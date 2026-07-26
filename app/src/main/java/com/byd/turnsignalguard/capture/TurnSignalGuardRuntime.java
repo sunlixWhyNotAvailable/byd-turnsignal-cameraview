@@ -269,16 +269,26 @@ final class TurnSignalGuardRuntime {
         if (blink.raw == expected) {
             manualCommandPending = false;
             emit("manual_turn_state_confirmed", "action", manualActionName(payload),
-                    "payload", payload, "blink", blink.raw,
+                    "operation", manualConfirmationOperation(payload),
+                    "payload", payload, "requested_payload", payload,
+                    "blink", blink.raw, "expected_blink", expected,
+                    "observed_blink", blink.raw,
                     "observable_transition", blinkBefore != expected,
+                    "classification", confirmationSuccessClassification(payload, blinkBefore),
+                    "framework_accepted", true, "framework_status", 0,
                     "assumed_latch_state", assumedLatchState);
             return;
         }
         if (SystemClock.elapsedRealtime() >= deadline) {
             manualCommandPending = false;
             emit("manual_turn_state_failed", "action", manualActionName(payload),
-                    "payload", payload, "reason", "blink_confirmation_timeout",
+                    "operation", manualConfirmationOperation(payload),
+                    "payload", payload, "requested_payload", payload,
+                    "reason", "blink_confirmation_timeout",
                     "blink", blink.raw, "expected_blink", expected,
+                    "observed_blink", blink.raw, "timeout_ms", CORRECTION_CONFIRM_MS,
+                    "framework_accepted", true, "framework_status", 0,
+                    "classification", confirmationTimeoutClassification(payload, blinkBefore),
                     "assumed_latch_state", assumedLatchState);
             return;
         }
@@ -718,8 +728,18 @@ final class TurnSignalGuardRuntime {
     private void evaluateCorrection(long now) {
         if (!sessionActive) return;
         if (confirmationPending && now >= confirmationDeadline) {
+            int payload = sessionDirection == BLINK_LEFT ? 2
+                    : sessionDirection == BLINK_RIGHT ? 3 : LATCH_UNKNOWN;
+            int expected = payload == LATCH_UNKNOWN
+                    ? sessionDirection : expectedBlinkForPayload(payload);
             emit("correction_failed", "reason", "blink_confirmation_timeout",
-                    "direction", directionName(sessionDirection));
+                    "operation", "guard_correction",
+                    "direction", directionName(sessionDirection),
+                    "payload", payload, "requested_payload", payload,
+                    "expected_blink", expected,
+                    "observed_blink", latestBlink, "timeout_ms", CORRECTION_CONFIRM_MS,
+                    "framework_accepted", true, "framework_status", 0,
+                    "classification", confirmationTimeoutClassification(payload, BLINK_OFF));
             finishSessionForOff("correction_timeout_cleanup");
             return;
         }
@@ -1194,6 +1214,40 @@ final class TurnSignalGuardRuntime {
         if (payload == 2) return "left";
         if (payload == 3) return "right";
         return "invalid";
+    }
+
+    static String manualConfirmationOperation(int payload) {
+        if (payload == 0) return "manual_reset";
+        if (payload == 1) return "manual_hazard_on";
+        if (payload == 2) return "manual_left_activation";
+        if (payload == 3) return "manual_right_activation";
+        return "manual_invalid";
+    }
+
+    static String confirmationTimeoutClassification(int payload, int blinkBefore) {
+        if (payload == 1) return "hazard_on_transition_not_observed";
+        if (payload == 2 || payload == 3) return "direction_activation_not_observed";
+        if (payload == 0 && blinkBefore == BLINK_HAZARD) {
+            return "hazard_off_transition_not_observed";
+        }
+        if (payload == 0 && blinkBefore == BLINK_OFF) {
+            return "payload_zero_off_confirmation_not_observed";
+        }
+        if (payload == 0) return "direction_deactivation_not_observed";
+        return "unsupported_payload_confirmation_timeout";
+    }
+
+    static String confirmationSuccessClassification(int payload, int blinkBefore) {
+        if (payload == 0 && blinkBefore == BLINK_OFF) {
+            return "accepted_no_observable_transition";
+        }
+        if (payload == 0 && blinkBefore == BLINK_HAZARD) {
+            return "hazard_off_transition_observed";
+        }
+        if (payload == 0) return "direction_deactivation_observed";
+        if (payload == 1) return "hazard_on_transition_observed";
+        if (payload == 2 || payload == 3) return "direction_activation_observed";
+        return "unsupported_payload_confirmed";
     }
 
     private static boolean isActivationGesture(

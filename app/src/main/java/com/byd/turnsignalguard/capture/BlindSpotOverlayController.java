@@ -42,6 +42,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     private static final int RIGHT_PREVIEW_INDEX = 3;
     private static final long STATE_STALE_MS = 750;
     private static final long VIEWPOINT_SETTLE_MS = 150;
+    private static final long CAMERA_RETRY_MS = 3_000;
 
     private final Context context;
     private final Handler handler;
@@ -53,6 +54,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         hide("vehicle_state_stale");
     };
     private final Runnable settleViewpoint = this::finishPreviewSettle;
+    private final Runnable retryCamera = this::retryCameraOpen;
 
     private CameraHelperMain.HelperBinder helper;
     private FrameLayout window;
@@ -65,6 +67,8 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     private boolean stateValid;
     private boolean visible;
     private boolean windowArmed;
+    private final CameraRetryState cameraRetry = new CameraRetryState();
+    private boolean shutdown;
     private int blink = -1;
     private float speedKph = Float.NaN;
     private int requestedPreviewIndex = -1;
@@ -184,13 +188,19 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
                 handler.post(this::applySettingsOnMain);
             } else if ("camera_opened".equals(kind)
                     && "helper".equals(event.optString("source"))
+                    && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
+                            event.optString("camera_owner"))
                     && DIRECT_CAMERA_TAG.equals(event.optString("camera_tag"))) {
                 int previewIndex = event.optInt("preview_index", -1);
                 handler.post(() -> cameraOpened(previewIndex));
             } else if ("camera_error".equals(kind)
                     && "helper".equals(event.optString("source"))
+                    && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
+                            event.optString("camera_owner"))
                     && DIRECT_CAMERA_TAG.equals(event.optString("camera_tag"))) {
-                handler.post(() -> cameraUnavailable(kind));
+                int previewIndex = event.optInt("preview_index", -1);
+                String stage = event.optString("stage", kind);
+                handler.post(() -> cameraUnavailable(stage, previewIndex));
             }
         } catch (Throwable error) {
             emit("overlay_event_parse_error", "error", summary(error));
@@ -198,8 +208,10 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     }
 
     void shutdown() {
+        shutdown = true;
         handler.removeCallbacks(staleState);
         handler.removeCallbacks(settleViewpoint);
+        cancelCameraRetry("overlay_shutdown");
         destroyWindow("overlay_shutdown");
         helper = null;
     }
@@ -224,6 +236,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     @Override
     public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
         emit("overlay_surface", "state", "destroyed");
+        cancelCameraRetry("surface_destroyed");
         if (!tearingDown && helper != null) helper.closeCamera("overlay_surface_destroyed");
         handler.removeCallbacks(settleViewpoint);
         cameraReady = false;
@@ -235,8 +248,10 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
 
     private void applySettingsOnMain() {
         boolean enabled = settings.getBoolean(PREF_ENABLED, false);
-        if (!enabled || suspended || helper == null || !Settings.canDrawOverlays(context)) {
+        if (shutdown || !enabled || suspended || helper == null
+                || !Settings.canDrawOverlays(context)) {
             destroyWindow(!enabled ? "overlay_disabled"
+                    : shutdown ? "overlay_shutdown"
                     : suspended ? "overlay_suspended"
                     : helper == null ? "helper_unavailable" : "overlay_permission_missing");
             return;
@@ -293,6 +308,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     }
 
     private void destroyWindow(String reason) {
+        cancelCameraRetry(reason);
         handler.removeCallbacks(staleState);
         handler.removeCallbacks(settleViewpoint);
         hide(reason);
@@ -359,7 +375,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
 
     private void requestDirection(int direction) {
         int previewIndex = previewIndexForDirection(direction);
-        if (helper == null || preview == null || previewIndex < 0
+        if (cameraRetry.active() || helper == null || preview == null || previewIndex < 0
                 || !preview.isCameraSurfaceReady()) {
             return;
         }
@@ -375,7 +391,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         cameraReady = false;
         settlingPreviewIndex = -1;
         handler.removeCallbacks(settleViewpoint);
-        helper.openDirectCamera(copy, DIRECT_CAMERA_TAG, previewIndex);
+        helper.openOverlayDirectCamera(copy, DIRECT_CAMERA_TAG, previewIndex);
         emit("overlay_camera_request", "camera_tag", DIRECT_CAMERA_TAG,
                 "preview_index", previewIndex,
                 "direction", direction == BLINK_RIGHT ? "right" : "left");
@@ -387,6 +403,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
 
     private void cameraOpened(int previewIndex) {
         if (previewIndex != requestedPreviewIndex) return;
+        cancelCameraRetry("camera_opened");
         displayedPreviewIndex = previewIndex;
         cameraReady = false;
         settlingPreviewIndex = previewIndex;
@@ -397,13 +414,113 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         handler.postDelayed(settleViewpoint, VIEWPOINT_SETTLE_MS);
     }
 
-    private void cameraUnavailable(String reason) {
+    private void cameraUnavailable(String reason, int previewIndex) {
+        if (previewIndex >= 0 && previewIndex != requestedPreviewIndex) {
+            emit("overlay_camera_retry", "state", "ignored",
+                    "reason", "preview_mismatch",
+                    "preview_index", previewIndex,
+                    "requested_preview_index", requestedPreviewIndex);
+            return;
+        }
         handler.removeCallbacks(settleViewpoint);
         cameraReady = false;
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
         settlingPreviewIndex = -1;
         hide(reason);
+        scheduleCameraRetry(reason);
+    }
+
+    private void scheduleCameraRetry(String reason) {
+        String blocked = cameraRetryBlockReason();
+        if (blocked != null) {
+            emit("overlay_camera_retry", "state", "cancelled", "reason", blocked,
+                    "trigger", reason);
+            return;
+        }
+        if (!cameraRetry.schedule(reason)) return;
+        handler.postDelayed(retryCamera, CAMERA_RETRY_MS);
+        emit("overlay_camera_retry", "state", "scheduled", "reason", reason,
+                "delay_ms", CAMERA_RETRY_MS,
+                "preview_index", previewIndexForDirection(desiredDirection()));
+    }
+
+    private void retryCameraOpen() {
+        String trigger = cameraRetry.consume();
+        if (trigger == null) return;
+        String blocked = cameraRetryBlockReason();
+        if (blocked != null) {
+            emit("overlay_camera_retry", "state", "cancelled", "reason", blocked,
+                    "trigger", trigger);
+            return;
+        }
+        int direction = desiredDirection();
+        emit("overlay_camera_retry", "state", "attempt",
+                "reason", trigger,
+                "preview_index", previewIndexForDirection(direction));
+        requestDirection(direction);
+    }
+
+    private String cameraRetryBlockReason() {
+        return cameraRetryBlockReason(
+                shutdown,
+                settings.getBoolean(PREF_ENABLED, false),
+                suspended,
+                helper != null,
+                Settings.canDrawOverlays(context),
+                preview != null && preview.isCameraSurfaceReady());
+    }
+
+    static String cameraRetryBlockReason(
+            boolean shutdown,
+            boolean enabled,
+            boolean suspended,
+            boolean helperAvailable,
+            boolean overlayPermission,
+            boolean surfaceReady) {
+        if (shutdown) return "shutdown";
+        if (!enabled) return "overlay_disabled";
+        if (suspended) return "overlay_suspended";
+        if (!helperAvailable) return "helper_unavailable";
+        if (!overlayPermission) return "overlay_permission_missing";
+        if (!surfaceReady) return "surface_unavailable";
+        return null;
+    }
+
+    private void cancelCameraRetry(String reason) {
+        String trigger = cameraRetry.cancel();
+        if (trigger == null) return;
+        handler.removeCallbacks(retryCamera);
+        emit("overlay_camera_retry", "state", "cancelled", "reason", reason,
+                "trigger", trigger);
+    }
+
+    static final class CameraRetryState {
+        private String trigger;
+
+        boolean schedule(String reason) {
+            if (trigger != null) return false;
+            trigger = reason == null ? "unknown" : reason;
+            return true;
+        }
+
+        String consume() {
+            return clear();
+        }
+
+        String cancel() {
+            return clear();
+        }
+
+        boolean active() {
+            return trigger != null;
+        }
+
+        private String clear() {
+            String value = trigger;
+            trigger = null;
+            return value;
+        }
     }
 
     private void show(int direction) {

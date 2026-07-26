@@ -40,6 +40,10 @@ final class CameraHelperMain {
     static final int TX_OPEN_STOCK_AVM = IBinder.FIRST_CALL_TRANSACTION + 7;
     static final int TX_OPEN_DIRECT = IBinder.FIRST_CALL_TRANSACTION + 8;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
+    static final int ADB_AUTH_MODE_AUTO_ONCE = 0;
+    static final int ADB_AUTH_MODE_FORCE = 1;
+    static final String CAMERA_OWNER_ACTIVITY = "activity";
+    static final String CAMERA_OWNER_OVERLAY = "overlay";
 
     private static final String TAG = "BydCameraProbe";
     private static final String COUNTER_PREFS = "lifetime_counters";
@@ -66,6 +70,7 @@ final class CameraHelperMain {
         private String viewName;
         private int activeCameraId = -1;
         private String activeCameraTag = "none";
+        private String activeCameraOwner = "none";
         private boolean stockCameraRequested;
 
         HelperBinder(Context context, Consumer<String> logSink) {
@@ -148,9 +153,11 @@ final class CameraHelperMain {
                     return true;
                 }
                 if (code == TX_RETRY_ADB_AUTH) {
-                    turnController.retryAuthorization();
+                    LocalAdbClient.PromptMode mode = adbAuthorizationMode(data.readInt());
+                    TurnSignalController.AuthorizationRequestAction action =
+                            turnController.requestAuthorization(mode);
                     reply.writeNoException();
-                    reply.writeString(result("adb_authorization_retry_queued", null));
+                    reply.writeString(authorizationResult(mode, action));
                     return true;
                 }
                 if (code == TX_OPEN_STOCK_AVM) {
@@ -248,7 +255,7 @@ final class CameraHelperMain {
 
         private String openCamera(Surface requestedSurface, int requestedIndex, String requestedView) {
             return openCamera(requestedSurface, requestedIndex, requestedView, true, false,
-                    cameraId, cameraTag);
+                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY);
         }
 
         private synchronized String openCamera(
@@ -258,7 +265,8 @@ final class CameraHelperMain {
                 boolean closeExisting,
                 boolean stockInput,
                 int requestedCameraId,
-                String requestedCameraTag) {
+                String requestedCameraTag,
+                String requestedCameraOwner) {
             if (requestedIndex < 0 || requestedIndex > 4) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Preview index must be 0..4");
@@ -271,7 +279,8 @@ final class CameraHelperMain {
             if (requestedCameraId < 0) {
                 requestedSurface.release();
                 String error = discoveryError == null ? "Camera was not discovered" : discoveryError;
-                emit("camera_error", "stage", "discovery", "error", error);
+                emit("camera_error", "stage", "discovery",
+                        "camera_owner", requestedCameraOwner, "error", error);
                 return result("camera_error", error, requestedCameraId, requestedCameraTag);
             }
 
@@ -303,11 +312,13 @@ final class CameraHelperMain {
                 previewIndex = requestedIndex;
                 activeCameraId = requestedCameraId;
                 activeCameraTag = requestedCameraTag;
+                activeCameraOwner = requestedCameraOwner;
                 if (!stockInput) {
                     viewName = requestedView == null ? "unknown" : requestedView;
                 }
                 emit("camera_opened", "camera_id", requestedCameraId,
                         "camera_tag", requestedCameraTag,
+                        "camera_owner", requestedCameraOwner,
                         "view", viewName, "preview_index", previewIndex,
                         "input_for_stock_avm", stockInput,
                         "add_surface", added, "set_surface", set, "start_preview", started);
@@ -324,6 +335,7 @@ final class CameraHelperMain {
                 String message = summary(error);
                 emit("camera_error", "stage", "open", "camera_id", requestedCameraId,
                         "camera_tag", requestedCameraTag, "view", requestedView,
+                        "camera_owner", requestedCameraOwner,
                         "preview_index", requestedIndex, "error", message);
                 return result("camera_error", message,
                         requestedCameraId, requestedCameraTag);
@@ -332,6 +344,21 @@ final class CameraHelperMain {
 
         String openDirectCamera(
                 Surface requestedSurface, String requestedTag, int requestedIndex) {
+            return openDirectCamera(
+                    requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_ACTIVITY);
+        }
+
+        String openOverlayDirectCamera(
+                Surface requestedSurface, String requestedTag, int requestedIndex) {
+            return openDirectCamera(
+                    requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_OVERLAY);
+        }
+
+        private String openDirectCamera(
+                Surface requestedSurface,
+                String requestedTag,
+                int requestedIndex,
+                String requestedOwner) {
             if (!isAllowedDirectCameraTag(requestedTag)) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Camera tag is not allowed: " + requestedTag);
@@ -346,6 +373,7 @@ final class CameraHelperMain {
                 String message = summary(error);
                 emit("camera_error", "stage", "direct_discovery",
                         "camera_tag", requestedTag, "preview_index", requestedIndex,
+                        "camera_owner", requestedOwner,
                         "error", message);
                 return result("camera_error", message, -1, requestedTag);
             }
@@ -354,12 +382,13 @@ final class CameraHelperMain {
                 String message = "Camera tag is unavailable: " + requestedTag;
                 emit("camera_error", "stage", "direct_discovery",
                         "camera_tag", requestedTag, "preview_index", requestedIndex,
+                        "camera_owner", requestedOwner,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, requestedTag);
             }
             return openCamera(requestedSurface, requestedIndex,
                     "direct_" + requestedTag + "_index_" + requestedIndex,
-                    true, false, requestedCameraId, requestedTag);
+                    true, false, requestedCameraId, requestedTag, requestedOwner);
         }
 
         synchronized String openStockAvm(Surface requestedSurface, int viewpoint) {
@@ -403,7 +432,7 @@ final class CameraHelperMain {
             }
             String attachResult = openCamera(
                     inputSurface, 0, "stock_avm_input", false, true,
-                    cameraId, cameraTag);
+                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY);
             emit("camera_input_surface_attached", "view", viewName,
                     "result", attachResult);
         }
@@ -417,6 +446,7 @@ final class CameraHelperMain {
             int activeIndex = previewIndex;
             int closedCameraId = activeCameraId;
             String closedCameraTag = activeCameraTag;
+            String closedCameraOwner = activeCameraOwner;
             camera = null;
             eventCallback = null;
             surface = null;
@@ -424,6 +454,7 @@ final class CameraHelperMain {
             viewName = null;
             activeCameraId = -1;
             activeCameraTag = "none";
+            activeCameraOwner = "none";
             String error = null;
             if (activeCamera != null) {
                 try {
@@ -436,6 +467,7 @@ final class CameraHelperMain {
                 emit("camera_closed", "reason", reason == null ? "unknown" : reason,
                         "view", activeView, "preview_index", activeIndex,
                         "camera_id", closedCameraId, "camera_tag", closedCameraTag,
+                        "camera_owner", closedCameraOwner,
                         "error", error == null ? "" : error);
             }
             if (closeStock) {
@@ -583,12 +615,33 @@ final class CameraHelperMain {
                 return kind;
             }
         }
+
+        private String authorizationResult(
+                LocalAdbClient.PromptMode mode,
+                TurnSignalController.AuthorizationRequestAction action) {
+            try {
+                return new JSONObject()
+                        .put("kind", "adb_authorization_request")
+                        .put("mode", mode.name())
+                        .put("result", action.wireName())
+                        .put("replaced_auto", action.replacedAuto())
+                        .toString();
+            } catch (Throwable ignored) {
+                return "{\"kind\":\"adb_authorization_request\",\"result\":\"error\"}";
+            }
+        }
     }
 
     static String lifetimeCounterKey(String kind) {
         if ("driver_activation".equals(kind)) return ACTIVATION_COUNT;
         if ("correction_confirmed".equals(kind)) return CORRECTION_COUNT;
         return null;
+    }
+
+    static LocalAdbClient.PromptMode adbAuthorizationMode(int value) {
+        if (value == ADB_AUTH_MODE_AUTO_ONCE) return LocalAdbClient.PromptMode.AUTO_ONCE;
+        if (value == ADB_AUTH_MODE_FORCE) return LocalAdbClient.PromptMode.FORCE;
+        throw new IllegalArgumentException("Unsupported ADB authorization mode: " + value);
     }
 
     static boolean isAllowedDirectCameraTag(String tag) {

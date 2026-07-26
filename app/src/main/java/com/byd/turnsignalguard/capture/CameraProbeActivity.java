@@ -68,6 +68,7 @@ public final class CameraProbeActivity extends Activity
     private static final int DEFAULT_MAX_SPEED_KPH = 30;
     private static final int DEFAULT_CAMERA_MIN_SPEED_KPH = 20;
     static final long ADB_AUTH_UI_SETTLE_MS = 600;
+    private static final String ADB_WAITING_STATUS = "Очікування ADB/RSA...";
     private static final long CAMERA_PREVIEW_HANDOFF_MS = 250;
     private static final int TAB_GUARD = 0;
     private static final int TAB_CAMERAS = 1;
@@ -171,6 +172,7 @@ public final class CameraProbeActivity extends Activity
     private boolean telemetryReady;
     private boolean manualTurnRequestPending;
     private boolean adbAuthPending;
+    private LocalAdbClient.PromptMode adbAuthMode;
     private boolean adbAuthorizationRequested;
     private boolean adbAuthorizationStartScheduled;
     private boolean cameraPermissionPending;
@@ -239,6 +241,7 @@ public final class CameraProbeActivity extends Activity
         public void onServiceDisconnected(ComponentName name) {
             helper = null;
             adbAuthPending = false;
+            adbAuthMode = null;
             adbAuthorizationRequested = false;
             cancelPendingForegroundAdbAuthorization();
             telemetryReady = false;
@@ -1394,7 +1397,12 @@ public final class CameraProbeActivity extends Activity
         if (!shouldCopyCalibrationFrame() || calibrationCopyPending) return;
         int width = calibrationPreview.getWidth();
         int height = calibrationPreview.getHeight();
-        if (width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) {
+            if (shouldRetryCalibrationCopy(true, width, height)) {
+                mainHandler.postDelayed(copyCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
+            }
+            return;
+        }
         if (calibrationCaptureBitmap == null
                 || calibrationCaptureBitmap.getWidth() != width
                 || calibrationCaptureBitmap.getHeight() != height) {
@@ -2319,34 +2327,58 @@ public final class CameraProbeActivity extends Activity
     private boolean requestAdbAuthorization(
             String event, String operation, boolean automatic) {
         IBinder current = helper;
-        if (current == null || adbAuthPending) return false;
+        LocalAdbClient.PromptMode mode = automatic
+                ? LocalAdbClient.PromptMode.AUTO_ONCE
+                : LocalAdbClient.PromptMode.FORCE;
+        if (current == null || automatic && adbAuthPending
+                || !automatic && adbAuthPending
+                && adbAuthMode == LocalAdbClient.PromptMode.FORCE) {
+            return false;
+        }
         cancelPendingForegroundAdbAuthorization();
         adbAuthPending = true;
-        guardStatus.setText("Очікування ADB/RSA...");
+        adbAuthMode = mode;
+        guardStatus.setText(ADB_WAITING_STATUS);
         updateControls();
-        record(event, "automatic", automatic);
+        record(event, "automatic", automatic, "mode", mode.name());
         ipcExecutor.execute(() -> transactAdbAuthorization(
-                current, operation, automatic));
+                current, operation, automatic, mode));
         return true;
     }
 
     private void transactAdbAuthorization(
-            IBinder current, String operation, boolean automatic) {
+            IBinder current,
+            String operation,
+            boolean automatic,
+            LocalAdbClient.PromptMode mode) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
+            data.writeInt(mode == LocalAdbClient.PromptMode.FORCE
+                    ? CameraHelperMain.ADB_AUTH_MODE_FORCE
+                    : CameraHelperMain.ADB_AUTH_MODE_AUTO_ONCE);
             requireTransaction(current, CameraHelperMain.TX_RETRY_ADB_AUTH, data, reply);
             String response = reply.readString();
-            record("ipc_reply", "operation", operation, "reply", response);
+            JSONObject result = new JSONObject(response);
+            String requestResult = result.optString("result", "error");
+            if (!"accepted".equals(requestResult) && !"coalesced".equals(requestResult)) {
+                throw new IllegalStateException("ADB request rejected: " + response);
+            }
+            record("ipc_reply", "operation", operation, "reply", response,
+                    "mode", mode.name(), "request_result", requestResult,
+                    "replaced_auto", result.optBoolean("replaced_auto"));
             runOnUiThread(() -> {
-                if (automatic) adbAuthorizationRequested = true;
+                adbAuthorizationRequested = true;
                 updateControls();
             });
         } catch (Throwable error) {
             record("ipc_error", "operation", operation, "error", error.toString());
             runOnUiThread(() -> {
-                adbAuthPending = false;
+                if (adbAuthMode == mode) {
+                    adbAuthPending = false;
+                    adbAuthMode = null;
+                }
                 if (automatic) adbAuthorizationRequested = false;
                 guardStatus.setText("ADB retry IPC error");
                 updateControls();
@@ -2403,6 +2435,7 @@ public final class CameraProbeActivity extends Activity
             try {
                 JSONObject json = new JSONObject(line);
                 String kind = json.optString("kind");
+                if (isOverlayCameraEvent(kind, json.optString("camera_owner"))) return;
                 if ("camera_opened".equals(kind)) {
                     cameraStatusForEvent(json).setText(
                             json.optString("renderer").startsWith("stock_avm")
@@ -2456,15 +2489,30 @@ public final class CameraProbeActivity extends Activity
                             : "Telemetry error: " + json.optString("error"));
                 } else if ("adb_auth_start".equals(kind)) {
                     adbAuthPending = true;
-                    guardStatus.setText("Очікування ADB/RSA...");
+                    LocalAdbClient.PromptMode eventMode = adbPromptMode(
+                            json.optString("mode"));
+                    if (adbAuthMode != LocalAdbClient.PromptMode.FORCE
+                            || eventMode == LocalAdbClient.PromptMode.FORCE) {
+                        adbAuthMode = eventMode;
+                    }
+                    guardStatus.setText(ADB_WAITING_STATUS);
                 } else if ("adb_auth_state".equals(kind)) {
                     adbAuthPending = json.optBoolean("pending");
-                    if (adbAuthPending) guardStatus.setText("Очікування ADB/RSA...");
+                    adbAuthMode = adbAuthPending
+                            ? adbPromptMode(json.optString("mode")) : null;
+                    if (adbAuthPending) {
+                        guardStatus.setText(ADB_WAITING_STATUS);
+                    } else if (ADB_WAITING_STATUS.contentEquals(guardStatus.getText())) {
+                        guardStatus.setText(telemetryReady
+                                ? "Телеметрія готова" : "ADB авторизація потрібна");
+                    }
                 } else if ("authorization_superseded".equals(kind)) {
-                    adbAuthPending = true;
-                    guardStatus.setText("Очікування ADB/RSA...");
+                    adbAuthMode = adbPromptMode(json.optString("next_mode"));
+                    adbAuthPending = adbAuthMode != null;
+                    if (adbAuthPending) guardStatus.setText(ADB_WAITING_STATUS);
+                } else if ("adb_auth_auto_blocked".equals(kind)) {
+                    guardStatus.setText("ADB авторизація потрібна; натисніть повторити");
                 } else if ("adb_auth_result".equals(kind)) {
-                    adbAuthPending = false;
                     if (!json.optBoolean("ok")) {
                         telemetryReady = false;
                         guardStatus.setText("ADB: " + json.optString("error"));
@@ -2665,9 +2713,42 @@ public final class CameraProbeActivity extends Activity
                             && !guardSwitch.isChecked());
         }
         if (adbRetryButton != null) {
-            adbRetryButton.setEnabled(helper != null && !adbAuthPending);
+            adbRetryButton.setEnabled(shouldEnableManualAdbAuthorization(
+                    helper != null, adbAuthPending, adbAuthMode));
         }
         maybeOpenPendingDiagnosticMode(debugStockReady);
+    }
+
+    static boolean shouldEnableManualAdbAuthorization(
+            boolean helperConnected,
+            boolean authorizationPending,
+            LocalAdbClient.PromptMode mode) {
+        return helperConnected
+                && (!authorizationPending || mode != LocalAdbClient.PromptMode.FORCE);
+    }
+
+    static boolean shouldRetryCalibrationCopy(boolean active, int width, int height) {
+        return active && (width <= 0 || height <= 0);
+    }
+
+    static LocalAdbClient.PromptMode adbPromptMode(String value) {
+        if (LocalAdbClient.PromptMode.AUTO_ONCE.name().equals(value)) {
+            return LocalAdbClient.PromptMode.AUTO_ONCE;
+        }
+        if (LocalAdbClient.PromptMode.FORCE.name().equals(value)) {
+            return LocalAdbClient.PromptMode.FORCE;
+        }
+        if (LocalAdbClient.PromptMode.NEVER.name().equals(value)) {
+            return LocalAdbClient.PromptMode.NEVER;
+        }
+        return null;
+    }
+
+    static boolean isOverlayCameraEvent(String kind, String owner) {
+        return CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(owner)
+                && ("camera_opened".equals(kind)
+                        || "camera_error".equals(kind)
+                        || "camera_closed".equals(kind));
     }
 
     static boolean isIntermediateCameraClose(String reason) {

@@ -93,7 +93,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(33, BuildConfig.VERSION_CODE);
+        assertEquals(34, BuildConfig.VERSION_CODE);
         assertEquals(3, TurnSignalShellProtocol.VERSION);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
@@ -118,18 +118,73 @@ public final class AdbCoreTest {
     }
 
     @Test
-    public void duplicateRetryIsCoalescedAndControlledCancellationDoesNotBackoff() {
-        TurnSignalController.RetryGate gate = new TurnSignalController.RetryGate();
-        assertTrue(gate.begin());
-        for (int i = 0; i < 9; i++) assertFalse(gate.begin());
-        gate.end();
-        assertTrue(gate.begin());
+    public void authorizationModesReplaceAutoAndCoalesceForce() {
+        TurnSignalController.AuthorizationGate gate =
+                new TurnSignalController.AuthorizationGate();
+        assertEquals(TurnSignalController.AuthorizationRequestAction.ACCEPTED,
+                gate.request(LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertEquals(TurnSignalController.AuthorizationRequestAction.COALESCED,
+                gate.request(LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertEquals(TurnSignalController.AuthorizationRequestAction.REPLACED_AUTO,
+                gate.request(LocalAdbClient.PromptMode.FORCE));
+        assertEquals(LocalAdbClient.PromptMode.FORCE, gate.mode());
+        gate.finish(LocalAdbClient.PromptMode.AUTO_ONCE);
+        assertEquals(LocalAdbClient.PromptMode.FORCE, gate.mode());
+        assertEquals(TurnSignalController.AuthorizationRequestAction.COALESCED,
+                gate.request(LocalAdbClient.PromptMode.FORCE));
+        assertEquals("accepted",
+                TurnSignalController.AuthorizationRequestAction.REPLACED_AUTO.wireName());
+        assertEquals("coalesced",
+                TurnSignalController.AuthorizationRequestAction.COALESCED.wireName());
+        gate.finish(LocalAdbClient.PromptMode.FORCE);
+        assertFalse(gate.active());
+
+        assertEquals(LocalAdbClient.PromptMode.AUTO_ONCE,
+                CameraHelperMain.adbAuthorizationMode(
+                        CameraHelperMain.ADB_AUTH_MODE_AUTO_ONCE));
+        assertEquals(LocalAdbClient.PromptMode.FORCE,
+                CameraHelperMain.adbAuthorizationMode(CameraHelperMain.ADB_AUTH_MODE_FORCE));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraHelperMain.adbAuthorizationMode(2));
+
+        assertTrue(TurnSignalController.canReuseHealthyHelperBeforeAuthorization(
+                true, LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertFalse(TurnSignalController.canReuseHealthyHelperBeforeAuthorization(
+                true, LocalAdbClient.PromptMode.FORCE));
+        assertFalse(TurnSignalController.canReuseHealthyHelperBeforeAuthorization(
+                false, LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertTrue(TurnSignalController.isSupersededByRequest(
+                LocalAdbClient.PromptMode.NEVER, LocalAdbClient.PromptMode.FORCE));
+        assertTrue(TurnSignalController.isSupersededByRequest(
+                LocalAdbClient.PromptMode.NEVER, LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertFalse(TurnSignalController.isSupersededByRequest(
+                LocalAdbClient.PromptMode.FORCE, LocalAdbClient.PromptMode.FORCE));
+        assertFalse(TurnSignalController.isSupersededByRequest(
+                LocalAdbClient.PromptMode.NEVER, null));
+        assertTrue(TurnSignalController.isSupersededByRequest(
+                LocalAdbClient.PromptMode.AUTO_ONCE, LocalAdbClient.PromptMode.FORCE));
+
+        long cancellationToken = LocalAdbClient.cancellationToken();
+        assertTrue(LocalAdbClient.isCancellationTokenCurrent(cancellationToken));
+        LocalAdbClient.cancelPendingAuthorization();
+        assertFalse(LocalAdbClient.isCancellationTokenCurrent(cancellationToken));
+        assertTrue(LocalAdbClient.isCancellationTokenCurrent(
+                LocalAdbClient.NO_CANCELLATION));
 
         assertFalse(TurnSignalController.shouldRecordLaunchFailure(
                 LocalAdbClient.Result.superseded()));
         assertTrue(TurnSignalController.shouldRecordLaunchFailure(
                 LocalAdbClient.Result.authorizationRequired(
                         "authorization_required", false, "key")));
+        LocalAdbClient.Result authorizationRequired =
+                LocalAdbClient.Result.authorizationRequired(
+                        "authorization_required", false, "key");
+        assertFalse(TurnSignalController.shouldRememberAutomaticAuthorizationBlock(
+                LocalAdbClient.PromptMode.NEVER, authorizationRequired));
+        assertTrue(TurnSignalController.shouldRememberAutomaticAuthorizationBlock(
+                LocalAdbClient.PromptMode.AUTO_ONCE, authorizationRequired));
+        assertTrue(TurnSignalController.shouldRememberAutomaticAuthorizationBlock(
+                LocalAdbClient.PromptMode.FORCE, authorizationRequired));
 
         assertTrue(TurnSignalController.shouldBlockAutomaticAuthorization(
                 LocalAdbClient.PromptMode.AUTO_ONCE, "2:key", "2:key"));
@@ -139,6 +194,25 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.NEVER, "2:key", "2:key"));
         assertFalse(TurnSignalController.shouldBlockAutomaticAuthorization(
                 LocalAdbClient.PromptMode.AUTO_ONCE, "2:key", "2:new-key"));
+    }
+
+    @Test
+    public void manualAuthorizationCanReplaceAutoButNotDuplicateForce() {
+        assertTrue(CameraProbeActivity.shouldEnableManualAdbAuthorization(
+                true, false, null));
+        assertTrue(CameraProbeActivity.shouldEnableManualAdbAuthorization(
+                true, true, LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertTrue(CameraProbeActivity.shouldEnableManualAdbAuthorization(
+                true, true, LocalAdbClient.PromptMode.NEVER));
+        assertFalse(CameraProbeActivity.shouldEnableManualAdbAuthorization(
+                true, true, LocalAdbClient.PromptMode.FORCE));
+        assertFalse(CameraProbeActivity.shouldEnableManualAdbAuthorization(
+                false, false, null));
+        assertEquals(LocalAdbClient.PromptMode.AUTO_ONCE,
+                CameraProbeActivity.adbPromptMode("AUTO_ONCE"));
+        assertEquals(LocalAdbClient.PromptMode.FORCE,
+                CameraProbeActivity.adbPromptMode("FORCE"));
+        assertEquals(null, CameraProbeActivity.adbPromptMode("NONE"));
     }
 
     @Test
@@ -174,6 +248,49 @@ public final class AdbCoreTest {
         assertTrue(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
                 false, true, true, false, false));
         assertEquals(600, CameraProbeActivity.ADB_AUTH_UI_SETTLE_MS);
+    }
+
+    @Test
+    public void cameraRecoveryAndCalibrationWaitForRuntimeReadiness() {
+        BlindSpotOverlayController.CameraRetryState retry =
+                new BlindSpotOverlayController.CameraRetryState();
+        assertTrue(retry.schedule("cold_open_failed"));
+        assertFalse(retry.schedule("duplicate_failure"));
+        assertTrue(retry.active());
+        assertEquals("cold_open_failed", retry.consume());
+        assertFalse(retry.active());
+        assertTrue(retry.schedule("second_failure"));
+        assertEquals("second_failure", retry.cancel());
+        assertFalse(retry.active());
+
+        assertEquals(null, BlindSpotOverlayController.cameraRetryBlockReason(
+                false, true, false, true, true, true));
+        assertEquals("overlay_disabled", BlindSpotOverlayController.cameraRetryBlockReason(
+                false, false, false, true, true, true));
+        assertEquals("overlay_suspended", BlindSpotOverlayController.cameraRetryBlockReason(
+                false, true, true, true, true, true));
+        assertEquals("helper_unavailable", BlindSpotOverlayController.cameraRetryBlockReason(
+                false, true, false, false, true, true));
+        assertEquals("overlay_permission_missing",
+                BlindSpotOverlayController.cameraRetryBlockReason(
+                        false, true, false, true, false, true));
+        assertEquals("surface_unavailable", BlindSpotOverlayController.cameraRetryBlockReason(
+                false, true, false, true, true, false));
+        assertEquals("shutdown", BlindSpotOverlayController.cameraRetryBlockReason(
+                true, true, false, true, true, true));
+
+        assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 0, 720));
+        assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 0));
+        assertFalse(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 720));
+        assertFalse(CameraProbeActivity.shouldRetryCalibrationCopy(false, 0, 0));
+        assertTrue(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_error", CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        assertTrue(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_opened", CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        assertFalse(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
+        assertFalse(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_discovery", CameraHelperMain.CAMERA_OWNER_OVERLAY));
     }
 
     @Test
@@ -245,6 +362,14 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalGuardRuntime.shouldCancelSpeedDeferredSession(4, false, 6));
         assertTrue(TurnSignalGuardRuntime.shouldCancelSpeedDeferredSession(4, true, 1));
         assertFalse(TurnSignalGuardRuntime.shouldCancelSpeedDeferredSession(4, true, 4));
+        assertEquals("manual_reset",
+                TurnSignalGuardRuntime.manualConfirmationOperation(0));
+        assertEquals("direction_activation_not_observed",
+                TurnSignalGuardRuntime.confirmationTimeoutClassification(2, 1));
+        assertEquals("hazard_off_transition_not_observed",
+                TurnSignalGuardRuntime.confirmationTimeoutClassification(0, 6));
+        assertEquals("accepted_no_observable_transition",
+                TurnSignalGuardRuntime.confirmationSuccessClassification(0, 1));
         assertEquals("activation_count",
                 CameraHelperMain.lifetimeCounterKey("driver_activation"));
         assertEquals("correction_count",

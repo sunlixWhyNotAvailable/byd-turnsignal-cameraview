@@ -36,6 +36,7 @@ final class LocalAdbClient {
     private static final int CONNECT_TIMEOUT_MS = 3_000;
     private static final int READ_TIMEOUT_MS = 5_000;
     private static final int AUTH_TIMEOUT_MS = 60_000;
+    static final long NO_CANCELLATION = Long.MIN_VALUE;
     private static final String PREFS = "local_adb";
     private static final String AUTO_PROMPT_KEY = "auto_prompt_key";
     private static final String AUTHORIZED_KEY = "authorized_key";
@@ -52,29 +53,58 @@ final class LocalAdbClient {
 
     static Result authorize(
             Context context, PromptMode mode, BiConsumer<String, Object[]> eventSink) {
+        return authorize(context, mode, cancellationToken(), eventSink);
+    }
+
+    static Result authorize(
+            Context context,
+            PromptMode mode,
+            long cancellationToken,
+            BiConsumer<String, Object[]> eventSink) {
         synchronized (LOCK) {
-            return connectOnly(context.getApplicationContext(), mode, eventSink);
+            return connectOnly(
+                    context.getApplicationContext(), mode, cancellationToken, eventSink);
         }
     }
 
     static Result executeAuthorized(
             Context context, String fixedCommand, BiConsumer<String, Object[]> eventSink) {
+        return executeAuthorized(context, fixedCommand, NO_CANCELLATION, eventSink);
+    }
+
+    static Result executeAuthorized(
+            Context context,
+            String fixedCommand,
+            long cancellationToken,
+            BiConsumer<String, Object[]> eventSink) {
         synchronized (LOCK) {
             Connection connection = null;
             try {
                 OpenResult open = Connection.open(
-                        context.getApplicationContext(), PromptMode.NEVER, eventSink);
+                        context.getApplicationContext(), PromptMode.NEVER,
+                        cancellationToken, eventSink);
                 if (open.connection == null) {
                     return Result.authorizationRequired(
                             open.authorizationError, open.publicKeySent, open.fingerprint);
                 }
                 connection = open.connection;
+                if (!isCancellationTokenCurrent(cancellationToken)) {
+                    return Result.superseded();
+                }
                 ShellResult shell = connection.shell(fixedCommand);
+                if (!isCancellationTokenCurrent(cancellationToken)) {
+                    return Result.superseded();
+                }
                 return shell.exitCode == 0
                         ? Result.ok(shell.output, shell.exitCode, open.fingerprint, false)
                         : Result.failed("shell_exit_" + shell.exitCode, shell.output,
                                 shell.exitCode, open.fingerprint);
+            } catch (AuthorizationSupersededException superseded) {
+                return Result.superseded();
             } catch (Throwable error) {
+                if (!isCancellationTokenCurrent(cancellationToken)) {
+                    return Result.superseded();
+                }
                 return Result.failed(summary(error), "", -1, "unavailable");
             } finally {
                 if (connection != null) connection.close();
@@ -83,10 +113,13 @@ final class LocalAdbClient {
     }
 
     private static Result connectOnly(
-            Context context, PromptMode mode, BiConsumer<String, Object[]> eventSink) {
+            Context context,
+            PromptMode mode,
+            long cancellationToken,
+            BiConsumer<String, Object[]> eventSink) {
         Connection connection = null;
         try {
-            OpenResult open = Connection.open(context, mode, eventSink);
+            OpenResult open = Connection.open(context, mode, cancellationToken, eventSink);
             connection = open.connection;
             return connection == null
                     ? Result.authorizationRequired(
@@ -111,6 +144,14 @@ final class LocalAdbClient {
         if (socket == null) return false;
         close(socket);
         return true;
+    }
+
+    static long cancellationToken() {
+        return cancellationGeneration();
+    }
+
+    static boolean isCancellationTokenCurrent(long token) {
+        return token == NO_CANCELLATION || cancellationGeneration() == token;
     }
 
     static byte[] signToken(PrivateKey key, byte[] token) throws Exception {
@@ -156,12 +197,19 @@ final class LocalAdbClient {
                 Context context,
                 PromptMode mode,
                 BiConsumer<String, Object[]> eventSink) throws Exception {
+            return open(context, mode, cancellationToken(), eventSink);
+        }
+
+        static OpenResult open(
+                Context context,
+                PromptMode mode,
+                long authGeneration,
+                BiConsumer<String, Object[]> eventSink) throws Exception {
             KeyPair keys = loadOrCreateKeys(context);
             String fingerprint = fingerprint(keys);
-            long authGeneration = cancellationGeneration();
             Socket socket = new Socket();
             try {
-                if (!trackPending(socket, authGeneration)) {
+                if (!isCancellationTokenCurrent(authGeneration)) {
                     throw new AuthorizationSupersededException();
                 }
                 socket.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
@@ -190,6 +238,9 @@ final class LocalAdbClient {
                         throw timeout;
                     }
                     if (packet.command == AdbPacket.A_CNXN) {
+                        if (!isCancellationTokenCurrent(authGeneration)) {
+                            throw new AuthorizationSupersededException();
+                        }
                         emitStage(eventSink, "cnxn_received", "fingerprint", fingerprint,
                                 "public_key_sent", publicKeySent);
                         clearPending(socket);
@@ -239,6 +290,9 @@ final class LocalAdbClient {
                     }
                     String publicKey = AdbKeyFormatter.formatPublicKey(
                             (RSAPublicKey) keys.getPublic());
+                    if (!trackPending(socket, authGeneration)) {
+                        throw new AuthorizationSupersededException();
+                    }
                     AdbPacket.write(connection.out, AdbPacket.A_AUTH,
                             AdbPacket.AUTH_RSAPUBLICKEY, 0,
                             nul(publicKey));
@@ -253,7 +307,7 @@ final class LocalAdbClient {
                 clearPending(socket);
                 LocalAdbClient.close(socket);
                 if (error instanceof AuthorizationSupersededException
-                        || cancellationGeneration() != authGeneration) {
+                        || !isCancellationTokenCurrent(authGeneration)) {
                     emitStage(eventSink, "socket_cancelled", "fingerprint", fingerprint);
                     throw new AuthorizationSupersededException();
                 }
