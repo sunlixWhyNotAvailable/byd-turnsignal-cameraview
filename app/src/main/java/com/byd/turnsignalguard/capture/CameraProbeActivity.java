@@ -2,6 +2,7 @@ package com.byd.turnsignalguard.capture;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -82,7 +83,9 @@ public final class CameraProbeActivity extends Activity
             "com.byd.turnsignalguard.capture.extra.AVM_CLOSE";
 
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AppUpdateManager updateManager = new AppUpdateManager();
     private final Paint calibrationCropPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Object logLock = new Object();
     private final Button[] viewButtons = new Button[4];
@@ -144,6 +147,7 @@ public final class CameraProbeActivity extends Activity
     private Switch debugShowRawSwitch;
     private Button closeButton;
     private Button adbRetryButton;
+    private Button updateButton;
     private Button shutdownButton;
     private Button clearLogsButton;
     private Button guardTabButton;
@@ -179,6 +183,9 @@ public final class CameraProbeActivity extends Activity
     private boolean helperBound;
     private boolean shutdownRequested;
     private boolean overlayPermissionRequested;
+    private boolean activityResumed;
+    private boolean activityDestroyed;
+    private boolean updateCheckInFlight;
     private boolean editingRightCameraPosition;
     private boolean debugHorizontal = true;
     private boolean calibrationRightCamera;
@@ -203,9 +210,12 @@ public final class CameraProbeActivity extends Activity
     private Bitmap calibrationResultBitmap;
     private int lastCalibrationCopyResult = PixelCopy.SUCCESS;
     private int selectedTab = -1;
+    private AlertDialog updateDialog;
+    private AlertDialog updateProgressDialog;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
     private final Runnable finishDirectCameraHandoff = this::openPendingDirectCamera;
     private final Runnable copyCalibrationFrame = this::copyCalibrationFrame;
+    private final Runnable runStartupUpdateCheck = this::runStartupUpdateCheck;
     private final Runnable startForegroundAdbAuthorization = () -> {
         adbAuthorizationStartScheduled = false;
         if (shouldStartForegroundAdbAuthorization(cameraPermissionPending,
@@ -308,12 +318,22 @@ public final class CameraProbeActivity extends Activity
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
+        showCachedUpdateIfAvailable();
+        scheduleStartupUpdateCheck();
         if (overlayPermissionRequested && Settings.canDrawOverlays(this)) {
             overlayPermissionRequested = false;
             record("overlay_permission", "granted", true);
             CameraHelperService.cameraSettingsChanged(this);
             if (cameraStatus != null) cameraStatus.setText("Overlay permission granted");
         }
+    }
+
+    @Override
+    protected void onPause() {
+        activityResumed = false;
+        mainHandler.removeCallbacks(runStartupUpdateCheck);
+        super.onPause();
     }
 
     @Override
@@ -351,13 +371,162 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     protected void onDestroy() {
+        activityDestroyed = true;
+        mainHandler.removeCallbacks(runStartupUpdateCheck);
         stopCalibrationCopies(true);
         if (helperBound) {
             unbindService(helperConnection);
             helperBound = false;
         }
         ipcExecutor.shutdown();
+        updateExecutor.shutdownNow();
+        if (updateDialog != null) updateDialog.dismiss();
+        if (updateProgressDialog != null) updateProgressDialog.dismiss();
         super.onDestroy();
+    }
+
+    private void scheduleStartupUpdateCheck() {
+        mainHandler.removeCallbacks(runStartupUpdateCheck);
+        long remainingMs = UpdateAutoCheckRuntime.remainingMs();
+        if (remainingMs >= 0L) mainHandler.postDelayed(runStartupUpdateCheck, remainingMs);
+    }
+
+    private void runStartupUpdateCheck() {
+        if (!activityResumed || activityDestroyed) return;
+        if (!UpdateAutoCheckRuntime.consumeIfReady()) {
+            scheduleStartupUpdateCheck();
+            return;
+        }
+        if (updateCheckInFlight) return;
+        runUpdateCheck(false);
+    }
+
+    private void runManualUpdateCheck() {
+        runUpdateCheck(true);
+    }
+
+    private void runUpdateCheck(boolean force) {
+        if (updateCheckInFlight || activityDestroyed) return;
+        updateCheckInFlight = true;
+        if (updateButton != null) {
+            updateButton.setEnabled(false);
+            updateButton.setText("Перевірка...");
+        }
+        record("update_check_started", "automatic", !force);
+        updateExecutor.execute(() -> {
+            try {
+                AppUpdateManager.UpdateInfo available = updateManager.checkForUpdate(
+                        getApplicationContext(), force);
+                runOnUiThread(() -> {
+                    updateCheckInFlight = false;
+                    restoreUpdateButton();
+                    if (available == null) {
+                        record("update_check_finished", "result", "up_to_date");
+                        if (force) showUpdateMessage(
+                                "Оновлення", "Встановлено актуальну версію.");
+                    } else {
+                        record("update_check_finished", "result", "available",
+                                "version", available.version);
+                        showCachedUpdateIfAvailable();
+                    }
+                });
+            } catch (Throwable error) {
+                runOnUiThread(() -> {
+                    updateCheckInFlight = false;
+                    restoreUpdateButton();
+                    record("update_check_finished", "result", "error",
+                            "error", error.toString());
+                    if (force) showUpdateError(error);
+                });
+            }
+        });
+    }
+
+    private void restoreUpdateButton() {
+        if (updateButton == null) return;
+        updateButton.setText("Оновлення");
+        updateButton.setEnabled(!activityDestroyed && updateProgressDialog == null);
+    }
+
+    private void showCachedUpdateIfAvailable() {
+        AppUpdateManager.UpdateInfo available = AppUpdateManager.cachedAvailable();
+        if (!activityResumed || activityDestroyed || available == null
+                || updateDialog != null || updateProgressDialog != null) return;
+        String message = "Встановлена версія: " + BuildConfig.VERSION_NAME
+                + "\nДоступна версія: " + available.version;
+        String notes = available.releaseNotes == null ? "" : available.releaseNotes.trim();
+        if (!notes.isEmpty()) message += "\n\n" + notes;
+        updateDialog = new AlertDialog.Builder(this)
+                .setTitle("Доступне оновлення")
+                .setMessage(message)
+                .setPositiveButton("Оновити", (dialog, which) -> {
+                    AppUpdateManager.clearCachedAvailable();
+                    startUpdateDownload(available);
+                })
+                .setNegativeButton("Пізніше", (dialog, which) ->
+                        AppUpdateManager.clearCachedAvailable())
+                .setOnCancelListener(dialog -> AppUpdateManager.clearCachedAvailable())
+                .create();
+        updateDialog.setOnDismissListener(dialog -> updateDialog = null);
+        updateDialog.show();
+    }
+
+    private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
+        if (activityDestroyed || updateProgressDialog != null) return;
+        record("update_download_started", "version", info.version);
+        updateProgressDialog = new AlertDialog.Builder(this)
+                .setTitle("Оновлення " + info.version)
+                .setMessage("Завантаження: 0%")
+                .setCancelable(false)
+                .create();
+        updateProgressDialog.show();
+        updateExecutor.execute(() -> {
+            try {
+                File file = updateManager.downloadAndVerify(
+                        getApplicationContext(), info, progress -> runOnUiThread(() -> {
+                            if (updateProgressDialog != null) {
+                                updateProgressDialog.setMessage("Завантаження: " + progress + "%");
+                            }
+                        }));
+                runOnUiThread(() -> {
+                    dismissUpdateProgress();
+                    try {
+                        updateManager.install(CameraProbeActivity.this, info, file);
+                        record("update_install_opened", "version", info.version);
+                    } catch (Throwable error) {
+                        showUpdateError(error);
+                    }
+                });
+            } catch (Throwable error) {
+                runOnUiThread(() -> {
+                    dismissUpdateProgress();
+                    showUpdateError(error);
+                });
+            }
+        });
+    }
+
+    private void dismissUpdateProgress() {
+        if (updateProgressDialog == null) return;
+        updateProgressDialog.dismiss();
+        updateProgressDialog = null;
+    }
+
+    private void showUpdateError(Throwable error) {
+        record("update_failed", "error", error.toString());
+        if (activityDestroyed || isFinishing()) return;
+        showUpdateMessage("Не вдалося оновити застосунок",
+                error.getMessage() == null
+                        ? error.getClass().getSimpleName() : error.getMessage());
+    }
+
+    private void showUpdateMessage(String title, String message) {
+        if (activityDestroyed || isFinishing()) return;
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void startAndBindHelperService() {
@@ -563,6 +732,8 @@ public final class CameraProbeActivity extends Activity
         shutdownRow.addView(shutdownLabel, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         shutdownButton = button("Вимкнути");
+        updateButton = button("Оновлення");
+        shutdownRow.addView(updateButton, new LinearLayout.LayoutParams(dp(170), dp(50)));
         shutdownRow.addView(shutdownButton, new LinearLayout.LayoutParams(dp(150), dp(50)));
         panel.addView(shutdownRow);
 
@@ -675,6 +846,7 @@ public final class CameraProbeActivity extends Activity
             CameraHelperService.updateAutoStart(this, checked);
             updateControls();
         });
+        updateButton.setOnClickListener(view -> runManualUpdateCheck());
         shutdownButton.setOnClickListener(view -> requestAppShutdown());
         return panel;
     }

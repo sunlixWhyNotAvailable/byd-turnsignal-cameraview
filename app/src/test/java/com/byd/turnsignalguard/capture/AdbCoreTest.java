@@ -93,7 +93,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(34, BuildConfig.VERSION_CODE);
+        assertEquals(35, BuildConfig.VERSION_CODE);
         assertEquals(3, TurnSignalShellProtocol.VERSION);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
@@ -115,6 +115,49 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.isPayloadAllowed(3));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(-1));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(4));
+    }
+
+    @Test
+    public void updateDelayAgesBeforeActivityOpensAndRunsOnce() {
+        UpdateAutoCheckRuntime.Scheduler scheduler =
+                new UpdateAutoCheckRuntime.Scheduler(30_000L);
+        scheduler.start(1_000L);
+        assertEquals(20_000L, scheduler.remainingMs(11_000L));
+        assertFalse(scheduler.consumeIfReady(30_999L));
+        assertTrue(scheduler.consumeIfReady(31_000L));
+        assertFalse(scheduler.consumeIfReady(61_000L));
+        assertEquals(-1L, scheduler.remainingMs(61_000L));
+    }
+
+    @Test
+    public void updateVersionComparisonUsesStableSemanticVersions() {
+        assertTrue(AppUpdateManager.isNewerVersion("0.35.0", "0.34.0"));
+        assertTrue(AppUpdateManager.isNewerVersion("v1.0.0", "0.99.9"));
+        assertFalse(AppUpdateManager.isNewerVersion("0.34.0", "0.34.0"));
+        assertFalse(AppUpdateManager.isNewerVersion("0.33.9", "0.34.0"));
+        assertThrows(IllegalArgumentException.class,
+                () -> AppUpdateManager.isNewerVersion("0.35-beta", "0.34.0"));
+    }
+
+    @Test
+    public void updateUrlsStayOnTheConfiguredGitHubRepository() {
+        String api = "https://api.github.com/repos/sunlixWhyNotAvailable/"
+                + "byd-turnsignal-cameraview/releases/latest";
+        String apk = "https://github.com/sunlixWhyNotAvailable/"
+                + "byd-turnsignal-cameraview/releases/download/v0.35.0/"
+                + "byd-turnsignal-camera-v0.35.0.apk";
+        assertEquals(api, AppUpdateManager.requireTrustedReleaseApiUrl(api));
+        assertEquals(apk, AppUpdateManager.requireTrustedApkDownloadUrl(apk));
+        assertThrows(IllegalArgumentException.class,
+                () -> AppUpdateManager.requireTrustedReleaseApiUrl(
+                        "https://example.com/releases/latest"));
+        assertThrows(IllegalArgumentException.class,
+                () -> AppUpdateManager.requireTrustedApkDownloadUrl(
+                        "https://github.com/other/repo/releases/download/v1/app.apk"));
+        assertThrows(IllegalArgumentException.class,
+                () -> AppUpdateManager.requireTrustedApkDownloadUrl(
+                        "http://github.com/sunlixWhyNotAvailable/"
+                                + "byd-turnsignal-cameraview/releases/download/v1/app.apk"));
     }
 
     @Test

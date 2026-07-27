@@ -14,8 +14,14 @@ android {
         applicationId = "com.byd.turnsignalguard.capture"
         minSdk = 26
         targetSdk = 29
-        versionCode = 34
-        versionName = "0.34.0"
+        versionCode = 35
+        versionName = "0.35.0"
+        buildConfigField(
+            "String",
+            "UPDATE_RELEASE_API_URL",
+            "\"https://api.github.com/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest\""
+        )
+        buildConfigField("String", "UPDATE_USER_AGENT", "\"BYD-TurnSignal-Camera-UpdateCheck\"")
     }
 
     compileOptions {
@@ -30,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
 }
 
