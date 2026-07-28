@@ -277,6 +277,22 @@ final class TurnSignalController {
         });
     }
 
+    void setCameraOverlayWarning(
+            int requestId, int surfaceGeneration, int edge, int mode) {
+        worker.execute(() -> {
+            try {
+                IBinder value = ensureCameraHelper();
+                transactOverlayWarning(value, requestId, surfaceGeneration, edge, mode);
+            } catch (Throwable error) {
+                emit("camera_overlay_warning_error", "stage", "set_warning",
+                        "request_id", requestId,
+                        "surface_generation", surfaceGeneration,
+                        "edge", edge, "mode", mode,
+                        "error", summary(error));
+            }
+        });
+    }
+
     void closeCameraOverlay(String reason) {
         worker.execute(() -> closeCameraOverlayNow(reason));
     }
@@ -917,6 +933,26 @@ final class TurnSignalController {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeString(reason == null ? "unknown" : reason);
             requireTransact(value, CameraShellProtocol.TX_OVERLAY_CLOSE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactOverlayWarning(
+            IBinder value, int requestId, int surfaceGeneration, int edge, int mode)
+            throws Exception {
+        CameraShellProtocol.validateWarning(requestId, surfaceGeneration, edge, mode);
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(surfaceGeneration);
+            data.writeInt(edge);
+            data.writeInt(mode);
+            requireTransact(
+                    value, CameraShellProtocol.TX_OVERLAY_SET_WARNING, data, reply);
         } finally {
             data.recycle();
             reply.recycle();

@@ -370,6 +370,12 @@ final class CameraHelperMain {
             turnController.setCameraOverlayVisible(requestId, surfaceGeneration, visible);
         }
 
+        void setOverlayWindowWarning(
+                int requestId, int surfaceGeneration, int edge, int mode) {
+            turnController.setCameraOverlayWarning(
+                    requestId, surfaceGeneration, edge, mode);
+        }
+
         void closeOverlayWindow(String reason) {
             turnController.closeCameraOverlay(reason);
         }

@@ -187,6 +187,20 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_OVERLAY_SET_WARNING) {
+                    int requestId = data.readInt();
+                    int surfaceGeneration = data.readInt();
+                    int edge = data.readInt();
+                    int mode = data.readInt();
+                    CameraShellProtocol.validateWarning(
+                            requestId, surfaceGeneration, edge, mode);
+                    runOnMain(() -> {
+                        overlay.setWarning(requestId, surfaceGeneration, edge, mode);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 return false;
             } catch (Throwable error) {
                 if (reply != null) reply.writeException(new IllegalStateException(summary(error)));

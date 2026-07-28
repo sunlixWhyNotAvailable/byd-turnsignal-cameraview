@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 6;
+    static final int VERSION = 7;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -26,12 +26,31 @@ final class CameraShellProtocol {
     static final int TX_OVERLAY_ARM_FRAME = IBinder.FIRST_CALL_TRANSACTION + 7;
     static final int TX_OVERLAY_SET_VISIBLE = IBinder.FIRST_CALL_TRANSACTION + 8;
     static final int TX_OVERLAY_CLOSE = IBinder.FIRST_CALL_TRANSACTION + 9;
+    static final int TX_OVERLAY_SET_WARNING = IBinder.FIRST_CALL_TRANSACTION + 10;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
+
+    static final int WARNING_MODE_OFF = 0;
+    static final int WARNING_MODE_CONSTANT = 1;
+    static final int WARNING_MODE_PULSE = 2;
+    static final int WARNING_EDGE_NONE = 0;
+    static final int WARNING_EDGE_LEFT = 1;
+    static final int WARNING_EDGE_RIGHT = 2;
 
     private CameraShellProtocol() {}
 
     static boolean isCallerAllowed(int actualUid, int appUid) {
         return actualUid == appUid;
+    }
+
+    static void validateWarning(int requestId, int surfaceGeneration, int edge, int mode) {
+        if (requestId <= 0 || surfaceGeneration <= 0) {
+            throw new IllegalArgumentException("invalid warning request identity");
+        }
+        if (edge == WARNING_EDGE_NONE && mode == WARNING_MODE_OFF) return;
+        if ((edge != WARNING_EDGE_LEFT && edge != WARNING_EDGE_RIGHT)
+                || (mode != WARNING_MODE_CONSTANT && mode != WARNING_MODE_PULSE)) {
+            throw new IllegalArgumentException("invalid warning edge/mode");
+        }
     }
 
     static final class OverlaySpec {

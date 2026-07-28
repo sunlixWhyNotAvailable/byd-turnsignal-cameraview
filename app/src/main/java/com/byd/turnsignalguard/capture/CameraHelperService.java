@@ -39,6 +39,8 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.CAMERA_PREVIEW_STOPPED";
     private static final String ACTION_CAMERA_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.CAMERA_SETTINGS_CHANGED";
+    private static final String ACTION_CAMERA_WARNING_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
     private static final String ACTION_AUTO_START_CHANGED =
             "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
     private static final String ACTION_SHUTDOWN =
@@ -120,6 +122,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_CAMERA_SETTINGS_CHANGED));
     }
 
+    static void cameraWarningSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_CAMERA_WARNING_SETTINGS_CHANGED));
+    }
+
     static void updateAutoStart(Context context, boolean enabled) {
         GuardRecovery.setAutoStartEnabled(context, enabled);
         Intent intent = new Intent(context, CameraHelperService.class)
@@ -196,6 +203,8 @@ public final class CameraHelperService extends Service {
         if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
             scheduleCameraDiscoveryRetry(0);
+        } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {
+            overlay.applyWarningSettings();
         }
         startHeartbeat();
         return START_STICKY;

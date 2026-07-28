@@ -93,7 +93,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(38, BuildConfig.VERSION_CODE);
+        assertEquals(39, BuildConfig.VERSION_CODE);
         assertEquals(3, TurnSignalShellProtocol.VERSION);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
@@ -507,6 +507,45 @@ public final class AdbCoreTest {
         assertEquals(0, BlindSpotOverlayController.directionToShow(true, 6, 30.0f, 20));
         assertEquals(2, BlindSpotOverlayController.directionToShow(true, 2, 20.0f, 20));
         assertEquals(4, BlindSpotOverlayController.directionToShow(true, 4, 30.0f, 20));
+        assertFalse(BlindSpotWarningRuntime.isValidRaw(-1));
+        assertTrue(BlindSpotWarningRuntime.isValidRaw(0));
+        assertTrue(BlindSpotWarningRuntime.isValidRaw(1));
+        assertTrue(BlindSpotWarningRuntime.isValidRaw(2));
+        assertFalse(BlindSpotWarningRuntime.isValidRaw(3));
+        assertFalse(BlindSpotWarningRuntime.isActiveRaw(false, 2));
+        assertFalse(BlindSpotWarningRuntime.isActiveRaw(true, 1));
+        assertTrue(BlindSpotWarningRuntime.isActiveRaw(true, 2));
+        assertEquals(CameraShellProtocol.WARNING_MODE_PULSE,
+                BlindSpotOverlayController.normalizeWarningMode(false, 99));
+        assertEquals(CameraShellProtocol.WARNING_MODE_CONSTANT,
+                BlindSpotOverlayController.normalizeWarningMode(
+                        true, CameraShellProtocol.WARNING_MODE_CONSTANT));
+        assertEquals(CameraShellProtocol.WARNING_MODE_OFF,
+                BlindSpotOverlayController.normalizeWarningMode(true, 99));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_NONE,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_OFF, true, 2,
+                        true, 2, true, 2));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_NONE,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_PULSE, false, 2,
+                        true, 2, true, 2));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_LEFT,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_PULSE, true, 2,
+                        true, 2, true, 0));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_RIGHT,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_CONSTANT, true, 4,
+                        true, 0, true, 2));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_NONE,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_PULSE, true, 2,
+                        true, 0, true, 2));
+        assertEquals(CameraShellProtocol.WARNING_EDGE_NONE,
+                BlindSpotOverlayController.warningEdge(
+                        CameraShellProtocol.WARNING_MODE_PULSE, true, 4,
+                        true, 0, true, 1));
         assertEquals(2, BlindSpotOverlayController.previewIndexForDirection(2));
         assertEquals(3, BlindSpotOverlayController.previewIndexForDirection(4));
         assertEquals(-1, BlindSpotOverlayController.previewIndexForDirection(6));
@@ -602,10 +641,37 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(6, CameraShellProtocol.VERSION);
+        assertEquals(7, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
+        assertTrue(CameraShellProtocol.TX_OVERLAY_SET_WARNING
+                > CameraShellProtocol.TX_OVERLAY_CLOSE);
+        CameraShellProtocol.validateWarning(1, 1,
+                CameraShellProtocol.WARNING_EDGE_NONE,
+                CameraShellProtocol.WARNING_MODE_OFF);
+        CameraShellProtocol.validateWarning(1, 1,
+                CameraShellProtocol.WARNING_EDGE_LEFT,
+                CameraShellProtocol.WARNING_MODE_CONSTANT);
+        CameraShellProtocol.validateWarning(1, 1,
+                CameraShellProtocol.WARNING_EDGE_RIGHT,
+                CameraShellProtocol.WARNING_MODE_PULSE);
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateWarning(0, 1,
+                        CameraShellProtocol.WARNING_EDGE_LEFT,
+                        CameraShellProtocol.WARNING_MODE_PULSE));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateWarning(1, 0,
+                        CameraShellProtocol.WARNING_EDGE_LEFT,
+                        CameraShellProtocol.WARNING_MODE_PULSE));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateWarning(1, 1,
+                        CameraShellProtocol.WARNING_EDGE_LEFT,
+                        CameraShellProtocol.WARNING_MODE_OFF));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateWarning(1, 1,
+                        CameraShellProtocol.WARNING_EDGE_NONE,
+                        CameraShellProtocol.WARNING_MODE_PULSE));
         CameraShellProtocol.OverlaySpec overlay = new CameraShellProtocol.OverlaySpec(
                 1, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,

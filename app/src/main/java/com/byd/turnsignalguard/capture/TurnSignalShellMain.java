@@ -73,6 +73,7 @@ public final class TurnSignalShellMain {
         private final int appUid;
         private final int versionCode;
         private final TurnSignalGuardRuntime runtime;
+        private final BlindSpotWarningRuntime warningRuntime;
         private final PowerManager powerManager;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
@@ -101,11 +102,13 @@ public final class TurnSignalShellMain {
                 }
             };
             runtime = new TurnSignalGuardRuntime(context, handler, this::emit);
+            warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
         }
 
         void start() {
             registerPowerReceiver();
             runtime.start();
+            warningRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
         }
 
@@ -114,6 +117,7 @@ public final class TurnSignalShellMain {
             handler.removeCallbacks(wakeCheckRunnable);
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
+            warningRuntime.stop();
             runtime.stop();
         }
 
@@ -156,6 +160,7 @@ public final class TurnSignalShellMain {
                 }
                 if (code == TurnSignalShellProtocol.TX_REPORT_STATUS) {
                     runtime.reportStatus();
+                    warningRuntime.reportStatus();
                     reply.writeNoException();
                     return true;
                 }
@@ -169,6 +174,7 @@ public final class TurnSignalShellMain {
                     recoveryEnabled = false;
                     reply.writeNoException();
                     handler.post(() -> {
+                        warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_request");
                         Looper.myLooper().quitSafely();
@@ -189,6 +195,7 @@ public final class TurnSignalShellMain {
             value.linkToDeath(() -> handler.post(() -> clearCallback(value)), 0);
             emit("shell_callback_registered", "shell_uid", Process.myUid());
             runtime.reportStatus();
+            warningRuntime.reportStatus();
         }
 
         private synchronized void clearCallback(IBinder value) {

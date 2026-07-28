@@ -34,6 +34,8 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -42,6 +44,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -110,6 +113,7 @@ public final class CameraProbeActivity extends Activity
     private EditText correctionDelayInput;
     private EditText maxSpeedInput;
     private EditText cameraMinSpeedInput;
+    private Spinner cameraWarningModeInput;
     private SeekBar cameraScaleInput;
     private TextView cameraScaleValue;
     private FrameLayout cameraPositionWidget;
@@ -934,6 +938,27 @@ public final class CameraProbeActivity extends Activity
         speedRow.addView(minSpeedUnit, new LinearLayout.LayoutParams(dp(78), dp(54)));
         settingsPane.addView(speedRow);
 
+        LinearLayout warningRow = new LinearLayout(this);
+        warningRow.setOrientation(LinearLayout.HORIZONTAL);
+        warningRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView warningLabel = label(
+                "Червона підсвітка, якщо в сліпій зоні є об'єкт");
+        warningLabel.setTextSize(15);
+        warningLabel.setGravity(Gravity.CENTER_VERTICAL);
+        warningRow.addView(warningLabel, new LinearLayout.LayoutParams(0, dp(66), 1));
+        cameraWarningModeInput = new Spinner(this);
+        String[] warningModes = {"Вимкнена", "Постійно", "Пульсація"};
+        ArrayAdapter<String> warningAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_item, warningModes);
+        warningAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        cameraWarningModeInput.setAdapter(warningAdapter);
+        int initialWarningMode = BlindSpotOverlayController.readWarningMode(preferences);
+        cameraWarningModeInput.setSelection(initialWarningMode, false);
+        warningRow.addView(cameraWarningModeInput,
+                new LinearLayout.LayoutParams(dp(176), dp(58)));
+        settingsPane.addView(warningRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(70)));
+
         LinearLayout scaleRow = new LinearLayout(this);
         scaleRow.setOrientation(LinearLayout.HORIZONTAL);
         scaleRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -1058,6 +1083,28 @@ public final class CameraProbeActivity extends Activity
         cameraMinSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
             if (!hasFocus) saveCameraMinSpeed();
         });
+        cameraWarningModeInput.setOnItemSelectedListener(
+                new AdapterView.OnItemSelectedListener() {
+                    @Override
+                    public void onItemSelected(
+                            AdapterView<?> parent, View view, int position, long id) {
+                        if (!BlindSpotOverlayController.isWarningMode(position)
+                                || position == BlindSpotOverlayController.readWarningMode(
+                                        preferences)) {
+                            return;
+                        }
+                        preferences.edit()
+                                .putInt(BlindSpotOverlayController.PREF_WARNING_MODE, position)
+                                .apply();
+                        record("camera_warning_setting", "mode", position,
+                                "mode_name", warningModes[position]);
+                        CameraHelperService.cameraWarningSettingsChanged(
+                                CameraProbeActivity.this);
+                    }
+
+                    @Override
+                    public void onNothingSelected(AdapterView<?> parent) {}
+                });
         cameraScaleInput.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {

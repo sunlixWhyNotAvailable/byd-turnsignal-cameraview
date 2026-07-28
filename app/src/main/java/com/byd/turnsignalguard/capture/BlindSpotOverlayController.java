@@ -20,12 +20,14 @@ final class BlindSpotOverlayController {
     static final String PREF_LEFT_Y = "camera_left_y";
     static final String PREF_RIGHT_X = "camera_right_x";
     static final String PREF_RIGHT_Y = "camera_right_y";
+    static final String PREF_WARNING_MODE = "camera_bsd_warning_mode";
     static final int DEFAULT_MIN_SPEED_KPH = 20;
     static final int DEFAULT_SCALE_PERCENT = 36;
     static final int MIN_SCALE_PERCENT = 20;
     static final int MAX_SCALE_PERCENT = 60;
     static final int DEFAULT_LEFT_POSITION = 0;
     static final int DEFAULT_RIGHT_POSITION = 2;
+    static final int DEFAULT_WARNING_MODE = CameraShellProtocol.WARNING_MODE_PULSE;
 
     private static final int BLINK_LEFT = 2;
     private static final int BLINK_RIGHT = 4;
@@ -67,6 +69,14 @@ final class BlindSpotOverlayController {
     private int requestedPreviewIndex = -1;
     private int displayedPreviewIndex = -1;
     private int preparedDirection = -1;
+    private boolean leftBsdValid;
+    private boolean rightBsdValid;
+    private int leftBsdRaw = -1;
+    private int rightBsdRaw = -1;
+    private int appliedWarningRequestId;
+    private int appliedWarningGeneration;
+    private int appliedWarningEdge;
+    private int appliedWarningMode;
 
     private void handleSurfaceTimeout() {
         cameraUnavailable("overlay_surface_timeout", requestedPreviewIndex);
@@ -168,6 +178,10 @@ final class BlindSpotOverlayController {
         handler.post(this::applySettingsOnMain);
     }
 
+    void applyWarningSettings() {
+        handler.post(() -> applyWarning("warning_setting_changed"));
+    }
+
     void acceptEvent(String line) {
         if (line == null) return;
         try {
@@ -179,6 +193,14 @@ final class BlindSpotOverlayController {
                 float nextSpeed = valid ? (float) event.optDouble("speed_kph", Double.NaN)
                         : Float.NaN;
                 handler.post(() -> acceptVehicleState(valid, nextBlink, nextSpeed));
+            } else if ("bsd_state".equals(kind)) {
+                boolean listenerOk = event.optBoolean("listener_ok");
+                boolean nextLeftValid = listenerOk && event.optBoolean("left_valid");
+                boolean nextRightValid = listenerOk && event.optBoolean("right_valid");
+                int nextLeftRaw = nextLeftValid ? event.optInt("left_raw", -1) : -1;
+                int nextRightRaw = nextRightValid ? event.optInt("right_raw", -1) : -1;
+                handler.post(() -> acceptBsdState(
+                        nextLeftValid, nextLeftRaw, nextRightValid, nextRightRaw));
             } else if ("camera_discovery".equals(kind) && event.optBoolean("ok")) {
                 handler.post(this::applySettingsOnMain);
             } else if ("camera_opened".equals(kind)
@@ -264,6 +286,7 @@ final class BlindSpotOverlayController {
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
         preparedDirection = -1;
+        resetAppliedWarning();
         emit("overlay_window", "state", "remove_requested", "reason", reason);
     }
 
@@ -276,6 +299,21 @@ final class BlindSpotOverlayController {
             handler.postDelayed(staleState, STATE_STALE_MS);
         }
         evaluate();
+    }
+
+    private void acceptBsdState(
+            boolean nextLeftValid, int nextLeftRaw,
+            boolean nextRightValid, int nextRightRaw) {
+        leftBsdValid = nextLeftValid && BlindSpotWarningRuntime.isValidRaw(nextLeftRaw);
+        rightBsdValid = nextRightValid && BlindSpotWarningRuntime.isValidRaw(nextRightRaw);
+        leftBsdRaw = leftBsdValid ? nextLeftRaw : -1;
+        rightBsdRaw = rightBsdValid ? nextRightRaw : -1;
+        emit("overlay_bsd_state",
+                "left_valid", leftBsdValid,
+                "left_raw", leftBsdValid ? leftBsdRaw : "unknown",
+                "right_valid", rightBsdValid,
+                "right_raw", rightBsdValid ? rightBsdRaw : "unknown");
+        applyWarning("bsd_state");
     }
 
     private void evaluate() {
@@ -320,6 +358,7 @@ final class BlindSpotOverlayController {
         activeRequestId = requestId;
         surfaceGeneration = 0;
         cameraReady = false;
+        resetAppliedWarning();
         overlayPrepared = true;
         handler.removeCallbacks(surfaceTimeout);
         handler.removeCallbacks(firstFrameTimeout);
@@ -514,9 +553,13 @@ final class BlindSpotOverlayController {
             requestDirection(direction);
             return;
         }
-        if (visible) return;
-        helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, true);
+        if (visible) {
+            applyWarning("overlay_already_visible");
+            return;
+        }
         visible = true;
+        applyWarning("overlay_show");
+        helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, true);
         emit("overlay_visibility", "visible", true,
                 "request_id", activeRequestId,
                 "direction", direction == BLINK_LEFT ? "left" : "right",
@@ -529,7 +572,89 @@ final class BlindSpotOverlayController {
             helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, false);
         }
         visible = false;
+        resetAppliedWarning();
         if (wasVisible) emit("overlay_visibility", "visible", false, "reason", reason);
+    }
+
+    private void applyWarning(String reason) {
+        if (helper == null || activeRequestId <= 0 || surfaceGeneration <= 0) return;
+        int configuredMode = readWarningMode(settings);
+        int edge = warningEdge(
+                configuredMode, visible, preparedDirection,
+                leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
+        int mode = edge == CameraShellProtocol.WARNING_EDGE_NONE
+                ? CameraShellProtocol.WARNING_MODE_OFF : configuredMode;
+        if (appliedWarningRequestId == activeRequestId
+                && appliedWarningGeneration == surfaceGeneration
+                && appliedWarningEdge == edge && appliedWarningMode == mode) {
+            return;
+        }
+        helper.setOverlayWindowWarning(
+                activeRequestId, surfaceGeneration, edge, mode);
+        appliedWarningRequestId = activeRequestId;
+        appliedWarningGeneration = surfaceGeneration;
+        appliedWarningEdge = edge;
+        appliedWarningMode = mode;
+        emit("overlay_warning_decision",
+                "request_id", activeRequestId,
+                "surface_generation", surfaceGeneration,
+                "active", edge != CameraShellProtocol.WARNING_EDGE_NONE,
+                "edge", warningEdgeName(edge),
+                "mode", warningModeName(mode),
+                "reason", reason);
+    }
+
+    private void resetAppliedWarning() {
+        appliedWarningRequestId = 0;
+        appliedWarningGeneration = 0;
+        appliedWarningEdge = CameraShellProtocol.WARNING_EDGE_NONE;
+        appliedWarningMode = CameraShellProtocol.WARNING_MODE_OFF;
+    }
+
+    static int readWarningMode(SharedPreferences settings) {
+        boolean present = settings.contains(PREF_WARNING_MODE);
+        int mode = settings.getInt(PREF_WARNING_MODE, DEFAULT_WARNING_MODE);
+        return normalizeWarningMode(present, mode);
+    }
+
+    static int normalizeWarningMode(boolean present, int mode) {
+        if (!present) return DEFAULT_WARNING_MODE;
+        return isWarningMode(mode) ? mode : CameraShellProtocol.WARNING_MODE_OFF;
+    }
+
+    static boolean isWarningMode(int mode) {
+        return mode >= CameraShellProtocol.WARNING_MODE_OFF
+                && mode <= CameraShellProtocol.WARNING_MODE_PULSE;
+    }
+
+    static int warningEdge(
+            int mode, boolean overlayVisible, int direction,
+            boolean leftValid, int leftRaw, boolean rightValid, int rightRaw) {
+        if (!isWarningMode(mode) || mode == CameraShellProtocol.WARNING_MODE_OFF
+                || !overlayVisible) {
+            return CameraShellProtocol.WARNING_EDGE_NONE;
+        }
+        if (direction == BLINK_LEFT
+                && BlindSpotWarningRuntime.isActiveRaw(leftValid, leftRaw)) {
+            return CameraShellProtocol.WARNING_EDGE_LEFT;
+        }
+        if (direction == BLINK_RIGHT
+                && BlindSpotWarningRuntime.isActiveRaw(rightValid, rightRaw)) {
+            return CameraShellProtocol.WARNING_EDGE_RIGHT;
+        }
+        return CameraShellProtocol.WARNING_EDGE_NONE;
+    }
+
+    private static String warningEdgeName(int edge) {
+        if (edge == CameraShellProtocol.WARNING_EDGE_LEFT) return "left";
+        if (edge == CameraShellProtocol.WARNING_EDGE_RIGHT) return "right";
+        return "none";
+    }
+
+    private static String warningModeName(int mode) {
+        if (mode == CameraShellProtocol.WARNING_MODE_CONSTANT) return "constant";
+        if (mode == CameraShellProtocol.WARNING_MODE_PULSE) return "pulse";
+        return "off";
     }
 
     private CameraShellProtocol.OverlaySpec buildOverlaySpec(int direction, int requestId) {

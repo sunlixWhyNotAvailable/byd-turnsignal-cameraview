@@ -14,8 +14,8 @@ android {
         applicationId = "com.byd.turnsignalguard.capture"
         minSdk = 26
         targetSdk = 29
-        versionCode = 38
-        versionName = "0.36.2"
+        versionCode = 39
+        versionName = "0.37.0"
         buildConfigField(
             "String",
             "UPDATE_RELEASE_API_URL",
