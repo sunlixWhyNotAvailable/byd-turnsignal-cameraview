@@ -48,7 +48,7 @@ public final class CameraShellMain {
             System.out.flush();
             Looper.loop();
         } finally {
-            binder.closePreview("process_exit");
+            binder.closeAll("process_exit");
             owner.close();
         }
     }
@@ -58,6 +58,7 @@ public final class CameraShellMain {
         private final int appUid;
         private final int versionCode;
         private final StockAvmPreview preview;
+        private final ShellCameraOverlay overlay;
         private IBinder callback;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
@@ -70,6 +71,7 @@ public final class CameraShellMain {
                     emit("camera_config_applied", "detail", detail);
                 }
             });
+            overlay = new ShellCameraOverlay(context, this::emit);
         }
 
         @Override
@@ -113,20 +115,15 @@ public final class CameraShellMain {
                         inputSurface.writeToParcel(reply, 0);
                     } catch (Throwable error) {
                         if (!preview.isOpen()) surface.release();
-                        handler.post(() -> {
-                            emit("camera_shell_exit", "reason", "open_failed");
-                            handler.getLooper().quitSafely();
-                        });
                         throw error;
                     }
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_CLOSE) {
                     String reason = data.readString();
-                    handler.post(() -> {
+                    runOnMain(() -> {
                         closePreview(reason);
-                        emit("camera_shell_exit", "reason", "preview_closed");
-                        handler.getLooper().quitSafely();
+                        return null;
                     });
                     reply.writeNoException();
                     return true;
@@ -134,10 +131,60 @@ public final class CameraShellMain {
                 if (code == CameraShellProtocol.TX_SHUTDOWN) {
                     reply.writeNoException();
                     handler.post(() -> {
-                        closePreview("controller_shutdown");
+                        closeAll("controller_shutdown");
                         emit("camera_shell_shutdown", "reason", "controller_request");
                         Looper.myLooper().quitSafely();
                     });
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
+                    CameraShellProtocol.OverlaySpec spec =
+                            CameraShellProtocol.OverlaySpec.readFromParcel(data);
+                    runOnMain(() -> {
+                        overlay.prepare(spec);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_OVERLAY_ACQUIRE_SURFACE) {
+                    int requestId = data.readInt();
+                    ShellCameraOverlay.SurfaceSnapshot snapshot = runOnMain(
+                            () -> overlay.acquireSurface(requestId));
+                    reply.writeNoException();
+                    reply.writeInt(snapshot.requestId);
+                    reply.writeInt(snapshot.surfaceGeneration);
+                    snapshot.surface.writeToParcel(reply, 0);
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_OVERLAY_ARM_FRAME) {
+                    int requestId = data.readInt();
+                    int surfaceGeneration = data.readInt();
+                    runOnMain(() -> {
+                        overlay.armFirstFrame(requestId, surfaceGeneration);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_OVERLAY_SET_VISIBLE) {
+                    int requestId = data.readInt();
+                    int surfaceGeneration = data.readInt();
+                    boolean visible = data.readInt() != 0;
+                    runOnMain(() -> {
+                        overlay.setVisible(requestId, surfaceGeneration, visible);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_OVERLAY_CLOSE) {
+                    String reason = data.readString();
+                    runOnMain(() -> {
+                        overlay.close(reason);
+                        return null;
+                    });
+                    reply.writeNoException();
                     return true;
                 }
                 return false;
@@ -185,6 +232,20 @@ public final class CameraShellMain {
                     "reason", reason == null ? "unknown" : reason, "error", error);
         }
 
+        private void closeAll(String reason) {
+            closePreview(reason);
+            overlay.close(reason);
+        }
+
+        private <T> T runOnMain(java.util.concurrent.Callable<T> callable) throws Exception {
+            if (Looper.myLooper() == handler.getLooper()) return callable.call();
+            FutureTask<T> task = new FutureTask<>(callable);
+            if (!handler.post(task)) {
+                throw new IllegalStateException("camera main handler rejected task");
+            }
+            return task.get(5, TimeUnit.SECONDS);
+        }
+
         private synchronized void registerCallback(IBinder value) throws RemoteException {
             if (value == null) throw new IllegalArgumentException("callback is null");
             callback = value;
@@ -195,7 +256,7 @@ public final class CameraShellMain {
         private synchronized void callbackDied(IBinder value) {
             if (callback != value) return;
             callback = null;
-            closePreview("controller_died");
+            closeAll("controller_died");
             handler.getLooper().quitSafely();
         }
 
@@ -229,9 +290,7 @@ public final class CameraShellMain {
                 target.transact(CameraShellProtocol.CB_EVENT,
                         parcel, null, IBinder.FLAG_ONEWAY);
             } catch (Throwable error) {
-                synchronized (this) {
-                    if (callback == target) callback = null;
-                }
+                handler.post(() -> callbackDied(target));
             } finally {
                 parcel.recycle();
             }

@@ -27,17 +27,17 @@ Download and install the latest APK from GitHub Releases.
 
 After first launch:
 
-1. Grant the requested camera and overlay permissions.
-2. Accept the Android local-ADB RSA prompt. The key is generated and stored privately by the application.
-3. Enable `Авто-запуск` if the service should recover after vehicle boot and application updates.
-4. Configure the turn guard and camera speed limits.
-5. Open `Калібрування камер` to select the visible crop for each side.
-6. Use the placement editor to set the overlay size and independent left/right screen positions.
+1. Grant the requested camera permission.
+2. In DiLink `Disable background Apps`, deselect `BYD Turn Signal Guard` to allow boot recovery.
+3. Accept the Android local-ADB RSA prompt. The key is generated and stored privately by the application.
+4. Enable `Авто-запуск` if the service should recover after vehicle boot and application updates.
+5. Configure the turn guard and camera speed limits.
+6. Open `Калібрування камер` to select the visible crop for each side.
+7. Use the placement editor to set the overlay size and independent left/right screen positions.
 
 ## Known Limitations
 
 - The application targets undocumented BYD/DiLink framework APIs and has only been validated on the tested vehicle/software combination.
-- Camera overlay opacity is controlled by DiLink's `TYPE_APPLICATION_OVERLAY` composition and may remain translucent even with an opaque window format.
 - Direct-camera startup can take several seconds from a cold provider state.
 - Local ADB must be enabled on the tablet.
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.

@@ -14,7 +14,6 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -23,7 +22,6 @@ import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.Log;
@@ -46,6 +44,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -69,7 +68,13 @@ public final class CameraProbeActivity extends Activity
     private static final int DEFAULT_MAX_SPEED_KPH = 30;
     private static final int DEFAULT_CAMERA_MIN_SPEED_KPH = 20;
     static final long ADB_AUTH_UI_SETTLE_MS = 600;
+    static final long BACKGROUND_START_UI_SETTLE_MS = 600;
     private static final String ADB_WAITING_STATUS = "Очікування ADB/RSA...";
+    private static final String PREF_BACKGROUND_START_SETTINGS_SHOWN =
+            "background_start_settings_shown";
+    private static final String BYD_START_SETTINGS_PACKAGE = "com.byd.appstartmanagement";
+    private static final String BYD_START_SETTINGS_CLASS =
+            "com.byd.appstartmanagement.frame.AppStartManagement";
     private static final long CAMERA_PREVIEW_HANDOFF_MS = 250;
     private static final int TAB_GUARD = 0;
     private static final int TAB_CAMERAS = 1;
@@ -147,6 +152,7 @@ public final class CameraProbeActivity extends Activity
     private Switch debugShowRawSwitch;
     private Button closeButton;
     private Button adbRetryButton;
+    private Button backgroundStartSettingsButton;
     private Button updateButton;
     private Button shutdownButton;
     private Button clearLogsButton;
@@ -180,9 +186,11 @@ public final class CameraProbeActivity extends Activity
     private boolean adbAuthorizationRequested;
     private boolean adbAuthorizationStartScheduled;
     private boolean cameraPermissionPending;
+    private boolean backgroundStartSettingsRequired;
+    private boolean backgroundStartSettingsActive;
+    private boolean backgroundStartSettingsStartScheduled;
     private boolean helperBound;
     private boolean shutdownRequested;
-    private boolean overlayPermissionRequested;
     private boolean activityResumed;
     private boolean activityDestroyed;
     private boolean updateCheckInFlight;
@@ -216,10 +224,19 @@ public final class CameraProbeActivity extends Activity
     private final Runnable finishDirectCameraHandoff = this::openPendingDirectCamera;
     private final Runnable copyCalibrationFrame = this::copyCalibrationFrame;
     private final Runnable runStartupUpdateCheck = this::runStartupUpdateCheck;
+    private final Runnable startBackgroundStartSettings = () -> {
+        backgroundStartSettingsStartScheduled = false;
+        if (shouldOpenBackgroundStartSettings(
+                GuardRecovery.isAutoStartEnabled(this), cameraPermissionPending,
+                hasWindowFocus(), backgroundStartSettingsRequired,
+                backgroundStartSettingsActive, adbAuthPending)) {
+            openBackgroundStartSettings("first_run");
+        }
+    };
     private final Runnable startForegroundAdbAuthorization = () -> {
         adbAuthorizationStartScheduled = false;
         if (shouldStartForegroundAdbAuthorization(cameraPermissionPending,
-                hasWindowFocus(), helper != null, adbAuthPending,
+                backgroundStartSettingsPending(), hasWindowFocus(), helper != null, adbAuthPending,
                 adbAuthorizationRequested)) {
             requestAdbAuthorization(
                     "adb_authorization_foreground_start",
@@ -275,6 +292,8 @@ public final class CameraProbeActivity extends Activity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        backgroundStartSettingsRequired = GuardRecovery.isAutoStartEnabled(this)
+                && !preferences.getBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, false);
         lifetimeActivations = preferences.getLong("activation_count", 0);
         lifetimeCorrections = preferences.getLong("correction_count", 0);
         createLogFile();
@@ -286,7 +305,8 @@ public final class CameraProbeActivity extends Activity
 
         record("activity_start", "log_path", logFile.getAbsolutePath(),
                 "shutdown_cleared", clearedShutdown,
-                "auto_start", GuardRecovery.isAutoStartEnabled(this));
+                "auto_start", GuardRecovery.isAutoStartEnabled(this),
+                "background_start_settings_required", backgroundStartSettingsRequired);
         cameraPermissionPending = checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED;
         startAndBindHelperService();
@@ -321,26 +341,30 @@ public final class CameraProbeActivity extends Activity
         activityResumed = true;
         showCachedUpdateIfAvailable();
         scheduleStartupUpdateCheck();
-        if (overlayPermissionRequested && Settings.canDrawOverlays(this)) {
-            overlayPermissionRequested = false;
-            record("overlay_permission", "granted", true);
-            CameraHelperService.cameraSettingsChanged(this);
-            if (cameraStatus != null) cameraStatus.setText("Overlay permission granted");
+        if (backgroundStartSettingsActive) {
+            backgroundStartSettingsActive = false;
+            record("background_start_settings_returned");
         }
+        advanceStartupAuthorizationFlow();
     }
 
     @Override
     protected void onPause() {
         activityResumed = false;
         mainHandler.removeCallbacks(runStartupUpdateCheck);
+        cancelPendingBackgroundStartSettings();
         super.onPause();
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) maybeStartForegroundAdbAuthorization();
-        else cancelPendingForegroundAdbAuthorization();
+        if (hasFocus) {
+            advanceStartupAuthorizationFlow();
+        } else {
+            cancelPendingBackgroundStartSettings();
+            cancelPendingForegroundAdbAuthorization();
+        }
     }
 
     @Override
@@ -351,7 +375,7 @@ public final class CameraProbeActivity extends Activity
             boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
             record("camera_permission", "granted", granted);
             if (!granted) cameraStatus.setText("Немає CAMERA permission");
-            maybeStartForegroundAdbAuthorization();
+            advanceStartupAuthorizationFlow();
             updateControls();
             maybeOpenCalibrationCamera();
         }
@@ -359,6 +383,7 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     protected void onStop() {
+        cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
         if (!shutdownRequested) {
             if (cameraMinSpeedInput != null) saveCameraMinSpeed();
@@ -725,6 +750,12 @@ public final class CameraProbeActivity extends Activity
         panel.addView(autoStartSwitch, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
 
+        backgroundStartSettingsButton = button("Налаштувати фоновий запуск DiLink");
+        backgroundStartSettingsButton.setOnClickListener(
+                view -> openBackgroundStartSettings("manual"));
+        panel.addView(backgroundStartSettingsButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
+
         LinearLayout shutdownRow = new LinearLayout(this);
         shutdownRow.setOrientation(LinearLayout.HORIZONTAL);
         shutdownRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -844,6 +875,13 @@ public final class CameraProbeActivity extends Activity
         autoStartSwitch.setOnCheckedChangeListener((button, checked) -> {
             record("auto_start_toggle", "enabled", checked);
             CameraHelperService.updateAutoStart(this, checked);
+            if (checked) {
+                backgroundStartSettingsRequired = true;
+            } else {
+                backgroundStartSettingsRequired = false;
+                cancelPendingBackgroundStartSettings();
+            }
+            advanceStartupAuthorizationFlow();
             updateControls();
         });
         updateButton.setOnClickListener(view -> runManualUpdateCheck());
@@ -1014,9 +1052,7 @@ public final class CameraProbeActivity extends Activity
             preferences.edit().putBoolean(BlindSpotOverlayController.PREF_ENABLED, checked).apply();
             record("camera_toggle", "enabled", checked);
             if (!checked) closeCamera("camera_disabled");
-            if (!checked) overlayPermissionRequested = false;
             CameraHelperService.cameraSettingsChanged(this);
-            if (checked) maybeRequestOverlayPermission();
             updateControls();
         });
         cameraMinSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
@@ -1919,26 +1955,6 @@ public final class CameraProbeActivity extends Activity
         }
     }
 
-    private void maybeRequestOverlayPermission() {
-        if (cameraSwitch == null || !cameraSwitch.isChecked()
-                || Settings.canDrawOverlays(this) || cameraPermissionPending
-                || adbAuthPending || !telemetryReady || overlayPermissionRequested) {
-            return;
-        }
-        overlayPermissionRequested = true;
-        cameraStatus.setText("Потрібен дозвіл показу поверх вікон");
-        record("overlay_permission", "requested", true);
-        try {
-            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName())));
-        } catch (Throwable error) {
-            overlayPermissionRequested = false;
-            cameraStatus.setText("Системне вікно overlay permission недоступне");
-            record("overlay_permission", "requested", false,
-                    "error", error.toString());
-        }
-    }
-
     private void clearCaptureLogs() {
         File captures = logFile == null ? null : logFile.getParentFile();
         File[] logs = captures == null ? null
@@ -2319,7 +2335,7 @@ public final class CameraProbeActivity extends Activity
             record("ipc_reply", "operation", "register_callback", "reply", reply.readString());
             runOnUiThread(() -> {
                 pushGuardConfig();
-                maybeStartForegroundAdbAuthorization();
+                advanceStartupAuthorizationFlow();
             });
         } catch (Throwable error) {
             record("ipc_error", "operation", "register_callback", "error", error.toString());
@@ -2480,7 +2496,8 @@ public final class CameraProbeActivity extends Activity
 
     private void maybeStartForegroundAdbAuthorization() {
         if (!shouldStartForegroundAdbAuthorization(cameraPermissionPending,
-                hasWindowFocus(), helper != null, adbAuthPending, adbAuthorizationRequested)) {
+                backgroundStartSettingsPending(), hasWindowFocus(), helper != null,
+                adbAuthPending, adbAuthorizationRequested)) {
             cancelPendingForegroundAdbAuthorization();
             return;
         }
@@ -2494,6 +2511,62 @@ public final class CameraProbeActivity extends Activity
     private void cancelPendingForegroundAdbAuthorization() {
         adbAuthorizationStartScheduled = false;
         mainHandler.removeCallbacks(startForegroundAdbAuthorization);
+    }
+
+    private void advanceStartupAuthorizationFlow() {
+        if (shouldOpenBackgroundStartSettings(
+                GuardRecovery.isAutoStartEnabled(this), cameraPermissionPending,
+                hasWindowFocus(), backgroundStartSettingsRequired,
+                backgroundStartSettingsActive, adbAuthPending)) {
+            cancelPendingForegroundAdbAuthorization();
+            if (!backgroundStartSettingsStartScheduled) {
+                backgroundStartSettingsStartScheduled = mainHandler.postDelayed(
+                        startBackgroundStartSettings, BACKGROUND_START_UI_SETTLE_MS);
+                record("background_start_settings_scheduled",
+                        "delay_ms", BACKGROUND_START_UI_SETTLE_MS);
+            }
+            updateControls();
+            return;
+        }
+        cancelPendingBackgroundStartSettings();
+        maybeStartForegroundAdbAuthorization();
+    }
+
+    private void openBackgroundStartSettings(String reason) {
+        if (cameraPermissionPending || backgroundStartSettingsActive || adbAuthPending) return;
+        cancelPendingBackgroundStartSettings();
+        cancelPendingForegroundAdbAuthorization();
+        backgroundStartSettingsRequired = false;
+        backgroundStartSettingsActive = true;
+        record("background_start_settings_open_requested", "reason", reason);
+        try {
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.setClassName(BYD_START_SETTINGS_PACKAGE, BYD_START_SETTINGS_CLASS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            preferences.edit().putBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, true).apply();
+            record("background_start_settings_opened", "reason", reason);
+            Toast.makeText(this,
+                    "Вимкніть BYD Turn Signal Guard у списку Disable background Apps",
+                    Toast.LENGTH_LONG).show();
+        } catch (Throwable error) {
+            backgroundStartSettingsActive = false;
+            record("background_start_settings_open_failed", "reason", reason,
+                    "error", error.toString());
+            guardStatus.setText("Системне вікно фонового запуску недоступне");
+            advanceStartupAuthorizationFlow();
+        }
+        updateControls();
+    }
+
+    private void cancelPendingBackgroundStartSettings() {
+        backgroundStartSettingsStartScheduled = false;
+        mainHandler.removeCallbacks(startBackgroundStartSettings);
+    }
+
+    private boolean backgroundStartSettingsPending() {
+        return backgroundStartSettingsRequired || backgroundStartSettingsActive
+                || backgroundStartSettingsStartScheduled;
     }
 
     private boolean requestAdbAuthorization(
@@ -2554,7 +2627,7 @@ public final class CameraProbeActivity extends Activity
                 if (automatic) adbAuthorizationRequested = false;
                 guardStatus.setText("ADB retry IPC error");
                 updateControls();
-                maybeStartForegroundAdbAuthorization();
+                advanceStartupAuthorizationFlow();
             });
         } finally {
             reply.recycle();
@@ -2563,10 +2636,17 @@ public final class CameraProbeActivity extends Activity
     }
 
     static boolean shouldStartForegroundAdbAuthorization(boolean permissionPending,
-            boolean hasFocus, boolean helperConnected, boolean authorizationPending,
-            boolean alreadyRequested) {
-        return !permissionPending && hasFocus && helperConnected
+            boolean startupSettingsPending, boolean hasFocus, boolean helperConnected,
+            boolean authorizationPending, boolean alreadyRequested) {
+        return !permissionPending && !startupSettingsPending && hasFocus && helperConnected
                 && !authorizationPending && !alreadyRequested;
+    }
+
+    static boolean shouldOpenBackgroundStartSettings(boolean autoStartEnabled,
+            boolean permissionPending, boolean hasFocus, boolean settingsRequired,
+            boolean settingsActive, boolean authorizationPending) {
+        return autoStartEnabled && !permissionPending && hasFocus && settingsRequired
+                && !settingsActive && !authorizationPending;
     }
 
     private void transactManualTurnState(IBinder current, int payload) {
@@ -2775,8 +2855,7 @@ public final class CameraProbeActivity extends Activity
             } catch (Throwable error) {
                 Log.e(TAG, "Invalid helper JSON", error);
             }
-            maybeStartForegroundAdbAuthorization();
-            maybeRequestOverlayPermission();
+            advanceStartupAuthorizationFlow();
             updateControls();
         });
     }
@@ -2815,6 +2894,11 @@ public final class CameraProbeActivity extends Activity
 
     private void updateControls() {
         if (autoStartSwitch != null) autoStartSwitch.setEnabled(!shutdownRequested);
+        if (backgroundStartSettingsButton != null) {
+            backgroundStartSettingsButton.setEnabled(!shutdownRequested
+                    && !cameraPermissionPending && !backgroundStartSettingsActive
+                    && !backgroundStartSettingsStartScheduled && !adbAuthPending);
+        }
         if (shutdownButton != null) shutdownButton.setEnabled(!shutdownRequested);
         if (guardSwitch != null) {
             boolean enabled = guardSwitch.isChecked();
@@ -2885,8 +2969,9 @@ public final class CameraProbeActivity extends Activity
                             && !guardSwitch.isChecked());
         }
         if (adbRetryButton != null) {
-            adbRetryButton.setEnabled(shouldEnableManualAdbAuthorization(
-                    helper != null, adbAuthPending, adbAuthMode));
+            adbRetryButton.setEnabled(!backgroundStartSettingsPending()
+                    && shouldEnableManualAdbAuthorization(
+                            helper != null, adbAuthPending, adbAuthMode));
         }
         maybeOpenPendingDiagnosticMode(debugStockReady);
     }

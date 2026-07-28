@@ -354,6 +354,26 @@ final class CameraHelperMain {
                     requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_OVERLAY);
         }
 
+        void prepareOverlayWindow(
+                CameraShellProtocol.OverlaySpec spec,
+                Consumer<TurnSignalController.OverlaySurface> surfaceSink,
+                Runnable preparedSink) {
+            turnController.prepareCameraOverlay(spec, surfaceSink, preparedSink);
+        }
+
+        void armOverlayFirstFrame(int requestId, int surfaceGeneration) {
+            turnController.armCameraOverlayFrame(requestId, surfaceGeneration);
+        }
+
+        void setOverlayWindowVisible(
+                int requestId, int surfaceGeneration, boolean visible) {
+            turnController.setCameraOverlayVisible(requestId, surfaceGeneration, visible);
+        }
+
+        void closeOverlayWindow(String reason) {
+            turnController.closeCameraOverlay(reason);
+        }
+
         private String openDirectCamera(
                 Surface requestedSurface,
                 String requestedTag,

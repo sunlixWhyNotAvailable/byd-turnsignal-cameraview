@@ -152,8 +152,9 @@ public final class CameraHelperService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
+        String reason = intent == null ? "" : intent.getStringExtra(EXTRA_REASON);
         lifecycle("service_start", "action", action == null ? "" : action,
-                "start_id", startId);
+                "reason", reason == null ? "" : reason, "start_id", startId);
         if (ACTION_SHUTDOWN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, true);
             stopRuntime(true);

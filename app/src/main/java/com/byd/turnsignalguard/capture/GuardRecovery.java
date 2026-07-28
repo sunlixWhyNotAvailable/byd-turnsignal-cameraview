@@ -11,6 +11,8 @@ final class GuardRecovery {
     private static final String TAG = "BydTurnGuardRecovery";
     static final String ACTION_WATCHDOG =
             "com.byd.turnsignalguard.capture.action.WATCHDOG";
+    static final String ACTION_SHELL_RECOVERY =
+            "com.byd.turnsignalguard.capture.action.SHELL_RECOVERY";
     static final String KEY_AUTO_START = "auto_start_enabled";
     static final String KEY_USER_SHUTDOWN = "user_shutdown_active";
     private static final long WATCHDOG_MS = 60_000;
@@ -58,12 +60,17 @@ final class GuardRecovery {
     }
 
     static boolean startService(Context context, String reason) {
-        if (!shouldRecover(context)) return false;
+        if (!shouldRecover(context)) {
+            Log.i(TAG, "recovery_gate_blocked reason=" + reason);
+            return false;
+        }
+        Log.i(TAG, "recovery_gate_passed reason=" + reason);
         try {
             CameraHelperService.startPersistent(context, reason);
+            Log.i(TAG, "foreground_service_start_accepted reason=" + reason);
             return true;
         } catch (RuntimeException error) {
-            Log.e(TAG, "service start failed: " + reason, error);
+            Log.e(TAG, "foreground_service_start_failed reason=" + reason, error);
             return false;
         }
     }

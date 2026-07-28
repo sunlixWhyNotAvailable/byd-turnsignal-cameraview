@@ -20,6 +20,8 @@ final class BlindSpotCameraView extends TextureView
                 BlindSpotCameraView view, Surface surface, int width, int height);
 
         void onCameraSurfaceDestroyed(BlindSpotCameraView view);
+
+        default void onCameraFrameUpdated(BlindSpotCameraView view) {}
     }
 
     private Callback callback;
@@ -100,5 +102,7 @@ final class BlindSpotCameraView extends TextureView
     }
 
     @Override
-    public void onSurfaceTextureUpdated(SurfaceTexture texture) {}
+    public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+        if (callback != null) callback.onCameraFrameUpdated(this);
+    }
 }

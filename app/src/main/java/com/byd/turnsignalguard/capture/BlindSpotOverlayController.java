@@ -2,23 +2,15 @@ package com.byd.turnsignalguard.capture;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.graphics.Color;
-import android.graphics.PixelFormat;
 import android.os.Handler;
-import android.os.Parcel;
-import android.provider.Settings;
 import android.util.DisplayMetrics;
-import android.view.Gravity;
-import android.view.Surface;
-import android.view.View;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
 
 import org.json.JSONObject;
 
 import java.util.function.BiConsumer;
 
-final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
+final class BlindSpotOverlayController {
     static final String PREF_ENABLED = "camera_enabled";
     static final String PREF_MIN_SPEED = "camera_min_speed_kph";
     static final String PREF_SCALE = "camera_overlay_scale_percent";
@@ -41,7 +33,8 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     private static final int LEFT_PREVIEW_INDEX = 2;
     private static final int RIGHT_PREVIEW_INDEX = 3;
     private static final long STATE_STALE_MS = 750;
-    private static final long VIEWPOINT_SETTLE_MS = 150;
+    private static final long SURFACE_TIMEOUT_MS = 8_000;
+    private static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
     private static final long CAMERA_RETRY_MS = 3_000;
 
     private final Context context;
@@ -53,28 +46,35 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         stateValid = false;
         hide("vehicle_state_stale");
     };
-    private final Runnable settleViewpoint = this::finishPreviewSettle;
+    private final Runnable surfaceTimeout = this::handleSurfaceTimeout;
+    private final Runnable firstFrameTimeout = this::handleFirstFrameTimeout;
     private final Runnable retryCamera = this::retryCameraOpen;
 
     private CameraHelperMain.HelperBinder helper;
-    private FrameLayout window;
-    private BlindSpotCameraView preview;
-    private WindowManager.LayoutParams layout;
     private boolean suspended;
     private boolean uiHidden;
-    private boolean tearingDown;
     private boolean cameraReady;
     private boolean stateValid;
     private boolean visible;
-    private boolean windowArmed;
+    private boolean overlayPrepared;
     private final CameraRetryState cameraRetry = new CameraRetryState();
     private boolean shutdown;
     private int blink = -1;
     private float speedKph = Float.NaN;
+    private int requestSequence;
+    private int activeRequestId;
+    private int surfaceGeneration;
     private int requestedPreviewIndex = -1;
     private int displayedPreviewIndex = -1;
-    private int settlingPreviewIndex = -1;
     private int preparedDirection = -1;
+
+    private void handleSurfaceTimeout() {
+        cameraUnavailable("overlay_surface_timeout", requestedPreviewIndex);
+    }
+
+    private void handleFirstFrameTimeout() {
+        cameraUnavailable("first_frame_timeout", requestedPreviewIndex);
+    }
 
     BlindSpotOverlayController(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -109,14 +109,19 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         return (vertical ? safe / 3 : safe % 3) / 2.0f;
     }
 
-    static boolean isSettledViewpoint(int settling, int requested, int displayed) {
-        return settling != -1 && settling == requested && settling == displayed;
-    }
-
     static int previewIndexForDirection(int direction) {
         if (direction == BLINK_LEFT) return LEFT_PREVIEW_INDEX;
         if (direction == BLINK_RIGHT) return RIGHT_PREVIEW_INDEX;
         return -1;
+    }
+
+    static boolean isMatchingFirstFrame(
+            int eventRequestId, int eventGeneration,
+            int activeRequestId, int activeGeneration,
+            int displayedPreviewIndex, int requestedPreviewIndex) {
+        return eventRequestId == activeRequestId
+                && eventGeneration == activeGeneration
+                && displayedPreviewIndex == requestedPreviewIndex;
     }
 
     static int[] fitAspect(
@@ -132,16 +137,6 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     static int[] fitFourThree(int requestedWidth, int maxWidth, int maxHeight) {
         return fitAspect(requestedWidth, maxWidth, maxHeight,
                 DirectCameraCrop.OUTPUT_ASPECT);
-    }
-
-    private void finishPreviewSettle() {
-        if (!isSettledViewpoint(
-                settlingPreviewIndex, requestedPreviewIndex, displayedPreviewIndex)) return;
-        cameraReady = true;
-        emit("overlay_camera_ready", "camera_tag", DIRECT_CAMERA_TAG,
-                "preview_index", settlingPreviewIndex,
-                "settle_ms", VIEWPOINT_SETTLE_MS);
-        evaluate();
     }
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
@@ -201,6 +196,26 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
                 int previewIndex = event.optInt("preview_index", -1);
                 String stage = event.optString("stage", kind);
                 handler.post(() -> cameraUnavailable(stage, previewIndex));
+            } else if ("camera_overlay_first_frame".equals(kind)) {
+                int requestId = event.optInt("request_id", -1);
+                int generation = event.optInt("surface_generation", -1);
+                handler.post(() -> firstFrameAvailable(requestId, generation));
+            } else if ("camera_overlay_surface".equals(kind)
+                    && "destroyed".equals(event.optString("state"))) {
+                int requestId = event.optInt("request_id", -1);
+                handler.post(() -> {
+                    if (requestId == activeRequestId) {
+                        cameraUnavailable("overlay_surface_destroyed", requestedPreviewIndex);
+                    }
+                });
+            } else if ("camera_overlay_error".equals(kind)) {
+                String stage = event.optString("stage", kind);
+                int requestId = event.optInt("request_id", -1);
+                handler.post(() -> {
+                    if (requestId <= 0 || requestId == activeRequestId) {
+                        cameraUnavailable(stage, requestedPreviewIndex);
+                    }
+                });
             }
         } catch (Throwable error) {
             emit("overlay_event_parse_error", "error", summary(error));
@@ -210,130 +225,46 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     void shutdown() {
         shutdown = true;
         handler.removeCallbacks(staleState);
-        handler.removeCallbacks(settleViewpoint);
         cancelCameraRetry("overlay_shutdown");
         destroyWindow("overlay_shutdown");
         helper = null;
     }
 
-    @Override
-    public void onCameraSurfaceAvailable(
-            BlindSpotCameraView view, Surface surface, int width, int height) {
-        emit("overlay_surface", "state", "created", "valid", surface.isValid(),
-                "width", width, "height", height,
-                "buffer_width", DirectCameraCrop.SOURCE_WIDTH,
-                "buffer_height", DirectCameraCrop.SOURCE_HEIGHT);
-        armWindowAfterSurfaceCreated();
-        requestDirection(desiredDirection());
-    }
-
-    @Override
-    public void onCameraSurfaceSizeChanged(
-            BlindSpotCameraView view, Surface surface, int width, int height) {
-        emit("overlay_surface", "state", "changed", "width", width, "height", height);
-    }
-
-    @Override
-    public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
-        emit("overlay_surface", "state", "destroyed");
-        cancelCameraRetry("surface_destroyed");
-        if (!tearingDown && helper != null) helper.closeCamera("overlay_surface_destroyed");
-        handler.removeCallbacks(settleViewpoint);
-        cameraReady = false;
-        windowArmed = false;
-        requestedPreviewIndex = -1;
-        displayedPreviewIndex = -1;
-        settlingPreviewIndex = -1;
-    }
-
     private void applySettingsOnMain() {
         boolean enabled = settings.getBoolean(PREF_ENABLED, false);
-        if (shutdown || !enabled || suspended || helper == null
-                || !Settings.canDrawOverlays(context)) {
+        if (shutdown || !enabled || suspended || helper == null || windows == null) {
             destroyWindow(!enabled ? "overlay_disabled"
                     : shutdown ? "overlay_shutdown"
                     : suspended ? "overlay_suspended"
-                    : helper == null ? "helper_unavailable" : "overlay_permission_missing");
+                    : helper == null ? "helper_unavailable" : "window_manager_unavailable");
             return;
         }
-        ensureWindow();
-        configureSurfaceBuffer();
         preparedDirection = -1;
-        boolean geometryChanged = prepareDirection(desiredDirection());
-        if (preview != null && preview.isCameraSurfaceReady()) {
-            requestDirection(desiredDirection());
-        }
-        if (geometryChanged && window != null) window.post(this::evaluate);
-        else evaluate();
-    }
-
-    private void ensureWindow() {
-        if (window != null || windows == null) return;
-        window = new FrameLayout(context);
-        window.setClipChildren(true);
-        window.setBackgroundColor(Color.BLACK);
-        preview = new BlindSpotCameraView(context);
-        preview.setAlpha(1.0f);
-        preview.setCallback(this);
-        window.addView(preview, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        layout = new WindowManager.LayoutParams(
-                1, 1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-                PixelFormat.RGBX_8888);
-        layout.gravity = Gravity.TOP | Gravity.START;
-        layout.alpha = 0.0f;
-        layout.windowAnimations = 0;
-        layout.setTitle("BYD blind-spot camera");
-        int initialDirection = desiredDirection();
-        setExpandedLayout(initialDirection);
-        preparedDirection = initialDirection;
-        configureSurfaceBuffer();
-        try {
-            windows.addView(window, layout);
-            emit("overlay_window", "state", "added",
-                    "width", layout.width, "height", layout.height,
-                    "x", layout.x, "y", layout.y, "initial_alpha", layout.alpha);
-        } catch (Throwable error) {
-            window = null;
-            preview = null;
-            layout = null;
-            preparedDirection = -1;
-            emit("overlay_window_error", "error", summary(error));
-        }
+        requestDirection(desiredDirection());
+        evaluate();
     }
 
     private void destroyWindow(String reason) {
         cancelCameraRetry(reason);
         handler.removeCallbacks(staleState);
-        handler.removeCallbacks(settleViewpoint);
+        handler.removeCallbacks(surfaceTimeout);
+        handler.removeCallbacks(firstFrameTimeout);
         hide(reason);
-        if (helper != null && (cameraReady || requestedPreviewIndex != -1)) {
-            helper.closeCamera(reason);
+        if (helper != null) {
+            if (cameraReady || requestedPreviewIndex != -1 || displayedPreviewIndex != -1) {
+                helper.closeCamera(reason);
+            }
+            if (overlayPrepared || activeRequestId != 0) helper.closeOverlayWindow(reason);
         }
         cameraReady = false;
-        windowArmed = false;
+        overlayPrepared = false;
+        visible = false;
+        activeRequestId = 0;
+        surfaceGeneration = 0;
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
-        settlingPreviewIndex = -1;
-        if (window == null || windows == null) return;
-        tearingDown = true;
-        try {
-            windows.removeView(window);
-        } catch (Throwable error) {
-            emit("overlay_window_error", "error", summary(error));
-        } finally {
-            tearingDown = false;
-            window = null;
-            preview = null;
-            layout = null;
-            preparedDirection = -1;
-        }
-        emit("overlay_window", "state", "removed", "reason", reason);
+        preparedDirection = -1;
+        emit("overlay_window", "state", "remove_requested", "reason", reason);
     }
 
     private void acceptVehicleState(boolean valid, int nextBlink, float nextSpeed) {
@@ -348,7 +279,7 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     }
 
     private void evaluate() {
-        if (window == null || suspended) {
+        if (!overlayPrepared || suspended) {
             hide("overlay_unavailable");
             return;
         }
@@ -375,26 +306,61 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
 
     private void requestDirection(int direction) {
         int previewIndex = previewIndexForDirection(direction);
-        if (cameraRetry.active() || helper == null || preview == null || previewIndex < 0
-                || !preview.isCameraSurfaceReady()) {
+        if (cameraRetry.active() || helper == null || windows == null || previewIndex < 0) return;
+        if (preparedDirection == direction && requestedPreviewIndex == previewIndex
+                && activeRequestId != 0) {
             return;
         }
-        prepareDirection(direction);
-        if (requestedPreviewIndex == previewIndex) return;
-        Surface copy = duplicate(preview.getCameraSurface());
-        if (copy == null || !copy.isValid()) {
-            if (copy != null) copy.release();
-            emit("overlay_camera_error", "reason", "surface_copy_invalid");
-            return;
-        }
+        if (visible) hide("overlay_geometry_changed");
+        int requestId = nextRequestId();
+        CameraShellProtocol.OverlaySpec spec = buildOverlaySpec(direction, requestId);
+        preparedDirection = direction;
         requestedPreviewIndex = previewIndex;
+        displayedPreviewIndex = -1;
+        activeRequestId = requestId;
+        surfaceGeneration = 0;
         cameraReady = false;
-        settlingPreviewIndex = -1;
-        handler.removeCallbacks(settleViewpoint);
-        helper.openOverlayDirectCamera(copy, DIRECT_CAMERA_TAG, previewIndex);
-        emit("overlay_camera_request", "camera_tag", DIRECT_CAMERA_TAG,
+        overlayPrepared = true;
+        handler.removeCallbacks(surfaceTimeout);
+        handler.removeCallbacks(firstFrameTimeout);
+        helper.prepareOverlayWindow(
+                spec, this::overlaySurfaceAvailable, () -> overlayPrepared(requestId));
+        emit("overlay_geometry", "request_id", requestId,
+                "direction", direction == BLINK_RIGHT ? "right" : "left",
+                "width", spec.width, "height", spec.height,
+                "x", spec.x, "y", spec.y);
+    }
+
+    private void overlayPrepared(int requestId) {
+        if (requestId != activeRequestId || surfaceGeneration > 0) return;
+        handler.removeCallbacks(surfaceTimeout);
+        handler.postDelayed(surfaceTimeout, SURFACE_TIMEOUT_MS);
+    }
+
+    private void overlaySurfaceAvailable(TurnSignalController.OverlaySurface value) {
+        if (value.requestId != activeRequestId || value.surface == null
+                || !value.surface.isValid()) {
+            if (value.surface != null) value.surface.release();
+            return;
+        }
+        handler.removeCallbacks(surfaceTimeout);
+        surfaceGeneration = value.surfaceGeneration;
+        int previewIndex = requestedPreviewIndex;
+        try {
+            helper.openOverlayDirectCamera(value.surface, DIRECT_CAMERA_TAG, previewIndex);
+        } catch (Throwable error) {
+            emit("camera_overlay_error", "stage", "open_direct_camera",
+                    "request_id", activeRequestId,
+                    "surface_generation", surfaceGeneration,
+                    "error", summary(error));
+            cameraUnavailable("open_direct_camera", previewIndex);
+            return;
+        }
+        emit("overlay_camera_request", "request_id", activeRequestId,
+                "surface_generation", surfaceGeneration,
+                "camera_tag", DIRECT_CAMERA_TAG,
                 "preview_index", previewIndex,
-                "direction", direction == BLINK_RIGHT ? "right" : "left");
+                "direction", preparedDirection == BLINK_RIGHT ? "right" : "left");
     }
 
     private int desiredDirection() {
@@ -402,32 +368,60 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     }
 
     private void cameraOpened(int previewIndex) {
-        if (previewIndex != requestedPreviewIndex) return;
+        if (previewIndex != requestedPreviewIndex || activeRequestId == 0
+                || surfaceGeneration <= 0) {
+            return;
+        }
         cancelCameraRetry("camera_opened");
         displayedPreviewIndex = previewIndex;
         cameraReady = false;
-        settlingPreviewIndex = previewIndex;
-        handler.removeCallbacks(settleViewpoint);
-        emit("overlay_camera_settling", "camera_tag", DIRECT_CAMERA_TAG,
+        handler.removeCallbacks(firstFrameTimeout);
+        handler.postDelayed(firstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
+        helper.armOverlayFirstFrame(activeRequestId, surfaceGeneration);
+        emit("overlay_camera_waiting_frame", "request_id", activeRequestId,
+                "surface_generation", surfaceGeneration,
+                "camera_tag", DIRECT_CAMERA_TAG,
                 "preview_index", previewIndex,
-                "settle_ms", VIEWPOINT_SETTLE_MS);
-        handler.postDelayed(settleViewpoint, VIEWPOINT_SETTLE_MS);
+                "timeout_ms", FIRST_FRAME_TIMEOUT_MS);
+    }
+
+    private void firstFrameAvailable(int requestId, int generation) {
+        if (!isMatchingFirstFrame(
+                requestId, generation, activeRequestId, surfaceGeneration,
+                displayedPreviewIndex, requestedPreviewIndex)) {
+            return;
+        }
+        handler.removeCallbacks(firstFrameTimeout);
+        cameraReady = true;
+        emit("overlay_camera_ready", "request_id", requestId,
+                "surface_generation", generation,
+                "camera_tag", DIRECT_CAMERA_TAG,
+                "preview_index", displayedPreviewIndex,
+                "readiness", "first_frame");
+        evaluate();
     }
 
     private void cameraUnavailable(String reason, int previewIndex) {
-        if (previewIndex >= 0 && previewIndex != requestedPreviewIndex) {
+        if (previewIndex >= 0 && requestedPreviewIndex >= 0
+                && previewIndex != requestedPreviewIndex) {
             emit("overlay_camera_retry", "state", "ignored",
                     "reason", "preview_mismatch",
                     "preview_index", previewIndex,
                     "requested_preview_index", requestedPreviewIndex);
             return;
         }
-        handler.removeCallbacks(settleViewpoint);
+        handler.removeCallbacks(surfaceTimeout);
+        handler.removeCallbacks(firstFrameTimeout);
+        hide(reason);
+        if (helper != null && (requestedPreviewIndex != -1 || displayedPreviewIndex != -1)) {
+            helper.closeCamera(reason);
+        }
         cameraReady = false;
+        activeRequestId = 0;
+        surfaceGeneration = 0;
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
-        settlingPreviewIndex = -1;
-        hide(reason);
+        preparedDirection = -1;
         scheduleCameraRetry(reason);
     }
 
@@ -463,27 +457,15 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
 
     private String cameraRetryBlockReason() {
         return cameraRetryBlockReason(
-                shutdown,
-                settings.getBoolean(PREF_ENABLED, false),
-                suspended,
-                helper != null,
-                Settings.canDrawOverlays(context),
-                preview != null && preview.isCameraSurfaceReady());
+                shutdown, settings.getBoolean(PREF_ENABLED, false), suspended, helper != null);
     }
 
     static String cameraRetryBlockReason(
-            boolean shutdown,
-            boolean enabled,
-            boolean suspended,
-            boolean helperAvailable,
-            boolean overlayPermission,
-            boolean surfaceReady) {
+            boolean shutdown, boolean enabled, boolean suspended, boolean helperAvailable) {
         if (shutdown) return "shutdown";
         if (!enabled) return "overlay_disabled";
         if (suspended) return "overlay_suspended";
         if (!helperAvailable) return "helper_unavailable";
-        if (!overlayPermission) return "overlay_permission_missing";
-        if (!surfaceReady) return "surface_unavailable";
         return null;
     }
 
@@ -524,71 +506,33 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
     }
 
     private void show(int direction) {
-        if (layout == null || window == null || windows == null || !windowArmed) return;
-        boolean wasVisible = visible;
-        if (preparedDirection != direction) {
-            prepareDirection(direction);
-            window.post(this::evaluate);
+        if (helper == null || !overlayPrepared || !cameraReady
+                || activeRequestId == 0 || surfaceGeneration <= 0) {
             return;
         }
-        window.setVisibility(View.VISIBLE);
-        visible = true;
-        if (!wasVisible) {
-            emit("overlay_visibility", "visible", true,
-                    "direction", direction == BLINK_LEFT ? "left" : "right",
-                    "speed_kph", speedKph);
+        if (preparedDirection != direction) {
+            requestDirection(direction);
+            return;
         }
+        if (visible) return;
+        helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, true);
+        visible = true;
+        emit("overlay_visibility", "visible", true,
+                "request_id", activeRequestId,
+                "direction", direction == BLINK_LEFT ? "left" : "right",
+                "speed_kph", speedKph);
     }
 
     private void hide(String reason) {
-        if (layout == null || window == null || windows == null) return;
         boolean wasVisible = visible;
-        // Keep the initial alpha-zero view drawable until TextureView creates its Surface.
-        if (!windowArmed) {
-            visible = false;
-            return;
+        if (wasVisible && helper != null && activeRequestId != 0) {
+            helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, false);
         }
-        if (!wasVisible && window.getVisibility() == View.INVISIBLE) return;
-        window.setVisibility(View.INVISIBLE);
         visible = false;
         if (wasVisible) emit("overlay_visibility", "visible", false, "reason", reason);
     }
 
-    private boolean prepareDirection(int direction) {
-        if (layout == null || window == null || windows == null
-                || preparedDirection == direction) return false;
-        if (visible) hide("overlay_geometry_changed");
-        setExpandedLayout(direction);
-        try {
-            windows.updateViewLayout(window, layout);
-        } catch (Throwable error) {
-            emit("overlay_window_error", "error", summary(error));
-            return false;
-        }
-        preparedDirection = direction;
-        emit("overlay_geometry", "direction", direction == BLINK_RIGHT ? "right" : "left",
-                "width", layout.width, "height", layout.height,
-                "x", layout.x, "y", layout.y);
-        return true;
-    }
-
-    private void armWindowAfterSurfaceCreated() {
-        if (windowArmed || window == null || layout == null || windows == null) return;
-        window.setVisibility(View.INVISIBLE);
-        layout.alpha = 1.0f;
-        try {
-            windows.updateViewLayout(window, layout);
-            windowArmed = true;
-            emit("overlay_window", "state", "armed",
-                    "width", layout.width, "height", layout.height,
-                    "x", layout.x, "y", layout.y);
-        } catch (Throwable error) {
-            emit("overlay_window_error", "error", summary(error));
-        }
-    }
-
-    private void setExpandedLayout(int direction) {
-        if (layout == null || windows == null) return;
+    private CameraShellProtocol.OverlaySpec buildOverlaySpec(int direction, int requestId) {
         DisplayMetrics metrics = new DisplayMetrics();
         windows.getDefaultDisplay().getRealMetrics(metrics);
         boolean right = direction == BLINK_RIGHT;
@@ -603,17 +547,11 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
         int bottomMargin = dp(88);
         int availableX = Math.max(0, metrics.widthPixels - width - marginX * 2);
         int availableY = Math.max(0, metrics.heightPixels - height - topMargin - bottomMargin);
-        layout.width = width;
-        layout.height = height;
-        layout.x = marginX + Math.round(availableX * x);
-        layout.y = topMargin + Math.round(availableY * y);
-        if (preview != null) preview.post(() -> preview.applyDirectCameraCrop(crop));
-    }
-
-    private void configureSurfaceBuffer() {
-        if (preview != null) {
-            preview.applyDirectCameraCrop(loadDirectCrop(desiredDirection() == BLINK_RIGHT));
-        }
+        return new CameraShellProtocol.OverlaySpec(
+                requestId, width, height,
+                marginX + Math.round(availableX * x),
+                topMargin + Math.round(availableY * y),
+                crop.left, crop.top, crop.width, crop.height, crop.aspectMode);
     }
 
     private int[] overlaySize(DisplayMetrics metrics, float aspect) {
@@ -644,23 +582,17 @@ final class BlindSpotOverlayController implements BlindSpotCameraView.Callback {
                         DirectCameraCrop.ASPECT_FOUR_THREE));
     }
 
+    private int nextRequestId() {
+        requestSequence = requestSequence == Integer.MAX_VALUE ? 1 : requestSequence + 1;
+        return requestSequence;
+    }
+
     private void emit(String kind, Object... fields) {
         eventSink.accept(kind, fields);
     }
 
     private int dp(int value) {
         return Math.round(value * context.getResources().getDisplayMetrics().density);
-    }
-
-    private static Surface duplicate(Surface source) {
-        Parcel parcel = Parcel.obtain();
-        try {
-            source.writeToParcel(parcel, 0);
-            parcel.setDataPosition(0);
-            return Surface.CREATOR.createFromParcel(parcel);
-        } finally {
-            parcel.recycle();
-        }
     }
 
     private static int clamp(int value, int min, int max) {

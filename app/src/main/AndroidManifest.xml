@@ -7,10 +7,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
+
+    <queries>
+        <package android:name="com.byd.appstartmanagement" />
+    </queries>
 
     <application
         android:allowBackup="false"
@@ -59,6 +62,16 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="com.byd.turnsignalguard.capture.action.WATCHDOG" />
                 <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".ShellRecoveryReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.byd.turnsignalguard.capture.action.SHELL_RECOVERY" />
             </intent-filter>
         </receiver>
     </application>

@@ -93,7 +93,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(35, BuildConfig.VERSION_CODE);
+        assertEquals(38, BuildConfig.VERSION_CODE);
         assertEquals(3, TurnSignalShellProtocol.VERSION);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
@@ -115,6 +115,27 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.isPayloadAllowed(3));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(-1));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(4));
+    }
+
+    @Test
+    public void shellRecoveryIsWakeGatedAndCommandIsFixed() {
+        assertFalse(TurnSignalShellMain.ShellBinder.shouldAttemptRecovery(
+                false, false, true, false));
+        assertFalse(TurnSignalShellMain.ShellBinder.shouldAttemptRecovery(
+                true, true, true, false));
+        assertFalse(TurnSignalShellMain.ShellBinder.shouldAttemptRecovery(
+                true, false, false, false));
+        assertFalse(TurnSignalShellMain.ShellBinder.shouldAttemptRecovery(
+                true, false, true, true));
+        assertTrue(TurnSignalShellMain.ShellBinder.shouldAttemptRecovery(
+                true, false, true, false));
+        assertArrayEquals(new String[]{
+                        "am", "broadcast", "--user", "0", "--include-stopped-packages",
+                        "--receiver-foreground", "--async",
+                        "-a", GuardRecovery.ACTION_SHELL_RECOVERY,
+                        "-n", CameraHelperMain.PACKAGE_NAME + "/.ShellRecoveryReceiver"
+                },
+                TurnSignalShellMain.ShellBinder.recoveryCommandForTest());
     }
 
     @Test
@@ -279,18 +300,34 @@ public final class AdbCoreTest {
     @Test
     public void foregroundAuthorizationWaitsForPermissionAndWindowFocus() {
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                true, true, true, false, false));
+                true, false, true, true, false, false));
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                false, false, true, false, false));
+                false, false, false, true, false, false));
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                false, true, false, false, false));
+                false, false, true, false, false, false));
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                false, true, true, true, false));
+                false, false, true, true, true, false));
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                false, true, true, false, true));
+                false, false, true, true, false, true));
+        assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
+                false, true, true, true, false, false));
         assertTrue(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
-                false, true, true, false, false));
+                false, false, true, true, false, false));
         assertEquals(600, CameraProbeActivity.ADB_AUTH_UI_SETTLE_MS);
+        assertEquals(600, CameraProbeActivity.BACKGROUND_START_UI_SETTLE_MS);
+
+        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                true, true, true, true, false, false));
+        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                true, false, false, true, false, false));
+        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                false, false, true, true, false, false));
+        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                true, false, true, true, true, false));
+        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                true, false, true, true, false, true));
+        assertTrue(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+                true, false, true, true, false, false));
     }
 
     @Test
@@ -307,20 +344,15 @@ public final class AdbCoreTest {
         assertFalse(retry.active());
 
         assertEquals(null, BlindSpotOverlayController.cameraRetryBlockReason(
-                false, true, false, true, true, true));
+                false, true, false, true));
         assertEquals("overlay_disabled", BlindSpotOverlayController.cameraRetryBlockReason(
-                false, false, false, true, true, true));
+                false, false, false, true));
         assertEquals("overlay_suspended", BlindSpotOverlayController.cameraRetryBlockReason(
-                false, true, true, true, true, true));
+                false, true, true, true));
         assertEquals("helper_unavailable", BlindSpotOverlayController.cameraRetryBlockReason(
-                false, true, false, false, true, true));
-        assertEquals("overlay_permission_missing",
-                BlindSpotOverlayController.cameraRetryBlockReason(
-                        false, true, false, true, false, true));
-        assertEquals("surface_unavailable", BlindSpotOverlayController.cameraRetryBlockReason(
-                false, true, false, true, true, false));
+                false, true, false, false));
         assertEquals("shutdown", BlindSpotOverlayController.cameraRetryBlockReason(
-                true, true, false, true, true, true));
+                true, true, false, true));
 
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 0, 720));
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 0));
@@ -478,6 +510,16 @@ public final class AdbCoreTest {
         assertEquals(2, BlindSpotOverlayController.previewIndexForDirection(2));
         assertEquals(3, BlindSpotOverlayController.previewIndexForDirection(4));
         assertEquals(-1, BlindSpotOverlayController.previewIndexForDirection(6));
+        assertTrue(BlindSpotOverlayController.isMatchingFirstFrame(
+                7, 2, 7, 2, 3, 3));
+        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
+                6, 2, 7, 2, 3, 3));
+        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
+                7, 1, 7, 2, 3, 3));
+        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
+                7, 2, 7, 2, 2, 3));
+        assertFalse(ShellCameraOverlay.isFramePastStaleBuffer(1));
+        assertTrue(ShellCameraOverlay.isFramePastStaleBuffer(2));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("preview_handoff"));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("replace_preview"));
         assertFalse(CameraProbeActivity.isIntermediateCameraClose("user_close"));
@@ -495,9 +537,6 @@ public final class AdbCoreTest {
                 BlindSpotOverlayController.DEFAULT_RIGHT_POSITION, false), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.legacyPosition(8, false), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.legacyPosition(8, true), 0.0f);
-        assertTrue(BlindSpotOverlayController.isSettledViewpoint(10008, 10008, 10008));
-        assertFalse(BlindSpotOverlayController.isSettledViewpoint(10008, 10009, 10008));
-        assertFalse(BlindSpotOverlayController.isSettledViewpoint(-1, -1, -1));
         assertArrayEquals(new int[]{691, 518},
                 BlindSpotOverlayController.fitFourThree(691, 917, 636));
         assertArrayEquals(new int[]{848, 636},
@@ -563,7 +602,27 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(5, CameraShellProtocol.VERSION);
+        assertEquals(6, CameraShellProtocol.VERSION);
+        assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
+        assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
+                > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
+        CameraShellProtocol.OverlaySpec overlay = new CameraShellProtocol.OverlaySpec(
+                1, 640, 480, 16, 36,
+                0.0f, 0.04f, 0.65f, 0.72f,
+                DirectCameraCrop.ASPECT_FREE);
+        overlay.validate(1920, 1080);
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
+                0, 640, 480, 16, 36,
+                0.0f, 0.04f, 0.65f, 0.72f,
+                DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
+                1, 640, 480, 1500, 36,
+                0.0f, 0.04f, 0.65f, 0.72f,
+                DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
+                1, 640, 480, 16, 36,
+                0.6f, 0.04f, 0.5f, 0.72f,
+                DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
         StockAvmPreview.Config config = new StockAvmPreview.Config(
                 1, 250, 250, 1920, 1300, "ocean", "car", "sub");
         assertEquals(1, config.panoramaState);

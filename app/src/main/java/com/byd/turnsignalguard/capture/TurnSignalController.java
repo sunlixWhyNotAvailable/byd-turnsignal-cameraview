@@ -64,6 +64,9 @@ final class TurnSignalController {
     private volatile IBinder helper;
     private volatile IBinder cameraHelper;
     private IBinder.DeathRecipient helperDeathRecipient;
+    private IBinder.DeathRecipient cameraHelperDeathRecipient;
+    private volatile int pendingOverlayRequestId;
+    private volatile Consumer<OverlaySurface> pendingOverlaySurfaceSink;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
     private long lastLaunchFailureAt;
     private volatile String automaticAuthorizationBlockedFor = "";
@@ -98,9 +101,10 @@ final class TurnSignalController {
             shutdownCameraHelper();
         } else {
             closeStockAvmNow("controller_shutdown");
+            closeCameraOverlayNow("controller_shutdown");
         }
         clearHelper(null);
-        cameraHelper = null;
+        clearCameraHelper(null);
         healthy = false;
         worker.shutdownNow();
     }
@@ -201,7 +205,7 @@ final class TurnSignalController {
                         "orientation", horizontal ? "horizontal" : "vertical",
                         "input_surface_valid", inputSurfaceValid);
             } catch (Throwable error) {
-                cameraHelper = null;
+                clearCameraHelper(null);
                 emit("camera_error", "renderer", "stock_avm_shell",
                         "stage", "camera_shell_launch_or_open",
                         "view", StockAvmPreview.viewName(viewpoint),
@@ -214,6 +218,67 @@ final class TurnSignalController {
 
     void closeStockAvm(String reason) {
         worker.execute(() -> closeStockAvmNow(reason));
+    }
+
+    void prepareCameraOverlay(
+            CameraShellProtocol.OverlaySpec spec,
+            Consumer<OverlaySurface> surfaceSink,
+            Runnable preparedSink) {
+        if (spec == null || surfaceSink == null || preparedSink == null) {
+            throw new IllegalArgumentException("overlay spec/sinks required");
+        }
+        worker.execute(() -> {
+            pendingOverlayRequestId = spec.requestId;
+            pendingOverlaySurfaceSink = surfaceSink;
+            try {
+                IBinder value = ensureCameraHelper();
+                transactOverlayPrepare(value, spec);
+                emit("camera_overlay_prepare", "request_id", spec.requestId,
+                        "width", spec.width, "height", spec.height,
+                        "x", spec.x, "y", spec.y);
+                if (!handler.post(preparedSink)) {
+                    throw new IllegalStateException("main handler rejected overlay prepare");
+                }
+            } catch (Throwable error) {
+                clearPendingOverlaySurface(spec.requestId);
+                clearCameraHelper(null);
+                emit("camera_overlay_error", "stage", "prepare",
+                        "request_id", spec.requestId, "error", summary(error));
+            }
+        });
+    }
+
+    void armCameraOverlayFrame(int requestId, int surfaceGeneration) {
+        worker.execute(() -> {
+            try {
+                IBinder value = ensureCameraHelper();
+                transactOverlayFrame(value, requestId, surfaceGeneration);
+            } catch (Throwable error) {
+                emit("camera_overlay_error", "stage", "arm_first_frame",
+                        "request_id", requestId,
+                        "surface_generation", surfaceGeneration,
+                        "error", summary(error));
+            }
+        });
+    }
+
+    void setCameraOverlayVisible(
+            int requestId, int surfaceGeneration, boolean visible) {
+        worker.execute(() -> {
+            try {
+                IBinder value = ensureCameraHelper();
+                transactOverlayVisibility(value, requestId, surfaceGeneration, visible);
+            } catch (Throwable error) {
+                emit("camera_overlay_error", "stage", visible ? "show" : "hide",
+                        "request_id", requestId,
+                        "surface_generation", surfaceGeneration,
+                        "error", summary(error));
+            }
+        });
+    }
+
+    void closeCameraOverlay(String reason) {
+        worker.execute(() -> closeCameraOverlayNow(reason));
     }
 
     void reportStatus() {
@@ -697,8 +762,10 @@ final class TurnSignalController {
             } while (SystemClock.elapsedRealtime() < deadline);
         }
         if (!cameraPing(value)) throw new IllegalStateException("camera_shell_binder_timeout");
-        cameraHelper = value;
-        transactCameraCallback(value);
+        if (cameraHelper != value) {
+            transactCameraCallback(value);
+            installCameraHelper(value);
+        }
         return value;
     }
 
@@ -771,6 +838,124 @@ final class TurnSignalController {
         }
     }
 
+    private static void transactOverlayPrepare(
+            IBinder value, CameraShellProtocol.OverlaySpec spec) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            spec.writeToParcel(data);
+            requireTransact(value, CameraShellProtocol.TX_OVERLAY_PREPARE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static OverlaySurface transactOverlayAcquire(
+            IBinder value, int requestId) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            requireTransact(
+                    value, CameraShellProtocol.TX_OVERLAY_ACQUIRE_SURFACE, data, reply);
+            int returnedRequestId = reply.readInt();
+            int surfaceGeneration = reply.readInt();
+            Surface surface = Surface.CREATOR.createFromParcel(reply);
+            if (returnedRequestId != requestId || surfaceGeneration <= 0
+                    || surface == null || !surface.isValid()) {
+                if (surface != null) surface.release();
+                throw new IllegalStateException("camera helper returned stale overlay Surface");
+            }
+            return new OverlaySurface(returnedRequestId, surfaceGeneration, surface);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactOverlayFrame(
+            IBinder value, int requestId, int surfaceGeneration) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(surfaceGeneration);
+            requireTransact(
+                    value, CameraShellProtocol.TX_OVERLAY_ARM_FRAME, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactOverlayVisibility(
+            IBinder value, int requestId, int surfaceGeneration, boolean visible)
+            throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(surfaceGeneration);
+            data.writeInt(visible ? 1 : 0);
+            requireTransact(
+                    value, CameraShellProtocol.TX_OVERLAY_SET_VISIBLE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactOverlayClose(IBinder value, String reason) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeString(reason == null ? "unknown" : reason);
+            requireTransact(value, CameraShellProtocol.TX_OVERLAY_CLOSE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private void acquireCameraOverlaySurface(int requestId, int reportedGeneration) {
+        Consumer<OverlaySurface> sink = pendingOverlaySurfaceSink;
+        if (sink == null || requestId != pendingOverlayRequestId || reportedGeneration <= 0) {
+            return;
+        }
+        try {
+            IBinder value = cameraHelper;
+            if (!cameraPing(value)) value = ensureCameraHelper();
+            OverlaySurface result = transactOverlayAcquire(value, requestId);
+            if (result.surfaceGeneration != reportedGeneration) {
+                result.surface.release();
+                throw new IllegalStateException("overlay Surface generation changed");
+            }
+            clearPendingOverlaySurface(requestId);
+            if (!handler.post(() -> sink.accept(result))) {
+                result.surface.release();
+                throw new IllegalStateException("main handler rejected overlay Surface");
+            }
+        } catch (Throwable error) {
+            clearPendingOverlaySurface(requestId);
+            emit("camera_overlay_error", "stage", "acquire_surface",
+                    "request_id", requestId,
+                    "surface_generation", reportedGeneration,
+                    "error", summary(error));
+        }
+    }
+
+    private void clearPendingOverlaySurface(int requestId) {
+        if (requestId != pendingOverlayRequestId) return;
+        pendingOverlayRequestId = 0;
+        pendingOverlaySurfaceSink = null;
+    }
+
     private void closeStockAvmNow(String reason) {
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
@@ -781,13 +966,26 @@ final class TurnSignalController {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeString(reason == null ? "unknown" : reason);
             requireTransact(value, CameraShellProtocol.TX_CLOSE, data, reply);
-            cameraHelper = null;
         } catch (Throwable error) {
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", "close", "error", summary(error));
         } finally {
             data.recycle();
             reply.recycle();
+        }
+    }
+
+    private void closeCameraOverlayNow(String reason) {
+        pendingOverlayRequestId = 0;
+        pendingOverlaySurfaceSink = null;
+        IBinder value = cameraHelper;
+        if (!cameraPing(value)) value = resolveCameraHelper();
+        if (!cameraPing(value)) return;
+        try {
+            transactOverlayClose(value, reason);
+        } catch (Throwable error) {
+            emit("camera_overlay_error", "stage", "close",
+                    "error", summary(error));
         }
     }
 
@@ -819,6 +1017,7 @@ final class TurnSignalController {
         } finally {
             data.recycle();
             reply.recycle();
+            clearCameraHelper(value);
         }
     }
 
@@ -833,6 +1032,12 @@ final class TurnSignalController {
             } else if ("turn_state_status".equals(kind)) {
                 settings.edit().putInt("assumed_latch_state",
                         event.optInt("assumed_latch_state", -1)).apply();
+            } else if ("camera_overlay_surface".equals(kind)
+                    && "ready".equals(event.optString("state"))) {
+                int requestId = event.optInt("request_id", -1);
+                int surfaceGeneration = event.optInt("surface_generation", -1);
+                worker.execute(() -> acquireCameraOverlaySurface(
+                        requestId, surfaceGeneration));
             }
         } catch (Throwable error) {
             emit("shell_event_parse_error", "error", summary(error));
@@ -922,6 +1127,25 @@ final class TurnSignalController {
         unlinkDeathRecipient(previous, previousRecipient);
     }
 
+    private synchronized void installCameraHelper(IBinder value) throws Exception {
+        if (cameraHelper == value) return;
+        IBinder.DeathRecipient recipient = () -> cameraHelperDied(value);
+        value.linkToDeath(recipient, 0);
+        IBinder previous = cameraHelper;
+        IBinder.DeathRecipient previousRecipient = cameraHelperDeathRecipient;
+        cameraHelper = value;
+        cameraHelperDeathRecipient = recipient;
+        unlinkDeathRecipient(previous, previousRecipient);
+    }
+
+    private void cameraHelperDied(IBinder value) {
+        clearCameraHelper(value);
+        pendingOverlayRequestId = 0;
+        pendingOverlaySurfaceSink = null;
+        emit("camera_overlay_error", "stage", "camera_shell_died",
+                "error", "camera helper Binder died");
+    }
+
     private void clearHelper(IBinder expected) {
         IBinder previous;
         IBinder.DeathRecipient previousRecipient;
@@ -931,6 +1155,19 @@ final class TurnSignalController {
             previousRecipient = helperDeathRecipient;
             helper = null;
             helperDeathRecipient = null;
+        }
+        unlinkDeathRecipient(previous, previousRecipient);
+    }
+
+    private void clearCameraHelper(IBinder expected) {
+        IBinder previous;
+        IBinder.DeathRecipient previousRecipient;
+        synchronized (this) {
+            if (expected != null && cameraHelper != expected) return;
+            previous = cameraHelper;
+            previousRecipient = cameraHelperDeathRecipient;
+            cameraHelper = null;
+            cameraHelperDeathRecipient = null;
         }
         unlinkDeathRecipient(previous, previousRecipient);
     }
@@ -974,6 +1211,18 @@ final class TurnSignalController {
 
         boolean healthy() {
             return binder != null && error.isEmpty();
+        }
+    }
+
+    static final class OverlaySurface {
+        final int requestId;
+        final int surfaceGeneration;
+        final Surface surface;
+
+        OverlaySurface(int requestId, int surfaceGeneration, Surface surface) {
+            this.requestId = requestId;
+            this.surfaceGeneration = surfaceGeneration;
+            this.surface = surface;
         }
     }
 
