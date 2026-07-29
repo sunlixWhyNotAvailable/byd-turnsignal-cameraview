@@ -13,6 +13,7 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.provider.Settings;
 
 import org.json.JSONObject;
 
@@ -62,6 +63,8 @@ public final class TurnSignalShellMain {
     }
 
     static final class ShellBinder extends Binder {
+        private static final String AWAKE_SESSION_PATH =
+                "/data/local/tmp/bydturnguard_awake_session";
         private static final long RECOVERY_DEATH_SETTLE_MS = 500;
         private static final long RECOVERY_WAKE_SETTLE_MS = 500;
         private static final long RECOVERY_WAKE_CHECK_MS = 1_000;
@@ -74,11 +77,13 @@ public final class TurnSignalShellMain {
         private final int versionCode;
         private final TurnSignalGuardRuntime runtime;
         private final BlindSpotWarningRuntime warningRuntime;
+        private final ReverseGearRuntime reverseGearRuntime;
         private final PowerManager powerManager;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
         private final BroadcastReceiver powerReceiver;
+        private final AwakeSessionState awakeSession;
         private IBinder callback;
         private IBinder controllerToken;
         private boolean guardEnabled;
@@ -94,6 +99,7 @@ public final class TurnSignalShellMain {
             this.appUid = appUid;
             this.versionCode = versionCode;
             powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            awakeSession = loadAwakeSession();
             powerReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context receiverContext, Intent intent) {
@@ -103,12 +109,14 @@ public final class TurnSignalShellMain {
             };
             runtime = new TurnSignalGuardRuntime(context, handler, this::emit);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
+            reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
         }
 
         void start() {
             registerPowerReceiver();
             runtime.start();
             warningRuntime.start();
+            reverseGearRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
         }
 
@@ -117,8 +125,10 @@ public final class TurnSignalShellMain {
             handler.removeCallbacks(wakeCheckRunnable);
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
+            reverseGearRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
+            saveAwakeSession();
         }
 
         @Override
@@ -161,6 +171,8 @@ public final class TurnSignalShellMain {
                 if (code == TurnSignalShellProtocol.TX_REPORT_STATUS) {
                     runtime.reportStatus();
                     warningRuntime.reportStatus();
+                    reverseGearRuntime.reportStatus();
+                    emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
                 }
@@ -174,6 +186,7 @@ public final class TurnSignalShellMain {
                     recoveryEnabled = false;
                     reply.writeNoException();
                     handler.post(() -> {
+                        reverseGearRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_request");
@@ -196,6 +209,8 @@ public final class TurnSignalShellMain {
             emit("shell_callback_registered", "shell_uid", Process.myUid());
             runtime.reportStatus();
             warningRuntime.reportStatus();
+            reverseGearRuntime.reportStatus();
+            emitPowerState("callback_registered", false);
         }
 
         private synchronized void clearCallback(IBinder value) {
@@ -278,12 +293,19 @@ public final class TurnSignalShellMain {
 
         private void powerStateChanged(String action) {
             boolean interactive = isInteractive();
+            boolean newSession = awakeSession.update(
+                    interactive,
+                    "android.intent.action.QUICKBOOT_POWERON".equals(action),
+                    SystemClock.elapsedRealtime());
+            saveAwakeSession();
             boolean waiting;
             synchronized (this) {
                 waiting = recoveryEnabled && controllerToken == null;
             }
             emit("shell_power_state", "action", action, "interactive", interactive,
-                    "recovery_waiting", waiting);
+                    "recovery_waiting", waiting,
+                    "awake_session_id", awakeSession.generation,
+                    "new_session", newSession);
             if (!interactive) {
                 handler.removeCallbacks(recoveryRunnable);
                 if (waiting) {
@@ -309,11 +331,51 @@ public final class TurnSignalShellMain {
             }
             if (!waiting) return;
             if (isInteractive()) {
-                emit("shell_power_state", "action", "wake_poll", "interactive", true,
-                        "recovery_waiting", true);
-                scheduleRecovery(RECOVERY_WAKE_SETTLE_MS, "wake_poll");
+                powerStateChanged("wake_poll");
             } else {
                 scheduleWakeCheck();
+            }
+        }
+
+        private void emitPowerState(String action, boolean newSession) {
+            boolean waiting;
+            synchronized (this) {
+                waiting = recoveryEnabled && controllerToken == null;
+            }
+            emit("shell_power_state", "action", action,
+                    "interactive", awakeSession.interactive,
+                    "recovery_waiting", waiting,
+                    "awake_session_id", awakeSession.generation,
+                    "new_session", newSession);
+        }
+
+        private AwakeSessionState loadAwakeSession() {
+            AwakeSessionState stored = null;
+            try (RandomAccessFile file = new RandomAccessFile(AWAKE_SESSION_PATH, "rw")) {
+                String line = file.readLine();
+                if (line != null) stored = AwakeSessionState.parse(line);
+            } catch (Throwable ignored) {
+            }
+            return AwakeSessionState.reconcile(
+                    stored, bootCount(), isInteractive(), SystemClock.elapsedRealtime());
+        }
+
+        private void saveAwakeSession() {
+            try (RandomAccessFile file = new RandomAccessFile(AWAKE_SESSION_PATH, "rw")) {
+                file.setLength(0);
+                file.write(awakeSession.encode().getBytes(StandardCharsets.US_ASCII));
+            } catch (Throwable error) {
+                emit("shell_power_state_error", "stage", "persist_session",
+                        "error", summary(error));
+            }
+        }
+
+        private long bootCount() {
+            try {
+                return Settings.Global.getInt(
+                        context.getContentResolver(), Settings.Global.BOOT_COUNT);
+            } catch (Throwable ignored) {
+                return -1;
             }
         }
 
@@ -453,6 +515,101 @@ public final class TurnSignalShellMain {
                 this.output = output == null ? "" : output;
                 this.error = error == null ? "" : error;
                 this.elapsedMs = elapsedMs;
+            }
+        }
+
+        static final class AwakeSessionState {
+            long bootCount;
+            long generation;
+            boolean interactive;
+            boolean unpairedInteractiveWake;
+            long lastWakeElapsedMs;
+            long lastObservedElapsedMs;
+
+            AwakeSessionState(
+                    long bootCount, long generation, boolean interactive,
+                    boolean unpairedInteractiveWake,
+                    long lastWakeElapsedMs, long lastObservedElapsedMs) {
+                this.bootCount = bootCount;
+                this.generation = Math.max(0, generation);
+                this.interactive = interactive;
+                this.unpairedInteractiveWake = unpairedInteractiveWake;
+                this.lastWakeElapsedMs = Math.max(0, lastWakeElapsedMs);
+                this.lastObservedElapsedMs = Math.max(0, lastObservedElapsedMs);
+            }
+
+            static AwakeSessionState reconcile(
+                    AwakeSessionState stored, long bootCount,
+                    boolean interactive, long elapsedMs) {
+                if (stored == null) {
+                    return new AwakeSessionState(bootCount, interactive ? 1 : 0,
+                            interactive, interactive,
+                            interactive ? elapsedMs : 0, elapsedMs);
+                }
+                boolean rebooted = bootCount >= 0 && stored.bootCount >= 0
+                        && bootCount != stored.bootCount;
+                if (!rebooted && elapsedMs < stored.lastObservedElapsedMs) rebooted = true;
+                AwakeSessionState state = new AwakeSessionState(
+                        bootCount, stored.generation, stored.interactive,
+                        stored.unpairedInteractiveWake,
+                        stored.lastWakeElapsedMs, elapsedMs);
+                if (rebooted) {
+                    state.interactive = interactive;
+                    state.unpairedInteractiveWake = interactive;
+                    if (interactive) {
+                        state.generation++;
+                        state.lastWakeElapsedMs = elapsedMs;
+                    }
+                } else {
+                    state.update(interactive, false, elapsedMs);
+                }
+                return state;
+            }
+
+            boolean update(boolean nextInteractive, boolean quickboot, long elapsedMs) {
+                boolean newSession = false;
+                if (nextInteractive && !interactive) {
+                    newSession = true;
+                    unpairedInteractiveWake = true;
+                } else if (!nextInteractive) {
+                    unpairedInteractiveWake = false;
+                }
+                if (nextInteractive && quickboot) {
+                    if (unpairedInteractiveWake) {
+                        unpairedInteractiveWake = false;
+                    } else if (!newSession) {
+                        newSession = true;
+                    }
+                }
+                if (newSession) {
+                    generation++;
+                    lastWakeElapsedMs = elapsedMs;
+                }
+                interactive = nextInteractive;
+                lastObservedElapsedMs = elapsedMs;
+                return newSession;
+            }
+
+            String encode() {
+                return bootCount + "," + generation + "," + (interactive ? 1 : 0)
+                        + "," + (unpairedInteractiveWake ? 1 : 0)
+                        + "," + lastWakeElapsedMs + "," + lastObservedElapsedMs;
+            }
+
+            static AwakeSessionState parse(String value) {
+                String[] fields = value == null ? new String[0] : value.trim().split(",");
+                if (fields.length != 5 && fields.length != 6) return null;
+                try {
+                    boolean currentFormat = fields.length == 6;
+                    return new AwakeSessionState(
+                            Long.parseLong(fields[0]), Long.parseLong(fields[1]),
+                            "1".equals(fields[2]),
+                            currentFormat && "1".equals(fields[3]),
+                            Long.parseLong(fields[currentFormat ? 4 : 3]),
+                            Long.parseLong(fields[currentFormat ? 5 : 4]));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
             }
         }
 

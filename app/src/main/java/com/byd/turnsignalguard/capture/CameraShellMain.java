@@ -48,8 +48,11 @@ public final class CameraShellMain {
             System.out.flush();
             Looper.loop();
         } finally {
-            binder.closeAll("process_exit");
-            owner.close();
+            try {
+                binder.closeAll("process_exit");
+            } finally {
+                owner.close();
+            }
         }
     }
 
@@ -59,6 +62,7 @@ public final class CameraShellMain {
         private final int versionCode;
         private final StockAvmPreview preview;
         private final ShellCameraOverlay overlay;
+        private final ShellReverseCameraOverlay reverseOverlay;
         private IBinder callback;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
@@ -72,6 +76,7 @@ public final class CameraShellMain {
                 }
             });
             overlay = new ShellCameraOverlay(context, this::emit);
+            reverseOverlay = new ShellReverseCameraOverlay(context, this::emit);
         }
 
         @Override
@@ -96,6 +101,9 @@ public final class CameraShellMain {
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OPEN) {
+                    if (reverseOverlay.isOpen()) {
+                        throw new IllegalStateException("reverse overlay has camera priority");
+                    }
                     Surface surface = Surface.CREATOR.createFromParcel(data);
                     try {
                         int viewpoint = data.readInt();
@@ -129,15 +137,22 @@ public final class CameraShellMain {
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_SHUTDOWN) {
+                    try {
+                        runOnMain(() -> {
+                            closeAll("controller_shutdown");
+                            emit("camera_shell_shutdown", "reason", "controller_request");
+                            return null;
+                        });
+                    } finally {
+                        handler.post(() -> Looper.myLooper().quitSafely());
+                    }
                     reply.writeNoException();
-                    handler.post(() -> {
-                        closeAll("controller_shutdown");
-                        emit("camera_shell_shutdown", "reason", "controller_request");
-                        Looper.myLooper().quitSafely();
-                    });
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
+                    if (reverseOverlay.isOpen()) {
+                        throw new IllegalStateException("reverse overlay has camera priority");
+                    }
                     CameraShellProtocol.OverlaySpec spec =
                             CameraShellProtocol.OverlaySpec.readFromParcel(data);
                     runOnMain(() -> {
@@ -201,6 +216,59 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_REVERSE_PREPARE) {
+                    CameraShellProtocol.ReverseOverlaySpec spec =
+                            CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
+                    runOnMain(() -> {
+                        closePreview("reverse_priority");
+                        overlay.close("reverse_priority");
+                        reverseOverlay.prepare(spec);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_REVERSE_ACQUIRE_SURFACES) {
+                    int requestId = data.readInt();
+                    ShellReverseCameraOverlay.SurfaceSnapshot snapshot = runOnMain(
+                            () -> reverseOverlay.acquireSurfaces(requestId));
+                    reply.writeNoException();
+                    reply.writeInt(snapshot.requestId);
+                    reply.writeInt(snapshot.generations.length);
+                    for (int generation : snapshot.generations) reply.writeInt(generation);
+                    for (Surface surface : snapshot.surfaces) surface.writeToParcel(reply, 0);
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_REVERSE_ARM_FRAMES) {
+                    int requestId = data.readInt();
+                    int[] generations = readReverseGenerations(data);
+                    runOnMain(() -> {
+                        reverseOverlay.armFrames(requestId, generations);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_REVERSE_SET_VISIBLE) {
+                    int requestId = data.readInt();
+                    int[] generations = readReverseGenerations(data);
+                    boolean visible = data.readInt() != 0;
+                    runOnMain(() -> {
+                        reverseOverlay.setVisible(requestId, generations, visible);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_REVERSE_CLOSE) {
+                    String reason = data.readString();
+                    runOnMain(() -> {
+                        reverseOverlay.close(reason);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 return false;
             } catch (Throwable error) {
                 if (reply != null) reply.writeException(new IllegalStateException(summary(error)));
@@ -248,7 +316,31 @@ public final class CameraShellMain {
 
         private void closeAll(String reason) {
             closePreview(reason);
-            overlay.close(reason);
+            Throwable failure = null;
+            try {
+                overlay.close(reason);
+            } catch (Throwable error) {
+                failure = error;
+            }
+            try {
+                reverseOverlay.close(reason);
+            } catch (Throwable error) {
+                if (failure == null) failure = error;
+            }
+            if (failure != null) throw new IllegalStateException(summary(failure), failure);
+        }
+
+        private static int[] readReverseGenerations(Parcel data) {
+            int count = data.readInt();
+            if (count != 3) throw new IllegalArgumentException("three reverse generations required");
+            int[] values = new int[count];
+            for (int i = 0; i < count; i++) {
+                values[i] = data.readInt();
+                if (values[i] <= 0) {
+                    throw new IllegalArgumentException("invalid reverse Surface generation");
+                }
+            }
+            return values;
         }
 
         private <T> T runOnMain(java.util.concurrent.Callable<T> callable) throws Exception {
@@ -270,8 +362,11 @@ public final class CameraShellMain {
         private synchronized void callbackDied(IBinder value) {
             if (callback != value) return;
             callback = null;
-            closeAll("controller_died");
-            handler.getLooper().quitSafely();
+            try {
+                closeAll("controller_died");
+            } finally {
+                handler.getLooper().quitSafely();
+            }
         }
 
         private void emit(String kind, Object... fields) {

@@ -41,6 +41,8 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_CAMERA_WARNING_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
+    private static final String ACTION_REVERSE_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_AUTO_START_CHANGED =
             "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
     private static final String ACTION_SHUTDOWN =
@@ -71,6 +73,8 @@ public final class CameraHelperService extends Service {
     };
     private CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController overlay;
+    private ReverseCameraController reverseCameras;
+    private ClusterFullscreenController clusterFullscreen;
     private File logFile;
     private boolean foreground;
     private boolean activityVisible;
@@ -127,6 +131,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_CAMERA_WARNING_SETTINGS_CHANGED));
     }
 
+    static void reverseCameraSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
+    }
+
     static void updateAutoStart(Context context, boolean enabled) {
         GuardRecovery.setAutoStartEnabled(context, enabled);
         Intent intent = new Intent(context, CameraHelperService.class)
@@ -146,7 +155,12 @@ public final class CameraHelperService extends Service {
     public void onCreate() {
         super.onCreate();
         createLogFile();
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        BlindSpotOverlayController.migrateOverlayPreferences(settings);
         overlay = new BlindSpotOverlayController(this, handler, this::lifecycle);
+        reverseCameras = new ReverseCameraController(
+                this, handler, this::reverseEvent, overlay::setReversePriority);
+        clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
         if (GuardRecovery.shouldRecover(this)) {
@@ -202,9 +216,12 @@ public final class CameraHelperService extends Service {
         helper.setRecoveryEnabled(true);
         if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
+            clusterFullscreen.settingsChanged();
             scheduleCameraDiscoveryRetry(0);
         } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {
             overlay.applyWarningSettings();
+        } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
+            reverseCameras.settingsChanged();
         }
         startHeartbeat();
         return START_STICKY;
@@ -239,7 +256,9 @@ public final class CameraHelperService extends Service {
         handler.removeCallbacks(retryCameraDiscovery);
         boolean recover = GuardRecovery.shouldRecover(this);
         lifecycle("service_destroy", "recover", recover);
+        if (reverseCameras != null) reverseCameras.shutdown();
         if (overlay != null) overlay.shutdown();
+        if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (helper != null) helper.shutdown(!recover);
         helper = null;
         stopForegroundRuntime();
@@ -261,6 +280,7 @@ public final class CameraHelperService extends Service {
                 settings.getInt("correction_delay_ms", 100),
                 settings.getInt("max_speed_kph", 30));
         overlay.attachHelper(helper);
+        reverseCameras.attachHelper(helper);
         overlay.setUiHidden(activityVisible);
         overlay.setSuspended(cameraPreviewActive);
         if (shouldRetryCameraDiscovery(cameraReady, GuardRecovery.shouldRecover(this))) {
@@ -272,7 +292,9 @@ public final class CameraHelperService extends Service {
         handler.removeCallbacks(heartbeat);
         handler.removeCallbacks(resumeOverlay);
         handler.removeCallbacks(retryCameraDiscovery);
+        if (reverseCameras != null) reverseCameras.shutdown();
         if (overlay != null) overlay.shutdown();
+        if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (helper != null) helper.shutdown(terminateShells);
         helper = null;
         stopForegroundRuntime();
@@ -345,7 +367,15 @@ public final class CameraHelperService extends Service {
 
     private void acceptHelperLine(String line) {
         if (overlay != null) overlay.acceptEvent(line);
+        if (reverseCameras != null) reverseCameras.acceptEvent(line);
+        if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
         writeLine(line);
+    }
+
+    private void reverseEvent(String kind, Object... fields) {
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) activeHelper.emitControllerEvent(kind, fields);
+        else lifecycle(kind, fields);
     }
 
     private void lifecycle(String kind, Object... fields) {

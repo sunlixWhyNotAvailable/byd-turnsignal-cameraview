@@ -21,6 +21,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.function.Consumer;
@@ -39,11 +40,13 @@ final class CameraHelperMain {
     static final int TX_RETRY_ADB_AUTH = IBinder.FIRST_CALL_TRANSACTION + 6;
     static final int TX_OPEN_STOCK_AVM = IBinder.FIRST_CALL_TRANSACTION + 7;
     static final int TX_OPEN_DIRECT = IBinder.FIRST_CALL_TRANSACTION + 8;
+    static final int TX_OPEN_REVERSE_PREVIEW = IBinder.FIRST_CALL_TRANSACTION + 9;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
     static final int ADB_AUTH_MODE_AUTO_ONCE = 0;
     static final int ADB_AUTH_MODE_FORCE = 1;
     static final String CAMERA_OWNER_ACTIVITY = "activity";
     static final String CAMERA_OWNER_OVERLAY = "overlay";
+    static final String CAMERA_OWNER_REVERSE = "reverse";
 
     private static final String TAG = "BydCameraProbe";
     private static final String COUNTER_PREFS = "lifetime_counters";
@@ -67,6 +70,8 @@ final class CameraHelperMain {
         private Object eventCallback;
         private Surface surface;
         private int previewIndex;
+        private Surface[] multiSurfaces = new Surface[0];
+        private int[] multiPreviewIndexes = new int[0];
         private String viewName;
         private int activeCameraId = -1;
         private String activeCameraTag = "none";
@@ -94,9 +99,13 @@ final class CameraHelperMain {
             turnController.setRecoveryEnabled(enabled);
         }
 
+        void emitControllerEvent(String kind, Object... fields) {
+            emit(kind, fields);
+        }
+
         void shutdown(boolean terminateShells) {
-            closeCamera("service_destroyed");
             turnController.shutdown(terminateShells);
+            closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", terminateShells);
         }
@@ -123,7 +132,7 @@ final class CameraHelperMain {
                 }
                 if (code == TX_CLOSE) {
                     String reason = data.readString();
-                    String result = closeCamera(reason);
+                    String result = closeCameraForOwner(CAMERA_OWNER_ACTIVITY, reason);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -175,6 +184,13 @@ final class CameraHelperMain {
                     int requestedIndex = data.readInt();
                     String result = openDirectCamera(
                             requestedSurface, requestedTag, requestedIndex);
+                    reply.writeNoException();
+                    reply.writeString(result);
+                    return true;
+                }
+                if (code == TX_OPEN_REVERSE_PREVIEW) {
+                    Surface[] requestedSurfaces = readReverseSurfaces(data);
+                    String result = openReversePreview(requestedSurfaces);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -245,7 +261,7 @@ final class CameraHelperMain {
             if (callback != disconnected) return;
             callback = null;
             try {
-                closeCamera("callback_died");
+                closeCameraForOwner(CAMERA_OWNER_ACTIVITY, "callback_died");
             } catch (Throwable error) {
                 emit("camera_error", "stage", "callback_died_close",
                         "error", summary(error));
@@ -274,6 +290,14 @@ final class CameraHelperMain {
             if (!requestedSurface.isValid()) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Surface is invalid");
+            }
+            if (closeExisting && !canReplaceCamera(requestedCameraOwner)) {
+                requestedSurface.release();
+                emit("camera_open_rejected", "reason", "reverse_owner_active",
+                        "requested_owner", requestedCameraOwner,
+                        "active_owner", activeCameraOwner);
+                return result("camera_busy", "reverse camera owns AVM",
+                        requestedCameraId, requestedCameraTag);
             }
             if (closeExisting) closeCamera("replace_preview");
             if (requestedCameraId < 0) {
@@ -354,6 +378,119 @@ final class CameraHelperMain {
                     requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_OVERLAY);
         }
 
+        String openReverseCamera(Surface[] requestedSurfaces) {
+            return openReverseCamera(requestedSurfaces, CAMERA_OWNER_REVERSE);
+        }
+
+        private String openReversePreview(Surface[] requestedSurfaces) {
+            return openReverseCamera(requestedSurfaces, CAMERA_OWNER_ACTIVITY);
+        }
+
+        private synchronized String openReverseCamera(
+                Surface[] requestedSurfaces, String requestedOwner) {
+            final int[] indexes = {1, 2, 3};
+            if (requestedSurfaces == null || requestedSurfaces.length != indexes.length) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("reverse camera requires three Surfaces");
+            }
+            for (Surface requestedSurface : requestedSurfaces) {
+                if (requestedSurface == null || !requestedSurface.isValid()) {
+                    releaseSurfaces(requestedSurfaces);
+                    throw new IllegalArgumentException("reverse camera Surface is invalid");
+                }
+            }
+            if (!canReplaceCamera(requestedOwner)) {
+                releaseSurfaces(requestedSurfaces);
+                emit("camera_open_rejected", "reason", "reverse_owner_active",
+                        "requested_owner", requestedOwner,
+                        "active_owner", activeCameraOwner);
+                return result("camera_busy", "reverse camera owns AVM", -1, "pano_h");
+            }
+            closeCamera("replace_with_reverse_multi");
+
+            int requestedCameraId;
+            try {
+                Class<?> info = Class.forName("android.hardware.BmmCameraInfo");
+                requestedCameraId = (Integer) info.getMethod("getCameraId", String.class)
+                        .invoke(null, "pano_h");
+            } catch (Throwable error) {
+                releaseSurfaces(requestedSurfaces);
+                String message = summary(error);
+                emit("camera_error", "stage", "reverse_direct_discovery",
+                        "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "error", message);
+                return result("camera_error", message, -1, "pano_h");
+            }
+            if (requestedCameraId < 0) {
+                releaseSurfaces(requestedSurfaces);
+                String message = "Camera tag is unavailable: pano_h";
+                emit("camera_error", "stage", "reverse_direct_discovery",
+                        "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "error", message);
+                return result("camera_error", message, requestedCameraId, "pano_h");
+            }
+
+            Object opened = null;
+            boolean[] attached = new boolean[indexes.length];
+            try {
+                Class<?> avm = Class.forName("android.hardware.AVMCamera");
+                opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
+                if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
+                if (opened == null) throw new IllegalStateException("AVMCamera.open returned null");
+
+                Class<?> callbackType = Class.forName("android.hardware.AVMCamera$IEventCallback");
+                Object callbackProxy = Proxy.newProxyInstance(
+                        callbackType.getClassLoader(), new Class<?>[]{callbackType}, eventHandler());
+                avm.getMethod("setEventCallback", callbackType).invoke(opened, callbackProxy);
+
+                for (int i = 0; i < indexes.length; i++) {
+                    attached[i] = invokeBoolean(avm, opened, "addPreviewSurface",
+                            new Class<?>[]{Surface.class, int.class},
+                            requestedSurfaces[i], indexes[i]);
+                    if (!attached[i]) {
+                        throw new IllegalStateException(
+                                "addPreviewSurface returned false for index " + indexes[i]);
+                    }
+                }
+                boolean started = invokeBoolean(avm, opened,
+                        "startPreview", new Class<?>[0]);
+                if (!started) throw new IllegalStateException("startPreview returned false");
+
+                camera = opened;
+                eventCallback = callbackProxy;
+                multiSurfaces = requestedSurfaces;
+                multiPreviewIndexes = indexes.clone();
+                activeCameraId = requestedCameraId;
+                activeCameraTag = "pano_h";
+                activeCameraOwner = requestedOwner;
+                viewName = CAMERA_OWNER_REVERSE.equals(requestedOwner)
+                        ? "reverse_overlay" : "reverse_preview";
+                emit("camera_opened", "camera_id", requestedCameraId,
+                        "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "view", viewName,
+                        "preview_indexes", Arrays.toString(indexes),
+                        "start_preview", true);
+                return result("camera_opened", null, requestedCameraId, "pano_h");
+            } catch (Throwable error) {
+                if (opened != null) {
+                    try {
+                        tryClose(opened, requestedSurfaces, indexes, attached);
+                    } catch (Throwable closeError) {
+                        Log.e(TAG, "Reverse cleanup after failed open also failed",
+                                root(closeError));
+                    }
+                }
+                releaseSurfaces(requestedSurfaces);
+                String message = summary(error);
+                emit("camera_error", "stage", "reverse_open",
+                        "camera_id", requestedCameraId, "camera_tag", "pano_h",
+                        "camera_owner", requestedOwner,
+                        "preview_indexes", Arrays.toString(indexes),
+                        "error", message);
+                return result("camera_error", message, requestedCameraId, "pano_h");
+            }
+        }
+
         void prepareOverlayWindow(
                 CameraShellProtocol.OverlaySpec spec,
                 Consumer<TurnSignalController.OverlaySurface> surfaceSink,
@@ -370,6 +507,13 @@ final class CameraHelperMain {
             turnController.setCameraOverlayVisible(requestId, surfaceGeneration, visible);
         }
 
+        void setOverlayWindowVisible(
+                int requestId, int surfaceGeneration, boolean visible,
+                Runnable completion) {
+            turnController.setCameraOverlayVisible(
+                    requestId, surfaceGeneration, visible, completion);
+        }
+
         void setOverlayWindowWarning(
                 int requestId, int surfaceGeneration, int edge, int mode) {
             turnController.setCameraOverlayWarning(
@@ -378,6 +522,28 @@ final class CameraHelperMain {
 
         void closeOverlayWindow(String reason) {
             turnController.closeCameraOverlay(reason);
+        }
+
+        void prepareReverseOverlayWindow(
+                CameraShellProtocol.ReverseOverlaySpec spec,
+                Consumer<TurnSignalController.ReverseSurfaces> surfaceSink,
+                Runnable preparedSink) {
+            turnController.prepareReverseOverlay(spec, surfaceSink, preparedSink);
+        }
+
+        void armReverseOverlayFrames(int requestId, int[] generations) {
+            turnController.armReverseOverlayFrames(requestId, generations);
+        }
+
+        void setReverseOverlayVisible(
+                int requestId, int[] generations, boolean visible,
+                Consumer<Boolean> completion) {
+            turnController.setReverseOverlayVisible(
+                    requestId, generations, visible, completion);
+        }
+
+        void closeReverseOverlayWindow(String reason, Consumer<Boolean> completion) {
+            turnController.closeReverseOverlay(reason, completion);
         }
 
         private String openDirectCamera(
@@ -432,6 +598,11 @@ final class CameraHelperMain {
                 throw new IllegalArgumentException("Surface is invalid");
             }
             if (camera != null && !stockCameraRequested) {
+                if (!canReplaceCamera(CAMERA_OWNER_ACTIVITY)) {
+                    requestedSurface.release();
+                    return result("camera_busy", "reverse camera owns AVM",
+                            activeCameraId, activeCameraTag);
+                }
                 closeCamera("replace_with_stock_avm");
             }
             String requestedView = StockAvmPreview.viewName(viewpoint);
@@ -470,6 +641,8 @@ final class CameraHelperMain {
             Object activeCamera = camera;
             Surface activeSurface = surface;
             int activeIndex = previewIndex;
+            Surface[] activeMultiSurfaces = multiSurfaces;
+            int[] activeMultiIndexes = multiPreviewIndexes;
             int closedCameraId = activeCameraId;
             String closedCameraTag = activeCameraTag;
             String closedCameraOwner = activeCameraOwner;
@@ -477,6 +650,8 @@ final class CameraHelperMain {
             eventCallback = null;
             surface = null;
             previewIndex = 0;
+            multiSurfaces = new Surface[0];
+            multiPreviewIndexes = new int[0];
             viewName = null;
             activeCameraId = -1;
             activeCameraTag = "none";
@@ -484,14 +659,21 @@ final class CameraHelperMain {
             String error = null;
             if (activeCamera != null) {
                 try {
-                    tryClose(activeCamera, activeSurface, activeIndex);
+                    if (activeMultiSurfaces.length > 0) {
+                        tryClose(activeCamera, activeMultiSurfaces,
+                                activeMultiIndexes, null);
+                    } else {
+                        tryClose(activeCamera, activeSurface, activeIndex);
+                    }
                 } catch (Throwable failure) {
                     error = summary(failure);
                 } finally {
                     if (activeSurface != null) activeSurface.release();
+                    releaseSurfaces(activeMultiSurfaces);
                 }
                 emit("camera_closed", "reason", reason == null ? "unknown" : reason,
                         "view", activeView, "preview_index", activeIndex,
+                        "preview_indexes", Arrays.toString(activeMultiIndexes),
                         "camera_id", closedCameraId, "camera_tag", closedCameraTag,
                         "camera_owner", closedCameraOwner,
                         "error", error == null ? "" : error);
@@ -504,6 +686,29 @@ final class CameraHelperMain {
             }
             if (activeCamera == null) return result("already_closed", null);
             return result("camera_closed", error, closedCameraId, closedCameraTag);
+        }
+
+        synchronized String closeCameraForOwner(String expectedOwner, String reason) {
+            if (camera == null && !stockCameraRequested) {
+                return result("already_closed", null);
+            }
+            String owner = stockCameraRequested && camera == null
+                    ? CAMERA_OWNER_ACTIVITY : activeCameraOwner;
+            if (!expectedOwner.equals(owner)) {
+                emit("camera_close_ignored", "reason", "owner_mismatch",
+                        "expected_owner", expectedOwner, "active_owner", owner,
+                        "request_reason", reason == null ? "unknown" : reason);
+                return result("camera_close_ignored", null, activeCameraId, activeCameraTag);
+            }
+            return closeCamera(reason);
+        }
+
+        String closeOverlayCamera(String reason) {
+            return closeCameraForOwner(CAMERA_OWNER_OVERLAY, reason);
+        }
+
+        String closeReverseCamera(String reason) {
+            return closeCameraForOwner(CAMERA_OWNER_REVERSE, reason);
         }
 
         private void tryClose(Object activeCamera, Surface activeSurface, int activeIndex)
@@ -529,6 +734,67 @@ final class CameraHelperMain {
                 if (first == null) first = root(error);
             }
             if (first != null) throw new Exception(first);
+        }
+
+        private void tryClose(
+                Object activeCamera, Surface[] activeSurfaces, int[] activeIndexes,
+                boolean[] attached) throws Exception {
+            Class<?> avm = activeCamera.getClass();
+            Throwable first = null;
+            for (int i = 0; i < activeSurfaces.length; i++) {
+                if (activeSurfaces[i] == null
+                        || attached != null && (i >= attached.length || !attached[i])) {
+                    continue;
+                }
+                try {
+                    avm.getMethod("rmPreviewSurface", Surface.class, int.class)
+                            .invoke(activeCamera, activeSurfaces[i], activeIndexes[i]);
+                } catch (Throwable error) {
+                    if (first == null) first = root(error);
+                }
+            }
+            try {
+                avm.getMethod("stopPreview").invoke(activeCamera);
+            } catch (Throwable error) {
+                if (first == null) first = root(error);
+            }
+            try {
+                avm.getMethod("close").invoke(activeCamera);
+            } catch (Throwable error) {
+                if (first == null) first = root(error);
+            }
+            if (first != null) throw new Exception(first);
+        }
+
+        private boolean canReplaceCamera(String requestedOwner) {
+            return canReplaceCamera(camera != null, activeCameraOwner, requestedOwner);
+        }
+
+        static boolean canReplaceCamera(
+                boolean cameraOpen, String activeOwner, String requestedOwner) {
+            return !cameraOpen
+                    || !CAMERA_OWNER_REVERSE.equals(activeOwner)
+                    || CAMERA_OWNER_REVERSE.equals(requestedOwner);
+        }
+
+        private static Surface[] readReverseSurfaces(Parcel data) {
+            Surface[] values = new Surface[3];
+            try {
+                for (int i = 0; i < values.length; i++) {
+                    values[i] = Surface.CREATOR.createFromParcel(data);
+                }
+                return values;
+            } catch (Throwable error) {
+                releaseSurfaces(values);
+                throw error;
+            }
+        }
+
+        private static void releaseSurfaces(Surface[] values) {
+            if (values == null) return;
+            for (Surface value : values) {
+                if (value != null) value.release();
+            }
         }
 
         private InvocationHandler eventHandler() {

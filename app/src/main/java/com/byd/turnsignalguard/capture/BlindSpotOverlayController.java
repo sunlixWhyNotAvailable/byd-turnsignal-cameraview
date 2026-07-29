@@ -3,7 +3,6 @@ package com.byd.turnsignalguard.capture;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
-import android.util.DisplayMetrics;
 import android.view.WindowManager;
 
 import org.json.JSONObject;
@@ -14,6 +13,10 @@ final class BlindSpotOverlayController {
     static final String PREF_ENABLED = "camera_enabled";
     static final String PREF_MIN_SPEED = "camera_min_speed_kph";
     static final String PREF_SCALE = "camera_overlay_scale_percent";
+    static final String PREF_LEFT_SCALE = "camera_left_scale_percent";
+    static final String PREF_RIGHT_SCALE = "camera_right_scale_percent";
+    static final String PREF_LEFT_TARGET = "camera_left_display_target";
+    static final String PREF_RIGHT_TARGET = "camera_right_display_target";
     static final String PREF_LEFT_POSITION = "camera_left_position";
     static final String PREF_RIGHT_POSITION = "camera_right_position";
     static final String PREF_LEFT_X = "camera_left_x";
@@ -54,6 +57,7 @@ final class BlindSpotOverlayController {
 
     private CameraHelperMain.HelperBinder helper;
     private boolean suspended;
+    private boolean reversePriority;
     private boolean uiHidden;
     private boolean cameraReady;
     private boolean stateValid;
@@ -69,6 +73,8 @@ final class BlindSpotOverlayController {
     private int requestedPreviewIndex = -1;
     private int displayedPreviewIndex = -1;
     private int preparedDirection = -1;
+    private int preparedTarget = -1;
+    private boolean displaySwitchPending;
     private boolean leftBsdValid;
     private boolean rightBsdValid;
     private int leftBsdRaw = -1;
@@ -92,6 +98,7 @@ final class BlindSpotOverlayController {
         this.handler = handler;
         this.eventSink = eventSink;
         settings = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        migrateOverlayPreferences(settings);
         windows = (WindowManager) this.context.getSystemService(Context.WINDOW_SERVICE);
     }
 
@@ -117,6 +124,45 @@ final class BlindSpotOverlayController {
     static float legacyPosition(int position, boolean vertical) {
         int safe = clamp(position, 0, 8);
         return (vertical ? safe / 3 : safe % 3) / 2.0f;
+    }
+
+    static void migrateOverlayPreferences(SharedPreferences settings) {
+        int sharedScale = migratedScale(false, 0,
+                settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT));
+        SharedPreferences.Editor editor = null;
+        if (!settings.contains(PREF_LEFT_SCALE)) {
+            editor = settings.edit().putInt(PREF_LEFT_SCALE, sharedScale);
+        }
+        if (!settings.contains(PREF_RIGHT_SCALE)) {
+            if (editor == null) editor = settings.edit();
+            editor.putInt(PREF_RIGHT_SCALE, sharedScale);
+        }
+        if (!settings.contains(PREF_LEFT_TARGET)) {
+            if (editor == null) editor = settings.edit();
+            editor.putInt(PREF_LEFT_TARGET, CameraDisplayTarget.TABLET);
+        }
+        if (!settings.contains(PREF_RIGHT_TARGET)) {
+            if (editor == null) editor = settings.edit();
+            editor.putInt(PREF_RIGHT_TARGET, CameraDisplayTarget.TABLET);
+        }
+        if (editor != null) editor.apply();
+    }
+
+    static int migratedScale(boolean sidePresent, int sideScale, int sharedScale) {
+        return clamp(sidePresent ? sideScale : sharedScale,
+                MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    }
+
+    static int readScale(SharedPreferences settings, boolean right) {
+        return clamp(settings.getInt(right ? PREF_RIGHT_SCALE : PREF_LEFT_SCALE,
+                settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT)),
+                MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    }
+
+    static int readTarget(SharedPreferences settings, boolean right) {
+        int target = settings.getInt(right ? PREF_RIGHT_TARGET : PREF_LEFT_TARGET,
+                CameraDisplayTarget.TABLET);
+        return CameraDisplayTarget.isValid(target) ? target : CameraDisplayTarget.TABLET;
     }
 
     static int previewIndexForDirection(int direction) {
@@ -161,6 +207,15 @@ final class BlindSpotOverlayController {
             if (suspended == value) return;
             suspended = value;
             if (value) destroyWindow("preview_handoff");
+            else applySettingsOnMain();
+        });
+    }
+
+    void setReversePriority(boolean value) {
+        handler.post(() -> {
+            if (reversePriority == value) return;
+            reversePriority = value;
+            if (value) destroyWindow("reverse_priority");
             else applySettingsOnMain();
         });
     }
@@ -254,10 +309,12 @@ final class BlindSpotOverlayController {
 
     private void applySettingsOnMain() {
         boolean enabled = settings.getBoolean(PREF_ENABLED, false);
-        if (shutdown || !enabled || suspended || helper == null || windows == null) {
+        if (shutdown || !enabled || suspended || reversePriority
+                || helper == null || windows == null) {
             destroyWindow(!enabled ? "overlay_disabled"
                     : shutdown ? "overlay_shutdown"
                     : suspended ? "overlay_suspended"
+                    : reversePriority ? "reverse_priority"
                     : helper == null ? "helper_unavailable" : "window_manager_unavailable");
             return;
         }
@@ -274,7 +331,7 @@ final class BlindSpotOverlayController {
         hide(reason);
         if (helper != null) {
             if (cameraReady || requestedPreviewIndex != -1 || displayedPreviewIndex != -1) {
-                helper.closeCamera(reason);
+                helper.closeOverlayCamera(reason);
             }
             if (overlayPrepared || activeRequestId != 0) helper.closeOverlayWindow(reason);
         }
@@ -286,6 +343,8 @@ final class BlindSpotOverlayController {
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
         preparedDirection = -1;
+        preparedTarget = -1;
+        displaySwitchPending = false;
         resetAppliedWarning();
         emit("overlay_window", "state", "remove_requested", "reason", reason);
     }
@@ -317,7 +376,7 @@ final class BlindSpotOverlayController {
     }
 
     private void evaluate() {
-        if (!overlayPrepared || suspended) {
+        if (!overlayPrepared || suspended || reversePriority) {
             hide("overlay_unavailable");
             return;
         }
@@ -344,15 +403,41 @@ final class BlindSpotOverlayController {
 
     private void requestDirection(int direction) {
         int previewIndex = previewIndexForDirection(direction);
-        if (cameraRetry.active() || helper == null || windows == null || previewIndex < 0) return;
+        if (cameraRetry.active()) {
+            if (shouldOverrideCameraRetry(true, blink, direction)) {
+                cancelCameraRetry("active_turn_override");
+            }
+            else return;
+        }
+        if (helper == null || windows == null || previewIndex < 0) return;
+        int target = readTarget(settings, direction == BLINK_RIGHT);
         if (preparedDirection == direction && requestedPreviewIndex == previewIndex
-                && activeRequestId != 0) {
+                && preparedTarget == target && activeRequestId != 0) {
             return;
+        }
+        if (activeRequestId != 0 && preparedTarget != -1 && preparedTarget != target) {
+            if (displaySwitchPending) return;
+            if (visible && surfaceGeneration > 0) {
+                displaySwitchPending = true;
+                int hidingRequestId = activeRequestId;
+                int hidingGeneration = surfaceGeneration;
+                visible = false;
+                resetAppliedWarning();
+                helper.setOverlayWindowVisible(
+                        hidingRequestId, hidingGeneration, false,
+                        this::completeDisplaySwitch);
+                emit("overlay_visibility", "visible", false,
+                        "reason", "overlay_display_changed",
+                        "request_id", hidingRequestId);
+                return;
+            }
+            resetForDisplaySwitch();
         }
         if (visible) hide("overlay_geometry_changed");
         int requestId = nextRequestId();
         CameraShellProtocol.OverlaySpec spec = buildOverlaySpec(direction, requestId);
         preparedDirection = direction;
+        preparedTarget = spec.target;
         requestedPreviewIndex = previewIndex;
         displayedPreviewIndex = -1;
         activeRequestId = requestId;
@@ -366,6 +451,7 @@ final class BlindSpotOverlayController {
                 spec, this::overlaySurfaceAvailable, () -> overlayPrepared(requestId));
         emit("overlay_geometry", "request_id", requestId,
                 "direction", direction == BLINK_RIGHT ? "right" : "left",
+                "target", CameraDisplayTarget.name(spec.target),
                 "width", spec.width, "height", spec.height,
                 "x", spec.x, "y", spec.y);
     }
@@ -374,6 +460,32 @@ final class BlindSpotOverlayController {
         if (requestId != activeRequestId || surfaceGeneration > 0) return;
         handler.removeCallbacks(surfaceTimeout);
         handler.postDelayed(surfaceTimeout, SURFACE_TIMEOUT_MS);
+    }
+
+    private void completeDisplaySwitch() {
+        displaySwitchPending = false;
+        if (shutdown || suspended || helper == null
+                || !settings.getBoolean(PREF_ENABLED, false)) {
+            return;
+        }
+        resetForDisplaySwitch();
+        requestDirection(desiredDirection());
+        evaluate();
+    }
+
+    private void resetForDisplaySwitch() {
+        if (helper != null && (cameraReady
+                || requestedPreviewIndex != -1 || displayedPreviewIndex != -1)) {
+            helper.closeOverlayCamera("overlay_display_changed");
+        }
+        cameraReady = false;
+        overlayPrepared = false;
+        activeRequestId = 0;
+        surfaceGeneration = 0;
+        requestedPreviewIndex = -1;
+        displayedPreviewIndex = -1;
+        preparedDirection = -1;
+        resetAppliedWarning();
     }
 
     private void overlaySurfaceAvailable(TurnSignalController.OverlaySurface value) {
@@ -453,7 +565,7 @@ final class BlindSpotOverlayController {
         handler.removeCallbacks(firstFrameTimeout);
         hide(reason);
         if (helper != null && (requestedPreviewIndex != -1 || displayedPreviewIndex != -1)) {
-            helper.closeCamera(reason);
+            helper.closeOverlayCamera(reason);
         }
         cameraReady = false;
         activeRequestId = 0;
@@ -461,6 +573,8 @@ final class BlindSpotOverlayController {
         requestedPreviewIndex = -1;
         displayedPreviewIndex = -1;
         preparedDirection = -1;
+        preparedTarget = -1;
+        displaySwitchPending = false;
         scheduleCameraRetry(reason);
     }
 
@@ -508,6 +622,12 @@ final class BlindSpotOverlayController {
         return null;
     }
 
+    static boolean shouldOverrideCameraRetry(
+            boolean retryActive, int activeBlink, int requestedDirection) {
+        return retryActive && activeBlink == requestedDirection
+                && previewIndexForDirection(requestedDirection) >= 0;
+    }
+
     private void cancelCameraRetry(String reason) {
         String trigger = cameraRetry.cancel();
         if (trigger == null) return;
@@ -545,7 +665,7 @@ final class BlindSpotOverlayController {
     }
 
     private void show(int direction) {
-        if (helper == null || !overlayPrepared || !cameraReady
+        if (displaySwitchPending || helper == null || !overlayPrepared || !cameraReady
                 || activeRequestId == 0 || surfaceGeneration <= 0) {
             return;
         }
@@ -658,33 +778,43 @@ final class BlindSpotOverlayController {
     }
 
     private CameraShellProtocol.OverlaySpec buildOverlaySpec(int direction, int requestId) {
-        DisplayMetrics metrics = new DisplayMetrics();
-        windows.getDefaultDisplay().getRealMetrics(metrics);
         boolean right = direction == BLINK_RIGHT;
+        int target = readTarget(settings, right);
+        int[] displaySize = CameraDisplayTarget.displaySize(context, target);
         DirectCameraCrop crop = loadDirectCrop(right);
-        int[] size = overlaySize(metrics, crop.outputAspect());
-        int width = size[0];
-        int height = size[1];
         float x = readPosition(settings, right, false);
         float y = readPosition(settings, right, true);
-        int marginX = dp(16);
-        int topMargin = dp(36);
-        int bottomMargin = dp(88);
-        int availableX = Math.max(0, metrics.widthPixels - width - marginX * 2);
-        int availableY = Math.max(0, metrics.heightPixels - height - topMargin - bottomMargin);
+        int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
+        int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
+        int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
+        int[] geometry = overlayGeometry(
+                displaySize[0], displaySize[1], readScale(settings, right),
+                crop.outputAspect(), x, y, marginX, topMargin, bottomMargin);
         return new CameraShellProtocol.OverlaySpec(
-                requestId, width, height,
-                marginX + Math.round(availableX * x),
-                topMargin + Math.round(availableY * y),
+                requestId, target, geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode);
     }
 
-    private int[] overlaySize(DisplayMetrics metrics, float aspect) {
-        int scale = clamp(settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT),
-                MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
-        int requestedWidth = metrics.widthPixels * scale / 100;
-        int availableHeight = Math.max(1, metrics.heightPixels - dp(36) - dp(88));
-        return fitAspect(requestedWidth, metrics.widthPixels, availableHeight, aspect);
+    static int[] overlayGeometry(
+            int displayWidth, int displayHeight, int scalePercent, float aspect,
+            float normalizedX, float normalizedY,
+            int marginX, int topMargin, int bottomMargin) {
+        int safeWidth = Math.max(1, displayWidth);
+        int safeHeight = Math.max(1, displayHeight);
+        int scale = clamp(scalePercent, MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+        int maxWidth = Math.max(1, safeWidth - Math.max(0, marginX) * 2);
+        int maxHeight = Math.max(1, safeHeight - Math.max(0, topMargin)
+                - Math.max(0, bottomMargin));
+        int[] size = fitAspect(safeWidth * scale / 100, maxWidth, maxHeight, aspect);
+        int availableX = Math.max(0, maxWidth - size[0]);
+        int availableY = Math.max(0, maxHeight - size[1]);
+        return new int[]{
+                Math.max(0, marginX) + Math.round(availableX
+                        * clamp(normalizedX, 0.0f, 1.0f)),
+                Math.max(0, topMargin) + Math.round(availableY
+                        * clamp(normalizedY, 0.0f, 1.0f)),
+                size[0], size[1]
+        };
     }
 
     private DirectCameraCrop loadDirectCrop(boolean right) {

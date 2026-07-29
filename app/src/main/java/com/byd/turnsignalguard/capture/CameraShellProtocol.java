@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 7;
+    static final int VERSION = 9;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -27,6 +27,11 @@ final class CameraShellProtocol {
     static final int TX_OVERLAY_SET_VISIBLE = IBinder.FIRST_CALL_TRANSACTION + 8;
     static final int TX_OVERLAY_CLOSE = IBinder.FIRST_CALL_TRANSACTION + 9;
     static final int TX_OVERLAY_SET_WARNING = IBinder.FIRST_CALL_TRANSACTION + 10;
+    static final int TX_REVERSE_PREPARE = IBinder.FIRST_CALL_TRANSACTION + 11;
+    static final int TX_REVERSE_ACQUIRE_SURFACES = IBinder.FIRST_CALL_TRANSACTION + 12;
+    static final int TX_REVERSE_ARM_FRAMES = IBinder.FIRST_CALL_TRANSACTION + 13;
+    static final int TX_REVERSE_SET_VISIBLE = IBinder.FIRST_CALL_TRANSACTION + 14;
+    static final int TX_REVERSE_CLOSE = IBinder.FIRST_CALL_TRANSACTION + 15;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
     static final int WARNING_MODE_OFF = 0;
@@ -55,6 +60,7 @@ final class CameraShellProtocol {
 
     static final class OverlaySpec {
         final int requestId;
+        final int target;
         final int width;
         final int height;
         final int x;
@@ -66,10 +72,11 @@ final class CameraShellProtocol {
         final int cropAspectMode;
 
         OverlaySpec(
-                int requestId, int width, int height, int x, int y,
+                int requestId, int target, int width, int height, int x, int y,
                 float cropLeft, float cropTop, float cropWidth, float cropHeight,
                 int cropAspectMode) {
             this.requestId = requestId;
+            this.target = target;
             this.width = width;
             this.height = height;
             this.x = x;
@@ -83,6 +90,7 @@ final class CameraShellProtocol {
 
         void writeToParcel(Parcel parcel) {
             parcel.writeInt(requestId);
+            parcel.writeInt(target);
             parcel.writeInt(width);
             parcel.writeInt(height);
             parcel.writeInt(x);
@@ -96,7 +104,7 @@ final class CameraShellProtocol {
 
         static OverlaySpec readFromParcel(Parcel parcel) {
             return new OverlaySpec(
-                    parcel.readInt(), parcel.readInt(), parcel.readInt(),
+                    parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readInt(), parcel.readInt(), parcel.readFloat(),
                     parcel.readFloat(), parcel.readFloat(), parcel.readFloat(),
                     parcel.readInt());
@@ -104,6 +112,9 @@ final class CameraShellProtocol {
 
         void validate(int displayWidth, int displayHeight) {
             if (requestId <= 0) throw new IllegalArgumentException("invalid request id");
+            if (!CameraDisplayTarget.isValid(target)) {
+                throw new IllegalArgumentException("invalid display target");
+            }
             if (width <= 0 || height <= 0 || x < 0 || y < 0
                     || width > displayWidth || height > displayHeight
                     || x > displayWidth - width || y > displayHeight - height) {
@@ -130,6 +141,121 @@ final class CameraShellProtocol {
 
         private static boolean finite(float value) {
             return !Float.isNaN(value) && !Float.isInfinite(value);
+        }
+    }
+
+    static final class ReverseOverlaySpec {
+        final int requestId;
+        final ReverseCameraLayout layout;
+
+        ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
+            if (layout == null) throw new IllegalArgumentException("reverse layout required");
+            this.requestId = requestId;
+            this.layout = layout;
+        }
+
+        void writeToParcel(Parcel parcel) {
+            parcel.writeInt(requestId);
+            for (ReverseCameraLayout.Pane pane : layout.panes()) {
+                parcel.writeInt(pane.cameraIndex);
+                writeRect(parcel, pane.destination);
+                writeRect(parcel, pane.sourceCrop);
+                parcel.writeInt(pane.zOrder);
+            }
+        }
+
+        static ReverseOverlaySpec readFromParcel(Parcel parcel) {
+            int requestId = parcel.readInt();
+            ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+            int[] indexes = new int[3];
+            int[] zOrders = new int[3];
+            for (int i = 0; i < indexes.length; i++) {
+                int cameraIndex = parcel.readInt();
+                int expectedIndex = i + 1;
+                if (cameraIndex != expectedIndex) {
+                    throw new IllegalArgumentException("invalid reverse camera mapping");
+                }
+                float[] destination = readRect(parcel);
+                float[] crop = readRect(parcel);
+                int zOrder = parcel.readInt();
+                validateRect(destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+                validateRect(crop, 0.0f);
+                if (zOrder < 0 || zOrder > 2) {
+                    throw new IllegalArgumentException("invalid reverse z-order");
+                }
+                layout = ReverseCameraLayout.withPane(layout, cameraIndex,
+                        ReverseCameraLayout.destination(destination[0], destination[1],
+                                destination[2], destination[3]),
+                        ReverseCameraLayout.sourceCrop(crop[0], crop[1],
+                                crop[2], crop[3]));
+                indexes[i] = cameraIndex;
+                zOrders[i] = zOrder;
+            }
+            if (zOrders[0] == zOrders[1] || zOrders[0] == zOrders[2]
+                    || zOrders[1] == zOrders[2]) {
+                throw new IllegalArgumentException("duplicate reverse z-order");
+            }
+            for (int z = 0; z < 3; z++) {
+                for (int i = 0; i < indexes.length; i++) {
+                    if (zOrders[i] == z) {
+                        layout = ReverseCameraLayout.bringToFront(layout, indexes[i]);
+                        break;
+                    }
+                }
+            }
+            return new ReverseOverlaySpec(requestId, layout);
+        }
+
+        void validate(int displayWidth, int displayHeight) {
+            if (requestId <= 0) throw new IllegalArgumentException("invalid reverse request id");
+            if (displayWidth <= 0 || displayHeight <= 0) {
+                throw new IllegalArgumentException("invalid reverse display bounds");
+            }
+            boolean[] zSeen = new boolean[3];
+            int expectedIndex = 1;
+            for (ReverseCameraLayout.Pane pane : layout.panes()) {
+                if (pane.cameraIndex != expectedIndex++) {
+                    throw new IllegalArgumentException("invalid reverse camera mapping");
+                }
+                validateModelRect(pane.destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+                validateModelRect(pane.sourceCrop, 0.0f);
+                if (pane.zOrder < 0 || pane.zOrder >= zSeen.length || zSeen[pane.zOrder]) {
+                    throw new IllegalArgumentException("invalid reverse z-order");
+                }
+                zSeen[pane.zOrder] = true;
+            }
+        }
+
+        private static void writeRect(Parcel parcel, ReverseCameraLayout.Rect rect) {
+            parcel.writeFloat(rect.left);
+            parcel.writeFloat(rect.top);
+            parcel.writeFloat(rect.width);
+            parcel.writeFloat(rect.height);
+        }
+
+        private static float[] readRect(Parcel parcel) {
+            return new float[]{parcel.readFloat(), parcel.readFloat(),
+                    parcel.readFloat(), parcel.readFloat()};
+        }
+
+        private static void validateModelRect(
+                ReverseCameraLayout.Rect rect, float minimumSize) {
+            validateRect(new float[]{rect.left, rect.top, rect.width, rect.height}, minimumSize);
+        }
+
+        private static void validateRect(float[] rect, float minimumSize) {
+            for (float value : rect) {
+                if (Float.isNaN(value) || Float.isInfinite(value)) {
+                    throw new IllegalArgumentException("reverse geometry must be finite");
+                }
+            }
+            if (rect[0] < 0 || rect[1] < 0
+                    || rect[2] <= minimumSize - 0.0001f
+                    || rect[3] <= minimumSize - 0.0001f
+                    || rect[0] + rect[2] > 1.0001f
+                    || rect[1] + rect[3] > 1.0001f) {
+                throw new IllegalArgumentException("reverse geometry outside canvas");
+            }
         }
     }
 }

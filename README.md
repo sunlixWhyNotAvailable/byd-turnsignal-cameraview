@@ -11,7 +11,10 @@
 - configurable long-turn guard using raw stalk, blink, steering-angle, and speed telemetry
 - configurable steering thresholds, correction delay, and maximum guard speed
 - left/right rear side-camera overlays triggered by the corresponding turn signal and speed condition
-- per-side crop calibration, aspect-ratio presets, free crop, scale, and screen placement
+- optional enhanced reverse view combining rear, rear-left, and rear-right cameras over the stock reverse screen
+- touch-based reverse-layout editor with independent pane position, size, crop, and layer order
+- per-side crop calibration, aspect-ratio presets, free crop, scale, and placement
+- independent tablet or instrument-cluster destination for each side camera
 - AVM layout and direct-camera diagnostic tabs
 - persistent settings and lifetime turn/correction counters
 
@@ -33,14 +36,17 @@ After first launch:
 4. Enable `Авто-запуск` if the service should recover after vehicle boot and application updates.
 5. Configure the turn guard and camera speed limits.
 6. Open `Калібрування камер` to select the visible crop for each side.
-7. Use the placement editor to set the overlay size and independent left/right screen positions.
+7. For each side, choose the tablet or instrument cluster, then set its size and position.
+8. Open `Камери заднього ходу` to configure the three-pane reverse layout. `Покращений задній вид` is off by default.
 
 ## Known Limitations
 
 - The application targets undocumented BYD/DiLink framework APIs and has only been validated on the tested vehicle/software combination.
 - Direct-camera startup can take several seconds from a cold provider state.
 - Local ADB must be enabled on the tablet.
+- Instrument-cluster output depends on the tested BYD projection display and dashboard-layout service.
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
+- The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
 
 ## Tested
 

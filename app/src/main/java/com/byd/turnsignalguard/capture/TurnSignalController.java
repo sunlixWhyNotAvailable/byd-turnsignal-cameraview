@@ -67,6 +67,8 @@ final class TurnSignalController {
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private volatile int pendingOverlayRequestId;
     private volatile Consumer<OverlaySurface> pendingOverlaySurfaceSink;
+    private volatile int pendingReverseRequestId;
+    private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
     private long lastLaunchFailureAt;
     private volatile String automaticAuthorizationBlockedFor = "";
@@ -102,6 +104,9 @@ final class TurnSignalController {
         } else {
             closeStockAvmNow("controller_shutdown");
             closeCameraOverlayNow("controller_shutdown");
+            if (!closeReverseOverlayNow("controller_shutdown")) {
+                shutdownCameraHelper();
+            }
         }
         clearHelper(null);
         clearCameraHelper(null);
@@ -234,6 +239,7 @@ final class TurnSignalController {
                 IBinder value = ensureCameraHelper();
                 transactOverlayPrepare(value, spec);
                 emit("camera_overlay_prepare", "request_id", spec.requestId,
+                        "target", CameraDisplayTarget.name(spec.target),
                         "width", spec.width, "height", spec.height,
                         "x", spec.x, "y", spec.y);
                 if (!handler.post(preparedSink)) {
@@ -264,6 +270,11 @@ final class TurnSignalController {
 
     void setCameraOverlayVisible(
             int requestId, int surfaceGeneration, boolean visible) {
+        setCameraOverlayVisible(requestId, surfaceGeneration, visible, null);
+    }
+
+    void setCameraOverlayVisible(
+            int requestId, int surfaceGeneration, boolean visible, Runnable completion) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
@@ -273,6 +284,11 @@ final class TurnSignalController {
                         "request_id", requestId,
                         "surface_generation", surfaceGeneration,
                         "error", summary(error));
+            } finally {
+                if (completion != null && !handler.post(completion)) {
+                    emit("camera_overlay_error", "stage", "visibility_completion",
+                            "request_id", requestId);
+                }
             }
         });
     }
@@ -295,6 +311,79 @@ final class TurnSignalController {
 
     void closeCameraOverlay(String reason) {
         worker.execute(() -> closeCameraOverlayNow(reason));
+    }
+
+    void prepareReverseOverlay(
+            CameraShellProtocol.ReverseOverlaySpec spec,
+            Consumer<ReverseSurfaces> surfaceSink,
+            Runnable preparedSink) {
+        if (spec == null || surfaceSink == null || preparedSink == null) {
+            throw new IllegalArgumentException("reverse spec/sinks required");
+        }
+        worker.execute(() -> {
+            pendingOverlayRequestId = 0;
+            pendingOverlaySurfaceSink = null;
+            pendingReverseRequestId = spec.requestId;
+            pendingReverseSurfaceSink = surfaceSink;
+            try {
+                IBinder value = ensureCameraHelper();
+                transactReversePrepare(value, spec);
+                emit("reverse_overlay_prepare", "request_id", spec.requestId);
+                if (!handler.post(preparedSink)) {
+                    throw new IllegalStateException("main handler rejected reverse prepare");
+                }
+            } catch (Throwable error) {
+                clearPendingReverseSurfaces(spec.requestId);
+                clearCameraHelper(null);
+                emit("reverse_overlay_error", "stage", "prepare",
+                        "request_id", spec.requestId, "error", summary(error));
+            }
+        });
+    }
+
+    void armReverseOverlayFrames(int requestId, int[] generations) {
+        worker.execute(() -> {
+            try {
+                IBinder value = ensureCameraHelper();
+                transactReverseFrames(value, requestId, generations);
+            } catch (Throwable error) {
+                emit("reverse_overlay_error", "stage", "arm_first_frames",
+                        "request_id", requestId, "error", summary(error));
+            }
+        });
+    }
+
+    void setReverseOverlayVisible(
+            int requestId, int[] generations, boolean visible,
+            Consumer<Boolean> completion) {
+        worker.execute(() -> {
+            boolean success = false;
+            try {
+                IBinder value = ensureCameraHelper();
+                transactReverseVisibility(value, requestId, generations, visible);
+                success = true;
+            } catch (Throwable error) {
+                emit("reverse_overlay_error", "stage", visible ? "show" : "hide",
+                        "request_id", requestId, "error", summary(error));
+            } finally {
+                postCompletion(completion, success, "reverse_visibility", requestId);
+            }
+        });
+    }
+
+    void closeReverseOverlay(String reason, Consumer<Boolean> completion) {
+        worker.execute(() -> {
+            boolean success = closeReverseOverlayNow(reason);
+            postCompletion(completion, success, "reverse_close", 0);
+        });
+    }
+
+    private void postCompletion(
+            Consumer<Boolean> completion, boolean success, String stage, int requestId) {
+        if (completion != null && !handler.post(() -> completion.accept(success))) {
+            emit("reverse_overlay_error", "stage", stage + "_completion",
+                    "request_id", requestId);
+        }
     }
 
     void reportStatus() {
@@ -361,8 +450,16 @@ final class TurnSignalController {
     private void checkHealth() {
         Ping ping = ping(resolveHelper());
         if (ping.healthy() && !shouldReplaceInstalledHelper()) {
-            if (!healthy || helper != ping.binder) attach(ping);
-            return;
+            if (!healthy || helper != ping.binder) {
+                attach(ping);
+                return;
+            }
+            try {
+                transactNoArgs(ping.binder, TurnSignalShellProtocol.TX_REPORT_STATUS);
+                return;
+            } catch (Throwable error) {
+                ping = Ping.failed("status_binder_error: " + summary(error));
+            }
         }
         if (healthy) {
             healthy = false;
@@ -959,6 +1056,105 @@ final class TurnSignalController {
         }
     }
 
+    private static void transactReversePrepare(
+            IBinder value, CameraShellProtocol.ReverseOverlaySpec spec) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            spec.writeToParcel(data);
+            requireTransact(value, CameraShellProtocol.TX_REVERSE_PREPARE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static ReverseSurfaces transactReverseAcquire(
+            IBinder value, int requestId) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        Surface[] surfaces = new Surface[3];
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            requireTransact(value, CameraShellProtocol.TX_REVERSE_ACQUIRE_SURFACES, data, reply);
+            int returnedRequestId = reply.readInt();
+            int count = reply.readInt();
+            if (returnedRequestId != requestId || count != surfaces.length) {
+                throw new IllegalStateException("camera helper returned stale reverse Surfaces");
+            }
+            int[] generations = new int[count];
+            for (int i = 0; i < count; i++) {
+                generations[i] = reply.readInt();
+                if (generations[i] <= 0) {
+                    throw new IllegalStateException("invalid reverse Surface generation");
+                }
+            }
+            for (int i = 0; i < count; i++) {
+                surfaces[i] = Surface.CREATOR.createFromParcel(reply);
+                if (surfaces[i] == null || !surfaces[i].isValid()) {
+                    throw new IllegalStateException("invalid reverse Surface");
+                }
+            }
+            return new ReverseSurfaces(returnedRequestId, generations, surfaces);
+        } catch (Throwable error) {
+            releaseSurfaces(surfaces);
+            throw error;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactReverseFrames(
+            IBinder value, int requestId, int[] generations) throws Exception {
+        transactReverseIdentity(value, CameraShellProtocol.TX_REVERSE_ARM_FRAMES,
+                requestId, generations, false);
+    }
+
+    private static void transactReverseVisibility(
+            IBinder value, int requestId, int[] generations, boolean visible) throws Exception {
+        transactReverseIdentity(value, CameraShellProtocol.TX_REVERSE_SET_VISIBLE,
+                requestId, generations, visible);
+    }
+
+    private static void transactReverseIdentity(
+            IBinder value, int transaction, int requestId, int[] generations,
+            boolean visible) throws Exception {
+        if (requestId <= 0 || generations == null || generations.length != 3) {
+            throw new IllegalArgumentException("invalid reverse request identity");
+        }
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(generations.length);
+            for (int generation : generations) data.writeInt(generation);
+            if (transaction == CameraShellProtocol.TX_REVERSE_SET_VISIBLE) {
+                data.writeInt(visible ? 1 : 0);
+            }
+            requireTransact(value, transaction, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactReverseClose(IBinder value, String reason) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeString(reason == null ? "unknown" : reason);
+            requireTransact(value, CameraShellProtocol.TX_REVERSE_CLOSE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     private void acquireCameraOverlaySurface(int requestId, int reportedGeneration) {
         Consumer<OverlaySurface> sink = pendingOverlaySurfaceSink;
         if (sink == null || requestId != pendingOverlayRequestId || reportedGeneration <= 0) {
@@ -992,6 +1188,38 @@ final class TurnSignalController {
         pendingOverlaySurfaceSink = null;
     }
 
+    private void acquireReverseSurfaces(int requestId) {
+        Consumer<ReverseSurfaces> sink = pendingReverseSurfaceSink;
+        if (sink == null || requestId != pendingReverseRequestId) return;
+        try {
+            IBinder value = cameraHelper;
+            if (!cameraPing(value)) value = ensureCameraHelper();
+            ReverseSurfaces result = transactReverseAcquire(value, requestId);
+            clearPendingReverseSurfaces(requestId);
+            if (!handler.post(() -> sink.accept(result))) {
+                releaseSurfaces(result.surfaces);
+                throw new IllegalStateException("main handler rejected reverse Surfaces");
+            }
+        } catch (Throwable error) {
+            clearPendingReverseSurfaces(requestId);
+            emit("reverse_overlay_error", "stage", "acquire_surfaces",
+                    "request_id", requestId, "error", summary(error));
+        }
+    }
+
+    private void clearPendingReverseSurfaces(int requestId) {
+        if (requestId != pendingReverseRequestId) return;
+        pendingReverseRequestId = 0;
+        pendingReverseSurfaceSink = null;
+    }
+
+    private static void releaseSurfaces(Surface[] surfaces) {
+        if (surfaces == null) return;
+        for (Surface surface : surfaces) {
+            if (surface != null) surface.release();
+        }
+    }
+
     private void closeStockAvmNow(String reason) {
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
@@ -1022,6 +1250,21 @@ final class TurnSignalController {
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "close",
                     "error", summary(error));
+        }
+    }
+
+    private boolean closeReverseOverlayNow(String reason) {
+        pendingReverseRequestId = 0;
+        pendingReverseSurfaceSink = null;
+        IBinder value = cameraHelper;
+        if (!cameraPing(value)) value = resolveCameraHelper();
+        if (!cameraPing(value)) return true;
+        try {
+            transactReverseClose(value, reason);
+            return true;
+        } catch (Throwable error) {
+            emit("reverse_overlay_error", "stage", "close", "error", summary(error));
+            return false;
         }
     }
 
@@ -1074,6 +1317,10 @@ final class TurnSignalController {
                 int surfaceGeneration = event.optInt("surface_generation", -1);
                 worker.execute(() -> acquireCameraOverlaySurface(
                         requestId, surfaceGeneration));
+            } else if ("reverse_overlay_surface".equals(kind)
+                    && "ready".equals(event.optString("state"))) {
+                int requestId = event.optInt("request_id", -1);
+                worker.execute(() -> acquireReverseSurfaces(requestId));
             }
         } catch (Throwable error) {
             emit("shell_event_parse_error", "error", summary(error));
@@ -1178,7 +1425,11 @@ final class TurnSignalController {
         clearCameraHelper(value);
         pendingOverlayRequestId = 0;
         pendingOverlaySurfaceSink = null;
+        pendingReverseRequestId = 0;
+        pendingReverseSurfaceSink = null;
         emit("camera_overlay_error", "stage", "camera_shell_died",
+                "error", "camera helper Binder died");
+        emit("reverse_overlay_error", "stage", "camera_shell_died",
                 "error", "camera helper Binder died");
     }
 
@@ -1259,6 +1510,18 @@ final class TurnSignalController {
             this.requestId = requestId;
             this.surfaceGeneration = surfaceGeneration;
             this.surface = surface;
+        }
+    }
+
+    static final class ReverseSurfaces {
+        final int requestId;
+        final int[] generations;
+        final Surface[] surfaces;
+
+        ReverseSurfaces(int requestId, int[] generations, Surface[] surfaces) {
+            this.requestId = requestId;
+            this.generations = generations;
+            this.surfaces = surfaces;
         }
     }
 

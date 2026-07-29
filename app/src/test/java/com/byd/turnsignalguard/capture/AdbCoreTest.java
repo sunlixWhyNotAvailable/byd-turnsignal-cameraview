@@ -93,8 +93,8 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(39, BuildConfig.VERSION_CODE);
-        assertEquals(3, TurnSignalShellProtocol.VERSION);
+        assertEquals(41, BuildConfig.VERSION_CODE);
+        assertEquals(4, TurnSignalShellProtocol.VERSION);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
         assertTrue(command.contains("pidof bydturnguard_helper"));
@@ -353,6 +353,9 @@ public final class AdbCoreTest {
                 false, true, false, false));
         assertEquals("shutdown", BlindSpotOverlayController.cameraRetryBlockReason(
                 true, true, false, true));
+        assertTrue(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 4, 4));
+        assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 2, 4));
+        assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(false, 4, 4));
 
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 0, 720));
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 0));
@@ -362,6 +365,8 @@ public final class AdbCoreTest {
                 "camera_error", CameraHelperMain.CAMERA_OWNER_OVERLAY));
         assertTrue(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_opened", CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        assertTrue(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_closed", CameraHelperMain.CAMERA_OWNER_REVERSE));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
@@ -640,13 +645,100 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void clusterDisplaySettingsAndGeometryStayDeterministic() {
+        assertEquals(0, CameraDisplayTarget.clusterNameRank(
+                "shared_fission_bg_XDJAScreenProjection_1"));
+        assertEquals(1, CameraDisplayTarget.clusterNameRank(
+                "shared_fission_bg_XDJAScreenProjection_0"));
+        assertEquals(Integer.MAX_VALUE,
+                CameraDisplayTarget.clusterNameRank("XDJAScreenProjection_aux"));
+        assertEquals(Integer.MAX_VALUE, CameraDisplayTarget.clusterNameRank("Built-in Screen"));
+        assertTrue(CameraDisplayTarget.isValid(CameraDisplayTarget.TABLET));
+        assertTrue(CameraDisplayTarget.isValid(CameraDisplayTarget.CLUSTER));
+        assertFalse(CameraDisplayTarget.isValid(4));
+
+        assertEquals(36, BlindSpotOverlayController.migratedScale(false, 50, 36));
+        assertEquals(50, BlindSpotOverlayController.migratedScale(true, 50, 36));
+        assertEquals(20, BlindSpotOverlayController.migratedScale(false, 0, 2));
+        assertEquals(60, BlindSpotOverlayController.migratedScale(true, 90, 36));
+
+        assertArrayEquals(new int[]{16, 36, 691, 518},
+                BlindSpotOverlayController.overlayGeometry(
+                        1920, 1080, 36, 4.0f / 3.0f,
+                        0.0f, 0.0f, 16, 36, 88));
+        assertArrayEquals(new int[]{1213, 474, 691, 518},
+                BlindSpotOverlayController.overlayGeometry(
+                        1920, 1080, 36, 4.0f / 3.0f,
+                        1.0f, 1.0f, 16, 36, 88));
+        assertArrayEquals(new int[]{0, 0, 691, 518},
+                BlindSpotOverlayController.overlayGeometry(
+                        1920, 720, 36, 4.0f / 3.0f,
+                        0.0f, 0.0f, 0, 0, 0));
+        assertArrayEquals(new int[]{1229, 331, 691, 389},
+                BlindSpotOverlayController.overlayGeometry(
+                        1920, 720, 36, 16.0f / 9.0f,
+                        1.0f, 1.0f, 0, 0, 0));
+    }
+
+    @Test
+    public void awakeSessionAndFullscreenAttemptAreOneShot() {
+        TurnSignalShellMain.ShellBinder.AwakeSessionState state =
+                TurnSignalShellMain.ShellBinder.AwakeSessionState.reconcile(
+                        null, 12, true, 1_000);
+        assertEquals(1, state.generation);
+        assertTrue(state.interactive);
+        assertFalse(state.update(true, true, 5_000));
+        assertEquals(1, state.generation);
+        assertFalse(state.update(false, false, 6_000));
+        assertTrue(state.update(true, false, 7_000));
+        assertEquals(2, state.generation);
+        assertFalse(state.update(true, true, 18_001));
+        assertEquals(2, state.generation);
+        assertTrue(state.update(true, true, 30_000));
+        assertEquals(3, state.generation);
+
+        TurnSignalShellMain.ShellBinder.AwakeSessionState restored =
+                TurnSignalShellMain.ShellBinder.AwakeSessionState.reconcile(
+                        TurnSignalShellMain.ShellBinder.AwakeSessionState.parse(state.encode()),
+                        12, true, 31_000);
+        assertEquals(3, restored.generation);
+        TurnSignalShellMain.ShellBinder.AwakeSessionState rebooted =
+                TurnSignalShellMain.ShellBinder.AwakeSessionState.reconcile(
+                        restored, 13, true, 100);
+        assertEquals(4, rebooted.generation);
+
+        assertTrue(ClusterFullscreenController.shouldAttempt(
+                true, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.TABLET,
+                true, 4, 3));
+        assertFalse(ClusterFullscreenController.shouldAttempt(
+                true, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.TABLET,
+                true, 4, 4));
+        assertFalse(ClusterFullscreenController.shouldAttempt(
+                true, CameraDisplayTarget.TABLET, CameraDisplayTarget.TABLET,
+                true, 4, 3));
+        assertFalse(ClusterFullscreenController.shouldAttempt(
+                true, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.TABLET,
+                false, 4, 3));
+        assertEquals(30011, ClusterFullscreenProtocol.protocolForTest());
+        assertEquals(4, ClusterFullscreenProtocol.operationForTest());
+        assertEquals("success", ClusterFullscreenController.outcome(""));
+        assertEquals("failed", ClusterFullscreenController.outcome("bind rejected"));
+        assertEquals("indeterminate", ClusterFullscreenController.outcome(
+                "transaction outcome indeterminate after 3000ms"));
+    }
+
+    @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(7, CameraShellProtocol.VERSION);
+        assertEquals(9, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
         assertTrue(CameraShellProtocol.TX_OVERLAY_SET_WARNING
                 > CameraShellProtocol.TX_OVERLAY_CLOSE);
+        assertTrue(CameraShellProtocol.TX_REVERSE_PREPARE
+                > CameraShellProtocol.TX_OVERLAY_SET_WARNING);
+        assertTrue(CameraShellProtocol.TX_REVERSE_CLOSE
+                > CameraShellProtocol.TX_REVERSE_SET_VISIBLE);
         CameraShellProtocol.validateWarning(1, 1,
                 CameraShellProtocol.WARNING_EDGE_NONE,
                 CameraShellProtocol.WARNING_MODE_OFF);
@@ -673,21 +765,25 @@ public final class AdbCoreTest {
                         CameraShellProtocol.WARNING_EDGE_NONE,
                         CameraShellProtocol.WARNING_MODE_PULSE));
         CameraShellProtocol.OverlaySpec overlay = new CameraShellProtocol.OverlaySpec(
-                1, 640, 480, 16, 36,
+                1, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE);
         overlay.validate(1920, 1080);
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
-                0, 640, 480, 16, 36,
+                0, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
-                1, 640, 480, 1500, 36,
+                1, CameraDisplayTarget.TABLET, 640, 480, 1500, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
-                1, 640, 480, 16, 36,
+                1, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.6f, 0.04f, 0.5f, 0.72f,
+                DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
+                1, 9, 640, 480, 16, 36,
+                0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
         StockAvmPreview.Config config = new StockAvmPreview.Config(
                 1, 250, 250, 1920, 1300, "ocean", "car", "sub");
@@ -753,6 +849,59 @@ public final class AdbCoreTest {
         assertTrue(StockAvmPreview.patchRearClairvoyance(config.toFile()));
         assertFalse(StockAvmPreview.patchRearClairvoyance(config.toFile()));
         config.toFile().deleteOnExit();
+    }
+
+    @Test
+    public void reverseGearAndLayoutStayFailSafe() {
+        assertFalse(ReverseGearRuntime.isValidRaw(0));
+        assertTrue(ReverseGearRuntime.isValidRaw(1));
+        assertTrue(ReverseGearRuntime.isReverseRaw(true, 2));
+        assertFalse(ReverseGearRuntime.isReverseRaw(false, 2));
+        assertFalse(ReverseGearRuntime.isValidRaw(7));
+        assertFalse(CameraHelperMain.HelperBinder.canReplaceCamera(
+                true, CameraHelperMain.CAMERA_OWNER_REVERSE,
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY));
+        assertFalse(CameraHelperMain.HelperBinder.canReplaceCamera(
+                true, CameraHelperMain.CAMERA_OWNER_REVERSE,
+                CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        assertTrue(CameraHelperMain.HelperBinder.canReplaceCamera(
+                true, CameraHelperMain.CAMERA_OWNER_REVERSE,
+                CameraHelperMain.CAMERA_OWNER_REVERSE));
+
+        ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+        assertEquals(0.0f, layout.rear.destination.left, 0.0001f);
+        assertEquals(0.5f, layout.rear.destination.height, 0.0001f);
+        assertEquals(0.5f, layout.rearLeft.destination.top, 0.0001f);
+        assertEquals(0.5f, layout.rearRight.destination.left, 0.0001f);
+        assertEquals(1, layout.rear.cameraIndex);
+        assertEquals(2, layout.rearLeft.cameraIndex);
+        assertEquals(3, layout.rearRight.cameraIndex);
+
+        ReverseCameraLayout.Rect clamped = ReverseCameraLayout.destination(
+                0.95f, 0.95f, 0.5f, 0.5f);
+        assertEquals(0.5f, clamped.left, 0.0001f);
+        assertEquals(0.5f, clamped.top, 0.0001f);
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraLayout.sourceCrop(0, 0, 0, 1));
+
+        layout = ReverseCameraLayout.bringToFront(
+                layout, ReverseCameraLayout.REAR_CAMERA_INDEX);
+        assertEquals(2, layout.rear.zOrder);
+        assertEquals(0, layout.rearLeft.zOrder);
+        assertEquals(1, layout.rearRight.zOrder);
+        layout = ReverseCameraLayout.sendToBack(
+                layout, ReverseCameraLayout.REAR_CAMERA_INDEX);
+        assertEquals(0, layout.rear.zOrder);
+        assertEquals(1, layout.rearLeft.zOrder);
+        assertEquals(2, layout.rearRight.zOrder);
+        layout = ReverseCameraLayout.raise(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        assertEquals(2, layout.rearLeft.zOrder);
+        assertEquals(1, layout.rearRight.zOrder);
+        layout = ReverseCameraLayout.lower(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        assertEquals(1, layout.rearLeft.zOrder);
+        assertEquals(2, layout.rearRight.zOrder);
     }
 
     private static byte[] collectorReferenceEncoding(RSAPublicKey key) {
