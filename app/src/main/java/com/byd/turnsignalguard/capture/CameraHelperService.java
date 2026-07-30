@@ -43,6 +43,8 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
+    private static final String ACTION_MUSIC_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.MUSIC_SETTINGS_CHANGED";
     private static final String ACTION_AUTO_START_CHANGED =
             "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
     private static final String ACTION_SHUTDOWN =
@@ -136,6 +138,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
     }
 
+    static void musicSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_MUSIC_SETTINGS_CHANGED));
+    }
+
     static void updateAutoStart(Context context, boolean enabled) {
         GuardRecovery.setAutoStartEnabled(context, enabled);
         Intent intent = new Intent(context, CameraHelperService.class)
@@ -222,6 +229,9 @@ public final class CameraHelperService extends Service {
             overlay.applyWarningSettings();
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
+        } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
+            helper.configureMusic(getSharedPreferences("settings", MODE_PRIVATE)
+                    .getBoolean("music_visualizer_enabled", false));
         }
         startHeartbeat();
         return START_STICKY;

@@ -15,6 +15,7 @@
 - touch-based reverse-layout editor with independent pane position, size, crop, and layer order
 - per-side crop calibration, aspect-ratio presets, free crop, scale, and placement
 - independent tablet or instrument-cluster destination for each side camera
+- optional stock ambient-light synchronization for third-party Android music sources
 - AVM layout and direct-camera diagnostic tabs
 - persistent settings and lifetime turn/correction counters
 
@@ -38,6 +39,7 @@ After first launch:
 6. Open `Калібрування камер` to select the visible crop for each side.
 7. For each side, choose the tablet or instrument cluster, then set its size and position.
 8. Open `Камери заднього ходу` to configure the three-pane reverse layout. `Покращений задній вид` is off by default.
+9. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app switch. The app switch is off by default.
 
 ## Known Limitations
 
@@ -47,10 +49,20 @@ After first launch:
 - Instrument-cluster output depends on the tested BYD projection display and dashboard-layout service.
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
 - The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
+- Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
 
 ## Tested
 
 Tested on the Chinese version of `BYD Sea Lion 07 EV 2025` with `DiLink 5.0`.
+
+## License
+
+Copyright (C) 2026 sunlixWhyNotAvailable.
+
+This project is free software licensed under the
+[GNU Affero General Public License v3.0 only](LICENSE). Modified versions that
+are distributed or offered for remote network use must provide their
+corresponding source under the same license.
 
 ## To Do
 

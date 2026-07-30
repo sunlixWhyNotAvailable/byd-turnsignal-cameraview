@@ -49,6 +49,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -56,6 +57,7 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -86,6 +88,7 @@ public final class CameraProbeActivity extends Activity
     private static final int TAB_DIRECT_CAMERA_DEBUG = 3;
     private static final int TAB_CAMERA_CALIBRATION = 4;
     private static final int TAB_REVERSE_CAMERAS = 5;
+    private static final int TAB_MUSIC = 6;
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
     private static final String EXTRA_DIAGNOSTIC_AVM_MODE_INDEX =
             "com.byd.turnsignalguard.capture.extra.AVM_MODE_INDEX";
@@ -110,6 +113,7 @@ public final class CameraProbeActivity extends Activity
     private Switch autoStartSwitch;
     private Switch guardSwitch;
     private Switch cameraSwitch;
+    private Switch musicSwitch;
     private EditText outwardInput;
     private EditText centerInput;
     private EditText correctionDelayInput;
@@ -133,6 +137,8 @@ public final class CameraProbeActivity extends Activity
     private TextView calibrationCropValues;
     private TextView calibrationResultTitle;
     private TextView reverseCameraStatus;
+    private TextView musicStatus;
+    private TextView musicJournalText;
     private TextView debugLayoutTitle;
     private TextView activationCount;
     private TextView correctionCount;
@@ -180,6 +186,7 @@ public final class CameraProbeActivity extends Activity
     private Button cameraDebugTabButton;
     private Button directCameraDebugTabButton;
     private Button reverseCameraTabButton;
+    private Button musicTabButton;
     private Button directCameraCloseButton;
     private Button calibrationLeftButton;
     private Button calibrationRightButton;
@@ -191,6 +198,8 @@ public final class CameraProbeActivity extends Activity
     private View cameraDebugPage;
     private View directCameraDebugPage;
     private View reverseCameraPage;
+    private View musicPage;
+    private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
     private File logFile;
     private volatile IBinder helper;
     private volatile boolean cameraSurfaceReady;
@@ -307,6 +316,7 @@ public final class CameraProbeActivity extends Activity
             directCameraStatus.setText("Службу зупинено");
             calibrationStatus.setText("Службу зупинено");
             reverseCameraStatus.setText("Службу зупинено");
+            musicStatus.setText("Helper недоступний");
             stopCalibrationCopies(true);
             clearPreview("helper_service_disconnected");
             activePreview = null;
@@ -713,17 +723,20 @@ public final class CameraProbeActivity extends Activity
         reverseCameraTabButton = button("Камери заднього ходу");
         cameraDebugTabButton = button("Режими AVM");
         directCameraDebugTabButton = button("Direct camera");
+        musicTabButton = button("Музика");
         guardTabButton.setTextSize(14);
         calibrationTabButton.setTextSize(14);
         cameraTabButton.setTextSize(14);
         reverseCameraTabButton.setTextSize(14);
         cameraDebugTabButton.setTextSize(14);
         directCameraDebugTabButton.setTextSize(14);
+        musicTabButton.setTextSize(14);
         tabs.addView(guardTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(cameraTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(reverseCameraTabButton,
                 new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(calibrationTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        tabs.addView(musicTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(directCameraDebugTabButton,
                 new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(cameraDebugTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -738,6 +751,7 @@ public final class CameraProbeActivity extends Activity
         calibrationPage = buildCameraCalibrationPanel();
         cameraPage = buildCameraPanel();
         reverseCameraPage = buildReverseCameraPanel();
+        musicPage = buildMusicPanel();
         cameraDebugPage = buildCameraDebugPanel();
         directCameraDebugPage = buildDirectCameraDebugPanel();
         pages.addView(guardPage, new FrameLayout.LayoutParams(
@@ -747,6 +761,8 @@ public final class CameraProbeActivity extends Activity
         pages.addView(cameraPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(reverseCameraPage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        pages.addView(musicPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(cameraDebugPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
@@ -760,6 +776,7 @@ public final class CameraProbeActivity extends Activity
                 view -> selectTab(TAB_CAMERA_CALIBRATION));
         cameraTabButton.setOnClickListener(view -> selectTab(TAB_CAMERAS));
         reverseCameraTabButton.setOnClickListener(view -> selectTab(TAB_REVERSE_CAMERAS));
+        musicTabButton.setOnClickListener(view -> selectTab(TAB_MUSIC));
         cameraDebugTabButton.setOnClickListener(view -> selectTab(TAB_CAMERA_DEBUG));
         directCameraDebugTabButton.setOnClickListener(
                 view -> selectTab(TAB_DIRECT_CAMERA_DEBUG));
@@ -784,6 +801,7 @@ public final class CameraProbeActivity extends Activity
         cameraPage.setVisibility(tab == TAB_CAMERAS ? View.VISIBLE : View.GONE);
         reverseCameraPage.setVisibility(
                 tab == TAB_REVERSE_CAMERAS ? View.VISIBLE : View.GONE);
+        musicPage.setVisibility(tab == TAB_MUSIC ? View.VISIBLE : View.GONE);
         cameraDebugPage.setVisibility(tab == TAB_CAMERA_DEBUG ? View.VISIBLE : View.GONE);
         directCameraDebugPage.setVisibility(
                 tab == TAB_DIRECT_CAMERA_DEBUG ? View.VISIBLE : View.GONE);
@@ -793,6 +811,7 @@ public final class CameraProbeActivity extends Activity
         cameraTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERAS));
         reverseCameraTabButton.setBackgroundColor(
                 tabColor(tab == TAB_REVERSE_CAMERAS));
+        musicTabButton.setBackgroundColor(tabColor(tab == TAB_MUSIC));
         cameraDebugTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERA_DEBUG));
         directCameraDebugTabButton.setBackgroundColor(
                 tabColor(tab == TAB_DIRECT_CAMERA_DEBUG));
@@ -808,7 +827,7 @@ public final class CameraProbeActivity extends Activity
     private static boolean isValidTab(int tab) {
         return tab == TAB_GUARD || tab == TAB_CAMERAS || tab == TAB_CAMERA_DEBUG
                 || tab == TAB_DIRECT_CAMERA_DEBUG || tab == TAB_CAMERA_CALIBRATION
-                || tab == TAB_REVERSE_CAMERAS;
+                || tab == TAB_REVERSE_CAMERAS || tab == TAB_MUSIC;
     }
 
     private static int tabColor(boolean selected) {
@@ -981,6 +1000,48 @@ public final class CameraProbeActivity extends Activity
         updateControls();
         CameraHelperService.requestShutdown(this);
         finishAndRemoveTask();
+    }
+
+    private View buildMusicPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(0, dp(12), 0, 0);
+
+        musicSwitch = new Switch(this);
+        musicSwitch.setText("Синхронізація підсвітки з музикою");
+        musicSwitch.setTextColor(Color.WHITE);
+        musicSwitch.setTextSize(20);
+        musicSwitch.setChecked(preferences.getBoolean("music_visualizer_enabled", false));
+        panel.addView(musicSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
+
+        musicStatus = statusText(musicSwitch.isChecked()
+                ? "Очікування helper..." : "Вимкнено");
+        panel.addView(musicStatus);
+
+        TextView journalTitle = label("Журнал");
+        journalTitle.setPadding(0, dp(24), 0, dp(8));
+        panel.addView(journalTitle);
+
+        ScrollView journalScroll = new ScrollView(this);
+        musicJournalText = new TextView(this);
+        musicJournalText.setTextColor(Color.LTGRAY);
+        musicJournalText.setTextSize(15);
+        musicJournalText.setPadding(dp(12), dp(12), dp(12), dp(12));
+        musicJournalText.setText("Подій ще немає");
+        journalScroll.addView(musicJournalText, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+        panel.addView(journalScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+
+        musicSwitch.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean("music_visualizer_enabled", checked).apply();
+            musicStatus.setText(checked ? "Очікування helper..." : "Вимкнено");
+            record("music_toggle", "enabled", checked);
+            CameraHelperService.musicSettingsChanged(this);
+            updateControls();
+        });
+        return panel;
     }
 
     private View buildReverseCameraPanel() {
@@ -3137,6 +3198,112 @@ public final class CameraProbeActivity extends Activity
         reply.readException();
     }
 
+    private void handleMusicEvent(JSONObject event) {
+        String kind = event.optString("kind");
+        if ("music_journal_snapshot".equals(kind)) {
+            musicJournal.clear();
+            JSONArray events = event.optJSONArray("events");
+            if (events != null) {
+                for (int i = 0; i < events.length(); i++) {
+                    try {
+                        appendMusicJournal(formatMusicEvent(
+                                new JSONObject(events.optString(i))));
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            renderMusicJournal();
+            return;
+        }
+        if (!kind.startsWith("music_")) return;
+        if (CameraHelperMain.HelperBinder.isMusicJournalEvent(kind)) {
+            appendMusicJournal(formatMusicEvent(event));
+            renderMusicJournal();
+        }
+
+        if ("music_runtime_status".equals(kind)) {
+            boolean enabled = event.optBoolean("enabled");
+            String error = event.optString("error");
+            if (!enabled) musicStatus.setText("Вимкнено");
+            else if (!error.isEmpty()) musicStatus.setText("Помилка: " + error);
+            else if (event.optBoolean("stop_pending")) {
+                musicStatus.setText("Завершення через 3 с");
+            } else if (event.optBoolean("session_active")) {
+                musicStatus.setText("Синхронізація активна");
+            } else {
+                musicStatus.setText("Очікування музики");
+            }
+        } else if ("music_visualizer_start".equals(kind)) {
+            musicStatus.setText(event.optBoolean("ok", true)
+                    ? "Синхронізація активна"
+                    : "Помилка: " + event.optString("error"));
+        } else if ("music_visualizer_stop_pending".equals(kind)) {
+            musicStatus.setText("Завершення через 3 с");
+        } else if ("music_visualizer_stop".equals(kind)) {
+            musicStatus.setText(event.optBoolean("ok", true)
+                    ? "Очікування музики"
+                    : "Помилка: " + event.optString("error"));
+        } else if ("music_runtime_config".equals(kind)) {
+            if (!event.optBoolean("enabled")) musicStatus.setText("Вимкнено");
+            else if (!event.optString("error").isEmpty()) {
+                musicStatus.setText("Помилка: " + event.optString("error"));
+            } else if (event.optBoolean("session_active")) {
+                musicStatus.setText("Синхронізація активна");
+            } else {
+                musicStatus.setText("Очікування музики");
+            }
+        } else if ("music_runtime_error".equals(kind)) {
+            musicStatus.setText("Помилка: " + event.optString("error"));
+        }
+    }
+
+    private void appendMusicJournal(String line) {
+        if (line == null || line.isEmpty()) return;
+        while (musicJournal.size() >= 20) musicJournal.removeFirst();
+        musicJournal.addLast(line);
+    }
+
+    private void renderMusicJournal() {
+        if (musicJournalText == null) return;
+        if (musicJournal.isEmpty()) {
+            musicJournalText.setText("Подій ще немає");
+            return;
+        }
+        StringBuilder text = new StringBuilder();
+        for (String line : musicJournal) {
+            if (text.length() > 0) text.append('\n');
+            text.append(line);
+        }
+        musicJournalText.setText(text);
+    }
+
+    private static String formatMusicEvent(JSONObject event) {
+        String kind = event.optString("kind");
+        String wallTime = event.optString("wall_time");
+        String time = wallTime.length() >= 19 ? wallTime.substring(11, 19) : "--:--:--";
+        String message;
+        if ("music_runtime_config".equals(kind)) {
+            message = event.optBoolean("enabled") ? "Функцію увімкнено" : "Функцію вимкнено";
+        } else if ("music_playback_state".equals(kind)) {
+            message = event.optBoolean("active") ? "Виявлено відтворення" : "Відтворення зупинено";
+        } else if ("music_visualizer_start".equals(kind)) {
+            message = event.optBoolean("ok", true)
+                    ? "Синхронізацію запущено" : "Помилка запуску";
+        } else if ("music_visualizer_stop_pending".equals(kind)) {
+            message = "Зупинка через 3 секунди";
+        } else if ("music_visualizer_stop".equals(kind)) {
+            message = event.optBoolean("ok", true)
+                    ? "Синхронізацію зупинено" : "Помилка зупинки";
+        } else if ("music_runtime_error".equals(kind)) {
+            message = "Помилка: " + event.optString("error");
+        } else if ("music_runtime_status".equals(kind)) {
+            message = "Стан оновлено";
+        } else {
+            message = kind;
+        }
+        return time + "  " + message;
+    }
+
     private void acceptHelperEvent(String line) {
         if (line == null) return;
         writeLine(line);
@@ -3144,6 +3311,7 @@ public final class CameraProbeActivity extends Activity
             try {
                 JSONObject json = new JSONObject(line);
                 String kind = json.optString("kind");
+                handleMusicEvent(json);
                 if ("reverse_camera_stopped".equals(kind)) {
                     maybeOpenReversePreview();
                     updateControls();
@@ -3244,6 +3412,7 @@ public final class CameraProbeActivity extends Activity
                         || "helper_ping_failed".equals(kind)) {
                     telemetryReady = false;
                     guardStatus.setText("Helper відновлюється: " + json.optString("error"));
+                    if (musicSwitch.isChecked()) musicStatus.setText("Helper недоступний");
                 } else if ("guard_config".equals(kind)) {
                     if (json.optBoolean("active")) {
                         guardStatus.setText("Guard активний");
@@ -3365,6 +3534,7 @@ public final class CameraProbeActivity extends Activity
 
     private void updateControls() {
         if (autoStartSwitch != null) autoStartSwitch.setEnabled(!shutdownRequested);
+        if (musicSwitch != null) musicSwitch.setEnabled(!shutdownRequested);
         if (backgroundStartSettingsButton != null) {
             backgroundStartSettingsButton.setEnabled(!shutdownRequested
                     && !cameraPermissionPending && !backgroundStartSettingsActive

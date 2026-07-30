@@ -13,6 +13,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.lang.reflect.Constructor;
@@ -21,6 +22,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
@@ -62,6 +64,7 @@ final class CameraHelperMain {
         private final TurnSignalController turnController;
         private final Consumer<String> logSink;
         private final SharedPreferences counters;
+        private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
         private IBinder callback;
         private int cameraId = -1;
         private String cameraTag = "none";
@@ -93,6 +96,10 @@ final class CameraHelperMain {
         void configureGuard(
                 boolean enabled, float outward, float center, int delayMs, int maxSpeedKph) {
             turnController.configure(enabled, outward, center, delayMs, maxSpeedKph);
+        }
+
+        void configureMusic(boolean enabled) {
+            turnController.configureMusic(enabled);
         }
 
         void setRecoveryEnabled(boolean enabled) {
@@ -253,6 +260,7 @@ final class CameraHelperMain {
                     () -> mainHandler.post(() -> disconnectCallback(newCallback)), 0);
             emit("helper_connected", "uid", Process.myUid());
             emitCounters();
+            emitMusicJournalSnapshot();
             discoverCamera();
             turnController.reportStatus();
         }
@@ -836,6 +844,11 @@ final class CameraHelperMain {
                 JSONObject event = new JSONObject(line);
                 String kind = event.optString("kind");
                 key = lifetimeCounterKey(kind);
+                if (isMusicJournalEvent(kind)) {
+                    synchronized (musicJournal) {
+                        appendBounded(musicJournal, line, 20);
+                    }
+                }
                 if ("camera_shell_helper".equals(event.optString("source"))
                         && ("camera_error".equals(kind) || "camera_closed".equals(kind))) {
                     synchronized (this) {
@@ -848,6 +861,29 @@ final class CameraHelperMain {
             if (key != null) incrementCounter(key);
             forwardLine(line);
             if (key != null) emitCounters();
+        }
+
+        private void emitMusicJournalSnapshot() {
+            JSONArray events = new JSONArray();
+            synchronized (musicJournal) {
+                for (String line : musicJournal) events.put(line);
+            }
+            emit("music_journal_snapshot", "events", events);
+        }
+
+        static void appendBounded(ArrayDeque<String> journal, String line, int limit) {
+            if (journal == null || line == null || limit <= 0) return;
+            while (journal.size() >= limit) journal.removeFirst();
+            journal.addLast(line);
+        }
+
+        static boolean isMusicJournalEvent(String kind) {
+            return "music_runtime_config".equals(kind)
+                    || "music_playback_state".equals(kind)
+                    || "music_visualizer_start".equals(kind)
+                    || "music_visualizer_stop_pending".equals(kind)
+                    || "music_visualizer_stop".equals(kind)
+                    || "music_runtime_error".equals(kind);
         }
 
         private synchronized void incrementCounter(String key) {

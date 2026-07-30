@@ -78,6 +78,7 @@ public final class TurnSignalShellMain {
         private final TurnSignalGuardRuntime runtime;
         private final BlindSpotWarningRuntime warningRuntime;
         private final ReverseGearRuntime reverseGearRuntime;
+        private final MusicVisualizerRuntime musicRuntime;
         private final PowerManager powerManager;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
@@ -110,6 +111,7 @@ public final class TurnSignalShellMain {
             runtime = new TurnSignalGuardRuntime(context, handler, this::emit);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
+            musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
         }
 
         void start() {
@@ -125,6 +127,7 @@ public final class TurnSignalShellMain {
             handler.removeCallbacks(wakeCheckRunnable);
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
+            musicRuntime.stop();
             reverseGearRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
@@ -159,6 +162,11 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_MUSIC) {
+                    musicRuntime.configure(data.readInt() != 0);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_SET_MANUAL_STATE) {
                     int payload = data.readInt();
                     if (!TurnSignalShellProtocol.isPayloadAllowed(payload)) {
@@ -172,6 +180,7 @@ public final class TurnSignalShellMain {
                     runtime.reportStatus();
                     warningRuntime.reportStatus();
                     reverseGearRuntime.reportStatus();
+                    musicRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
@@ -186,6 +195,7 @@ public final class TurnSignalShellMain {
                     recoveryEnabled = false;
                     reply.writeNoException();
                     handler.post(() -> {
+                        musicRuntime.stop();
                         reverseGearRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
@@ -210,6 +220,7 @@ public final class TurnSignalShellMain {
             runtime.reportStatus();
             warningRuntime.reportStatus();
             reverseGearRuntime.reportStatus();
+            musicRuntime.reportStatus();
             emitPowerState("callback_registered", false);
         }
 
@@ -293,6 +304,7 @@ public final class TurnSignalShellMain {
 
         private void powerStateChanged(String action) {
             boolean interactive = isInteractive();
+            musicRuntime.powerStateChanged(interactive);
             boolean newSession = awakeSession.update(
                     interactive,
                     "android.intent.action.QUICKBOOT_POWERON".equals(action),

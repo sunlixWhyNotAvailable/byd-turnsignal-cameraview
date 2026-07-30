@@ -145,6 +145,13 @@ final class TurnSignalController {
         });
     }
 
+    void configureMusic(boolean enabled) {
+        settings.edit().putBoolean("music_visualizer_enabled", enabled).apply();
+        worker.execute(() -> {
+            if (!sendMusicConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+        });
+    }
+
     void setManualState(int payload) {
         if (payload < 0 || payload > 3) throw new IllegalArgumentException("payload not whitelisted");
         worker.execute(() -> {
@@ -682,8 +689,9 @@ final class TurnSignalController {
         }
         try {
             transactAttach(value, GuardRecovery.shouldRecover(context));
-            transactConfig(value);
             transactCallback(value);
+            transactConfig(value);
+            transactMusicConfig(value);
             transactNoArgs(value, TurnSignalShellProtocol.TX_REPORT_STATUS);
             healthy = true;
             primaryError = "";
@@ -726,6 +734,21 @@ final class TurnSignalController {
             clearHelper(value);
             healthy = false;
             primaryError = "guard_config_binder_error: " + summary(error);
+            emit("helper_ping_failed", "error", primaryError);
+            return false;
+        }
+    }
+
+    private boolean sendMusicConfig() {
+        IBinder value = helper;
+        if (!healthy || value == null) return false;
+        try {
+            transactMusicConfig(value);
+            return true;
+        } catch (Throwable error) {
+            clearHelper(value);
+            healthy = false;
+            primaryError = "music_config_binder_error: " + summary(error);
             emit("helper_ping_failed", "error", primaryError);
             return false;
         }
@@ -789,6 +812,19 @@ final class TurnSignalController {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
             data.writeStrongBinder(callback);
             requireTransact(value, TurnSignalShellProtocol.TX_REGISTER_CALLBACK, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private void transactMusicConfig(IBinder value) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(settings.getBoolean("music_visualizer_enabled", false) ? 1 : 0);
+            requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_MUSIC, data, reply);
         } finally {
             data.recycle();
             reply.recycle();

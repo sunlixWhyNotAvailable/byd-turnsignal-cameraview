@@ -1,5 +1,7 @@
 package com.byd.turnsignalguard.capture;
 
+import android.media.AudioAttributes;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -19,6 +21,7 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
 import java.security.interfaces.RSAPublicKey;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 
 public final class AdbCoreTest {
@@ -93,8 +96,10 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(41, BuildConfig.VERSION_CODE);
-        assertEquals(4, TurnSignalShellProtocol.VERSION);
+        assertEquals(42, BuildConfig.VERSION_CODE);
+        assertEquals(5, TurnSignalShellProtocol.VERSION);
+        assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
+                > TurnSignalShellProtocol.TX_SHUTDOWN);
 
         String command = TurnSignalController.launchCommand("/data/app/a'b/base.apk", 10058, 5);
         assertTrue(command.contains("pidof bydturnguard_helper"));
@@ -295,6 +300,56 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.TX_SHUTDOWN
                 > TurnSignalShellProtocol.TX_ATTACH_CONTROLLER);
         assertTrue(CameraShellProtocol.TX_SHUTDOWN > CameraShellProtocol.TX_CLOSE);
+    }
+
+    @Test
+    public void musicJournalKeepsOnlyLatestServiceEvents() {
+        ArrayDeque<String> journal = new ArrayDeque<>();
+        for (int i = 0; i < 25; i++) {
+            CameraHelperMain.HelperBinder.appendBounded(journal, "event-" + i, 20);
+        }
+        assertEquals(20, journal.size());
+        assertEquals("event-5", journal.getFirst());
+        assertEquals("event-24", journal.getLast());
+        assertTrue(CameraHelperMain.HelperBinder.isMusicJournalEvent(
+                "music_playback_state"));
+        assertFalse(CameraHelperMain.HelperBinder.isMusicJournalEvent(
+                "music_runtime_status"));
+        assertFalse(CameraHelperMain.HelperBinder.isMusicJournalEvent(
+                "music_journal_snapshot"));
+    }
+
+    @Test
+    public void musicRuntimeContractStaysNarrowAndMediaOnly() {
+        assertEquals("com.byd.mediacenter", MusicVisualizerRuntime.MEDIA_SELECTOR);
+        assertEquals(3_000, MusicVisualizerRuntime.STOP_DEBOUNCE_MS);
+        assertTrue(MusicVisualizerRuntime.isMusicAttributes(
+                AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_UNKNOWN));
+        assertTrue(MusicVisualizerRuntime.isMusicAttributes(
+                AudioAttributes.USAGE_UNKNOWN, AudioAttributes.CONTENT_TYPE_MUSIC));
+        assertFalse(MusicVisualizerRuntime.isMusicAttributes(
+                AudioAttributes.USAGE_NOTIFICATION,
+                AudioAttributes.CONTENT_TYPE_SONIFICATION));
+        assertFalse(MusicVisualizerRuntime.isMediaPlayback(false,
+                AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_MUSIC));
+        assertTrue(MusicVisualizerRuntime.shouldStartOutput(
+                true, true, true, true, false));
+        assertFalse(MusicVisualizerRuntime.shouldStartOutput(
+                true, true, true, true, true));
+        assertTrue(MusicVisualizerRuntime.shouldScheduleStop(true, false, false));
+        assertFalse(MusicVisualizerRuntime.shouldScheduleStop(true, false, true));
+        assertFalse(MusicVisualizerRuntime.shouldScheduleStop(true, true, false));
+        assertEquals(3, MusicVisualizerRuntime.MAX_STOP_RETRIES);
+        assertTrue(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 0));
+        assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 3));
+        assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(true, 0));
+        assertTrue(MusicVisualizerRuntime.shouldCancelStopRetry(
+                true, true, true, false));
+        assertFalse(MusicVisualizerRuntime.shouldCancelStopRetry(
+                true, true, true, true));
+        assertFalse(MusicVisualizerRuntime.shouldCancelStopRetry(
+                true, false, true, false));
+        assertFalse(MusicVisualizerRuntime.hasMediaPlayback(null));
     }
 
     @Test
