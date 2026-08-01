@@ -33,4 +33,18 @@ public final class ReverseCameraLayoutTest {
         assertFalse(ReverseCameraLayout.mirrorHorizontally(
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
     }
+
+    @Test
+    public void nudgeMovesSelectedPaneAndClampsToCanvas() {
+        ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+        ReverseCameraLayout moved = ReverseCameraLayout.move(layout,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.01f, -0.01f);
+        assertEquals(0.01f, moved.rearLeft.destination.left, 0.0001f);
+        assertEquals(0.49f, moved.rearLeft.destination.top, 0.0001f);
+
+        ReverseCameraLayout clamped = ReverseCameraLayout.move(moved,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 2.0f, 2.0f);
+        assertEquals(0.5f, clamped.rearLeft.destination.left, 0.0001f);
+        assertEquals(0.5f, clamped.rearLeft.destination.top, 0.0001f);
+    }
 }

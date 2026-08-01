@@ -9,20 +9,49 @@ public final class CameraProfileTest {
     public void frontAndRearPoliciesStayIndependent() {
         int rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT).bit();
         int frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT).bit();
-        int frontRight = CameraProfile.of(CameraProfile.FRONT_RIGHT).bit();
 
         assertEquals(rearLeft | frontLeft, CameraProfile.desiredMask(
-                true, 2, 20.0f, 0.0f,
-                true, 20, true, 0, true));
-        assertEquals(frontLeft | frontRight, CameraProfile.desiredMask(
-                true, 1, 0.0f, 0.0f,
-                false, 20, true, 0, false));
+                true, 2, 10.0f, 10.0f,
+                true, 10, 300, true, 0, 10, true, 10.0f));
         assertEquals(0, CameraProfile.desiredMask(
                 false, 2, 30.0f, 0.0f,
-                true, 20, true, 0, false));
+                true, 10, 300, true, 0, 10, false, 10.0f));
         assertEquals(0, CameraProfile.desiredMask(
                 true, 2, Float.NaN, 0.0f,
-                true, 20, true, 0, false));
+                true, 10, 300, true, 0, 10, false, 10.0f));
+    }
+
+    @Test
+    public void speedRangesAreInclusiveAndSharedBoundaryAllowsBothGroups() {
+        int rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT).bit();
+        int frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT).bit();
+        assertEquals(rearLeft | frontLeft, CameraProfile.desiredMask(
+                true, 2, 10.0f, 10.0f,
+                true, 10, 300, true, 0, 10, true, 10.0f));
+        assertEquals(0, CameraProfile.desiredMask(
+                true, 2, 301.0f, 20.0f,
+                true, 10, 300, true, 0, 10, true, 10.0f));
+        assertEquals(0, CameraProfile.desiredMask(
+                true, 2, 10.0f, 20.0f,
+                true, 20, 10, true, 20, 10, true, 10.0f));
+    }
+
+    @Test
+    public void frontCameraRequiresFreshSignedAngle() {
+        int frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT).bit();
+        int frontRight = CameraProfile.of(CameraProfile.FRONT_RIGHT).bit();
+        assertEquals(frontLeft, CameraProfile.desiredMask(
+                true, 1, 5.0f, 12.0f,
+                false, 10, 300, true, 0, 10, false, 10.0f));
+        assertEquals(frontRight, CameraProfile.desiredMask(
+                true, 1, 5.0f, -12.0f,
+                false, 10, 300, true, 0, 10, false, 10.0f));
+        assertEquals(0, CameraProfile.desiredMask(
+                true, 2, 5.0f, -12.0f,
+                false, 10, 300, true, 0, 10, true, 10.0f));
+        assertEquals(0, CameraProfile.desiredMask(
+                true, 2, 5.0f, Float.NaN,
+                false, 10, 300, true, 0, 10, true, 10.0f));
     }
 
     @Test

@@ -15,8 +15,11 @@ import java.util.function.BiConsumer;
 final class BlindSpotOverlayController {
     static final String PREF_ENABLED = "camera_enabled";
     static final String PREF_MIN_SPEED = "camera_min_speed_kph";
+    static final String PREF_MAX_SPEED = "camera_max_speed_kph";
     static final String PREF_FRONT_ENABLED = "camera_front_enabled";
     static final String PREF_FRONT_MIN_SPEED = "camera_front_min_speed_kph";
+    static final String PREF_FRONT_MAX_SPEED = "camera_front_max_speed_kph";
+    static final String PREF_FRONT_MIN_ANGLE = "camera_front_min_angle_deg";
     static final String PREF_FRONT_TURN_REQUIRED = "camera_front_turn_required";
     static final String PREF_CORNER_RADIUS = "camera_corner_radius_dp";
     static final String PREF_SCALE = "camera_overlay_scale_percent";
@@ -40,15 +43,18 @@ final class BlindSpotOverlayController {
     static final String PREF_FRONT_RIGHT_Y = "camera_front_right_y";
     static final String PREF_WARNING_MODE = "camera_bsd_warning_mode";
 
-    static final int DEFAULT_MIN_SPEED_KPH = 20;
+    static final int DEFAULT_MIN_SPEED_KPH = 10;
+    static final int DEFAULT_MAX_SPEED_KPH = 300;
     static final int DEFAULT_FRONT_MIN_SPEED_KPH = 0;
-    static final int DEFAULT_SCALE_PERCENT = 36;
+    static final int DEFAULT_FRONT_MAX_SPEED_KPH = 10;
+    static final float DEFAULT_FRONT_MIN_ANGLE_DEG = 10.0f;
+    static final int DEFAULT_SCALE_PERCENT = 30;
     static final int MIN_SCALE_PERCENT = 20;
     static final int MAX_SCALE_PERCENT = 60;
     static final int DEFAULT_LEFT_POSITION = 0;
     static final int DEFAULT_RIGHT_POSITION = 2;
     static final int DEFAULT_WARNING_MODE = CameraShellProtocol.WARNING_MODE_PULSE;
-    static final int DEFAULT_CORNER_RADIUS_DP = 8;
+    static final int DEFAULT_CORNER_RADIUS_DP = 10;
     static final int MAX_CORNER_RADIUS_DP = 48;
 
     private static final int BLINK_OFF = 1;
@@ -116,7 +122,7 @@ final class BlindSpotOverlayController {
 
     static int directionToShow(boolean valid, int blink, float speedKph, int minSpeedKph) {
         int mask = CameraProfile.desiredMask(valid, blink, speedKph, Float.NaN,
-                true, minSpeedKph, false, 0, true);
+                true, minSpeedKph, 300, false, 0, 300, true, 10.0f);
         if ((mask & CameraProfile.of(CameraProfile.REAR_LEFT).bit()) != 0) return BLINK_LEFT;
         if ((mask & CameraProfile.of(CameraProfile.REAR_RIGHT).bit()) != 0) return BLINK_RIGHT;
         return 0;
@@ -124,10 +130,13 @@ final class BlindSpotOverlayController {
 
     static int desiredCameraMask(
             boolean valid, int blink, float speedKph, float steeringAngle,
-            boolean rearEnabled, int rearMinSpeed,
-            boolean frontEnabled, int frontMinSpeed, boolean frontTurnRequired) {
+            boolean rearEnabled, int rearMinSpeed, int rearMaxSpeed,
+            boolean frontEnabled, int frontMinSpeed, int frontMaxSpeed,
+            boolean frontTurnRequired, float frontMinAngle) {
         return CameraProfile.desiredMask(valid, blink, speedKph, steeringAngle,
-                rearEnabled, rearMinSpeed, frontEnabled, frontMinSpeed, frontTurnRequired);
+                rearEnabled, rearMinSpeed, rearMaxSpeed,
+                frontEnabled, frontMinSpeed, frontMaxSpeed,
+                frontTurnRequired, frontMinAngle);
     }
 
     static float readPosition(
@@ -147,7 +156,12 @@ final class BlindSpotOverlayController {
                     profile.right() ? DEFAULT_RIGHT_POSITION : DEFAULT_LEFT_POSITION);
             return legacyPosition(legacy, vertical);
         }
-        return vertical ? 0.0f : profile.right() ? 1.0f : 0.0f;
+        return defaultPosition(profile, vertical);
+    }
+
+    static float defaultPosition(CameraProfile profile, boolean vertical) {
+        return vertical ? (profile.front() ? 1.0f : 0.0f)
+                : profile.right() ? 1.0f : 0.0f;
     }
 
     static float legacyPosition(int position, boolean vertical) {
@@ -178,6 +192,22 @@ final class BlindSpotOverlayController {
         }
         if (!settings.contains(PREF_FRONT_MIN_SPEED)) {
             editor.putInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH);
+            changed = true;
+        }
+        if (!settings.contains(PREF_MIN_SPEED)) {
+            editor.putInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH);
+            changed = true;
+        }
+        if (!settings.contains(PREF_MAX_SPEED)) {
+            editor.putInt(PREF_MAX_SPEED, DEFAULT_MAX_SPEED_KPH);
+            changed = true;
+        }
+        if (!settings.contains(PREF_FRONT_MAX_SPEED)) {
+            editor.putInt(PREF_FRONT_MAX_SPEED, DEFAULT_FRONT_MAX_SPEED_KPH);
+            changed = true;
+        }
+        if (!settings.contains(PREF_FRONT_MIN_ANGLE)) {
+            editor.putFloat(PREF_FRONT_MIN_ANGLE, DEFAULT_FRONT_MIN_ANGLE_DEG);
             changed = true;
         }
         if (!settings.contains(PREF_FRONT_TURN_REQUIRED)) {
@@ -578,9 +608,12 @@ final class BlindSpotOverlayController {
                 stateValid, blink, speedKph, steeringAngle,
                 settings.getBoolean(PREF_ENABLED, false),
                 settings.getInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH),
+                settings.getInt(PREF_MAX_SPEED, DEFAULT_MAX_SPEED_KPH),
                 settings.getBoolean(PREF_FRONT_ENABLED, false),
                 settings.getInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH),
-                settings.getBoolean(PREF_FRONT_TURN_REQUIRED, true));
+                settings.getInt(PREF_FRONT_MAX_SPEED, DEFAULT_FRONT_MAX_SPEED_KPH),
+                settings.getBoolean(PREF_FRONT_TURN_REQUIRED, true),
+                settings.getFloat(PREF_FRONT_MIN_ANGLE, DEFAULT_FRONT_MIN_ANGLE_DEG));
         if (suspended || reversePriority || uiHidden) desired = 0;
         for (PaneState pane : panes) {
             boolean show = (desired & pane.profile.bit()) != 0

@@ -96,7 +96,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(43, BuildConfig.VERSION_CODE);
+        assertEquals(44, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -621,7 +621,13 @@ public final class AdbCoreTest {
         assertTrue(ShellCameraOverlay.isFramePastStaleBuffer(2));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("preview_handoff"));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("replace_preview"));
+        assertTrue(CameraProbeActivity.isIntermediateCameraClose("replace_with_stock_avm"));
         assertFalse(CameraProbeActivity.isIntermediateCameraClose("user_close"));
+        assertTrue(CameraProbeActivity.isInvalidStockSurfaceError(
+                "stock_avm_shell", "get_camera_input_surface",
+                "IllegalStateException: AVM input Surface is invalid"));
+        assertFalse(CameraProbeActivity.isInvalidStockSurfaceError(
+                "direct_avm", "open", "Surface is invalid"));
         assertEquals(0.0f, BlindSpotOverlayController.legacyPosition(6, false), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.legacyPosition(6, true), 0.0f);
         assertEquals(0, BlindSpotOverlayController.DEFAULT_LEFT_POSITION);
@@ -716,6 +722,12 @@ public final class AdbCoreTest {
         assertEquals(50, BlindSpotOverlayController.migratedScale(true, 50, 36));
         assertEquals(20, BlindSpotOverlayController.migratedScale(false, 0, 2));
         assertEquals(60, BlindSpotOverlayController.migratedScale(true, 90, 36));
+        assertEquals(30, BlindSpotOverlayController.DEFAULT_SCALE_PERCENT);
+        assertEquals(10, BlindSpotOverlayController.DEFAULT_CORNER_RADIUS_DP);
+        assertEquals(0.0f, BlindSpotOverlayController.defaultPosition(
+                CameraProfile.of(CameraProfile.REAR_LEFT), true), 0.0f);
+        assertEquals(1.0f, BlindSpotOverlayController.defaultPosition(
+                CameraProfile.of(CameraProfile.FRONT_LEFT), true), 0.0f);
 
         assertArrayEquals(new int[]{16, 36, 691, 518},
                 BlindSpotOverlayController.overlayGeometry(

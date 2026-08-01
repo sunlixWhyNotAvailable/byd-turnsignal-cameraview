@@ -1292,7 +1292,12 @@ final class TurnSignalController {
     private void closeStockAvmNow(String reason) {
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
-        if (!cameraPing(value)) return;
+        if (!cameraPing(value)) {
+            emit("camera_closed", "renderer", "stock_avm_shell",
+                    "view", "unknown", "reason", reason == null ? "unknown" : reason,
+                    "error", "camera_helper_unavailable");
+            return;
+        }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {

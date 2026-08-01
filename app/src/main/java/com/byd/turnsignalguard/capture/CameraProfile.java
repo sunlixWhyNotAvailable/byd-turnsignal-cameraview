@@ -65,25 +65,33 @@ final class CameraProfile {
 
     static int desiredMask(
             boolean valid, int blink, float speedKph, float steeringAngle,
-            boolean rearEnabled, int rearMinSpeed,
-            boolean frontEnabled, int frontMinSpeed, boolean frontTurnRequired) {
+            boolean rearEnabled, int rearMinSpeed, int rearMaxSpeed,
+            boolean frontEnabled, int frontMinSpeed, int frontMaxSpeed,
+            boolean frontTurnRequired, float frontMinAngle) {
         if (!valid || !Float.isFinite(speedKph)) return 0;
         int mask = 0;
-        if (rearEnabled && speedAllowed(speedKph, rearMinSpeed)) {
+        if (rearEnabled && speedAllowed(speedKph, rearMinSpeed, rearMaxSpeed)) {
             if (blink == 2) mask |= of(REAR_LEFT).bit();
             else if (blink == 4) mask |= of(REAR_RIGHT).bit();
         }
-        if (!frontEnabled || !speedAllowed(speedKph, frontMinSpeed)) return mask;
+        if (!frontEnabled || !speedAllowed(speedKph, frontMinSpeed, frontMaxSpeed)
+                || !Float.isFinite(steeringAngle)
+                || !Float.isFinite(frontMinAngle)
+                || frontMinAngle < 0.0f || frontMinAngle > 780.0f) return mask;
+        boolean leftAngle = steeringAngle > 0.0f && steeringAngle >= frontMinAngle;
+        boolean rightAngle = steeringAngle < 0.0f && steeringAngle <= -frontMinAngle;
         if (frontTurnRequired) {
-            if (blink == 2) mask |= of(FRONT_LEFT).bit();
-            else if (blink == 4) mask |= of(FRONT_RIGHT).bit();
+            if (blink == 2 && leftAngle) mask |= of(FRONT_LEFT).bit();
+            else if (blink == 4 && rightAngle) mask |= of(FRONT_RIGHT).bit();
         } else {
-            mask |= of(FRONT_LEFT).bit() | of(FRONT_RIGHT).bit();
+            if (leftAngle) mask |= of(FRONT_LEFT).bit();
+            else if (rightAngle) mask |= of(FRONT_RIGHT).bit();
         }
         return mask;
     }
 
-    private static boolean speedAllowed(float speedKph, int minimum) {
-        return minimum >= 0 && minimum <= 300 && speedKph >= minimum;
+    private static boolean speedAllowed(float speedKph, int minimum, int maximum) {
+        return minimum >= 0 && minimum <= maximum && maximum <= 300
+                && speedKph >= minimum && speedKph <= maximum;
     }
 }

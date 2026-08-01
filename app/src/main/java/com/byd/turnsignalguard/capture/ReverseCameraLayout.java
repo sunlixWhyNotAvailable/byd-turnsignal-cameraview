@@ -96,6 +96,18 @@ final class ReverseCameraLayout {
         return new ReverseCameraLayout(safe, layout.rear, layout.rearLeft, layout.rearRight);
     }
 
+    static ReverseCameraLayout move(
+            ReverseCameraLayout layout, int cameraIndex, float deltaX, float deltaY) {
+        if (layout == null) throw new IllegalArgumentException("layout is required");
+        Rect current = cameraIndex == BACKGROUND_PANE_ID
+                ? layout.background : layout.pane(cameraIndex).destination;
+        Rect moved = destination(current.left + deltaX, current.top + deltaY,
+                current.width, current.height);
+        if (cameraIndex == BACKGROUND_PANE_ID) return withBackground(layout, moved);
+        Pane pane = layout.pane(cameraIndex);
+        return withPane(layout, cameraIndex, moved, pane.sourceCrop);
+    }
+
     static ReverseCameraLayout bringToFront(
             ReverseCameraLayout layout, int cameraIndex) {
         return reorder(layout, cameraIndex, true);

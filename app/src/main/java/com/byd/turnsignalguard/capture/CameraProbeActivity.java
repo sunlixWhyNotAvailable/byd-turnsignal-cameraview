@@ -72,7 +72,8 @@ public final class CameraProbeActivity extends Activity
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
     private static final int DEFAULT_MAX_SPEED_KPH = 30;
-    private static final int DEFAULT_CAMERA_MIN_SPEED_KPH = 20;
+    private static final int DEFAULT_CAMERA_MIN_SPEED_KPH = 10;
+    private static final int DEFAULT_CAMERA_MAX_SPEED_KPH = 300;
     static final long ADB_AUTH_UI_SETTLE_MS = 600;
     static final long BACKGROUND_START_UI_SETTLE_MS = 600;
     private static final String ADB_WAITING_STATUS = "Очікування ADB/RSA...";
@@ -92,11 +93,15 @@ public final class CameraProbeActivity extends Activity
     private static final int TAB_SETTINGS = 7;
     private static final String PREF_FRONT_CAMERA_ENABLED = "camera_front_enabled";
     private static final String PREF_FRONT_CAMERA_MIN_SPEED = "camera_front_min_speed_kph";
+    private static final String PREF_FRONT_CAMERA_MAX_SPEED = "camera_front_max_speed_kph";
+    private static final String PREF_FRONT_CAMERA_MIN_ANGLE = "camera_front_min_angle_deg";
     private static final String PREF_FRONT_CAMERA_TURN_REQUIRED =
             "camera_front_turn_required";
     private static final String PREF_CAMERA_CORNER_RADIUS = "camera_corner_radius_dp";
     private static final int DEFAULT_FRONT_CAMERA_MIN_SPEED_KPH = 0;
-    private static final int DEFAULT_CAMERA_CORNER_RADIUS_DP = 8;
+    private static final int DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH = 10;
+    private static final float DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG = 10.0f;
+    private static final int DEFAULT_CAMERA_CORNER_RADIUS_DP = 10;
     private static final int MAX_CAMERA_CORNER_RADIUS_DP = 48;
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
     private static final String EXTRA_DIAGNOSTIC_AVM_MODE_INDEX =
@@ -108,6 +113,7 @@ public final class CameraProbeActivity extends Activity
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AppUpdateManager updateManager = new AppUpdateManager();
+    private final CameraTransition cameraTransition = new CameraTransition();
     private final Paint calibrationCropPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Object logLock = new Object();
     private final Button[] viewButtons = new Button[4];
@@ -130,7 +136,10 @@ public final class CameraProbeActivity extends Activity
     private EditText correctionDelayInput;
     private EditText maxSpeedInput;
     private EditText cameraMinSpeedInput;
+    private EditText cameraMaxSpeedInput;
     private EditText frontCameraMinSpeedInput;
+    private EditText frontCameraMaxSpeedInput;
+    private EditText frontCameraMinAngleInput;
     private Spinner cameraWarningModeInput;
     private SeekBar cameraScaleInput;
     private TextView cameraScaleValue;
@@ -187,6 +196,7 @@ public final class CameraProbeActivity extends Activity
     private final SeekBar[] reverseCropSliders = new SeekBar[4];
     private final TextView[] reverseCropValues = new TextView[4];
     private final Button[] reversePaneButtons = new Button[4];
+    private final Button[] reverseNudgeButtons = new Button[4];
     private Button reverseLowerButton;
     private Button reverseRaiseButton;
     private boolean reverseCropUiUpdating;
@@ -207,6 +217,7 @@ public final class CameraProbeActivity extends Activity
     private Button cameraTabButton;
     private Button cameraDebugTabButton;
     private Button directCameraDebugTabButton;
+    private Button cameraAvmDebugSubtabButton;
     private Button reverseCameraTabButton;
     private Button musicTabButton;
     private Button settingsTabButton;
@@ -219,6 +230,7 @@ public final class CameraProbeActivity extends Activity
     private View cameraPage;
     private View cameraDebugPage;
     private View directCameraDebugPage;
+    private View debugPage;
     private View reverseCameraPage;
     private View musicPage;
     private View settingsPage;
@@ -265,12 +277,16 @@ public final class CameraProbeActivity extends Activity
     private int pendingDirectCameraIndex = -1;
     private String pendingDirectCameraTag;
     private int activeCameraViewpoint = -1;
+    private int retryStockViewpoint = -1;
+    private boolean retryStockDebug;
+    private boolean invalidStockSurfaceRetryUsed;
     private boolean pendingCameraDebug;
     private boolean cameraHandoffPending;
     private Bitmap calibrationCaptureBitmap;
     private Bitmap calibrationResultBitmap;
     private int lastCalibrationCopyResult = PixelCopy.SUCCESS;
     private int selectedTab = -1;
+    private int selectedDebugMode;
     private int reversePreviewRequestSequence;
     private AlertDialog updateDialog;
     private AlertDialog updateProgressDialog;
@@ -329,6 +345,7 @@ public final class CameraProbeActivity extends Activity
             manualTurnRequestPending = false;
             cameraDiscovered = false;
             requestedOpen = false;
+            cameraTransition.cancel();
             guardStatus.setText("Службу зупинено");
             settingsStatus.setText("Службу зупинено");
             adbStatus.setText("ADB/helper недоступний");
@@ -448,8 +465,15 @@ public final class CameraProbeActivity extends Activity
     protected void onStop() {
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
+        cameraTransition.cancel();
+        retryStockViewpoint = -1;
+        retryStockDebug = false;
         if (!shutdownRequested) {
-            if (cameraMinSpeedInput != null) saveCameraMinSpeed();
+            if (cameraMinSpeedInput != null && cameraMaxSpeedInput != null) {
+                saveRearCameraSpeedRange();
+            }
+            if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
+                    && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
             closeCamera("activity_stopped");
             detachHelperCallback();
             CameraHelperService.activityClosed(this);
@@ -746,9 +770,8 @@ public final class CameraProbeActivity extends Activity
         guardTabButton = button("Поворотники");
         calibrationTabButton = button("Калібрування камер");
         cameraTabButton = button("Камери");
-        reverseCameraTabButton = button("Камери заднього ходу");
-        cameraDebugTabButton = button("Режими AVM");
-        directCameraDebugTabButton = button("Direct camera");
+        reverseCameraTabButton = button("Задній хід");
+        cameraDebugTabButton = button("Відладка");
         musicTabButton = button("Музика");
         settingsTabButton = button("Налаштування");
         guardTabButton.setTextSize(14);
@@ -756,19 +779,16 @@ public final class CameraProbeActivity extends Activity
         cameraTabButton.setTextSize(14);
         reverseCameraTabButton.setTextSize(14);
         cameraDebugTabButton.setTextSize(14);
-        directCameraDebugTabButton.setTextSize(14);
         musicTabButton.setTextSize(14);
         settingsTabButton.setTextSize(14);
         tabs.addView(guardTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(cameraTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        tabs.addView(calibrationTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(reverseCameraTabButton,
                 new LinearLayout.LayoutParams(0, dp(48), 1));
-        tabs.addView(calibrationTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(musicTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-        tabs.addView(directCameraDebugTabButton,
-                new LinearLayout.LayoutParams(0, dp(48), 1));
-        tabs.addView(cameraDebugTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(settingsTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        tabs.addView(cameraDebugTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         root.addView(tabs);
 
         FrameLayout pages = new FrameLayout(this);
@@ -783,6 +803,7 @@ public final class CameraProbeActivity extends Activity
         musicPage = buildMusicPanel();
         cameraDebugPage = buildCameraDebugPanel();
         directCameraDebugPage = buildDirectCameraDebugPanel();
+        debugPage = buildCombinedDebugPanel();
         ScrollView settingsScroll = new ScrollView(this);
         settingsScroll.setFillViewport(true);
         settingsScroll.addView(buildSettingsPanel(), new ScrollView.LayoutParams(
@@ -798,9 +819,7 @@ public final class CameraProbeActivity extends Activity
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(musicPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        pages.addView(cameraDebugPage, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        pages.addView(directCameraDebugPage, new FrameLayout.LayoutParams(
+        pages.addView(debugPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(settingsPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
@@ -814,24 +833,30 @@ public final class CameraProbeActivity extends Activity
         reverseCameraTabButton.setOnClickListener(view -> selectTab(TAB_REVERSE_CAMERAS));
         musicTabButton.setOnClickListener(view -> selectTab(TAB_MUSIC));
         cameraDebugTabButton.setOnClickListener(view -> selectTab(TAB_CAMERA_DEBUG));
-        directCameraDebugTabButton.setOnClickListener(
-                view -> selectTab(TAB_DIRECT_CAMERA_DEBUG));
         settingsTabButton.setOnClickListener(view -> selectTab(TAB_SETTINGS));
         setContentView(root);
         int initialTab = preferences.contains("selected_tab")
                 ? preferences.getInt("selected_tab", TAB_GUARD)
                 : preferences.getBoolean("camera_tab_selected", false)
                         ? TAB_CAMERAS : TAB_GUARD;
+        if (initialTab == TAB_DIRECT_CAMERA_DEBUG) {
+            selectDebugMode(0);
+            initialTab = TAB_CAMERA_DEBUG;
+        }
         selectTab(initialTab);
     }
 
     private void selectTab(int tab) {
+        if (tab == TAB_DIRECT_CAMERA_DEBUG) tab = TAB_CAMERA_DEBUG;
         if (!isValidTab(tab)) tab = TAB_GUARD;
-        if (selectedTab != -1 && selectedTab != tab
-                && (requestedOpen || cameraHandoffPending)) {
-            closeCamera("camera_tab_changed");
-        }
+        if (selectedTab != tab) invalidStockSurfaceRetryUsed = false;
+        int previousTab = selectedTab;
         selectedTab = tab;
+        boolean transitionStarted = false;
+        if (previousTab != -1 && previousTab != tab
+                && (requestedOpen || cameraHandoffPending)) {
+            transitionStarted = closeCameraForTransition("camera_tab_changed");
+        }
         guardPage.setVisibility(tab == TAB_GUARD ? View.VISIBLE : View.GONE);
         calibrationPage.setVisibility(
                 tab == TAB_CAMERA_CALIBRATION ? View.VISIBLE : View.GONE);
@@ -839,9 +864,7 @@ public final class CameraProbeActivity extends Activity
         reverseCameraPage.setVisibility(
                 tab == TAB_REVERSE_CAMERAS ? View.VISIBLE : View.GONE);
         musicPage.setVisibility(tab == TAB_MUSIC ? View.VISIBLE : View.GONE);
-        cameraDebugPage.setVisibility(tab == TAB_CAMERA_DEBUG ? View.VISIBLE : View.GONE);
-        directCameraDebugPage.setVisibility(
-                tab == TAB_DIRECT_CAMERA_DEBUG ? View.VISIBLE : View.GONE);
+        debugPage.setVisibility(tab == TAB_CAMERA_DEBUG ? View.VISIBLE : View.GONE);
         settingsPage.setVisibility(tab == TAB_SETTINGS ? View.VISIBLE : View.GONE);
         guardTabButton.setBackgroundColor(tabColor(tab == TAB_GUARD));
         calibrationTabButton.setBackgroundColor(
@@ -851,17 +874,17 @@ public final class CameraProbeActivity extends Activity
                 tabColor(tab == TAB_REVERSE_CAMERAS));
         musicTabButton.setBackgroundColor(tabColor(tab == TAB_MUSIC));
         cameraDebugTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERA_DEBUG));
-        directCameraDebugTabButton.setBackgroundColor(
-                tabColor(tab == TAB_DIRECT_CAMERA_DEBUG));
         settingsTabButton.setBackgroundColor(tabColor(tab == TAB_SETTINGS));
         preferences.edit().putInt("selected_tab", tab).apply();
-        if (tab == TAB_CAMERA_CALIBRATION) maybeOpenCalibrationCamera();
+        if (!transitionStarted && tab == TAB_CAMERA_CALIBRATION) {
+            maybeOpenCalibrationCamera();
+        }
         if (tab == TAB_CAMERAS) {
             updateCameraPositionHandle();
             updateProductionPreviewSize();
-            maybeOpenProductionPreview();
+            if (!transitionStarted) maybeOpenProductionPreview();
         }
-        if (tab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
+        if (!transitionStarted && tab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
     }
 
     private static boolean isValidTab(int tab) {
@@ -1175,6 +1198,21 @@ public final class CameraProbeActivity extends Activity
         }
         editorPane.addView(selectors);
 
+        LinearLayout nudgeRow = new LinearLayout(this);
+        String[] nudgeNames = {"Вліво", "Вверх", "Вправо", "Вниз"};
+        float[] nudgeX = {-0.01f, 0.0f, 0.01f, 0.0f};
+        float[] nudgeY = {0.0f, -0.01f, 0.0f, 0.01f};
+        for (int i = 0; i < reverseNudgeButtons.length; i++) {
+            final float deltaX = nudgeX[i];
+            final float deltaY = nudgeY[i];
+            reverseNudgeButtons[i] = button(nudgeNames[i]);
+            reverseNudgeButtons[i].setOnClickListener(
+                    view -> nudgeReversePane(deltaX, deltaY));
+            nudgeRow.addView(reverseNudgeButtons[i],
+                    new LinearLayout.LayoutParams(0, dp(38), 1));
+        }
+        editorPane.addView(nudgeRow);
+
         LinearLayout crop = new LinearLayout(this);
         String[] cropNames = {"Ліва межа", "Верхня межа", "Права межа", "Нижня межа"};
         for (int i = 0; i < reverseCropSliders.length; i++) {
@@ -1370,6 +1408,18 @@ public final class CameraProbeActivity extends Activity
                 "action", raise ? "raise" : "lower");
     }
 
+    private void nudgeReversePane(float deltaX, float deltaY) {
+        int cameraIndex = reverseCameraEditor.selectedCamera();
+        reverseCameraLayout = ReverseCameraLayout.move(
+                reverseCameraLayout, cameraIndex, deltaX, deltaY);
+        ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
+        reverseCameraEditor.setLayoutModel(reverseCameraLayout);
+        reverseCameraPreview.applyLayout(reverseCameraLayout);
+        CameraHelperService.reverseCameraSettingsChanged(this);
+        record("reverse_position_nudged", "camera_index", cameraIndex,
+                "delta_x", deltaX, "delta_y", deltaY);
+    }
+
     private View buildCameraPanel() {
         BlindSpotOverlayController.migrateOverlayPreferences(preferences);
         loadCameraProfiles();
@@ -1419,6 +1469,22 @@ public final class CameraProbeActivity extends Activity
         minSpeedUnit.setGravity(Gravity.CENTER);
         speedRow.addView(minSpeedUnit, new LinearLayout.LayoutParams(dp(72), dp(46)));
         rearPolicy.addView(speedRow);
+
+        LinearLayout maxSpeedRow = new LinearLayout(this);
+        maxSpeedRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView maxSpeedLabel = label("Макс. швидкість для задніх камер");
+        maxSpeedLabel.setTextSize(15);
+        maxSpeedRow.addView(maxSpeedLabel, new LinearLayout.LayoutParams(0, dp(46), 1));
+        cameraMaxSpeedInput = numberInput(preferences.getInt(
+                BlindSpotOverlayController.PREF_MAX_SPEED, DEFAULT_CAMERA_MAX_SPEED_KPH));
+        cameraMaxSpeedInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        maxSpeedRow.addView(cameraMaxSpeedInput,
+                new LinearLayout.LayoutParams(dp(84), dp(44)));
+        TextView maxSpeedUnit = label("км/год");
+        maxSpeedUnit.setTextSize(15);
+        maxSpeedUnit.setGravity(Gravity.CENTER);
+        maxSpeedRow.addView(maxSpeedUnit, new LinearLayout.LayoutParams(dp(72), dp(46)));
+        rearPolicy.addView(maxSpeedRow);
 
         LinearLayout warningRow = new LinearLayout(this);
         warningRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -1473,6 +1539,40 @@ public final class CameraProbeActivity extends Activity
         frontSpeedRow.addView(frontSpeedUnit, new LinearLayout.LayoutParams(dp(72), dp(46)));
         frontPolicy.addView(frontSpeedRow);
 
+        LinearLayout frontMaxSpeedRow = new LinearLayout(this);
+        frontMaxSpeedRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView frontMaxSpeedLabel = label("Макс. швидкість для передніх камер");
+        frontMaxSpeedLabel.setTextSize(15);
+        frontMaxSpeedRow.addView(frontMaxSpeedLabel,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        frontCameraMaxSpeedInput = numberInput(preferences.getInt(
+                PREF_FRONT_CAMERA_MAX_SPEED, DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH));
+        frontCameraMaxSpeedInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        frontMaxSpeedRow.addView(frontCameraMaxSpeedInput,
+                new LinearLayout.LayoutParams(dp(84), dp(44)));
+        TextView frontMaxSpeedUnit = label("км/год");
+        frontMaxSpeedUnit.setTextSize(15);
+        frontMaxSpeedUnit.setGravity(Gravity.CENTER);
+        frontMaxSpeedRow.addView(frontMaxSpeedUnit,
+                new LinearLayout.LayoutParams(dp(72), dp(46)));
+        frontPolicy.addView(frontMaxSpeedRow);
+
+        LinearLayout frontAngleRow = new LinearLayout(this);
+        frontAngleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView frontAngleLabel = label("Мін. кут керма");
+        frontAngleLabel.setTextSize(15);
+        frontAngleRow.addView(frontAngleLabel, new LinearLayout.LayoutParams(0, dp(46), 1));
+        frontCameraMinAngleInput = numberInput(Math.round(preferences.getFloat(
+                PREF_FRONT_CAMERA_MIN_ANGLE, DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG)));
+        frontCameraMinAngleInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        frontAngleRow.addView(frontCameraMinAngleInput,
+                new LinearLayout.LayoutParams(dp(84), dp(44)));
+        TextView frontAngleUnit = label("град.");
+        frontAngleUnit.setTextSize(15);
+        frontAngleUnit.setGravity(Gravity.CENTER);
+        frontAngleRow.addView(frontAngleUnit, new LinearLayout.LayoutParams(dp(72), dp(46)));
+        frontPolicy.addView(frontAngleRow);
+
         frontTurnRequiredSwitch = new Switch(this);
         frontTurnRequiredSwitch.setText("Обов'язково поворотник для передніх камер");
         frontTurnRequiredSwitch.setTextColor(Color.WHITE);
@@ -1489,7 +1589,7 @@ public final class CameraProbeActivity extends Activity
         policyHost.addView(frontPolicy, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
         settingsPane.addView(policyHost, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(168)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(264)));
 
         LinearLayout cameraSide = new LinearLayout(this);
         cameraSide.setOrientation(LinearLayout.HORIZONTAL);
@@ -1560,7 +1660,10 @@ public final class CameraProbeActivity extends Activity
             updateControls();
         });
         cameraMinSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
-            if (!hasFocus) saveCameraMinSpeed();
+            if (!hasFocus) saveRearCameraSpeedRange();
+        });
+        cameraMaxSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveRearCameraSpeedRange();
         });
         frontCameraSwitch.setOnCheckedChangeListener((button, checked) -> {
             preferences.edit().putBoolean(PREF_FRONT_CAMERA_ENABLED, checked).apply();
@@ -1570,7 +1673,13 @@ public final class CameraProbeActivity extends Activity
             updateControls();
         });
         frontCameraMinSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
-            if (!hasFocus) saveFrontCameraMinSpeed();
+            if (!hasFocus) saveFrontCameraPolicy();
+        });
+        frontCameraMaxSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveFrontCameraPolicy();
+        });
+        frontCameraMinAngleInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveFrontCameraPolicy();
         });
         frontTurnRequiredSwitch.setOnCheckedChangeListener((button, checked) -> {
             preferences.edit().putBoolean(PREF_FRONT_CAMERA_TURN_REQUIRED, checked).apply();
@@ -1832,6 +1941,55 @@ public final class CameraProbeActivity extends Activity
         return panel;
     }
 
+    private View buildCombinedDebugPanel() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout tabs = new LinearLayout(this);
+        directCameraDebugTabButton = button("Direct camera");
+        cameraAvmDebugSubtabButton = button("Режими AVM");
+        tabs.addView(directCameraDebugTabButton,
+                new LinearLayout.LayoutParams(0, dp(44), 1));
+        tabs.addView(cameraAvmDebugSubtabButton,
+                new LinearLayout.LayoutParams(0, dp(44), 1));
+        root.addView(tabs);
+
+        FrameLayout pages = new FrameLayout(this);
+        pages.addView(directCameraDebugPage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        pages.addView(cameraDebugPage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(pages, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+
+        selectedDebugMode = clamp(preferences.getInt("selected_debug_mode", 0), 0, 1);
+        directCameraDebugTabButton.setOnClickListener(view -> selectDebugMode(0));
+        cameraAvmDebugSubtabButton.setOnClickListener(view -> selectDebugMode(1));
+        selectDebugMode(selectedDebugMode);
+        return root;
+    }
+
+    private void selectDebugMode(int mode) {
+        int next = clamp(mode, 0, 1);
+        if (selectedDebugMode != next && (requestedOpen || cameraHandoffPending)
+                && (activePreview == directCameraPreview || activePreview == debugPreview)) {
+            closeCamera("debug_subtab_changed");
+        }
+        selectedDebugMode = next;
+        preferences.edit().putInt("selected_debug_mode", next).apply();
+        if (directCameraDebugPage != null) {
+            directCameraDebugPage.setVisibility(next == 0 ? View.VISIBLE : View.GONE);
+        }
+        if (cameraDebugPage != null) {
+            cameraDebugPage.setVisibility(next == 1 ? View.VISIBLE : View.GONE);
+        }
+        if (directCameraDebugTabButton != null) {
+            directCameraDebugTabButton.setBackgroundColor(tabColor(next == 0));
+        }
+        if (cameraAvmDebugSubtabButton != null) {
+            cameraAvmDebugSubtabButton.setBackgroundColor(tabColor(next == 1));
+        }
+    }
+
     private View buildCameraDebugPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -1871,7 +2029,10 @@ public final class CameraProbeActivity extends Activity
             final int viewpoint = StockAvmPreview.horizontalViewpoint(i);
             Button mode = button(String.format(Locale.US, "%02d  %s",
                     i + 1, StockAvmPreview.horizontalLayoutName(i)));
-            mode.setOnClickListener(view -> openStockAvm(viewpoint, true));
+            mode.setOnClickListener(view -> {
+                invalidStockSurfaceRetryUsed = false;
+                openStockAvm(viewpoint, true);
+            });
             horizontalLayoutButtons[i] = mode;
             modes.addView(mode, new LinearLayout.LayoutParams(dp(300), dp(54)));
         }
@@ -1982,9 +2143,8 @@ public final class CameraProbeActivity extends Activity
         boolean switchingOpenCamera = open && requestedOpen
                 && activePreview == calibrationPreview
                 && calibrationCameraId != cameraId;
-        if (switchingOpenCamera) closeCamera("calibration_camera_changed");
-
         calibrationCameraId = cameraId;
+        if (switchingOpenCamera) closeCameraForTransition("calibration_camera_changed");
         CameraProfile profile = CameraProfile.of(cameraId);
         DirectCameraCrop crop = loadCalibrationCrop(cameraId);
         calibrationCropOverlay.setCrop(crop);
@@ -1995,11 +2155,7 @@ public final class CameraProbeActivity extends Activity
         }
         record("calibration_camera_selected", "camera_id", cameraId,
                 "camera", profile.wireName, "preview_index", profile.previewIndex);
-        if (open) {
-            calibrationPreview.postDelayed(
-                    () -> openCalibrationCamera(profile.previewIndex),
-                    switchingOpenCamera ? CAMERA_PREVIEW_HANDOFF_MS : 0);
-        }
+        if (open && !switchingOpenCamera) openCalibrationCamera(profile.previewIndex);
     }
 
     private DirectCameraCrop loadCalibrationCrop(int cameraId) {
@@ -2128,6 +2284,7 @@ public final class CameraProbeActivity extends Activity
     private void maybeOpenCalibrationCamera() {
         if (selectedTab != TAB_CAMERA_CALIBRATION || helper == null || !cameraDiscovered
                 || !calibrationSurfaceReady || requestedOpen || cameraHandoffPending
+                || cameraTransition.pending()
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED) {
             return;
@@ -2413,58 +2570,69 @@ public final class CameraProbeActivity extends Activity
         pushGuardConfig();
     }
 
-    private void saveCameraMinSpeed() {
+    private void saveRearCameraSpeedRange() {
         try {
-            int value = Integer.parseInt(cameraMinSpeedInput.getText().toString());
-            if (value < 0 || value > 300) throw new NumberFormatException();
-            preferences.edit().putInt(BlindSpotOverlayController.PREF_MIN_SPEED, value).apply();
-            record("camera_settings", "minimum_speed_kph", value);
+            int minimum = Integer.parseInt(cameraMinSpeedInput.getText().toString());
+            int maximum = Integer.parseInt(cameraMaxSpeedInput.getText().toString());
+            if (minimum < 0 || minimum > maximum || maximum > 300) {
+                throw new NumberFormatException();
+            }
+            preferences.edit()
+                    .putInt(BlindSpotOverlayController.PREF_MIN_SPEED, minimum)
+                    .putInt(BlindSpotOverlayController.PREF_MAX_SPEED, maximum)
+                    .apply();
+            record("camera_settings", "minimum_speed_kph", minimum,
+                    "maximum_speed_kph", maximum);
             CameraHelperService.cameraSettingsChanged(this);
         } catch (NumberFormatException error) {
-            cameraMinSpeedInput.setText(String.valueOf(DEFAULT_CAMERA_MIN_SPEED_KPH));
-            cameraStatus.setText("Мінімальна швидкість має бути 0..300 км/год");
+            cameraMinSpeedInput.setText(String.valueOf(preferences.getInt(
+                    BlindSpotOverlayController.PREF_MIN_SPEED,
+                    DEFAULT_CAMERA_MIN_SPEED_KPH)));
+            cameraMaxSpeedInput.setText(String.valueOf(preferences.getInt(
+                    BlindSpotOverlayController.PREF_MAX_SPEED,
+                    DEFAULT_CAMERA_MAX_SPEED_KPH)));
+            cameraStatus.setText("Швидкість має відповідати 0 <= мін. <= макс. <= 300");
         }
     }
 
-    private void saveFrontCameraMinSpeed() {
+    private void saveFrontCameraPolicy() {
         try {
-            int value = Integer.parseInt(frontCameraMinSpeedInput.getText().toString());
-            if (value < 0 || value > 300) throw new NumberFormatException();
-            preferences.edit().putInt(PREF_FRONT_CAMERA_MIN_SPEED, value).apply();
-            record("front_camera_settings", "minimum_speed_kph", value);
+            int minimum = Integer.parseInt(frontCameraMinSpeedInput.getText().toString());
+            int maximum = Integer.parseInt(frontCameraMaxSpeedInput.getText().toString());
+            int angle = Integer.parseInt(frontCameraMinAngleInput.getText().toString());
+            if (minimum < 0 || minimum > maximum || maximum > 300
+                    || angle < 0 || angle > 780) throw new NumberFormatException();
+            preferences.edit()
+                    .putInt(PREF_FRONT_CAMERA_MIN_SPEED, minimum)
+                    .putInt(PREF_FRONT_CAMERA_MAX_SPEED, maximum)
+                    .putFloat(PREF_FRONT_CAMERA_MIN_ANGLE, angle)
+                    .apply();
+            record("front_camera_settings", "minimum_speed_kph", minimum,
+                    "maximum_speed_kph", maximum, "minimum_angle_deg", angle);
             CameraHelperService.cameraSettingsChanged(this);
         } catch (NumberFormatException error) {
             frontCameraMinSpeedInput.setText(
-                    String.valueOf(DEFAULT_FRONT_CAMERA_MIN_SPEED_KPH));
-            cameraStatus.setText("Мінімальна швидкість має бути 0..300 км/год");
+                    String.valueOf(preferences.getInt(PREF_FRONT_CAMERA_MIN_SPEED,
+                            DEFAULT_FRONT_CAMERA_MIN_SPEED_KPH)));
+            frontCameraMaxSpeedInput.setText(
+                    String.valueOf(preferences.getInt(PREF_FRONT_CAMERA_MAX_SPEED,
+                            DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH)));
+            frontCameraMinAngleInput.setText(String.valueOf(Math.round(preferences.getFloat(
+                    PREF_FRONT_CAMERA_MIN_ANGLE, DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG))));
+            cameraStatus.setText("Швидкість: 0 <= мін. <= макс. <= 300; кут: 0..780");
         }
     }
 
     private void loadCameraProfiles() {
         for (CameraProfile profile : CameraProfile.values()) {
-            if (profile.rear()) {
-                cameraScale[profile.id] = BlindSpotOverlayController.readScale(
-                        preferences, profile.right());
-                cameraTarget[profile.id] = BlindSpotOverlayController.readTarget(
-                        preferences, profile.right());
-                cameraX[profile.id] = BlindSpotOverlayController.readPosition(
-                        preferences, profile.right(), false);
-                cameraY[profile.id] = BlindSpotOverlayController.readPosition(
-                        preferences, profile.right(), true);
-                continue;
-            }
-            cameraScale[profile.id] = clamp(preferences.getInt(
-                    cameraScaleKey(profile), BlindSpotOverlayController.DEFAULT_SCALE_PERCENT),
-                    BlindSpotOverlayController.MIN_SCALE_PERCENT,
-                    BlindSpotOverlayController.MAX_SCALE_PERCENT);
-            int target = preferences.getInt(
-                    cameraTargetKey(profile), CameraDisplayTarget.TABLET);
-            cameraTarget[profile.id] = CameraDisplayTarget.isValid(target)
-                    ? target : CameraDisplayTarget.TABLET;
-            cameraX[profile.id] = clamp(preferences.getFloat(
-                    cameraXKey(profile), profile.right() ? 1.0f : 0.0f), 0.0f, 1.0f);
-            cameraY[profile.id] = clamp(preferences.getFloat(
-                    cameraYKey(profile), 0.0f), 0.0f, 1.0f);
+            cameraScale[profile.id] = BlindSpotOverlayController.readScale(
+                    preferences, profile);
+            cameraTarget[profile.id] = BlindSpotOverlayController.readTarget(
+                    preferences, profile);
+            cameraX[profile.id] = BlindSpotOverlayController.readPosition(
+                    preferences, profile, false);
+            cameraY[profile.id] = BlindSpotOverlayController.readPosition(
+                    preferences, profile, true);
         }
     }
 
@@ -2501,7 +2669,10 @@ public final class CameraProbeActivity extends Activity
 
     private void selectCameraProfile(int cameraId, boolean open) {
         if (!CameraProfile.isValid(cameraId)) return;
+        boolean switchingOpenCamera = open && requestedOpen
+                && activePreview == cameraPreview && selectedCameraId != cameraId;
         selectedCameraId = cameraId;
+        if (switchingOpenCamera) closeCameraForTransition("production_camera_changed");
         CameraProfile profile = CameraProfile.of(cameraId);
         preferences.edit().putInt("camera_selected_profile", cameraId).apply();
         boolean front = profile.front();
@@ -2524,7 +2695,7 @@ public final class CameraProbeActivity extends Activity
         record("camera_profile_selected", "camera_id", cameraId,
                 "camera", profile.wireName, "preview_index", profile.previewIndex);
         updateControls();
-        if (!open) return;
+        if (!open || switchingOpenCamera) return;
         if (requestedOpen && activePreview != cameraPreview) return;
         openStockAvm(profile.right()
                 ? StockAvmPreview.VIEW_BLIND_SPOT_RIGHT
@@ -2783,7 +2954,7 @@ public final class CameraProbeActivity extends Activity
                 || reverseCameraPreview == null || !reverseCameraSurfacesReady
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED
-                || requestedOpen || cameraHandoffPending) {
+                || requestedOpen || cameraHandoffPending || cameraTransition.pending()) {
             return;
         }
         int requestId = ++reversePreviewRequestSequence;
@@ -2816,7 +2987,7 @@ public final class CameraProbeActivity extends Activity
                 || cameraPreview == null || !cameraSurfaceReady
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED
-                || requestedOpen || cameraHandoffPending) {
+                || requestedOpen || cameraHandoffPending || cameraTransition.pending()) {
             return;
         }
         CameraProfile profile = CameraProfile.of(selectedCameraId);
@@ -2996,6 +3167,8 @@ public final class CameraProbeActivity extends Activity
             return;
         }
 
+        invalidStockSurfaceRetryUsed = false;
+        selectDebugMode(1);
         selectTab(TAB_CAMERA_DEBUG);
         pendingDiagnosticAvmModeIndex = index;
         String mode = StockAvmPreview.horizontalLayoutName(index);
@@ -3020,8 +3193,8 @@ public final class CameraProbeActivity extends Activity
         record("mapping_self_check", "ok", true);
     }
 
-    private void closeCamera(String reason) {
-        if (!requestedOpen && !cameraHandoffPending) return;
+    private boolean closeCamera(String reason) {
+        if (!requestedOpen && !cameraHandoffPending) return false;
         TextView status = activeCameraStatus();
         if (cameraHandoffPending) {
             cameraPreview.removeCallbacks(finishCameraHandoff);
@@ -3050,6 +3223,40 @@ public final class CameraProbeActivity extends Activity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         updateControls();
+        return wasOpen && current != null;
+    }
+
+    private boolean closeCameraForTransition(String reason) {
+        String token = cameraTransition.begin(reason);
+        boolean waiting = closeCamera(token);
+        if (!waiting) finishCameraTransition(token, "local");
+        return waiting;
+    }
+
+    private void finishCameraTransition(String token, String source) {
+        if (!cameraTransition.complete(token)) {
+            record("camera_transition_ignored", "token", token, "source", source);
+            return;
+        }
+        record("camera_transition_completed", "token", token, "source", source,
+                "selected_tab", selectedTab);
+        resumeSelectedCameraPreview();
+        updateControls();
+    }
+
+    private void resumeSelectedCameraPreview() {
+        if (cameraTransition.pending()) return;
+        if (retryStockViewpoint >= 0) {
+            int viewpoint = retryStockViewpoint;
+            boolean debug = retryStockDebug;
+            retryStockViewpoint = -1;
+            retryStockDebug = false;
+            openStockAvm(viewpoint, debug);
+            return;
+        }
+        if (selectedTab == TAB_CAMERA_CALIBRATION) maybeOpenCalibrationCamera();
+        else if (selectedTab == TAB_CAMERAS) maybeOpenProductionPreview();
+        else if (selectedTab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
     }
 
     private TextView cameraStatus(boolean debug) {
@@ -3253,9 +3460,19 @@ public final class CameraProbeActivity extends Activity
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
             data.writeString(reason);
             requireTransaction(current, CameraHelperMain.TX_CLOSE, data, reply);
-            record("ipc_reply", "operation", "close", "reply", reply.readString());
+            String result = reply.readString();
+            record("ipc_reply", "operation", "close", "reply", result);
+            if (CameraTransition.owns(reason)) {
+                JSONObject json = new JSONObject(result);
+                if (!"stock_avm_shell_close_queued".equals(json.optString("kind"))) {
+                    runOnUiThread(() -> finishCameraTransition(reason, "ipc_reply"));
+                }
+            }
         } catch (Throwable error) {
             record("ipc_error", "operation", "close", "error", error.toString());
+            if (CameraTransition.owns(reason)) {
+                runOnUiThread(() -> finishCameraTransition(reason, "ipc_error"));
+            }
         } finally {
             reply.recycle();
             data.recycle();
@@ -3650,6 +3867,24 @@ public final class CameraProbeActivity extends Activity
                     maybeOpenProductionPreview();
                     maybeOpenReversePreview();
                 } else if ("camera_error".equals(kind)) {
+                    if (isInvalidStockSurfaceError(
+                            json.optString("renderer"), json.optString("stage"),
+                            json.optString("error"))) {
+                        if (cameraTransition.pending()) return;
+                        if (!invalidStockSurfaceRetryUsed && requestedOpen) {
+                            invalidStockSurfaceRetryUsed = true;
+                            retryStockViewpoint = activePreview == debugPreview
+                                    ? activeCameraViewpoint : -1;
+                            retryStockDebug = activePreview == debugPreview;
+                            cameraStatusForEvent(json).setText(
+                                    "AVM Surface invalid; retrying once...");
+                            record("stock_avm_recovery", "state", "attempt",
+                                    "viewpoint", retryStockViewpoint,
+                                    "debug", retryStockDebug);
+                            closeCameraForTransition("invalid_stock_surface_recovery");
+                            return;
+                        }
+                    }
                     boolean resumeOverlay = requestedOpen;
                     requestedOpen = false;
                     stopCalibrationCopies(true);
@@ -3660,7 +3895,15 @@ public final class CameraProbeActivity extends Activity
                     activePreviewCover = null;
                     if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                 } else if ("camera_closed".equals(kind)) {
-                    if (!isIntermediateCameraClose(json.optString("reason"))) {
+                    String reason = json.optString("reason");
+                    if (CameraTransition.owns(reason)) {
+                        if ("stock_avm_shell".equals(json.optString("renderer"))) {
+                            finishCameraTransition(reason, "shell_callback");
+                        } else {
+                            record("camera_transition_close_observed", "token", reason,
+                                    "source", json.optString("source"));
+                        }
+                    } else if (!isIntermediateCameraClose(reason)) {
                         boolean resumeOverlay = requestedOpen;
                         requestedOpen = false;
                         stopCalibrationCopies(true);
@@ -3973,7 +4216,19 @@ public final class CameraProbeActivity extends Activity
     }
 
     static boolean isIntermediateCameraClose(String reason) {
-        return "preview_handoff".equals(reason) || "replace_preview".equals(reason);
+        return "preview_handoff".equals(reason)
+                || (reason != null && reason.startsWith("replace_"));
+    }
+
+    static boolean isInvalidStockSurfaceError(
+            String renderer, String stage, String error) {
+        String combined = (renderer == null ? "" : renderer) + " "
+                + (stage == null ? "" : stage) + " "
+                + (error == null ? "" : error);
+        String lower = combined.toLowerCase(Locale.US);
+        return lower.contains("stock_avm")
+                && lower.contains("surface")
+                && (lower.contains("invalid") || lower.contains("get_camera_input_surface"));
     }
 
     private void createLogFile() {
