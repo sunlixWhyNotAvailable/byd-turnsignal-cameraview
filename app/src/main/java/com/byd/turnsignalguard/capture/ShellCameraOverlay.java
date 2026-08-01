@@ -21,12 +21,12 @@ import java.lang.reflect.Method;
 import java.util.function.BiConsumer;
 
 final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
-    private static final int CORNER_RADIUS_DP = 8;
     private static final int WARNING_WIDTH_PERCENT = 20;
     private static final long WARNING_PULSE_HALF_CYCLE_MS = 800;
     private static final String WINDOW_TITLE = "BYD trusted blind-spot camera";
 
     private final Context context;
+    private final int cameraId;
     private final BiConsumer<String, Object[]> eventSink;
 
     private Context windowContext;
@@ -46,12 +46,17 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int activeTarget = -1;
     private int activeDisplayId = -1;
 
-    ShellCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
+    ShellCameraOverlay(
+            Context context, int cameraId, BiConsumer<String, Object[]> eventSink) {
         this.context = context;
+        this.cameraId = CameraProfile.of(cameraId).id;
         this.eventSink = eventSink;
     }
 
     void prepare(CameraShellProtocol.OverlaySpec spec) throws Exception {
+        if (spec.cameraId != cameraId) {
+            throw new IllegalArgumentException("overlay camera id mismatch");
+        }
         Display display = CameraDisplayTarget.resolve(context, spec.target);
         if (display == null) {
             if (root != null && activeTarget != spec.target) {
@@ -124,7 +129,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     void setWarning(
             int expectedRequestId, int expectedSurfaceGeneration, int edge, int mode) {
         CameraShellProtocol.validateWarning(
-                expectedRequestId, expectedSurfaceGeneration, edge, mode);
+                cameraId, expectedRequestId, expectedSurfaceGeneration, edge, mode);
         requireCurrent(expectedRequestId, expectedSurfaceGeneration);
         clearWarning("warning_replaced");
         if (edge == CameraShellProtocol.WARNING_EDGE_NONE) {
@@ -196,7 +201,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextRoot.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
         GradientDrawable background = new GradientDrawable();
         background.setColor(Color.BLACK);
-        background.setCornerRadius(dp(CORNER_RADIUS_DP));
+        background.setCornerRadius(dp(spec.cornerRadiusDp));
         nextRoot.setBackground(background);
 
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
@@ -227,7 +232,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextLayout.y = spec.y;
         nextLayout.alpha = 0.0f;
         nextLayout.windowAnimations = 0;
-        nextLayout.setTitle(WINDOW_TITLE);
+        nextLayout.setTitle(WINDOW_TITLE + " " + CameraProfile.of(cameraId).wireName);
         String trustedApi = setTrustedOverlay(nextLayout);
 
         root = nextRoot;
@@ -247,7 +252,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "request_id", requestId, "width", spec.width, "height", spec.height,
                 "x", spec.x, "y", spec.y, "type", nextLayout.type,
                 "format", nextLayout.format, "alpha", nextLayout.alpha,
-                "trusted_api", trustedApi, "corner_radius_dp", CORNER_RADIUS_DP,
+                "trusted_api", trustedApi, "corner_radius_dp", spec.cornerRadiusDp,
                 "target", CameraDisplayTarget.name(spec.target),
                 "display_id", activeDisplayId,
                 "display_name", windows.getDefaultDisplay().getName());
@@ -256,6 +261,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
         visible = false;
         preview.applyDirectCameraCrop(spec.crop());
+        GradientDrawable background = (GradientDrawable) root.getBackground();
+        background.setCornerRadius(dp(spec.cornerRadiusDp));
         layout.width = spec.width;
         layout.height = spec.height;
         layout.x = spec.x;
@@ -380,7 +387,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emit(String kind, Object... fields) {
-        eventSink.accept(kind, fields);
+        Object[] tagged = new Object[fields.length + 2];
+        tagged[0] = "camera_id";
+        tagged[1] = cameraId;
+        System.arraycopy(fields, 0, tagged, 2, fields.length);
+        eventSink.accept(kind, tagged);
     }
 
     private int dp(int value) {

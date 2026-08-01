@@ -10,11 +10,13 @@
 
 - configurable long-turn guard using raw stalk, blink, steering-angle, and speed telemetry
 - configurable steering thresholds, correction delay, and maximum guard speed
-- left/right rear side-camera overlays triggered by the corresponding turn signal and speed condition
+- independently configured rear-left, rear-right, front-left, and front-right camera overlays
+- separate rear/front enable switches, speed thresholds, and an optional front-camera turn-signal requirement
 - optional enhanced reverse view combining rear, rear-left, and rear-right cameras over the stock reverse screen
-- touch-based reverse-layout editor with independent pane position, size, crop, and layer order
-- per-side crop calibration, aspect-ratio presets, free crop, scale, and placement
-- independent tablet or instrument-cluster destination for each side camera
+- touch-based reverse-layout editor with independent pane position, size, crop sliders, layer order, and a movable black background pane
+- four-camera crop calibration with aspect-ratio presets, free crop, scale, and placement
+- independent tablet or instrument-cluster destination for every side camera
+- configurable production-camera corner radius and a separate application settings tab
 - optional stock ambient-light synchronization for third-party Android music sources
 - AVM layout and direct-camera diagnostic tabs
 - persistent settings and lifetime turn/correction counters
@@ -36,9 +38,9 @@ After first launch:
 3. Accept the Android local-ADB RSA prompt. The key is generated and stored privately by the application.
 4. Enable `Авто-запуск` if the service should recover after vehicle boot and application updates.
 5. Configure the turn guard and camera speed limits.
-6. Open `Калібрування камер` to select the visible crop for each side.
-7. For each side, choose the tablet or instrument cluster, then set its size and position.
-8. Open `Камери заднього ходу` to configure the three-pane reverse layout. `Покращений задній вид` is off by default.
+6. Open `Калібрування камер` to select the visible crop for each rear/front side camera.
+7. For each camera, choose the tablet or instrument cluster, then set its size and position.
+8. Open `Камери заднього ходу` to configure the mirrored central rear pane, side panes, and black background. `Покращений задній вид` is off by default.
 9. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app switch. The app switch is off by default.
 
 ## Known Limitations
@@ -49,6 +51,7 @@ After first launch:
 - Instrument-cluster output depends on the tested BYD projection display and dashboard-layout service.
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
 - The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
+- Simultaneous rear/front crops from the same physical side depend on duplicate-index Surface support and must pass the bundled parked probe before public release.
 - Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
 
 ## Tested

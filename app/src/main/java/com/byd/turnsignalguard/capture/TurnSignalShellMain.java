@@ -108,7 +108,8 @@ public final class TurnSignalShellMain {
                     handler.post(() -> powerStateChanged(action));
                 }
             };
-            runtime = new TurnSignalGuardRuntime(context, handler, this::emit);
+            runtime = new TurnSignalGuardRuntime(
+                    context, handler, this::emit, this::markStartupCleanupAttempted);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
@@ -159,6 +160,10 @@ public final class TurnSignalShellMain {
                     guardEnabled = data.readInt() != 0;
                     runtime.configure(guardEnabled, data.readFloat(), data.readFloat(),
                             data.readInt(), data.readInt(), data.readInt());
+                    runtime.vehiclePowerStateChanged(
+                            awakeSession.interactive,
+                            awakeSession.generation,
+                            awakeSession.cleanupAttemptedGeneration);
                     reply.writeNoException();
                     return true;
                 }
@@ -310,6 +315,10 @@ public final class TurnSignalShellMain {
                     "android.intent.action.QUICKBOOT_POWERON".equals(action),
                     SystemClock.elapsedRealtime());
             saveAwakeSession();
+            runtime.vehiclePowerStateChanged(
+                    interactive,
+                    awakeSession.generation,
+                    awakeSession.cleanupAttemptedGeneration);
             boolean waiting;
             synchronized (this) {
                 waiting = recoveryEnabled && controllerToken == null;
@@ -372,14 +381,27 @@ public final class TurnSignalShellMain {
                     stored, bootCount(), isInteractive(), SystemClock.elapsedRealtime());
         }
 
-        private void saveAwakeSession() {
+        private boolean saveAwakeSession() {
             try (RandomAccessFile file = new RandomAccessFile(AWAKE_SESSION_PATH, "rw")) {
                 file.setLength(0);
                 file.write(awakeSession.encode().getBytes(StandardCharsets.US_ASCII));
+                file.getFD().sync();
+                return true;
             } catch (Throwable error) {
                 emit("shell_power_state_error", "stage", "persist_session",
                         "error", summary(error));
+                return false;
             }
+        }
+
+        private boolean markStartupCleanupAttempted(long generation) {
+            if (generation <= 0 || generation != awakeSession.generation) return false;
+            if (awakeSession.cleanupAttemptedGeneration == generation) return true;
+            long previous = awakeSession.cleanupAttemptedGeneration;
+            awakeSession.cleanupAttemptedGeneration = generation;
+            if (saveAwakeSession()) return true;
+            awakeSession.cleanupAttemptedGeneration = previous;
+            return false;
         }
 
         private long bootCount() {
@@ -537,17 +559,20 @@ public final class TurnSignalShellMain {
             boolean unpairedInteractiveWake;
             long lastWakeElapsedMs;
             long lastObservedElapsedMs;
+            long cleanupAttemptedGeneration;
 
             AwakeSessionState(
                     long bootCount, long generation, boolean interactive,
                     boolean unpairedInteractiveWake,
-                    long lastWakeElapsedMs, long lastObservedElapsedMs) {
+                    long lastWakeElapsedMs, long lastObservedElapsedMs,
+                    long cleanupAttemptedGeneration) {
                 this.bootCount = bootCount;
                 this.generation = Math.max(0, generation);
                 this.interactive = interactive;
                 this.unpairedInteractiveWake = unpairedInteractiveWake;
                 this.lastWakeElapsedMs = Math.max(0, lastWakeElapsedMs);
                 this.lastObservedElapsedMs = Math.max(0, lastObservedElapsedMs);
+                this.cleanupAttemptedGeneration = Math.max(0, cleanupAttemptedGeneration);
             }
 
             static AwakeSessionState reconcile(
@@ -556,7 +581,7 @@ public final class TurnSignalShellMain {
                 if (stored == null) {
                     return new AwakeSessionState(bootCount, interactive ? 1 : 0,
                             interactive, interactive,
-                            interactive ? elapsedMs : 0, elapsedMs);
+                            interactive ? elapsedMs : 0, elapsedMs, 0);
                 }
                 boolean rebooted = bootCount >= 0 && stored.bootCount >= 0
                         && bootCount != stored.bootCount;
@@ -564,7 +589,8 @@ public final class TurnSignalShellMain {
                 AwakeSessionState state = new AwakeSessionState(
                         bootCount, stored.generation, stored.interactive,
                         stored.unpairedInteractiveWake,
-                        stored.lastWakeElapsedMs, elapsedMs);
+                        stored.lastWakeElapsedMs, elapsedMs,
+                        stored.cleanupAttemptedGeneration);
                 if (rebooted) {
                     state.interactive = interactive;
                     state.unpairedInteractiveWake = interactive;
@@ -605,20 +631,24 @@ public final class TurnSignalShellMain {
             String encode() {
                 return bootCount + "," + generation + "," + (interactive ? 1 : 0)
                         + "," + (unpairedInteractiveWake ? 1 : 0)
-                        + "," + lastWakeElapsedMs + "," + lastObservedElapsedMs;
+                        + "," + lastWakeElapsedMs + "," + lastObservedElapsedMs
+                        + "," + cleanupAttemptedGeneration;
             }
 
             static AwakeSessionState parse(String value) {
                 String[] fields = value == null ? new String[0] : value.trim().split(",");
-                if (fields.length != 5 && fields.length != 6) return null;
+                if (fields.length != 5 && fields.length != 6 && fields.length != 7) {
+                    return null;
+                }
                 try {
-                    boolean currentFormat = fields.length == 6;
+                    boolean currentFormat = fields.length >= 6;
                     return new AwakeSessionState(
                             Long.parseLong(fields[0]), Long.parseLong(fields[1]),
                             "1".equals(fields[2]),
                             currentFormat && "1".equals(fields[3]),
                             Long.parseLong(fields[currentFormat ? 4 : 3]),
-                            Long.parseLong(fields[currentFormat ? 5 : 4]));
+                            Long.parseLong(fields[currentFormat ? 5 : 4]),
+                            fields.length == 7 ? Long.parseLong(fields[6]) : 0);
                 } catch (NumberFormatException ignored) {
                     return null;
                 }

@@ -12,6 +12,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.function.BiConsumer;
+import java.util.function.LongPredicate;
 
 final class TurnSignalGuardRuntime {
     private static final int PERIOD_MS = 50;
@@ -40,6 +41,7 @@ final class TurnSignalGuardRuntime {
     private final Context context;
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
+    private final LongPredicate startupCleanupAttemptMarker;
     private final Runnable pollRunnable = this::pollAndSchedule;
 
     private IBinder autoservice;
@@ -95,14 +97,23 @@ final class TurnSignalGuardRuntime {
     private long lastTelemetryErrorAt;
     private String lastTelemetryErrorReason;
     private String primaryTelemetryError;
+    private boolean vehicleInteractive;
+    private long awakeSessionGeneration;
+    private long startupCleanupAttemptedGeneration;
+    private long startupCleanupArmedGeneration;
+    private long startupCleanupFreshGeneration;
+    private long startupCleanupPersistFailedGeneration;
+    private boolean writeInFlight;
 
     TurnSignalGuardRuntime(
             Context context,
             Handler handler,
-            BiConsumer<String, Object[]> eventSink) {
+            BiConsumer<String, Object[]> eventSink,
+            LongPredicate startupCleanupAttemptMarker) {
         this.context = context;
         this.handler = handler;
         this.eventSink = eventSink;
+        this.startupCleanupAttemptMarker = startupCleanupAttemptMarker;
         assumedLatchState = LATCH_UNKNOWN;
     }
 
@@ -124,6 +135,12 @@ final class TurnSignalGuardRuntime {
         runOnHandler(() -> configureOnHandler(
                 enabled, outward, center, correctionDelay, maxSpeed,
                 initialAssumedLatchState));
+    }
+
+    void vehiclePowerStateChanged(
+            boolean interactive, long generation, long cleanupAttemptedGeneration) {
+        runOnHandler(() -> vehiclePowerStateChangedOnHandler(
+                interactive, generation, cleanupAttemptedGeneration));
     }
 
     void reportStatus() {
@@ -333,7 +350,11 @@ final class TurnSignalGuardRuntime {
         correctionDelayMs = correctionDelay;
         maxSpeedKph = maxSpeed;
         requestedEnabled = enabled;
-        if (!enabled) hazardCleanupPending = false;
+        if (!enabled) {
+            hazardCleanupPending = false;
+            startupCleanupArmedGeneration = 0;
+            startupCleanupFreshGeneration = 0;
+        }
         if (enabled) guardDisableResetPending = false;
         if (configurationChanged) {
             resetSession();
@@ -345,7 +366,43 @@ final class TurnSignalGuardRuntime {
             emit("guard_disable_latch_reset_queued", "feature_id", TURN_SIGNAL_SET_FID,
                     "requested_payload", 0, "assumed_latch_state", assumedLatchState);
         }
+        if (enabled) armStartupCleanupIfNeeded();
         emitGuardConfig();
+    }
+
+    private void vehiclePowerStateChangedOnHandler(
+            boolean interactive, long generation, long cleanupAttemptedGeneration) {
+        vehicleInteractive = interactive;
+        awakeSessionGeneration = Math.max(0, generation);
+        startupCleanupAttemptedGeneration = Math.max(0, cleanupAttemptedGeneration);
+        if (!interactive) {
+            startupCleanupArmedGeneration = 0;
+            startupCleanupFreshGeneration = 0;
+            return;
+        }
+        armStartupCleanupIfNeeded();
+    }
+
+    private void armStartupCleanupIfNeeded() {
+        long generation = awakeSessionGeneration;
+        if (!vehicleInteractive || !requestedEnabled || generation <= 0
+                || startupCleanupAttemptedGeneration == generation
+                || startupCleanupArmedGeneration == generation) {
+            return;
+        }
+        resetSession();
+        clearSpeedDeferredSession();
+        hazardCleanupPending = false;
+        speedLimitCleanupPending = false;
+        startupCleanupArmedGeneration = generation;
+        startupCleanupFreshGeneration = 0;
+        startupCleanupPersistFailedGeneration = 0;
+        pollHealthy = false;
+        latestStalk = -1;
+        latestBlink = -1;
+        emit("startup_awake_session_cleanup_pending",
+                "awake_session_id", generation,
+                "attempted_session_id", startupCleanupAttemptedGeneration);
     }
 
     private void emitGuardConfig() {
@@ -398,6 +455,9 @@ final class TurnSignalGuardRuntime {
                         "steering_status", steering.status, "blink_status", blink.status,
                         "speed_status", speed.status);
             }
+            if (wasHealthy || now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
+                emitCameraState(now);
+            }
             return;
         }
 
@@ -427,11 +487,14 @@ final class TurnSignalGuardRuntime {
         observeStalk(stalk.raw, "poll", now);
         observeAngle(angle);
         observeBlink(blink.raw, now);
-        if ((blink.raw == BLINK_LEFT || blink.raw == BLINK_RIGHT)
-                && now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
+        if (startupCleanupArmedGeneration == awakeSessionGeneration) {
+            startupCleanupFreshGeneration = awakeSessionGeneration;
+        }
+        if (now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
             emitCameraState(now);
         }
         evaluateSpeedDeferredSession(now);
+        evaluateStartupAwakeSessionCleanup();
         evaluateGuardDisableReset();
         evaluateHazardCleanup();
         evaluateSpeedLimitCleanup();
@@ -455,6 +518,54 @@ final class TurnSignalGuardRuntime {
                     "speed_deferred", speedDeferredDirection != 0,
                     "direction", directionName(sessionActive
                             ? sessionDirection : speedDeferredDirection));
+        }
+    }
+
+    private void evaluateStartupAwakeSessionCleanup() {
+        long generation = awakeSessionGeneration;
+        if (!canRunStartupAwakeSessionCleanup(
+                vehicleInteractive,
+                requestedEnabled,
+                generation,
+                startupCleanupArmedGeneration,
+                startupCleanupFreshGeneration,
+                startupCleanupAttemptedGeneration,
+                startupCleanupPersistFailedGeneration,
+                telemetryReady(),
+                latestStalk,
+                latestBlink,
+                writeInFlight,
+                manualCommandPending,
+                confirmationPending,
+                !sessionActive
+                        && speedDeferredDirection == 0
+                        && pendingNeutralizeReason == null
+                        && !hazardCleanupPending
+                        && !speedLimitCleanupPending)) {
+            return;
+        }
+        if (!startupCleanupAttemptMarker.test(generation)) {
+            startupCleanupPersistFailedGeneration = generation;
+            emit("startup_awake_session_cleanup_failed",
+                    "awake_session_id", generation,
+                    "stage", "persist_attempted_session");
+            return;
+        }
+        startupCleanupAttemptedGeneration = generation;
+        startupCleanupArmedGeneration = 0;
+        startupCleanupFreshGeneration = 0;
+        try {
+            int status = writeTurnSignal(0, "startup_awake_session_cleanup");
+            emit("startup_awake_session_cleanup",
+                    "awake_session_id", generation,
+                    "requested_payload", 0,
+                    "framework_status", status);
+        } catch (Throwable failure) {
+            emit("startup_awake_session_cleanup_failed",
+                    "awake_session_id", generation,
+                    "stage", "framework_write",
+                    "requested_payload", 0,
+                    "error", summary(failure));
         }
     }
 
@@ -868,10 +979,12 @@ final class TurnSignalGuardRuntime {
     }
 
     private int writeTurnSignal(int payload, String reason) throws Exception {
+        if (writeInFlight) throw new IllegalStateException("turn-state write already in flight");
         if (lightDevice == null || setLightFeature == null || eventValueType == null) {
             throw new IllegalStateException("BYD light control unavailable");
         }
         int previous = assumedLatchState;
+        writeInFlight = true;
         try {
             Object value = eventValueType.getDeclaredConstructor().newInstance();
             Field intValue = eventValueType.getField("intValue");
@@ -902,6 +1015,8 @@ final class TurnSignalGuardRuntime {
                     "blink_before", latestBlink, "stalk", latestStalk,
                     "error", summary(failure));
             throw failure;
+        } finally {
+            writeInFlight = false;
         }
     }
 
@@ -1082,9 +1197,11 @@ final class TurnSignalGuardRuntime {
     private void emitCameraState(long now) {
         lastCameraStateAt = now;
         boolean valid = pollHealthy && Float.isFinite(latestSpeedKph)
+                && Float.isFinite(latestAngle)
                 && lastPollAt != 0 && now - lastPollAt <= MAX_POLL_GAP_MS;
         emit("vehicle_state", "valid", valid, "blink", latestBlink,
-                "speed_kph", valid ? latestSpeedKph : "unknown");
+                "speed_kph", valid ? latestSpeedKph : "unknown",
+                "steering_angle_deg", valid ? latestAngle : "unknown");
     }
 
     private void runOnHandler(Runnable action) {
@@ -1198,6 +1315,35 @@ final class TurnSignalGuardRuntime {
 
     static boolean safeGuardDisableResetBlink(int blink) {
         return blink == BLINK_OFF || blink == BLINK_LEFT || blink == BLINK_RIGHT;
+    }
+
+    static boolean canRunStartupAwakeSessionCleanup(
+            boolean interactive,
+            boolean enabled,
+            long generation,
+            long armedGeneration,
+            long freshGeneration,
+            long attemptedGeneration,
+            long persistFailedGeneration,
+            boolean telemetryReady,
+            int stalk,
+            int blink,
+            boolean writeInFlight,
+            boolean manualCommandPending,
+            boolean confirmationPending,
+            boolean controlIdle) {
+        return interactive && enabled && generation > 0
+                && armedGeneration == generation
+                && freshGeneration == generation
+                && attemptedGeneration != generation
+                && persistFailedGeneration != generation
+                && telemetryReady
+                && stalk == 1
+                && blink == BLINK_OFF
+                && !writeInFlight
+                && !manualCommandPending
+                && !confirmationPending
+                && controlIdle;
     }
 
     private static int expectedBlinkForPayload(int payload) {

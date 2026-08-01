@@ -3,40 +3,58 @@ package com.byd.turnsignalguard.capture;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
+import android.view.Surface;
 import android.view.WindowManager;
 
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BiConsumer;
 
 final class BlindSpotOverlayController {
     static final String PREF_ENABLED = "camera_enabled";
     static final String PREF_MIN_SPEED = "camera_min_speed_kph";
+    static final String PREF_FRONT_ENABLED = "camera_front_enabled";
+    static final String PREF_FRONT_MIN_SPEED = "camera_front_min_speed_kph";
+    static final String PREF_FRONT_TURN_REQUIRED = "camera_front_turn_required";
+    static final String PREF_CORNER_RADIUS = "camera_corner_radius_dp";
     static final String PREF_SCALE = "camera_overlay_scale_percent";
     static final String PREF_LEFT_SCALE = "camera_left_scale_percent";
     static final String PREF_RIGHT_SCALE = "camera_right_scale_percent";
+    static final String PREF_FRONT_LEFT_SCALE = "camera_front_left_scale_percent";
+    static final String PREF_FRONT_RIGHT_SCALE = "camera_front_right_scale_percent";
     static final String PREF_LEFT_TARGET = "camera_left_display_target";
     static final String PREF_RIGHT_TARGET = "camera_right_display_target";
+    static final String PREF_FRONT_LEFT_TARGET = "camera_front_left_display_target";
+    static final String PREF_FRONT_RIGHT_TARGET = "camera_front_right_display_target";
     static final String PREF_LEFT_POSITION = "camera_left_position";
     static final String PREF_RIGHT_POSITION = "camera_right_position";
     static final String PREF_LEFT_X = "camera_left_x";
     static final String PREF_LEFT_Y = "camera_left_y";
     static final String PREF_RIGHT_X = "camera_right_x";
     static final String PREF_RIGHT_Y = "camera_right_y";
+    static final String PREF_FRONT_LEFT_X = "camera_front_left_x";
+    static final String PREF_FRONT_LEFT_Y = "camera_front_left_y";
+    static final String PREF_FRONT_RIGHT_X = "camera_front_right_x";
+    static final String PREF_FRONT_RIGHT_Y = "camera_front_right_y";
     static final String PREF_WARNING_MODE = "camera_bsd_warning_mode";
+
     static final int DEFAULT_MIN_SPEED_KPH = 20;
+    static final int DEFAULT_FRONT_MIN_SPEED_KPH = 0;
     static final int DEFAULT_SCALE_PERCENT = 36;
     static final int MIN_SCALE_PERCENT = 20;
     static final int MAX_SCALE_PERCENT = 60;
     static final int DEFAULT_LEFT_POSITION = 0;
     static final int DEFAULT_RIGHT_POSITION = 2;
     static final int DEFAULT_WARNING_MODE = CameraShellProtocol.WARNING_MODE_PULSE;
+    static final int DEFAULT_CORNER_RADIUS_DP = 8;
+    static final int MAX_CORNER_RADIUS_DP = 48;
 
+    private static final int BLINK_OFF = 1;
     private static final int BLINK_LEFT = 2;
     private static final int BLINK_RIGHT = 4;
     private static final String DIRECT_CAMERA_TAG = "pano_h";
-    private static final int LEFT_PREVIEW_INDEX = 2;
-    private static final int RIGHT_PREVIEW_INDEX = 3;
     private static final long STATE_STALE_MS = 750;
     private static final long SURFACE_TIMEOUT_MS = 8_000;
     private static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
@@ -47,50 +65,41 @@ final class BlindSpotOverlayController {
     private final SharedPreferences settings;
     private final WindowManager windows;
     private final BiConsumer<String, Object[]> eventSink;
+    private final PaneState[] panes = new PaneState[CameraProfile.COUNT];
+    private final CameraRetryState cameraRetry = new CameraRetryState();
     private final Runnable staleState = () -> {
         stateValid = false;
-        hide("vehicle_state_stale");
+        evaluate();
     };
-    private final Runnable surfaceTimeout = this::handleSurfaceTimeout;
-    private final Runnable firstFrameTimeout = this::handleFirstFrameTimeout;
-    private final Runnable retryCamera = this::retryCameraOpen;
+    private final Runnable retryCamera = () -> {
+        String trigger = cameraRetry.consume();
+        if (trigger == null) return;
+        String blocked = cameraRetryBlockReason();
+        if (blocked != null) {
+            emit("overlay_camera_retry", "state", "cancelled",
+                    "reason", blocked, "trigger", trigger);
+            return;
+        }
+        emit("overlay_camera_retry", "state", "attempt", "reason", trigger);
+        rebuild("camera_retry");
+    };
 
     private CameraHelperMain.HelperBinder helper;
     private boolean suspended;
     private boolean reversePriority;
     private boolean uiHidden;
-    private boolean cameraReady;
-    private boolean stateValid;
-    private boolean visible;
-    private boolean overlayPrepared;
-    private final CameraRetryState cameraRetry = new CameraRetryState();
     private boolean shutdown;
+    private boolean stateValid;
+    private boolean cameraOpenPending;
+    private boolean cameraSessionOpen;
     private int blink = -1;
     private float speedKph = Float.NaN;
+    private float steeringAngle = Float.NaN;
     private int requestSequence;
-    private int activeRequestId;
-    private int surfaceGeneration;
-    private int requestedPreviewIndex = -1;
-    private int displayedPreviewIndex = -1;
-    private int preparedDirection = -1;
-    private int preparedTarget = -1;
-    private boolean displaySwitchPending;
     private boolean leftBsdValid;
     private boolean rightBsdValid;
     private int leftBsdRaw = -1;
     private int rightBsdRaw = -1;
-    private int appliedWarningRequestId;
-    private int appliedWarningGeneration;
-    private int appliedWarningEdge;
-    private int appliedWarningMode;
-
-    private void handleSurfaceTimeout() {
-        cameraUnavailable("overlay_surface_timeout", requestedPreviewIndex);
-    }
-
-    private void handleFirstFrameTimeout() {
-        cameraUnavailable("first_frame_timeout", requestedPreviewIndex);
-    }
 
     BlindSpotOverlayController(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -100,25 +109,45 @@ final class BlindSpotOverlayController {
         settings = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         migrateOverlayPreferences(settings);
         windows = (WindowManager) this.context.getSystemService(Context.WINDOW_SERVICE);
+        for (CameraProfile profile : CameraProfile.values()) {
+            panes[profile.id] = new PaneState(profile);
+        }
     }
 
     static int directionToShow(boolean valid, int blink, float speedKph, int minSpeedKph) {
-        if (!valid || !Float.isFinite(speedKph)
-                || minSpeedKph < 0 || minSpeedKph > 300 || speedKph < minSpeedKph) {
-            return 0;
-        }
-        return blink == BLINK_LEFT || blink == BLINK_RIGHT ? blink : 0;
+        int mask = CameraProfile.desiredMask(valid, blink, speedKph, Float.NaN,
+                true, minSpeedKph, false, 0, true);
+        if ((mask & CameraProfile.of(CameraProfile.REAR_LEFT).bit()) != 0) return BLINK_LEFT;
+        if ((mask & CameraProfile.of(CameraProfile.REAR_RIGHT).bit()) != 0) return BLINK_RIGHT;
+        return 0;
+    }
+
+    static int desiredCameraMask(
+            boolean valid, int blink, float speedKph, float steeringAngle,
+            boolean rearEnabled, int rearMinSpeed,
+            boolean frontEnabled, int frontMinSpeed, boolean frontTurnRequired) {
+        return CameraProfile.desiredMask(valid, blink, speedKph, steeringAngle,
+                rearEnabled, rearMinSpeed, frontEnabled, frontMinSpeed, frontTurnRequired);
     }
 
     static float readPosition(
             SharedPreferences settings, boolean right, boolean vertical) {
-        String key = right
-                ? (vertical ? PREF_RIGHT_Y : PREF_RIGHT_X)
-                : (vertical ? PREF_LEFT_Y : PREF_LEFT_X);
+        return readPosition(settings,
+                CameraProfile.of(right ? CameraProfile.REAR_RIGHT : CameraProfile.REAR_LEFT),
+                vertical);
+    }
+
+    static float readPosition(
+            SharedPreferences settings, CameraProfile profile, boolean vertical) {
+        String key = positionKey(profile, vertical);
         if (settings.contains(key)) return clamp(settings.getFloat(key, 0.0f), 0.0f, 1.0f);
-        int legacy = settings.getInt(right ? PREF_RIGHT_POSITION : PREF_LEFT_POSITION,
-                right ? DEFAULT_RIGHT_POSITION : DEFAULT_LEFT_POSITION);
-        return legacyPosition(legacy, vertical);
+        if (profile.rear()) {
+            int legacy = settings.getInt(profile.right()
+                            ? PREF_RIGHT_POSITION : PREF_LEFT_POSITION,
+                    profile.right() ? DEFAULT_RIGHT_POSITION : DEFAULT_LEFT_POSITION);
+            return legacyPosition(legacy, vertical);
+        }
+        return vertical ? 0.0f : profile.right() ? 1.0f : 0.0f;
     }
 
     static float legacyPosition(int position, boolean vertical) {
@@ -129,23 +158,37 @@ final class BlindSpotOverlayController {
     static void migrateOverlayPreferences(SharedPreferences settings) {
         int sharedScale = migratedScale(false, 0,
                 settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT));
-        SharedPreferences.Editor editor = null;
-        if (!settings.contains(PREF_LEFT_SCALE)) {
-            editor = settings.edit().putInt(PREF_LEFT_SCALE, sharedScale);
+        SharedPreferences.Editor editor = settings.edit();
+        boolean changed = false;
+        for (CameraProfile profile : CameraProfile.values()) {
+            String scaleKey = scaleKey(profile);
+            if (!settings.contains(scaleKey)) {
+                editor.putInt(scaleKey, profile.rear() ? sharedScale : DEFAULT_SCALE_PERCENT);
+                changed = true;
+            }
+            String targetKey = targetKey(profile);
+            if (!settings.contains(targetKey)) {
+                editor.putInt(targetKey, CameraDisplayTarget.TABLET);
+                changed = true;
+            }
         }
-        if (!settings.contains(PREF_RIGHT_SCALE)) {
-            if (editor == null) editor = settings.edit();
-            editor.putInt(PREF_RIGHT_SCALE, sharedScale);
+        if (!settings.contains(PREF_FRONT_ENABLED)) {
+            editor.putBoolean(PREF_FRONT_ENABLED, false);
+            changed = true;
         }
-        if (!settings.contains(PREF_LEFT_TARGET)) {
-            if (editor == null) editor = settings.edit();
-            editor.putInt(PREF_LEFT_TARGET, CameraDisplayTarget.TABLET);
+        if (!settings.contains(PREF_FRONT_MIN_SPEED)) {
+            editor.putInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH);
+            changed = true;
         }
-        if (!settings.contains(PREF_RIGHT_TARGET)) {
-            if (editor == null) editor = settings.edit();
-            editor.putInt(PREF_RIGHT_TARGET, CameraDisplayTarget.TABLET);
+        if (!settings.contains(PREF_FRONT_TURN_REQUIRED)) {
+            editor.putBoolean(PREF_FRONT_TURN_REQUIRED, true);
+            changed = true;
         }
-        if (editor != null) editor.apply();
+        if (!settings.contains(PREF_CORNER_RADIUS)) {
+            editor.putInt(PREF_CORNER_RADIUS, DEFAULT_CORNER_RADIUS_DP);
+            changed = true;
+        }
+        if (changed) editor.apply();
     }
 
     static int migratedScale(boolean sidePresent, int sideScale, int sharedScale) {
@@ -154,20 +197,36 @@ final class BlindSpotOverlayController {
     }
 
     static int readScale(SharedPreferences settings, boolean right) {
-        return clamp(settings.getInt(right ? PREF_RIGHT_SCALE : PREF_LEFT_SCALE,
-                settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT)),
+        return readScale(settings,
+                CameraProfile.of(right ? CameraProfile.REAR_RIGHT : CameraProfile.REAR_LEFT));
+    }
+
+    static int readScale(SharedPreferences settings, CameraProfile profile) {
+        int fallback = profile.rear()
+                ? settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT)
+                : DEFAULT_SCALE_PERCENT;
+        return clamp(settings.getInt(scaleKey(profile), fallback),
                 MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
     }
 
     static int readTarget(SharedPreferences settings, boolean right) {
-        int target = settings.getInt(right ? PREF_RIGHT_TARGET : PREF_LEFT_TARGET,
-                CameraDisplayTarget.TABLET);
+        return readTarget(settings,
+                CameraProfile.of(right ? CameraProfile.REAR_RIGHT : CameraProfile.REAR_LEFT));
+    }
+
+    static int readTarget(SharedPreferences settings, CameraProfile profile) {
+        int target = settings.getInt(targetKey(profile), CameraDisplayTarget.TABLET);
         return CameraDisplayTarget.isValid(target) ? target : CameraDisplayTarget.TABLET;
     }
 
+    static int readCornerRadius(SharedPreferences settings) {
+        return clamp(settings.getInt(PREF_CORNER_RADIUS, DEFAULT_CORNER_RADIUS_DP),
+                0, MAX_CORNER_RADIUS_DP);
+    }
+
     static int previewIndexForDirection(int direction) {
-        if (direction == BLINK_LEFT) return LEFT_PREVIEW_INDEX;
-        if (direction == BLINK_RIGHT) return RIGHT_PREVIEW_INDEX;
+        if (direction == BLINK_LEFT) return CameraProfile.of(CameraProfile.REAR_LEFT).previewIndex;
+        if (direction == BLINK_RIGHT) return CameraProfile.of(CameraProfile.REAR_RIGHT).previewIndex;
         return -1;
     }
 
@@ -206,7 +265,7 @@ final class BlindSpotOverlayController {
         handler.post(() -> {
             if (suspended == value) return;
             suspended = value;
-            if (value) destroyWindow("preview_handoff");
+            if (value) destroyAll("preview_handoff");
             else applySettingsOnMain();
         });
     }
@@ -215,17 +274,15 @@ final class BlindSpotOverlayController {
         handler.post(() -> {
             if (reversePriority == value) return;
             reversePriority = value;
-            if (value) destroyWindow("reverse_priority");
+            if (value) destroyAll("reverse_priority");
             else applySettingsOnMain();
         });
     }
 
     void setUiHidden(boolean value) {
         handler.post(() -> {
-            if (uiHidden == value) return;
             uiHidden = value;
-            if (value) hide("activity_visible");
-            else evaluate();
+            evaluate();
         });
     }
 
@@ -234,7 +291,7 @@ final class BlindSpotOverlayController {
     }
 
     void applyWarningSettings() {
-        handler.post(() -> applyWarning("warning_setting_changed"));
+        handler.post(this::applyWarnings);
     }
 
     void acceptEvent(String line) {
@@ -245,9 +302,14 @@ final class BlindSpotOverlayController {
             if ("vehicle_state".equals(kind)) {
                 boolean valid = event.optBoolean("valid");
                 int nextBlink = event.optInt("blink", -1);
-                float nextSpeed = valid ? (float) event.optDouble("speed_kph", Double.NaN)
-                        : Float.NaN;
-                handler.post(() -> acceptVehicleState(valid, nextBlink, nextSpeed));
+                float nextSpeed = valid
+                        ? (float) event.optDouble("speed_kph", Double.NaN) : Float.NaN;
+                double angleValue = event.has("steering_angle_deg")
+                        ? event.optDouble("steering_angle_deg", Double.NaN)
+                        : event.optDouble("angle_deg", Double.NaN);
+                float nextAngle = valid ? (float) angleValue : Float.NaN;
+                handler.post(() -> acceptVehicleState(
+                        valid, nextBlink, nextSpeed, nextAngle));
             } else if ("bsd_state".equals(kind)) {
                 boolean listenerOk = event.optBoolean("listener_ok");
                 boolean nextLeftValid = listenerOk && event.optBoolean("left_valid");
@@ -263,36 +325,28 @@ final class BlindSpotOverlayController {
                     && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
                             event.optString("camera_owner"))
                     && DIRECT_CAMERA_TAG.equals(event.optString("camera_tag"))) {
-                int previewIndex = event.optInt("preview_index", -1);
-                handler.post(() -> cameraOpened(previewIndex));
+                handler.post(this::cameraOpened);
             } else if ("camera_error".equals(kind)
                     && "helper".equals(event.optString("source"))
                     && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
-                            event.optString("camera_owner"))
-                    && DIRECT_CAMERA_TAG.equals(event.optString("camera_tag"))) {
-                int previewIndex = event.optInt("preview_index", -1);
+                            event.optString("camera_owner"))) {
                 String stage = event.optString("stage", kind);
-                handler.post(() -> cameraUnavailable(stage, previewIndex));
+                handler.post(() -> cameraUnavailable(stage));
             } else if ("camera_overlay_first_frame".equals(kind)) {
+                int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
                 int generation = event.optInt("surface_generation", -1);
-                handler.post(() -> firstFrameAvailable(requestId, generation));
+                handler.post(() -> firstFrameAvailable(cameraId, requestId, generation));
             } else if ("camera_overlay_surface".equals(kind)
                     && "destroyed".equals(event.optString("state"))) {
+                int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
-                handler.post(() -> {
-                    if (requestId == activeRequestId) {
-                        cameraUnavailable("overlay_surface_destroyed", requestedPreviewIndex);
-                    }
-                });
+                handler.post(() -> paneSurfaceDestroyed(cameraId, requestId));
             } else if ("camera_overlay_error".equals(kind)) {
-                String stage = event.optString("stage", kind);
+                int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
-                handler.post(() -> {
-                    if (requestId <= 0 || requestId == activeRequestId) {
-                        cameraUnavailable(stage, requestedPreviewIndex);
-                    }
-                });
+                String stage = event.optString("stage", kind);
+                handler.post(() -> paneUnavailable(cameraId, requestId, stage));
             }
         } catch (Throwable error) {
             emit("overlay_event_parse_error", "error", summary(error));
@@ -303,61 +357,210 @@ final class BlindSpotOverlayController {
         shutdown = true;
         handler.removeCallbacks(staleState);
         cancelCameraRetry("overlay_shutdown");
-        destroyWindow("overlay_shutdown");
+        destroyAll("overlay_shutdown");
         helper = null;
     }
 
     private void applySettingsOnMain() {
-        boolean enabled = settings.getBoolean(PREF_ENABLED, false);
-        if (shutdown || !enabled || suspended || reversePriority
-                || helper == null || windows == null) {
-            destroyWindow(!enabled ? "overlay_disabled"
-                    : shutdown ? "overlay_shutdown"
-                    : suspended ? "overlay_suspended"
-                    : reversePriority ? "reverse_priority"
-                    : helper == null ? "helper_unavailable" : "window_manager_unavailable");
+        migrateOverlayPreferences(settings);
+        if (cameraUnavailableReason() != null) {
+            destroyAll(cameraUnavailableReason());
             return;
         }
-        preparedDirection = -1;
-        requestDirection(desiredDirection());
+        rebuild("settings_changed");
+    }
+
+    private String cameraUnavailableReason() {
+        if (shutdown) return "overlay_shutdown";
+        if (!anyLaneEnabled()) return "overlay_disabled";
+        if (suspended) return "overlay_suspended";
+        if (reversePriority) return "reverse_priority";
+        if (helper == null) return "helper_unavailable";
+        if (windows == null) return "window_manager_unavailable";
+        return null;
+    }
+
+    private boolean anyLaneEnabled() {
+        return settings.getBoolean(PREF_ENABLED, false)
+                || settings.getBoolean(PREF_FRONT_ENABLED, false);
+    }
+
+    private void rebuild(String reason) {
+        cancelCameraRetry(reason);
+        destroyAll(reason);
+        if (cameraUnavailableReason() != null) return;
+        boolean rearEnabled = settings.getBoolean(PREF_ENABLED, false);
+        boolean frontEnabled = settings.getBoolean(PREF_FRONT_ENABLED, false);
+        for (PaneState pane : panes) {
+            if (pane.profile.rear() ? rearEnabled : frontEnabled) preparePane(pane);
+        }
+    }
+
+    private void preparePane(PaneState pane) {
+        int requestId = nextRequestId();
+        CameraShellProtocol.OverlaySpec spec = buildOverlaySpec(pane.profile, requestId);
+        pane.expected = true;
+        pane.requestId = requestId;
+        pane.target = spec.target;
+        helper.prepareOverlayWindow(spec,
+                this::overlaySurfaceAvailable,
+                () -> overlayPrepared(pane.profile.id, requestId));
+        emit("overlay_geometry", "camera_id", pane.profile.id,
+                "camera_profile", pane.profile.wireName,
+                "request_id", requestId,
+                "target", CameraDisplayTarget.name(spec.target),
+                "width", spec.width, "height", spec.height,
+                "x", spec.x, "y", spec.y);
+    }
+
+    private void overlayPrepared(int cameraId, int requestId) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || pane.requestId != requestId || pane.resolved) return;
+        handler.postDelayed(() -> surfaceTimedOut(cameraId, requestId), SURFACE_TIMEOUT_MS);
+    }
+
+    private void surfaceTimedOut(int cameraId, int requestId) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || pane.requestId != requestId || pane.resolved) return;
+        paneUnavailable(cameraId, requestId, "overlay_surface_timeout");
+    }
+
+    private void overlaySurfaceAvailable(TurnSignalController.OverlaySurface value) {
+        PaneState pane = pane(value.cameraId);
+        if (pane == null || !pane.expected || pane.requestId != value.requestId
+                || value.surface == null || !value.surface.isValid()) {
+            if (value.surface != null) value.surface.release();
+            return;
+        }
+        releaseSurface(pane.pendingSurface);
+        pane.pendingSurface = value.surface;
+        pane.generation = value.surfaceGeneration;
+        pane.resolved = true;
+        maybeOpenCamera();
+    }
+
+    private void maybeOpenCamera() {
+        if (cameraOpenPending || cameraSessionOpen || helper == null) return;
+        List<PaneState> ready = new ArrayList<>();
+        for (PaneState pane : panes) {
+            if (!pane.expected) continue;
+            if (!pane.resolved) return;
+            if (!pane.failed && pane.pendingSurface != null) ready.add(pane);
+        }
+        if (ready.isEmpty()) {
+            scheduleCameraRetry("no_overlay_surfaces");
+            return;
+        }
+        Surface[] surfaces = new Surface[ready.size()];
+        int[] indexes = new int[ready.size()];
+        int[] cameraIds = new int[ready.size()];
+        for (int i = 0; i < ready.size(); i++) {
+            PaneState pane = ready.get(i);
+            surfaces[i] = pane.pendingSurface;
+            pane.pendingSurface = null;
+            indexes[i] = pane.profile.previewIndex;
+            cameraIds[i] = pane.profile.id;
+        }
+        cameraOpenPending = true;
+        try {
+            helper.openOverlayDirectCameras(surfaces, indexes, cameraIds);
+            emit("overlay_camera_request", "camera_ids", java.util.Arrays.toString(cameraIds),
+                    "preview_indexes", java.util.Arrays.toString(indexes));
+        } catch (Throwable error) {
+            for (Surface surface : surfaces) releaseSurface(surface);
+            cameraUnavailable("open_direct_camera");
+        }
+    }
+
+    private void cameraOpened() {
+        if (!cameraOpenPending) return;
+        cameraOpenPending = false;
+        cameraSessionOpen = true;
+        cancelCameraRetry("camera_opened");
+        for (PaneState pane : panes) {
+            if (!pane.expected || pane.failed || pane.generation <= 0) continue;
+            helper.armOverlayFirstFrame(
+                    pane.profile.id, pane.requestId, pane.generation);
+            int cameraId = pane.profile.id;
+            int requestId = pane.requestId;
+            int generation = pane.generation;
+            handler.postDelayed(() -> firstFrameTimedOut(
+                    cameraId, requestId, generation), FIRST_FRAME_TIMEOUT_MS);
+        }
+    }
+
+    private void firstFrameTimedOut(int cameraId, int requestId, int generation) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || pane.requestId != requestId
+                || pane.generation != generation || pane.ready) return;
+        cameraUnavailable("first_frame_timeout_" + pane.profile.wireName);
+    }
+
+    private void firstFrameAvailable(int cameraId, int requestId, int generation) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || pane.requestId != requestId || pane.generation != generation
+                || !cameraSessionOpen) return;
+        pane.ready = true;
+        emit("overlay_camera_ready", "camera_id", cameraId,
+                "camera_profile", pane.profile.wireName,
+                "request_id", requestId, "surface_generation", generation,
+                "readiness", "first_frame");
         evaluate();
     }
 
-    private void destroyWindow(String reason) {
-        cancelCameraRetry(reason);
-        handler.removeCallbacks(staleState);
-        handler.removeCallbacks(surfaceTimeout);
-        handler.removeCallbacks(firstFrameTimeout);
-        hide(reason);
-        if (helper != null) {
-            if (cameraReady || requestedPreviewIndex != -1 || displayedPreviewIndex != -1) {
-                helper.closeOverlayCamera(reason);
-            }
-            if (overlayPrepared || activeRequestId != 0) helper.closeOverlayWindow(reason);
+    private void paneSurfaceDestroyed(int cameraId, int requestId) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || pane.requestId != requestId) return;
+        if (cameraOpenPending || cameraSessionOpen) {
+            cameraUnavailable("overlay_surface_destroyed_" + pane.profile.wireName);
+        } else {
+            paneUnavailable(cameraId, requestId, "overlay_surface_destroyed");
         }
-        cameraReady = false;
-        overlayPrepared = false;
-        visible = false;
-        activeRequestId = 0;
-        surfaceGeneration = 0;
-        requestedPreviewIndex = -1;
-        displayedPreviewIndex = -1;
-        preparedDirection = -1;
-        preparedTarget = -1;
-        displaySwitchPending = false;
-        resetAppliedWarning();
-        emit("overlay_window", "state", "remove_requested", "reason", reason);
     }
 
-    private void acceptVehicleState(boolean valid, int nextBlink, float nextSpeed) {
-        stateValid = valid;
+    private void paneUnavailable(int cameraId, int requestId, String reason) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || !pane.expected
+                || requestId > 0 && pane.requestId != requestId) return;
+        if (cameraOpenPending || cameraSessionOpen) {
+            cameraUnavailable(reason + "_" + pane.profile.wireName);
+            return;
+        }
+        pane.failed = true;
+        pane.resolved = true;
+        releaseSurface(pane.pendingSurface);
+        pane.pendingSurface = null;
+        if (helper != null) helper.closeOverlayWindow(cameraId, reason);
+        emit("overlay_camera_output_unavailable", "camera_id", cameraId,
+                "camera_profile", pane.profile.wireName, "reason", reason);
+        maybeOpenCamera();
+    }
+
+    private void cameraUnavailable(String reason) {
+        hideAll(reason);
+        if (helper != null) helper.closeOverlayCamera(reason);
+        cameraOpenPending = false;
+        cameraSessionOpen = false;
+        for (PaneState pane : panes) {
+            pane.ready = false;
+            pane.visible = false;
+        }
+        scheduleCameraRetry(reason);
+    }
+
+    private void acceptVehicleState(
+            boolean valid, int nextBlink, float nextSpeed, float nextAngle) {
+        stateValid = valid && validBlink(nextBlink) && Float.isFinite(nextSpeed);
         blink = nextBlink;
         speedKph = nextSpeed;
+        steeringAngle = nextAngle;
         handler.removeCallbacks(staleState);
-        if (nextBlink == BLINK_LEFT || nextBlink == BLINK_RIGHT) {
-            handler.postDelayed(staleState, STATE_STALE_MS);
-        }
+        if (stateValid) handler.postDelayed(staleState, STATE_STALE_MS);
         evaluate();
+    }
+
+    private static boolean validBlink(int value) {
+        return value == BLINK_OFF || value == BLINK_LEFT || value == BLINK_RIGHT;
     }
 
     private void acceptBsdState(
@@ -367,250 +570,99 @@ final class BlindSpotOverlayController {
         rightBsdValid = nextRightValid && BlindSpotWarningRuntime.isValidRaw(nextRightRaw);
         leftBsdRaw = leftBsdValid ? nextLeftRaw : -1;
         rightBsdRaw = rightBsdValid ? nextRightRaw : -1;
-        emit("overlay_bsd_state",
-                "left_valid", leftBsdValid,
-                "left_raw", leftBsdValid ? leftBsdRaw : "unknown",
-                "right_valid", rightBsdValid,
-                "right_raw", rightBsdValid ? rightBsdRaw : "unknown");
-        applyWarning("bsd_state");
+        applyWarnings();
     }
 
     private void evaluate() {
-        if (!overlayPrepared || suspended || reversePriority) {
-            hide("overlay_unavailable");
-            return;
+        int desired = desiredCameraMask(
+                stateValid, blink, speedKph, steeringAngle,
+                settings.getBoolean(PREF_ENABLED, false),
+                settings.getInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH),
+                settings.getBoolean(PREF_FRONT_ENABLED, false),
+                settings.getInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH),
+                settings.getBoolean(PREF_FRONT_TURN_REQUIRED, true));
+        if (suspended || reversePriority || uiHidden) desired = 0;
+        for (PaneState pane : panes) {
+            boolean show = (desired & pane.profile.bit()) != 0
+                    && pane.expected && pane.ready && !pane.failed;
+            setVisible(pane, show, show ? "trigger_active" : "trigger_inactive");
         }
-        int activeDirection = blink == BLINK_LEFT || blink == BLINK_RIGHT ? blink : 0;
-        if (activeDirection != 0) requestDirection(activeDirection);
-        int direction = directionToShow(stateValid, blink, speedKph,
-                settings.getInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH));
-        if (direction == 0) {
-            hide("turn_or_speed_condition_false");
-            return;
-        }
-        int previewIndex = previewIndexForDirection(direction);
-        if (!cameraReady || displayedPreviewIndex != previewIndex) {
-            requestDirection(direction);
-            hide("direct_camera_switch_pending");
-            return;
-        }
-        if (uiHidden) {
-            hide("activity_visible");
-            return;
-        }
-        show(direction);
+        applyWarnings();
     }
 
-    private void requestDirection(int direction) {
-        int previewIndex = previewIndexForDirection(direction);
-        if (cameraRetry.active()) {
-            if (shouldOverrideCameraRetry(true, blink, direction)) {
-                cancelCameraRetry("active_turn_override");
+    private void setVisible(PaneState pane, boolean visible, String reason) {
+        if (pane.visible == visible) return;
+        pane.visible = visible;
+        if (helper != null && pane.requestId > 0 && pane.generation > 0) {
+            helper.setOverlayWindowVisible(pane.profile.id,
+                    pane.requestId, pane.generation, visible);
+        }
+        emit("overlay_visibility", "camera_id", pane.profile.id,
+                "camera_profile", pane.profile.wireName,
+                "visible", visible, "reason", reason,
+                "speed_kph", Float.isFinite(speedKph) ? speedKph : "unknown");
+    }
+
+    private void hideAll(String reason) {
+        for (PaneState pane : panes) setVisible(pane, false, reason);
+    }
+
+    private void applyWarnings() {
+        int mode = readWarningMode(settings);
+        for (PaneState pane : panes) {
+            if (!pane.profile.rear() || !pane.ready || pane.generation <= 0) continue;
+            boolean active = pane.profile.right()
+                    ? BlindSpotWarningRuntime.isActiveRaw(rightBsdValid, rightBsdRaw)
+                    : BlindSpotWarningRuntime.isActiveRaw(leftBsdValid, leftBsdRaw);
+            int edge = pane.visible && active && mode != CameraShellProtocol.WARNING_MODE_OFF
+                    ? (pane.profile.right() ? CameraShellProtocol.WARNING_EDGE_RIGHT
+                            : CameraShellProtocol.WARNING_EDGE_LEFT)
+                    : CameraShellProtocol.WARNING_EDGE_NONE;
+            int appliedMode = edge == CameraShellProtocol.WARNING_EDGE_NONE
+                    ? CameraShellProtocol.WARNING_MODE_OFF : mode;
+            if (pane.warningEdge == edge && pane.warningMode == appliedMode) continue;
+            helper.setOverlayWindowWarning(pane.profile.id,
+                    pane.requestId, pane.generation, edge, appliedMode);
+            pane.warningEdge = edge;
+            pane.warningMode = appliedMode;
+        }
+    }
+
+    private void destroyAll(String reason) {
+        handler.removeCallbacks(staleState);
+        hideAll(reason);
+        if (helper != null) {
+            if (cameraOpenPending || cameraSessionOpen || hasPendingSurfaces()) {
+                helper.closeOverlayCamera(reason);
             }
-            else return;
+            helper.closeOverlayWindows(reason);
         }
-        if (helper == null || windows == null || previewIndex < 0) return;
-        int target = readTarget(settings, direction == BLINK_RIGHT);
-        if (preparedDirection == direction && requestedPreviewIndex == previewIndex
-                && preparedTarget == target && activeRequestId != 0) {
-            return;
-        }
-        if (activeRequestId != 0 && preparedTarget != -1 && preparedTarget != target) {
-            if (displaySwitchPending) return;
-            if (visible && surfaceGeneration > 0) {
-                displaySwitchPending = true;
-                int hidingRequestId = activeRequestId;
-                int hidingGeneration = surfaceGeneration;
-                visible = false;
-                resetAppliedWarning();
-                helper.setOverlayWindowVisible(
-                        hidingRequestId, hidingGeneration, false,
-                        this::completeDisplaySwitch);
-                emit("overlay_visibility", "visible", false,
-                        "reason", "overlay_display_changed",
-                        "request_id", hidingRequestId);
-                return;
-            }
-            resetForDisplaySwitch();
-        }
-        if (visible) hide("overlay_geometry_changed");
-        int requestId = nextRequestId();
-        CameraShellProtocol.OverlaySpec spec = buildOverlaySpec(direction, requestId);
-        preparedDirection = direction;
-        preparedTarget = spec.target;
-        requestedPreviewIndex = previewIndex;
-        displayedPreviewIndex = -1;
-        activeRequestId = requestId;
-        surfaceGeneration = 0;
-        cameraReady = false;
-        resetAppliedWarning();
-        overlayPrepared = true;
-        handler.removeCallbacks(surfaceTimeout);
-        handler.removeCallbacks(firstFrameTimeout);
-        helper.prepareOverlayWindow(
-                spec, this::overlaySurfaceAvailable, () -> overlayPrepared(requestId));
-        emit("overlay_geometry", "request_id", requestId,
-                "direction", direction == BLINK_RIGHT ? "right" : "left",
-                "target", CameraDisplayTarget.name(spec.target),
-                "width", spec.width, "height", spec.height,
-                "x", spec.x, "y", spec.y);
+        cameraOpenPending = false;
+        cameraSessionOpen = false;
+        for (PaneState pane : panes) pane.reset();
     }
 
-    private void overlayPrepared(int requestId) {
-        if (requestId != activeRequestId || surfaceGeneration > 0) return;
-        handler.removeCallbacks(surfaceTimeout);
-        handler.postDelayed(surfaceTimeout, SURFACE_TIMEOUT_MS);
-    }
-
-    private void completeDisplaySwitch() {
-        displaySwitchPending = false;
-        if (shutdown || suspended || helper == null
-                || !settings.getBoolean(PREF_ENABLED, false)) {
-            return;
-        }
-        resetForDisplaySwitch();
-        requestDirection(desiredDirection());
-        evaluate();
-    }
-
-    private void resetForDisplaySwitch() {
-        if (helper != null && (cameraReady
-                || requestedPreviewIndex != -1 || displayedPreviewIndex != -1)) {
-            helper.closeOverlayCamera("overlay_display_changed");
-        }
-        cameraReady = false;
-        overlayPrepared = false;
-        activeRequestId = 0;
-        surfaceGeneration = 0;
-        requestedPreviewIndex = -1;
-        displayedPreviewIndex = -1;
-        preparedDirection = -1;
-        resetAppliedWarning();
-    }
-
-    private void overlaySurfaceAvailable(TurnSignalController.OverlaySurface value) {
-        if (value.requestId != activeRequestId || value.surface == null
-                || !value.surface.isValid()) {
-            if (value.surface != null) value.surface.release();
-            return;
-        }
-        handler.removeCallbacks(surfaceTimeout);
-        surfaceGeneration = value.surfaceGeneration;
-        int previewIndex = requestedPreviewIndex;
-        try {
-            helper.openOverlayDirectCamera(value.surface, DIRECT_CAMERA_TAG, previewIndex);
-        } catch (Throwable error) {
-            emit("camera_overlay_error", "stage", "open_direct_camera",
-                    "request_id", activeRequestId,
-                    "surface_generation", surfaceGeneration,
-                    "error", summary(error));
-            cameraUnavailable("open_direct_camera", previewIndex);
-            return;
-        }
-        emit("overlay_camera_request", "request_id", activeRequestId,
-                "surface_generation", surfaceGeneration,
-                "camera_tag", DIRECT_CAMERA_TAG,
-                "preview_index", previewIndex,
-                "direction", preparedDirection == BLINK_RIGHT ? "right" : "left");
-    }
-
-    private int desiredDirection() {
-        return blink == BLINK_RIGHT ? BLINK_RIGHT : BLINK_LEFT;
-    }
-
-    private void cameraOpened(int previewIndex) {
-        if (previewIndex != requestedPreviewIndex || activeRequestId == 0
-                || surfaceGeneration <= 0) {
-            return;
-        }
-        cancelCameraRetry("camera_opened");
-        displayedPreviewIndex = previewIndex;
-        cameraReady = false;
-        handler.removeCallbacks(firstFrameTimeout);
-        handler.postDelayed(firstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
-        helper.armOverlayFirstFrame(activeRequestId, surfaceGeneration);
-        emit("overlay_camera_waiting_frame", "request_id", activeRequestId,
-                "surface_generation", surfaceGeneration,
-                "camera_tag", DIRECT_CAMERA_TAG,
-                "preview_index", previewIndex,
-                "timeout_ms", FIRST_FRAME_TIMEOUT_MS);
-    }
-
-    private void firstFrameAvailable(int requestId, int generation) {
-        if (!isMatchingFirstFrame(
-                requestId, generation, activeRequestId, surfaceGeneration,
-                displayedPreviewIndex, requestedPreviewIndex)) {
-            return;
-        }
-        handler.removeCallbacks(firstFrameTimeout);
-        cameraReady = true;
-        emit("overlay_camera_ready", "request_id", requestId,
-                "surface_generation", generation,
-                "camera_tag", DIRECT_CAMERA_TAG,
-                "preview_index", displayedPreviewIndex,
-                "readiness", "first_frame");
-        evaluate();
-    }
-
-    private void cameraUnavailable(String reason, int previewIndex) {
-        if (previewIndex >= 0 && requestedPreviewIndex >= 0
-                && previewIndex != requestedPreviewIndex) {
-            emit("overlay_camera_retry", "state", "ignored",
-                    "reason", "preview_mismatch",
-                    "preview_index", previewIndex,
-                    "requested_preview_index", requestedPreviewIndex);
-            return;
-        }
-        handler.removeCallbacks(surfaceTimeout);
-        handler.removeCallbacks(firstFrameTimeout);
-        hide(reason);
-        if (helper != null && (requestedPreviewIndex != -1 || displayedPreviewIndex != -1)) {
-            helper.closeOverlayCamera(reason);
-        }
-        cameraReady = false;
-        activeRequestId = 0;
-        surfaceGeneration = 0;
-        requestedPreviewIndex = -1;
-        displayedPreviewIndex = -1;
-        preparedDirection = -1;
-        preparedTarget = -1;
-        displaySwitchPending = false;
-        scheduleCameraRetry(reason);
+    private boolean hasPendingSurfaces() {
+        for (PaneState pane : panes) if (pane.pendingSurface != null) return true;
+        return false;
     }
 
     private void scheduleCameraRetry(String reason) {
         String blocked = cameraRetryBlockReason();
         if (blocked != null) {
-            emit("overlay_camera_retry", "state", "cancelled", "reason", blocked,
-                    "trigger", reason);
+            emit("overlay_camera_retry", "state", "cancelled",
+                    "reason", blocked, "trigger", reason);
             return;
         }
         if (!cameraRetry.schedule(reason)) return;
         handler.postDelayed(retryCamera, CAMERA_RETRY_MS);
-        emit("overlay_camera_retry", "state", "scheduled", "reason", reason,
-                "delay_ms", CAMERA_RETRY_MS,
-                "preview_index", previewIndexForDirection(desiredDirection()));
-    }
-
-    private void retryCameraOpen() {
-        String trigger = cameraRetry.consume();
-        if (trigger == null) return;
-        String blocked = cameraRetryBlockReason();
-        if (blocked != null) {
-            emit("overlay_camera_retry", "state", "cancelled", "reason", blocked,
-                    "trigger", trigger);
-            return;
-        }
-        int direction = desiredDirection();
-        emit("overlay_camera_retry", "state", "attempt",
-                "reason", trigger,
-                "preview_index", previewIndexForDirection(direction));
-        requestDirection(direction);
+        emit("overlay_camera_retry", "state", "scheduled",
+                "reason", reason, "delay_ms", CAMERA_RETRY_MS);
     }
 
     private String cameraRetryBlockReason() {
         return cameraRetryBlockReason(
-                shutdown, settings.getBoolean(PREF_ENABLED, false), suspended, helper != null);
+                shutdown, anyLaneEnabled(), suspended || reversePriority, helper != null);
     }
 
     static String cameraRetryBlockReason(
@@ -632,8 +684,8 @@ final class BlindSpotOverlayController {
         String trigger = cameraRetry.cancel();
         if (trigger == null) return;
         handler.removeCallbacks(retryCamera);
-        emit("overlay_camera_retry", "state", "cancelled", "reason", reason,
-                "trigger", trigger);
+        emit("overlay_camera_retry", "state", "cancelled",
+                "reason", reason, "trigger", trigger);
     }
 
     static final class CameraRetryState {
@@ -645,90 +697,15 @@ final class BlindSpotOverlayController {
             return true;
         }
 
-        String consume() {
-            return clear();
-        }
-
-        String cancel() {
-            return clear();
-        }
-
-        boolean active() {
-            return trigger != null;
-        }
+        String consume() { return clear(); }
+        String cancel() { return clear(); }
+        boolean active() { return trigger != null; }
 
         private String clear() {
             String value = trigger;
             trigger = null;
             return value;
         }
-    }
-
-    private void show(int direction) {
-        if (displaySwitchPending || helper == null || !overlayPrepared || !cameraReady
-                || activeRequestId == 0 || surfaceGeneration <= 0) {
-            return;
-        }
-        if (preparedDirection != direction) {
-            requestDirection(direction);
-            return;
-        }
-        if (visible) {
-            applyWarning("overlay_already_visible");
-            return;
-        }
-        visible = true;
-        applyWarning("overlay_show");
-        helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, true);
-        emit("overlay_visibility", "visible", true,
-                "request_id", activeRequestId,
-                "direction", direction == BLINK_LEFT ? "left" : "right",
-                "speed_kph", speedKph);
-    }
-
-    private void hide(String reason) {
-        boolean wasVisible = visible;
-        if (wasVisible && helper != null && activeRequestId != 0) {
-            helper.setOverlayWindowVisible(activeRequestId, surfaceGeneration, false);
-        }
-        visible = false;
-        resetAppliedWarning();
-        if (wasVisible) emit("overlay_visibility", "visible", false, "reason", reason);
-    }
-
-    private void applyWarning(String reason) {
-        if (helper == null || activeRequestId <= 0 || surfaceGeneration <= 0) return;
-        int configuredMode = readWarningMode(settings);
-        int edge = warningEdge(
-                configuredMode, visible, preparedDirection,
-                leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
-        int mode = edge == CameraShellProtocol.WARNING_EDGE_NONE
-                ? CameraShellProtocol.WARNING_MODE_OFF : configuredMode;
-        if (appliedWarningRequestId == activeRequestId
-                && appliedWarningGeneration == surfaceGeneration
-                && appliedWarningEdge == edge && appliedWarningMode == mode) {
-            return;
-        }
-        helper.setOverlayWindowWarning(
-                activeRequestId, surfaceGeneration, edge, mode);
-        appliedWarningRequestId = activeRequestId;
-        appliedWarningGeneration = surfaceGeneration;
-        appliedWarningEdge = edge;
-        appliedWarningMode = mode;
-        emit("overlay_warning_decision",
-                "request_id", activeRequestId,
-                "surface_generation", surfaceGeneration,
-                "active", edge != CameraShellProtocol.WARNING_EDGE_NONE,
-                "edge", warningEdgeName(edge),
-                "mode", warningModeName(mode),
-                "reason", reason);
-    }
-
-    private void resetAppliedWarning() {
-        appliedWarningRequestId = 0;
-        appliedWarningGeneration = 0;
-        appliedWarningEdge = CameraShellProtocol.WARNING_EDGE_NONE;
-        appliedWarningMode = CameraShellProtocol.WARNING_MODE_OFF;
     }
 
     static int readWarningMode(SharedPreferences settings) {
@@ -751,9 +728,7 @@ final class BlindSpotOverlayController {
             int mode, boolean overlayVisible, int direction,
             boolean leftValid, int leftRaw, boolean rightValid, int rightRaw) {
         if (!isWarningMode(mode) || mode == CameraShellProtocol.WARNING_MODE_OFF
-                || !overlayVisible) {
-            return CameraShellProtocol.WARNING_EDGE_NONE;
-        }
+                || !overlayVisible) return CameraShellProtocol.WARNING_EDGE_NONE;
         if (direction == BLINK_LEFT
                 && BlindSpotWarningRuntime.isActiveRaw(leftValid, leftRaw)) {
             return CameraShellProtocol.WARNING_EDGE_LEFT;
@@ -765,34 +740,24 @@ final class BlindSpotOverlayController {
         return CameraShellProtocol.WARNING_EDGE_NONE;
     }
 
-    private static String warningEdgeName(int edge) {
-        if (edge == CameraShellProtocol.WARNING_EDGE_LEFT) return "left";
-        if (edge == CameraShellProtocol.WARNING_EDGE_RIGHT) return "right";
-        return "none";
-    }
-
-    private static String warningModeName(int mode) {
-        if (mode == CameraShellProtocol.WARNING_MODE_CONSTANT) return "constant";
-        if (mode == CameraShellProtocol.WARNING_MODE_PULSE) return "pulse";
-        return "off";
-    }
-
-    private CameraShellProtocol.OverlaySpec buildOverlaySpec(int direction, int requestId) {
-        boolean right = direction == BLINK_RIGHT;
-        int target = readTarget(settings, right);
+    private CameraShellProtocol.OverlaySpec buildOverlaySpec(
+            CameraProfile profile, int requestId) {
+        int target = readTarget(settings, profile);
         int[] displaySize = CameraDisplayTarget.displaySize(context, target);
-        DirectCameraCrop crop = loadDirectCrop(right);
-        float x = readPosition(settings, right, false);
-        float y = readPosition(settings, right, true);
+        DirectCameraCrop crop = loadDirectCrop(profile);
         int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
         int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
         int[] geometry = overlayGeometry(
-                displaySize[0], displaySize[1], readScale(settings, right),
-                crop.outputAspect(), x, y, marginX, topMargin, bottomMargin);
+                displaySize[0], displaySize[1], readScale(settings, profile),
+                crop.outputAspect(), readPosition(settings, profile, false),
+                readPosition(settings, profile, true),
+                marginX, topMargin, bottomMargin);
         return new CameraShellProtocol.OverlaySpec(
-                requestId, target, geometry[2], geometry[3], geometry[0], geometry[1],
-                crop.left, crop.top, crop.width, crop.height, crop.aspectMode);
+                profile.id, requestId, target,
+                geometry[2], geometry[3], geometry[0], geometry[1],
+                crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
+                readCornerRadius(settings));
     }
 
     static int[] overlayGeometry(
@@ -817,29 +782,46 @@ final class BlindSpotOverlayController {
         };
     }
 
-    private DirectCameraCrop loadDirectCrop(boolean right) {
-        DirectCameraCrop fallback = DirectCameraCrop.defaultFor(right);
+    private DirectCameraCrop loadDirectCrop(CameraProfile profile) {
+        DirectCameraCrop fallback = DirectCameraCrop.defaultFor(profile);
         return DirectCameraCrop.of(
-                settings.getFloat(right
-                        ? DirectCameraCrop.PREF_RIGHT_X : DirectCameraCrop.PREF_LEFT_X,
-                        fallback.left),
-                settings.getFloat(right
-                        ? DirectCameraCrop.PREF_RIGHT_Y : DirectCameraCrop.PREF_LEFT_Y,
-                        fallback.top),
-                settings.getFloat(right
-                        ? DirectCameraCrop.PREF_RIGHT_WIDTH : DirectCameraCrop.PREF_LEFT_WIDTH,
-                        fallback.width),
-                settings.getFloat(right
-                        ? DirectCameraCrop.PREF_RIGHT_HEIGHT : DirectCameraCrop.PREF_LEFT_HEIGHT,
-                        fallback.height),
-                settings.getInt(right
-                        ? DirectCameraCrop.PREF_RIGHT_ASPECT : DirectCameraCrop.PREF_LEFT_ASPECT,
-                        DirectCameraCrop.ASPECT_FOUR_THREE));
+                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 0), fallback.left),
+                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 1), fallback.top),
+                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 2), fallback.width),
+                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 3), fallback.height),
+                settings.getInt(DirectCameraCrop.preferenceKey(profile, 4), fallback.aspectMode));
+    }
+
+    private static String scaleKey(CameraProfile profile) {
+        if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_SCALE;
+        if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_SCALE;
+        if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_SCALE;
+        return PREF_FRONT_RIGHT_SCALE;
+    }
+
+    private static String targetKey(CameraProfile profile) {
+        if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_TARGET;
+        if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_TARGET;
+        if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_TARGET;
+        return PREF_FRONT_RIGHT_TARGET;
+    }
+
+    private static String positionKey(CameraProfile profile, boolean vertical) {
+        if (profile.id == CameraProfile.REAR_LEFT) return vertical ? PREF_LEFT_Y : PREF_LEFT_X;
+        if (profile.id == CameraProfile.REAR_RIGHT) return vertical ? PREF_RIGHT_Y : PREF_RIGHT_X;
+        if (profile.id == CameraProfile.FRONT_LEFT) {
+            return vertical ? PREF_FRONT_LEFT_Y : PREF_FRONT_LEFT_X;
+        }
+        return vertical ? PREF_FRONT_RIGHT_Y : PREF_FRONT_RIGHT_X;
     }
 
     private int nextRequestId() {
         requestSequence = requestSequence == Integer.MAX_VALUE ? 1 : requestSequence + 1;
         return requestSequence;
+    }
+
+    private PaneState pane(int cameraId) {
+        return CameraProfile.isValid(cameraId) ? panes[cameraId] : null;
     }
 
     private void emit(String kind, Object... fields) {
@@ -848,6 +830,10 @@ final class BlindSpotOverlayController {
 
     private int dp(int value) {
         return Math.round(value * context.getResources().getDisplayMetrics().density);
+    }
+
+    private static void releaseSurface(Surface surface) {
+        if (surface != null) surface.release();
     }
 
     private static int clamp(int value, int min, int max) {
@@ -861,5 +847,39 @@ final class BlindSpotOverlayController {
     private static String summary(Throwable error) {
         String message = error.getMessage();
         return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+    }
+
+    private static final class PaneState {
+        final CameraProfile profile;
+        boolean expected;
+        boolean resolved;
+        boolean failed;
+        boolean ready;
+        boolean visible;
+        int requestId;
+        int generation;
+        int target = -1;
+        int warningEdge = CameraShellProtocol.WARNING_EDGE_NONE;
+        int warningMode = CameraShellProtocol.WARNING_MODE_OFF;
+        Surface pendingSurface;
+
+        PaneState(CameraProfile profile) {
+            this.profile = profile;
+        }
+
+        void reset() {
+            releaseSurface(pendingSurface);
+            pendingSurface = null;
+            expected = false;
+            resolved = false;
+            failed = false;
+            ready = false;
+            visible = false;
+            requestId = 0;
+            generation = 0;
+            target = -1;
+            warningEdge = CameraShellProtocol.WARNING_EDGE_NONE;
+            warningMode = CameraShellProtocol.WARNING_MODE_OFF;
+        }
     }
 }

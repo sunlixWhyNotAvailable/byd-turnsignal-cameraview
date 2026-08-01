@@ -41,8 +41,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         requestId = spec.requestId;
         completedFrameRequestId = 0;
         visible = false;
-        if (root == null) createWindow(display, size, spec.layout);
+        if (root == null) createWindow(display, size, spec.layout, spec.cornerRadiusDp);
         else {
+            root.setCornerRadiusDp(spec.cornerRadiusDp);
             root.applyLayout(spec.layout);
             window.alpha = 0.0f;
             windows.updateViewLayout(root, window);
@@ -144,13 +145,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     private void createWindow(
-            Display display, Point size, ReverseCameraLayout layoutModel) throws Exception {
+            Display display, Point size, ReverseCameraLayout layoutModel,
+            int cornerRadiusDp) throws Exception {
         Context windowContext = context.createDisplayContext(display);
         windows = (WindowManager) windowContext.getSystemService(Context.WINDOW_SERVICE);
         if (windows == null) throw new IllegalStateException("window manager unavailable");
 
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
         nextRoot.setCallback(this);
+        nextRoot.setCornerRadiusDp(cornerRadiusDp);
         nextRoot.applyLayout(layoutModel);
         WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
                 size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,

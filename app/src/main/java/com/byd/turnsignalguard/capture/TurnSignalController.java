@@ -65,8 +65,7 @@ final class TurnSignalController {
     private volatile IBinder cameraHelper;
     private IBinder.DeathRecipient helperDeathRecipient;
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
-    private volatile int pendingOverlayRequestId;
-    private volatile Consumer<OverlaySurface> pendingOverlaySurfaceSink;
+    private final PendingOverlay[] pendingOverlays = new PendingOverlay[CameraProfile.COUNT];
     private volatile int pendingReverseRequestId;
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
@@ -103,7 +102,9 @@ final class TurnSignalController {
             shutdownCameraHelper();
         } else {
             closeStockAvmNow("controller_shutdown");
-            closeCameraOverlayNow("controller_shutdown");
+            for (CameraProfile profile : CameraProfile.values()) {
+                closeCameraOverlayNow(profile.id, "controller_shutdown");
+            }
             if (!closeReverseOverlayNow("controller_shutdown")) {
                 shutdownCameraHelper();
             }
@@ -240,12 +241,12 @@ final class TurnSignalController {
             throw new IllegalArgumentException("overlay spec/sinks required");
         }
         worker.execute(() -> {
-            pendingOverlayRequestId = spec.requestId;
-            pendingOverlaySurfaceSink = surfaceSink;
+            pendingOverlays[spec.cameraId] = new PendingOverlay(spec.requestId, surfaceSink);
             try {
                 IBinder value = ensureCameraHelper();
                 transactOverlayPrepare(value, spec);
-                emit("camera_overlay_prepare", "request_id", spec.requestId,
+                emit("camera_overlay_prepare", "camera_id", spec.cameraId,
+                        "request_id", spec.requestId,
                         "target", CameraDisplayTarget.name(spec.target),
                         "width", spec.width, "height", spec.height,
                         "x", spec.x, "y", spec.y);
@@ -253,22 +254,23 @@ final class TurnSignalController {
                     throw new IllegalStateException("main handler rejected overlay prepare");
                 }
             } catch (Throwable error) {
-                clearPendingOverlaySurface(spec.requestId);
+                clearPendingOverlaySurface(spec.cameraId, spec.requestId);
                 clearCameraHelper(null);
                 emit("camera_overlay_error", "stage", "prepare",
+                        "camera_id", spec.cameraId,
                         "request_id", spec.requestId, "error", summary(error));
             }
         });
     }
 
-    void armCameraOverlayFrame(int requestId, int surfaceGeneration) {
+    void armCameraOverlayFrame(int cameraId, int requestId, int surfaceGeneration) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
-                transactOverlayFrame(value, requestId, surfaceGeneration);
+                transactOverlayFrame(value, cameraId, requestId, surfaceGeneration);
             } catch (Throwable error) {
                 emit("camera_overlay_error", "stage", "arm_first_frame",
-                        "request_id", requestId,
+                        "camera_id", cameraId, "request_id", requestId,
                         "surface_generation", surfaceGeneration,
                         "error", summary(error));
             }
@@ -276,19 +278,21 @@ final class TurnSignalController {
     }
 
     void setCameraOverlayVisible(
-            int requestId, int surfaceGeneration, boolean visible) {
-        setCameraOverlayVisible(requestId, surfaceGeneration, visible, null);
+            int cameraId, int requestId, int surfaceGeneration, boolean visible) {
+        setCameraOverlayVisible(cameraId, requestId, surfaceGeneration, visible, null);
     }
 
     void setCameraOverlayVisible(
-            int requestId, int surfaceGeneration, boolean visible, Runnable completion) {
+            int cameraId, int requestId, int surfaceGeneration,
+            boolean visible, Runnable completion) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
-                transactOverlayVisibility(value, requestId, surfaceGeneration, visible);
+                transactOverlayVisibility(
+                        value, cameraId, requestId, surfaceGeneration, visible);
             } catch (Throwable error) {
                 emit("camera_overlay_error", "stage", visible ? "show" : "hide",
-                        "request_id", requestId,
+                        "camera_id", cameraId, "request_id", requestId,
                         "surface_generation", surfaceGeneration,
                         "error", summary(error));
             } finally {
@@ -301,14 +305,15 @@ final class TurnSignalController {
     }
 
     void setCameraOverlayWarning(
-            int requestId, int surfaceGeneration, int edge, int mode) {
+            int cameraId, int requestId, int surfaceGeneration, int edge, int mode) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
-                transactOverlayWarning(value, requestId, surfaceGeneration, edge, mode);
+                transactOverlayWarning(
+                        value, cameraId, requestId, surfaceGeneration, edge, mode);
             } catch (Throwable error) {
                 emit("camera_overlay_warning_error", "stage", "set_warning",
-                        "request_id", requestId,
+                        "camera_id", cameraId, "request_id", requestId,
                         "surface_generation", surfaceGeneration,
                         "edge", edge, "mode", mode,
                         "error", summary(error));
@@ -316,8 +321,17 @@ final class TurnSignalController {
         });
     }
 
-    void closeCameraOverlay(String reason) {
-        worker.execute(() -> closeCameraOverlayNow(reason));
+    void closeCameraOverlay(int cameraId, String reason) {
+        CameraProfile.of(cameraId);
+        worker.execute(() -> closeCameraOverlayNow(cameraId, reason));
+    }
+
+    void closeCameraOverlays(String reason) {
+        worker.execute(() -> {
+            for (CameraProfile profile : CameraProfile.values()) {
+                closeCameraOverlayNow(profile.id, reason);
+            }
+        });
     }
 
     void prepareReverseOverlay(
@@ -328,8 +342,7 @@ final class TurnSignalController {
             throw new IllegalArgumentException("reverse spec/sinks required");
         }
         worker.execute(() -> {
-            pendingOverlayRequestId = 0;
-            pendingOverlaySurfaceSink = null;
+            clearPendingOverlays();
             pendingReverseRequestId = spec.requestId;
             pendingReverseSurfaceSink = surfaceSink;
             try {
@@ -1002,23 +1015,27 @@ final class TurnSignalController {
     }
 
     private static OverlaySurface transactOverlayAcquire(
-            IBinder value, int requestId) throws Exception {
+            IBinder value, int cameraId, int requestId) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cameraId);
             data.writeInt(requestId);
             requireTransact(
                     value, CameraShellProtocol.TX_OVERLAY_ACQUIRE_SURFACE, data, reply);
+            int returnedCameraId = reply.readInt();
             int returnedRequestId = reply.readInt();
             int surfaceGeneration = reply.readInt();
             Surface surface = Surface.CREATOR.createFromParcel(reply);
-            if (returnedRequestId != requestId || surfaceGeneration <= 0
+            if (returnedCameraId != cameraId || returnedRequestId != requestId
+                    || surfaceGeneration <= 0
                     || surface == null || !surface.isValid()) {
                 if (surface != null) surface.release();
                 throw new IllegalStateException("camera helper returned stale overlay Surface");
             }
-            return new OverlaySurface(returnedRequestId, surfaceGeneration, surface);
+            return new OverlaySurface(
+                    returnedCameraId, returnedRequestId, surfaceGeneration, surface);
         } finally {
             data.recycle();
             reply.recycle();
@@ -1026,11 +1043,12 @@ final class TurnSignalController {
     }
 
     private static void transactOverlayFrame(
-            IBinder value, int requestId, int surfaceGeneration) throws Exception {
+            IBinder value, int cameraId, int requestId, int surfaceGeneration) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cameraId);
             data.writeInt(requestId);
             data.writeInt(surfaceGeneration);
             requireTransact(
@@ -1042,12 +1060,14 @@ final class TurnSignalController {
     }
 
     private static void transactOverlayVisibility(
-            IBinder value, int requestId, int surfaceGeneration, boolean visible)
+            IBinder value, int cameraId, int requestId,
+            int surfaceGeneration, boolean visible)
             throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cameraId);
             data.writeInt(requestId);
             data.writeInt(surfaceGeneration);
             data.writeInt(visible ? 1 : 0);
@@ -1059,11 +1079,13 @@ final class TurnSignalController {
         }
     }
 
-    private static void transactOverlayClose(IBinder value, String reason) throws Exception {
+    private static void transactOverlayClose(
+            IBinder value, int cameraId, String reason) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cameraId);
             data.writeString(reason == null ? "unknown" : reason);
             requireTransact(value, CameraShellProtocol.TX_OVERLAY_CLOSE, data, reply);
         } finally {
@@ -1073,13 +1095,16 @@ final class TurnSignalController {
     }
 
     private static void transactOverlayWarning(
-            IBinder value, int requestId, int surfaceGeneration, int edge, int mode)
+            IBinder value, int cameraId, int requestId,
+            int surfaceGeneration, int edge, int mode)
             throws Exception {
-        CameraShellProtocol.validateWarning(requestId, surfaceGeneration, edge, mode);
+        CameraShellProtocol.validateWarning(
+                cameraId, requestId, surfaceGeneration, edge, mode);
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cameraId);
             data.writeInt(requestId);
             data.writeInt(surfaceGeneration);
             data.writeInt(edge);
@@ -1191,37 +1216,45 @@ final class TurnSignalController {
         }
     }
 
-    private void acquireCameraOverlaySurface(int requestId, int reportedGeneration) {
-        Consumer<OverlaySurface> sink = pendingOverlaySurfaceSink;
-        if (sink == null || requestId != pendingOverlayRequestId || reportedGeneration <= 0) {
+    private void acquireCameraOverlaySurface(
+            int cameraId, int requestId, int reportedGeneration) {
+        if (!CameraProfile.isValid(cameraId)) return;
+        PendingOverlay pending = pendingOverlays[cameraId];
+        if (pending == null || pending.sink == null
+                || requestId != pending.requestId || reportedGeneration <= 0) {
             return;
         }
         try {
             IBinder value = cameraHelper;
             if (!cameraPing(value)) value = ensureCameraHelper();
-            OverlaySurface result = transactOverlayAcquire(value, requestId);
+            OverlaySurface result = transactOverlayAcquire(value, cameraId, requestId);
             if (result.surfaceGeneration != reportedGeneration) {
                 result.surface.release();
                 throw new IllegalStateException("overlay Surface generation changed");
             }
-            clearPendingOverlaySurface(requestId);
-            if (!handler.post(() -> sink.accept(result))) {
+            clearPendingOverlaySurface(cameraId, requestId);
+            if (!handler.post(() -> pending.sink.accept(result))) {
                 result.surface.release();
                 throw new IllegalStateException("main handler rejected overlay Surface");
             }
         } catch (Throwable error) {
-            clearPendingOverlaySurface(requestId);
+            clearPendingOverlaySurface(cameraId, requestId);
             emit("camera_overlay_error", "stage", "acquire_surface",
-                    "request_id", requestId,
+                    "camera_id", cameraId, "request_id", requestId,
                     "surface_generation", reportedGeneration,
                     "error", summary(error));
         }
     }
 
-    private void clearPendingOverlaySurface(int requestId) {
-        if (requestId != pendingOverlayRequestId) return;
-        pendingOverlayRequestId = 0;
-        pendingOverlaySurfaceSink = null;
+    private void clearPendingOverlaySurface(int cameraId, int requestId) {
+        if (!CameraProfile.isValid(cameraId)) return;
+        PendingOverlay pending = pendingOverlays[cameraId];
+        if (pending == null || requestId != pending.requestId) return;
+        pendingOverlays[cameraId] = null;
+    }
+
+    private void clearPendingOverlays() {
+        for (int i = 0; i < pendingOverlays.length; i++) pendingOverlays[i] = null;
     }
 
     private void acquireReverseSurfaces(int requestId) {
@@ -1275,17 +1308,17 @@ final class TurnSignalController {
         }
     }
 
-    private void closeCameraOverlayNow(String reason) {
-        pendingOverlayRequestId = 0;
-        pendingOverlaySurfaceSink = null;
+    private void closeCameraOverlayNow(int cameraId, String reason) {
+        CameraProfile.of(cameraId);
+        pendingOverlays[cameraId] = null;
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
         if (!cameraPing(value)) return;
         try {
-            transactOverlayClose(value, reason);
+            transactOverlayClose(value, cameraId, reason);
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "close",
-                    "error", summary(error));
+                    "camera_id", cameraId, "error", summary(error));
         }
     }
 
@@ -1349,10 +1382,11 @@ final class TurnSignalController {
                         event.optInt("assumed_latch_state", -1)).apply();
             } else if ("camera_overlay_surface".equals(kind)
                     && "ready".equals(event.optString("state"))) {
+                int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
                 int surfaceGeneration = event.optInt("surface_generation", -1);
                 worker.execute(() -> acquireCameraOverlaySurface(
-                        requestId, surfaceGeneration));
+                        cameraId, requestId, surfaceGeneration));
             } else if ("reverse_overlay_surface".equals(kind)
                     && "ready".equals(event.optString("state"))) {
                 int requestId = event.optInt("request_id", -1);
@@ -1459,8 +1493,7 @@ final class TurnSignalController {
 
     private void cameraHelperDied(IBinder value) {
         clearCameraHelper(value);
-        pendingOverlayRequestId = 0;
-        pendingOverlaySurfaceSink = null;
+        clearPendingOverlays();
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
         emit("camera_overlay_error", "stage", "camera_shell_died",
@@ -1538,14 +1571,27 @@ final class TurnSignalController {
     }
 
     static final class OverlaySurface {
+        final int cameraId;
         final int requestId;
         final int surfaceGeneration;
         final Surface surface;
 
-        OverlaySurface(int requestId, int surfaceGeneration, Surface surface) {
+        OverlaySurface(
+                int cameraId, int requestId, int surfaceGeneration, Surface surface) {
+            this.cameraId = cameraId;
             this.requestId = requestId;
             this.surfaceGeneration = surfaceGeneration;
             this.surface = surface;
+        }
+    }
+
+    private static final class PendingOverlay {
+        final int requestId;
+        final Consumer<OverlaySurface> sink;
+
+        PendingOverlay(int requestId, Consumer<OverlaySurface> sink) {
+            this.requestId = requestId;
+            this.sink = sink;
         }
     }
 

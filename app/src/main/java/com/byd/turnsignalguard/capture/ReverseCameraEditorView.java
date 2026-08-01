@@ -15,6 +15,7 @@ final class ReverseCameraEditorView extends View {
 
     private static final int[] COLORS = {0xFF42A5F5, 0xFF66BB6A, 0xFFFFCA28};
     private static final String[] LABELS = {"Rear", "Left", "Right"};
+    private static final int BACKGROUND_COLOR = 0xFFAB47BC;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -46,7 +47,9 @@ final class ReverseCameraEditorView extends View {
     }
 
     void selectCamera(int cameraIndex) {
-        layout.pane(cameraIndex);
+        if (cameraIndex != ReverseCameraLayout.BACKGROUND_PANE_ID) {
+            layout.pane(cameraIndex);
+        }
         selectedCamera = cameraIndex;
         invalidate();
         notifyChanged(false);
@@ -59,6 +62,7 @@ final class ReverseCameraEditorView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        drawBackgroundPane(canvas);
         ReverseCameraLayout.Pane[] panes = layout.panes();
         for (int z = 0; z < panes.length; z++) {
             for (int i = 0; i < panes.length; i++) {
@@ -74,9 +78,11 @@ final class ReverseCameraEditorView extends View {
         float y = clamp(event.getY() / getHeight());
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
             int hitCamera = hitTest(x, y);
-            if (hitCamera < 0) return false;
+            if (hitCamera == 0) return false;
             selectedCamera = hitCamera;
-            ReverseCameraLayout.Rect rect = layout.pane(selectedCamera).destination;
+            ReverseCameraLayout.Rect rect = selectedCamera
+                    == ReverseCameraLayout.BACKGROUND_PANE_ID
+                    ? layout.background : layout.pane(selectedCamera).destination;
             downX = x;
             downY = y;
             startRect = rect;
@@ -94,9 +100,13 @@ final class ReverseCameraEditorView extends View {
                     ? ReverseCameraLayout.destination(startRect.left + dx, startRect.top + dy,
                             startRect.width, startRect.height)
                     : resized(startRect, dx, dy, resizeCorner);
-            ReverseCameraLayout.Pane pane = layout.pane(selectedCamera);
-            layout = ReverseCameraLayout.withPane(
-                    layout, selectedCamera, destination, pane.sourceCrop);
+            if (selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+                layout = ReverseCameraLayout.withBackground(layout, destination);
+            } else {
+                ReverseCameraLayout.Pane pane = layout.pane(selectedCamera);
+                layout = ReverseCameraLayout.withPane(
+                        layout, selectedCamera, destination, pane.sourceCrop);
+            }
             notifyChanged(false);
             invalidate();
             return true;
@@ -124,6 +134,27 @@ final class ReverseCameraEditorView extends View {
         canvas.drawText(LABELS[index], rect.left + dp(8), rect.top + dp(22), text);
         if (pane.cameraIndex == selectedCamera) {
             fill.setColor(color);
+            float radius = dp(8);
+            canvas.drawCircle(rect.left, rect.top, radius, fill);
+            canvas.drawCircle(rect.right, rect.top, radius, fill);
+            canvas.drawCircle(rect.left, rect.bottom, radius, fill);
+            canvas.drawCircle(rect.right, rect.bottom, radius, fill);
+        }
+    }
+
+    private void drawBackgroundPane(Canvas canvas) {
+        ReverseCameraLayout.Rect value = layout.background;
+        RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
+                value.right() * getWidth(), value.bottom() * getHeight());
+        fill.setColor(0x55000000);
+        stroke.setColor(BACKGROUND_COLOR);
+        stroke.setStrokeWidth(dp(selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID
+                ? 5 : 3));
+        canvas.drawRect(rect, fill);
+        canvas.drawRect(rect, stroke);
+        canvas.drawText("Background", rect.left + dp(8), rect.top + dp(22), text);
+        if (selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+            fill.setColor(BACKGROUND_COLOR);
             float radius = dp(8);
             canvas.drawCircle(rect.left, rect.top, radius, fill);
             canvas.drawCircle(rect.right, rect.top, radius, fill);
@@ -177,7 +208,10 @@ final class ReverseCameraEditorView extends View {
                         && y >= rect.top && y <= rect.bottom()) return pane.cameraIndex;
             }
         }
-        return -1;
+        ReverseCameraLayout.Rect background = layout.background;
+        return x >= background.left && x <= background.right()
+                && y >= background.top && y <= background.bottom()
+                ? ReverseCameraLayout.BACKGROUND_PANE_ID : 0;
     }
 
     private void notifyChanged(boolean finished) {

@@ -11,6 +11,16 @@ final class DirectCameraCrop {
     static final String PREF_RIGHT_WIDTH = "direct_crop_right_width";
     static final String PREF_RIGHT_HEIGHT = "direct_crop_right_height";
     static final String PREF_RIGHT_ASPECT = "direct_crop_right_aspect";
+    static final String PREF_FRONT_LEFT_X = "direct_crop_front_left_x";
+    static final String PREF_FRONT_LEFT_Y = "direct_crop_front_left_y";
+    static final String PREF_FRONT_LEFT_WIDTH = "direct_crop_front_left_width";
+    static final String PREF_FRONT_LEFT_HEIGHT = "direct_crop_front_left_height";
+    static final String PREF_FRONT_LEFT_ASPECT = "direct_crop_front_left_aspect";
+    static final String PREF_FRONT_RIGHT_X = "direct_crop_front_right_x";
+    static final String PREF_FRONT_RIGHT_Y = "direct_crop_front_right_y";
+    static final String PREF_FRONT_RIGHT_WIDTH = "direct_crop_front_right_width";
+    static final String PREF_FRONT_RIGHT_HEIGHT = "direct_crop_front_right_height";
+    static final String PREF_FRONT_RIGHT_ASPECT = "direct_crop_front_right_aspect";
 
     static final int ASPECT_FOUR_THREE = 0;
     static final int ASPECT_SIXTEEN_NINE = 1;
@@ -45,6 +55,32 @@ final class DirectCameraCrop {
 
     static DirectCameraCrop defaultFor(boolean rightCamera) {
         return defaultFor(rightCamera, ASPECT_FOUR_THREE);
+    }
+
+    static DirectCameraCrop defaultFor(CameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        return defaultFor(profile.right());
+    }
+
+    static String preferenceKey(CameraProfile profile, int field) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        if (profile.rear()) {
+            if (field == 0) return profile.right() ? PREF_RIGHT_X : PREF_LEFT_X;
+            if (field == 1) return profile.right() ? PREF_RIGHT_Y : PREF_LEFT_Y;
+            if (field == 2) return profile.right() ? PREF_RIGHT_WIDTH : PREF_LEFT_WIDTH;
+            if (field == 3) return profile.right() ? PREF_RIGHT_HEIGHT : PREF_LEFT_HEIGHT;
+            if (field == 4) return profile.right() ? PREF_RIGHT_ASPECT : PREF_LEFT_ASPECT;
+        } else {
+            if (field == 0) return profile.right() ? PREF_FRONT_RIGHT_X : PREF_FRONT_LEFT_X;
+            if (field == 1) return profile.right() ? PREF_FRONT_RIGHT_Y : PREF_FRONT_LEFT_Y;
+            if (field == 2) return profile.right()
+                    ? PREF_FRONT_RIGHT_WIDTH : PREF_FRONT_LEFT_WIDTH;
+            if (field == 3) return profile.right()
+                    ? PREF_FRONT_RIGHT_HEIGHT : PREF_FRONT_LEFT_HEIGHT;
+            if (field == 4) return profile.right()
+                    ? PREF_FRONT_RIGHT_ASPECT : PREF_FRONT_LEFT_ASPECT;
+        }
+        throw new IllegalArgumentException("invalid crop field: " + field);
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera, int aspectMode) {

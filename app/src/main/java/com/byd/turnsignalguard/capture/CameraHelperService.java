@@ -223,6 +223,7 @@ public final class CameraHelperService extends Service {
         helper.setRecoveryEnabled(true);
         if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
+            reverseCameras.settingsChanged();
             clusterFullscreen.settingsChanged();
             scheduleCameraDiscoveryRetry(0);
         } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {

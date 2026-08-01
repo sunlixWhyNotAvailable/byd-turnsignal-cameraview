@@ -61,7 +61,7 @@ public final class CameraShellMain {
         private final int appUid;
         private final int versionCode;
         private final StockAvmPreview preview;
-        private final ShellCameraOverlay overlay;
+        private final ShellCameraOverlay[] overlays = new ShellCameraOverlay[CameraProfile.COUNT];
         private final ShellReverseCameraOverlay reverseOverlay;
         private IBinder callback;
 
@@ -75,7 +75,9 @@ public final class CameraShellMain {
                     emit("camera_config_applied", "detail", detail);
                 }
             });
-            overlay = new ShellCameraOverlay(context, this::emit);
+            for (CameraProfile profile : CameraProfile.values()) {
+                overlays[profile.id] = new ShellCameraOverlay(context, profile.id, this::emit);
+            }
             reverseOverlay = new ShellReverseCameraOverlay(context, this::emit);
         }
 
@@ -156,61 +158,67 @@ public final class CameraShellMain {
                     CameraShellProtocol.OverlaySpec spec =
                             CameraShellProtocol.OverlaySpec.readFromParcel(data);
                     runOnMain(() -> {
-                        overlay.prepare(spec);
+                        overlay(spec.cameraId).prepare(spec);
                         return null;
                     });
                     reply.writeNoException();
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_ACQUIRE_SURFACE) {
+                    int cameraId = data.readInt();
                     int requestId = data.readInt();
                     ShellCameraOverlay.SurfaceSnapshot snapshot = runOnMain(
-                            () -> overlay.acquireSurface(requestId));
+                            () -> overlay(cameraId).acquireSurface(requestId));
                     reply.writeNoException();
+                    reply.writeInt(cameraId);
                     reply.writeInt(snapshot.requestId);
                     reply.writeInt(snapshot.surfaceGeneration);
                     snapshot.surface.writeToParcel(reply, 0);
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_ARM_FRAME) {
+                    int cameraId = data.readInt();
                     int requestId = data.readInt();
                     int surfaceGeneration = data.readInt();
                     runOnMain(() -> {
-                        overlay.armFirstFrame(requestId, surfaceGeneration);
+                        overlay(cameraId).armFirstFrame(requestId, surfaceGeneration);
                         return null;
                     });
                     reply.writeNoException();
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_SET_VISIBLE) {
+                    int cameraId = data.readInt();
                     int requestId = data.readInt();
                     int surfaceGeneration = data.readInt();
                     boolean visible = data.readInt() != 0;
                     runOnMain(() -> {
-                        overlay.setVisible(requestId, surfaceGeneration, visible);
+                        overlay(cameraId).setVisible(requestId, surfaceGeneration, visible);
                         return null;
                     });
                     reply.writeNoException();
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_CLOSE) {
+                    int cameraId = data.readInt();
                     String reason = data.readString();
                     runOnMain(() -> {
-                        overlay.close(reason);
+                        overlay(cameraId).close(reason);
                         return null;
                     });
                     reply.writeNoException();
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_SET_WARNING) {
+                    int cameraId = data.readInt();
                     int requestId = data.readInt();
                     int surfaceGeneration = data.readInt();
                     int edge = data.readInt();
                     int mode = data.readInt();
                     CameraShellProtocol.validateWarning(
-                            requestId, surfaceGeneration, edge, mode);
+                            cameraId, requestId, surfaceGeneration, edge, mode);
                     runOnMain(() -> {
-                        overlay.setWarning(requestId, surfaceGeneration, edge, mode);
+                        overlay(cameraId).setWarning(requestId, surfaceGeneration, edge, mode);
                         return null;
                     });
                     reply.writeNoException();
@@ -221,7 +229,7 @@ public final class CameraShellMain {
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
                     runOnMain(() -> {
                         closePreview("reverse_priority");
-                        overlay.close("reverse_priority");
+                        closeOverlays("reverse_priority");
                         reverseOverlay.prepare(spec);
                         return null;
                     });
@@ -318,7 +326,7 @@ public final class CameraShellMain {
             closePreview(reason);
             Throwable failure = null;
             try {
-                overlay.close(reason);
+                closeOverlays(reason);
             } catch (Throwable error) {
                 failure = error;
             }
@@ -341,6 +349,22 @@ public final class CameraShellMain {
                 }
             }
             return values;
+        }
+
+        private ShellCameraOverlay overlay(int cameraId) {
+            return overlays[CameraProfile.of(cameraId).id];
+        }
+
+        private void closeOverlays(String reason) {
+            Throwable failure = null;
+            for (ShellCameraOverlay value : overlays) {
+                try {
+                    value.close(reason);
+                } catch (Throwable error) {
+                    if (failure == null) failure = error;
+                }
+            }
+            if (failure != null) throw new IllegalStateException(summary(failure), failure);
         }
 
         private <T> T runOnMain(java.util.concurrent.Callable<T> callable) throws Exception {

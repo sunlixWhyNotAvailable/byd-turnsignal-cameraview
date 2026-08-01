@@ -180,7 +180,8 @@ final class ReverseCameraController {
         visible = false;
         prioritySink.accept(true);
         CameraShellProtocol.ReverseOverlaySpec spec =
-                new CameraShellProtocol.ReverseOverlaySpec(requestId, loadLayout(settings));
+                new CameraShellProtocol.ReverseOverlaySpec(requestId, loadLayout(settings),
+                        BlindSpotOverlayController.readCornerRadius(settings));
         activeHelper.prepareReverseOverlayWindow(
                 spec, this::surfacesAvailable, () -> overlayPrepared(requestId));
         emit("reverse_camera_start", "request_id", requestId);
@@ -390,6 +391,17 @@ final class ReverseCameraController {
     static ReverseCameraLayout loadLayout(SharedPreferences settings) {
         try {
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+            ReverseCameraLayout.Rect defaultBackground = layout.background;
+            layout = ReverseCameraLayout.withBackground(layout,
+                    ReverseCameraLayout.destination(
+                            settings.getFloat(PREF_PREFIX + "background_left",
+                                    defaultBackground.left),
+                            settings.getFloat(PREF_PREFIX + "background_top",
+                                    defaultBackground.top),
+                            settings.getFloat(PREF_PREFIX + "background_width",
+                                    defaultBackground.width),
+                            settings.getFloat(PREF_PREFIX + "background_height",
+                                    defaultBackground.height)));
             for (ReverseCameraLayout.Pane pane : layout.panes()) {
                 String prefix = PREF_PREFIX + pane.cameraIndex + "_";
                 ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(
@@ -416,7 +428,11 @@ final class ReverseCameraController {
     }
 
     static void saveLayout(SharedPreferences settings, ReverseCameraLayout layout) {
-        SharedPreferences.Editor editor = settings.edit();
+        SharedPreferences.Editor editor = settings.edit()
+                .putFloat(PREF_PREFIX + "background_left", layout.background.left)
+                .putFloat(PREF_PREFIX + "background_top", layout.background.top)
+                .putFloat(PREF_PREFIX + "background_width", layout.background.width)
+                .putFloat(PREF_PREFIX + "background_height", layout.background.height);
         for (ReverseCameraLayout.Pane pane : layout.panes()) {
             String prefix = PREF_PREFIX + pane.cameraIndex + "_";
             editor.putFloat(prefix + "left", pane.destination.left)

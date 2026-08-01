@@ -15,7 +15,7 @@ import android.widget.FrameLayout;
 final class ReverseCameraCompositionView extends FrameLayout {
     static final int SOURCE_WIDTH = 1920;
     static final int SOURCE_HEIGHT = 1300;
-    private static final int CORNER_RADIUS_DP = 8;
+    private static final int DEFAULT_CORNER_RADIUS_DP = 8;
 
     interface Callback {
         void onReverseSurfacesReady(int[] generations);
@@ -23,9 +23,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void onReverseSurfaceLost(int cameraIndex, int generation);
     }
 
+    private final View backgroundPane;
     private final PaneView[] panes = new PaneView[3];
+    private TextureView previewBase;
+    private View previewBaseCover;
+    private Surface previewBaseSurface;
+    private int previewBaseGeneration;
+    private int previewBaseArmedGeneration;
+    private boolean previewBaseFreshFrame;
     private Callback callback;
     private ReverseCameraLayout model = ReverseCameraLayout.defaults();
+    private int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
     private int armedRequestId;
     private boolean framesReported;
 
@@ -33,6 +41,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
         super(context);
         setBackgroundColor(Color.TRANSPARENT);
         setClipChildren(true);
+        backgroundPane = new View(context);
+        backgroundPane.setBackgroundColor(Color.BLACK);
+        addView(backgroundPane, new FrameLayout.LayoutParams(1, 1));
         panes[0] = addPane(ReverseCameraLayout.REAR_CAMERA_INDEX);
         panes[1] = addPane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         panes[2] = addPane(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
@@ -42,6 +53,63 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     void setCallback(Callback value) {
         callback = value;
+    }
+
+    void enablePreviewBase() {
+        if (previewBase != null) return;
+        previewBase = new TextureView(getContext());
+        previewBase.setOpaque(true);
+        previewBase.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(
+                    SurfaceTexture texture, int width, int height) {
+                texture.setDefaultBufferSize(1920, 990);
+                if (previewBaseSurface != null) previewBaseSurface.release();
+                previewBaseSurface = new Surface(texture);
+                previewBaseGeneration++;
+                previewBaseFreshFrame = false;
+                notifySurfacesReady();
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(
+                    SurfaceTexture texture, int width, int height) {
+                texture.setDefaultBufferSize(1920, 990);
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+                int lostGeneration = previewBaseGeneration;
+                if (previewBaseSurface != null) previewBaseSurface.release();
+                previewBaseSurface = null;
+                previewBaseFreshFrame = false;
+                previewBaseCover.setVisibility(View.VISIBLE);
+                if (callback != null) callback.onReverseSurfaceLost(0, lostGeneration);
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+                if (armedRequestId <= 0
+                        || previewBaseArmedGeneration != previewBaseGeneration) return;
+                previewBaseFreshFrame = true;
+                maybeReportFrames();
+            }
+        });
+        addView(previewBase, 0, new FrameLayout.LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        previewBaseCover = new View(getContext());
+        previewBaseCover.setBackgroundColor(Color.BLACK);
+        addView(previewBaseCover, 1, new FrameLayout.LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        previewBase.setZ(-2.0f);
+        previewBaseCover.setZ(-1.0f);
+        notifySurfacesReady();
+    }
+
+    void setCornerRadiusDp(int value) {
+        cornerRadiusDp = Math.max(0, Math.min(48, value));
+        for (PaneView pane : panes) pane.setCornerRadiusDp(cornerRadiusDp);
     }
 
     void applyLayout(ReverseCameraLayout value) {
@@ -57,6 +125,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
         return true;
     }
 
+    boolean previewSurfacesReady() {
+        return surfacesReady() && previewBaseSurface != null && previewBaseSurface.isValid();
+    }
+
     SurfaceBundle acquireSurfaces(int requestId) {
         if (requestId <= 0 || !surfacesReady()) {
             throw new IllegalStateException("reverse Surfaces unavailable");
@@ -68,6 +140,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
             generations[i] = panes[i].generation;
         }
         return new SurfaceBundle(requestId, generations, surfaces);
+    }
+
+    SurfaceBundle acquirePreviewSurfaces(int requestId) {
+        if (requestId <= 0 || !previewSurfacesReady()) {
+            throw new IllegalStateException("reverse preview Surfaces unavailable");
+        }
+        SurfaceBundle direct = acquireSurfaces(requestId);
+        Surface[] surfaces = new Surface[direct.surfaces.length + 1];
+        surfaces[0] = previewBaseSurface;
+        System.arraycopy(direct.surfaces, 0, surfaces, 1, direct.surfaces.length);
+        return new SurfaceBundle(requestId, direct.generations, surfaces);
     }
 
     void armFrames(int requestId, int[] expectedGenerations) {
@@ -84,6 +167,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
             panes[i].freshFrame = false;
             panes[i].cover.setVisibility(View.VISIBLE);
         }
+        if (previewBase != null) {
+            if (previewBaseSurface == null || !previewBaseSurface.isValid()) {
+                throw new IllegalStateException("stale reverse preview base Surface");
+            }
+            previewBaseArmedGeneration = previewBaseGeneration;
+            previewBaseFreshFrame = false;
+            previewBaseCover.setVisibility(View.VISIBLE);
+        }
         armedRequestId = requestId;
         framesReported = false;
     }
@@ -96,6 +187,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             pane.freshFrame = false;
             pane.cover.setVisibility(View.VISIBLE);
         }
+        previewBaseFreshFrame = false;
+        if (previewBaseCover != null) previewBaseCover.setVisibility(View.VISIBLE);
     }
 
     boolean framesReady(int requestId, int[] expectedGenerations) {
@@ -106,6 +199,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 return false;
             }
         }
+        if (previewBase != null && !previewBaseFreshFrame) return false;
         return true;
     }
 
@@ -161,7 +255,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void notifySurfacesReady() {
-        if (callback != null && surfacesReady()) {
+        boolean ready = previewBase == null ? surfacesReady() : previewSurfacesReady();
+        if (callback != null && ready) {
             callback.onReverseSurfacesReady(currentGenerations());
         }
     }
@@ -172,6 +267,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (!framesReady(armedRequestId, generations)) return;
         framesReported = true;
         for (PaneView pane : panes) pane.cover.setVisibility(View.GONE);
+        if (previewBaseCover != null) previewBaseCover.setVisibility(View.GONE);
         if (callback != null) callback.onReverseFramesReady(armedRequestId, generations);
     }
 
@@ -185,6 +281,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
         int width = getWidth();
         int height = getHeight();
         if (width <= 0 || height <= 0) return;
+        ReverseCameraLayout.PixelRect backgroundRect =
+                ReverseCameraLayout.project(model.background, width, height);
+        FrameLayout.LayoutParams backgroundParams =
+                (FrameLayout.LayoutParams) backgroundPane.getLayoutParams();
+        backgroundParams.width = Math.max(1, backgroundRect.width);
+        backgroundParams.height = Math.max(1, backgroundRect.height);
+        backgroundParams.leftMargin = backgroundRect.left;
+        backgroundParams.topMargin = backgroundRect.top;
+        backgroundPane.setLayoutParams(backgroundParams);
+        backgroundPane.setZ(0.0f);
         for (PaneView pane : panes) {
             ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
             ReverseCameraLayout.PixelRect rect =
@@ -195,7 +301,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             params.leftMargin = rect.left;
             params.topMargin = rect.top;
             pane.setLayoutParams(params);
-            pane.setZ(value.zOrder);
+            pane.setZ(1.0f + value.zOrder);
             pane.applyCrop(value.sourceCrop);
         }
     }
@@ -231,11 +337,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
             setOutlineProvider(ViewOutlineProvider.BACKGROUND);
             GradientDrawable background = new GradientDrawable();
             background.setColor(Color.BLACK);
-            background.setCornerRadius(dp(context, CORNER_RADIUS_DP));
+            background.setCornerRadius(dp(context, DEFAULT_CORNER_RADIUS_DP));
             setBackground(background);
 
             texture = new TextureView(context);
             texture.setOpaque(true);
+            if (ReverseCameraLayout.mirrorHorizontally(cameraIndex)) {
+                texture.setScaleX(-1.0f);
+            }
             addView(texture, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             cover = new View(context);
@@ -275,6 +384,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
                             (cropTop + cropHeight) * height),
                     new RectF(0, 0, width, height), Matrix.ScaleToFit.FILL);
             texture.setTransform(transform);
+        }
+
+        void setCornerRadiusDp(int value) {
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(Color.BLACK);
+            background.setCornerRadius(dp(getContext(), value));
+            setBackground(background);
+            invalidateOutline();
         }
 
         private static float dp(Context context, int value) {

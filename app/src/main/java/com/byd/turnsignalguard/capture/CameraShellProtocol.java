@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 9;
+    static final int VERSION = 10;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -47,7 +47,11 @@ final class CameraShellProtocol {
         return actualUid == appUid;
     }
 
-    static void validateWarning(int requestId, int surfaceGeneration, int edge, int mode) {
+    static void validateWarning(
+            int cameraId, int requestId, int surfaceGeneration, int edge, int mode) {
+        if (!CameraProfile.of(cameraId).rear()) {
+            throw new IllegalArgumentException("warning is rear-camera only");
+        }
         if (requestId <= 0 || surfaceGeneration <= 0) {
             throw new IllegalArgumentException("invalid warning request identity");
         }
@@ -58,7 +62,13 @@ final class CameraShellProtocol {
         }
     }
 
+    static void validateWarning(int requestId, int surfaceGeneration, int edge, int mode) {
+        validateWarning(CameraProfile.REAR_LEFT,
+                requestId, surfaceGeneration, edge, mode);
+    }
+
     static final class OverlaySpec {
+        final int cameraId;
         final int requestId;
         final int target;
         final int width;
@@ -70,11 +80,21 @@ final class CameraShellProtocol {
         final float cropWidth;
         final float cropHeight;
         final int cropAspectMode;
+        final int cornerRadiusDp;
 
         OverlaySpec(
                 int requestId, int target, int width, int height, int x, int y,
                 float cropLeft, float cropTop, float cropWidth, float cropHeight,
                 int cropAspectMode) {
+            this(CameraProfile.REAR_LEFT, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode, 8);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int cornerRadiusDp) {
+            this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
             this.width = width;
@@ -86,9 +106,11 @@ final class CameraShellProtocol {
             this.cropWidth = cropWidth;
             this.cropHeight = cropHeight;
             this.cropAspectMode = cropAspectMode;
+            this.cornerRadiusDp = cornerRadiusDp;
         }
 
         void writeToParcel(Parcel parcel) {
+            parcel.writeInt(cameraId);
             parcel.writeInt(requestId);
             parcel.writeInt(target);
             parcel.writeInt(width);
@@ -100,17 +122,19 @@ final class CameraShellProtocol {
             parcel.writeFloat(cropWidth);
             parcel.writeFloat(cropHeight);
             parcel.writeInt(cropAspectMode);
+            parcel.writeInt(cornerRadiusDp);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
             return new OverlaySpec(
                     parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
-                    parcel.readInt(), parcel.readInt(), parcel.readFloat(),
+                    parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readFloat(), parcel.readFloat(), parcel.readFloat(),
-                    parcel.readInt());
+                    parcel.readFloat(), parcel.readInt(), parcel.readInt());
         }
 
         void validate(int displayWidth, int displayHeight) {
+            CameraProfile.of(cameraId);
             if (requestId <= 0) throw new IllegalArgumentException("invalid request id");
             if (!CameraDisplayTarget.isValid(target)) {
                 throw new IllegalArgumentException("invalid display target");
@@ -132,6 +156,9 @@ final class CameraShellProtocol {
                     || cropAspectMode > DirectCameraCrop.ASPECT_FREE) {
                 throw new IllegalArgumentException("invalid crop aspect mode");
             }
+            if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
+                throw new IllegalArgumentException("invalid corner radius");
+            }
         }
 
         DirectCameraCrop crop() {
@@ -147,15 +174,23 @@ final class CameraShellProtocol {
     static final class ReverseOverlaySpec {
         final int requestId;
         final ReverseCameraLayout layout;
+        final int cornerRadiusDp;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
+            this(requestId, layout, 8);
+        }
+
+        ReverseOverlaySpec(int requestId, ReverseCameraLayout layout, int cornerRadiusDp) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             this.requestId = requestId;
             this.layout = layout;
+            this.cornerRadiusDp = cornerRadiusDp;
         }
 
         void writeToParcel(Parcel parcel) {
             parcel.writeInt(requestId);
+            writeRect(parcel, layout.background);
+            parcel.writeInt(cornerRadiusDp);
             for (ReverseCameraLayout.Pane pane : layout.panes()) {
                 parcel.writeInt(pane.cameraIndex);
                 writeRect(parcel, pane.destination);
@@ -167,6 +202,12 @@ final class CameraShellProtocol {
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
             int requestId = parcel.readInt();
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+            float[] background = readRect(parcel);
+            validateRect(background, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+            layout = ReverseCameraLayout.withBackground(layout,
+                    ReverseCameraLayout.destination(background[0], background[1],
+                            background[2], background[3]));
+            int cornerRadiusDp = parcel.readInt();
             int[] indexes = new int[3];
             int[] zOrders = new int[3];
             for (int i = 0; i < indexes.length; i++) {
@@ -203,13 +244,17 @@ final class CameraShellProtocol {
                     }
                 }
             }
-            return new ReverseOverlaySpec(requestId, layout);
+            return new ReverseOverlaySpec(requestId, layout, cornerRadiusDp);
         }
 
         void validate(int displayWidth, int displayHeight) {
             if (requestId <= 0) throw new IllegalArgumentException("invalid reverse request id");
             if (displayWidth <= 0 || displayHeight <= 0) {
                 throw new IllegalArgumentException("invalid reverse display bounds");
+            }
+            validateModelRect(layout.background, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+            if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
+                throw new IllegalArgumentException("invalid reverse corner radius");
             }
             boolean[] zSeen = new boolean[3];
             int expectedIndex = 1;

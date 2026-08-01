@@ -96,8 +96,8 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(42, BuildConfig.VERSION_CODE);
-        assertEquals(5, TurnSignalShellProtocol.VERSION);
+        assertEquals(43, BuildConfig.VERSION_CODE);
+        assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
 
@@ -784,7 +784,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(9, CameraShellProtocol.VERSION);
+        assertEquals(10, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -828,6 +828,11 @@ public final class AdbCoreTest {
                 0, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
+        new CameraShellProtocol.ReverseOverlaySpec(
+                1, ReverseCameraLayout.defaults(), 8).validate(1920, 990);
+        assertThrows(IllegalArgumentException.class,
+                () -> new CameraShellProtocol.ReverseOverlaySpec(
+                        1, ReverseCameraLayout.defaults(), 49).validate(1920, 990));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
                 1, CameraDisplayTarget.TABLET, 640, 480, 1500, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
