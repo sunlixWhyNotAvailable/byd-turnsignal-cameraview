@@ -32,6 +32,8 @@ final class BlindSpotCameraView extends TextureView
         super(context);
         setOpaque(true);
         setSurfaceTextureListener(this);
+        addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> applyCurrentCrop());
     }
 
     void setCallback(Callback value) {
@@ -66,6 +68,13 @@ final class BlindSpotCameraView extends TextureView
                 new RectF(0.0f, 0.0f, width, height),
                 Matrix.ScaleToFit.FILL);
         setTransform(transform);
+        float[] scale = CameraRotation.scaleToRotatedBounds(
+                width, height, directCrop.outputAspect(), directCrop.rotationDegrees);
+        setPivotX(width / 2.0f);
+        setPivotY(height / 2.0f);
+        setRotation(directCrop.rotationDegrees);
+        setScaleX(scale[0]);
+        setScaleY(scale[1]);
     }
 
     private void configureBuffer() {

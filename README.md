@@ -40,8 +40,8 @@ After first launch:
 5. Configure the turn guard and camera speed limits.
 6. Open `Калібрування камер` to select the visible crop for each rear/front side camera.
 7. For each camera, choose the tablet or instrument cluster, then set its size and position.
-8. Open `Камери заднього ходу` to configure the mirrored central rear pane, side panes, and black background. `Покращений задній вид` is off by default.
-9. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app switch. The app switch is off by default.
+8. Open `Задній хід` to configure the mirrored central rear pane, side panes, and black background. `Покращений задній вид` is off by default.
+9. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app switch. The same switch also forwards title, artist, playback state, and timeline from common third-party Android media players to the instrument cluster. The app switch is off by default.
 
 ## Known Limitations
 
@@ -53,6 +53,7 @@ After first launch:
 - The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
 - Simultaneous rear/front crops from the same physical side depend on duplicate-index Surface support and must pass the bundled parked probe before public release.
 - Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
+- Third-party metadata forwarding does not include album artwork. BYD's protected cover provider is unavailable to the shell helper, while stock Bluetooth, Local Media, and supported OEM players keep their native metadata path.
 
 ## Tested
 

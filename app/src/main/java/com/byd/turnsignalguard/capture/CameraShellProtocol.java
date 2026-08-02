@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 10;
+    static final int VERSION = 11;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -80,6 +80,7 @@ final class CameraShellProtocol {
         final float cropWidth;
         final float cropHeight;
         final int cropAspectMode;
+        final int rotationDegrees;
         final int cornerRadiusDp;
 
         OverlaySpec(
@@ -87,13 +88,23 @@ final class CameraShellProtocol {
                 float cropLeft, float cropTop, float cropWidth, float cropHeight,
                 int cropAspectMode) {
             this(CameraProfile.REAR_LEFT, requestId, target, width, height, x, y,
-                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode, 8);
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    CameraRotation.DEFAULT_DEGREES, 8);
         }
 
         OverlaySpec(
                 int cameraId, int requestId, int target, int width, int height, int x, int y,
                 float cropLeft, float cropTop, float cropWidth, float cropHeight,
                 int cropAspectMode, int cornerRadiusDp) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    CameraRotation.DEFAULT_DEGREES, cornerRadiusDp);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int cornerRadiusDp) {
             this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
@@ -106,6 +117,7 @@ final class CameraShellProtocol {
             this.cropWidth = cropWidth;
             this.cropHeight = cropHeight;
             this.cropAspectMode = cropAspectMode;
+            this.rotationDegrees = rotationDegrees;
             this.cornerRadiusDp = cornerRadiusDp;
         }
 
@@ -122,6 +134,7 @@ final class CameraShellProtocol {
             parcel.writeFloat(cropWidth);
             parcel.writeFloat(cropHeight);
             parcel.writeInt(cropAspectMode);
+            parcel.writeInt(rotationDegrees);
             parcel.writeInt(cornerRadiusDp);
         }
 
@@ -130,7 +143,7 @@ final class CameraShellProtocol {
                     parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readFloat(), parcel.readFloat(), parcel.readFloat(),
-                    parcel.readFloat(), parcel.readInt(), parcel.readInt());
+                    parcel.readFloat(), parcel.readInt(), parcel.readInt(), parcel.readInt());
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -156,6 +169,9 @@ final class CameraShellProtocol {
                     || cropAspectMode > DirectCameraCrop.ASPECT_FREE) {
                 throw new IllegalArgumentException("invalid crop aspect mode");
             }
+            if (!CameraRotation.isValid(rotationDegrees)) {
+                throw new IllegalArgumentException("invalid camera rotation");
+            }
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid corner radius");
             }
@@ -163,7 +179,8 @@ final class CameraShellProtocol {
 
         DirectCameraCrop crop() {
             return DirectCameraCrop.of(
-                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode);
+                    cropLeft, cropTop, cropWidth, cropHeight,
+                    cropAspectMode, rotationDegrees);
         }
 
         private static boolean finite(float value) {
@@ -195,6 +212,7 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.cameraIndex);
                 writeRect(parcel, pane.destination);
                 writeRect(parcel, pane.sourceCrop);
+                parcel.writeInt(pane.rotationDegrees);
                 parcel.writeInt(pane.zOrder);
             }
         }
@@ -218,17 +236,21 @@ final class CameraShellProtocol {
                 }
                 float[] destination = readRect(parcel);
                 float[] crop = readRect(parcel);
+                int rotationDegrees = parcel.readInt();
                 int zOrder = parcel.readInt();
                 validateRect(destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
                 validateRect(crop, 0.0f);
                 if (zOrder < 0 || zOrder > 2) {
                     throw new IllegalArgumentException("invalid reverse z-order");
                 }
+                if (!CameraRotation.isValid(rotationDegrees)) {
+                    throw new IllegalArgumentException("invalid reverse rotation");
+                }
                 layout = ReverseCameraLayout.withPane(layout, cameraIndex,
                         ReverseCameraLayout.destination(destination[0], destination[1],
                                 destination[2], destination[3]),
                         ReverseCameraLayout.sourceCrop(crop[0], crop[1],
-                                crop[2], crop[3]));
+                                crop[2], crop[3]), rotationDegrees);
                 indexes[i] = cameraIndex;
                 zOrders[i] = zOrder;
             }
@@ -264,6 +286,9 @@ final class CameraShellProtocol {
                 }
                 validateModelRect(pane.destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
                 validateModelRect(pane.sourceCrop, 0.0f);
+                if (!CameraRotation.isValid(pane.rotationDegrees)) {
+                    throw new IllegalArgumentException("invalid reverse rotation");
+                }
                 if (pane.zOrder < 0 || pane.zOrder >= zSeen.length || zSeen[pane.zOrder]) {
                     throw new IllegalArgumentException("invalid reverse z-order");
                 }

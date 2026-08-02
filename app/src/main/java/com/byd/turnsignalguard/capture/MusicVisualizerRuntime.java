@@ -22,6 +22,7 @@ final class MusicVisualizerRuntime {
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
     private final AudioManager audioManager;
+    private final MusicMetadataRuntime metadataRuntime;
     private final AudioManager.AudioPlaybackCallback playbackCallback;
     private final Runnable deferredStop = this::finishDeferredStop;
     private final Runnable retryStop = this::retryStop;
@@ -42,6 +43,7 @@ final class MusicVisualizerRuntime {
         this.handler = handler;
         this.eventSink = eventSink;
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        metadataRuntime = new MusicMetadataRuntime(context, handler, eventSink);
         playbackCallback = new AudioManager.AudioPlaybackCallback() {
             @Override
             public void onPlaybackConfigChanged(
@@ -63,6 +65,7 @@ final class MusicVisualizerRuntime {
     void stop() {
         runOnHandler(() -> {
             boolean wasEnabled = enabled;
+            metadataRuntime.stop();
             enabled = false;
             awake = false;
             deactivate("shutdown");
@@ -71,10 +74,14 @@ final class MusicVisualizerRuntime {
     }
 
     void reportStatus() {
-        runOnHandler(() -> emitStatus("report"));
+        runOnHandler(() -> {
+            emitStatus("report");
+            metadataRuntime.reportStatus();
+        });
     }
 
     private void configureOnHandler(boolean value) {
+        metadataRuntime.configure(value);
         if (enabled == value) {
             if (enabled && awake && !callbackRegistered) activate("configure_retry");
             return;
@@ -90,6 +97,7 @@ final class MusicVisualizerRuntime {
     }
 
     private void powerStateChangedOnHandler(boolean interactive) {
+        metadataRuntime.powerStateChanged(interactive);
         if (awake == interactive) return;
         awake = interactive;
         if (awake && enabled) activate("wake");
@@ -143,6 +151,7 @@ final class MusicVisualizerRuntime {
     private void applyPlaybackConfigurations(
             List<AudioPlaybackConfiguration> configurations, String source) {
         if (!callbackRegistered || !enabled || !awake) return;
+        metadataRuntime.audioPlaybackChanged(source);
         boolean nextActive = hasMediaPlayback(configurations);
         if (nextActive == mediaActive) {
             if (!nextActive && outputActive) scheduleDeferredStop(source);

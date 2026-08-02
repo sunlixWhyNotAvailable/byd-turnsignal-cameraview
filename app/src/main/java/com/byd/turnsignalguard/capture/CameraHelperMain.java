@@ -986,6 +986,11 @@ final class CameraHelperMain {
                     || "music_visualizer_start".equals(kind)
                     || "music_visualizer_stop_pending".equals(kind)
                     || "music_visualizer_stop".equals(kind)
+                    || "music_metadata_focus".equals(kind)
+                    || "music_metadata_publish".equals(kind)
+                    || "music_metadata_cleanup".equals(kind)
+                    || "music_metadata_relinquished".equals(kind)
+                    || "music_metadata_error".equals(kind)
                     || "music_runtime_error".equals(kind);
         }
 

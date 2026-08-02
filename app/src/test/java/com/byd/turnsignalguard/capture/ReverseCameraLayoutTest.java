@@ -1,7 +1,6 @@
 package com.byd.turnsignalguard.capture;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -25,12 +24,12 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
-    public void onlyCentralRearCameraIsMirrored() {
+    public void allReverseCamerasAreMirrored() {
         assertTrue(ReverseCameraLayout.mirrorHorizontally(
                 ReverseCameraLayout.REAR_CAMERA_INDEX));
-        assertFalse(ReverseCameraLayout.mirrorHorizontally(
+        assertTrue(ReverseCameraLayout.mirrorHorizontally(
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
-        assertFalse(ReverseCameraLayout.mirrorHorizontally(
+        assertTrue(ReverseCameraLayout.mirrorHorizontally(
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
     }
 
@@ -46,5 +45,19 @@ public final class ReverseCameraLayoutTest {
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 2.0f, 2.0f);
         assertEquals(0.5f, clamped.rearLeft.destination.left, 0.0001f);
         assertEquals(0.5f, clamped.rearLeft.destination.top, 0.0001f);
+    }
+
+    @Test
+    public void rotationIsPerPaneAndSurvivesGeometryChanges() {
+        ReverseCameraLayout layout = ReverseCameraLayout.withRotation(
+                ReverseCameraLayout.defaults(),
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, -37);
+        ReverseCameraLayout moved = ReverseCameraLayout.move(layout,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.01f, 0.0f);
+        assertEquals(-37, moved.rearLeft.rotationDegrees);
+        assertEquals(0, moved.rear.rotationDegrees);
+        assertEquals(180, ReverseCameraLayout.withRotation(
+                moved, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 999)
+                .rearLeft.rotationDegrees);
     }
 }

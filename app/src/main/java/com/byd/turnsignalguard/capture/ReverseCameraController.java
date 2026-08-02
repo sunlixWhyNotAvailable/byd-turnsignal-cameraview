@@ -414,8 +414,10 @@ final class ReverseCameraController {
                         settings.getFloat(prefix + "crop_top", pane.sourceCrop.top),
                         settings.getFloat(prefix + "crop_width", pane.sourceCrop.width),
                         settings.getFloat(prefix + "crop_height", pane.sourceCrop.height));
+                int rotationDegrees = CameraRotation.clamp(settings.getInt(
+                        prefix + "rotation_degrees", pane.rotationDegrees));
                 layout = ReverseCameraLayout.withPane(
-                        layout, pane.cameraIndex, destination, crop);
+                        layout, pane.cameraIndex, destination, crop, rotationDegrees);
             }
             for (int z = 0; z < 3; z++) {
                 int cameraIndex = settings.getInt(PREF_PREFIX + "z_" + z, z + 1);
@@ -443,6 +445,7 @@ final class ReverseCameraController {
                     .putFloat(prefix + "crop_top", pane.sourceCrop.top)
                     .putFloat(prefix + "crop_width", pane.sourceCrop.width)
                     .putFloat(prefix + "crop_height", pane.sourceCrop.height)
+                    .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
         }
         editor.apply();

@@ -6,21 +6,25 @@ final class DirectCameraCrop {
     static final String PREF_LEFT_WIDTH = "direct_crop_left_width";
     static final String PREF_LEFT_HEIGHT = "direct_crop_left_height";
     static final String PREF_LEFT_ASPECT = "direct_crop_left_aspect";
+    static final String PREF_LEFT_ROTATION = "direct_crop_left_rotation";
     static final String PREF_RIGHT_X = "direct_crop_right_x";
     static final String PREF_RIGHT_Y = "direct_crop_right_y";
     static final String PREF_RIGHT_WIDTH = "direct_crop_right_width";
     static final String PREF_RIGHT_HEIGHT = "direct_crop_right_height";
     static final String PREF_RIGHT_ASPECT = "direct_crop_right_aspect";
+    static final String PREF_RIGHT_ROTATION = "direct_crop_right_rotation";
     static final String PREF_FRONT_LEFT_X = "direct_crop_front_left_x";
     static final String PREF_FRONT_LEFT_Y = "direct_crop_front_left_y";
     static final String PREF_FRONT_LEFT_WIDTH = "direct_crop_front_left_width";
     static final String PREF_FRONT_LEFT_HEIGHT = "direct_crop_front_left_height";
     static final String PREF_FRONT_LEFT_ASPECT = "direct_crop_front_left_aspect";
+    static final String PREF_FRONT_LEFT_ROTATION = "direct_crop_front_left_rotation";
     static final String PREF_FRONT_RIGHT_X = "direct_crop_front_right_x";
     static final String PREF_FRONT_RIGHT_Y = "direct_crop_front_right_y";
     static final String PREF_FRONT_RIGHT_WIDTH = "direct_crop_front_right_width";
     static final String PREF_FRONT_RIGHT_HEIGHT = "direct_crop_front_right_height";
     static final String PREF_FRONT_RIGHT_ASPECT = "direct_crop_front_right_aspect";
+    static final String PREF_FRONT_RIGHT_ROTATION = "direct_crop_front_right_rotation";
 
     static final int ASPECT_FOUR_THREE = 0;
     static final int ASPECT_SIXTEEN_NINE = 1;
@@ -43,14 +47,17 @@ final class DirectCameraCrop {
     final float width;
     final float height;
     final int aspectMode;
+    final int rotationDegrees;
 
     private DirectCameraCrop(
-            float left, float top, float width, float height, int aspectMode) {
+            float left, float top, float width, float height, int aspectMode,
+            int rotationDegrees) {
         this.left = left;
         this.top = top;
         this.width = width;
         this.height = height;
         this.aspectMode = aspectMode;
+        this.rotationDegrees = rotationDegrees;
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera) {
@@ -70,6 +77,7 @@ final class DirectCameraCrop {
             if (field == 2) return profile.right() ? PREF_RIGHT_WIDTH : PREF_LEFT_WIDTH;
             if (field == 3) return profile.right() ? PREF_RIGHT_HEIGHT : PREF_LEFT_HEIGHT;
             if (field == 4) return profile.right() ? PREF_RIGHT_ASPECT : PREF_LEFT_ASPECT;
+            if (field == 5) return profile.right() ? PREF_RIGHT_ROTATION : PREF_LEFT_ROTATION;
         } else {
             if (field == 0) return profile.right() ? PREF_FRONT_RIGHT_X : PREF_FRONT_LEFT_X;
             if (field == 1) return profile.right() ? PREF_FRONT_RIGHT_Y : PREF_FRONT_LEFT_Y;
@@ -79,6 +87,8 @@ final class DirectCameraCrop {
                     ? PREF_FRONT_RIGHT_HEIGHT : PREF_FRONT_LEFT_HEIGHT;
             if (field == 4) return profile.right()
                     ? PREF_FRONT_RIGHT_ASPECT : PREF_FRONT_LEFT_ASPECT;
+            if (field == 5) return profile.right()
+                    ? PREF_FRONT_RIGHT_ROTATION : PREF_FRONT_LEFT_ROTATION;
         }
         throw new IllegalArgumentException("invalid crop field: " + field);
     }
@@ -97,7 +107,14 @@ final class DirectCameraCrop {
 
     static DirectCameraCrop of(
             float left, float top, float width, float height, int aspectMode) {
+        return of(left, top, width, height, aspectMode, CameraRotation.DEFAULT_DEGREES);
+    }
+
+    static DirectCameraCrop of(
+            float left, float top, float width, float height, int aspectMode,
+            int rotationDegrees) {
         int safeMode = sanitizeAspectMode(aspectMode);
+        int safeRotation = CameraRotation.clamp(rotationDegrees);
         if (safeMode != ASPECT_FREE) {
             float ratio = heightPerWidth(safeMode);
             float maxWidth = Math.min(1.0f, 1.0f / ratio);
@@ -107,7 +124,7 @@ final class DirectCameraCrop {
             return new DirectCameraCrop(
                     clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                     clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
-                    safeWidth, safeHeight, safeMode);
+                    safeWidth, safeHeight, safeMode, safeRotation);
         }
 
         float safeWidth = clamp(finite(width) ? width : 0.65f, MIN_WIDTH, 1.0f);
@@ -116,17 +133,23 @@ final class DirectCameraCrop {
         return new DirectCameraCrop(
                 clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                 clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
-                safeWidth, safeHeight, safeMode);
+                safeWidth, safeHeight, safeMode, safeRotation);
     }
 
     DirectCameraCrop withAspectMode(int mode) {
         int safeMode = sanitizeAspectMode(mode);
         if (safeMode == aspectMode) return this;
-        return of(left, top, width, height, safeMode);
+        return of(left, top, width, height, safeMode, rotationDegrees);
+    }
+
+    DirectCameraCrop withRotation(int degrees) {
+        int safeDegrees = CameraRotation.clamp(degrees);
+        return safeDegrees == rotationDegrees ? this
+                : new DirectCameraCrop(left, top, width, height, aspectMode, safeDegrees);
     }
 
     DirectCameraCrop move(float dx, float dy) {
-        return of(left + dx, top + dy, width, height, aspectMode);
+        return of(left + dx, top + dy, width, height, aspectMode, rotationDegrees);
     }
 
     DirectCameraCrop resize(int edges, float dx, float dy) {
@@ -155,7 +178,7 @@ final class DirectCameraCrop {
             return new DirectCameraCrop(
                     dragLeft ? anchorX - safeWidth : anchorX,
                     dragTop ? anchorY - safeWidth * ratio : anchorY,
-                    safeWidth, safeWidth * ratio, aspectMode);
+                    safeWidth, safeWidth * ratio, aspectMode, rotationDegrees);
         }
 
         if (dragLeft || dragRight) {
@@ -168,7 +191,7 @@ final class DirectCameraCrop {
                     Math.min(maxWidthX, maxWidthY));
             return new DirectCameraCrop(dragLeft ? anchorX - safeWidth : anchorX,
                     centerY - safeWidth * ratio / 2.0f,
-                    safeWidth, safeWidth * ratio, aspectMode);
+                    safeWidth, safeWidth * ratio, aspectMode, rotationDegrees);
         }
 
         float anchorY = dragTop ? bottom() : top;
@@ -180,7 +203,7 @@ final class DirectCameraCrop {
                 MIN_WIDTH, Math.min(maxWidthX, maxHeight / ratio));
         return new DirectCameraCrop(centerX - safeWidth / 2.0f,
                 dragTop ? anchorY - safeWidth * ratio : anchorY,
-                safeWidth, safeWidth * ratio, aspectMode);
+                safeWidth, safeWidth * ratio, aspectMode, rotationDegrees);
     }
 
     private DirectCameraCrop resizeFree(int edges, float dx, float dy) {
@@ -199,11 +222,15 @@ final class DirectCameraCrop {
         if (dragTop) nextTop = clamp(top + dy, 0.0f, nextBottom - MIN_HEIGHT);
         if (dragBottom) nextBottom = clamp(bottom() + dy, nextTop + MIN_HEIGHT, 1.0f);
         return new DirectCameraCrop(nextLeft, nextTop,
-                nextRight - nextLeft, nextBottom - nextTop, ASPECT_FREE);
+                nextRight - nextLeft, nextBottom - nextTop, ASPECT_FREE, rotationDegrees);
     }
 
     float outputAspect() {
         return width * SOURCE_WIDTH / (height * SOURCE_HEIGHT);
+    }
+
+    float rotatedOutputAspect() {
+        return CameraRotation.rotatedAspect(outputAspect(), rotationDegrees);
     }
 
     float right() {

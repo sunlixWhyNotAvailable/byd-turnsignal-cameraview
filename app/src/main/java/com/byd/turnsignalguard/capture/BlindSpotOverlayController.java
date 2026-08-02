@@ -65,6 +65,9 @@ final class BlindSpotOverlayController {
     private static final long SURFACE_TIMEOUT_MS = 8_000;
     private static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
     private static final long CAMERA_RETRY_MS = 3_000;
+    static final int PREPARATION_WAIT = 0;
+    static final int PREPARATION_OPEN = 1;
+    static final int PREPARATION_RETRY = 2;
 
     private final Context context;
     private final Handler handler;
@@ -472,13 +475,22 @@ final class BlindSpotOverlayController {
     private void maybeOpenCamera() {
         if (cameraOpenPending || cameraSessionOpen || helper == null) return;
         List<PaneState> ready = new ArrayList<>();
+        int expected = 0;
+        int resolved = 0;
+        int failed = 0;
         for (PaneState pane : panes) {
             if (!pane.expected) continue;
-            if (!pane.resolved) return;
+            expected++;
+            if (pane.resolved) resolved++;
+            if (pane.failed) failed++;
             if (!pane.failed && pane.pendingSurface != null) ready.add(pane);
         }
-        if (ready.isEmpty()) {
-            scheduleCameraRetry("no_overlay_surfaces");
+        int decision = preparationDecision(expected, resolved, failed);
+        if (decision == PREPARATION_WAIT) return;
+        if (decision == PREPARATION_RETRY) {
+            destroyAll(failed > 0 ? "incomplete_overlay_set" : "no_overlay_surfaces");
+            scheduleCameraRetry(failed > 0
+                    ? "incomplete_overlay_set" : "no_overlay_surfaces");
             return;
         }
         Surface[] surfaces = new Surface[ready.size()];
@@ -560,10 +572,14 @@ final class BlindSpotOverlayController {
         pane.resolved = true;
         releaseSurface(pane.pendingSurface);
         pane.pendingSurface = null;
-        if (helper != null) helper.closeOverlayWindow(cameraId, reason);
         emit("overlay_camera_output_unavailable", "camera_id", cameraId,
                 "camera_profile", pane.profile.wireName, "reason", reason);
         maybeOpenCamera();
+    }
+
+    static int preparationDecision(int expected, int resolved, int failed) {
+        if (failed > 0 || expected <= 0) return PREPARATION_RETRY;
+        return resolved < expected ? PREPARATION_WAIT : PREPARATION_OPEN;
     }
 
     private void cameraUnavailable(String reason) {
@@ -783,14 +799,14 @@ final class BlindSpotOverlayController {
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
         int[] geometry = overlayGeometry(
                 displaySize[0], displaySize[1], readScale(settings, profile),
-                crop.outputAspect(), readPosition(settings, profile, false),
+                crop.rotatedOutputAspect(), readPosition(settings, profile, false),
                 readPosition(settings, profile, true),
                 marginX, topMargin, bottomMargin);
         return new CameraShellProtocol.OverlaySpec(
                 profile.id, requestId, target,
                 geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
-                readCornerRadius(settings));
+                crop.rotationDegrees, readCornerRadius(settings));
     }
 
     static int[] overlayGeometry(
@@ -822,7 +838,9 @@ final class BlindSpotOverlayController {
                 settings.getFloat(DirectCameraCrop.preferenceKey(profile, 1), fallback.top),
                 settings.getFloat(DirectCameraCrop.preferenceKey(profile, 2), fallback.width),
                 settings.getFloat(DirectCameraCrop.preferenceKey(profile, 3), fallback.height),
-                settings.getInt(DirectCameraCrop.preferenceKey(profile, 4), fallback.aspectMode));
+                settings.getInt(DirectCameraCrop.preferenceKey(profile, 4), fallback.aspectMode),
+                settings.getInt(DirectCameraCrop.preferenceKey(profile, 5),
+                        fallback.rotationDegrees));
     }
 
     private static String scaleKey(CameraProfile profile) {

@@ -96,7 +96,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(44, BuildConfig.VERSION_CODE);
+        assertEquals(46, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -313,6 +313,10 @@ public final class AdbCoreTest {
         assertEquals("event-24", journal.getLast());
         assertTrue(CameraHelperMain.HelperBinder.isMusicJournalEvent(
                 "music_playback_state"));
+        assertTrue(CameraHelperMain.HelperBinder.isMusicJournalEvent(
+                "music_metadata_publish"));
+        assertTrue(CameraHelperMain.HelperBinder.isMusicJournalEvent(
+                "music_metadata_error"));
         assertFalse(CameraHelperMain.HelperBinder.isMusicJournalEvent(
                 "music_runtime_status"));
         assertFalse(CameraHelperMain.HelperBinder.isMusicJournalEvent(
@@ -350,6 +354,36 @@ public final class AdbCoreTest {
         assertFalse(MusicVisualizerRuntime.shouldCancelStopRetry(
                 true, false, true, false));
         assertFalse(MusicVisualizerRuntime.hasMediaPlayback(null));
+    }
+
+    @Test
+    public void musicMetadataBridgeUsesGenericSourceAndLeavesOemPlayersAlone() {
+        assertEquals(26, MusicMetadataRuntime.SOURCE_THIRD_PARTY);
+        assertEquals(750, MusicMetadataRuntime.PUBLISH_DEBOUNCE_MS);
+        assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.byd.mediacenter"));
+        assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.android.bluetooth"));
+        assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.tencent.qqmusiccar"));
+        assertFalse(MusicMetadataRuntime.isOemManagedPackage(
+                "app.revanced.android.apps.youtube.music"));
+        assertFalse(MusicMetadataRuntime.isOemManagedPackage("com.spotify.music"));
+        assertFalse(MusicMetadataRuntime.isOemManagedPackage("ua.radioplayer.app"));
+        assertFalse(MusicMetadataRuntime.shouldPublish(
+                false, true, "same-track", "same-track"));
+        assertTrue(MusicMetadataRuntime.shouldPublish(
+                true, true, "same-track", "same-track"));
+        assertTrue(MusicMetadataRuntime.shouldPublish(
+                false, true, "old-track", "new-track"));
+        assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(true, false, false));
+        assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(false, true, false));
+        assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(false, false, true));
+        assertFalse(MusicMetadataRuntime.shouldRetainPublishedCard(false, false, false));
+
+        assertEquals(17, MusicMetadataRuntime.progressPercent(5_100, 30_000));
+        assertEquals(0, MusicMetadataRuntime.progressPercent(5_100, 0));
+        assertArrayEquals(new int[]{1, 1, 1, 2, 2, 2},
+                MusicMetadataRuntime.timeline(3_661_000, 7_322_000));
+        assertTrue(MusicMetadataRuntime.utf16Le("title").length <= 254);
+        assertTrue(MusicMetadataRuntime.utf16Le("a".repeat(300)).length <= 254);
     }
 
     @Test
@@ -411,6 +445,14 @@ public final class AdbCoreTest {
         assertTrue(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 4, 4));
         assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 2, 4));
         assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(false, 4, 4));
+        assertEquals(BlindSpotOverlayController.PREPARATION_WAIT,
+                BlindSpotOverlayController.preparationDecision(4, 3, 0));
+        assertEquals(BlindSpotOverlayController.PREPARATION_OPEN,
+                BlindSpotOverlayController.preparationDecision(4, 4, 0));
+        assertEquals(BlindSpotOverlayController.PREPARATION_RETRY,
+                BlindSpotOverlayController.preparationDecision(4, 1, 1));
+        assertEquals(BlindSpotOverlayController.PREPARATION_RETRY,
+                BlindSpotOverlayController.preparationDecision(0, 0, 0));
 
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 0, 720));
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 0));
@@ -673,10 +715,15 @@ public final class AdbCoreTest {
                 left.width * DirectCameraCrop.SOURCE_WIDTH
                         / (left.height * DirectCameraCrop.SOURCE_HEIGHT),
                 0.0001f);
+        assertEquals(0, left.rotationDegrees);
 
         DirectCameraCrop moved = left.move(-2.0f, 2.0f);
         assertEquals(0.0f, moved.left, 0.0001f);
         assertEquals(1.0f, moved.bottom(), 0.0001f);
+        DirectCameraCrop rotated = moved.withRotation(37).resize(
+                DirectCameraCrop.EDGE_RIGHT, 0.1f, 0.0f);
+        assertEquals(37, rotated.rotationDegrees);
+        assertEquals(180, rotated.withRotation(999).rotationDegrees);
 
         DirectCameraCrop resized = right.resize(
                 DirectCameraCrop.EDGE_LEFT | DirectCameraCrop.EDGE_TOP,
@@ -694,6 +741,8 @@ public final class AdbCoreTest {
         assertEquals(16.0f / 9.0f, wide.outputAspect(), 0.0001f);
         DirectCameraCrop square = left.withAspectMode(DirectCameraCrop.ASPECT_ONE_ONE);
         assertEquals(1.0f, square.outputAspect(), 0.0001f);
+        DirectCameraCrop portrait = left.withRotation(90);
+        assertEquals(3.0f / 4.0f, portrait.rotatedOutputAspect(), 0.0001f);
 
         DirectCameraCrop free = wide.withAspectMode(DirectCameraCrop.ASPECT_FREE);
         float originalHeight = free.height;
@@ -703,6 +752,20 @@ public final class AdbCoreTest {
         assertTrue(free.right() <= 1.0f);
         free = free.resize(DirectCameraCrop.EDGE_BOTTOM, 0.0f, 2.0f);
         assertEquals(1.0f, free.bottom(), 0.0001f);
+    }
+
+    @Test
+    public void productionPreviewRetriesOnlyForCurrentFrameWait() {
+        assertTrue(CameraProbeActivity.shouldRetryProductionPreviewFrame(
+                true, true, true, true));
+        assertFalse(CameraProbeActivity.shouldRetryProductionPreviewFrame(
+                false, true, true, true));
+        assertFalse(CameraProbeActivity.shouldRetryProductionPreviewFrame(
+                true, false, true, true));
+        assertFalse(CameraProbeActivity.shouldRetryProductionPreviewFrame(
+                true, true, false, true));
+        assertFalse(CameraProbeActivity.shouldRetryProductionPreviewFrame(
+                true, true, true, false));
     }
 
     @Test
@@ -796,7 +859,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(10, CameraShellProtocol.VERSION);
+        assertEquals(11, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -836,6 +899,13 @@ public final class AdbCoreTest {
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE);
         overlay.validate(1920, 1080);
+        assertThrows(IllegalArgumentException.class, () ->
+                new CameraShellProtocol.OverlaySpec(
+                        CameraProfile.REAR_LEFT, 1, CameraDisplayTarget.TABLET,
+                        640, 480, 16, 36,
+                        0.0f, 0.04f, 0.65f, 0.72f,
+                        DirectCameraCrop.ASPECT_FREE, 181, 8)
+                        .validate(1920, 1080));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
                 0, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,

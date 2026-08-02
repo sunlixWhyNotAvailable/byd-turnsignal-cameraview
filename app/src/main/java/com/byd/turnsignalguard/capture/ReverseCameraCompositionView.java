@@ -215,7 +215,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 pane.generation++;
                 pane.freshFrame = false;
                 pane.discardNextFrame = false;
-                pane.applyCrop(model.pane(cameraIndex).sourceCrop);
+                applyModel();
                 notifySurfacesReady();
             }
 
@@ -223,7 +223,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             public void onSurfaceTextureSizeChanged(
                     SurfaceTexture texture, int width, int height) {
                 texture.setDefaultBufferSize(SOURCE_WIDTH, SOURCE_HEIGHT);
-                pane.applyCrop(model.pane(cameraIndex).sourceCrop);
+                applyModel();
             }
 
             @Override
@@ -293,16 +293,27 @@ final class ReverseCameraCompositionView extends FrameLayout {
         backgroundPane.setZ(0.0f);
         for (PaneView pane : panes) {
             ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
-            ReverseCameraLayout.PixelRect rect =
+            ReverseCameraLayout.PixelRect baseRect =
                     ReverseCameraLayout.project(value.destination, width, height);
+            int[] rotated = CameraRotation.rotatedBounds(
+                    baseRect.width, baseRect.height, value.rotationDegrees);
+            float fit = Math.min(1.0f, Math.min(
+                    (float) width / rotated[0], (float) height / rotated[1]));
+            int paneWidth = Math.max(1, Math.round(rotated[0] * fit));
+            int paneHeight = Math.max(1, Math.round(rotated[1] * fit));
+            int centerX = baseRect.left + baseRect.width / 2;
+            int centerY = baseRect.top + baseRect.height / 2;
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) pane.getLayoutParams();
-            params.width = Math.max(1, rect.width);
-            params.height = Math.max(1, rect.height);
-            params.leftMargin = rect.left;
-            params.topMargin = rect.top;
+            params.width = paneWidth;
+            params.height = paneHeight;
+            params.leftMargin = Math.max(0, Math.min(width - paneWidth,
+                    centerX - paneWidth / 2));
+            params.topMargin = Math.max(0, Math.min(height - paneHeight,
+                    centerY - paneHeight / 2));
             pane.setLayoutParams(params);
             pane.setZ(1.0f + value.zOrder);
-            pane.applyCrop(value.sourceCrop);
+            pane.applyTransform(value.sourceCrop, value.rotationDegrees,
+                    (float) baseRect.width / Math.max(1, baseRect.height));
         }
     }
 
@@ -328,6 +339,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         boolean discardNextFrame;
         boolean freshFrame;
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(0, 0, 1, 1);
+        int rotationDegrees;
+        float contentAspect = 1.0f;
 
         PaneView(Context context, int cameraIndex) {
             super(context);
@@ -342,9 +355,6 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
             texture = new TextureView(context);
             texture.setOpaque(true);
-            if (ReverseCameraLayout.mirrorHorizontally(cameraIndex)) {
-                texture.setScaleX(-1.0f);
-            }
             addView(texture, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             cover = new View(context);
@@ -352,11 +362,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
             addView(cover, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             texture.addOnLayoutChangeListener((view, left, top, right, bottom,
-                    oldLeft, oldTop, oldRight, oldBottom) -> applyCrop(crop));
+                    oldLeft, oldTop, oldRight, oldBottom) ->
+                    applyTransform(crop, rotationDegrees, contentAspect));
         }
 
-        void applyCrop(ReverseCameraLayout.Rect value) {
+        void applyTransform(
+                ReverseCameraLayout.Rect value, int degrees, float nextContentAspect) {
             crop = value;
+            rotationDegrees = CameraRotation.clamp(degrees);
+            contentAspect = Float.isFinite(nextContentAspect) && nextContentAspect > 0.0f
+                    ? nextContentAspect : 1.0f;
             int width = texture.getWidth();
             int height = texture.getHeight();
             if (width <= 0 || height <= 0) return;
@@ -366,7 +381,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             float cropWidth = value.width;
             float cropHeight = value.height;
             float sourceAspect = cropWidth * SOURCE_WIDTH / (cropHeight * SOURCE_HEIGHT);
-            float targetAspect = (float) width / height;
+            float targetAspect = contentAspect;
             if (sourceAspect > targetAspect) {
                 float nextWidth = cropHeight * SOURCE_HEIGHT * targetAspect / SOURCE_WIDTH;
                 cropLeft += (cropWidth - nextWidth) / 2.0f;
@@ -384,6 +399,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
                             (cropTop + cropHeight) * height),
                     new RectF(0, 0, width, height), Matrix.ScaleToFit.FILL);
             texture.setTransform(transform);
+            float[] scale = CameraRotation.scaleToRotatedBounds(
+                    width, height, contentAspect, rotationDegrees);
+            texture.setPivotX(width / 2.0f);
+            texture.setPivotY(height / 2.0f);
+            texture.setRotation(rotationDegrees);
+            texture.setScaleX(ReverseCameraLayout.mirrorHorizontally(cameraIndex)
+                    ? -scale[0] : scale[0]);
+            texture.setScaleY(scale[1]);
         }
 
         void setCornerRadiusDp(int value) {

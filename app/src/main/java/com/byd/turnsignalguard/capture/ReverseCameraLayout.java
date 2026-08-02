@@ -36,15 +36,17 @@ final class ReverseCameraLayout {
         return new ReverseCameraLayout(
                 destination(0.0f, 0.0f, 1.0f, 1.0f),
                 new Pane(REAR, REAR_CAMERA_INDEX,
-                        destination(0.0f, 0.0f, 1.0f, 0.5f), fullCrop, 0),
+                        destination(0.0f, 0.0f, 1.0f, 0.5f), fullCrop, 0, 0),
                 new Pane(REAR_LEFT, REAR_LEFT_CAMERA_INDEX,
-                        destination(0.0f, 0.5f, 0.5f, 0.5f), fullCrop, 1),
+                        destination(0.0f, 0.5f, 0.5f, 0.5f), fullCrop, 1, 0),
                 new Pane(REAR_RIGHT, REAR_RIGHT_CAMERA_INDEX,
-                        destination(0.5f, 0.5f, 0.5f, 0.5f), fullCrop, 2));
+                        destination(0.5f, 0.5f, 0.5f, 0.5f), fullCrop, 2, 0));
     }
 
     static boolean mirrorHorizontally(int cameraIndex) {
-        return cameraIndex == REAR_CAMERA_INDEX;
+        return cameraIndex == REAR_CAMERA_INDEX
+                || cameraIndex == REAR_LEFT_CAMERA_INDEX
+                || cameraIndex == REAR_RIGHT_CAMERA_INDEX;
     }
 
     static Rect destination(float left, float top, float width, float height) {
@@ -83,7 +85,26 @@ final class ReverseCameraLayout {
                 sourceCrop.left, sourceCrop.top, sourceCrop.width, sourceCrop.height);
         return layout.replace(cameraIndex,
                 new Pane(name(cameraIndex), cameraIndex, safeDestination, safeSourceCrop,
-                        layout.pane(cameraIndex).zOrder));
+                        layout.pane(cameraIndex).zOrder,
+                        layout.pane(cameraIndex).rotationDegrees));
+    }
+
+    static ReverseCameraLayout withPane(
+            ReverseCameraLayout layout, int cameraIndex, Rect destination, Rect sourceCrop,
+            int rotationDegrees) {
+        ReverseCameraLayout next = withPane(layout, cameraIndex, destination, sourceCrop);
+        return withRotation(next, cameraIndex, rotationDegrees);
+    }
+
+    static ReverseCameraLayout withRotation(
+            ReverseCameraLayout layout, int cameraIndex, int rotationDegrees) {
+        if (layout == null) throw new IllegalArgumentException("layout is required");
+        Pane pane = layout.pane(cameraIndex);
+        int safeDegrees = CameraRotation.clamp(rotationDegrees);
+        if (safeDegrees == pane.rotationDegrees) return layout;
+        return layout.replace(cameraIndex, new Pane(
+                pane.name, pane.cameraIndex, pane.destination, pane.sourceCrop,
+                pane.zOrder, safeDegrees));
     }
 
     static ReverseCameraLayout withBackground(
@@ -243,18 +264,22 @@ final class ReverseCameraLayout {
         final Rect destination;
         final Rect sourceCrop;
         final int zOrder;
+        final int rotationDegrees;
 
         private Pane(
-                String name, int cameraIndex, Rect destination, Rect sourceCrop, int zOrder) {
+                String name, int cameraIndex, Rect destination, Rect sourceCrop, int zOrder,
+                int rotationDegrees) {
             this.name = name;
             this.cameraIndex = cameraIndex;
             this.destination = destination;
             this.sourceCrop = sourceCrop;
             this.zOrder = zOrder;
+            this.rotationDegrees = CameraRotation.clamp(rotationDegrees);
         }
 
         private Pane withZOrder(int nextZOrder) {
-            return new Pane(name, cameraIndex, destination, sourceCrop, nextZOrder);
+            return new Pane(name, cameraIndex, destination, sourceCrop,
+                    nextZOrder, rotationDegrees);
         }
     }
 
