@@ -96,7 +96,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(46, BuildConfig.VERSION_CODE);
+        assertEquals(49, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -360,6 +360,9 @@ public final class AdbCoreTest {
     public void musicMetadataBridgeUsesGenericSourceAndLeavesOemPlayersAlone() {
         assertEquals(26, MusicMetadataRuntime.SOURCE_THIRD_PARTY);
         assertEquals(750, MusicMetadataRuntime.PUBLISH_DEBOUNCE_MS);
+        assertEquals(150, MusicMetadataRuntime.SESSION_REPAIR_DEBOUNCE_MS);
+        assertEquals(150, MusicMetadataRuntime.publishDelayMs("sessions_callback"));
+        assertEquals(750, MusicMetadataRuntime.publishDelayMs("metadata_callback"));
         assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.byd.mediacenter"));
         assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.android.bluetooth"));
         assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.tencent.qqmusiccar"));
@@ -373,6 +376,17 @@ public final class AdbCoreTest {
                 true, true, "same-track", "same-track"));
         assertTrue(MusicMetadataRuntime.shouldPublish(
                 false, true, "old-track", "new-track"));
+        assertFalse(MusicMetadataRuntime.shouldClaimSource(
+                true, "com.spotify.music", "com.spotify.music"));
+        assertTrue(MusicMetadataRuntime.shouldClaimSource(
+                true, "com.spotify.music", "ua.radioplayer.app"));
+        assertTrue(MusicMetadataRuntime.shouldRepairPublishedSource(
+                "sessions_callback", true, "com.spotify.music", "com.spotify.music"));
+        assertFalse(MusicMetadataRuntime.shouldRepairPublishedSource(
+                "playback_callback", true, "com.spotify.music", "com.spotify.music"));
+        assertTrue(MusicMetadataRuntime.shouldClaimSource(
+                true, true, "com.spotify.music", "com.spotify.music"));
+        assertEquals(2, CameraProbeActivity.CAMERA_PREVIEW_READY_FRAME_UPDATES);
         assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(true, false, false));
         assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(false, true, false));
         assertTrue(MusicMetadataRuntime.shouldRetainPublishedCard(false, false, true));
@@ -384,6 +398,12 @@ public final class AdbCoreTest {
                 MusicMetadataRuntime.timeline(3_661_000, 7_322_000));
         assertTrue(MusicMetadataRuntime.utf16Le("title").length <= 254);
         assertTrue(MusicMetadataRuntime.utf16Le("a".repeat(300)).length <= 254);
+        assertEquals("AB", MusicMetadataRuntime.normalizeText("\uD835\uDC00\uFF22"));
+        String emoji = new String(
+                MusicMetadataRuntime.utf16Le("\uD83D\uDE80".repeat(100)),
+                java.nio.charset.StandardCharsets.UTF_16LE);
+        assertFalse(emoji.isEmpty());
+        assertFalse(Character.isHighSurrogate(emoji.charAt(emoji.length() - 1)));
     }
 
     @Test
@@ -468,6 +488,27 @@ public final class AdbCoreTest {
                 "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_discovery", CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                false, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_REVERSE, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "apa"));
+        assertTrue(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
+                "camera_opened", "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
+                "camera_error", "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
+                "camera_opened", "direct_blind_spot"));
+        assertEquals(0, CameraProbeActivity.normalizeReverseInspector(3, true));
+        assertEquals(3, CameraProbeActivity.normalizeReverseInspector(3, false));
+        assertEquals(0, CameraProbeActivity.normalizeReverseInspector(9, false));
     }
 
     @Test
@@ -716,6 +757,7 @@ public final class AdbCoreTest {
                         / (left.height * DirectCameraCrop.SOURCE_HEIGHT),
                 0.0001f);
         assertEquals(0, left.rotationDegrees);
+        assertEquals(CameraRotation.MODE_FIT, left.rotationMode);
 
         DirectCameraCrop moved = left.move(-2.0f, 2.0f);
         assertEquals(0.0f, moved.left, 0.0001f);
@@ -742,7 +784,22 @@ public final class AdbCoreTest {
         DirectCameraCrop square = left.withAspectMode(DirectCameraCrop.ASPECT_ONE_ONE);
         assertEquals(1.0f, square.outputAspect(), 0.0001f);
         DirectCameraCrop portrait = left.withRotation(90);
-        assertEquals(3.0f / 4.0f, portrait.rotatedOutputAspect(), 0.0001f);
+        assertEquals(4.0f / 3.0f, portrait.outputAspect(), 0.0001f);
+
+        DirectCameraCrop aligned = left.withRotation(45)
+                .withRotationMode(CameraRotation.MODE_ALIGNED);
+        assertEquals(CameraRotation.MODE_ALIGNED, aligned.rotationMode);
+        double radians = Math.toRadians(aligned.rotationDegrees);
+        double extentX = Math.abs(Math.cos(radians)) * aligned.width / 2.0d
+                + Math.abs(Math.sin(radians)) * aligned.height
+                * DirectCameraCrop.SOURCE_HEIGHT / DirectCameraCrop.SOURCE_WIDTH / 2.0d;
+        double extentY = Math.abs(Math.sin(radians)) * aligned.width
+                * DirectCameraCrop.SOURCE_WIDTH / DirectCameraCrop.SOURCE_HEIGHT / 2.0d
+                + Math.abs(Math.cos(radians)) * aligned.height / 2.0d;
+        assertTrue(aligned.left + aligned.width / 2.0f - extentX >= -0.0001d);
+        assertTrue(aligned.left + aligned.width / 2.0f + extentX <= 1.0001d);
+        assertTrue(aligned.top + aligned.height / 2.0f - extentY >= -0.0001d);
+        assertTrue(aligned.top + aligned.height / 2.0f + extentY <= 1.0001d);
 
         DirectCameraCrop free = wide.withAspectMode(DirectCameraCrop.ASPECT_FREE);
         float originalHeight = free.height;
@@ -859,7 +916,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(11, CameraShellProtocol.VERSION);
+        assertEquals(14, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -906,6 +963,13 @@ public final class AdbCoreTest {
                         0.0f, 0.04f, 0.65f, 0.72f,
                         DirectCameraCrop.ASPECT_FREE, 181, 8)
                         .validate(1920, 1080));
+        assertThrows(IllegalArgumentException.class, () ->
+                new CameraShellProtocol.OverlaySpec(
+                        CameraProfile.REAR_LEFT, 1, CameraDisplayTarget.TABLET,
+                        640, 480, 16, 36,
+                        0.0f, 0.04f, 0.65f, 0.72f,
+                        DirectCameraCrop.ASPECT_FREE, 0, 99, 8,
+                        CameraDewarpConfig.disabled()).validate(1920, 1080));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
                 0, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,

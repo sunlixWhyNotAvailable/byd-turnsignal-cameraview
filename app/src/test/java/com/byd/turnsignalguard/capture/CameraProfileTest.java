@@ -66,5 +66,7 @@ public final class CameraProfileTest {
                 DirectCameraCrop.preferenceKey(CameraProfile.of(CameraProfile.FRONT_LEFT), 0));
         assertEquals(DirectCameraCrop.PREF_FRONT_LEFT_ROTATION,
                 DirectCameraCrop.preferenceKey(CameraProfile.of(CameraProfile.FRONT_LEFT), 5));
+        assertEquals(DirectCameraCrop.PREF_FRONT_LEFT_ROTATION_MODE,
+                DirectCameraCrop.preferenceKey(CameraProfile.of(CameraProfile.FRONT_LEFT), 6));
     }
 }

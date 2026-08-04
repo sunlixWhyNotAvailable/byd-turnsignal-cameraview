@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 11;
+    static final int VERSION = 14;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -81,7 +81,9 @@ final class CameraShellProtocol {
         final float cropHeight;
         final int cropAspectMode;
         final int rotationDegrees;
+        final int rotationMode;
         final int cornerRadiusDp;
+        final CameraDewarpConfig dewarp;
 
         OverlaySpec(
                 int requestId, int target, int width, int height, int x, int y,
@@ -89,7 +91,8 @@ final class CameraShellProtocol {
                 int cropAspectMode) {
             this(CameraProfile.REAR_LEFT, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
-                    CameraRotation.DEFAULT_DEGREES, 8);
+                    CameraRotation.DEFAULT_DEGREES, CameraRotation.MODE_FIT,
+                    8, CameraDewarpConfig.disabled());
         }
 
         OverlaySpec(
@@ -98,13 +101,35 @@ final class CameraShellProtocol {
                 int cropAspectMode, int cornerRadiusDp) {
             this(cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
-                    CameraRotation.DEFAULT_DEGREES, cornerRadiusDp);
+                    CameraRotation.DEFAULT_DEGREES, CameraRotation.MODE_FIT, cornerRadiusDp,
+                    CameraDewarpConfig.disabled());
         }
 
         OverlaySpec(
                 int cameraId, int requestId, int target, int width, int height, int x, int y,
                 float cropLeft, float cropTop, float cropWidth, float cropHeight,
                 int cropAspectMode, int rotationDegrees, int cornerRadiusDp) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    rotationDegrees, CameraRotation.MODE_FIT, cornerRadiusDp,
+                    CameraDewarpConfig.disabled());
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int cornerRadiusDp,
+                CameraDewarpConfig dewarp) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    rotationDegrees, CameraRotation.MODE_FIT, cornerRadiusDp, dewarp);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int rotationMode,
+                int cornerRadiusDp, CameraDewarpConfig dewarp) {
             this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
@@ -118,7 +143,9 @@ final class CameraShellProtocol {
             this.cropHeight = cropHeight;
             this.cropAspectMode = cropAspectMode;
             this.rotationDegrees = rotationDegrees;
+            this.rotationMode = rotationMode;
             this.cornerRadiusDp = cornerRadiusDp;
+            this.dewarp = dewarp == null ? CameraDewarpConfig.disabled() : dewarp;
         }
 
         void writeToParcel(Parcel parcel) {
@@ -135,15 +162,20 @@ final class CameraShellProtocol {
             parcel.writeFloat(cropHeight);
             parcel.writeInt(cropAspectMode);
             parcel.writeInt(rotationDegrees);
+            parcel.writeInt(rotationMode);
             parcel.writeInt(cornerRadiusDp);
+            writeDewarp(parcel, dewarp);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
-            return new OverlaySpec(
+            OverlaySpec spec = new OverlaySpec(
                     parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readInt(), parcel.readInt(), parcel.readInt(),
                     parcel.readFloat(), parcel.readFloat(), parcel.readFloat(),
-                    parcel.readFloat(), parcel.readInt(), parcel.readInt(), parcel.readInt());
+                    parcel.readFloat(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
+                    parcel.readInt(),
+                    readDewarp(parcel));
+            return spec;
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -172,6 +204,9 @@ final class CameraShellProtocol {
             if (!CameraRotation.isValid(rotationDegrees)) {
                 throw new IllegalArgumentException("invalid camera rotation");
             }
+            if (!CameraRotation.isValidMode(rotationMode)) {
+                throw new IllegalArgumentException("invalid camera rotation mode");
+            }
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid corner radius");
             }
@@ -180,7 +215,7 @@ final class CameraShellProtocol {
         DirectCameraCrop crop() {
             return DirectCameraCrop.of(
                     cropLeft, cropTop, cropWidth, cropHeight,
-                    cropAspectMode, rotationDegrees);
+                    cropAspectMode, rotationDegrees, rotationMode);
         }
 
         private static boolean finite(float value) {
@@ -192,22 +227,46 @@ final class CameraShellProtocol {
         final int requestId;
         final ReverseCameraLayout layout;
         final int cornerRadiusDp;
+        final CameraDewarpConfig rearDewarp;
+        final CameraDewarpConfig leftDewarp;
+        final CameraDewarpConfig rightDewarp;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
-            this(requestId, layout, 8);
+            this(requestId, layout, 8,
+                    CameraDewarpConfig.disabled(), CameraDewarpConfig.disabled(),
+                    CameraDewarpConfig.disabled());
         }
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout, int cornerRadiusDp) {
+            this(requestId, layout, cornerRadiusDp,
+                    CameraDewarpConfig.disabled(), CameraDewarpConfig.disabled(),
+                    CameraDewarpConfig.disabled());
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             this.requestId = requestId;
             this.layout = layout;
             this.cornerRadiusDp = cornerRadiusDp;
+            this.rearDewarp = rearDewarp == null
+                    ? CameraDewarpConfig.disabled() : rearDewarp;
+            this.leftDewarp = leftDewarp == null
+                    ? CameraDewarpConfig.disabled() : leftDewarp;
+            this.rightDewarp = rightDewarp == null
+                    ? CameraDewarpConfig.disabled() : rightDewarp;
         }
 
         void writeToParcel(Parcel parcel) {
             parcel.writeInt(requestId);
             writeRect(parcel, layout.background);
             parcel.writeInt(cornerRadiusDp);
+            writeDewarp(parcel, rearDewarp);
+            writeDewarp(parcel, leftDewarp);
+            writeDewarp(parcel, rightDewarp);
             for (ReverseCameraLayout.Pane pane : layout.panes()) {
                 parcel.writeInt(pane.cameraIndex);
                 writeRect(parcel, pane.destination);
@@ -226,6 +285,9 @@ final class CameraShellProtocol {
                     ReverseCameraLayout.destination(background[0], background[1],
                             background[2], background[3]));
             int cornerRadiusDp = parcel.readInt();
+            CameraDewarpConfig rearDewarp = readDewarp(parcel);
+            CameraDewarpConfig leftDewarp = readDewarp(parcel);
+            CameraDewarpConfig rightDewarp = readDewarp(parcel);
             int[] indexes = new int[3];
             int[] zOrders = new int[3];
             for (int i = 0; i < indexes.length; i++) {
@@ -266,7 +328,8 @@ final class CameraShellProtocol {
                     }
                 }
             }
-            return new ReverseOverlaySpec(requestId, layout, cornerRadiusDp);
+            return new ReverseOverlaySpec(requestId, layout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -327,5 +390,28 @@ final class CameraShellProtocol {
                 throw new IllegalArgumentException("reverse geometry outside canvas");
             }
         }
+    }
+
+    private static void writeDewarp(Parcel parcel, CameraDewarpConfig value) {
+        parcel.writeInt(value.enabled ? 1 : 0);
+        parcel.writeInt(value.strength);
+        parcel.writeInt(value.centerX);
+        parcel.writeInt(value.centerY);
+        parcel.writeInt(value.zoom);
+    }
+
+    private static CameraDewarpConfig readDewarp(Parcel parcel) {
+        boolean enabled = parcel.readInt() != 0;
+        int strength = parcel.readInt();
+        int centerX = parcel.readInt();
+        int centerY = parcel.readInt();
+        int zoom = parcel.readInt();
+        if (strength < 0 || strength > 100
+                || centerX < 0 || centerX > 100
+                || centerY < 0 || centerY > 100
+                || zoom < 100 || zoom > 160) {
+            throw new IllegalArgumentException("invalid dewarp config");
+        }
+        return CameraDewarpConfig.of(enabled, strength, centerX, centerY, zoom);
     }
 }

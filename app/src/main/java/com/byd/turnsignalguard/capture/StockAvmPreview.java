@@ -85,6 +85,7 @@ final class StockAvmPreview {
     private static final String RESOURCE_CACHE = "/data/local/tmp/bydturnguard_avm";
     private static final long DISPLAY_READY_TIMEOUT_MS = 500;
     private static final long DISPLAY_STATUS_POLL_MS = 20;
+    private static final long INPUT_SURFACE_READY_TIMEOUT_MS = 500;
 
     private final Context baseContext;
     private final BiConsumer<String, String> stageSink;
@@ -329,10 +330,8 @@ final class StockAvmPreview {
                     + layoutName(requestedViewpoint) + ";result=" + layoutResult);
 
             currentStage = "get_camera_input_surface";
-            Surface openedInput = (Surface) invoke(
-                    openedApi, "getCameraSurface", new Class<?>[0]);
+            Surface openedInput = awaitInputSurface(openedApi);
             if (openedInput == null || !openedInput.isValid()) {
-                if (openedInput != null) openedInput.release();
                 throw new IllegalStateException("AVM input Surface is invalid");
             }
             stage(currentStage, "valid");
@@ -367,14 +366,13 @@ final class StockAvmPreview {
     synchronized void close() throws Exception {
         Object activeApi = panoApi;
         Surface activeSurface = surface;
-        Surface activeInputSurface = inputSurface;
         panoApi = null;
         surface = null;
         inputSurface = null;
         viewpoint = -1;
         Throwable failure = terminate(activeApi);
         if (activeSurface != null) activeSurface.release();
-        if (activeInputSurface != null) activeInputSurface.release();
+        // AvmController retains this exact Surface in a static cache across SDK sessions.
         stage("closed", failure == null ? "ok" : summary(failure));
         if (failure != null) throw new Exception(failure);
     }
@@ -741,6 +739,19 @@ final class StockAvmPreview {
             Thread.sleep(DISPLAY_STATUS_POLL_MS);
         } while (System.nanoTime() < deadline);
         return status;
+    }
+
+    private static Surface awaitInputSurface(Object api) throws Exception {
+        long deadline = System.nanoTime() + INPUT_SURFACE_READY_TIMEOUT_MS * 1_000_000L;
+        Surface value = null;
+        do {
+            if (value == null) {
+                value = (Surface) invoke(api, "getCameraSurface", new Class<?>[0]);
+            }
+            if (value != null && value.isValid()) return value;
+            Thread.sleep(DISPLAY_STATUS_POLL_MS);
+        } while (System.nanoTime() < deadline);
+        return value;
     }
 
     static boolean isDisplayReadyStatus(String status) {

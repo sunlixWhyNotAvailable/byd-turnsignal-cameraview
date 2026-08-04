@@ -38,19 +38,27 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         display.getSize(size);
         spec.validate(size.x, size.y);
 
+        if (root != null && !root.dewarpPipelineCompatible(
+                spec.rearDewarp, spec.leftDewarp, spec.rightDewarp)) {
+            close("dewarp_pipeline_changed");
+        }
         requestId = spec.requestId;
         completedFrameRequestId = 0;
         visible = false;
-        if (root == null) createWindow(display, size, spec.layout, spec.cornerRadiusDp);
+        if (root == null) createWindow(display, size, spec);
         else {
             root.setCornerRadiusDp(spec.cornerRadiusDp);
+            root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
             root.applyLayout(spec.layout);
             window.alpha = 0.0f;
             windows.updateViewLayout(root, window);
         }
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
         emit("reverse_overlay_prepare", "request_id", requestId,
-                "width", size.x, "height", size.y);
+                "width", size.x, "height", size.y,
+                "rear_dewarp", spec.rearDewarp.enabled,
+                "left_dewarp", spec.leftDewarp.enabled,
+                "right_dewarp", spec.rightDewarp.enabled);
     }
 
     SurfaceSnapshot acquireSurfaces(int expectedRequestId) {
@@ -145,16 +153,17 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     private void createWindow(
-            Display display, Point size, ReverseCameraLayout layoutModel,
-            int cornerRadiusDp) throws Exception {
+            Display display, Point size, CameraShellProtocol.ReverseOverlaySpec spec)
+            throws Exception {
         Context windowContext = context.createDisplayContext(display);
         windows = (WindowManager) windowContext.getSystemService(Context.WINDOW_SERVICE);
         if (windows == null) throw new IllegalStateException("window manager unavailable");
 
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
         nextRoot.setCallback(this);
-        nextRoot.setCornerRadiusDp(cornerRadiusDp);
-        nextRoot.applyLayout(layoutModel);
+        nextRoot.setCornerRadiusDp(spec.cornerRadiusDp);
+        nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
+        nextRoot.applyLayout(spec.layout);
         WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
                 size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE

@@ -12,8 +12,10 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,7 +29,6 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -84,6 +85,7 @@ public final class CameraProbeActivity extends Activity
             "com.byd.appstartmanagement.frame.AppStartManagement";
     private static final long CAMERA_PREVIEW_HANDOFF_MS = 250;
     private static final long CAMERA_PREVIEW_FIRST_FRAME_TIMEOUT_MS = 3_000;
+    static final int CAMERA_PREVIEW_READY_FRAME_UPDATES = 2;
     private static final int TAB_GUARD = 0;
     private static final int TAB_CAMERAS = 1;
     private static final int TAB_CAMERA_DEBUG = 2;
@@ -92,6 +94,10 @@ public final class CameraProbeActivity extends Activity
     private static final int TAB_REVERSE_CAMERAS = 5;
     private static final int TAB_MUSIC = 6;
     private static final int TAB_SETTINGS = 7;
+    private static final int REVERSE_INSPECTOR_POSITION = 0;
+    private static final int REVERSE_INSPECTOR_CROP = 1;
+    private static final int REVERSE_INSPECTOR_ROTATION = 2;
+    private static final int REVERSE_INSPECTOR_CORRECTION = 3;
     private static final String PREF_FRONT_CAMERA_ENABLED = "camera_front_enabled";
     private static final String PREF_FRONT_CAMERA_MIN_SPEED = "camera_front_min_speed_kph";
     private static final String PREF_FRONT_CAMERA_MAX_SPEED = "camera_front_max_speed_kph";
@@ -105,6 +111,9 @@ public final class CameraProbeActivity extends Activity
     private static final int DEFAULT_CAMERA_CORNER_RADIUS_DP = 10;
     private static final int MAX_CAMERA_CORNER_RADIUS_DP = 48;
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
+    private static final DirectCameraCrop FULL_CALIBRATION_CROP = DirectCameraCrop.of(
+            0.0f, 0.0f, 1.0f, 1.0f,
+            DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES);
     private static final String EXTRA_DIAGNOSTIC_AVM_MODE_INDEX =
             "com.byd.turnsignalguard.capture.extra.AVM_MODE_INDEX";
     private static final String EXTRA_DIAGNOSTIC_AVM_CLOSE =
@@ -182,7 +191,7 @@ public final class CameraProbeActivity extends Activity
     private View debugPreviewCover;
     private SurfaceView directCameraPreview;
     private View directCameraPreviewCover;
-    private SurfaceView calibrationPreview;
+    private BlindSpotCameraView calibrationPreview;
     private View calibrationPreviewCover;
     private CameraCropOverlayView calibrationCropOverlay;
     private ImageView calibrationCropPreview;
@@ -198,12 +207,15 @@ public final class CameraProbeActivity extends Activity
     private final TextView[] reverseCropValues = new TextView[4];
     private final Button[] reversePaneButtons = new Button[4];
     private final Button[] reverseNudgeButtons = new Button[4];
+    private final Button[] reverseInspectorButtons = new Button[4];
+    private final View[] reverseInspectorPanels = new View[4];
     private SeekBar reverseRotationSlider;
     private TextView reverseRotationValue;
     private Button reverseLowerButton;
     private Button reverseRaiseButton;
     private boolean reverseCropUiUpdating;
     private boolean reverseRotationUiUpdating;
+    private int reverseInspectorMode = REVERSE_INSPECTOR_POSITION;
     private View activePreview;
     private View activePreviewCover;
     private Button rawButton;
@@ -231,7 +243,17 @@ public final class CameraProbeActivity extends Activity
     private Button calibrationStopButton;
     private SeekBar calibrationRotationSlider;
     private TextView calibrationRotationValue;
+    private Spinner calibrationRotationModeInput;
     private boolean calibrationRotationUiUpdating;
+    private boolean calibrationRotationModeUiUpdating;
+    private Switch calibrationDewarpSwitch;
+    private final SeekBar[] calibrationDewarpSliders = new SeekBar[4];
+    private final TextView[] calibrationDewarpValues = new TextView[4];
+    private boolean calibrationDewarpUiUpdating;
+    private Switch reverseDewarpSwitch;
+    private final SeekBar[] reverseDewarpSliders = new SeekBar[4];
+    private final TextView[] reverseDewarpValues = new TextView[4];
+    private boolean reverseDewarpUiUpdating;
     private View guardPage;
     private View calibrationPage;
     private View cameraPage;
@@ -295,7 +317,6 @@ public final class CameraProbeActivity extends Activity
     private int productionPreviewFrameRequest;
     private Bitmap calibrationCaptureBitmap;
     private Bitmap calibrationResultBitmap;
-    private int lastCalibrationCopyResult = PixelCopy.SUCCESS;
     private int selectedTab = -1;
     private int selectedDebugMode;
     private int reversePreviewRequestSequence;
@@ -421,6 +442,7 @@ public final class CameraProbeActivity extends Activity
     @Override
     protected void onStart() {
         super.onStart();
+        invalidStockSurfaceRetryUsed = false;
         CameraHelperService.activityOpened(this);
         if (!helperBound) startAndBindHelperService();
         if (helper != null) ipcExecutor.execute(this::registerCallback);
@@ -716,18 +738,38 @@ public final class CameraProbeActivity extends Activity
     @Override
     public void onCameraSurfaceAvailable(
             BlindSpotCameraView view, Surface surface, int width, int height) {
+        if (view == calibrationPreview) {
+            calibrationSurfaceReady = surface.isValid();
+            if (calibrationPreviewCover != null) {
+                calibrationPreviewCover.setVisibility(View.VISIBLE);
+            }
+            record("surface_created", "target", "camera_calibration",
+                    "valid", calibrationSurfaceReady, "width", width, "height", height,
+                    "dewarp_pipeline", true);
+            maybeOpenCalibrationCamera();
+            updateControls();
+            return;
+        }
         cameraSurfaceReady = surface.isValid();
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.VISIBLE);
         record("surface_created", "target", "production", "valid", cameraSurfaceReady,
                 "width", width, "height", height,
                 "buffer_width", BlindSpotCameraView.BUFFER_WIDTH,
                 "buffer_height", BlindSpotCameraView.BUFFER_HEIGHT);
+        maybeOpenProductionPreview();
         updateControls();
     }
 
     @Override
     public void onCameraSurfaceSizeChanged(
             BlindSpotCameraView view, Surface surface, int width, int height) {
+        if (view == calibrationPreview) {
+            calibrationSurfaceReady = surface.isValid();
+            record("surface_changed", "target", "camera_calibration",
+                    "width", width, "height", height);
+            updateControls();
+            return;
+        }
         cameraSurfaceReady = surface.isValid();
         record("surface_changed", "target", "production",
                 "width", width, "height", height,
@@ -738,6 +780,16 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
+        if (view == calibrationPreview) {
+            calibrationSurfaceReady = false;
+            stopCalibrationCopies(true);
+            if (activePreview == calibrationPreview) {
+                closeCamera("calibration_surface_destroyed");
+            }
+            record("surface_destroyed", "target", "camera_calibration");
+            updateControls();
+            return;
+        }
         cameraSurfaceReady = false;
         cancelProductionPreviewFirstFrameWait();
         if (activePreview == cameraPreview) closeCamera("surface_destroyed");
@@ -747,12 +799,21 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     public void onCameraFrameUpdated(BlindSpotCameraView view) {
+        if (view == calibrationPreview) {
+            if (activePreview == calibrationPreview && requestedOpen) {
+                if (calibrationPreviewCover != null) {
+                    calibrationPreviewCover.setVisibility(View.INVISIBLE);
+                }
+            }
+            return;
+        }
         if (view != cameraPreview || activePreview != cameraPreview
                 || !requestedOpen || !productionPreviewAwaitingFrame) return;
-        if (++productionPreviewFrameUpdates < 2) return;
+        if (++productionPreviewFrameUpdates < CAMERA_PREVIEW_READY_FRAME_UPDATES) return;
         productionPreviewAwaitingFrame = false;
         mainHandler.removeCallbacks(productionPreviewFirstFrameTimeout);
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.INVISIBLE);
+        cameraStatus.setText("Showing " + CameraProfile.of(selectedCameraId).wireName);
         record("camera_preview_first_frame", "request_id", productionPreviewFrameRequest,
                 "frame_updates", productionPreviewFrameUpdates,
                 "camera_id", selectedCameraId);
@@ -1241,8 +1302,6 @@ public final class CameraProbeActivity extends Activity
             nudgeRow.addView(reverseNudgeButtons[i],
                     new LinearLayout.LayoutParams(0, dp(38), 1));
         }
-        editorPane.addView(nudgeRow);
-
         LinearLayout rotationRow = new LinearLayout(this);
         rotationRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView rotationLabel = label("Поворот");
@@ -1273,8 +1332,6 @@ public final class CameraProbeActivity extends Activity
                 new LinearLayout.LayoutParams(0, dp(42), 1));
         rotationRow.addView(reverseRotationValue,
                 new LinearLayout.LayoutParams(dp(64), dp(42)));
-        editorPane.addView(rotationRow);
-
         LinearLayout crop = new LinearLayout(this);
         String[] cropNames = {"Ліва межа", "Верхня межа", "Права межа", "Нижня межа"};
         for (int i = 0; i < reverseCropSliders.length; i++) {
@@ -1307,18 +1364,50 @@ public final class CameraProbeActivity extends Activity
                     LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
             crop.addView(cell, new LinearLayout.LayoutParams(0, dp(60), 1));
         }
-        editorPane.addView(crop);
-
         LinearLayout zRow = new LinearLayout(this);
         reverseLowerButton = button("Нижче");
         reverseRaiseButton = button("Вище");
         zRow.addView(reverseLowerButton, new LinearLayout.LayoutParams(0, dp(46), 1));
         zRow.addView(reverseRaiseButton, new LinearLayout.LayoutParams(0, dp(46), 1));
-        editorPane.addView(zRow);
+        LinearLayout positionPanel = new LinearLayout(this);
+        positionPanel.setOrientation(LinearLayout.VERTICAL);
+        positionPanel.addView(nudgeRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+        positionPanel.addView(zRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
+        reverseInspectorPanels[REVERSE_INSPECTOR_POSITION] = positionPanel;
+        reverseInspectorPanels[REVERSE_INSPECTOR_CROP] = crop;
+        reverseInspectorPanels[REVERSE_INSPECTOR_ROTATION] = rotationRow;
+        reverseInspectorPanels[REVERSE_INSPECTOR_CORRECTION] = buildDewarpControls(true);
+
+        LinearLayout inspectorTabs = new LinearLayout(this);
+        String[] inspectorNames = {"Позиція", "Кроп", "Поворот", "Корекція"};
+        for (int i = 0; i < reverseInspectorButtons.length; i++) {
+            final int mode = i;
+            reverseInspectorButtons[i] = button(inspectorNames[i]);
+            reverseInspectorButtons[i].setTextSize(13);
+            reverseInspectorButtons[i].setOnClickListener(
+                    view -> selectReverseInspector(mode));
+            inspectorTabs.addView(reverseInspectorButtons[i],
+                    new LinearLayout.LayoutParams(0, dp(38), 1));
+        }
+        editorPane.addView(inspectorTabs, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+
+        FrameLayout inspectorHost = new FrameLayout(this);
+        for (View panel : reverseInspectorPanels) {
+            inspectorHost.addView(panel, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+        }
+        editorPane.addView(inspectorHost, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(84)));
 
         reverseCameraStatus = statusText("Очікування AVM camera...");
         previewPane.addView(reverseCameraStatus);
         reverseCameraPreview = new ReverseCameraCompositionView(this);
+        reverseCameraPreview.setForceDewarpPipeline(true);
+        applyReversePreviewDewarpConfigs();
         reverseCameraPreview.enablePreviewBase();
         reverseCameraPreview.setCallback(this);
         reverseCameraPreview.applyLayout(reverseCameraLayout);
@@ -1383,6 +1472,32 @@ public final class CameraProbeActivity extends Activity
         return host;
     }
 
+    private void selectReverseInspector(int requestedMode) {
+        boolean background = reverseCameraEditor != null
+                && reverseCameraEditor.selectedCamera()
+                        == ReverseCameraLayout.BACKGROUND_PANE_ID;
+        reverseInspectorMode = normalizeReverseInspector(requestedMode, background);
+        for (int i = 0; i < reverseInspectorButtons.length; i++) {
+            Button button = reverseInspectorButtons[i];
+            if (button != null) {
+                button.setEnabled(i == REVERSE_INSPECTOR_POSITION || !background);
+                button.setBackgroundColor(tabColor(i == reverseInspectorMode));
+            }
+            View panel = reverseInspectorPanels[i];
+            if (panel != null) {
+                panel.setVisibility(i == reverseInspectorMode ? View.VISIBLE : View.GONE);
+            }
+        }
+    }
+
+    static int normalizeReverseInspector(int requestedMode, boolean background) {
+        if (background || requestedMode < REVERSE_INSPECTOR_POSITION
+                || requestedMode > REVERSE_INSPECTOR_CORRECTION) {
+            return REVERSE_INSPECTOR_POSITION;
+        }
+        return requestedMode;
+    }
+
     private void updateReversePaneControls(int cameraIndex) {
         if (reverseCameraLayout == null) return;
         int[] paneIds = {ReverseCameraLayout.BACKGROUND_PANE_ID,
@@ -1393,6 +1508,7 @@ public final class CameraProbeActivity extends Activity
             reversePaneButtons[i].setBackgroundColor(tabColor(paneIds[i] == cameraIndex));
         }
         boolean background = cameraIndex == ReverseCameraLayout.BACKGROUND_PANE_ID;
+        selectReverseInspector(reverseInspectorMode);
         ReverseCameraLayout.Pane pane = background ? null : reverseCameraLayout.pane(cameraIndex);
         float[] values = background ? new float[]{0, 0, 1, 1}
                 : new float[]{pane.sourceCrop.left, pane.sourceCrop.top,
@@ -1414,6 +1530,12 @@ public final class CameraProbeActivity extends Activity
         reverseRotationSlider.setEnabled(!background);
         reverseRotationValue.setText(background ? "—" : rotationDegrees + "°");
         reverseRotationUiUpdating = false;
+        if (background) {
+            setDewarpControlsEnabled(true, false);
+        } else {
+            updateDewarpUi(true, CameraDewarpConfig.load(preferences,
+                    CameraDewarpConfig.lensForReverseCamera(cameraIndex)));
+        }
         reverseLowerButton.setEnabled(!background && pane.zOrder > 0);
         reverseRaiseButton.setEnabled(!background && pane.zOrder < 2);
     }
@@ -1916,6 +2038,24 @@ public final class CameraProbeActivity extends Activity
         panel.addView(calibrationCropValues, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
 
+        LinearLayout rotationModeRow = new LinearLayout(this);
+        rotationModeRow.setGravity(Gravity.CENTER_VERTICAL);
+        rotationModeRow.addView(label("Режим повороту"),
+                new LinearLayout.LayoutParams(0, dp(42), 1));
+        calibrationRotationModeInput = new Spinner(this);
+        ArrayAdapter<String> rotationModeAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_item,
+                new String[]{CameraRotation.modeLabel(CameraRotation.MODE_FIT),
+                        CameraRotation.modeLabel(CameraRotation.MODE_FILL),
+                        CameraRotation.modeLabel(CameraRotation.MODE_ALIGNED)});
+        rotationModeAdapter.setDropDownViewResource(
+                android.R.layout.simple_spinner_dropdown_item);
+        calibrationRotationModeInput.setAdapter(rotationModeAdapter);
+        rotationModeRow.addView(calibrationRotationModeInput,
+                new LinearLayout.LayoutParams(dp(196), dp(42)));
+        panel.addView(rotationModeRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+
         LinearLayout rotationRow = new LinearLayout(this);
         rotationRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView rotationLabel = label("Поворот");
@@ -1951,6 +2091,8 @@ public final class CameraProbeActivity extends Activity
                 new LinearLayout.LayoutParams(dp(64), dp(42)));
         panel.addView(rotationRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+        panel.addView(buildDewarpControls(false), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(62)));
 
         LinearLayout previews = new LinearLayout(this);
         previews.setOrientation(LinearLayout.HORIZONTAL);
@@ -1968,43 +2110,13 @@ public final class CameraProbeActivity extends Activity
         sourceFrame.setClipChildren(true);
         calibrationSourceFrame = sourceFrame;
 
-        calibrationPreview = new SurfaceView(this);
+        calibrationPreview = new BlindSpotCameraView(this);
         calibrationPreview.setAlpha(1.0f);
-        calibrationPreview.getHolder().setFormat(android.graphics.PixelFormat.OPAQUE);
-        calibrationPreview.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                calibrationSurfaceReady = holder.getSurface().isValid();
-                if (calibrationPreviewCover != null) {
-                    calibrationPreviewCover.setVisibility(View.VISIBLE);
-                }
-                record("surface_created", "target", "camera_calibration",
-                        "valid", calibrationSurfaceReady);
-                updateControls();
-                maybeOpenCalibrationCamera();
-            }
-
-            @Override
-            public void surfaceChanged(
-                    SurfaceHolder holder, int format, int width, int height) {
-                calibrationSurfaceReady = holder.getSurface().isValid();
-                record("surface_changed", "target", "camera_calibration",
-                        "width", width, "height", height, "format", format);
-                updateControls();
-                maybeOpenCalibrationCamera();
-            }
-
-            @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                calibrationSurfaceReady = false;
-                stopCalibrationCopies(true);
-                if (activePreview == calibrationPreview) {
-                    closeCamera("calibration_surface_destroyed");
-                }
-                record("surface_destroyed", "target", "camera_calibration");
-                updateControls();
-            }
-        });
+        calibrationPreview.setForceDewarpPipeline(true);
+        calibrationPreview.setCallback(this);
+        calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
+        calibrationPreview.applyDewarpConfig(CameraDewarpConfig.load(
+                preferences, CameraDewarpConfig.LENS_LEFT));
         sourceFrame.addView(calibrationPreview, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -2050,7 +2162,7 @@ public final class CameraProbeActivity extends Activity
         calibrationResultHost.addOnLayoutChangeListener((view, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> fitAspectFrame(
                 calibrationResultHost, calibrationResultFrame,
-                currentCalibrationCrop().rotatedOutputAspect()));
+                currentCalibrationCrop().outputAspect()));
         resultPane.addView(calibrationResultHost, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         previews.addView(resultPane, new LinearLayout.LayoutParams(
@@ -2063,6 +2175,24 @@ public final class CameraProbeActivity extends Activity
             renderCalibrationCrop();
             if (finished) saveCalibrationCrop(crop);
         });
+        calibrationRotationModeInput.setOnItemSelectedListener(
+                new AdapterView.OnItemSelectedListener() {
+                    @Override
+                    public void onItemSelected(
+                            AdapterView<?> parent, View view, int position, long id) {
+                        if (calibrationRotationModeUiUpdating
+                                || !CameraRotation.isValidMode(position)
+                                || currentCalibrationCrop().rotationMode == position) return;
+                        DirectCameraCrop crop = currentCalibrationCrop()
+                                .withRotationMode(position);
+                        calibrationCropOverlay.setCrop(crop);
+                        updateCalibrationUi(crop);
+                        renderCalibrationCrop();
+                        saveCalibrationCrop(crop);
+                    }
+
+                    @Override public void onNothingSelected(AdapterView<?> parent) {}
+                });
         calibrationResetButton.setOnClickListener(view -> resetCalibrationCrop());
         calibrationStopButton.setOnClickListener(
                 view -> closeCamera("calibration_user_stop"));
@@ -2095,6 +2225,168 @@ public final class CameraProbeActivity extends Activity
         cameraAvmDebugSubtabButton.setOnClickListener(view -> selectDebugMode(1));
         selectDebugMode(selectedDebugMode);
         return root;
+    }
+
+    private View buildDewarpControls(boolean reverse) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        Switch toggle = new Switch(this);
+        toggle.setText("Dewarp");
+        toggle.setTextColor(Color.WHITE);
+        toggle.setTextSize(15);
+        SeekBar[] sliders = reverse ? reverseDewarpSliders : calibrationDewarpSliders;
+        TextView[] values = reverse ? reverseDewarpValues : calibrationDewarpValues;
+        if (reverse) reverseDewarpSwitch = toggle;
+        else calibrationDewarpSwitch = toggle;
+        row.addView(toggle, new LinearLayout.LayoutParams(dp(150), dp(58)));
+
+        String[] names = {"Сила", "Центр X", "Центр Y", "Zoom"};
+        for (int i = 0; i < sliders.length; i++) {
+            final int index = i;
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            values[i] = label(names[i]);
+            values[i].setTextSize(12);
+            values[i].setGravity(Gravity.CENTER);
+            cell.addView(values[i], new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(21)));
+            sliders[i] = new SeekBar(this);
+            sliders[i].setMax(i == 3 ? 60 : 100);
+            sliders[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(
+                        SeekBar seekBar, int progress, boolean fromUser) {
+                    if (fromUser && !(reverse
+                            ? reverseDewarpUiUpdating : calibrationDewarpUiUpdating)) {
+                        applyDewarpFromControls(reverse, false);
+                    }
+                }
+
+                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+
+                @Override
+                public void onStopTrackingTouch(SeekBar seekBar) {
+                    applyDewarpFromControls(reverse, true);
+                }
+            });
+            cell.addView(sliders[i], new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(37)));
+            row.addView(cell, new LinearLayout.LayoutParams(0, dp(58), 1));
+        }
+        Button reset = button("Скинути dewarp");
+        reset.setOnClickListener(view -> {
+            CameraDewarpConfig value = CameraDewarpConfig.disabled();
+            updateDewarpUi(reverse, value);
+            applyDewarpConfig(reverse, value, true);
+        });
+        row.addView(reset, new LinearLayout.LayoutParams(dp(180), dp(48)));
+        toggle.setOnCheckedChangeListener((button, checked) -> {
+            boolean updating = reverse ? reverseDewarpUiUpdating : calibrationDewarpUiUpdating;
+            if (updating) return;
+            CameraDewarpConfig current = dewarpFromControls(reverse).withEnabled(checked);
+            applyDewarpConfig(reverse, current, true);
+        });
+        return row;
+    }
+
+    private void applyDewarpFromControls(boolean reverse, boolean persist) {
+        applyDewarpConfig(reverse, dewarpFromControls(reverse), persist);
+    }
+
+    private CameraDewarpConfig dewarpFromControls(boolean reverse) {
+        Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
+        SeekBar[] sliders = reverse ? reverseDewarpSliders : calibrationDewarpSliders;
+        return CameraDewarpConfig.of(toggle != null && toggle.isChecked(),
+                sliders[0].getProgress(), sliders[1].getProgress(),
+                sliders[2].getProgress(), 100 + sliders[3].getProgress());
+    }
+
+    private void updateDewarpUi(boolean reverse, CameraDewarpConfig value) {
+        Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
+        SeekBar[] sliders = reverse ? reverseDewarpSliders : calibrationDewarpSliders;
+        TextView[] values = reverse ? reverseDewarpValues : calibrationDewarpValues;
+        if (toggle == null) return;
+        if (reverse) reverseDewarpUiUpdating = true;
+        else calibrationDewarpUiUpdating = true;
+        toggle.setChecked(value.enabled);
+        if (!reverse && calibrationCropOverlay != null) {
+            calibrationCropOverlay.setGridVisible(value.enabled);
+        }
+        int[] progress = {value.strength, value.centerX, value.centerY, value.zoom - 100};
+        String[] names = {"Сила", "Центр X", "Центр Y", "Zoom"};
+        int[] displayed = {value.strength, value.centerX, value.centerY, value.zoom};
+        for (int i = 0; i < sliders.length; i++) {
+            sliders[i].setProgress(progress[i]);
+            values[i].setText(names[i] + ": " + displayed[i]);
+        }
+        setDewarpControlsEnabled(reverse, true);
+        if (reverse) reverseDewarpUiUpdating = false;
+        else calibrationDewarpUiUpdating = false;
+    }
+
+    private void setDewarpControlsEnabled(boolean reverse, boolean enabled) {
+        Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
+        SeekBar[] sliders = reverse ? reverseDewarpSliders : calibrationDewarpSliders;
+        if (toggle != null) toggle.setEnabled(enabled);
+        for (SeekBar slider : sliders) if (slider != null) slider.setEnabled(enabled);
+    }
+
+    private void applyDewarpConfig(
+            boolean reverse, CameraDewarpConfig value, boolean persist) {
+        int lens;
+        if (reverse) {
+            if (reverseCameraEditor == null || reverseCameraEditor.selectedCamera()
+                    == ReverseCameraLayout.BACKGROUND_PANE_ID) return;
+            lens = CameraDewarpConfig.lensForReverseCamera(
+                    reverseCameraEditor.selectedCamera());
+        } else {
+            lens = CameraDewarpConfig.lensFor(CameraProfile.of(calibrationCameraId));
+        }
+        updateDewarpValueLabels(reverse, value);
+        if (!reverse && calibrationCropOverlay != null) {
+            calibrationCropOverlay.setGridVisible(value.enabled);
+        }
+        if (calibrationPreview != null
+                && CameraDewarpConfig.lensFor(CameraProfile.of(calibrationCameraId)) == lens) {
+            calibrationPreview.applyDewarpConfig(value);
+        }
+        if (cameraPreview != null
+                && CameraDewarpConfig.lensFor(CameraProfile.of(selectedCameraId)) == lens) {
+            cameraPreview.applyDewarpConfig(value);
+        }
+        applyReversePreviewDewarpConfigs(lens, value);
+        if (!persist) return;
+        CameraDewarpConfig.save(preferences, lens, value);
+        CameraHelperService.cameraSettingsChanged(this);
+        CameraHelperService.reverseCameraSettingsChanged(this);
+        record("camera_dewarp_changed", "lens", lens, "enabled", value.enabled,
+                "strength", value.strength, "center_x", value.centerX,
+                "center_y", value.centerY, "zoom", value.zoom);
+    }
+
+    private void updateDewarpValueLabels(boolean reverse, CameraDewarpConfig value) {
+        TextView[] labels = reverse ? reverseDewarpValues : calibrationDewarpValues;
+        if (labels[0] == null) return;
+        labels[0].setText("Сила: " + value.strength);
+        labels[1].setText("Центр X: " + value.centerX);
+        labels[2].setText("Центр Y: " + value.centerY);
+        labels[3].setText("Zoom: " + value.zoom);
+    }
+
+    private void applyReversePreviewDewarpConfigs() {
+        applyReversePreviewDewarpConfigs(0, null);
+    }
+
+    private void applyReversePreviewDewarpConfigs(
+            int overrideLens, CameraDewarpConfig override) {
+        if (reverseCameraPreview == null) return;
+        CameraDewarpConfig rear = overrideLens == CameraDewarpConfig.LENS_REAR
+                ? override : CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_REAR);
+        CameraDewarpConfig left = overrideLens == CameraDewarpConfig.LENS_LEFT
+                ? override : CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_LEFT);
+        CameraDewarpConfig right = overrideLens == CameraDewarpConfig.LENS_RIGHT
+                ? override : CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_RIGHT);
+        reverseCameraPreview.applyDewarpConfigs(rear, left, right);
     }
 
     private void selectDebugMode(int mode) {
@@ -2276,8 +2568,13 @@ public final class CameraProbeActivity extends Activity
         if (switchingOpenCamera) closeCameraForTransition("calibration_camera_changed");
         CameraProfile profile = CameraProfile.of(cameraId);
         DirectCameraCrop crop = loadCalibrationCrop(cameraId);
+        CameraDewarpConfig dewarp = CameraDewarpConfig.load(
+                preferences, CameraDewarpConfig.lensFor(profile));
+        calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
+        calibrationPreview.applyDewarpConfig(dewarp);
         calibrationCropOverlay.setCrop(crop);
         updateCalibrationUi(crop);
+        updateDewarpUi(false, dewarp);
         renderCalibrationCrop();
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setBackgroundColor(tabColor(i == cameraId));
@@ -2298,7 +2595,9 @@ public final class CameraProbeActivity extends Activity
                 preferences.getInt(DirectCameraCrop.preferenceKey(profile, 4),
                         DirectCameraCrop.ASPECT_FOUR_THREE),
                 preferences.getInt(DirectCameraCrop.preferenceKey(profile, 5),
-                        fallback.rotationDegrees));
+                        fallback.rotationDegrees),
+                preferences.getInt(DirectCameraCrop.preferenceKey(profile, 6),
+                        fallback.rotationMode));
     }
 
     private void saveCalibrationCrop(DirectCameraCrop crop) {
@@ -2310,13 +2609,15 @@ public final class CameraProbeActivity extends Activity
                 .putFloat(DirectCameraCrop.preferenceKey(profile, 3), crop.height)
                 .putInt(DirectCameraCrop.preferenceKey(profile, 4), crop.aspectMode)
                 .putInt(DirectCameraCrop.preferenceKey(profile, 5), crop.rotationDegrees)
+                .putInt(DirectCameraCrop.preferenceKey(profile, 6), crop.rotationMode)
                 .apply();
         record("direct_crop_saved", "camera_id", profile.id, "camera", profile.wireName,
                 "x", crop.left, "y", crop.top,
                 "width", crop.width, "height", crop.height,
                 "aspect", DirectCameraCrop.aspectLabel(crop.aspectMode),
                 "rotation_degrees", crop.rotationDegrees,
-                "output_aspect", crop.rotatedOutputAspect());
+                "rotation_mode", CameraRotation.modeLabel(crop.rotationMode),
+                "output_aspect", crop.outputAspect());
         updateCameraPositionHandle();
         updateProductionPreviewSize();
         CameraHelperService.cameraSettingsChanged(this);
@@ -2350,7 +2651,8 @@ public final class CameraProbeActivity extends Activity
         updateCalibrationCropValues(crop);
         if (calibrationResultTitle != null) {
             calibrationResultTitle.setText(
-                    "Фактичний crop " + DirectCameraCrop.aspectLabel(crop.aspectMode));
+                    "Фактичний crop " + DirectCameraCrop.aspectLabel(crop.aspectMode)
+                            + " · " + CameraRotation.modeLabel(crop.rotationMode));
         }
         for (int mode = 0; mode < calibrationAspectButtons.length; mode++) {
             Button button = calibrationAspectButtons[mode];
@@ -2363,19 +2665,25 @@ public final class CameraProbeActivity extends Activity
             calibrationRotationValue.setText(crop.rotationDegrees + "°");
             calibrationRotationUiUpdating = false;
         }
+        if (calibrationRotationModeInput != null) {
+            calibrationRotationModeUiUpdating = true;
+            calibrationRotationModeInput.setSelection(crop.rotationMode, false);
+            calibrationRotationModeUiUpdating = false;
+        }
         if (calibrationResultHost != null && calibrationResultFrame != null) {
             fitAspectFrame(
                     calibrationResultHost, calibrationResultFrame,
-                    crop.rotatedOutputAspect());
+                    crop.outputAspect());
             calibrationResultFrame.post(this::renderCalibrationCrop);
         }
     }
 
     private void updateCalibrationCropValues(DirectCameraCrop crop) {
         calibrationCropValues.setText(String.format(Locale.US,
-                "%s %s: x %.1f%%  y %.1f%%  w %.1f%%  h %.1f%%  rot %d°",
+                "%s %s/%s: x %.1f%%  y %.1f%%  w %.1f%%  h %.1f%%  rot %d°",
                 CameraProfile.of(calibrationCameraId).wireName,
                 DirectCameraCrop.aspectLabel(crop.aspectMode),
+                CameraRotation.modeLabel(crop.rotationMode),
                 crop.left * 100.0f, crop.top * 100.0f,
                 crop.width * 100.0f, crop.height * 100.0f,
                 crop.rotationDegrees));
@@ -2399,7 +2707,7 @@ public final class CameraProbeActivity extends Activity
 
     private void openCalibrationCamera(int index) {
         IBinder current = helper;
-        Surface surface = calibrationPreview.getHolder().getSurface();
+        Surface surface = calibrationPreview.getCameraSurface();
         if (current == null || !calibrationSurfaceReady || !surface.isValid()
                 || requestedOpen || cameraHandoffPending) {
             record("open_rejected", "renderer", "direct_crop_calibration",
@@ -2432,8 +2740,12 @@ public final class CameraProbeActivity extends Activity
                         != PackageManager.PERMISSION_GRANTED) {
             return;
         }
-        Surface surface = calibrationPreview.getHolder().getSurface();
+        Surface surface = calibrationPreview.getCameraSurface();
         if (surface != null && surface.isValid()) {
+            CameraProfile profile = CameraProfile.of(calibrationCameraId);
+            calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
+            calibrationPreview.applyDewarpConfig(CameraDewarpConfig.load(
+                    preferences, CameraDewarpConfig.lensFor(profile)));
             openCalibrationCamera(CameraProfile.of(calibrationCameraId).previewIndex);
         }
     }
@@ -2473,24 +2785,15 @@ public final class CameraProbeActivity extends Activity
         }
         calibrationCopyPending = true;
         try {
-            PixelCopy.request(calibrationPreview, calibrationCaptureBitmap, result -> {
-                calibrationCopyPending = false;
-                if (result != lastCalibrationCopyResult) {
-                    record("calibration_pixel_copy", "result", result,
-                            "recovered", result == PixelCopy.SUCCESS);
-                    lastCalibrationCopyResult = result;
-                }
-                if (result == PixelCopy.SUCCESS && shouldCopyCalibrationFrame()) {
-                    renderCalibrationCrop();
-                }
-                if (shouldCopyCalibrationFrame()) {
-                    mainHandler.postDelayed(
-                            copyCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
-                }
-            }, mainHandler);
+            calibrationPreview.getBitmap(calibrationCaptureBitmap);
+            calibrationCopyPending = false;
+            if (shouldCopyCalibrationFrame()) renderCalibrationCrop();
+            if (shouldCopyCalibrationFrame()) {
+                mainHandler.postDelayed(copyCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
+            }
         } catch (Throwable error) {
             calibrationCopyPending = false;
-            record("calibration_pixel_copy", "error", error.toString());
+            record("calibration_texture_copy", "error", error.toString());
             if (shouldCopyCalibrationFrame()) {
                 mainHandler.postDelayed(copyCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
             }
@@ -2513,23 +2816,22 @@ public final class CameraProbeActivity extends Activity
         DirectCameraCrop crop = calibrationCropOverlay.getCrop();
         int sourceWidth = calibrationCaptureBitmap.getWidth();
         int sourceHeight = calibrationCaptureBitmap.getHeight();
-        Rect source = new Rect(
-                Math.round(crop.left * sourceWidth),
-                Math.round(crop.top * sourceHeight),
-                Math.round(crop.right() * sourceWidth),
-                Math.round(crop.bottom() * sourceHeight));
         Canvas canvas = new Canvas(calibrationResultBitmap);
         canvas.drawColor(Color.BLACK);
-        int save = canvas.save();
-        float centerX = width / 2.0f;
-        float centerY = height / 2.0f;
-        float[] scale = CameraRotation.scaleToRotatedBounds(
-                width, height, crop.outputAspect(), crop.rotationDegrees);
-        canvas.rotate(crop.rotationDegrees, centerX, centerY);
-        canvas.scale(scale[0], scale[1], centerX, centerY);
-        canvas.drawBitmap(calibrationCaptureBitmap, source,
-                new Rect(0, 0, width, height), calibrationCropPaint);
-        canvas.restoreToCount(save);
+        Matrix transform = new Matrix();
+        CameraRotation.setSourceCropTransform(
+                transform,
+                new RectF(
+                        crop.left * sourceWidth,
+                        crop.top * sourceHeight,
+                        crop.right() * sourceWidth,
+                        crop.bottom() * sourceHeight),
+                new RectF(0.0f, 0.0f, width, height),
+                crop.rotationDegrees,
+                crop.rotationMode,
+                new RectF(0.0f, 0.0f, sourceWidth, sourceHeight),
+                false);
+        canvas.drawBitmap(calibrationCaptureBitmap, transform, calibrationCropPaint);
         calibrationCropPreview.setImageBitmap(calibrationResultBitmap);
         calibrationCropPreview.invalidate();
     }
@@ -2584,7 +2886,12 @@ public final class CameraProbeActivity extends Activity
         updateCameraPositionCanvasSize();
         updateCameraPositionHandle();
         if (cameraPreview != null) {
-            cameraPreview.post(() -> cameraPreview.applyDirectCameraCrop(crop));
+            CameraDewarpConfig dewarp = CameraDewarpConfig.load(preferences,
+                    CameraDewarpConfig.lensFor(CameraProfile.of(selectedCameraId)));
+            cameraPreview.post(() -> {
+                cameraPreview.applyDewarpConfig(dewarp);
+                cameraPreview.applyDirectCameraCrop(crop);
+            });
         }
     }
 
@@ -2605,6 +2912,9 @@ public final class CameraProbeActivity extends Activity
             debugPreviewCover = cover;
         } else {
             BlindSpotCameraView surface = new BlindSpotCameraView(this);
+            surface.setForceDewarpPipeline(true);
+            surface.applyDewarpConfig(CameraDewarpConfig.load(preferences,
+                    CameraDewarpConfig.lensFor(CameraProfile.of(selectedCameraId))));
             surface.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
             surface.setCallback(this);
             frame.addView(surface, new FrameLayout.LayoutParams(
@@ -2908,7 +3218,7 @@ public final class CameraProbeActivity extends Activity
         int requestedWidth = cameraPositionWidget.getWidth() * scale / 100;
         int[] size = BlindSpotOverlayController.fitAspect(requestedWidth,
                 cameraPositionWidget.getWidth(), cameraPositionWidget.getHeight(),
-                crop.rotatedOutputAspect());
+                crop.outputAspect());
         int width = size[0];
         int height = size[1];
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams)
@@ -3166,11 +3476,12 @@ public final class CameraProbeActivity extends Activity
 
     private void openDirectCameraNow(String cameraTag, int index, boolean calibration) {
         IBinder current = helper;
-        SurfaceView target = calibration ? calibrationPreview : directCameraPreview;
+        View target = calibration ? calibrationPreview : directCameraPreview;
         View cover = calibration ? calibrationPreviewCover : directCameraPreviewCover;
         TextView status = calibration ? calibrationStatus : directCameraStatus;
         boolean surfaceReady = calibration ? calibrationSurfaceReady : directCameraSurfaceReady;
-        Surface surface = target.getHolder().getSurface();
+        Surface surface = calibration ? calibrationPreview.getCameraSurface()
+                : directCameraPreview.getHolder().getSurface();
         String renderer = calibration ? "direct_crop_calibration" : "direct_avm";
         if (current == null || !surfaceReady || !surface.isValid()) {
             record("open_rejected", "renderer", renderer,
@@ -3228,6 +3539,10 @@ public final class CameraProbeActivity extends Activity
             openStockAvmNow(viewpoint, debug);
             return;
         }
+        if (!debug) {
+            openStockAvmNow(viewpoint, false);
+            return;
+        }
         if (cameraHandoffPending) return;
         cameraHandoffPending = true;
         pendingCameraViewpoint = viewpoint;
@@ -3276,6 +3591,8 @@ public final class CameraProbeActivity extends Activity
         if (!debug) {
             updateProductionPreviewSize();
             CameraProfile profile = CameraProfile.of(selectedCameraId);
+            cameraPreview.applyDewarpConfig(CameraDewarpConfig.load(
+                    preferences, CameraDewarpConfig.lensFor(profile)));
             cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
             requestedOpen = true;
             armProductionPreviewFirstFrame();
@@ -4007,6 +4324,14 @@ public final class CameraProbeActivity extends Activity
                 }
                 if (isOverlayCameraEvent(kind, json.optString("camera_owner"))) return;
                 if ("camera_opened".equals(kind)) {
+                    if (shouldRearmStockSurfaceRecovery(
+                            kind, json.optString("renderer"))) {
+                        if (invalidStockSurfaceRetryUsed) {
+                            record("stock_avm_recovery", "state", "rearmed",
+                                    "reason", "camera_opened");
+                        }
+                        invalidStockSurfaceRetryUsed = false;
+                    }
                     if (activePreview == reverseCameraPreview
                             && "reverse_preview_with_stock_base".equals(
                                     json.optString("view"))) {
@@ -4283,7 +4608,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void showPreview(
-            SurfaceView target, View cover, boolean cropLeft, boolean cropRight) {
+            View target, View cover, boolean cropLeft, boolean cropRight) {
         if (cover != null) cover.setVisibility(View.INVISIBLE);
         boolean crop = cropLeft || cropRight;
         target.setPivotX(cropRight ? target.getWidth() : 0.0f);
@@ -4454,6 +4779,10 @@ public final class CameraProbeActivity extends Activity
         return lower.contains("stock_avm")
                 && lower.contains("surface")
                 && (lower.contains("invalid") || lower.contains("get_camera_input_surface"));
+    }
+
+    static boolean shouldRearmStockSurfaceRecovery(String kind, String renderer) {
+        return "camera_opened".equals(kind) && "stock_avm_shell".equals(renderer);
     }
 
     private void createLogFile() {

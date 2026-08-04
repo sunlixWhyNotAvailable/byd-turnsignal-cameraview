@@ -112,6 +112,30 @@ final class ReverseCameraCompositionView extends FrameLayout {
         for (PaneView pane : panes) pane.setCornerRadiusDp(cornerRadiusDp);
     }
 
+    void setForceDewarpPipeline(boolean value) {
+        for (PaneView pane : panes) pane.texture.setForceDewarpPipeline(value);
+    }
+
+    void applyDewarpConfigs(
+            CameraDewarpConfig rear,
+            CameraDewarpConfig left,
+            CameraDewarpConfig right) {
+        panes[0].texture.applyDewarpConfig(rear);
+        panes[1].texture.applyDewarpConfig(left);
+        panes[2].texture.applyDewarpConfig(right);
+    }
+
+    boolean dewarpPipelineCompatible(
+            CameraDewarpConfig rear,
+            CameraDewarpConfig left,
+            CameraDewarpConfig right) {
+        CameraDewarpConfig[] values = {rear, left, right};
+        for (int i = 0; i < panes.length; i++) {
+            if (panes[i].texture.usesDewarpPipeline() != values[i].usesGpu()) return false;
+        }
+        return true;
+    }
+
     void applyLayout(ReverseCameraLayout value) {
         if (value == null) throw new IllegalArgumentException("reverse layout is required");
         model = value;
@@ -205,13 +229,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private PaneView addPane(int cameraIndex) {
         PaneView pane = new PaneView(getContext(), cameraIndex);
-        pane.texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+        pane.texture.setCallback(new BlindSpotCameraView.Callback() {
             @Override
-            public void onSurfaceTextureAvailable(
-                    SurfaceTexture texture, int width, int height) {
-                texture.setDefaultBufferSize(SOURCE_WIDTH, SOURCE_HEIGHT);
-                if (pane.surface != null) pane.surface.release();
-                pane.surface = new Surface(texture);
+            public void onCameraSurfaceAvailable(
+                    BlindSpotCameraView view, Surface surface, int width, int height) {
+                pane.surface = surface;
                 pane.generation++;
                 pane.freshFrame = false;
                 pane.discardNextFrame = false;
@@ -220,27 +242,24 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
 
             @Override
-            public void onSurfaceTextureSizeChanged(
-                    SurfaceTexture texture, int width, int height) {
-                texture.setDefaultBufferSize(SOURCE_WIDTH, SOURCE_HEIGHT);
+            public void onCameraSurfaceSizeChanged(
+                    BlindSpotCameraView view, Surface surface, int width, int height) {
                 applyModel();
             }
 
             @Override
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+            public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
                 int lostGeneration = pane.generation;
-                if (pane.surface != null) pane.surface.release();
                 pane.surface = null;
                 pane.freshFrame = false;
                 pane.cover.setVisibility(View.VISIBLE);
                 if (callback != null) {
                     callback.onReverseSurfaceLost(cameraIndex, lostGeneration);
                 }
-                return true;
             }
 
             @Override
-            public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+            public void onCameraFrameUpdated(BlindSpotCameraView view) {
                 if (armedRequestId <= 0 || pane.armedGeneration != pane.generation) return;
                 if (pane.discardNextFrame) {
                     pane.discardNextFrame = false;
@@ -295,25 +314,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
             ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
             ReverseCameraLayout.PixelRect baseRect =
                     ReverseCameraLayout.project(value.destination, width, height);
-            int[] rotated = CameraRotation.rotatedBounds(
-                    baseRect.width, baseRect.height, value.rotationDegrees);
-            float fit = Math.min(1.0f, Math.min(
-                    (float) width / rotated[0], (float) height / rotated[1]));
-            int paneWidth = Math.max(1, Math.round(rotated[0] * fit));
-            int paneHeight = Math.max(1, Math.round(rotated[1] * fit));
-            int centerX = baseRect.left + baseRect.width / 2;
-            int centerY = baseRect.top + baseRect.height / 2;
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) pane.getLayoutParams();
-            params.width = paneWidth;
-            params.height = paneHeight;
-            params.leftMargin = Math.max(0, Math.min(width - paneWidth,
-                    centerX - paneWidth / 2));
-            params.topMargin = Math.max(0, Math.min(height - paneHeight,
-                    centerY - paneHeight / 2));
+            params.width = Math.max(1, baseRect.width);
+            params.height = Math.max(1, baseRect.height);
+            params.leftMargin = baseRect.left;
+            params.topMargin = baseRect.top;
             pane.setLayoutParams(params);
             pane.setZ(1.0f + value.zOrder);
-            pane.applyTransform(value.sourceCrop, value.rotationDegrees,
-                    (float) baseRect.width / Math.max(1, baseRect.height));
+            pane.applyTransform(value.sourceCrop, value.rotationDegrees);
         }
     }
 
@@ -331,7 +339,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private static final class PaneView extends FrameLayout {
         final int cameraIndex;
-        final TextureView texture;
+        final BlindSpotCameraView texture;
         final View cover;
         Surface surface;
         int generation;
@@ -340,7 +348,6 @@ final class ReverseCameraCompositionView extends FrameLayout {
         boolean freshFrame;
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(0, 0, 1, 1);
         int rotationDegrees;
-        float contentAspect = 1.0f;
 
         PaneView(Context context, int cameraIndex) {
             super(context);
@@ -353,8 +360,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
             background.setCornerRadius(dp(context, DEFAULT_CORNER_RADIUS_DP));
             setBackground(background);
 
-            texture = new TextureView(context);
+            texture = new BlindSpotCameraView(context);
             texture.setOpaque(true);
+            texture.setExternalTransform(true);
             addView(texture, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             cover = new View(context);
@@ -363,50 +371,30 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             texture.addOnLayoutChangeListener((view, left, top, right, bottom,
                     oldLeft, oldTop, oldRight, oldBottom) ->
-                    applyTransform(crop, rotationDegrees, contentAspect));
+                    applyTransform(crop, rotationDegrees));
         }
 
-        void applyTransform(
-                ReverseCameraLayout.Rect value, int degrees, float nextContentAspect) {
+        void applyTransform(ReverseCameraLayout.Rect value, int degrees) {
             crop = value;
             rotationDegrees = CameraRotation.clamp(degrees);
-            contentAspect = Float.isFinite(nextContentAspect) && nextContentAspect > 0.0f
-                    ? nextContentAspect : 1.0f;
             int width = texture.getWidth();
             int height = texture.getHeight();
             if (width <= 0 || height <= 0) return;
 
-            float cropLeft = value.left;
-            float cropTop = value.top;
-            float cropWidth = value.width;
-            float cropHeight = value.height;
-            float sourceAspect = cropWidth * SOURCE_WIDTH / (cropHeight * SOURCE_HEIGHT);
-            float targetAspect = contentAspect;
-            if (sourceAspect > targetAspect) {
-                float nextWidth = cropHeight * SOURCE_HEIGHT * targetAspect / SOURCE_WIDTH;
-                cropLeft += (cropWidth - nextWidth) / 2.0f;
-                cropWidth = nextWidth;
-            } else if (sourceAspect < targetAspect) {
-                float nextHeight = cropWidth * SOURCE_WIDTH / (targetAspect * SOURCE_HEIGHT);
-                cropTop += (cropHeight - nextHeight) / 2.0f;
-                cropHeight = nextHeight;
-            }
-
             Matrix transform = new Matrix();
-            transform.setRectToRect(
-                    new RectF(cropLeft * width, cropTop * height,
-                            (cropLeft + cropWidth) * width,
-                            (cropTop + cropHeight) * height),
-                    new RectF(0, 0, width, height), Matrix.ScaleToFit.FILL);
+            CameraRotation.setSourceCropTransform(
+                    transform,
+                    new RectF(value.left * width, value.top * height,
+                            value.right() * width, value.bottom() * height),
+                    new RectF(0, 0, width, height),
+                    rotationDegrees,
+                    CameraRotation.MODE_FIT,
+                    new RectF(0, 0, width, height),
+                    ReverseCameraLayout.mirrorHorizontally(cameraIndex));
+            texture.setRotation(0.0f);
+            texture.setScaleX(1.0f);
+            texture.setScaleY(1.0f);
             texture.setTransform(transform);
-            float[] scale = CameraRotation.scaleToRotatedBounds(
-                    width, height, contentAspect, rotationDegrees);
-            texture.setPivotX(width / 2.0f);
-            texture.setPivotY(height / 2.0f);
-            texture.setRotation(rotationDegrees);
-            texture.setScaleX(ReverseCameraLayout.mirrorHorizontally(cameraIndex)
-                    ? -scale[0] : scale[0]);
-            texture.setScaleY(scale[1]);
         }
 
         void setCornerRadiusDp(int value) {

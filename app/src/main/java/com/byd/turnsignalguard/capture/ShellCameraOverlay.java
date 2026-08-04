@@ -69,8 +69,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         display.getRealMetrics(metrics);
         spec.validate(metrics.widthPixels, metrics.heightPixels);
         if (root != null && (activeTarget != spec.target
-                || activeDisplayId != display.getDisplayId())) {
-            close("display_target_changed");
+                || activeDisplayId != display.getDisplayId()
+                || preview.usesDewarpPipeline() != spec.dewarp.usesGpu())) {
+            close(activeTarget != spec.target || activeDisplayId != display.getDisplayId()
+                    ? "display_target_changed" : "dewarp_pipeline_changed");
         }
         if (root == null) {
             windowContext = context.createDisplayContext(display);
@@ -207,6 +209,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
         nextPreview.setAlpha(1.0f);
         nextPreview.setCallback(this);
+        nextPreview.applyDewarpConfig(spec.dewarp);
         nextPreview.applyDirectCameraCrop(spec.crop());
         nextRoot.addView(nextPreview, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -255,11 +258,17 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "trusted_api", trustedApi, "corner_radius_dp", spec.cornerRadiusDp,
                 "target", CameraDisplayTarget.name(spec.target),
                 "display_id", activeDisplayId,
-                "display_name", windows.getDefaultDisplay().getName());
+                "display_name", windows.getDefaultDisplay().getName(),
+                "dewarp_enabled", spec.dewarp.enabled,
+                "dewarp_strength", spec.dewarp.strength,
+                "dewarp_center_x", spec.dewarp.centerX,
+                "dewarp_center_y", spec.dewarp.centerY,
+                "dewarp_zoom", spec.dewarp.zoom);
     }
 
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
         visible = false;
+        preview.applyDewarpConfig(spec.dewarp);
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();
         background.setCornerRadius(dp(spec.cornerRadiusDp));

@@ -799,14 +799,15 @@ final class BlindSpotOverlayController {
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
         int[] geometry = overlayGeometry(
                 displaySize[0], displaySize[1], readScale(settings, profile),
-                crop.rotatedOutputAspect(), readPosition(settings, profile, false),
+                crop.outputAspect(), readPosition(settings, profile, false),
                 readPosition(settings, profile, true),
                 marginX, topMargin, bottomMargin);
         return new CameraShellProtocol.OverlaySpec(
                 profile.id, requestId, target,
                 geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
-                crop.rotationDegrees, readCornerRadius(settings));
+                crop.rotationDegrees, crop.rotationMode, readCornerRadius(settings),
+                CameraDewarpConfig.load(settings, CameraDewarpConfig.lensFor(profile)));
     }
 
     static int[] overlayGeometry(
@@ -840,7 +841,9 @@ final class BlindSpotOverlayController {
                 settings.getFloat(DirectCameraCrop.preferenceKey(profile, 3), fallback.height),
                 settings.getInt(DirectCameraCrop.preferenceKey(profile, 4), fallback.aspectMode),
                 settings.getInt(DirectCameraCrop.preferenceKey(profile, 5),
-                        fallback.rotationDegrees));
+                        fallback.rotationDegrees),
+                settings.getInt(DirectCameraCrop.preferenceKey(profile, 6),
+                        fallback.rotationMode));
     }
 
     private static String scaleKey(CameraProfile profile) {

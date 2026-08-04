@@ -17,6 +17,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -30,6 +31,7 @@ import java.util.function.BiConsumer;
 
 final class MusicMetadataRuntime {
     static final long PUBLISH_DEBOUNCE_MS = 750;
+    static final long SESSION_REPAIR_DEBOUNCE_MS = 150;
     static final int SOURCE_THIRD_PARTY = 26;
     static final int DEVICE_AUDIO = 1002;
     static final int DEVICE_INSTRUMENT = 1007;
@@ -243,10 +245,14 @@ final class MusicMetadataRuntime {
     private void schedulePublish(String reason, boolean force) {
         if (!enabled || !awake || !observersStarted) return;
         forcePending |= force;
-        pendingReason = reason == null ? "unknown" : reason;
+        String nextReason = reason == null ? "unknown" : reason;
+        if ("sessions_callback".equals(nextReason)
+                || !"sessions_callback".equals(pendingReason)) {
+            pendingReason = nextReason;
+        }
         publishPending = true;
         handler.removeCallbacks(publishRunnable);
-        handler.postDelayed(publishRunnable, PUBLISH_DEBOUNCE_MS);
+        handler.postDelayed(publishRunnable, publishDelayMs(pendingReason));
     }
 
     private void publishSelectedSession() {
@@ -299,8 +305,15 @@ final class MusicMetadataRuntime {
             cleanupOwnedCard(reason + "_empty_metadata");
             return;
         }
-        if (!shouldPublish(force, published, lastFingerprint, snapshot.fingerprint)) return;
-        enqueueWrite(WriteRequest.publish(lifecycleGeneration, reason, snapshot));
+        boolean claimSource = shouldClaimSource(
+                force, published, lastPublishedPackage, snapshot.packageName);
+        boolean repair = shouldRepairPublishedSource(
+                reason, published, lastPublishedPackage, snapshot.packageName);
+        claimSource |= repair;
+        if (!shouldPublish(force || repair, published,
+                lastFingerprint, snapshot.fingerprint)) return;
+        enqueueWrite(WriteRequest.publish(
+                lifecycleGeneration, reason, snapshot, claimSource));
     }
 
     private void relinquishToOem(String reason) {
@@ -337,7 +350,7 @@ final class MusicMetadataRuntime {
             try {
                 if (writer == null) writer = new BydMediaWriter(context, eventSink);
                 if (request.cleanup) writer.cleanup();
-                else writer.publish(request.snapshot);
+                else writer.publish(request.snapshot, request.claimSource);
             } catch (Throwable error) {
                 failure = summary(error);
             }
@@ -364,11 +377,20 @@ final class MusicMetadataRuntime {
                         "package", request.snapshot.packageName,
                         "title_present", !request.snapshot.title.isEmpty(),
                         "artist_present", !request.snapshot.artist.isEmpty(),
+                        "title_bytes", request.snapshot.titleBytes,
+                        "artist_bytes", request.snapshot.artistBytes,
+                        "title_code_points", request.snapshot.titleCodePoints,
+                        "artist_code_points", request.snapshot.artistCodePoints,
+                        "normalization_changed",
+                        request.snapshot.titleNormalizationChanged
+                                || request.snapshot.artistNormalizationChanged,
                         "duration_ms", request.snapshot.durationMs,
                         "position_ms", request.snapshot.positionMs,
                         "progress", request.snapshot.progress,
                         "playing", request.snapshot.playing,
-                        "source_event", request.reason, "stale", !current);
+                        "source_event", request.reason,
+                        "source_claimed", request.claimSource,
+                        "stale", !current);
             }
         } else {
             setError("metadata_write: " + failure, request.reason);
@@ -437,6 +459,27 @@ final class MusicMetadataRuntime {
         return force || !published || !nextFingerprint.equals(previousFingerprint);
     }
 
+    static boolean shouldClaimSource(
+            boolean published, String previousPackage, String nextPackage) {
+        return !published || nextPackage == null || !nextPackage.equals(previousPackage);
+    }
+
+    static boolean shouldClaimSource(
+            boolean force, boolean published, String previousPackage, String nextPackage) {
+        return force || shouldClaimSource(published, previousPackage, nextPackage);
+    }
+
+    static boolean shouldRepairPublishedSource(
+            String reason, boolean published, String previousPackage, String nextPackage) {
+        return published && "sessions_callback".equals(reason)
+                && nextPackage != null && nextPackage.equals(previousPackage);
+    }
+
+    static long publishDelayMs(String reason) {
+        return "sessions_callback".equals(reason)
+                ? SESSION_REPAIR_DEBOUNCE_MS : PUBLISH_DEBOUNCE_MS;
+    }
+
     static boolean shouldRetainPublishedCard(
             boolean hasLiveSession, boolean focusedProcessAlive,
             boolean publishedProcessAlive) {
@@ -471,11 +514,15 @@ final class MusicMetadataRuntime {
     }
 
     static byte[] utf16Le(String value) {
-        String safe = value == null ? "" : value;
+        String safe = normalizeText(value);
         while (safe.getBytes(StandardCharsets.UTF_16LE).length > MAX_TEXT_BYTES) {
             safe = safe.substring(0, safe.offsetByCodePoints(safe.length(), -1));
         }
         return safe.getBytes(StandardCharsets.UTF_16LE);
+    }
+
+    static String normalizeText(String value) {
+        return Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC);
     }
 
     private static int[] hms(long valueMs) {
@@ -612,13 +659,27 @@ final class MusicMetadataRuntime {
         final int progress;
         final int[] timeline;
         final String fingerprint;
+        final boolean titleNormalizationChanged;
+        final boolean artistNormalizationChanged;
+        final int titleCodePoints;
+        final int artistCodePoints;
+        final int titleBytes;
+        final int artistBytes;
 
         Snapshot(
                 String packageName, String title, String artist,
                 long durationMs, long positionMs, boolean playing) {
             this.packageName = packageName == null ? "" : packageName;
-            this.title = title == null ? "" : title;
-            this.artist = artist == null ? "" : artist;
+            String rawTitle = title == null ? "" : title;
+            String rawArtist = artist == null ? "" : artist;
+            this.title = normalizeText(rawTitle);
+            this.artist = normalizeText(rawArtist);
+            titleNormalizationChanged = !this.title.equals(rawTitle);
+            artistNormalizationChanged = !this.artist.equals(rawArtist);
+            titleCodePoints = this.title.codePointCount(0, this.title.length());
+            artistCodePoints = this.artist.codePointCount(0, this.artist.length());
+            titleBytes = utf16Le(this.title).length;
+            artistBytes = utf16Le(this.artist).length;
             this.durationMs = Math.max(0L, durationMs);
             this.positionMs = Math.max(0L, positionMs);
             this.playing = playing;
@@ -635,20 +696,25 @@ final class MusicMetadataRuntime {
         final String reason;
         final Snapshot snapshot;
         final boolean cleanup;
+        final boolean claimSource;
 
-        private WriteRequest(int generation, String reason, Snapshot snapshot, boolean cleanup) {
+        private WriteRequest(
+                int generation, String reason, Snapshot snapshot,
+                boolean cleanup, boolean claimSource) {
             this.generation = generation;
             this.reason = reason;
             this.snapshot = snapshot;
             this.cleanup = cleanup;
+            this.claimSource = claimSource;
         }
 
-        static WriteRequest publish(int generation, String reason, Snapshot snapshot) {
-            return new WriteRequest(generation, reason, snapshot, false);
+        static WriteRequest publish(
+                int generation, String reason, Snapshot snapshot, boolean claimSource) {
+            return new WriteRequest(generation, reason, snapshot, false, claimSource);
         }
 
         static WriteRequest cleanup(int generation, String reason) {
-            return new WriteRequest(generation, reason, null, true);
+            return new WriteRequest(generation, reason, null, true, false);
         }
     }
 
@@ -691,9 +757,11 @@ final class MusicMetadataRuntime {
                     feature("AUDIO_TOTAL_TIME_SECOND_SET")};
         }
 
-        void publish(Snapshot snapshot) throws Exception {
-            writeInt(DEVICE_INSTRUMENT, sourceFid, SOURCE_THIRD_PARTY, "source");
-            writeInt(DEVICE_INSTRUMENT, radioStateFid, RADIO_OFF, "radio_state");
+        void publish(Snapshot snapshot, boolean claimSource) throws Exception {
+            if (claimSource) {
+                writeInt(DEVICE_INSTRUMENT, sourceFid, SOURCE_THIRD_PARTY, "source");
+                writeInt(DEVICE_INSTRUMENT, radioStateFid, RADIO_OFF, "radio_state");
+            }
             writeBytes(DEVICE_INSTRUMENT, titleFid, utf16Le(snapshot.title), "title");
             writeBytes(DEVICE_AUDIO, singerFid, utf16Le(snapshot.artist), "artist");
             writeIntArray(DEVICE_AUDIO, timeFids, snapshot.timeline, "timeline");

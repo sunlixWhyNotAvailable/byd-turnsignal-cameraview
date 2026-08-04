@@ -181,7 +181,10 @@ final class ReverseCameraController {
         prioritySink.accept(true);
         CameraShellProtocol.ReverseOverlaySpec spec =
                 new CameraShellProtocol.ReverseOverlaySpec(requestId, loadLayout(settings),
-                        BlindSpotOverlayController.readCornerRadius(settings));
+                        BlindSpotOverlayController.readCornerRadius(settings),
+                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_REAR),
+                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_LEFT),
+                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_RIGHT));
         activeHelper.prepareReverseOverlayWindow(
                 spec, this::surfacesAvailable, () -> overlayPrepared(requestId));
         emit("reverse_camera_start", "request_id", requestId);
