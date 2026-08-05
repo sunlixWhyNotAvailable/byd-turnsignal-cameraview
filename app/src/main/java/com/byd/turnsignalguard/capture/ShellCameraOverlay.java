@@ -1,5 +1,6 @@
 package com.byd.turnsignalguard.capture;
 
+import android.annotation.SuppressLint;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -209,6 +210,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
         nextPreview.setAlpha(1.0f);
         nextPreview.setCallback(this);
+        nextPreview.setDewarpStatsSink(this::emitDewarpStats);
         nextPreview.applyDewarpConfig(spec.dewarp);
         nextPreview.applyDirectCameraCrop(spec.crop());
         nextRoot.addView(nextPreview, new FrameLayout.LayoutParams(
@@ -333,6 +335,28 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "surface_generation", surfaceGeneration);
     }
 
+    private void emitDewarpStats(CameraDewarpRenderer.Stats stats) {
+        emit("camera_dewarp_stats",
+                "camera_owner", CameraHelperMain.CAMERA_OWNER_OVERLAY,
+                "camera_id", cameraId,
+                "camera_profile", CameraProfile.of(cameraId).wireName,
+                "request_id", requestId,
+                "surface_generation", surfaceGeneration,
+                "visible", visible,
+                "interval_ms", stats.intervalMs,
+                "callbacks", stats.callbacks,
+                "completed_swaps", stats.completedSwaps,
+                "average_render_ms", stats.averageRenderMs,
+                "max_render_ms", stats.maxRenderMs,
+                "max_swap_ms", stats.maxSwapMs,
+                "max_callback_gap_ms", stats.maxCallbackGapMs,
+                "last_frame_age_ms", stats.lastFrameAgeMs,
+                "max_frame_age_ms", stats.maxFrameAgeMs,
+                "process_max_concurrent_renders", stats.processMaxConcurrentRenders,
+                "buffer_width", stats.bufferWidth,
+                "buffer_height", stats.bufferHeight);
+    }
+
     static boolean isFramePastStaleBuffer(int updatesAfterArm) {
         return updatesAfterArm >= 2;
     }
@@ -408,6 +432,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         return Math.round(value * valueContext.getResources().getDisplayMetrics().density);
     }
 
+    @SuppressLint("BlockedPrivateApi")
     static String setTrustedOverlay(WindowManager.LayoutParams value) throws Exception {
         try {
             Method method = WindowManager.LayoutParams.class

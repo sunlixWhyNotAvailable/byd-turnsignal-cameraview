@@ -1,6 +1,7 @@
 package com.byd.turnsignalguard.capture;
 
 import android.media.AudioAttributes;
+import android.os.IBinder;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -12,6 +13,7 @@ import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -96,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(49, BuildConfig.VERSION_CODE);
+        assertEquals(53, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -360,8 +362,8 @@ public final class AdbCoreTest {
     public void musicMetadataBridgeUsesGenericSourceAndLeavesOemPlayersAlone() {
         assertEquals(26, MusicMetadataRuntime.SOURCE_THIRD_PARTY);
         assertEquals(750, MusicMetadataRuntime.PUBLISH_DEBOUNCE_MS);
-        assertEquals(150, MusicMetadataRuntime.SESSION_REPAIR_DEBOUNCE_MS);
-        assertEquals(150, MusicMetadataRuntime.publishDelayMs("sessions_callback"));
+        assertEquals(750, MusicMetadataRuntime.SESSION_REPAIR_DEBOUNCE_MS);
+        assertEquals(750, MusicMetadataRuntime.publishDelayMs("sessions_callback"));
         assertEquals(750, MusicMetadataRuntime.publishDelayMs("metadata_callback"));
         assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.byd.mediacenter"));
         assertTrue(MusicMetadataRuntime.isOemManagedPackage("com.android.bluetooth"));
@@ -384,6 +386,21 @@ public final class AdbCoreTest {
                 "sessions_callback", true, "com.spotify.music", "com.spotify.music"));
         assertFalse(MusicMetadataRuntime.shouldRepairPublishedSource(
                 "playback_callback", true, "com.spotify.music", "com.spotify.music"));
+        assertTrue(MusicMetadataRuntime.shouldForceObserverRetry("configure"));
+        assertFalse(MusicMetadataRuntime.shouldForceObserverRetry("wake"));
+        assertTrue(MusicMetadataRuntime.shouldClaimSource(
+                MusicMetadataRuntime.shouldForceObserverRetry("configure"),
+                true, "com.spotify.music", "com.spotify.music"));
+        boolean backgroundRefresh = MusicMetadataRuntime.coalesceForce(
+                false, MusicMetadataRuntime.shouldForceObserverRetry("configure"));
+        backgroundRefresh = MusicMetadataRuntime.coalesceForce(backgroundRefresh, false);
+        assertTrue(MusicMetadataRuntime.shouldPublish(
+                backgroundRefresh, true, "same-track", "same-track"));
+        assertTrue(MusicMetadataRuntime.shouldClaimSource(
+                backgroundRefresh, true, "com.spotify.music", "com.spotify.music"));
+        backgroundRefresh = false;
+        assertFalse(MusicMetadataRuntime.shouldPublish(
+                backgroundRefresh, true, "same-track", "same-track"));
         assertTrue(MusicMetadataRuntime.shouldClaimSource(
                 true, true, "com.spotify.music", "com.spotify.music"));
         assertEquals(2, CameraProbeActivity.CAMERA_PREVIEW_READY_FRAME_UPDATES);
@@ -559,6 +576,31 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalGuardRuntime.speedAllowed(30.0f, 30));
         assertFalse(TurnSignalGuardRuntime.speedAllowed(30.01f, 30));
         assertFalse(TurnSignalGuardRuntime.speedAllowed(Float.NaN, 30));
+        assertFalse(TurnSignalGuardRuntime.pollFresh(1_000L, 0L));
+        assertFalse(TurnSignalGuardRuntime.pollFresh(1_000L, 1_001L));
+        assertTrue(TurnSignalGuardRuntime.pollFresh(1_000L, 750L));
+        assertFalse(TurnSignalGuardRuntime.pollFresh(1_001L, 750L));
+        assertEquals("payload_not_whitelisted",
+                TurnSignalGuardRuntime.manualPrecheckReason(-1, false, false, 1_000L, 900L));
+        assertEquals("command_already_pending",
+                TurnSignalGuardRuntime.manualPrecheckReason(0, true, false, 1_000L, 900L));
+        assertEquals("disable_guard_before_manual_command",
+                TurnSignalGuardRuntime.manualPrecheckReason(0, false, true, 1_000L, 900L));
+        assertEquals("stale_poll",
+                TurnSignalGuardRuntime.manualPrecheckReason(0, false, false, 1_001L, 750L));
+        assertEquals(null,
+                TurnSignalGuardRuntime.manualPrecheckReason(0, false, false, 1_000L, 750L));
+        assertEquals(null, TurnSignalGuardRuntime.manualTelemetryRejectionReason(
+                0, true, 0, 1, 0, 6));
+        assertEquals(null, TurnSignalGuardRuntime.manualTelemetryRejectionReason(
+                2, true, 0, 1, 0, 1));
+        assertEquals("requires_healthy_telemetry_P_and_safe_blink_state",
+                TurnSignalGuardRuntime.manualTelemetryRejectionReason(
+                        2, true, 0, 1, 0, 2));
+        assertEquals("requires_healthy_telemetry_P_and_safe_blink_state",
+                TurnSignalGuardRuntime.manualTelemetryRejectionReason(
+                        0, false, 0, 1, 0, 1));
+        assertEquals(871366669, TurnSignalGuardRuntime.turnSignalSetFidForTest());
         assertTrue(TurnSignalGuardRuntime.canRunSpeedLimitCleanup(
                 true, true, true, 1, 1));
         assertFalse(TurnSignalGuardRuntime.canRunSpeedLimitCleanup(
@@ -747,6 +789,116 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void dewarpStatsExposeBoundedAggregateUnits() {
+        CameraDewarpRenderer.Stats stats = new CameraDewarpRenderer.Stats(
+                2_000_000_000L,
+                12,
+                10,
+                20_000_000L,
+                5_000_000L,
+                9_000_000L,
+                7_000_000L,
+                11_000_000L,
+                13_000_000L,
+                2,
+                1920,
+                990);
+
+        assertEquals(2_000L, stats.intervalMs);
+        assertEquals(12, stats.callbacks);
+        assertEquals(10, stats.completedSwaps);
+        assertEquals(2.0d, stats.averageRenderMs, 0.001d);
+        assertEquals(5.0d, stats.maxRenderMs, 0.001d);
+        assertEquals(9.0d, stats.maxSwapMs, 0.001d);
+        assertEquals(7.0d, stats.maxCallbackGapMs, 0.001d);
+        assertEquals(11.0d, stats.lastFrameAgeMs, 0.001d);
+        assertEquals(13.0d, stats.maxFrameAgeMs, 0.001d);
+        assertEquals(2, stats.processMaxConcurrentRenders);
+        assertEquals(1920, stats.bufferWidth);
+        assertEquals(990, stats.bufferHeight);
+    }
+
+    @Test
+    public void staleCameraHelperDeathDoesNotMatchReplacementBinder() {
+        IBinder first = proxyBinder();
+        IBinder replacement = proxyBinder();
+        assertTrue(TurnSignalController.matchesExpectedCameraHelper(first, null));
+        assertTrue(TurnSignalController.matchesExpectedCameraHelper(first, first));
+        assertFalse(TurnSignalController.matchesExpectedCameraHelper(replacement, first));
+        assertTrue(TurnSignalController.matchesExpectedCameraHelper(
+                first, 2, first, 2));
+        assertFalse(TurnSignalController.matchesExpectedCameraHelper(
+                first, 3, first, 2));
+        assertFalse(TurnSignalController.matchesExpectedCameraHelper(
+                replacement, 2, first, 2));
+        assertTrue(TurnSignalController.isCurrentCameraShellEpoch(2, 2));
+        assertFalse(TurnSignalController.isCurrentCameraShellEpoch(2, 1));
+        assertFalse(TurnSignalController.isCurrentCameraShellEpoch(2, 0));
+        assertTrue(CameraHelperService.shouldReopenLog(true, false));
+        assertFalse(CameraHelperService.shouldReopenLog(true, true));
+        assertFalse(CameraHelperService.shouldReopenLog(false, false));
+    }
+
+    @Test
+    public void cameraOpenCallbacksMustMatchCurrentSession() {
+        assertTrue(BlindSpotOverlayController.matchesCameraOpenEvent(true, 7, 7));
+        assertFalse(BlindSpotOverlayController.matchesCameraOpenEvent(false, 7, 7));
+        assertFalse(BlindSpotOverlayController.matchesCameraOpenEvent(true, 8, 7));
+        assertFalse(BlindSpotOverlayController.matchesCameraOpenEvent(true, 0, 0));
+
+        assertTrue(ReverseCameraController.matchesCameraOpenEvent(9, 9));
+        assertFalse(ReverseCameraController.matchesCameraOpenEvent(10, 9));
+        assertFalse(ReverseCameraController.matchesCameraOpenEvent(0, 0));
+
+        assertTrue(CameraProbeActivity.shouldRecoverActivityCamera(true, false, false));
+        assertTrue(CameraProbeActivity.shouldRecoverActivityCamera(false, true, false));
+        assertTrue(CameraProbeActivity.shouldRecoverActivityCamera(false, false, true));
+        assertFalse(CameraProbeActivity.shouldRecoverActivityCamera(false, false, false));
+        assertTrue(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, true, true));
+        assertFalse(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, false, true));
+        assertFalse(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, true, false));
+        assertTrue(CameraProbeActivity.isCurrentActivityCameraEvent(
+                true, 12, 12, "helper"));
+        assertFalse(CameraProbeActivity.isCurrentActivityCameraEvent(
+                true, 13, 12, "helper"));
+        assertFalse(CameraProbeActivity.isCurrentActivityCameraEvent(
+                true, 12, 12, "camera_shell_helper"));
+        assertFalse(CameraProbeActivity.isCurrentActivityCameraEvent(
+                false, 12, 12, "helper"));
+        assertTrue(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(0, -1));
+        assertTrue(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, 14));
+        assertFalse(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, 13));
+        assertFalse(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, -1));
+        assertTrue(CameraHelperMain.HelperBinder.matchesPendingCameraRequest(21, 21));
+        assertFalse(CameraHelperMain.HelperBinder.matchesPendingCameraRequest(22, 21));
+        assertTrue(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                true, 31, 0, 31));
+        assertTrue(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                true, 0, 32, 32));
+        assertFalse(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                true, 34, 33, 33));
+        assertTrue(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                true, 34, 33, 34));
+        assertFalse(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                true, 33, 0, 32));
+        assertFalse(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
+                false, 33, 33, 33));
+        assertTrue(TurnSignalController.shouldQueueCameraRecovery(false, false));
+        assertFalse(TurnSignalController.shouldQueueCameraRecovery(false, true));
+        assertFalse(TurnSignalController.shouldQueueCameraRecovery(true, false));
+    }
+
+    private static IBinder proxyBinder() {
+        return (IBinder) Proxy.newProxyInstance(
+                AdbCoreTest.class.getClassLoader(), new Class<?>[]{IBinder.class},
+                (proxy, method, args) -> {
+                    if (method.getReturnType() == boolean.class) return false;
+                    if (method.getReturnType() == int.class) return 0;
+                    return null;
+                });
+    }
+
+    @Test
     public void directCameraCropKeepsFourThreeAndSourceBounds() {
         DirectCameraCrop left = DirectCameraCrop.defaultFor(false);
         DirectCameraCrop right = DirectCameraCrop.defaultFor(true);
@@ -916,7 +1068,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(14, CameraShellProtocol.VERSION);
+        assertEquals(16, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -1019,6 +1171,91 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void cameraCacheAppliesOnlyStockRearSideDewarpBlocks() throws Exception {
+        assertFalse(CameraProbeActivity.shouldUseStockDewarp(false, false));
+        assertFalse(CameraProbeActivity.shouldUseStockDewarp(false, true));
+        assertTrue(CameraProbeActivity.shouldUseStockDewarp(true, true));
+
+        Path config = Files.createTempFile("SViewConfig_1300", ".json");
+        String stock = "        , {#left back tire\n"
+                + "        \"NAME\" : \"AREA_ID_2D_LEFT_BACK\",\n"
+                + "        \"TYPE\" : \"SINGLE_CAM_TETHERED_REAR\",\n"
+                + "        \"INPUT_CAM_IDX\" : 1,\n"
+                + "        \"FOV\" : 100,\n"
+                + "        }\n"
+                + "        , {#right back tire\n"
+                + "        \"NAME\" : \"AREA_ID_2D_RIGHT_BACK\",\n"
+                + "        \"TYPE\" : \"SINGLE_CAM_TETHERED_REAR\",\n"
+                + "        \"INPUT_CAM_IDX\" : 3,\n"
+                + "        \"FOV\" : 100,\n"
+                + "        }\n"
+                + "        , {\n"
+                + "        \"NAME\" : \"AREA_ID_RESERVED_VIEW1\",\n"
+                + "        \"TYPE\" : \"INPUT_CAM_CROPPED\",\n"
+                + "        \"DEWARP_STRENGTH\" : 1,\n"
+                + "        \"INPUT_CAM_IDX\" : 1,\n"
+                + "        }";
+        Files.write(config, stock.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        assertFalse(StockAvmPreview.isRearSideDewarpEnabled(config.toFile()));
+        assertFalse(StockAvmPreview.configureRearSideDewarp(config.toFile(), false));
+        assertEquals(stock, new String(Files.readAllBytes(config),
+                java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(StockAvmPreview.configureRearSideDewarp(config.toFile(), true));
+        String expected = stock
+                .replace("        \"TYPE\" : \"SINGLE_CAM_TETHERED_REAR\",\n",
+                        "        \"TYPE\" : \"INPUT_CAM_CROPPED\",\n"
+                                + "        \"DEWARP_STRENGTH\" : 1,\n");
+        assertEquals(expected, new String(Files.readAllBytes(config),
+                java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(StockAvmPreview.isRearSideDewarpEnabled(config.toFile()));
+        assertFalse(StockAvmPreview.configureRearSideDewarp(config.toFile(), true));
+
+        String stockTypeLine = "        \"TYPE\" : \"SINGLE_CAM_TETHERED_REAR\",\n";
+        String dewarpTypeLine = "        \"TYPE\" : \"INPUT_CAM_CROPPED\",\n"
+                + "        \"DEWARP_STRENGTH\" : 1,\n";
+        int firstType = stock.indexOf(stockTypeLine);
+        String partial = stock.substring(0, firstType) + dewarpTypeLine
+                + stock.substring(firstType + stockTypeLine.length());
+        Files.write(config, partial.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThrows(IllegalStateException.class,
+                () -> StockAvmPreview.isRearSideDewarpEnabled(config.toFile()));
+
+        Files.write(config, stock.replace("\"INPUT_CAM_IDX\" : 3",
+                "\"INPUT_CAM_IDX\" : 2").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThrows(IllegalStateException.class,
+                () -> StockAvmPreview.configureRearSideDewarp(config.toFile(), true));
+        Files.write(config, stock.replace(
+                "        , {#right back tire\n"
+                        + "        \"NAME\" : \"AREA_ID_2D_RIGHT_BACK\",\n"
+                        + "        \"TYPE\" : \"SINGLE_CAM_TETHERED_REAR\",\n"
+                        + "        \"INPUT_CAM_IDX\" : 3,\n"
+                        + "        \"FOV\" : 100,\n"
+                        + "        }\n", "").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThrows(IllegalStateException.class,
+                () -> StockAvmPreview.configureRearSideDewarp(config.toFile(), true));
+        Files.write(config, (stock + stock.substring(
+                stock.indexOf("        , {#left back tire"),
+                stock.indexOf("        , {#right back tire")))
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThrows(IllegalStateException.class,
+                () -> StockAvmPreview.configureRearSideDewarp(config.toFile(), true));
+        config.toFile().deleteOnExit();
+
+        Path cache = Files.createTempDirectory("stock-avm-cache");
+        Path standard = cache.resolve("SViewConfig_1300.json");
+        Path ceps = cache.resolve("CEPS_SViewConfig_1300.json");
+        Path unrelated = cache.resolve("Vehicle_Configuration.json");
+        Files.write(standard, stock.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Files.write(ceps, stock.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Files.write(unrelated, "keep".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(2, StockAvmPreview.resetCachedViewConfigs(cache.toFile(), 1300));
+        assertFalse(Files.exists(standard));
+        assertFalse(Files.exists(ceps));
+        assertTrue(Files.exists(unrelated));
+    }
+
+    @Test
     public void cameraCacheBuildsRearClairvoyanceFromRearSideAreas() throws Exception {
         Path config = Files.createTempFile("Vehicle_Configuration", ".json");
         String stock = "\"VIEW_2D_LEFT_CLAIRVOYANCE\": "
@@ -1079,6 +1316,27 @@ public final class AdbCoreTest {
         assertEquals(0.5f, layout.rear.destination.height, 0.0001f);
         assertEquals(0.5f, layout.rearLeft.destination.top, 0.0001f);
         assertEquals(0.5f, layout.rearRight.destination.left, 0.0001f);
+        ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
+                layout.rear.sourceCrop, 1920, 540,
+                ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT);
+        assertEquals(561, fitted.left);
+        assertEquals(0, fitted.top);
+        assertEquals(798, fitted.width);
+        assertEquals(540, fitted.height);
+        assertEquals(1920.0f / 1300.0f,
+                (float) fitted.width / fitted.height, 0.002f);
+        ReverseCameraLayout.PixelRect partial = ReverseCameraLayout.fitSourceCrop(
+                ReverseCameraLayout.sourceCrop(0.2f, 0.1f, 0.4f, 0.7f),
+                960, 540,
+                ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT);
+        assertEquals(252, partial.left);
+        assertEquals(0, partial.top);
+        assertEquals(456, partial.width);
+        assertEquals(540, partial.height);
+        assertEquals(0.4f * 1920.0f / (0.7f * 1300.0f),
+                (float) partial.width / partial.height, 0.002f);
         assertEquals(1, layout.rear.cameraIndex);
         assertEquals(2, layout.rearLeft.cameraIndex);
         assertEquals(3, layout.rearRight.cameraIndex);
@@ -1108,6 +1366,47 @@ public final class AdbCoreTest {
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         assertEquals(1, layout.rearLeft.zOrder);
         assertEquals(2, layout.rearRight.zOrder);
+    }
+
+    @Test
+    public void activityPreviewSurvivesReversePriorityThenReattaches() {
+        CameraHelperMain.HelperBinder.ActivityPreviewState<String> preview =
+                new CameraHelperMain.HelperBinder.ActivityPreviewState<>();
+        preview.set("surface", 2, true);
+        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> reverseEntry =
+                preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
+                        preview.has(), CameraHelperMain.CAMERA_OWNER_REVERSE));
+        assertEquals("surface", reverseEntry.value);
+        assertTrue(reverseEntry.attached);
+        assertFalse(reverseEntry.release);
+        assertTrue(preview.has());
+        assertFalse(preview.attached());
+        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_REVERSE, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> reverseExit =
+                preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
+                        preview.has(), CameraHelperMain.CAMERA_OWNER_REVERSE));
+        assertFalse(reverseExit.attached);
+        assertFalse(reverseExit.release);
+        assertTrue(preview.has());
+        preview.setAttached(true);
+        assertTrue(preview.attached());
+        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
+                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
+        CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> activityClose =
+                preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
+                        preview.has(), CameraHelperMain.CAMERA_OWNER_ACTIVITY));
+        assertTrue(activityClose.attached);
+        assertTrue(activityClose.release);
+        assertFalse(preview.has());
+        CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> repeatedClose =
+                preview.close(false);
+        assertFalse(repeatedClose.release);
     }
 
     private static byte[] collectorReferenceEncoding(RSAPublicKey key) {

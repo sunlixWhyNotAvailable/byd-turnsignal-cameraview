@@ -75,22 +75,24 @@ final class CameraHelperMain {
         private int previewIndex;
         private Surface[] multiSurfaces = new Surface[0];
         private int[] multiPreviewIndexes = new int[0];
-        private Surface activityPreviewSurface;
-        private int activityPreviewIndex = -1;
-        private boolean activityPreviewAttached;
+        private final ActivityPreviewState<Surface> activityPreview =
+                new ActivityPreviewState<>();
         private String viewName;
         private int activeCameraId = -1;
         private String activeCameraTag = "none";
         private String activeCameraOwner = "none";
+        private int activeCameraRequestId;
         private boolean stockCameraRequested;
+        private int pendingStockCameraRequestId;
         private Surface[] pendingReversePreviewSurfaces = new Surface[0];
+        private int pendingReversePreviewRequestId;
 
         HelperBinder(Context context, Consumer<String> logSink) {
             this.logSink = logSink;
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             migrateLegacyCounters(context);
             turnController = new TurnSignalController(
-                    context, mainHandler, this::acceptShellEvent, this::emit);
+                    context, mainHandler, this::acceptShellEvent, this::acceptControllerEvent);
         }
 
         void startGuardRuntime() {
@@ -136,7 +138,10 @@ final class CameraHelperMain {
                     Surface requestedSurface = Surface.CREATOR.createFromParcel(data);
                     int requestedIndex = data.readInt();
                     String requestedView = data.readString();
-                    String result = openCamera(requestedSurface, requestedIndex, requestedView);
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
+                    String result = openCamera(
+                            requestedSurface, requestedIndex, requestedView, requestId);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -184,7 +189,11 @@ final class CameraHelperMain {
                     Surface requestedSurface = Surface.CREATOR.createFromParcel(data);
                     int viewpoint = data.readInt();
                     boolean horizontal = data.readInt() != 0;
-                    String result = openStockAvm(requestedSurface, viewpoint, horizontal);
+                    boolean stockDewarp = data.readInt() != 0;
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
+                    String result = openStockAvm(
+                            requestedSurface, viewpoint, horizontal, stockDewarp, requestId);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -193,15 +202,19 @@ final class CameraHelperMain {
                     Surface requestedSurface = Surface.CREATOR.createFromParcel(data);
                     String requestedTag = data.readString();
                     int requestedIndex = data.readInt();
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
                     String result = openDirectCamera(
-                            requestedSurface, requestedTag, requestedIndex);
+                            requestedSurface, requestedTag, requestedIndex, requestId);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
                 }
                 if (code == TX_OPEN_REVERSE_PREVIEW) {
                     Surface[] requestedSurfaces = readReverseSurfaces(data);
-                    String result = openReversePreview(requestedSurfaces);
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
+                    String result = openReversePreview(requestedSurfaces, requestId);
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -281,9 +294,10 @@ final class CameraHelperMain {
             emit("helper_client_disconnected", "guard_kept_running", true);
         }
 
-        private String openCamera(Surface requestedSurface, int requestedIndex, String requestedView) {
+        private String openCamera(
+                Surface requestedSurface, int requestedIndex, String requestedView, int requestId) {
             return openCamera(requestedSurface, requestedIndex, requestedView, true, false,
-                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY);
+                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY, requestId);
         }
 
         private synchronized String openCamera(
@@ -294,7 +308,8 @@ final class CameraHelperMain {
                 boolean stockInput,
                 int requestedCameraId,
                 String requestedCameraTag,
-                String requestedCameraOwner) {
+                String requestedCameraOwner,
+                int requestId) {
             if (requestedIndex < 0 || requestedIndex > 4) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Preview index must be 0..4");
@@ -307,7 +322,12 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 emit("camera_open_rejected", "reason", "reverse_owner_active",
                         "requested_owner", requestedCameraOwner,
-                        "active_owner", activeCameraOwner);
+                        "active_owner", activeCameraOwner,
+                        "request_id", requestId);
+                emit("camera_error", "stage", "owner_busy",
+                        "camera_owner", requestedCameraOwner,
+                        "request_id", requestId,
+                        "error", "reverse camera owns AVM");
                 return result("camera_busy", "reverse camera owns AVM",
                         requestedCameraId, requestedCameraTag);
             }
@@ -316,7 +336,8 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 String error = discoveryError == null ? "Camera was not discovered" : discoveryError;
                 emit("camera_error", "stage", "discovery",
-                        "camera_owner", requestedCameraOwner, "error", error);
+                        "camera_owner", requestedCameraOwner,
+                        "request_id", requestId, "error", error);
                 return result("camera_error", error, requestedCameraId, requestedCameraTag);
             }
 
@@ -349,12 +370,15 @@ final class CameraHelperMain {
                 activeCameraId = requestedCameraId;
                 activeCameraTag = requestedCameraTag;
                 activeCameraOwner = requestedCameraOwner;
+                activeCameraRequestId = requestId;
                 if (!stockInput) {
                     viewName = requestedView == null ? "unknown" : requestedView;
                 }
                 emit("camera_opened", "camera_id", requestedCameraId,
                         "camera_tag", requestedCameraTag,
                         "camera_owner", requestedCameraOwner,
+                        "request_id", requestId,
+                        "renderer", stockInput ? "stock_avm_shell" : "direct_avm",
                         "view", viewName, "preview_index", previewIndex,
                         "input_for_stock_avm", stockInput,
                         "add_surface", added, "set_surface", set, "start_preview", started);
@@ -372,6 +396,7 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", "open", "camera_id", requestedCameraId,
                         "camera_tag", requestedCameraTag, "view", requestedView,
                         "camera_owner", requestedCameraOwner,
+                        "request_id", requestId,
                         "preview_index", requestedIndex, "error", message);
                 return result("camera_error", message,
                         requestedCameraId, requestedCameraTag);
@@ -379,19 +404,27 @@ final class CameraHelperMain {
         }
 
         String openDirectCamera(
-                Surface requestedSurface, String requestedTag, int requestedIndex) {
+                Surface requestedSurface, String requestedTag, int requestedIndex,
+                int requestId) {
             return openDirectCamera(
-                    requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_ACTIVITY);
+                    requestedSurface, requestedTag, requestedIndex,
+                    CAMERA_OWNER_ACTIVITY, requestId);
         }
 
         String openOverlayDirectCamera(
                 Surface requestedSurface, String requestedTag, int requestedIndex) {
             return openDirectCamera(
-                    requestedSurface, requestedTag, requestedIndex, CAMERA_OWNER_OVERLAY);
+                    requestedSurface, requestedTag, requestedIndex,
+                    CAMERA_OWNER_OVERLAY, 0);
         }
 
         String openOverlayDirectCameras(
-                Surface[] requestedSurfaces, int[] requestedIndexes, int[] cameraIds) {
+                Surface[] requestedSurfaces, int[] requestedIndexes, int[] cameraIds,
+                int requestId) {
+            if (requestId <= 0) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("overlay request id required");
+            }
             if (cameraIds == null || requestedIndexes == null
                     || cameraIds.length != requestedIndexes.length) {
                 releaseSurfaces(requestedSurfaces);
@@ -405,14 +438,18 @@ final class CameraHelperMain {
                 }
             }
             return openMultiCamera(requestedSurfaces, requestedIndexes, cameraIds,
-                    CAMERA_OWNER_OVERLAY, "side_camera_overlays", "overlay_open");
+                    CAMERA_OWNER_OVERLAY, "side_camera_overlays", "overlay_open", requestId);
         }
 
-        String openReverseCamera(Surface[] requestedSurfaces) {
-            return openReverseCamera(requestedSurfaces, CAMERA_OWNER_REVERSE);
+        String openReverseCamera(Surface[] requestedSurfaces, int requestId) {
+            if (requestId <= 0) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("reverse request id required");
+            }
+            return openReverseCamera(requestedSurfaces, CAMERA_OWNER_REVERSE, requestId);
         }
 
-        private String openReversePreview(Surface[] requestedSurfaces) {
+        private String openReversePreview(Surface[] requestedSurfaces, int requestId) {
             if (requestedSurfaces == null || requestedSurfaces.length != 4) {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("Pano base plus three reverse Surfaces required");
@@ -422,22 +459,44 @@ final class CameraHelperMain {
             if (camera != null && !canReplaceCamera(CAMERA_OWNER_ACTIVITY)) {
                 panoOutput.release();
                 releaseSurfaces(directSurfaces);
+                emit("camera_error", "stage", "reverse_preview_owner_busy",
+                        "camera_tag", "pano_h", "camera_owner", CAMERA_OWNER_ACTIVITY,
+                        "request_id", requestId,
+                        "error", "reverse camera owns AVM");
                 return result("camera_busy", "reverse camera owns AVM", -1, "pano_h");
             }
             closeCamera("replace_with_reverse_preview");
             pendingReversePreviewSurfaces = directSurfaces;
+            pendingReversePreviewRequestId = requestId;
+            pendingStockCameraRequestId = requestId;
             stockCameraRequested = true;
             viewName = "reverse_preview_with_stock_base";
             turnController.openStockAvm(panoOutput, StockAvmPreview.horizontalViewpoint(3), true,
-                    this::attachReversePreviewInputSurface);
+                    false, requestId,
+                    inputSurface -> attachReversePreviewInputSurface(inputSurface, requestId));
             emit("camera_shell_request", "action", "open_reverse_preview_base",
-                    "view", "VIEW_2D_REAR", "preview_indexes", "[0, 1, 2, 3]");
+                    "view", "VIEW_2D_REAR", "request_id", requestId,
+                    "preview_indexes", "[0, 1, 2, 3]");
             return result("reverse_preview_shell_open_queued", null);
         }
 
-        private synchronized void attachReversePreviewInputSurface(Surface inputSurface) {
+        private synchronized void attachReversePreviewInputSurface(
+                Surface inputSurface, int callbackRequestId) {
+            if (!matchesPendingCameraRequest(
+                    pendingReversePreviewRequestId, callbackRequestId)
+                    || !matchesPendingCameraRequest(
+                            pendingStockCameraRequestId, callbackRequestId)) {
+                inputSurface.release();
+                emit("camera_input_surface_ignored", "view", "reverse_preview_with_stock_base",
+                        "request_id", callbackRequestId,
+                        "pending_request_id", pendingReversePreviewRequestId);
+                return;
+            }
             Surface[] direct = pendingReversePreviewSurfaces;
             pendingReversePreviewSurfaces = new Surface[0];
+            int requestId = callbackRequestId;
+            pendingReversePreviewRequestId = 0;
+            pendingStockCameraRequestId = 0;
             if (!stockCameraRequested || direct.length != 3) {
                 inputSurface.release();
                 releaseSurfaces(direct);
@@ -446,35 +505,43 @@ final class CameraHelperMain {
             Surface[] combined = {inputSurface, direct[0], direct[1], direct[2]};
             String openResult = openMultiCamera(combined, new int[]{0, 1, 2, 3}, null,
                     CAMERA_OWNER_ACTIVITY, "reverse_preview_with_stock_base",
-                    "reverse_preview_open", false);
+                    "reverse_preview_open", false, requestId);
             emit("camera_input_surface_attached", "view", viewName,
                     "result", openResult, "preview_indexes", "[0, 1, 2, 3]");
             if (openResult.contains("camera_error") || openResult.contains("camera_busy")) {
                 stockCameraRequested = false;
-                turnController.closeStockAvm("reverse_preview_direct_open_failed");
+                turnController.closeStockAvm("reverse_preview_direct_open_failed", requestId);
             }
         }
 
         private synchronized String openReverseCamera(
-                Surface[] requestedSurfaces, String requestedOwner) {
+                Surface[] requestedSurfaces, String requestedOwner, int requestId) {
             return openMultiCamera(requestedSurfaces, new int[]{1, 2, 3}, null,
                     requestedOwner,
                     CAMERA_OWNER_REVERSE.equals(requestedOwner)
                             ? "reverse_overlay" : "reverse_preview",
-                    "reverse_open");
+                    "reverse_open", requestId);
         }
 
         private synchronized String openMultiCamera(
                 Surface[] requestedSurfaces, int[] indexes, int[] profileIds,
                 String requestedOwner, String requestedView, String errorStage) {
             return openMultiCamera(requestedSurfaces, indexes, profileIds,
-                    requestedOwner, requestedView, errorStage, true);
+                    requestedOwner, requestedView, errorStage, true, 0);
         }
 
         private synchronized String openMultiCamera(
                 Surface[] requestedSurfaces, int[] indexes, int[] profileIds,
                 String requestedOwner, String requestedView, String errorStage,
-                boolean closeExisting) {
+                int requestId) {
+            return openMultiCamera(requestedSurfaces, indexes, profileIds,
+                    requestedOwner, requestedView, errorStage, true, requestId);
+        }
+
+        private synchronized String openMultiCamera(
+                Surface[] requestedSurfaces, int[] indexes, int[] profileIds,
+                String requestedOwner, String requestedView, String errorStage,
+                boolean closeExisting, int requestId) {
             if (requestedSurfaces == null || requestedSurfaces.length != indexes.length) {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("camera Surface/index count mismatch");
@@ -489,7 +556,12 @@ final class CameraHelperMain {
                 releaseSurfaces(requestedSurfaces);
                 emit("camera_open_rejected", "reason", "reverse_owner_active",
                         "requested_owner", requestedOwner,
-                        "active_owner", activeCameraOwner);
+                        "active_owner", activeCameraOwner,
+                        "request_id", requestId);
+                emit("camera_error", "stage", errorStage + "_owner_busy",
+                        "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "request_id", requestId,
+                        "error", "reverse camera owns AVM");
                 return result("camera_busy", "reverse camera owns AVM", -1, "pano_h");
             }
             if (!closeExisting && camera != null) {
@@ -498,8 +570,8 @@ final class CameraHelperMain {
             }
             if (closeExisting) {
                 closeCamera("replace_with_multi_preview",
-                        CAMERA_OWNER_OVERLAY.equals(requestedOwner)
-                                && activityPreviewSurface != null);
+                        shouldPreserveActivityPreview(
+                                activityPreview.has(), requestedOwner));
             }
 
             int requestedCameraId;
@@ -512,6 +584,7 @@ final class CameraHelperMain {
                 String message = summary(error);
                 emit("camera_error", "stage", errorStage + "_discovery",
                         "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "error", message);
                 return result("camera_error", message, -1, "pano_h");
             }
@@ -520,6 +593,7 @@ final class CameraHelperMain {
                 String message = "Camera tag is unavailable: pano_h";
                 emit("camera_error", "stage", errorStage + "_discovery",
                         "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, "pano_h");
             }
@@ -548,17 +622,17 @@ final class CameraHelperMain {
                     }
                 }
                 if (CAMERA_OWNER_OVERLAY.equals(requestedOwner)
-                        && activityPreviewSurface != null) {
-                    if (!activityPreviewSurface.isValid()) {
+                        && activityPreview.has()) {
+                    if (!activityPreview.value().isValid()) {
                         releaseActivityPreview();
                     } else {
                         activityAttached = invokeBoolean(avm, opened, "addPreviewSurface",
                                 new Class<?>[]{Surface.class, int.class},
-                                activityPreviewSurface, activityPreviewIndex);
+                                activityPreview.value(), activityPreview.index());
                         if (!activityAttached) {
                             throw new IllegalStateException(
                                     "addPreviewSurface returned false for Activity index "
-                                            + activityPreviewIndex);
+                                            + activityPreview.index());
                         }
                     }
                 }
@@ -573,10 +647,12 @@ final class CameraHelperMain {
                 activeCameraId = requestedCameraId;
                 activeCameraTag = "pano_h";
                 activeCameraOwner = requestedOwner;
+                activeCameraRequestId = requestId;
                 viewName = requestedView;
-                activityPreviewAttached = activityAttached;
+                activityPreview.setAttached(activityAttached);
                 emit("camera_opened", "camera_id", requestedCameraId,
                         "camera_tag", "pano_h", "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "view", viewName,
                         "camera_profiles", profileIds == null
                                 ? "[]" : Arrays.toString(profileIds),
@@ -586,17 +662,17 @@ final class CameraHelperMain {
                     emit("camera_preview_attached", "camera_owner", CAMERA_OWNER_ACTIVITY,
                             "producer_owner", requestedOwner,
                             "camera_tag", "pano_h",
-                            "preview_index", activityPreviewIndex,
+                            "preview_index", activityPreview.index(),
                             "path", "atomic_multi_surface");
                 }
                 return result("camera_opened", null, requestedCameraId, "pano_h");
             } catch (Throwable error) {
                 if (opened != null) {
                     try {
-                        if (activityAttached && activityPreviewSurface != null) {
+                        if (activityAttached && activityPreview.has()) {
                             invokeBoolean(opened.getClass(), opened, "rmPreviewSurface",
                                     new Class<?>[]{Surface.class, int.class},
-                                    activityPreviewSurface, activityPreviewIndex);
+                                    activityPreview.value(), activityPreview.index());
                         }
                         tryClose(opened, requestedSurfaces, indexes, attached);
                     } catch (Throwable closeError) {
@@ -609,6 +685,7 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", errorStage,
                         "camera_id", requestedCameraId, "camera_tag", "pano_h",
                         "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "camera_profiles", profileIds == null
                                 ? "[]" : Arrays.toString(profileIds),
                         "preview_indexes", Arrays.toString(indexes),
@@ -681,7 +758,8 @@ final class CameraHelperMain {
                 Surface requestedSurface,
                 String requestedTag,
                 int requestedIndex,
-                String requestedOwner) {
+                String requestedOwner,
+                int requestId) {
             if (!isAllowedDirectCameraTag(requestedTag)) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Camera tag is not allowed: " + requestedTag);
@@ -689,7 +767,7 @@ final class CameraHelperMain {
             if (canAttachActivityPreview(
                     camera != null, activeCameraOwner, activeCameraTag,
                     requestedOwner, requestedTag)) {
-                return attachActivityPreview(requestedSurface, requestedIndex);
+                return attachActivityPreview(requestedSurface, requestedIndex, requestId);
             }
             int requestedCameraId;
             try {
@@ -702,6 +780,7 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", "direct_discovery",
                         "camera_tag", requestedTag, "preview_index", requestedIndex,
                         "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "error", message);
                 return result("camera_error", message, -1, requestedTag);
             }
@@ -711,20 +790,34 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", "direct_discovery",
                         "camera_tag", requestedTag, "preview_index", requestedIndex,
                         "camera_owner", requestedOwner,
+                        "request_id", requestId,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, requestedTag);
             }
             return openCamera(requestedSurface, requestedIndex,
                     "direct_" + requestedTag + "_index_" + requestedIndex,
-                    true, false, requestedCameraId, requestedTag, requestedOwner);
+                    true, false, requestedCameraId, requestedTag, requestedOwner, requestId);
         }
 
         synchronized String openStockAvm(Surface requestedSurface, int viewpoint) {
-            return openStockAvm(requestedSurface, viewpoint, true);
+            return openStockAvm(requestedSurface, viewpoint, true, false);
         }
 
         synchronized String openStockAvm(
                 Surface requestedSurface, int viewpoint, boolean horizontal) {
+            return openStockAvm(requestedSurface, viewpoint, horizontal, false);
+        }
+
+        synchronized String openStockAvm(
+                Surface requestedSurface, int viewpoint, boolean horizontal,
+                boolean stockDewarp) {
+            return openStockAvm(
+                    requestedSurface, viewpoint, horizontal, stockDewarp, 0);
+        }
+
+        synchronized String openStockAvm(
+                Surface requestedSurface, int viewpoint, boolean horizontal,
+                boolean stockDewarp, int requestId) {
             if (!StockAvmPreview.isAllowedViewpoint(viewpoint)) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Unsupported stock AVM viewpoint: " + viewpoint);
@@ -743,29 +836,49 @@ final class CameraHelperMain {
             }
             String requestedView = StockAvmPreview.viewName(viewpoint);
             stockCameraRequested = true;
+            pendingStockCameraRequestId = requestId;
             viewName = requestedView;
             previewIndex = -1;
-            turnController.openStockAvm(requestedSurface, viewpoint, horizontal,
-                    this::attachStockAvmInputSurface);
+            turnController.openStockAvm(requestedSurface, viewpoint, horizontal, stockDewarp,
+                    requestId, inputSurface -> attachStockAvmInputSurface(inputSurface, requestId));
             emit("camera_shell_request", "action", "open", "view", requestedView,
                     "viewpoint", viewpoint, "orientation",
-                    horizontal ? "horizontal" : "vertical");
+                    horizontal ? "horizontal" : "vertical",
+                    "dewarp", stockDewarp, "request_id", requestId);
             return result("stock_avm_shell_open_queued", null);
         }
 
-        private synchronized void attachStockAvmInputSurface(Surface inputSurface) {
-            if (!stockCameraRequested) {
+        private synchronized void attachStockAvmInputSurface(
+                Surface inputSurface, int callbackRequestId) {
+            if (!stockCameraRequested
+                    || !matchesPendingCameraRequest(
+                            pendingStockCameraRequestId, callbackRequestId)) {
                 inputSurface.release();
+                emit("camera_input_surface_ignored", "view", viewName,
+                        "request_id", callbackRequestId,
+                        "pending_request_id", pendingStockCameraRequestId);
                 return;
             }
+            int requestId = callbackRequestId;
+            pendingStockCameraRequestId = 0;
             if (camera != null) {
                 inputSurface.release();
-                emit("camera_input_surface_reused", "view", viewName);
+                activeCameraRequestId = requestId;
+                emit("camera_input_surface_reused", "view", viewName,
+                        "request_id", requestId);
+                emit("camera_opened", "camera_id", activeCameraId,
+                        "camera_tag", activeCameraTag,
+                        "camera_owner", activeCameraOwner,
+                        "request_id", requestId,
+                        "view", viewName,
+                        "renderer", "stock_avm_shell",
+                        "preview_index", previewIndex,
+                        "reused", true);
                 return;
             }
             String attachResult = openCamera(
                     inputSurface, 0, "stock_avm_input", false, true,
-                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY);
+                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY, requestId);
             emit("camera_input_surface_attached", "view", viewName,
                     "result", attachResult);
         }
@@ -777,36 +890,39 @@ final class CameraHelperMain {
         private synchronized String closeCamera(
                 String reason, boolean preserveActivityPreview) {
             boolean closeStock = stockCameraRequested;
+            int stockRequestId = pendingStockCameraRequestId > 0
+                    ? pendingStockCameraRequestId : activeCameraRequestId;
             String activeView = viewName == null ? "unknown" : viewName;
             stockCameraRequested = false;
+            pendingStockCameraRequestId = 0;
             Surface[] pendingReverseSurfaces = pendingReversePreviewSurfaces;
             pendingReversePreviewSurfaces = new Surface[0];
+            pendingReversePreviewRequestId = 0;
             Object activeCamera = camera;
             Surface activeSurface = surface;
             int activeIndex = previewIndex;
             Surface[] activeMultiSurfaces = multiSurfaces;
             int[] activeMultiIndexes = multiPreviewIndexes;
-            Surface activeActivitySurface = activityPreviewSurface;
-            int activeActivityIndex = activityPreviewIndex;
-            boolean activeActivityAttached = activityPreviewAttached;
+            ActivityPreviewState.Snapshot<Surface> activeActivityPreview =
+                    activityPreview.close(preserveActivityPreview);
+            Surface activeActivitySurface = activeActivityPreview.value;
+            int activeActivityIndex = activeActivityPreview.index;
+            boolean activeActivityAttached = activeActivityPreview.attached;
             int closedCameraId = activeCameraId;
             String closedCameraTag = activeCameraTag;
             String closedCameraOwner = activeCameraOwner;
+            int closedRequestId = activeCameraRequestId;
             camera = null;
             eventCallback = null;
             surface = null;
             previewIndex = 0;
             multiSurfaces = new Surface[0];
             multiPreviewIndexes = new int[0];
-            activityPreviewAttached = false;
-            if (!preserveActivityPreview) {
-                activityPreviewSurface = null;
-                activityPreviewIndex = -1;
-            }
             viewName = null;
             activeCameraId = -1;
             activeCameraTag = "none";
             activeCameraOwner = "none";
+            activeCameraRequestId = 0;
             String error = null;
             releaseSurfaces(pendingReverseSurfaces);
             if (activeCamera != null) {
@@ -837,7 +953,7 @@ final class CameraHelperMain {
                 } finally {
                     if (activeSurface != null) activeSurface.release();
                     releaseSurfaces(activeMultiSurfaces);
-                    if (!preserveActivityPreview && activeActivitySurface != null) {
+                    if (activeActivityPreview.release && activeActivitySurface != null) {
                         activeActivitySurface.release();
                     }
                 }
@@ -847,16 +963,18 @@ final class CameraHelperMain {
                         "preview_indexes", Arrays.toString(activeMultiIndexes),
                         "camera_id", closedCameraId, "camera_tag", closedCameraTag,
                         "camera_owner", closedCameraOwner,
+                        "request_id", closedRequestId,
                         "error", error == null ? "" : error);
             }
             if (activeCamera == null
-                    && !preserveActivityPreview && activeActivitySurface != null) {
+                    && activeActivityPreview.release && activeActivitySurface != null) {
                 activeActivitySurface.release();
             }
             if (closeStock) {
-                turnController.closeStockAvm(reason);
+                turnController.closeStockAvm(reason, stockRequestId);
                 emit("camera_shell_request", "action", "close", "view", activeView,
-                        "reason", reason == null ? "unknown" : reason);
+                        "reason", reason == null ? "unknown" : reason,
+                        "request_id", stockRequestId);
                 return result("stock_avm_shell_close_queued", error);
             }
             if (activeCamera == null) return result("already_closed", null);
@@ -870,7 +988,7 @@ final class CameraHelperMain {
         private synchronized String closeCameraForOwner(
                 String expectedOwner, String reason, boolean preserveActivityPreview) {
             if (CAMERA_OWNER_ACTIVITY.equals(expectedOwner)
-                    && activityPreviewSurface != null) {
+                    && activityPreview.has()) {
                 return detachActivityPreview(reason);
             }
             if (camera == null && !stockCameraRequested) {
@@ -892,11 +1010,13 @@ final class CameraHelperMain {
         }
 
         String closeReverseCamera(String reason) {
-            return closeCameraForOwner(CAMERA_OWNER_REVERSE, reason);
+            return closeCameraForOwner(CAMERA_OWNER_REVERSE, reason,
+                    shouldPreserveActivityPreview(
+                            activityPreview.has(), CAMERA_OWNER_REVERSE));
         }
 
         private synchronized String attachActivityPreview(
-                Surface requestedSurface, int requestedIndex) {
+                Surface requestedSurface, int requestedIndex, int requestId) {
             if (requestedIndex < 0 || requestedIndex > 4) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Preview index must be 0..4");
@@ -905,7 +1025,7 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Surface is invalid");
             }
-            if (activityPreviewSurface != null) {
+            if (activityPreview.has()) {
                 detachActivityPreview("replace_activity_preview");
             }
             try {
@@ -916,11 +1036,10 @@ final class CameraHelperMain {
                     throw new IllegalStateException(
                             "addPreviewSurface returned false for Activity preview");
                 }
-                activityPreviewSurface = requestedSurface;
-                activityPreviewIndex = requestedIndex;
-                activityPreviewAttached = true;
+                activityPreview.set(requestedSurface, requestedIndex, true);
                 emit("camera_preview_attached", "camera_owner", CAMERA_OWNER_ACTIVITY,
                         "producer_owner", activeCameraOwner,
+                        "request_id", requestId,
                         "camera_tag", activeCameraTag,
                         "preview_index", requestedIndex,
                         "path", "hot_multi_surface");
@@ -932,6 +1051,7 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", "attach_activity_preview",
                         "camera_owner", CAMERA_OWNER_ACTIVITY,
                         "producer_owner", activeCameraOwner,
+                        "request_id", requestId,
                         "camera_tag", activeCameraTag,
                         "preview_index", requestedIndex,
                         "error", message);
@@ -940,12 +1060,10 @@ final class CameraHelperMain {
         }
 
         private synchronized String detachActivityPreview(String reason) {
-            Surface activeSurface = activityPreviewSurface;
-            int activeIndex = activityPreviewIndex;
-            boolean attached = activityPreviewAttached;
-            activityPreviewSurface = null;
-            activityPreviewIndex = -1;
-            activityPreviewAttached = false;
+            ActivityPreviewState.Snapshot<Surface> active = activityPreview.close(false);
+            Surface activeSurface = active.value;
+            int activeIndex = active.index;
+            boolean attached = active.attached;
             String error = null;
             try {
                 if (attached && camera != null) {
@@ -961,7 +1079,7 @@ final class CameraHelperMain {
             } catch (Throwable failure) {
                 error = summary(failure);
             } finally {
-                if (activeSurface != null) activeSurface.release();
+                if (active.release && activeSurface != null) activeSurface.release();
             }
             emit("camera_preview_detached", "camera_owner", CAMERA_OWNER_ACTIVITY,
                     "producer_owner", activeCameraOwner,
@@ -974,11 +1092,8 @@ final class CameraHelperMain {
         }
 
         private void releaseActivityPreview() {
-            Surface value = activityPreviewSurface;
-            activityPreviewSurface = null;
-            activityPreviewIndex = -1;
-            activityPreviewAttached = false;
-            if (value != null) value.release();
+            ActivityPreviewState.Snapshot<Surface> active = activityPreview.close(false);
+            if (active.release && active.value != null) active.value.release();
         }
 
         private void tryClose(Object activeCamera, Surface activeSurface, int activeIndex)
@@ -1047,6 +1162,88 @@ final class CameraHelperMain {
                     || CAMERA_OWNER_REVERSE.equals(requestedOwner);
         }
 
+        static boolean matchesPendingCameraRequest(int pendingRequestId, int callbackRequestId) {
+            return callbackRequestId > 0 && callbackRequestId == pendingRequestId;
+        }
+
+        static boolean matchesCurrentStockRequest(
+                boolean stockRequested, int pendingRequestId,
+                int activeRequestId, int eventRequestId) {
+            int currentRequestId = pendingRequestId > 0
+                    ? pendingRequestId : activeRequestId;
+            return stockRequested && eventRequestId > 0
+                    && eventRequestId == currentRequestId;
+        }
+
+        private static void requireActivityRequestId(int requestId) {
+            if (requestId <= 0) throw new IllegalArgumentException("camera request id required");
+        }
+
+        static boolean shouldPreserveActivityPreview(
+                boolean hasActivityPreview, String requestedOwner) {
+            return hasActivityPreview
+                    && (CAMERA_OWNER_OVERLAY.equals(requestedOwner)
+                            || CAMERA_OWNER_REVERSE.equals(requestedOwner));
+        }
+
+        static final class ActivityPreviewState<T> {
+            private T value;
+            private int index = -1;
+            private boolean attached;
+
+            boolean has() {
+                return value != null;
+            }
+
+            T value() {
+                return value;
+            }
+
+            int index() {
+                return index;
+            }
+
+            boolean attached() {
+                return attached;
+            }
+
+            void set(T nextValue, int nextIndex, boolean nextAttached) {
+                if (nextValue == null) throw new IllegalArgumentException("preview required");
+                value = nextValue;
+                index = nextIndex;
+                attached = nextAttached;
+            }
+
+            void setAttached(boolean nextAttached) {
+                attached = value != null && nextAttached;
+            }
+
+            Snapshot<T> close(boolean preserve) {
+                Snapshot<T> snapshot = new Snapshot<>(
+                        value, index, attached, !preserve && value != null);
+                attached = false;
+                if (!preserve) {
+                    value = null;
+                    index = -1;
+                }
+                return snapshot;
+            }
+
+            static final class Snapshot<T> {
+                final T value;
+                final int index;
+                final boolean attached;
+                final boolean release;
+
+                Snapshot(T value, int index, boolean attached, boolean release) {
+                    this.value = value;
+                    this.index = index;
+                    this.attached = attached;
+                    this.release = release;
+                }
+            }
+        }
+
         static boolean canAttachActivityPreview(
                 boolean cameraOpen, String activeOwner, String activeTag,
                 String requestedOwner, String requestedTag) {
@@ -1112,6 +1309,19 @@ final class CameraHelperMain {
             forwardLine(line);
         }
 
+        private void acceptControllerEvent(String kind, Object[] fields) {
+            emit(kind, fields);
+            if ("camera_shell_died".equals(kind)) {
+                cameraShellDiedCleanup();
+                turnController.recoverCameraHelper();
+            }
+        }
+
+        private synchronized void cameraShellDiedCleanup() {
+            stockCameraRequested = false;
+            closeCamera("camera_shell_died");
+        }
+
         private void acceptShellEvent(String line) {
             if (line == null) return;
             String key = null;
@@ -1124,20 +1334,31 @@ final class CameraHelperMain {
                         appendBounded(musicJournal, line, 20);
                     }
                 }
-                boolean shellTerminal = "camera_shell_helper".equals(
-                        event.optString("source"))
-                        && ("camera_error".equals(kind) || "camera_closed".equals(kind));
-                boolean pendingPreviewError = "camera_error".equals(kind)
-                        && pendingReversePreviewSurfaces.length > 0;
-                if (shellTerminal || pendingPreviewError) {
-                    synchronized (this) {
+                int requestId = event.optInt("request_id", 0);
+                boolean terminal = "camera_error".equals(kind)
+                        || "camera_closed".equals(kind);
+                boolean pendingPreviewError;
+                synchronized (this) {
+                    boolean stockTerminal = terminal && matchesCurrentStockRequest(
+                            stockCameraRequested, pendingStockCameraRequestId,
+                            activeCameraRequestId, requestId);
+                    pendingPreviewError = "camera_error".equals(kind)
+                            && matchesPendingCameraRequest(
+                                    pendingReversePreviewRequestId, requestId);
+                    if (stockTerminal || pendingPreviewError) {
                         stockCameraRequested = false;
+                        if (pendingStockCameraRequestId == requestId) {
+                            pendingStockCameraRequestId = 0;
+                        }
                         releaseSurfaces(pendingReversePreviewSurfaces);
                         pendingReversePreviewSurfaces = new Surface[0];
+                        if (pendingReversePreviewRequestId == requestId) {
+                            pendingReversePreviewRequestId = 0;
+                        }
                     }
-                    if (pendingPreviewError) {
-                        turnController.closeStockAvm("reverse_preview_base_failed");
-                    }
+                }
+                if (pendingPreviewError) {
+                    turnController.closeStockAvm("reverse_preview_base_failed", requestId);
                 }
             } catch (Throwable error) {
                 Log.w(TAG, "Counter event parse failed", error);

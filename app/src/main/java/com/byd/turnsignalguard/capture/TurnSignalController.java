@@ -13,6 +13,7 @@ import android.view.Surface;
 import org.json.JSONObject;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
@@ -65,6 +66,8 @@ final class TurnSignalController {
     private volatile IBinder cameraHelper;
     private IBinder.DeathRecipient helperDeathRecipient;
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
+    private long cameraHelperEpoch;
+    private boolean cameraRecoveryPending;
     private final PendingOverlay[] pendingOverlays = new PendingOverlay[CameraProfile.COUNT];
     private volatile int pendingReverseRequestId;
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
@@ -163,24 +166,29 @@ final class TurnSignalController {
     }
 
     void openStockAvm(
-            Surface surface, int viewpoint, boolean horizontal,
+            Surface surface, int viewpoint, boolean horizontal, boolean stockDewarp, int requestId,
             Consumer<Surface> inputSurfaceSink) {
+        if (requestId <= 0) {
+            surface.release();
+            throw new IllegalArgumentException("camera request id required");
+        }
         if (!StockAvmPreview.isAllowedViewpoint(viewpoint)) {
             surface.release();
             throw new IllegalArgumentException("viewpoint not whitelisted");
         }
         if (!handler.post(() -> readCameraConfigAndOpen(
-                surface, viewpoint, horizontal, inputSurfaceSink))) {
+                surface, viewpoint, horizontal, stockDewarp, requestId, inputSurfaceSink))) {
             surface.release();
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", "config_main_handler_unavailable",
-                    "viewpoint", viewpoint, "error", "main handler rejected task");
+                    "viewpoint", viewpoint, "request_id", requestId,
+                    "error", "main handler rejected task");
         }
     }
 
     private void readCameraConfigAndOpen(
-            Surface surface, int viewpoint, boolean horizontal,
-            Consumer<Surface> inputSurfaceSink) {
+            Surface surface, int viewpoint, boolean horizontal, boolean stockDewarp,
+            int requestId, Consumer<Surface> inputSurfaceSink) {
         if (stopped) {
             surface.release();
             return;
@@ -192,21 +200,29 @@ final class TurnSignalController {
                             "stage", stage, "detail", detail));
             emit("camera_config_read", "ok", true,
                     "detail", config.detail(), "viewpoint", viewpoint,
-                    "orientation", horizontal ? "horizontal" : "vertical");
+                    "request_id", requestId,
+                    "orientation", horizontal ? "horizontal" : "vertical",
+                    "dewarp", stockDewarp);
         } catch (Throwable error) {
             String stage = error instanceof StockAvmPreview.StageException
                     ? ((StockAvmPreview.StageException) error).stage : "camera_config_read";
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", stage, "view", StockAvmPreview.viewName(viewpoint),
-                    "viewpoint", viewpoint, "error", summary(error));
+                    "viewpoint", viewpoint, "request_id", requestId,
+                    "error", summary(error));
             surface.release();
             return;
         }
         worker.execute(() -> {
+            IBinder value = null;
+            long epoch = 0;
+            boolean transactionComplete = false;
             try {
-                IBinder value = ensureCameraHelper();
+                value = ensureCameraHelper();
+                epoch = cameraHelperEpoch(value);
                 Surface inputSurface = transactCameraOpen(
-                        value, surface, viewpoint, horizontal, config);
+                        value, surface, viewpoint, horizontal, stockDewarp, requestId, config);
+                transactionComplete = true;
                 boolean inputSurfaceValid = inputSurface.isValid();
                 try {
                     inputSurfaceSink.accept(inputSurface);
@@ -215,22 +231,46 @@ final class TurnSignalController {
                     throw error;
                 }
                 emit("camera_shell_opened", "viewpoint", viewpoint,
+                        "request_id", requestId,
                         "orientation", horizontal ? "horizontal" : "vertical",
+                        "dewarp", stockDewarp,
                         "input_surface_valid", inputSurfaceValid);
             } catch (Throwable error) {
-                clearCameraHelper(null);
+                if (!transactionComplete && value != null) {
+                    cameraHelperLost(value, epoch, summary(error));
+                }
                 emit("camera_error", "renderer", "stock_avm_shell",
                         "stage", "camera_shell_launch_or_open",
                         "view", StockAvmPreview.viewName(viewpoint),
-                        "viewpoint", viewpoint, "error", summary(error));
+                        "viewpoint", viewpoint, "request_id", requestId,
+                        "error", summary(error));
             } finally {
                 surface.release();
             }
         });
     }
 
-    void closeStockAvm(String reason) {
-        worker.execute(() -> closeStockAvmNow(reason));
+    void closeStockAvm(String reason, int requestId) {
+        if (requestId <= 0) return;
+        worker.execute(() -> closeStockAvmNow(reason, requestId));
+    }
+
+    void recoverCameraHelper() {
+        synchronized (this) {
+            if (!shouldQueueCameraRecovery(stopped, cameraRecoveryPending)) return;
+            cameraRecoveryPending = true;
+        }
+        worker.execute(() -> {
+            try {
+                if (!stopped) ensureCameraHelper();
+            } catch (Throwable error) {
+                emit("camera_shell_recovery_failed", "error", summary(error));
+            } finally {
+                synchronized (TurnSignalController.this) {
+                    cameraRecoveryPending = false;
+                }
+            }
+        });
     }
 
     void prepareCameraOverlay(
@@ -242,9 +282,14 @@ final class TurnSignalController {
         }
         worker.execute(() -> {
             pendingOverlays[spec.cameraId] = new PendingOverlay(spec.requestId, surfaceSink);
+            IBinder value = null;
+            long epoch = 0;
+            boolean transactionComplete = false;
             try {
-                IBinder value = ensureCameraHelper();
+                value = ensureCameraHelper();
+                epoch = cameraHelperEpoch(value);
                 transactOverlayPrepare(value, spec);
+                transactionComplete = true;
                 emit("camera_overlay_prepare", "camera_id", spec.cameraId,
                         "request_id", spec.requestId,
                         "target", CameraDisplayTarget.name(spec.target),
@@ -255,7 +300,9 @@ final class TurnSignalController {
                 }
             } catch (Throwable error) {
                 clearPendingOverlaySurface(spec.cameraId, spec.requestId);
-                clearCameraHelper(null);
+                if (!transactionComplete && value != null) {
+                    cameraHelperLost(value, epoch, summary(error));
+                }
                 emit("camera_overlay_error", "stage", "prepare",
                         "camera_id", spec.cameraId,
                         "request_id", spec.requestId, "error", summary(error));
@@ -345,16 +392,23 @@ final class TurnSignalController {
             clearPendingOverlays();
             pendingReverseRequestId = spec.requestId;
             pendingReverseSurfaceSink = surfaceSink;
+            IBinder value = null;
+            long epoch = 0;
+            boolean transactionComplete = false;
             try {
-                IBinder value = ensureCameraHelper();
+                value = ensureCameraHelper();
+                epoch = cameraHelperEpoch(value);
                 transactReversePrepare(value, spec);
+                transactionComplete = true;
                 emit("reverse_overlay_prepare", "request_id", spec.requestId);
                 if (!handler.post(preparedSink)) {
                     throw new IllegalStateException("main handler rejected reverse prepare");
                 }
             } catch (Throwable error) {
                 clearPendingReverseSurfaces(spec.requestId);
-                clearCameraHelper(null);
+                if (!transactionComplete && value != null) {
+                    cameraHelperLost(value, epoch, summary(error));
+                }
                 emit("reverse_overlay_error", "stage", "prepare",
                         "request_id", spec.requestId, "error", summary(error));
             }
@@ -925,8 +979,13 @@ final class TurnSignalController {
         }
         if (!cameraPing(value)) throw new IllegalStateException("camera_shell_binder_timeout");
         if (cameraHelper != value) {
-            transactCameraCallback(value);
-            installCameraHelper(value);
+            long epoch = installCameraHelper(value);
+            try {
+                transactCameraCallback(value);
+            } catch (Throwable error) {
+                cameraHelperLost(value, epoch, summary(error));
+                throw error;
+            }
         }
         return value;
     }
@@ -978,6 +1037,8 @@ final class TurnSignalController {
             Surface surface,
             int viewpoint,
             boolean horizontal,
+            boolean stockDewarp,
+            int requestId,
             StockAvmPreview.Config config) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -986,6 +1047,8 @@ final class TurnSignalController {
             surface.writeToParcel(data, 0);
             data.writeInt(viewpoint);
             data.writeInt(horizontal ? 1 : 0);
+            data.writeInt(stockDewarp ? 1 : 0);
+            data.writeInt(requestId);
             config.writeToParcel(data);
             requireTransact(value, CameraShellProtocol.TX_OPEN, data, reply);
             Surface inputSurface = Surface.CREATOR.createFromParcel(reply);
@@ -1290,11 +1353,16 @@ final class TurnSignalController {
     }
 
     private void closeStockAvmNow(String reason) {
+        closeStockAvmNow(reason, 0);
+    }
+
+    private void closeStockAvmNow(String reason, int requestId) {
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
         if (!cameraPing(value)) {
             emit("camera_closed", "renderer", "stock_avm_shell",
                     "view", "unknown", "reason", reason == null ? "unknown" : reason,
+                    "request_id", requestId,
                     "error", "camera_helper_unavailable");
             return;
         }
@@ -1303,10 +1371,12 @@ final class TurnSignalController {
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeString(reason == null ? "unknown" : reason);
+            data.writeInt(requestId);
             requireTransact(value, CameraShellProtocol.TX_CLOSE, data, reply);
         } catch (Throwable error) {
             emit("camera_error", "renderer", "stock_avm_shell",
-                    "stage", "close", "error", summary(error));
+                    "stage", "close", "request_id", requestId,
+                    "error", summary(error));
         } finally {
             data.recycle();
             reply.recycle();
@@ -1485,26 +1555,45 @@ final class TurnSignalController {
         unlinkDeathRecipient(previous, previousRecipient);
     }
 
-    private synchronized void installCameraHelper(IBinder value) throws Exception {
-        if (cameraHelper == value) return;
-        IBinder.DeathRecipient recipient = () -> cameraHelperDied(value);
-        value.linkToDeath(recipient, 0);
-        IBinder previous = cameraHelper;
-        IBinder.DeathRecipient previousRecipient = cameraHelperDeathRecipient;
-        cameraHelper = value;
-        cameraHelperDeathRecipient = recipient;
+    private long installCameraHelper(IBinder value) throws Exception {
+        IBinder previous;
+        IBinder.DeathRecipient previousRecipient;
+        long epoch;
+        synchronized (this) {
+            if (cameraHelper == value) return cameraHelperEpoch;
+            epoch = cameraHelperEpoch + 1;
+            IBinder.DeathRecipient recipient = () -> {
+                try {
+                    worker.execute(() -> cameraHelperLost(
+                            value, epoch, "camera helper Binder died"));
+                } catch (Throwable ignored) {
+                    // Controller shutdown already owns final cleanup.
+                }
+            };
+            value.linkToDeath(recipient, 0);
+            previous = cameraHelper;
+            previousRecipient = cameraHelperDeathRecipient;
+            cameraHelperEpoch = epoch;
+            cameraHelper = value;
+            cameraHelperDeathRecipient = recipient;
+        }
         unlinkDeathRecipient(previous, previousRecipient);
+        emit("camera_shell_attached", "camera_shell_epoch", epoch);
+        return epoch;
     }
 
-    private void cameraHelperDied(IBinder value) {
-        clearCameraHelper(value);
+    private void cameraHelperLost(IBinder value, long epoch, String error) {
+        if (!clearCameraHelper(value, epoch)) return;
+        int[] overlayRequestIds = pendingOverlayRequestIds();
+        int reverseRequestId = pendingReverseRequestId;
         clearPendingOverlays();
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
-        emit("camera_overlay_error", "stage", "camera_shell_died",
-                "error", "camera helper Binder died");
-        emit("reverse_overlay_error", "stage", "camera_shell_died",
-                "error", "camera helper Binder died");
+        emit("camera_shell_died",
+                "camera_shell_epoch", epoch,
+                "pending_overlay_request_ids", Arrays.toString(overlayRequestIds),
+                "pending_reverse_request_id", reverseRequestId,
+                "error", error == null ? "camera helper unavailable" : error);
     }
 
     private void clearHelper(IBinder expected) {
@@ -1520,17 +1609,56 @@ final class TurnSignalController {
         unlinkDeathRecipient(previous, previousRecipient);
     }
 
-    private void clearCameraHelper(IBinder expected) {
+    private boolean clearCameraHelper(IBinder expected) {
+        return clearCameraHelper(expected, 0);
+    }
+
+    private boolean clearCameraHelper(IBinder expected, long expectedEpoch) {
         IBinder previous;
         IBinder.DeathRecipient previousRecipient;
         synchronized (this) {
-            if (expected != null && cameraHelper != expected) return;
+            if (!matchesExpectedCameraHelper(
+                    cameraHelper, cameraHelperEpoch, expected, expectedEpoch)) return false;
             previous = cameraHelper;
             previousRecipient = cameraHelperDeathRecipient;
             cameraHelper = null;
             cameraHelperDeathRecipient = null;
         }
         unlinkDeathRecipient(previous, previousRecipient);
+        return true;
+    }
+
+    static boolean matchesExpectedCameraHelper(IBinder current, IBinder expected) {
+        return expected == null || current == expected;
+    }
+
+    static boolean matchesExpectedCameraHelper(
+            IBinder current, long currentEpoch, IBinder expected, long expectedEpoch) {
+        return matchesExpectedCameraHelper(current, expected)
+                && (expectedEpoch <= 0 || currentEpoch == expectedEpoch);
+    }
+
+    private synchronized long cameraHelperEpoch(IBinder expected) {
+        return cameraHelper == expected ? cameraHelperEpoch : 0;
+    }
+
+    static boolean isCurrentCameraShellEpoch(long current, long event) {
+        return event > 0 && event == current;
+    }
+
+    static boolean shouldQueueCameraRecovery(boolean stopped, boolean pending) {
+        return !stopped && !pending;
+    }
+
+    private int[] pendingOverlayRequestIds() {
+        int count = 0;
+        for (PendingOverlay pending : pendingOverlays) if (pending != null) count++;
+        int[] values = new int[count];
+        int index = 0;
+        for (PendingOverlay pending : pendingOverlays) {
+            if (pending != null) values[index++] = pending.requestId;
+        }
+        return values;
     }
 
     private static void unlinkDeathRecipient(

@@ -58,6 +58,7 @@ public final class TurnSignalShellMain {
             Looper.loop();
         } finally {
             binder.stop();
+            System.out.flush();
             owner.close();
         }
     }
@@ -70,6 +71,7 @@ public final class TurnSignalShellMain {
         private static final long RECOVERY_WAKE_CHECK_MS = 1_000;
         private static final long RECOVERY_RETRY_MS = 5_000;
         private static final long RECOVERY_COMMAND_TIMEOUT_MS = 2_000;
+        private static final long LOG_FLUSH_DELAY_MS = 250;
 
         private final Context context;
         private final Handler handler;
@@ -93,6 +95,7 @@ public final class TurnSignalShellMain {
         private boolean awaitingControllerAttach;
         private boolean powerReceiverRegistered;
         private IBinder.DeathRecipient controllerDeathRecipient;
+        private boolean stdoutFlushScheduled;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
             this.context = context;
@@ -672,7 +675,7 @@ public final class TurnSignalShellMain {
                 line = "{\"kind\":\"shell_json_error\"}";
             }
             System.out.println(line);
-            System.out.flush();
+            scheduleStdoutFlush();
             IBinder target;
             synchronized (this) {
                 target = callback;
@@ -688,6 +691,24 @@ public final class TurnSignalShellMain {
                 clearCallback(target);
             } finally {
                 parcel.recycle();
+            }
+        }
+
+        private void scheduleStdoutFlush() {
+            synchronized (this) {
+                if (stdoutFlushScheduled) return;
+                stdoutFlushScheduled = true;
+            }
+            if (!handler.postDelayed(() -> {
+                synchronized (ShellBinder.this) {
+                    stdoutFlushScheduled = false;
+                }
+                System.out.flush();
+            }, LOG_FLUSH_DELAY_MS)) {
+                synchronized (this) {
+                    stdoutFlushScheduled = false;
+                }
+                System.out.flush();
             }
         }
     }

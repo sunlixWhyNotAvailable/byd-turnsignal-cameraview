@@ -12,7 +12,7 @@
 - configurable steering thresholds, correction delay, and maximum guard speed
 - independently configured rear-left, rear-right, front-left, and front-right camera overlays
 - separate rear/front enable switches, speed thresholds, and an optional front-camera turn-signal requirement
-- optional enhanced reverse view combining rear, rear-left, and rear-right cameras over the stock reverse screen, with configurable static parking-distance guides
+- optional enhanced reverse view combining rear, rear-left, and rear-right cameras over the stock reverse screen
 - touch-based reverse-layout editor with independent pane position, size, crop sliders, layer order, and a movable black background pane
 - four-camera crop calibration with aspect-ratio presets, free crop, Fit/Fill/aligned rotation modes, scale, placement, and optional per-lens GPU fisheye correction
 - independent tablet or instrument-cluster destination for every side camera
@@ -52,7 +52,6 @@ After first launch:
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
 - The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
 - Fisheye correction is off by default and adds one GPU render pass per corrected physical camera stream. Calibrate and performance-test it while parked before regular use.
-- The red/yellow parking guides are static distance references, not the stock steering-dependent predicted trajectory.
 - Simultaneous rear/front crops from the same physical side depend on duplicate-index Surface support and must pass the bundled parked probe before public release.
 - Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
 - Third-party metadata forwarding does not include album artwork. BYD's protected cover provider is unavailable to the shell helper, while stock Bluetooth, Local Media, and supported OEM players keep their native metadata path.

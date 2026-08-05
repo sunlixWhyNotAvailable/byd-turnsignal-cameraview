@@ -8,6 +8,8 @@ import android.util.Log;
 import android.view.Surface;
 import android.view.TextureView;
 
+import java.util.function.Consumer;
+
 final class BlindSpotCameraView extends TextureView
         implements TextureView.SurfaceTextureListener {
     private static final String TAG = "BlindSpotCameraView";
@@ -30,6 +32,8 @@ final class BlindSpotCameraView extends TextureView
     private Surface cameraSurface;
     private CameraDewarpRenderer dewarpRenderer;
     private CameraDewarpConfig dewarpConfig = CameraDewarpConfig.disabled();
+    private Consumer<CameraDewarpRenderer.Stats> dewarpStatsSink;
+    private int dewarpStatsGeneration;
     private boolean forceDewarpPipeline;
     private boolean externalTransform;
     private DirectCameraCrop directCrop = DirectCameraCrop.defaultFor(false);
@@ -69,6 +73,10 @@ final class BlindSpotCameraView extends TextureView
 
     boolean usesDewarpPipeline() {
         return forceDewarpPipeline || dewarpConfig.usesGpu();
+    }
+
+    void setDewarpStatsSink(Consumer<CameraDewarpRenderer.Stats> value) {
+        dewarpStatsSink = value;
     }
 
     void setExternalTransform(boolean value) {
@@ -115,8 +123,15 @@ final class BlindSpotCameraView extends TextureView
     public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
         configureBuffer();
         if (usesDewarpPipeline()) {
+            int statsGeneration = ++dewarpStatsGeneration;
             dewarpRenderer = CameraDewarpRenderer.start(
-                    texture, BUFFER_WIDTH, BUFFER_HEIGHT, dewarpConfig);
+                    texture, BUFFER_WIDTH, BUFFER_HEIGHT, dewarpConfig,
+                    stats -> post(() -> {
+                        if (statsGeneration != dewarpStatsGeneration
+                                || dewarpRenderer == null) return;
+                        Consumer<CameraDewarpRenderer.Stats> sink = dewarpStatsSink;
+                        if (sink != null) sink.accept(stats);
+                    }));
         }
         if (dewarpRenderer != null) {
             cameraSurface = dewarpRenderer.cameraSurface();
@@ -143,6 +158,7 @@ final class BlindSpotCameraView extends TextureView
 
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+        dewarpStatsGeneration++;
         if (callback != null) callback.onCameraSurfaceDestroyed(this);
         if (dewarpRenderer != null) {
             dewarpRenderer.release();

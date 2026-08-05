@@ -216,32 +216,29 @@ final class TurnSignalGuardRuntime {
     }
 
     private void setManualTurnStateOnHandler(int payload) {
-        if (payload < 0 || payload > 3) {
-            emit("manual_turn_state_rejected", "reason", "payload_not_whitelisted",
-                    "payload", payload);
-            return;
-        }
-        if (manualCommandPending) {
-            emit("manual_turn_state_rejected", "reason", "command_already_pending",
-                    "payload", payload);
-            return;
-        }
-        if (requestedEnabled) {
-            emit("manual_turn_state_rejected", "reason", "disable_guard_before_manual_command",
-                    "payload", payload);
+        long now = SystemClock.elapsedRealtime();
+        String precheck = manualPrecheckReason(
+                payload, manualCommandPending, requestedEnabled, now, lastPollAt);
+        if (precheck != null) {
+            if ("stale_poll".equals(precheck)) {
+                emit("manual_turn_state_rejected", "reason", precheck,
+                        "payload", payload,
+                        "poll_age_ms", lastPollAt == 0 ? "unknown" : now - lastPollAt,
+                        "max_poll_gap_ms", MAX_POLL_GAP_MS);
+            } else {
+                emit("manual_turn_state_rejected", "reason", precheck,
+                        "payload", payload);
+            }
             return;
         }
 
         ReadResult gear = read(GEAR);
         ReadResult blink = read(BLINK);
-        boolean blinkAllowed = payload == 0
-                ? blink.raw != null && (blink.raw == BLINK_OFF || blink.raw == BLINK_LEFT
-                        || blink.raw == BLINK_RIGHT || blink.raw == BLINK_HAZARD)
-                : blink.raw != null && blink.raw == BLINK_OFF;
-        if (!telemetryReady() || gear.status != 0 || gear.raw == null || gear.raw != 1
-                || blink.status != 0 || !blinkAllowed) {
+        String telemetryRejection = manualTelemetryRejectionReason(
+                payload, telemetryReady(), gear.status, gear.raw, blink.status, blink.raw);
+        if (telemetryRejection != null) {
             emit("manual_turn_state_rejected",
-                    "reason", "requires_healthy_telemetry_P_and_safe_blink_state",
+                    "reason", telemetryRejection,
                     "payload", payload, "telemetry_ready", telemetryReady(),
                     "gear_status", gear.status,
                     "gear", gear.raw == null ? "unknown" : gear.raw,
@@ -1237,6 +1234,36 @@ final class TurnSignalGuardRuntime {
 
     static boolean validSpeedValue(float value) {
         return Float.isFinite(value) && value >= 0.0f && value <= 300.0f;
+    }
+
+    static boolean pollFresh(long now, long lastPollAt) {
+        return lastPollAt > 0 && now >= lastPollAt && now - lastPollAt <= MAX_POLL_GAP_MS;
+    }
+
+    static String manualPrecheckReason(
+            int payload, boolean commandPending, boolean guardEnabled,
+            long now, long lastPollAt) {
+        if (payload < 0 || payload > 3) return "payload_not_whitelisted";
+        if (commandPending) return "command_already_pending";
+        if (guardEnabled) return "disable_guard_before_manual_command";
+        if (!pollFresh(now, lastPollAt)) return "stale_poll";
+        return null;
+    }
+
+    static String manualTelemetryRejectionReason(
+            int payload, boolean telemetryReady,
+            int gearStatus, Integer gear, int blinkStatus, Integer blink) {
+        boolean blinkAllowed = payload == 0
+                ? blink != null && (blink == BLINK_OFF || blink == BLINK_LEFT
+                        || blink == BLINK_RIGHT || blink == BLINK_HAZARD)
+                : blink != null && blink == BLINK_OFF;
+        return telemetryReady && gearStatus == 0 && gear != null && gear == 1
+                && blinkStatus == 0 && blinkAllowed
+                ? null : "requires_healthy_telemetry_P_and_safe_blink_state";
+    }
+
+    static int turnSignalSetFidForTest() {
+        return TURN_SIGNAL_SET_FID;
     }
 
     static boolean speedAllowed(float speedKph, int maxSpeedKph) {

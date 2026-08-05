@@ -10,6 +10,7 @@ import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
@@ -17,11 +18,17 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 final class CameraDewarpRenderer {
     private static final String TAG = "CameraDewarpRenderer";
     private static final int START_TIMEOUT_MS = 1500;
+    private static final long METRICS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
+    private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
+    private static final AtomicInteger RENDERS_IN_FLIGHT = new AtomicInteger();
+    private static final AtomicInteger MAX_RENDERS_IN_FLIGHT = new AtomicInteger();
     private static final float[] VERTICES = {
             -1, -1, 0, 0,
              1, -1, 1, 0,
@@ -57,6 +64,8 @@ final class CameraDewarpRenderer {
     private final SurfaceTexture outputTexture;
     private final int width;
     private final int height;
+    private final Consumer<Stats> statsSink;
+    private final Runnable metricsTick = this::emitStatsTick;
     private volatile CameraDewarpConfig config;
     private Handler handler;
     private Surface cameraSurface;
@@ -76,19 +85,75 @@ final class CameraDewarpRenderer {
     private FloatBuffer vertices;
     private final float[] textureMatrix = new float[16];
     private Throwable startupError;
+    private long metricsStartedNs;
+    private long lastCallbackNs;
+    private long callbackCount;
+    private long completedSwapCount;
+    private long totalRenderNs;
+    private long maxRenderNs;
+    private long maxSwapNs;
+    private long maxCallbackGapNs;
+    private long lastFrameAgeNs = -1;
+    private long maxFrameAgeNs = -1;
+    private boolean metricsActive;
+
+    static final class Stats {
+        final long intervalMs;
+        final long callbacks;
+        final long completedSwaps;
+        final double averageRenderMs;
+        final double maxRenderMs;
+        final double maxSwapMs;
+        final double maxCallbackGapMs;
+        final double lastFrameAgeMs;
+        final double maxFrameAgeMs;
+        final int processMaxConcurrentRenders;
+        final int bufferWidth;
+        final int bufferHeight;
+
+        Stats(long intervalNs, long callbacks, long completedSwaps,
+                long totalRenderNs, long maxRenderNs, long maxSwapNs,
+                long maxCallbackGapNs, long lastFrameAgeNs, long maxFrameAgeNs,
+                int processMaxConcurrentRenders, int bufferWidth, int bufferHeight) {
+            intervalMs = TimeUnit.NANOSECONDS.toMillis(intervalNs);
+            this.callbacks = callbacks;
+            this.completedSwaps = completedSwaps;
+            averageRenderMs = completedSwaps == 0 ? 0.0
+                    : nanosToMillis(totalRenderNs) / completedSwaps;
+            this.maxRenderMs = nanosToMillis(maxRenderNs);
+            this.maxSwapMs = nanosToMillis(maxSwapNs);
+            this.maxCallbackGapMs = nanosToMillis(maxCallbackGapNs);
+            this.lastFrameAgeMs = optionalNanosToMillis(lastFrameAgeNs);
+            this.maxFrameAgeMs = optionalNanosToMillis(maxFrameAgeNs);
+            this.processMaxConcurrentRenders = processMaxConcurrentRenders;
+            this.bufferWidth = bufferWidth;
+            this.bufferHeight = bufferHeight;
+        }
+
+        private static double nanosToMillis(long value) {
+            return value / 1_000_000.0;
+        }
+
+        private static double optionalNanosToMillis(long value) {
+            return value < 0 ? -1.0 : nanosToMillis(value);
+        }
+    }
 
     private CameraDewarpRenderer(
-            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config) {
+            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
+            Consumer<Stats> statsSink) {
         this.outputTexture = outputTexture;
         this.width = width;
         this.height = height;
         this.config = config;
+        this.statsSink = statsSink;
     }
 
     static CameraDewarpRenderer start(
-            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config) {
+            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
+            Consumer<Stats> statsSink) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
-                outputTexture, width, height, config);
+                outputTexture, width, height, config, statsSink);
         return renderer.startInternal() ? renderer : null;
     }
 
@@ -195,6 +260,8 @@ final class CameraDewarpRenderer {
         cameraTexture = new SurfaceTexture(textureId);
         cameraTexture.setDefaultBufferSize(width, height);
         cameraTexture.setOnFrameAvailableListener(texture -> {
+            long callbackNs = SystemClock.elapsedRealtimeNanos();
+            recordCallback(callbackNs);
             try {
                 renderFrame();
             } catch (Throwable error) {
@@ -206,42 +273,122 @@ final class CameraDewarpRenderer {
         vertices = ByteBuffer.allocateDirect(VERTICES.length * 4)
                 .order(ByteOrder.nativeOrder()).asFloatBuffer();
         vertices.put(VERTICES).position(0);
+        metricsStartedNs = SystemClock.elapsedRealtimeNanos();
+        metricsActive = true;
+        handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
     }
 
     private void renderFrame() {
         if (cameraTexture == null || eglSurface == EGL14.EGL_NO_SURFACE) return;
-        cameraTexture.updateTexImage();
-        cameraTexture.getTransformMatrix(textureMatrix);
-        CameraDewarpConfig value = config;
+        int concurrent = RENDERS_IN_FLIGHT.incrementAndGet();
+        MAX_RENDERS_IN_FLIGHT.accumulateAndGet(concurrent, Math::max);
+        long renderStartedNs = SystemClock.elapsedRealtimeNanos();
+        boolean swapped = false;
+        long swapNs = 0;
+        try {
+            cameraTexture.updateTexImage();
+            cameraTexture.getTransformMatrix(textureMatrix);
+            recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
+            CameraDewarpConfig value = config;
 
-        GLES20.glViewport(0, 0, width, height);
-        GLES20.glClearColor(0, 0, 0, 1);
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        GLES20.glUseProgram(program);
-        vertices.position(0);
-        GLES20.glVertexAttribPointer(
-                positionLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
-        vertices.position(2);
-        GLES20.glVertexAttribPointer(
-                texCoordLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
-        GLES20.glEnableVertexAttribArray(positionLocation);
-        GLES20.glEnableVertexAttribArray(texCoordLocation);
-        GLES20.glUniformMatrix4fv(
-                textureMatrixLocation, 1, false, textureMatrix, 0);
-        GLES20.glUniform1f(strengthLocation,
-                value.enabled ? value.strength / 100.0f : 0.0f);
-        GLES20.glUniform2f(centerLocation,
-                value.centerX / 100.0f, value.centerY / 100.0f);
-        GLES20.glUniform1f(zoomLocation,
-                value.enabled ? value.zoom / 100.0f : 1.0f);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
-        GLES20.glUniform1i(textureLocation, 0);
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        require(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "EGL swap failed");
+            GLES20.glViewport(0, 0, width, height);
+            GLES20.glClearColor(0, 0, 0, 1);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            GLES20.glUseProgram(program);
+            vertices.position(0);
+            GLES20.glVertexAttribPointer(
+                    positionLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
+            vertices.position(2);
+            GLES20.glVertexAttribPointer(
+                    texCoordLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
+            GLES20.glEnableVertexAttribArray(positionLocation);
+            GLES20.glEnableVertexAttribArray(texCoordLocation);
+            GLES20.glUniformMatrix4fv(
+                    textureMatrixLocation, 1, false, textureMatrix, 0);
+            GLES20.glUniform1f(strengthLocation,
+                    value.enabled ? value.strength / 100.0f : 0.0f);
+            GLES20.glUniform2f(centerLocation,
+                    value.centerX / 100.0f, value.centerY / 100.0f);
+            GLES20.glUniform1f(zoomLocation,
+                    value.enabled ? value.zoom / 100.0f : 1.0f);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
+            GLES20.glUniform1i(textureLocation, 0);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            long swapStartedNs = SystemClock.elapsedRealtimeNanos();
+            require(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "EGL swap failed");
+            swapNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+            swapped = true;
+        } finally {
+            long completedNs = SystemClock.elapsedRealtimeNanos();
+            RENDERS_IN_FLIGHT.decrementAndGet();
+            if (swapped) recordCompletedRender(completedNs - renderStartedNs, swapNs);
+        }
+    }
+
+    private void recordCallback(long nowNs) {
+        if (metricsStartedNs == 0) metricsStartedNs = nowNs;
+        callbackCount++;
+        if (lastCallbackNs != 0) {
+            maxCallbackGapNs = Math.max(maxCallbackGapNs, nowNs - lastCallbackNs);
+        }
+        lastCallbackNs = nowNs;
+    }
+
+    private void recordFrameAge(long nowNs, long frameTimestampNs) {
+        if (frameTimestampNs <= 0 || nowNs < frameTimestampNs) {
+            lastFrameAgeNs = -1;
+            return;
+        }
+        long ageNs = nowNs - frameTimestampNs;
+        if (ageNs > MAX_VALID_FRAME_AGE_NS) {
+            lastFrameAgeNs = -1;
+            return;
+        }
+        lastFrameAgeNs = ageNs;
+        maxFrameAgeNs = Math.max(maxFrameAgeNs, ageNs);
+    }
+
+    private void recordCompletedRender(long renderNs, long swapNs) {
+        completedSwapCount++;
+        totalRenderNs += renderNs;
+        maxRenderNs = Math.max(maxRenderNs, renderNs);
+        maxSwapNs = Math.max(maxSwapNs, swapNs);
+    }
+
+    private void emitStatsTick() {
+        if (!metricsActive) return;
+        emitStats(SystemClock.elapsedRealtimeNanos());
+        if (metricsActive) {
+            handler.postDelayed(metricsTick,
+                    TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
+        }
+    }
+
+    private void emitStats(long nowNs) {
+        if (statsSink == null || metricsStartedNs == 0) return;
+        long intervalNs = nowNs - metricsStartedNs;
+        Stats stats = new Stats(intervalNs, callbackCount, completedSwapCount,
+                totalRenderNs, maxRenderNs, maxSwapNs, maxCallbackGapNs,
+                lastFrameAgeNs, maxFrameAgeNs, MAX_RENDERS_IN_FLIGHT.get(), width, height);
+        metricsStartedNs = nowNs;
+        callbackCount = 0;
+        completedSwapCount = 0;
+        totalRenderNs = 0;
+        maxRenderNs = 0;
+        maxSwapNs = 0;
+        maxCallbackGapNs = 0;
+        maxFrameAgeNs = -1;
+        try {
+            statsSink.accept(stats);
+        } catch (Throwable error) {
+            Log.w(TAG, "Dewarp stats sink failed", error);
+        }
     }
 
     private void releaseGl() {
+        metricsActive = false;
+        if (handler != null) handler.removeCallbacks(metricsTick);
         if (cameraTexture != null) cameraTexture.setOnFrameAvailableListener(null);
         if (cameraSurface != null) cameraSurface.release();
         cameraSurface = null;

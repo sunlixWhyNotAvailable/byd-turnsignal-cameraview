@@ -158,6 +158,28 @@ final class ReverseCameraLayout {
         return new PixelRect(left, top, right - left, bottom - top);
     }
 
+    static PixelRect fitSourceCrop(
+            Rect crop, int destinationWidth, int destinationHeight,
+            int sourceWidth, int sourceHeight) {
+        if (crop == null || destinationWidth <= 0 || destinationHeight <= 0
+                || sourceWidth <= 0 || sourceHeight <= 0) {
+            throw new IllegalArgumentException("positive crop and bounds are required");
+        }
+        float contentAspect = crop.width * sourceWidth / (crop.height * sourceHeight);
+        float destinationAspect = (float) destinationWidth / destinationHeight;
+        int width = destinationWidth;
+        int height = destinationHeight;
+        if (destinationAspect > contentAspect) {
+            width = Math.max(1, Math.round(destinationHeight * contentAspect));
+        } else if (destinationAspect < contentAspect) {
+            height = Math.max(1, Math.round(destinationWidth / contentAspect));
+        }
+        return new PixelRect(
+                (destinationWidth - width) / 2,
+                (destinationHeight - height) / 2,
+                width, height);
+    }
+
     Pane pane(int cameraIndex) {
         switch (cameraIndex) {
             case REAR_CAMERA_INDEX:

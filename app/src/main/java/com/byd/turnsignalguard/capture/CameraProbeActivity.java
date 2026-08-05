@@ -50,7 +50,6 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -58,7 +57,6 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -104,12 +102,9 @@ public final class CameraProbeActivity extends Activity
     private static final String PREF_FRONT_CAMERA_MIN_ANGLE = "camera_front_min_angle_deg";
     private static final String PREF_FRONT_CAMERA_TURN_REQUIRED =
             "camera_front_turn_required";
-    private static final String PREF_CAMERA_CORNER_RADIUS = "camera_corner_radius_dp";
     private static final int DEFAULT_FRONT_CAMERA_MIN_SPEED_KPH = 0;
     private static final int DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH = 10;
     private static final float DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG = 10.0f;
-    private static final int DEFAULT_CAMERA_CORNER_RADIUS_DP = 10;
-    private static final int MAX_CAMERA_CORNER_RADIUS_DP = 48;
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
     private static final DirectCameraCrop FULL_CALIBRATION_CROP = DirectCameraCrop.of(
             0.0f, 0.0f, 1.0f, 1.0f,
@@ -135,12 +130,10 @@ public final class CameraProbeActivity extends Activity
     private final Button[] calibrationAspectButtons = new Button[4];
 
     private SharedPreferences preferences;
-    private Switch autoStartSwitch;
     private Switch guardSwitch;
     private Switch cameraSwitch;
     private Switch frontCameraSwitch;
     private Switch frontTurnRequiredSwitch;
-    private Switch musicSwitch;
     private EditText outwardInput;
     private EditText centerInput;
     private EditText correctionDelayInput;
@@ -165,8 +158,6 @@ public final class CameraProbeActivity extends Activity
     private Button cameraTabletTargetButton;
     private Button cameraClusterTargetButton;
     private TextView guardStatus;
-    private TextView settingsStatus;
-    private TextView adbStatus;
     private TextView cameraStatus;
     private TextView rearCameraPolicyStatus;
     private TextView frontCameraPolicyStatus;
@@ -176,8 +167,6 @@ public final class CameraProbeActivity extends Activity
     private TextView calibrationCropValues;
     private TextView calibrationResultTitle;
     private TextView reverseCameraStatus;
-    private TextView musicStatus;
-    private TextView musicJournalText;
     private TextView debugLayoutTitle;
     private TextView activationCount;
     private TextView correctionCount;
@@ -222,12 +211,8 @@ public final class CameraProbeActivity extends Activity
     private Button debugHorizontalButton;
     private Button debugVerticalButton;
     private Switch debugShowRawSwitch;
+    private Switch debugDewarpSwitch;
     private Button closeButton;
-    private Button adbRetryButton;
-    private Button backgroundStartSettingsButton;
-    private Button updateButton;
-    private Button shutdownButton;
-    private Button clearLogsButton;
     private Button guardTabButton;
     private Button calibrationTabButton;
     private Button cameraTabButton;
@@ -263,7 +248,8 @@ public final class CameraProbeActivity extends Activity
     private View reverseCameraPage;
     private View musicPage;
     private View settingsPage;
-    private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
+    private CameraProbeSettingsPanel settingsPanel;
+    private CameraProbeMusicPanel musicPanel;
     private File logFile;
     private volatile IBinder helper;
     private volatile boolean cameraSurfaceReady;
@@ -306,8 +292,12 @@ public final class CameraProbeActivity extends Activity
     private int pendingDirectCameraIndex = -1;
     private String pendingDirectCameraTag;
     private int activeCameraViewpoint = -1;
+    private int activeDirectCameraIndex = -1;
     private int retryStockViewpoint = -1;
     private boolean retryStockDebug;
+    private int retryDirectCameraIndex = -1;
+    private boolean cameraShellRecoveryPending;
+    private boolean cameraShellAvailable;
     private boolean invalidStockSurfaceRetryUsed;
     private boolean pendingCameraDebug;
     private boolean cameraHandoffPending;
@@ -319,7 +309,8 @@ public final class CameraProbeActivity extends Activity
     private Bitmap calibrationResultBitmap;
     private int selectedTab = -1;
     private int selectedDebugMode;
-    private int reversePreviewRequestSequence;
+    private int activityCameraRequestSequence;
+    private int activeActivityCameraRequestId;
     private AlertDialog updateDialog;
     private AlertDialog updateProgressDialog;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
@@ -380,19 +371,27 @@ public final class CameraProbeActivity extends Activity
             cameraDiscovered = false;
             requestedOpen = false;
             cameraTransition.cancel();
+            cameraShellRecoveryPending = false;
+            cameraShellAvailable = false;
+            retryStockViewpoint = -1;
+            retryStockDebug = false;
+            retryDirectCameraIndex = -1;
             guardStatus.setText("Службу зупинено");
-            settingsStatus.setText("Службу зупинено");
-            adbStatus.setText("ADB/helper недоступний");
+            settingsPanel.setServiceStatus("Службу зупинено");
+            settingsPanel.setAdbStatus("ADB/helper недоступний");
             cameraStatus.setText("Службу зупинено");
             debugCameraStatus.setText("Службу зупинено");
             directCameraStatus.setText("Службу зупинено");
             calibrationStatus.setText("Службу зупинено");
             reverseCameraStatus.setText("Службу зупинено");
-            musicStatus.setText("Helper недоступний");
+            musicPanel.setStatus("Helper недоступний");
             stopCalibrationCopies(true);
             clearPreview("helper_service_disconnected");
             activePreview = null;
             activePreviewCover = null;
+            activeCameraViewpoint = -1;
+            activeDirectCameraIndex = -1;
+            activeActivityCameraRequestId = 0;
             record("helper_service_disconnected");
             updateControls();
         }
@@ -452,6 +451,7 @@ public final class CameraProbeActivity extends Activity
     protected void onResume() {
         super.onResume();
         activityResumed = true;
+        resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
         showCachedUpdateIfAvailable();
         scheduleStartupUpdateCheck();
         if (backgroundStartSettingsActive) {
@@ -503,6 +503,8 @@ public final class CameraProbeActivity extends Activity
         cameraTransition.cancel();
         retryStockViewpoint = -1;
         retryStockDebug = false;
+        retryDirectCameraIndex = -1;
+        cameraShellRecoveryPending = false;
         if (!shutdownRequested) {
             if (cameraMinSpeedInput != null && cameraMaxSpeedInput != null) {
                 saveRearCameraSpeedRange();
@@ -548,17 +550,14 @@ public final class CameraProbeActivity extends Activity
         runUpdateCheck(false);
     }
 
-    private void runManualUpdateCheck() {
+    void runManualUpdateCheck() {
         runUpdateCheck(true);
     }
 
     private void runUpdateCheck(boolean force) {
         if (updateCheckInFlight || activityDestroyed) return;
         updateCheckInFlight = true;
-        if (updateButton != null) {
-            updateButton.setEnabled(false);
-            updateButton.setText("Перевірка...");
-        }
+        if (settingsPanel != null) settingsPanel.setUpdateButton("Перевірка...", false);
         record("update_check_started", "automatic", !force);
         updateExecutor.execute(() -> {
             try {
@@ -590,9 +589,9 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void restoreUpdateButton() {
-        if (updateButton == null) return;
-        updateButton.setText("Оновлення");
-        updateButton.setEnabled(!activityDestroyed && updateProgressDialog == null);
+        if (settingsPanel == null) return;
+        settingsPanel.setUpdateButton(
+                "Оновлення", !activityDestroyed && updateProgressDialog == null);
     }
 
     private void showCachedUpdateIfAvailable() {
@@ -694,8 +693,8 @@ public final class CameraProbeActivity extends Activity
         telemetryReady = false;
         cameraDiscovered = false;
         guardStatus.setText("Підключення телеметрії...");
-        settingsStatus.setText("Служба підключена");
-        adbStatus.setText("Перевірка ADB/RSA...");
+        settingsPanel.setServiceStatus("Служба підключена");
+        settingsPanel.setAdbStatus("Перевірка ADB/RSA...");
         cameraStatus.setText("Пошук AVM camera...");
         debugCameraStatus.setText("Пошук AVM camera...");
         directCameraStatus.setText("Пошук direct camera...");
@@ -888,13 +887,15 @@ public final class CameraProbeActivity extends Activity
         calibrationPage = buildCameraCalibrationPanel();
         cameraPage = buildCameraPanel();
         reverseCameraPage = buildReverseCameraPanel();
-        musicPage = buildMusicPanel();
+        musicPanel = new CameraProbeMusicPanel(this, preferences);
+        musicPage = musicPanel.view();
         cameraDebugPage = buildCameraDebugPanel();
         directCameraDebugPage = buildDirectCameraDebugPanel();
         debugPage = buildCombinedDebugPanel();
         ScrollView settingsScroll = new ScrollView(this);
         settingsScroll.setFillViewport(true);
-        settingsScroll.addView(buildSettingsPanel(), new ScrollView.LayoutParams(
+        settingsPanel = new CameraProbeSettingsPanel(this, preferences);
+        settingsScroll.addView(settingsPanel.view(), new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         settingsPage = settingsScroll;
         pages.addView(guardPage, new FrameLayout.LayoutParams(
@@ -1088,104 +1089,7 @@ public final class CameraProbeActivity extends Activity
         return panel;
     }
 
-    private View buildSettingsPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(0, 0, dp(18), dp(16));
-
-        autoStartSwitch = new Switch(this);
-        autoStartSwitch.setText("Авто-запуск");
-        autoStartSwitch.setTextColor(Color.WHITE);
-        autoStartSwitch.setTextSize(20);
-        autoStartSwitch.setChecked(GuardRecovery.isAutoStartEnabled(this));
-        panel.addView(autoStartSwitch, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
-
-        backgroundStartSettingsButton = button("Налаштувати фоновий запуск DiLink");
-        backgroundStartSettingsButton.setOnClickListener(
-                view -> openBackgroundStartSettings("manual"));
-        panel.addView(backgroundStartSettingsButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
-
-        settingsStatus = statusText("Служба запускається...");
-        panel.addView(settingsStatus, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(30)));
-
-        TextView adbTitle = label("ADB/RSA");
-        adbTitle.setPadding(0, dp(14), 0, dp(4));
-        panel.addView(adbTitle);
-        adbStatus = statusText("Очікування стану ADB...");
-        panel.addView(adbStatus, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(30)));
-        adbRetryButton = button("Повторити ADB авторизацію");
-        adbRetryButton.setOnClickListener(view -> requestAdbAuthorization(
-                "adb_authorization_retry_ui", "retry_adb_auth", false));
-        panel.addView(adbRetryButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(50)));
-
-        TextView radiusTitle = label("Заокруглення камер");
-        radiusTitle.setPadding(0, dp(18), 0, dp(4));
-        panel.addView(radiusTitle);
-        LinearLayout radiusRow = new LinearLayout(this);
-        radiusRow.setGravity(Gravity.CENTER_VERTICAL);
-        SeekBar radius = new SeekBar(this);
-        radius.setMax(MAX_CAMERA_CORNER_RADIUS_DP);
-        int initialRadius = Math.max(0, Math.min(MAX_CAMERA_CORNER_RADIUS_DP,
-                preferences.getInt(PREF_CAMERA_CORNER_RADIUS,
-                        DEFAULT_CAMERA_CORNER_RADIUS_DP)));
-        radius.setProgress(initialRadius);
-        TextView radiusValue = label(initialRadius + " dp");
-        radiusValue.setGravity(Gravity.CENTER);
-        radiusRow.addView(radius, new LinearLayout.LayoutParams(0, dp(54), 1));
-        radiusRow.addView(radiusValue, new LinearLayout.LayoutParams(dp(90), dp(54)));
-        panel.addView(radiusRow);
-        radius.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                radiusValue.setText(progress + " dp");
-            }
-
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-                int value = seekBar.getProgress();
-                preferences.edit().putInt(PREF_CAMERA_CORNER_RADIUS, value).apply();
-                record("camera_corner_radius", "radius_dp", value);
-                CameraHelperService.cameraSettingsChanged(CameraProbeActivity.this);
-            }
-        });
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        updateButton = button("Оновлення");
-        clearLogsButton = button("Очистити старі логи");
-        shutdownButton = button("Shutdown");
-        actions.addView(updateButton, new LinearLayout.LayoutParams(0, dp(52), 1));
-        actions.addView(clearLogsButton, new LinearLayout.LayoutParams(0, dp(52), 1));
-        actions.addView(shutdownButton, new LinearLayout.LayoutParams(0, dp(52), 1));
-        panel.addView(actions, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(56)));
-
-        autoStartSwitch.setOnCheckedChangeListener((button, checked) -> {
-            record("auto_start_toggle", "enabled", checked);
-            CameraHelperService.updateAutoStart(this, checked);
-            if (checked) {
-                backgroundStartSettingsRequired = true;
-            } else {
-                backgroundStartSettingsRequired = false;
-                cancelPendingBackgroundStartSettings();
-            }
-            advanceStartupAuthorizationFlow();
-            updateControls();
-        });
-        updateButton.setOnClickListener(view -> runManualUpdateCheck());
-        clearLogsButton.setOnClickListener(view -> clearCaptureLogs());
-        shutdownButton.setOnClickListener(view -> requestAppShutdown());
-        return panel;
-    }
-
-    private void requestAppShutdown() {
+    void requestAppShutdown() {
         if (shutdownRequested) return;
         shutdownRequested = true;
         record("user_shutdown_requested", "auto_start",
@@ -1196,46 +1100,28 @@ public final class CameraProbeActivity extends Activity
         finishAndRemoveTask();
     }
 
-    private View buildMusicPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(0, dp(12), 0, 0);
+    void onSettingsAutoStartChanged(boolean checked) {
+        record("auto_start_toggle", "enabled", checked);
+        CameraHelperService.updateAutoStart(this, checked);
+        if (checked) {
+            backgroundStartSettingsRequired = true;
+        } else {
+            backgroundStartSettingsRequired = false;
+            cancelPendingBackgroundStartSettings();
+        }
+        advanceStartupAuthorizationFlow();
+        updateControls();
+    }
 
-        musicSwitch = new Switch(this);
-        musicSwitch.setText("Підсвітка та метадані музики");
-        musicSwitch.setTextColor(Color.WHITE);
-        musicSwitch.setTextSize(20);
-        musicSwitch.setChecked(preferences.getBoolean("music_visualizer_enabled", false));
-        panel.addView(musicSwitch, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
+    void onCameraCornerRadiusChanged(int value) {
+        record("camera_corner_radius", "radius_dp", value);
+        CameraHelperService.cameraSettingsChanged(this);
+    }
 
-        musicStatus = statusText(musicSwitch.isChecked()
-                ? "Очікування helper..." : "Вимкнено");
-        panel.addView(musicStatus);
-
-        TextView journalTitle = label("Журнал");
-        journalTitle.setPadding(0, dp(24), 0, dp(8));
-        panel.addView(journalTitle);
-
-        ScrollView journalScroll = new ScrollView(this);
-        musicJournalText = new TextView(this);
-        musicJournalText.setTextColor(Color.LTGRAY);
-        musicJournalText.setTextSize(15);
-        musicJournalText.setPadding(dp(12), dp(12), dp(12), dp(12));
-        musicJournalText.setText("Подій ще немає");
-        journalScroll.addView(musicJournalText, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
-        panel.addView(journalScroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-
-        musicSwitch.setOnCheckedChangeListener((button, checked) -> {
-            preferences.edit().putBoolean("music_visualizer_enabled", checked).apply();
-            musicStatus.setText(checked ? "Очікування helper..." : "Вимкнено");
-            record("music_toggle", "enabled", checked);
-            CameraHelperService.musicSettingsChanged(this);
-            updateControls();
-        });
-        return panel;
+    void onMusicEnabledChanged(boolean checked) {
+        record("music_toggle", "enabled", checked);
+        CameraHelperService.musicSettingsChanged(this);
+        updateControls();
     }
 
     private View buildReverseCameraPanel() {
@@ -2429,9 +2315,15 @@ public final class CameraProbeActivity extends Activity
         debugShowRawSwitch.setTextColor(Color.WHITE);
         debugShowRawSwitch.setTextSize(16);
         debugShowRawSwitch.setChecked(true);
+        debugDewarpSwitch = new Switch(this);
+        debugDewarpSwitch.setText("Dewarp");
+        debugDewarpSwitch.setTextColor(Color.WHITE);
+        debugDewarpSwitch.setTextSize(16);
+        debugDewarpSwitch.setChecked(false);
         controls.addView(debugHorizontalButton, new LinearLayout.LayoutParams(dp(140), dp(52)));
         controls.addView(debugVerticalButton, new LinearLayout.LayoutParams(dp(140), dp(52)));
         controls.addView(debugShowRawSwitch, new LinearLayout.LayoutParams(dp(180), dp(52)));
+        controls.addView(debugDewarpSwitch, new LinearLayout.LayoutParams(dp(160), dp(52)));
 
         panel.addView(controls, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(54)));
@@ -2475,6 +2367,18 @@ public final class CameraProbeActivity extends Activity
             applyDebugPreviewMode();
             record("debug_show_raw", "enabled", checked,
                     "viewpoint", activeCameraViewpoint);
+        });
+        debugDewarpSwitch.setOnCheckedChangeListener((button, checked) -> {
+            record("debug_stock_dewarp", "enabled", checked,
+                    "viewpoint", activeCameraViewpoint);
+            if (requestedOpen && activePreview == debugPreview
+                    && activeCameraViewpoint >= 0 && !cameraTransition.pending()) {
+                retryStockViewpoint = activeCameraViewpoint;
+                retryStockDebug = true;
+                closeCameraForTransition("debug_stock_dewarp_changed");
+            } else {
+                updateControls();
+            }
         });
         updateDebugOrientationControls();
         return panel;
@@ -2966,7 +2870,7 @@ public final class CameraProbeActivity extends Activity
         return counter;
     }
 
-    private TextView label(String text) {
+    TextView label(String text) {
         TextView label = new TextView(this);
         label.setText(text);
         label.setTextColor(Color.WHITE);
@@ -2974,7 +2878,7 @@ public final class CameraProbeActivity extends Activity
         return label;
     }
 
-    private TextView statusText(String text) {
+    TextView statusText(String text) {
         TextView status = new TextView(this);
         status.setText(text);
         status.setTextColor(Color.LTGRAY);
@@ -2984,7 +2888,7 @@ public final class CameraProbeActivity extends Activity
         return status;
     }
 
-    private Button button(String text) {
+    Button button(String text) {
         Button button = new Button(this);
         button.setText(text);
         button.setTextSize(13);
@@ -3284,7 +3188,7 @@ public final class CameraProbeActivity extends Activity
         return profile.right() ? "camera_front_right_y" : "camera_front_left_y";
     }
 
-    private void clearCaptureLogs() {
+    void clearCaptureLogs() {
         File captures = logFile == null ? null : logFile.getParentFile();
         File[] logs = captures == null ? null
                 : captures.listFiles((directory, name) -> name.endsWith(".jsonl"));
@@ -3299,8 +3203,7 @@ public final class CameraProbeActivity extends Activity
             }
         }
         record("logs_cleared", "deleted", deleted, "failed", failed);
-        TextView status = settingsStatus == null ? guardStatus : settingsStatus;
-        status.setText(failed == 0
+        settingsPanel.setServiceStatus(failed == 0
                 ? "Старі JSONL очищено: " + deleted
                 : "Очищено " + deleted + ", не видалено " + failed);
     }
@@ -3372,15 +3275,19 @@ public final class CameraProbeActivity extends Activity
             return;
         }
         int index = previewIndex(viewName);
+        int requestId = nextActivityCameraRequestId();
+        activeActivityCameraRequestId = requestId;
         activePreview = debugPreview;
         activePreviewCover = debugPreviewCover;
         activeCameraViewpoint = -1;
         showPreview(debugPreview, activePreviewCover, false, false);
         requestedOpen = true;
         debugCameraStatus.setText("Opening " + viewName + " (preview " + index + ")...");
-        record("open_requested", "view", viewName, "preview_index", index);
+        record("open_requested", "view", viewName, "preview_index", index,
+                "request_id", requestId);
         updateControls();
-        ipcExecutor.execute(() -> transactOpen(current, surface, index, viewName));
+        ipcExecutor.execute(() -> transactOpen(
+                current, surface, index, viewName, requestId));
     }
 
     private void openDirectCamera(int index) {
@@ -3419,7 +3326,8 @@ public final class CameraProbeActivity extends Activity
                 || requestedOpen || cameraHandoffPending || cameraTransition.pending()) {
             return;
         }
-        int requestId = ++reversePreviewRequestSequence;
+        int requestId = nextActivityCameraRequestId();
+        activeActivityCameraRequestId = requestId;
         ReverseCameraCompositionView.SurfaceBundle bundle;
         try {
             bundle = reverseCameraPreview.acquirePreviewSurfaces(requestId);
@@ -3495,13 +3403,18 @@ public final class CameraProbeActivity extends Activity
         }
         activePreview = target;
         activePreviewCover = cover;
+        activeDirectCameraIndex = index;
+        int requestId = nextActivityCameraRequestId();
+        activeActivityCameraRequestId = requestId;
         showPreview(target, cover, false, false);
         requestedOpen = true;
         status.setText("Opening " + cameraTag + " / index " + index + "...");
         record("open_requested", "renderer", renderer,
-                "camera_tag", cameraTag, "preview_index", index);
+                "camera_tag", cameraTag, "preview_index", index,
+                "request_id", requestId);
         updateControls();
-        ipcExecutor.execute(() -> transactOpenDirect(current, surface, cameraTag, index));
+        ipcExecutor.execute(() -> transactOpenDirect(
+                current, surface, cameraTag, index, requestId));
     }
 
     private static int previewIndex(String viewName) {
@@ -3513,6 +3426,12 @@ public final class CameraProbeActivity extends Activity
             case "front": return 4;
             default: throw new IllegalArgumentException("Unknown view: " + viewName);
         }
+    }
+
+    private int nextActivityCameraRequestId() {
+        activityCameraRequestSequence = activityCameraRequestSequence == Integer.MAX_VALUE
+                ? 1 : activityCameraRequestSequence + 1;
+        return activityCameraRequestSequence;
     }
 
     private void openStockAvm(int viewpoint, boolean debug) {
@@ -3588,6 +3507,9 @@ public final class CameraProbeActivity extends Activity
         activePreview = target;
         activePreviewCover = cover;
         activeCameraViewpoint = viewpoint;
+        activeDirectCameraIndex = -1;
+        int requestId = nextActivityCameraRequestId();
+        activeActivityCameraRequestId = requestId;
         if (!debug) {
             updateProductionPreviewSize();
             CameraProfile profile = CameraProfile.of(selectedCameraId);
@@ -3600,25 +3522,30 @@ public final class CameraProbeActivity extends Activity
             cameraStatus.setText("Opening " + viewName + "...");
             record("open_requested", "renderer", renderer,
                     "camera_tag", "pano_h", "preview_index", previewIndex,
+                    "request_id", requestId,
                     "direction", right ? "right" : "left",
                     "camera_id", profile.id, "camera", profile.wireName);
             updateControls();
             ipcExecutor.execute(() -> transactOpenDirect(
-                    current, surface, "pano_h", previewIndex));
+                    current, surface, "pano_h", previewIndex, requestId));
             return;
         }
         applyDebugPreviewMode();
         requestedOpen = true;
         boolean horizontal = debugHorizontal;
+        boolean stockDewarp = shouldUseStockDewarp(
+                debug, debugDewarpSwitch != null && debugDewarpSwitch.isChecked());
         cameraStatus(debug).setText("Opening " + viewName + "...");
         record("open_requested", "renderer", "stock_avm",
                 "view", viewName, "viewpoint", viewpoint,
+                "request_id", requestId,
                 "orientation", horizontal ? "horizontal" : "vertical",
                 "show_raw", debugShowRawSwitch.isChecked(),
+                "dewarp", stockDewarp,
                 "target", "debug");
         updateControls();
         ipcExecutor.execute(() -> transactOpenStockAvm(
-                current, surface, viewpoint, horizontal));
+                current, surface, viewpoint, horizontal, stockDewarp, requestId));
     }
 
     private void acceptDiagnosticIntent(Intent intent) {
@@ -3692,6 +3619,8 @@ public final class CameraProbeActivity extends Activity
         activePreview = null;
         activePreviewCover = null;
         activeCameraViewpoint = -1;
+        activeDirectCameraIndex = -1;
+        activeActivityCameraRequestId = 0;
         updateControls();
         return wasOpen && current != null;
     }
@@ -3722,6 +3651,12 @@ public final class CameraProbeActivity extends Activity
             retryStockViewpoint = -1;
             retryStockDebug = false;
             openStockAvm(viewpoint, debug);
+            return;
+        }
+        if (retryDirectCameraIndex >= 0) {
+            int index = retryDirectCameraIndex;
+            retryDirectCameraIndex = -1;
+            openDirectCamera(index);
             return;
         }
         if (selectedTab == TAB_CAMERA_CALIBRATION) maybeOpenCalibrationCamera();
@@ -3798,7 +3733,8 @@ public final class CameraProbeActivity extends Activity
         }
     }
 
-    private void transactOpen(IBinder current, Surface surface, int index, String viewName) {
+    private void transactOpen(
+            IBinder current, Surface surface, int index, String viewName, int requestId) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -3806,12 +3742,16 @@ public final class CameraProbeActivity extends Activity
             surface.writeToParcel(data, 0);
             data.writeInt(index);
             data.writeString(viewName);
+            data.writeInt(requestId);
             requireTransaction(current, CameraHelperMain.TX_OPEN, data, reply);
             record("ipc_reply", "operation", "open", "reply", reply.readString());
         } catch (Throwable error) {
-            requestedOpen = false;
-            record("ipc_error", "operation", "open", "error", error.toString());
+            record("ipc_error", "operation", "open", "request_id", requestId,
+                    "error", error.toString());
             runOnUiThread(() -> {
+                if (activeActivityCameraRequestId != requestId) return;
+                requestedOpen = false;
+                activeActivityCameraRequestId = 0;
                 cameraStatus(activePreview == debugPreview).setText(
                         "Open failed: " + error.getClass().getSimpleName());
                 updateControls();
@@ -3823,7 +3763,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void transactOpenDirect(
-            IBinder current, Surface surface, String cameraTag, int index) {
+            IBinder current, Surface surface, String cameraTag, int index, int requestId) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -3831,17 +3771,22 @@ public final class CameraProbeActivity extends Activity
             surface.writeToParcel(data, 0);
             data.writeString(cameraTag);
             data.writeInt(index);
+            data.writeInt(requestId);
             requireTransaction(current, CameraHelperMain.TX_OPEN_DIRECT, data, reply);
             record("ipc_reply", "operation", "open_direct",
                     "camera_tag", cameraTag, "preview_index", index,
+                    "request_id", requestId,
                     "reply", reply.readString());
         } catch (Throwable error) {
-            requestedOpen = false;
             record("ipc_error", "operation", "open_direct",
                     "camera_tag", cameraTag, "preview_index", index,
+                    "request_id", requestId,
                     "error", error.toString());
-            CameraHelperService.cameraPreviewStopped(this);
             runOnUiThread(() -> {
+                if (activeActivityCameraRequestId != requestId) return;
+                requestedOpen = false;
+                activeActivityCameraRequestId = 0;
+                CameraHelperService.cameraPreviewStopped(this);
                 TextView status = activePreview == calibrationPreview
                         ? calibrationStatus : directCameraStatus;
                 status.setText(
@@ -3866,6 +3811,7 @@ public final class CameraProbeActivity extends Activity
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
             data.writeInt(surfaces.length);
             for (Surface surface : surfaces) surface.writeToParcel(data, 0);
+            data.writeInt(requestId);
             requireTransaction(current, CameraHelperMain.TX_OPEN_REVERSE_PREVIEW, data, reply);
             String result = reply.readString();
             record("ipc_reply", "operation", "open_reverse_preview",
@@ -3875,11 +3821,13 @@ public final class CameraProbeActivity extends Activity
                 throw new IllegalStateException(json.optString("error", json.optString("kind")));
             }
         } catch (Throwable error) {
-            requestedOpen = false;
             record("ipc_error", "operation", "open_reverse_preview",
                     "request_id", requestId, "error", error.toString());
-            CameraHelperService.cameraPreviewStopped(this);
             runOnUiThread(() -> {
+                if (activeActivityCameraRequestId != requestId) return;
+                requestedOpen = false;
+                activeActivityCameraRequestId = 0;
+                CameraHelperService.cameraPreviewStopped(this);
                 reverseCameraStatus.setText(
                         "Open failed: " + error.getClass().getSimpleName());
                 if (activePreview == reverseCameraPreview) {
@@ -3895,7 +3843,8 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void transactOpenStockAvm(
-            IBinder current, Surface surface, int viewpoint, boolean horizontal) {
+            IBinder current, Surface surface, int viewpoint, boolean horizontal,
+            boolean stockDewarp, int requestId) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -3903,16 +3852,23 @@ public final class CameraProbeActivity extends Activity
             surface.writeToParcel(data, 0);
             data.writeInt(viewpoint);
             data.writeInt(horizontal ? 1 : 0);
+            data.writeInt(stockDewarp ? 1 : 0);
+            data.writeInt(requestId);
             requireTransaction(current, CameraHelperMain.TX_OPEN_STOCK_AVM, data, reply);
             record("ipc_reply", "operation", "open_stock_avm",
                     "viewpoint", viewpoint, "orientation",
-                    horizontal ? "horizontal" : "vertical", "reply", reply.readString());
+                    horizontal ? "horizontal" : "vertical",
+                    "dewarp", stockDewarp, "request_id", requestId,
+                    "reply", reply.readString());
         } catch (Throwable error) {
-            requestedOpen = false;
             record("ipc_error", "operation", "open_stock_avm",
-                    "viewpoint", viewpoint, "error", error.toString());
-            CameraHelperService.cameraPreviewStopped(this);
+                    "viewpoint", viewpoint, "request_id", requestId,
+                    "error", error.toString());
             runOnUiThread(() -> {
+                if (activeActivityCameraRequestId != requestId) return;
+                requestedOpen = false;
+                activeActivityCameraRequestId = 0;
+                CameraHelperService.cameraPreviewStopped(this);
                 cameraStatus(activePreview == debugPreview).setText(
                         "Stock AVM failed: " + error.getClass().getSimpleName());
                 updateControls();
@@ -3921,6 +3877,10 @@ public final class CameraProbeActivity extends Activity
             reply.recycle();
             data.recycle();
         }
+    }
+
+    static boolean shouldUseStockDewarp(boolean debug, boolean enabled) {
+        return debug && enabled;
     }
 
     private void transactClose(IBinder current, String reason) {
@@ -4002,7 +3962,7 @@ public final class CameraProbeActivity extends Activity
         maybeStartForegroundAdbAuthorization();
     }
 
-    private void openBackgroundStartSettings(String reason) {
+    void openBackgroundStartSettings(String reason) {
         if (cameraPermissionPending || backgroundStartSettingsActive || adbAuthPending) return;
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
@@ -4023,7 +3983,7 @@ public final class CameraProbeActivity extends Activity
             backgroundStartSettingsActive = false;
             record("background_start_settings_open_failed", "reason", reason,
                     "error", error.toString());
-            settingsStatus.setText("Системне вікно фонового запуску недоступне");
+            settingsPanel.setServiceStatus("Системне вікно фонового запуску недоступне");
             advanceStartupAuthorizationFlow();
         }
         updateControls();
@@ -4039,7 +3999,7 @@ public final class CameraProbeActivity extends Activity
                 || backgroundStartSettingsStartScheduled;
     }
 
-    private boolean requestAdbAuthorization(
+    boolean requestAdbAuthorization(
             String event, String operation, boolean automatic) {
         IBinder current = helper;
         LocalAdbClient.PromptMode mode = automatic
@@ -4053,7 +4013,7 @@ public final class CameraProbeActivity extends Activity
         cancelPendingForegroundAdbAuthorization();
         adbAuthPending = true;
         adbAuthMode = mode;
-        adbStatus.setText(ADB_WAITING_STATUS);
+        settingsPanel.setAdbStatus(ADB_WAITING_STATUS);
         updateControls();
         record(event, "automatic", automatic, "mode", mode.name());
         ipcExecutor.execute(() -> transactAdbAuthorization(
@@ -4095,7 +4055,7 @@ public final class CameraProbeActivity extends Activity
                     adbAuthMode = null;
                 }
                 if (automatic) adbAuthorizationRequested = false;
-                adbStatus.setText("ADB retry IPC error");
+                settingsPanel.setAdbStatus("ADB retry IPC error");
                 updateControls();
                 advanceStartupAuthorizationFlow();
             });
@@ -4150,124 +4110,6 @@ public final class CameraProbeActivity extends Activity
         reply.readException();
     }
 
-    private void handleMusicEvent(JSONObject event) {
-        String kind = event.optString("kind");
-        if ("music_journal_snapshot".equals(kind)) {
-            musicJournal.clear();
-            JSONArray events = event.optJSONArray("events");
-            if (events != null) {
-                for (int i = 0; i < events.length(); i++) {
-                    try {
-                        appendMusicJournal(formatMusicEvent(
-                                new JSONObject(events.optString(i))));
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
-            renderMusicJournal();
-            return;
-        }
-        if (!kind.startsWith("music_")) return;
-        if (CameraHelperMain.HelperBinder.isMusicJournalEvent(kind)) {
-            appendMusicJournal(formatMusicEvent(event));
-            renderMusicJournal();
-        }
-
-        if ("music_runtime_status".equals(kind)) {
-            boolean enabled = event.optBoolean("enabled");
-            String error = event.optString("error");
-            if (!enabled) musicStatus.setText("Вимкнено");
-            else if (!error.isEmpty()) musicStatus.setText("Помилка: " + error);
-            else if (event.optBoolean("stop_pending")) {
-                musicStatus.setText("Завершення через 3 с");
-            } else if (event.optBoolean("session_active")) {
-                musicStatus.setText("Синхронізація активна");
-            } else {
-                musicStatus.setText("Очікування музики");
-            }
-        } else if ("music_visualizer_start".equals(kind)) {
-            musicStatus.setText(event.optBoolean("ok", true)
-                    ? "Синхронізація активна"
-                    : "Помилка: " + event.optString("error"));
-        } else if ("music_visualizer_stop_pending".equals(kind)) {
-            musicStatus.setText("Завершення через 3 с");
-        } else if ("music_visualizer_stop".equals(kind)) {
-            musicStatus.setText(event.optBoolean("ok", true)
-                    ? "Очікування музики"
-                    : "Помилка: " + event.optString("error"));
-        } else if ("music_runtime_config".equals(kind)) {
-            if (!event.optBoolean("enabled")) musicStatus.setText("Вимкнено");
-            else if (!event.optString("error").isEmpty()) {
-                musicStatus.setText("Помилка: " + event.optString("error"));
-            } else if (event.optBoolean("session_active")) {
-                musicStatus.setText("Синхронізація активна");
-            } else {
-                musicStatus.setText("Очікування музики");
-            }
-        } else if ("music_runtime_error".equals(kind)) {
-            musicStatus.setText("Помилка: " + event.optString("error"));
-        }
-    }
-
-    private void appendMusicJournal(String line) {
-        if (line == null || line.isEmpty()) return;
-        while (musicJournal.size() >= 20) musicJournal.removeFirst();
-        musicJournal.addLast(line);
-    }
-
-    private void renderMusicJournal() {
-        if (musicJournalText == null) return;
-        if (musicJournal.isEmpty()) {
-            musicJournalText.setText("Подій ще немає");
-            return;
-        }
-        StringBuilder text = new StringBuilder();
-        for (String line : musicJournal) {
-            if (text.length() > 0) text.append('\n');
-            text.append(line);
-        }
-        musicJournalText.setText(text);
-    }
-
-    private static String formatMusicEvent(JSONObject event) {
-        String kind = event.optString("kind");
-        String wallTime = event.optString("wall_time");
-        String time = wallTime.length() >= 19 ? wallTime.substring(11, 19) : "--:--:--";
-        String message;
-        if ("music_runtime_config".equals(kind)) {
-            message = event.optBoolean("enabled") ? "Функцію увімкнено" : "Функцію вимкнено";
-        } else if ("music_playback_state".equals(kind)) {
-            message = event.optBoolean("active") ? "Виявлено відтворення" : "Відтворення зупинено";
-        } else if ("music_visualizer_start".equals(kind)) {
-            message = event.optBoolean("ok", true)
-                    ? "Синхронізацію запущено" : "Помилка запуску";
-        } else if ("music_visualizer_stop_pending".equals(kind)) {
-            message = "Зупинка через 3 секунди";
-        } else if ("music_visualizer_stop".equals(kind)) {
-            message = event.optBoolean("ok", true)
-                    ? "Синхронізацію зупинено" : "Помилка зупинки";
-        } else if ("music_metadata_focus".equals(kind)) {
-            message = "Аудіофокус: " + event.optString("to");
-        } else if ("music_metadata_publish".equals(kind)) {
-            message = event.optBoolean("ok", true)
-                    ? "Метадані передано: " + event.optString("package")
-                    : "Помилка передачі метаданих";
-        } else if ("music_metadata_cleanup".equals(kind)) {
-            message = "Метадані очищено";
-        } else if ("music_metadata_relinquished".equals(kind)) {
-            message = "Метадані передано штатній системі";
-        } else if ("music_metadata_error".equals(kind)) {
-            message = "Помилка метаданих: " + event.optString("error");
-        } else if ("music_runtime_error".equals(kind)) {
-            message = "Помилка: " + event.optString("error");
-        } else if ("music_runtime_status".equals(kind)) {
-            message = "Стан оновлено";
-        } else {
-            message = kind;
-        }
-        return time + "  " + message;
-    }
-
     private void handleCameraLaneEvent(JSONObject event) {
         if (rearCameraPolicyStatus == null || frontCameraPolicyStatus == null) return;
         String kind = event.optString("kind");
@@ -4315,7 +4157,7 @@ public final class CameraProbeActivity extends Activity
             try {
                 JSONObject json = new JSONObject(line);
                 String kind = json.optString("kind");
-                handleMusicEvent(json);
+                musicPanel.acceptEvent(json);
                 handleCameraLaneEvent(json);
                 if ("reverse_camera_stopped".equals(kind)) {
                     maybeOpenReversePreview();
@@ -4323,26 +4165,40 @@ public final class CameraProbeActivity extends Activity
                     return;
                 }
                 if (isOverlayCameraEvent(kind, json.optString("camera_owner"))) return;
-                if ("camera_opened".equals(kind)) {
-                    if (shouldRearmStockSurfaceRecovery(
+                if ("camera_shell_died".equals(kind)) {
+                    handleActivityCameraShellDied(json);
+                } else if ("camera_shell_attached".equals(kind)) {
+                    handleActivityCameraShellAttached(json);
+                } else if ("camera_opened".equals(kind)) {
+                    int requestId = json.optInt("request_id", -1);
+                    if (!isCurrentActivityCameraEvent(
+                            requestedOpen, activeActivityCameraRequestId,
+                            requestId, json.optString("source"))) {
+                        record("activity_camera_event_ignored", "kind", kind,
+                                "request_id", requestId,
+                                "active_request_id", activeActivityCameraRequestId,
+                                "source", json.optString("source"));
+                    } else {
+                        if (shouldRearmStockSurfaceRecovery(
                             kind, json.optString("renderer"))) {
-                        if (invalidStockSurfaceRetryUsed) {
-                            record("stock_avm_recovery", "state", "rearmed",
-                                    "reason", "camera_opened");
+                            if (invalidStockSurfaceRetryUsed) {
+                                record("stock_avm_recovery", "state", "rearmed",
+                                        "reason", "camera_opened");
+                            }
+                            invalidStockSurfaceRetryUsed = false;
                         }
-                        invalidStockSurfaceRetryUsed = false;
+                        if (activePreview == reverseCameraPreview
+                                && "reverse_preview_with_stock_base".equals(
+                                        json.optString("view"))) {
+                            reverseCameraStatus.setText("Очікування перших кадрів...");
+                        } else cameraStatusForEvent(json).setText(
+                                json.optString("renderer").startsWith("stock_avm")
+                                || json.optInt("preview_index", -1) < 0
+                                ? "Showing " + json.optString("view")
+                                : "Showing " + json.optString("view")
+                                        + " (preview " + json.optInt("preview_index") + ")");
+                        if (activePreview == calibrationPreview) startCalibrationCopies();
                     }
-                    if (activePreview == reverseCameraPreview
-                            && "reverse_preview_with_stock_base".equals(
-                                    json.optString("view"))) {
-                        reverseCameraStatus.setText("Очікування перших кадрів...");
-                    } else cameraStatusForEvent(json).setText(
-                            json.optString("renderer").startsWith("stock_avm")
-                            || json.optInt("preview_index", -1) < 0
-                            ? "Showing " + json.optString("view")
-                            : "Showing " + json.optString("view")
-                                    + " (preview " + json.optInt("preview_index") + ")");
-                    if (activePreview == calibrationPreview) startCalibrationCopies();
                 } else if ("stock_avm_stage".equals(kind)) {
                     cameraStatusForEvent(json).setText(
                             "Stock AVM: " + json.optString("stage"));
@@ -4365,34 +4221,53 @@ public final class CameraProbeActivity extends Activity
                     maybeOpenProductionPreview();
                     maybeOpenReversePreview();
                 } else if ("camera_error".equals(kind)) {
-                    if (isInvalidStockSurfaceError(
+                    int requestId = json.optInt("request_id", -1);
+                    if (!isCurrentOrIdleActivityCameraTerminalEvent(
+                            activeActivityCameraRequestId, requestId)) {
+                        record("activity_camera_event_ignored", "kind", kind,
+                                "request_id", requestId,
+                                "active_request_id", activeActivityCameraRequestId,
+                                "source", json.optString("source"));
+                    } else {
+                        if (isInvalidStockSurfaceError(
                             json.optString("renderer"), json.optString("stage"),
                             json.optString("error"))) {
-                        if (cameraTransition.pending()) return;
-                        if (!invalidStockSurfaceRetryUsed && requestedOpen) {
-                            invalidStockSurfaceRetryUsed = true;
-                            retryStockViewpoint = activePreview == debugPreview
-                                    ? activeCameraViewpoint : -1;
-                            retryStockDebug = activePreview == debugPreview;
-                            cameraStatusForEvent(json).setText(
-                                    "AVM Surface invalid; retrying once...");
-                            record("stock_avm_recovery", "state", "attempt",
-                                    "viewpoint", retryStockViewpoint,
-                                    "debug", retryStockDebug);
-                            closeCameraForTransition("invalid_stock_surface_recovery");
-                            return;
+                            if (cameraTransition.pending()) return;
+                            if (!invalidStockSurfaceRetryUsed && requestedOpen) {
+                                invalidStockSurfaceRetryUsed = true;
+                                retryStockViewpoint = activePreview == debugPreview
+                                        ? activeCameraViewpoint : -1;
+                                retryStockDebug = activePreview == debugPreview;
+                                cameraStatusForEvent(json).setText(
+                                        "AVM Surface invalid; retrying once...");
+                                record("stock_avm_recovery", "state", "attempt",
+                                        "viewpoint", retryStockViewpoint,
+                                        "debug", retryStockDebug);
+                                closeCameraForTransition("invalid_stock_surface_recovery");
+                                return;
+                            }
                         }
+                        boolean resumeOverlay = requestedOpen;
+                        requestedOpen = false;
+                        activeActivityCameraRequestId = 0;
+                        stopCalibrationCopies(true);
+                        cameraStatusForEvent(json).setText(
+                                "Camera error: " + json.optString("error"));
+                        clearPreview("camera_error");
+                        activePreview = null;
+                        activePreviewCover = null;
+                        if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                     }
-                    boolean resumeOverlay = requestedOpen;
-                    requestedOpen = false;
-                    stopCalibrationCopies(true);
-                    cameraStatusForEvent(json).setText(
-                            "Camera error: " + json.optString("error"));
-                    clearPreview("camera_error");
-                    activePreview = null;
-                    activePreviewCover = null;
-                    if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                 } else if ("camera_closed".equals(kind)) {
+                    int requestId = json.optInt("request_id", -1);
+                    if (!isCurrentOrIdleActivityCameraTerminalEvent(
+                            activeActivityCameraRequestId, requestId)) {
+                        record("activity_camera_event_ignored", "kind", kind,
+                                "request_id", requestId,
+                                "active_request_id", activeActivityCameraRequestId,
+                                "source", json.optString("source"));
+                        return;
+                    }
                     String reason = json.optString("reason");
                     if (CameraTransition.owns(reason)) {
                         if ("stock_avm_shell".equals(json.optString("renderer"))) {
@@ -4404,6 +4279,7 @@ public final class CameraProbeActivity extends Activity
                     } else if (!isIntermediateCameraClose(reason)) {
                         boolean resumeOverlay = requestedOpen;
                         requestedOpen = false;
+                        activeActivityCameraRequestId = 0;
                         stopCalibrationCopies(true);
                         cameraStatusForEvent(json).setText("Camera closed");
                         clearPreview("camera_closed");
@@ -4424,40 +4300,40 @@ public final class CameraProbeActivity extends Activity
                             || eventMode == LocalAdbClient.PromptMode.FORCE) {
                         adbAuthMode = eventMode;
                     }
-                    adbStatus.setText(ADB_WAITING_STATUS);
+                    settingsPanel.setAdbStatus(ADB_WAITING_STATUS);
                 } else if ("adb_auth_state".equals(kind)) {
                     adbAuthPending = json.optBoolean("pending");
                     adbAuthMode = adbAuthPending
                             ? adbPromptMode(json.optString("mode")) : null;
                     if (adbAuthPending) {
-                        adbStatus.setText(ADB_WAITING_STATUS);
-                    } else if (ADB_WAITING_STATUS.contentEquals(adbStatus.getText())) {
-                        adbStatus.setText(telemetryReady
+                        settingsPanel.setAdbStatus(ADB_WAITING_STATUS);
+                    } else if (settingsPanel.isAdbStatus(ADB_WAITING_STATUS)) {
+                        settingsPanel.setAdbStatus(telemetryReady
                                 ? "ADB/RSA авторизовано" : "ADB авторизація потрібна");
                     }
                 } else if ("authorization_superseded".equals(kind)) {
                     adbAuthMode = adbPromptMode(json.optString("next_mode"));
                     adbAuthPending = adbAuthMode != null;
-                    if (adbAuthPending) adbStatus.setText(ADB_WAITING_STATUS);
+                    if (adbAuthPending) settingsPanel.setAdbStatus(ADB_WAITING_STATUS);
                 } else if ("adb_auth_auto_blocked".equals(kind)) {
-                    adbStatus.setText("ADB авторизація потрібна; натисніть повторити");
+                    settingsPanel.setAdbStatus("ADB авторизація потрібна; натисніть повторити");
                 } else if ("adb_auth_result".equals(kind)) {
                     if (!json.optBoolean("ok")) {
                         telemetryReady = false;
-                        adbStatus.setText("ADB: " + json.optString("error"));
+                        settingsPanel.setAdbStatus("ADB: " + json.optString("error"));
                     } else {
-                        adbStatus.setText("ADB/RSA авторизовано");
+                        settingsPanel.setAdbStatus("ADB/RSA авторизовано");
                     }
                 } else if ("helper_launch".equals(kind) && !json.optBoolean("ok")) {
                     telemetryReady = false;
-                    settingsStatus.setText("Helper: " + json.optString("error"));
+                    settingsPanel.setServiceStatus("Helper: " + json.optString("error"));
                 } else if ("helper_death".equals(kind)
                         || "helper_ping_failed".equals(kind)) {
                     telemetryReady = false;
                     guardStatus.setText("Helper відновлюється: " + json.optString("error"));
-                    settingsStatus.setText("Helper відновлюється: "
+                    settingsPanel.setServiceStatus("Helper відновлюється: "
                             + json.optString("error"));
-                    if (musicSwitch.isChecked()) musicStatus.setText("Helper недоступний");
+                    if (musicPanel.isChecked()) musicPanel.setStatus("Helper недоступний");
                 } else if ("guard_config".equals(kind)) {
                     if (json.optBoolean("active")) {
                         guardStatus.setText("Guard активний");
@@ -4540,6 +4416,76 @@ public final class CameraProbeActivity extends Activity
             advanceStartupAuthorizationFlow();
             updateControls();
         });
+    }
+
+    private void handleActivityCameraShellDied(JSONObject event) {
+        boolean transitionPending = cameraTransition.pending();
+        boolean hadCamera = shouldRecoverActivityCamera(
+                requestedOpen, cameraHandoffPending, transitionPending);
+        if (!hadCamera) return;
+        if (activePreview == debugPreview && activeCameraViewpoint >= 0) {
+            retryStockViewpoint = activeCameraViewpoint;
+            retryStockDebug = true;
+        } else if (activePreview == directCameraPreview && activeDirectCameraIndex >= 0) {
+            retryDirectCameraIndex = activeDirectCameraIndex;
+        }
+        cameraShellRecoveryPending = true;
+        cameraShellAvailable = false;
+        boolean previewClaimed = requestedOpen || cameraHandoffPending;
+        cameraTransition.cancel();
+        cameraPreview.removeCallbacks(finishCameraHandoff);
+        debugPreview.removeCallbacks(finishCameraHandoff);
+        directCameraPreview.removeCallbacks(finishDirectCameraHandoff);
+        calibrationPreview.removeCallbacks(finishDirectCameraHandoff);
+        cameraHandoffPending = false;
+        pendingCameraViewpoint = -1;
+        pendingDirectCalibration = false;
+        pendingDirectCameraIndex = -1;
+        pendingDirectCameraTag = null;
+        requestedOpen = false;
+        stopCalibrationCopies(true);
+        clearPreview("camera_shell_died");
+        activePreview = null;
+        activePreviewCover = null;
+        activeCameraViewpoint = -1;
+        activeDirectCameraIndex = -1;
+        activeActivityCameraRequestId = 0;
+        if (previewClaimed) CameraHelperService.cameraPreviewStopped(this);
+        cameraStatus.setText("Camera helper відновлюється...");
+        debugCameraStatus.setText("Camera helper відновлюється...");
+        directCameraStatus.setText("Camera helper відновлюється...");
+        calibrationStatus.setText("Camera helper відновлюється...");
+        reverseCameraStatus.setText("Camera helper відновлюється...");
+        record("activity_camera_output_invalidated",
+                "camera_shell_epoch", event.optLong("camera_shell_epoch", 0),
+                "reopen_pending", cameraShellRecoveryPending);
+    }
+
+    private void handleActivityCameraShellAttached(JSONObject event) {
+        cameraShellAvailable = true;
+        resumeActivityCameraAfterShellRecovery(
+                "camera_shell_attached", event.optLong("camera_shell_epoch", 0));
+    }
+
+    private void resumeActivityCameraAfterShellRecovery(String reason, long epoch) {
+        if (!shouldResumeActivityCameraRecovery(
+                cameraShellRecoveryPending, activityResumed, cameraShellAvailable)) return;
+        cameraShellRecoveryPending = false;
+        record("activity_camera_reopen",
+                "reason", reason,
+                "camera_shell_epoch", epoch,
+                "selected_tab", selectedTab);
+        resumeSelectedCameraPreview();
+    }
+
+    static boolean shouldRecoverActivityCamera(
+            boolean requestedOpen, boolean handoffPending, boolean transitionPending) {
+        return requestedOpen || handoffPending || transitionPending;
+    }
+
+    static boolean shouldResumeActivityCameraRecovery(
+            boolean pending, boolean resumed, boolean shellAvailable) {
+        return pending && resumed && shellAvailable;
     }
 
     private void updateCounters() {
@@ -4630,14 +4576,18 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void updateControls() {
-        if (autoStartSwitch != null) autoStartSwitch.setEnabled(!shutdownRequested);
-        if (musicSwitch != null) musicSwitch.setEnabled(!shutdownRequested);
-        if (backgroundStartSettingsButton != null) {
-            backgroundStartSettingsButton.setEnabled(!shutdownRequested
-                    && !cameraPermissionPending && !backgroundStartSettingsActive
-                    && !backgroundStartSettingsStartScheduled && !adbAuthPending);
+        if (musicPanel != null) musicPanel.setControlEnabled(!shutdownRequested);
+        if (settingsPanel != null) {
+            settingsPanel.setControlsEnabled(
+                    shutdownRequested,
+                    !shutdownRequested && !cameraPermissionPending
+                            && !backgroundStartSettingsActive
+                            && !backgroundStartSettingsStartScheduled && !adbAuthPending,
+                    !backgroundStartSettingsPending()
+                            && shouldEnableManualAdbAuthorization(
+                                    helper != null, adbAuthPending, adbAuthMode),
+                    !requestedOpen && !cameraHandoffPending);
         }
-        if (shutdownButton != null) shutdownButton.setEnabled(!shutdownRequested);
         if (guardSwitch != null) {
             boolean enabled = guardSwitch.isChecked();
             boolean guardReady = helper != null && telemetryReady;
@@ -4692,6 +4642,9 @@ public final class CameraProbeActivity extends Activity
         if (debugHorizontalButton != null) debugHorizontalButton.setEnabled(debugStockReady);
         if (debugVerticalButton != null) debugVerticalButton.setEnabled(debugStockReady);
         if (debugShowRawSwitch != null) debugShowRawSwitch.setEnabled(debugSurfaceReady);
+        if (debugDewarpSwitch != null) {
+            debugDewarpSwitch.setEnabled(debugStockReady && !cameraTransition.pending());
+        }
         if (rawButton != null) rawButton.setEnabled(debugRawReady && !requestedOpen);
         if (closeButton != null) closeButton.setEnabled(requestedOpen || cameraHandoffPending);
         boolean directReady = helper != null && directCameraSurfaceReady
@@ -4716,18 +4669,10 @@ public final class CameraProbeActivity extends Activity
                     (requestedOpen || cameraHandoffPending)
                             && activePreview == calibrationPreview);
         }
-        if (clearLogsButton != null) {
-            clearLogsButton.setEnabled(!requestedOpen && !cameraHandoffPending);
-        }
         for (Button button : turnStateButtons) {
             if (button != null) button.setEnabled(
                     helper != null && telemetryReady && !manualTurnRequestPending
                             && !guardSwitch.isChecked());
-        }
-        if (adbRetryButton != null) {
-            adbRetryButton.setEnabled(!backgroundStartSettingsPending()
-                    && shouldEnableManualAdbAuthorization(
-                            helper != null, adbAuthPending, adbAuthMode));
         }
         maybeOpenPendingDiagnosticMode(debugStockReady);
     }
@@ -4763,6 +4708,17 @@ public final class CameraProbeActivity extends Activity
                 && ("camera_opened".equals(kind)
                         || "camera_error".equals(kind)
                         || "camera_closed".equals(kind));
+    }
+
+    static boolean isCurrentActivityCameraEvent(
+            boolean requestedOpen, int activeRequestId, int eventRequestId, String source) {
+        return requestedOpen && "helper".equals(source)
+                && activeRequestId > 0 && eventRequestId == activeRequestId;
+    }
+
+    static boolean isCurrentOrIdleActivityCameraTerminalEvent(
+            int activeRequestId, int eventRequestId) {
+        return activeRequestId <= 0 || eventRequestId == activeRequestId;
     }
 
     static boolean isIntermediateCameraClose(String reason) {
@@ -4829,7 +4785,7 @@ public final class CameraProbeActivity extends Activity
                 : String.format(Locale.US, "%.1f", value);
     }
 
-    private int dp(int value) {
+    int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 

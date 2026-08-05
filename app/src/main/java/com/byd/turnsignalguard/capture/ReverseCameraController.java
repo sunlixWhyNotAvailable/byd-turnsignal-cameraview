@@ -48,6 +48,7 @@ final class ReverseCameraController {
     private int requestSequence;
     private int activeRequestId;
     private int[] generations = new int[0];
+    private long cameraShellEpoch;
     private CameraHelperMain.HelperBinder cleanupHelper;
     private String cleanupReason;
     private boolean cleanupRetryAfter;
@@ -125,10 +126,13 @@ final class ReverseCameraController {
                 stop("gear_helper_unavailable", false);
             } else if ("camera_opened".equals(kind)
                     && "reverse".equals(event.optString("camera_owner"))) {
-                cameraOpened();
+                cameraOpened(event.optInt("request_id", -1));
             } else if ("camera_error".equals(kind)
                     && "reverse".equals(event.optString("camera_owner"))) {
-                fail("camera_open_error");
+                int requestId = event.optInt("request_id", -1);
+                if (matchesCameraOpenEvent(activeRequestId, requestId)) {
+                    fail("camera_open_error");
+                }
             } else if ("reverse_overlay_first_frames".equals(kind)) {
                 framesReady(event.optInt("request_id", -1));
             } else if ("reverse_overlay_surface".equals(kind)
@@ -137,6 +141,19 @@ final class ReverseCameraController {
             } else if ("reverse_overlay_error".equals(kind)) {
                 if ("camera_shell_died".equals(event.optString("stage"))) visible = false;
                 fail("overlay_error");
+            } else if ("camera_shell_attached".equals(kind)) {
+                long epoch = event.optLong("camera_shell_epoch", 0);
+                if (epoch > cameraShellEpoch) cameraShellEpoch = epoch;
+            } else if ("camera_shell_died".equals(kind)) {
+                long epoch = event.optLong("camera_shell_epoch", 0);
+                if (!TurnSignalController.isCurrentCameraShellEpoch(
+                        cameraShellEpoch, epoch)) return;
+                emit("reverse_camera_output_invalidated",
+                        "request_id", activeRequestId,
+                        "generations", Arrays.toString(generations),
+                        "reason", "camera_shell_died");
+                visible = false;
+                fail("camera_shell_died");
             }
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "event_parse",
@@ -210,7 +227,7 @@ final class ReverseCameraController {
             return;
         }
         try {
-            activeHelper.openReverseCamera(value.surfaces);
+            activeHelper.openReverseCamera(value.surfaces, activeRequestId);
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "open_surfaces",
                     "error", summary(error));
@@ -221,8 +238,9 @@ final class ReverseCameraController {
                 "generations", Arrays.toString(generations));
     }
 
-    private void cameraOpened() {
-        if (activeRequestId == 0 || generations.length != 3 || stopping || helper == null) return;
+    private void cameraOpened(int requestId) {
+        if (!matchesCameraOpenEvent(activeRequestId, requestId)
+                || generations.length != 3 || stopping || helper == null) return;
         handler.removeCallbacks(firstFrameTimeout);
         handler.postDelayed(firstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
         helper.armReverseOverlayFrames(activeRequestId, generations);
@@ -385,6 +403,10 @@ final class ReverseCameraController {
     private int nextRequestId() {
         requestSequence = requestSequence == Integer.MAX_VALUE ? 1 : requestSequence + 1;
         return requestSequence;
+    }
+
+    static boolean matchesCameraOpenEvent(int activeRequestId, int eventRequestId) {
+        return activeRequestId > 0 && eventRequestId == activeRequestId;
     }
 
     private void emit(String kind, Object... fields) {

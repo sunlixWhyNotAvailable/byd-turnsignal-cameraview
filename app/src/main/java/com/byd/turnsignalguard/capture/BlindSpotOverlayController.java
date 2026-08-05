@@ -96,11 +96,13 @@ final class BlindSpotOverlayController {
     private CameraHelperMain.HelperBinder helper;
     private boolean suspended;
     private boolean reversePriority;
+    private long cameraShellEpoch;
     private boolean uiHidden;
     private boolean shutdown;
     private boolean stateValid;
     private boolean cameraOpenPending;
     private boolean cameraSessionOpen;
+    private int cameraOpenRequestId;
     private int blink = -1;
     private float speedKph = Float.NaN;
     private float steeringAngle = Float.NaN;
@@ -358,13 +360,21 @@ final class BlindSpotOverlayController {
                     && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
                             event.optString("camera_owner"))
                     && DIRECT_CAMERA_TAG.equals(event.optString("camera_tag"))) {
-                handler.post(this::cameraOpened);
+                int requestId = event.optInt("request_id", -1);
+                handler.post(() -> cameraOpened(requestId));
             } else if ("camera_error".equals(kind)
                     && "helper".equals(event.optString("source"))
                     && CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(
                             event.optString("camera_owner"))) {
                 String stage = event.optString("stage", kind);
-                handler.post(() -> cameraUnavailable(stage));
+                int requestId = event.optInt("request_id", -1);
+                handler.post(() -> {
+                    if (matchesCameraOpenEvent(
+                            cameraOpenPending || cameraSessionOpen,
+                            cameraOpenRequestId, requestId)) {
+                        cameraUnavailable(stage);
+                    }
+                });
             } else if ("camera_overlay_first_frame".equals(kind)) {
                 int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
@@ -380,6 +390,12 @@ final class BlindSpotOverlayController {
                 int requestId = event.optInt("request_id", -1);
                 String stage = event.optString("stage", kind);
                 handler.post(() -> paneUnavailable(cameraId, requestId, stage));
+            } else if ("camera_shell_attached".equals(kind)) {
+                long epoch = event.optLong("camera_shell_epoch", 0);
+                handler.post(() -> cameraShellAttached(epoch));
+            } else if ("camera_shell_died".equals(kind)) {
+                long epoch = event.optLong("camera_shell_epoch", 0);
+                handler.post(() -> cameraShellDied(epoch));
             }
         } catch (Throwable error) {
             emit("overlay_event_parse_error", "error", summary(error));
@@ -504,18 +520,22 @@ final class BlindSpotOverlayController {
             cameraIds[i] = pane.profile.id;
         }
         cameraOpenPending = true;
+        cameraOpenRequestId = nextRequestId();
         try {
-            helper.openOverlayDirectCameras(surfaces, indexes, cameraIds);
+            helper.openOverlayDirectCameras(
+                    surfaces, indexes, cameraIds, cameraOpenRequestId);
             emit("overlay_camera_request", "camera_ids", java.util.Arrays.toString(cameraIds),
-                    "preview_indexes", java.util.Arrays.toString(indexes));
+                    "preview_indexes", java.util.Arrays.toString(indexes),
+                    "request_id", cameraOpenRequestId);
         } catch (Throwable error) {
             for (Surface surface : surfaces) releaseSurface(surface);
             cameraUnavailable("open_direct_camera");
         }
     }
 
-    private void cameraOpened() {
-        if (!cameraOpenPending) return;
+    private void cameraOpened(int cameraRequestId) {
+        if (!matchesCameraOpenEvent(
+                cameraOpenPending, cameraOpenRequestId, cameraRequestId)) return;
         cameraOpenPending = false;
         cameraSessionOpen = true;
         cancelCameraRetry("camera_opened");
@@ -587,11 +607,34 @@ final class BlindSpotOverlayController {
         if (helper != null) helper.closeOverlayCamera(reason);
         cameraOpenPending = false;
         cameraSessionOpen = false;
+        cameraOpenRequestId = 0;
         for (PaneState pane : panes) {
             pane.ready = false;
             pane.visible = false;
         }
         scheduleCameraRetry(reason);
+    }
+
+    private void cameraShellAttached(long epoch) {
+        if (epoch > cameraShellEpoch) cameraShellEpoch = epoch;
+    }
+
+    private void cameraShellDied(long epoch) {
+        if (!TurnSignalController.isCurrentCameraShellEpoch(cameraShellEpoch, epoch)) return;
+        for (PaneState pane : panes) {
+            if (!pane.expected && pane.requestId <= 0 && pane.generation <= 0) continue;
+            emit("overlay_camera_output_invalidated",
+                    "camera_id", pane.profile.id,
+                    "camera_profile", pane.profile.wireName,
+                    "request_id", pane.requestId,
+                    "surface_generation", pane.generation,
+                    "reason", "camera_shell_died");
+        }
+        cameraOpenPending = false;
+        cameraSessionOpen = false;
+        cameraOpenRequestId = 0;
+        for (PaneState pane : panes) pane.reset();
+        scheduleCameraRetry("camera_shell_died");
     }
 
     private void acceptVehicleState(
@@ -688,7 +731,13 @@ final class BlindSpotOverlayController {
         }
         cameraOpenPending = false;
         cameraSessionOpen = false;
+        cameraOpenRequestId = 0;
         for (PaneState pane : panes) pane.reset();
+    }
+
+    static boolean matchesCameraOpenEvent(
+            boolean pending, int expectedRequestId, int eventRequestId) {
+        return pending && expectedRequestId > 0 && eventRequestId == expectedRequestId;
     }
 
     private boolean hasPendingSurfaces() {

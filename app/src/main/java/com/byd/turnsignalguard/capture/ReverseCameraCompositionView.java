@@ -21,6 +21,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void onReverseSurfacesReady(int[] generations);
         void onReverseFramesReady(int requestId, int[] generations);
         void onReverseSurfaceLost(int cameraIndex, int generation);
+        default void onReverseDewarpStats(
+                int cameraIndex, CameraDewarpRenderer.Stats stats) {}
     }
 
     private final View backgroundPane;
@@ -229,6 +231,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private PaneView addPane(int cameraIndex) {
         PaneView pane = new PaneView(getContext(), cameraIndex);
+        pane.texture.setDewarpStatsSink(stats -> {
+            if (callback != null) callback.onReverseDewarpStats(cameraIndex, stats);
+        });
         pane.texture.setCallback(new BlindSpotCameraView.Callback() {
             @Override
             public void onCameraSurfaceAvailable(
@@ -369,7 +374,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             cover.setBackgroundColor(Color.BLACK);
             addView(cover, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-            texture.addOnLayoutChangeListener((view, left, top, right, bottom,
+            addOnLayoutChangeListener((view, left, top, right, bottom,
                     oldLeft, oldTop, oldRight, oldBottom) ->
                     applyTransform(crop, rotationDegrees));
         }
@@ -377,19 +382,33 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void applyTransform(ReverseCameraLayout.Rect value, int degrees) {
             crop = value;
             rotationDegrees = CameraRotation.clamp(degrees);
-            int width = texture.getWidth();
-            int height = texture.getHeight();
+            int width = getWidth();
+            int height = getHeight();
             if (width <= 0 || height <= 0) return;
 
+            ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
+                    value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT);
+            FrameLayout.LayoutParams textureParams =
+                    (FrameLayout.LayoutParams) texture.getLayoutParams();
+            if (textureParams.width != fitted.width || textureParams.height != fitted.height
+                    || textureParams.leftMargin != fitted.left
+                    || textureParams.topMargin != fitted.top) {
+                textureParams.width = fitted.width;
+                textureParams.height = fitted.height;
+                textureParams.leftMargin = fitted.left;
+                textureParams.topMargin = fitted.top;
+                texture.setLayoutParams(textureParams);
+            }
             Matrix transform = new Matrix();
             CameraRotation.setSourceCropTransform(
                     transform,
-                    new RectF(value.left * width, value.top * height,
-                            value.right() * width, value.bottom() * height),
-                    new RectF(0, 0, width, height),
+                    new RectF(value.left * fitted.width, value.top * fitted.height,
+                            value.right() * fitted.width,
+                            value.bottom() * fitted.height),
+                    new RectF(0, 0, fitted.width, fitted.height),
                     rotationDegrees,
                     CameraRotation.MODE_FIT,
-                    new RectF(0, 0, width, height),
+                    new RectF(0, 0, fitted.width, fitted.height),
                     ReverseCameraLayout.mirrorHorizontally(cameraIndex));
             texture.setRotation(0.0f);
             texture.setScaleX(1.0f);

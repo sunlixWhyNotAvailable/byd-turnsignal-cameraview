@@ -152,6 +152,28 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "surface_generation", generation);
     }
 
+    @Override
+    public void onReverseDewarpStats(
+            int cameraIndex, CameraDewarpRenderer.Stats stats) {
+        emit("camera_dewarp_stats",
+                "camera_owner", CameraHelperMain.CAMERA_OWNER_REVERSE,
+                "camera_index", cameraIndex,
+                "request_id", requestId,
+                "visible", visible,
+                "interval_ms", stats.intervalMs,
+                "callbacks", stats.callbacks,
+                "completed_swaps", stats.completedSwaps,
+                "average_render_ms", stats.averageRenderMs,
+                "max_render_ms", stats.maxRenderMs,
+                "max_swap_ms", stats.maxSwapMs,
+                "max_callback_gap_ms", stats.maxCallbackGapMs,
+                "last_frame_age_ms", stats.lastFrameAgeMs,
+                "max_frame_age_ms", stats.maxFrameAgeMs,
+                "process_max_concurrent_renders", stats.processMaxConcurrentRenders,
+                "buffer_width", stats.bufferWidth,
+                "buffer_height", stats.bufferHeight);
+    }
+
     private void createWindow(
             Display display, Point size, CameraShellProtocol.ReverseOverlaySpec spec)
             throws Exception {

@@ -2,6 +2,7 @@ package com.byd.turnsignalguard.capture;
 
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
 import android.os.Parcel;
 import android.view.Surface;
 
@@ -163,7 +164,7 @@ final class StockAvmPreview {
 
     synchronized boolean open(
             Surface requestedSurface, int requestedViewpoint, Config config,
-            boolean horizontal) throws Exception {
+            boolean horizontal, boolean stockDewarp) throws Exception {
         if (!isAllowedViewpoint(requestedViewpoint)) {
             requestedSurface.release();
             throw new IllegalArgumentException("Unsupported stock AVM viewpoint: "
@@ -196,9 +197,9 @@ final class StockAvmPreview {
             ClassLoader loader = stockContext.getClassLoader();
             ApplicationInfo info = stockContext.getApplicationInfo();
             stage(currentStage, "base=" + baseContext.getPackageName()
-                    + ";base_op=" + baseContext.getOpPackageName()
+                    + ";base_op=" + opPackageName(baseContext)
                     + ";stock=" + stockContext.getPackageName()
-                    + ";stock_op=" + stockContext.getOpPackageName()
+                    + ";stock_op=" + opPackageName(stockContext)
                     + ";source=" + info.sourceDir + ";native=" + info.nativeLibraryDir);
 
             currentStage = "set_stock_context";
@@ -248,6 +249,41 @@ final class StockAvmPreview {
             currentStage = "resolve_sdk_config";
             SdkConfig sdkConfig = resolveSdkConfig(loader, stockContext, config);
             stage(currentStage, sdkConfig.detail());
+
+            currentStage = "configure_stock_dewarp";
+            String selectedViewConfig = stockDewarp
+                    ? selectedViewConfigName(loader, config.panoHeight) : "not_resolved";
+            String standardName = "SViewConfig_" + config.panoHeight + ".json";
+            String cepsName = "CEPS_" + standardName;
+            File standardConfig = new File(sdkConfig.resourcePath, standardName);
+            File cepsConfig = new File(sdkConfig.resourcePath, cepsName);
+            if (stockDewarp) {
+                boolean standardChanged = configureRearSideDewarp(standardConfig, true);
+                boolean cepsChanged = configureRearSideDewarp(cepsConfig, true);
+                stage(currentStage, "enabled=true;selected=" + selectedViewConfig
+                        + ";standard_changed=" + standardChanged
+                        + ";ceps_changed=" + cepsChanged);
+            } else {
+                boolean standardPatched = isRearSideDewarpEnabled(standardConfig);
+                boolean cepsPatched = isRearSideDewarpEnabled(cepsConfig);
+                int removedViewConfigs = 0;
+                if (standardPatched || cepsPatched) {
+                    removedViewConfigs = resetCachedViewConfigs(
+                            new File(sdkConfig.resourcePath), config.panoHeight);
+                    copyAssetDirectory(loader, stockContext,
+                            "resource_ts/" + config.carType + "/CarModel/" + config.subCarType,
+                            sdkConfig.resourcePath);
+                    if (isRearSideDewarpEnabled(standardConfig)
+                            || isRearSideDewarpEnabled(cepsConfig)) {
+                        throw new IllegalStateException("stock SView restore retained dewarp");
+                    }
+                }
+                stage(currentStage, "enabled=false;selected=" + selectedViewConfig
+                        + ";standard_patched=" + standardPatched
+                        + ";ceps_patched=" + cepsPatched
+                        + ";restored=" + (removedViewConfigs > 0)
+                        + ";removed=" + removedViewConfigs);
+            }
 
             currentStage = "disable_sdk_debug";
             boolean debugChanged = disableSdkDebug(
@@ -346,6 +382,11 @@ final class StockAvmPreview {
             requestedSurface.release();
             throw new StageException(currentStage, root(error));
         }
+    }
+
+    private static String opPackageName(Context context) {
+        return Build.VERSION.SDK_INT >= 29
+                ? context.getOpPackageName() : context.getPackageName();
     }
 
     synchronized boolean isOpen() {
@@ -649,6 +690,117 @@ final class StockAvmPreview {
         if (patched.equals(text)) return false;
         Files.write(configFile.toPath(), patched.getBytes(StandardCharsets.UTF_8));
         return true;
+    }
+
+    static boolean configureRearSideDewarp(File configFile, boolean enabled) throws Exception {
+        if (!enabled) return false;
+        if (!configFile.isFile()) {
+            throw new IllegalStateException("stock SView config is missing: " + configFile);
+        }
+        String original = new String(Files.readAllBytes(configFile.toPath()),
+                StandardCharsets.UTF_8);
+        String patched = patchRearSideDewarpBlock(original, "LEFT", 1);
+        patched = patchRearSideDewarpBlock(patched, "RIGHT", 3);
+        if (patched.equals(original)) return false;
+        Files.write(configFile.toPath(), patched.getBytes(StandardCharsets.UTF_8));
+        return true;
+    }
+
+    static boolean isRearSideDewarpEnabled(File configFile) throws Exception {
+        if (!configFile.isFile()) {
+            throw new IllegalStateException("stock SView config is missing: " + configFile);
+        }
+        String original = new String(Files.readAllBytes(configFile.toPath()),
+                StandardCharsets.UTF_8);
+        boolean leftEnabled = patchRearSideDewarpBlock(original, "LEFT", 1).equals(original);
+        boolean rightEnabled = patchRearSideDewarpBlock(original, "RIGHT", 3).equals(original);
+        if (leftEnabled != rightEnabled) {
+            throw new IllegalStateException("partial stock rear-side dewarp: " + configFile);
+        }
+        return leftEnabled;
+    }
+
+    static int resetCachedViewConfigs(File resourcePath, int panoHeight) throws Exception {
+        int removed = 0;
+        String standardName = "SViewConfig_" + panoHeight + ".json";
+        if (Files.deleteIfExists(new File(resourcePath, standardName).toPath())) removed++;
+        if (Files.deleteIfExists(new File(resourcePath, "CEPS_" + standardName).toPath())) {
+            removed++;
+        }
+        return removed;
+    }
+
+    private static String patchRearSideDewarpBlock(
+            String text, String side, int expectedCameraIndex) {
+        String areaName = "AREA_ID_2D_" + side + "_BACK";
+        Pattern areaPattern = Pattern.compile(
+                "(?s)(\\{[^{}]*\\\"NAME\\\"\\s*:\\s*\\\""
+                        + areaName + "\\\"[^{}]*\\})");
+        Matcher areaMatcher = areaPattern.matcher(text);
+        if (!areaMatcher.find()) {
+            throw new IllegalStateException("missing stock area: " + areaName);
+        }
+        int areaStart = areaMatcher.start(1);
+        int areaEnd = areaMatcher.end(1);
+        String area = areaMatcher.group(1);
+        if (areaMatcher.find()) {
+            throw new IllegalStateException("duplicate stock area: " + areaName);
+        }
+
+        Matcher indexMatcher = Pattern.compile(
+                "\\\"INPUT_CAM_IDX\\\"\\s*:\\s*(-?\\d+)").matcher(area);
+        if (!indexMatcher.find() || Integer.parseInt(indexMatcher.group(1)) != expectedCameraIndex
+                || indexMatcher.find()) {
+            throw new IllegalStateException("unexpected camera index for " + areaName);
+        }
+
+        Matcher typeMatcher = Pattern.compile(
+                "\\\"TYPE\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(area);
+        if (!typeMatcher.find()) {
+            throw new IllegalStateException("missing stock type for " + areaName);
+        }
+        String type = typeMatcher.group(1);
+        if (typeMatcher.find()) {
+            throw new IllegalStateException("duplicate stock type for " + areaName);
+        }
+
+        Matcher strengthMatcher = Pattern.compile(
+                "\\\"DEWARP_STRENGTH\\\"\\s*:\\s*([0-9.]+)").matcher(area);
+        boolean hasStrength = strengthMatcher.find();
+        String strength = hasStrength ? strengthMatcher.group(1) : null;
+        if (hasStrength && strengthMatcher.find()) {
+            throw new IllegalStateException("duplicate dewarp strength for " + areaName);
+        }
+        if ("INPUT_CAM_CROPPED".equals(type)) {
+            if (!hasStrength || Float.parseFloat(strength) != 1.0f) {
+                throw new IllegalStateException("unexpected dewarp strength for " + areaName);
+            }
+            return text;
+        }
+        if (!"SINGLE_CAM_TETHERED_REAR".equals(type) || hasStrength) {
+            throw new IllegalStateException("unexpected stock dewarp state for " + areaName);
+        }
+
+        Pattern typeLinePattern = Pattern.compile(
+                "(?m)^([ \\t]*)(\\\"TYPE\\\"[ \\t]*:[ \\t]*)"
+                        + "\\\"SINGLE_CAM_TETHERED_REAR\\\"([ \\t]*,[ \\t]*)(\\r?\\n)");
+        Matcher typeLine = typeLinePattern.matcher(area);
+        if (!typeLine.find()) {
+            throw new IllegalStateException("unsupported stock type line for " + areaName);
+        }
+        String replacement = typeLine.group(1) + typeLine.group(2)
+                + "\"INPUT_CAM_CROPPED\"" + typeLine.group(3) + typeLine.group(4)
+                + typeLine.group(1) + "\"DEWARP_STRENGTH\" : 1," + typeLine.group(4);
+        String patchedArea = typeLine.replaceFirst(Matcher.quoteReplacement(replacement));
+        return text.substring(0, areaStart) + patchedArea + text.substring(areaEnd);
+    }
+
+    private static String selectedViewConfigName(ClassLoader loader, int panoHeight)
+            throws Exception {
+        Object carConfig = invokeStatic(loader, "com.ts.avm.bydsdk.CarConfigData", "getInstance");
+        Object epsType = invoke(carConfig, "getEPSType", new Class<?>[0]);
+        String prefix = "C_EPS".equals(String.valueOf(epsType)) ? "CEPS_" : "";
+        return prefix + "SViewConfig_" + panoHeight + ".json";
     }
 
     private static int countMatches(Matcher matcher) {

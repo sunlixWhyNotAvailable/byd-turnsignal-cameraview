@@ -16,6 +16,7 @@ import android.os.SystemClock;
 
 import org.json.JSONObject;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
@@ -52,9 +53,11 @@ public final class CameraHelperService extends Service {
     private static final String EXTRA_ENABLED = "enabled";
     private static final String EXTRA_REASON = "reason";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
+    private static final long LOG_FLUSH_DELAY_MS = 250;
 
     private final Object logLock = new Object();
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable flushLog = this::flushLogWriter;
     private final Runnable heartbeat = new Runnable() {
         @Override
         public void run() {
@@ -78,6 +81,9 @@ public final class CameraHelperService extends Service {
     private ReverseCameraController reverseCameras;
     private ClusterFullscreenController clusterFullscreen;
     private File logFile;
+    private BufferedWriter logWriter;
+    private boolean logFlushScheduled;
+    private boolean logClosed;
     private boolean foreground;
     private boolean activityVisible;
     private boolean cameraPreviewActive;
@@ -181,6 +187,7 @@ public final class CameraHelperService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
         String reason = intent == null ? "" : intent.getStringExtra(EXTRA_REASON);
+        boolean refreshMusicAfterClose = false;
         lifecycle("service_start", "action", action == null ? "" : action,
                 "reason", reason == null ? "" : reason, "start_id", startId);
         if (ACTION_SHUTDOWN.equals(action)) {
@@ -199,6 +206,7 @@ public final class CameraHelperService extends Service {
             overlay.setUiHidden(false);
             handler.removeCallbacks(resumeOverlay);
             handler.postDelayed(resumeOverlay, 250);
+            refreshMusicAfterClose = true;
         } else if (ACTION_CAMERA_PREVIEW_STARTED.equals(action)) {
             cameraPreviewActive = true;
             handler.removeCallbacks(resumeOverlay);
@@ -221,7 +229,10 @@ public final class CameraHelperService extends Service {
         startForegroundRuntime();
         ensureHelperStarted();
         helper.setRecoveryEnabled(true);
-        if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
+        if (refreshMusicAfterClose) {
+            helper.configureMusic(getSharedPreferences("settings", MODE_PRIVATE)
+                    .getBoolean("music_visualizer_enabled", false));
+        } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
             reverseCameras.settingsChanged();
             clusterFullscreen.settingsChanged();
@@ -273,6 +284,7 @@ public final class CameraHelperService extends Service {
         helper = null;
         stopForegroundRuntime();
         if (recover) GuardRecovery.scheduleSoon(this);
+        closeLogWriter();
         super.onDestroy();
     }
 
@@ -365,14 +377,67 @@ public final class CameraHelperService extends Service {
 
     private void writeLine(String line) {
         synchronized (logLock) {
-            try (OutputStreamWriter writer = new OutputStreamWriter(
-                    new FileOutputStream(logFile, true), StandardCharsets.UTF_8)) {
-                writer.write(line);
-                writer.write('\n');
+            if (logClosed) return;
+            try {
+                if (shouldReopenLog(logWriter != null, logFile.exists())) {
+                    closeLogWriterLocked();
+                }
+                if (logWriter == null) {
+                    logWriter = new BufferedWriter(new OutputStreamWriter(
+                            new FileOutputStream(logFile, true), StandardCharsets.UTF_8));
+                }
+                logWriter.write(line);
+                logWriter.newLine();
+                if (!logFlushScheduled) {
+                    logFlushScheduled = true;
+                    if (!handler.postDelayed(flushLog, LOG_FLUSH_DELAY_MS)) {
+                        logFlushScheduled = false;
+                        logWriter.flush();
+                    }
+                }
             } catch (Throwable ignored) {
                 // Logcat still receives the same helper event.
+                closeLogWriterLocked();
             }
         }
+    }
+
+    static boolean shouldReopenLog(boolean writerOpen, boolean fileExists) {
+        return writerOpen && !fileExists;
+    }
+
+    private void flushLogWriter() {
+        synchronized (logLock) {
+            logFlushScheduled = false;
+            if (logWriter == null) return;
+            try {
+                logWriter.flush();
+            } catch (Throwable ignored) {
+                closeLogWriterLocked();
+            }
+        }
+    }
+
+    private void closeLogWriter() {
+        handler.removeCallbacks(flushLog);
+        synchronized (logLock) {
+            logClosed = true;
+            closeLogWriterLocked();
+        }
+    }
+
+    private void closeLogWriterLocked() {
+        logFlushScheduled = false;
+        if (logWriter == null) return;
+        try {
+            logWriter.flush();
+        } catch (Throwable ignored) {
+        }
+        try {
+            logWriter.close();
+        } catch (Throwable ignored) {
+        }
+        logWriter = null;
     }
 
     private void acceptHelperLine(String line) {

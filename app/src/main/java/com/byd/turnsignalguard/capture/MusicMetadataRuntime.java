@@ -1,5 +1,6 @@
 package com.byd.turnsignalguard.capture;
 
+import android.annotation.SuppressLint;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.media.AudioManager;
@@ -31,7 +32,7 @@ import java.util.function.BiConsumer;
 
 final class MusicMetadataRuntime {
     static final long PUBLISH_DEBOUNCE_MS = 750;
-    static final long SESSION_REPAIR_DEBOUNCE_MS = 150;
+    static final long SESSION_REPAIR_DEBOUNCE_MS = PUBLISH_DEBOUNCE_MS;
     static final int SOURCE_THIRD_PARTY = 26;
     static final int DEVICE_AUDIO = 1002;
     static final int DEVICE_INSTRUMENT = 1007;
@@ -165,7 +166,7 @@ final class MusicMetadataRuntime {
     private void startObservers(String reason) {
         if (!enabled || !awake) return;
         if (observersStarted) {
-            schedulePublish(reason + "_retry", false);
+            schedulePublish(reason + "_retry", shouldForceObserverRetry(reason));
             return;
         }
         try {
@@ -244,7 +245,7 @@ final class MusicMetadataRuntime {
 
     private void schedulePublish(String reason, boolean force) {
         if (!enabled || !awake || !observersStarted) return;
-        forcePending |= force;
+        forcePending = coalesceForce(forcePending, force);
         String nextReason = reason == null ? "unknown" : reason;
         if ("sessions_callback".equals(nextReason)
                 || !"sessions_callback".equals(pendingReason)) {
@@ -473,6 +474,14 @@ final class MusicMetadataRuntime {
             String reason, boolean published, String previousPackage, String nextPackage) {
         return published && "sessions_callback".equals(reason)
                 && nextPackage != null && nextPackage.equals(previousPackage);
+    }
+
+    static boolean shouldForceObserverRetry(String reason) {
+        return "configure".equals(reason);
+    }
+
+    static boolean coalesceForce(boolean pending, boolean requested) {
+        return pending || requested;
     }
 
     static long publishDelayMs(String reason) {
@@ -732,6 +741,7 @@ final class MusicMetadataRuntime {
         private final int progressFid;
         private final int[] timeFids;
 
+        @SuppressLint("WrongConstant")
         BydMediaWriter(Context context, BiConsumer<String, Object[]> eventSink) throws Exception {
             this.eventSink = eventSink;
             autoManager = context.getSystemService("auto");
