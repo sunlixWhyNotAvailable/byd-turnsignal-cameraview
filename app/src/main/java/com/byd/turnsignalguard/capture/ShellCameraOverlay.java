@@ -211,6 +211,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextPreview.setAlpha(1.0f);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
+        nextPreview.setDewarpEventSink(this::emitDewarpEvent);
+        nextPreview.applyRawFallbackCrop(spec.rawFallbackCrop);
         nextPreview.applyDewarpConfig(spec.dewarp);
         nextPreview.applyDirectCameraCrop(spec.crop());
         nextRoot.addView(nextPreview, new FrameLayout.LayoutParams(
@@ -262,14 +264,13 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "display_id", activeDisplayId,
                 "display_name", windows.getDefaultDisplay().getName(),
                 "dewarp_enabled", spec.dewarp.enabled,
-                "dewarp_strength", spec.dewarp.strength,
-                "dewarp_center_x", spec.dewarp.centerX,
-                "dewarp_center_y", spec.dewarp.centerY,
-                "dewarp_zoom", spec.dewarp.zoom);
+                "dewarp_lens", spec.dewarp.lens,
+                "dewarp_fov_degrees", spec.dewarp.fovDegrees);
     }
 
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
         visible = false;
+        preview.applyRawFallbackCrop(spec.rawFallbackCrop);
         preview.applyDewarpConfig(spec.dewarp);
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();
@@ -355,6 +356,41 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "process_max_concurrent_renders", stats.processMaxConcurrentRenders,
                 "buffer_width", stats.bufferWidth,
                 "buffer_height", stats.bufferHeight);
+    }
+
+    private void emitDewarpEvent(CameraDewarpRenderer.Event event) {
+        emit(event.kind,
+                "camera_owner", CameraHelperMain.CAMERA_OWNER_OVERLAY,
+                "camera_profile", CameraProfile.of(cameraId).wireName,
+                "request_id", requestId,
+                "surface_generation", surfaceGeneration,
+                "lens", event.lens,
+                "enabled", event.enabled,
+                "fov_degrees", event.fovDegrees,
+                "mesh_vertices", event.vertexCount,
+                "generation_ms", event.generationMs,
+                "error", event.error);
+        if (CameraDewarpRenderer.isFatalEventKind(event.kind)) {
+            hideFailedRenderer();
+            emit("camera_overlay_error", "stage", event.kind,
+                    "request_id", requestId,
+                    "surface_generation", surfaceGeneration,
+                    "error", event.error);
+        }
+    }
+
+    private void hideFailedRenderer() {
+        visible = false;
+        completedFrameRequestId = 0;
+        clearWarning("dewarp_failed");
+        if (root == null || layout == null || windows == null) return;
+        try {
+            layout.alpha = 0.0f;
+            windows.updateViewLayout(root, layout);
+        } catch (Throwable error) {
+            emit("camera_overlay_error", "stage", "hide_failed_renderer",
+                    "request_id", requestId, "error", summary(error));
+        }
     }
 
     static boolean isFramePastStaleBuffer(int updatesAfterArm) {

@@ -842,7 +842,10 @@ final class BlindSpotOverlayController {
             CameraProfile profile, int requestId) {
         int target = readTarget(settings, profile);
         int[] displaySize = CameraDisplayTarget.displaySize(context, target);
-        DirectCameraCrop crop = loadDirectCrop(profile);
+        CameraDewarpConfig dewarp = CameraDewarpConfig.load(
+                settings, CameraDewarpConfig.lensFor(profile));
+        DirectCameraCrop crop = DirectCameraCrop.load(settings, profile, dewarp.enabled);
+        DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile, false);
         int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
         int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
@@ -856,7 +859,7 @@ final class BlindSpotOverlayController {
                 geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, readCornerRadius(settings),
-                CameraDewarpConfig.load(settings, CameraDewarpConfig.lensFor(profile)));
+                dewarp, rawCrop);
     }
 
     static int[] overlayGeometry(
@@ -879,20 +882,6 @@ final class BlindSpotOverlayController {
                         * clamp(normalizedY, 0.0f, 1.0f)),
                 size[0], size[1]
         };
-    }
-
-    private DirectCameraCrop loadDirectCrop(CameraProfile profile) {
-        DirectCameraCrop fallback = DirectCameraCrop.defaultFor(profile);
-        return DirectCameraCrop.of(
-                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 0), fallback.left),
-                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 1), fallback.top),
-                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 2), fallback.width),
-                settings.getFloat(DirectCameraCrop.preferenceKey(profile, 3), fallback.height),
-                settings.getInt(DirectCameraCrop.preferenceKey(profile, 4), fallback.aspectMode),
-                settings.getInt(DirectCameraCrop.preferenceKey(profile, 5),
-                        fallback.rotationDegrees),
-                settings.getInt(DirectCameraCrop.preferenceKey(profile, 6),
-                        fallback.rotationMode));
     }
 
     private static String scaleKey(CameraProfile profile) {

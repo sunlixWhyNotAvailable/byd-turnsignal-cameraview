@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(53, BuildConfig.VERSION_CODE);
+        assertEquals(54, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -1068,7 +1068,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(16, CameraShellProtocol.VERSION);
+        assertEquals(17, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -1121,13 +1121,52 @@ public final class AdbCoreTest {
                         640, 480, 16, 36,
                         0.0f, 0.04f, 0.65f, 0.72f,
                         DirectCameraCrop.ASPECT_FREE, 0, 99, 8,
-                        CameraDewarpConfig.disabled()).validate(1920, 1080));
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT))
+                        .validate(1920, 1080));
+        CameraDewarpConfig decoded = CameraShellProtocol.decodeDewarp(
+                CameraDewarpConfig.LENS_RIGHT, 1, 115);
+        assertEquals(CameraDewarpConfig.LENS_RIGHT, decoded.lens);
+        assertTrue(decoded.enabled);
+        assertEquals(115, decoded.fovDegrees);
+        int[] dewarpWire = CameraShellProtocol.encodeDewarp(decoded);
+        assertArrayEquals(new int[]{CameraDewarpConfig.LENS_RIGHT, 1, 115}, dewarpWire);
+        CameraDewarpConfig roundTrip = CameraShellProtocol.decodeDewarp(dewarpWire);
+        assertEquals(decoded.lens, roundTrip.lens);
+        assertEquals(decoded.enabled, roundTrip.enabled);
+        assertEquals(decoded.fovDegrees, roundTrip.fovDegrees);
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(new int[]{1, 0}));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp((int[]) null));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(
+                        CameraDewarpConfig.LENS_LEFT, 2, 100));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(0, 0, 100));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(
+                        CameraDewarpConfig.LENS_LEFT, 0, 141));
+        assertThrows(IllegalArgumentException.class, () ->
+                new CameraShellProtocol.OverlaySpec(
+                        CameraProfile.REAR_RIGHT, 1, CameraDisplayTarget.TABLET,
+                        640, 480, 16, 36,
+                        0.0f, 0.04f, 0.65f, 0.72f,
+                        DirectCameraCrop.ASPECT_FREE, 0, 8,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT))
+                        .validate(1920, 1080));
         assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
                 0, CameraDisplayTarget.TABLET, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
         new CameraShellProtocol.ReverseOverlaySpec(
                 1, ReverseCameraLayout.defaults(), 8).validate(1920, 990);
+        assertThrows(IllegalArgumentException.class,
+                () -> new CameraShellProtocol.ReverseOverlaySpec(
+                        1, ReverseCameraLayout.defaults(), 8,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT),
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR),
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT))
+                        .validate(1920, 990));
         assertThrows(IllegalArgumentException.class,
                 () -> new CameraShellProtocol.ReverseOverlaySpec(
                         1, ReverseCameraLayout.defaults(), 49).validate(1920, 990));

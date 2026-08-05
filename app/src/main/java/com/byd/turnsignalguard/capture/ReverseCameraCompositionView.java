@@ -23,6 +23,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void onReverseSurfaceLost(int cameraIndex, int generation);
         default void onReverseDewarpStats(
                 int cameraIndex, CameraDewarpRenderer.Stats stats) {}
+        default void onReverseDewarpEvent(
+                int cameraIndex, CameraDewarpRenderer.Event event) {}
     }
 
     private final View backgroundPane;
@@ -35,6 +37,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private boolean previewBaseFreshFrame;
     private Callback callback;
     private ReverseCameraLayout model = ReverseCameraLayout.defaults();
+    private ReverseCameraLayout rawFallbackModel = ReverseCameraLayout.defaults();
     private int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
     private int armedRequestId;
     private boolean framesReported;
@@ -144,6 +147,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyModel();
     }
 
+    void applyRawFallbackLayout(ReverseCameraLayout value) {
+        if (value == null) throw new IllegalArgumentException("raw fallback layout is required");
+        rawFallbackModel = value;
+        applyModel();
+    }
+
     boolean surfacesReady() {
         for (PaneView pane : panes) {
             if (pane.surface == null || !pane.surface.isValid()) return false;
@@ -234,6 +243,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
         pane.texture.setDewarpStatsSink(stats -> {
             if (callback != null) callback.onReverseDewarpStats(cameraIndex, stats);
         });
+        pane.texture.setDewarpEventSink(event -> {
+            if (callback != null) callback.onReverseDewarpEvent(cameraIndex, event);
+        });
         pane.texture.setCallback(new BlindSpotCameraView.Callback() {
             @Override
             public void onCameraSurfaceAvailable(
@@ -272,6 +284,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 }
                 pane.freshFrame = true;
                 maybeReportFrames();
+            }
+
+            @Override
+            public void onDewarpFallbackChanged(BlindSpotCameraView view) {
+                applyModel();
             }
         });
         addView(pane, new FrameLayout.LayoutParams(1, 1));
@@ -317,6 +334,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
         backgroundPane.setZ(0.0f);
         for (PaneView pane : panes) {
             ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
+            ReverseCameraLayout.Rect sourceCrop = pane.texture.usesRawFallback()
+                    ? rawFallbackModel.pane(pane.cameraIndex).sourceCrop
+                    : value.sourceCrop;
             ReverseCameraLayout.PixelRect baseRect =
                     ReverseCameraLayout.project(value.destination, width, height);
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) pane.getLayoutParams();
@@ -326,7 +346,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             params.topMargin = baseRect.top;
             pane.setLayoutParams(params);
             pane.setZ(1.0f + value.zOrder);
-            pane.applyTransform(value.sourceCrop, value.rotationDegrees);
+            pane.applyTransform(sourceCrop, value.rotationDegrees);
         }
     }
 

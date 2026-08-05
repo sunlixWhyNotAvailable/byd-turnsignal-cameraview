@@ -137,10 +137,15 @@ final class ReverseCameraController {
                 framesReady(event.optInt("request_id", -1));
             } else if ("reverse_overlay_surface".equals(kind)
                     && "destroyed".equals(event.optString("state"))) {
-                fail("surface_destroyed");
+                int requestId = event.optInt("request_id", -1);
+                if (matchesCameraOpenEvent(activeRequestId, requestId)) {
+                    fail("surface_destroyed");
+                }
             } else if ("reverse_overlay_error".equals(kind)) {
-                if ("camera_shell_died".equals(event.optString("stage"))) visible = false;
-                fail("overlay_error");
+                int requestId = event.optInt("request_id", -1);
+                if (matchesCameraOpenEvent(activeRequestId, requestId)) {
+                    fail("overlay_error");
+                }
             } else if ("camera_shell_attached".equals(kind)) {
                 long epoch = event.optLong("camera_shell_epoch", 0);
                 if (epoch > cameraShellEpoch) cameraShellEpoch = epoch;
@@ -197,7 +202,8 @@ final class ReverseCameraController {
         visible = false;
         prioritySink.accept(true);
         CameraShellProtocol.ReverseOverlaySpec spec =
-                new CameraShellProtocol.ReverseOverlaySpec(requestId, loadLayout(settings),
+                new CameraShellProtocol.ReverseOverlaySpec(
+                        requestId, loadLayout(settings), loadRawLayout(settings),
                         BlindSpotOverlayController.readCornerRadius(settings),
                         CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_REAR),
                         CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_LEFT),
@@ -414,6 +420,15 @@ final class ReverseCameraController {
     }
 
     static ReverseCameraLayout loadLayout(SharedPreferences settings) {
+        return loadLayout(settings, false);
+    }
+
+    static ReverseCameraLayout loadRawLayout(SharedPreferences settings) {
+        return loadLayout(settings, true);
+    }
+
+    private static ReverseCameraLayout loadLayout(
+            SharedPreferences settings, boolean forceRawCrop) {
         try {
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
             ReverseCameraLayout.Rect defaultBackground = layout.background;
@@ -434,11 +449,10 @@ final class ReverseCameraController {
                         settings.getFloat(prefix + "top", pane.destination.top),
                         settings.getFloat(prefix + "width", pane.destination.width),
                         settings.getFloat(prefix + "height", pane.destination.height));
-                ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(
-                        settings.getFloat(prefix + "crop_left", pane.sourceCrop.left),
-                        settings.getFloat(prefix + "crop_top", pane.sourceCrop.top),
-                        settings.getFloat(prefix + "crop_width", pane.sourceCrop.width),
-                        settings.getFloat(prefix + "crop_height", pane.sourceCrop.height));
+                boolean dewarped = !forceRawCrop && CameraDewarpConfig.load(settings,
+                        CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex)).enabled;
+                ReverseCameraLayout.Rect crop = loadSourceCrop(
+                        settings, pane.cameraIndex, pane.sourceCrop, dewarped);
                 int rotationDegrees = CameraRotation.clamp(settings.getInt(
                         prefix + "rotation_degrees", pane.rotationDegrees));
                 layout = ReverseCameraLayout.withPane(
@@ -462,22 +476,78 @@ final class ReverseCameraController {
                 .putFloat(PREF_PREFIX + "background_height", layout.background.height);
         for (ReverseCameraLayout.Pane pane : layout.panes()) {
             String prefix = PREF_PREFIX + pane.cameraIndex + "_";
+            boolean dewarped = CameraDewarpConfig.load(settings,
+                    CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex)).enabled;
             editor.putFloat(prefix + "left", pane.destination.left)
                     .putFloat(prefix + "top", pane.destination.top)
                     .putFloat(prefix + "width", pane.destination.width)
                     .putFloat(prefix + "height", pane.destination.height)
-                    .putFloat(prefix + "crop_left", pane.sourceCrop.left)
-                    .putFloat(prefix + "crop_top", pane.sourceCrop.top)
-                    .putFloat(prefix + "crop_width", pane.sourceCrop.width)
-                    .putFloat(prefix + "crop_height", pane.sourceCrop.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, dewarped);
         }
         editor.apply();
     }
 
     static void resetLayout(SharedPreferences settings) {
-        saveLayout(settings, ReverseCameraLayout.defaults());
+        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
+        SharedPreferences.Editor editor = settings.edit()
+                .putFloat(PREF_PREFIX + "background_left", defaults.background.left)
+                .putFloat(PREF_PREFIX + "background_top", defaults.background.top)
+                .putFloat(PREF_PREFIX + "background_width", defaults.background.width)
+                .putFloat(PREF_PREFIX + "background_height", defaults.background.height);
+        for (ReverseCameraLayout.Pane pane : defaults.panes()) {
+            String prefix = PREF_PREFIX + pane.cameraIndex + "_";
+            editor.putFloat(prefix + "left", pane.destination.left)
+                    .putFloat(prefix + "top", pane.destination.top)
+                    .putFloat(prefix + "width", pane.destination.width)
+                    .putFloat(prefix + "height", pane.destination.height)
+                    .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
+                    .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, false);
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, true);
+        }
+        editor.apply();
+    }
+
+    private static ReverseCameraLayout.Rect loadSourceCrop(
+            SharedPreferences settings, int cameraIndex,
+            ReverseCameraLayout.Rect fallback, boolean dewarped) {
+        if (dewarped && !settings.getBoolean(sourceCropSeedKey(cameraIndex), false)) {
+            SharedPreferences.Editor editor = settings.edit();
+            writeSourceCrop(editor, cameraIndex,
+                    loadSourceCrop(settings, cameraIndex, fallback, false), true);
+            editor.apply();
+        }
+        return ReverseCameraLayout.sourceCrop(
+                settings.getFloat(sourceCropKey(cameraIndex, "left", dewarped), fallback.left),
+                settings.getFloat(sourceCropKey(cameraIndex, "top", dewarped), fallback.top),
+                settings.getFloat(sourceCropKey(cameraIndex, "width", dewarped), fallback.width),
+                settings.getFloat(sourceCropKey(cameraIndex, "height", dewarped), fallback.height));
+    }
+
+    private static void writeSourceCrop(
+            SharedPreferences.Editor editor, int cameraIndex,
+            ReverseCameraLayout.Rect crop, boolean dewarped) {
+        editor.putFloat(sourceCropKey(cameraIndex, "left", dewarped), crop.left)
+                .putFloat(sourceCropKey(cameraIndex, "top", dewarped), crop.top)
+                .putFloat(sourceCropKey(cameraIndex, "width", dewarped), crop.width)
+                .putFloat(sourceCropKey(cameraIndex, "height", dewarped), crop.height);
+        if (dewarped) editor.putBoolean(sourceCropSeedKey(cameraIndex), true);
+    }
+
+    static String sourceCropKey(int cameraIndex, String field, boolean dewarped) {
+        CameraDewarpConfig.lensForReverseCamera(cameraIndex);
+        if (!"left".equals(field) && !"top".equals(field)
+                && !"width".equals(field) && !"height".equals(field)) {
+            throw new IllegalArgumentException("invalid reverse crop field");
+        }
+        return PREF_PREFIX + cameraIndex + "_"
+                + (dewarped ? "dewarp_v2_crop_" : "crop_") + field;
+    }
+
+    private static String sourceCropSeedKey(int cameraIndex) {
+        return PREF_PREFIX + cameraIndex + "_dewarp_v2_crop_seeded";
     }
 
     private static void release(Surface[] surfaces) {

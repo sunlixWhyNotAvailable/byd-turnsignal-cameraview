@@ -1,5 +1,7 @@
 package com.byd.turnsignalguard.capture;
 
+import android.content.SharedPreferences;
+
 final class DirectCameraCrop {
     static final String PREF_LEFT_X = "direct_crop_left_x";
     static final String PREF_LEFT_Y = "direct_crop_left_y";
@@ -103,6 +105,66 @@ final class DirectCameraCrop {
                     ? PREF_FRONT_RIGHT_ROTATION_MODE : PREF_FRONT_LEFT_ROTATION_MODE;
         }
         throw new IllegalArgumentException("invalid crop field: " + field);
+    }
+
+    static String preferenceKey(CameraProfile profile, int field, boolean dewarped) {
+        if (!dewarped) return preferenceKey(profile, field);
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        return "direct_crop_dewarp_v2_" + profile.wireName + "_" + fieldName(field);
+    }
+
+    static DirectCameraCrop load(
+            SharedPreferences preferences, CameraProfile profile, boolean dewarped) {
+        if (dewarped) seedDewarpedCrop(preferences, profile);
+        DirectCameraCrop fallback = defaultFor(profile);
+        return of(
+                preferences.getFloat(preferenceKey(profile, 0, dewarped), fallback.left),
+                preferences.getFloat(preferenceKey(profile, 1, dewarped), fallback.top),
+                preferences.getFloat(preferenceKey(profile, 2, dewarped), fallback.width),
+                preferences.getFloat(preferenceKey(profile, 3, dewarped), fallback.height),
+                preferences.getInt(preferenceKey(profile, 4, dewarped), fallback.aspectMode),
+                preferences.getInt(preferenceKey(profile, 5, dewarped),
+                        fallback.rotationDegrees),
+                preferences.getInt(preferenceKey(profile, 6, dewarped),
+                        fallback.rotationMode));
+    }
+
+    static void save(
+            SharedPreferences preferences, CameraProfile profile,
+            boolean dewarped, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit()
+                .putFloat(preferenceKey(profile, 0, dewarped), crop.left)
+                .putFloat(preferenceKey(profile, 1, dewarped), crop.top)
+                .putFloat(preferenceKey(profile, 2, dewarped), crop.width)
+                .putFloat(preferenceKey(profile, 3, dewarped), crop.height)
+                .putInt(preferenceKey(profile, 4, dewarped), crop.aspectMode)
+                .putInt(preferenceKey(profile, 5, dewarped), crop.rotationDegrees)
+                .putInt(preferenceKey(profile, 6, dewarped), crop.rotationMode);
+        if (dewarped) editor.putBoolean(dewarpSeedKey(profile), true);
+        editor.apply();
+    }
+
+    private static void seedDewarpedCrop(
+            SharedPreferences preferences, CameraProfile profile) {
+        if (preferences.getBoolean(dewarpSeedKey(profile), false)) return;
+        save(preferences, profile, true, load(preferences, profile, false));
+    }
+
+    private static String dewarpSeedKey(CameraProfile profile) {
+        return "direct_crop_dewarp_v2_" + profile.wireName + "_seeded";
+    }
+
+    private static String fieldName(int field) {
+        switch (field) {
+            case 0: return "x";
+            case 1: return "y";
+            case 2: return "width";
+            case 3: return "height";
+            case 4: return "aspect";
+            case 5: return "rotation";
+            case 6: return "rotation_mode";
+            default: throw new IllegalArgumentException("invalid crop field: " + field);
+        }
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera, int aspectMode) {

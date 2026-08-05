@@ -17,7 +17,9 @@ import android.view.Surface;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.ShortBuffer;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -29,35 +31,30 @@ final class CameraDewarpRenderer {
     private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final AtomicInteger RENDERS_IN_FLIGHT = new AtomicInteger();
     private static final AtomicInteger MAX_RENDERS_IN_FLIGHT = new AtomicInteger();
-    private static final float[] VERTICES = {
-            -1, -1, 0, 0,
-             1, -1, 1, 0,
-            -1,  1, 0, 1,
-             1,  1, 1, 1
-    };
     private static final String VERTEX_SHADER =
             "attribute vec2 aPosition;\n"
                     + "attribute vec2 aTexCoord;\n"
+                    + "uniform mat4 uTextureMatrix;\n"
+                    + "varying vec2 vRawTexCoord;\n"
                     + "varying vec2 vTexCoord;\n"
-                    + "void main(){ gl_Position=vec4(aPosition,0.0,1.0);"
-                    + "vTexCoord=aTexCoord; }\n";
+                    + "void main(){\n"
+                    + " gl_Position=vec4(aPosition,0.0,1.0);\n"
+                    + " vRawTexCoord=aTexCoord;\n"
+                    + " vTexCoord=(uTextureMatrix*vec4(aTexCoord,0.0,1.0)).xy;\n"
+                    + "}\n";
     private static final String FRAGMENT_SHADER =
             "#extension GL_OES_EGL_image_external : require\n"
                     + "precision mediump float;\n"
                     + "uniform samplerExternalOES uTexture;\n"
-                    + "uniform mat4 uTextureMatrix;\n"
-                    + "uniform float uStrength;\n"
-                    + "uniform vec2 uCenter;\n"
-                    + "uniform float uZoom;\n"
+                    + "varying vec2 vRawTexCoord;\n"
                     + "varying vec2 vTexCoord;\n"
                     + "void main(){\n"
-                    + " vec2 base=(uTextureMatrix*vec4(vTexCoord,0.0,1.0)).xy;\n"
-                    + " vec2 q=(base-uCenter)/uZoom;\n"
-                    + " float r2=4.0*dot(q,q);\n"
-                    + " vec2 uv=uCenter+q*(1.0+uStrength*r2);\n"
-                    + " if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){"
+                    + " if(vRawTexCoord.x<0.0||vRawTexCoord.x>1.0"
+                    + "||vRawTexCoord.y<0.0||vRawTexCoord.y>1.0"
+                    + "||vTexCoord.x<0.0||vTexCoord.x>1.0"
+                    + "||vTexCoord.y<0.0||vTexCoord.y>1.0){"
                     + "gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}\n"
-                    + " gl_FragColor=texture2D(uTexture,uv);\n"
+                    + " gl_FragColor=texture2D(uTexture,vTexCoord);\n"
                     + "}\n";
 
     private final HandlerThread thread = new HandlerThread("camera-dewarp");
@@ -65,7 +62,13 @@ final class CameraDewarpRenderer {
     private final int width;
     private final int height;
     private final Consumer<Stats> statsSink;
+    private final Consumer<Event> eventSink;
     private final Runnable metricsTick = this::emitStatsTick;
+    private final AtomicBoolean mappingUpdatePosted = new AtomicBoolean();
+    private final AtomicBoolean startupFailureReported = new AtomicBoolean();
+    private final AtomicBoolean runtimeFailureReported = new AtomicBoolean();
+    private final AtomicBoolean released = new AtomicBoolean();
+    private final AtomicBoolean cleanupStarted = new AtomicBoolean();
     private volatile CameraDewarpConfig config;
     private Handler handler;
     private Surface cameraSurface;
@@ -78,11 +81,11 @@ final class CameraDewarpRenderer {
     private int positionLocation;
     private int texCoordLocation;
     private int textureMatrixLocation;
-    private int strengthLocation;
-    private int centerLocation;
-    private int zoomLocation;
     private int textureLocation;
     private FloatBuffer vertices;
+    private ShortBuffer indices;
+    private int indexCount;
+    private CameraDewarpConfig appliedConfig;
     private final float[] textureMatrix = new float[16];
     private Throwable startupError;
     private long metricsStartedNs;
@@ -96,6 +99,29 @@ final class CameraDewarpRenderer {
     private long lastFrameAgeNs = -1;
     private long maxFrameAgeNs = -1;
     private boolean metricsActive;
+
+    static final class Event {
+        final String kind;
+        final int lens;
+        final boolean enabled;
+        final int fovDegrees;
+        final int vertexCount;
+        final double generationMs;
+        final String error;
+
+        Event(
+                String kind, CameraDewarpConfig config, int vertexCount,
+                long generationNs, Throwable error) {
+            this.kind = kind;
+            lens = config == null ? 0 : config.lens;
+            enabled = config != null && config.enabled;
+            fovDegrees = config == null ? 0 : config.fovDegrees;
+            this.vertexCount = vertexCount;
+            generationMs = generationNs < 0 ? -1.0 : generationNs / 1_000_000.0;
+            this.error = error == null ? null
+                    : error.getClass().getSimpleName() + ": " + error.getMessage();
+        }
+    }
 
     static final class Stats {
         final long intervalMs;
@@ -141,19 +167,20 @@ final class CameraDewarpRenderer {
 
     private CameraDewarpRenderer(
             SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
-            Consumer<Stats> statsSink) {
+            Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         this.outputTexture = outputTexture;
         this.width = width;
         this.height = height;
         this.config = config;
         this.statsSink = statsSink;
+        this.eventSink = eventSink;
     }
 
     static CameraDewarpRenderer start(
             SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
-            Consumer<Stats> statsSink) {
+            Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
-                outputTexture, width, height, config, statsSink);
+                outputTexture, width, height, config, statsSink, eventSink);
         return renderer.startInternal() ? renderer : null;
     }
 
@@ -162,10 +189,18 @@ final class CameraDewarpRenderer {
     }
 
     void update(CameraDewarpConfig value) {
+        if (value == null) throw new IllegalArgumentException("dewarp config is required");
+        if (released.get()) return;
         config = value;
+        Handler activeHandler = handler;
+        if (activeHandler != null && mappingUpdatePosted.compareAndSet(false, true)) {
+            activeHandler.post(this::applyLatestMapping);
+        }
     }
 
     void release() {
+        released.set(true);
+        if (!cleanupStarted.compareAndSet(false, true)) return;
         Handler activeHandler = handler;
         if (activeHandler == null) return;
         CountDownLatch released = new CountDownLatch(1);
@@ -194,20 +229,24 @@ final class CameraDewarpRenderer {
                 initializeGl();
             } catch (Throwable error) {
                 startupError = error;
-                releaseGl();
+                reportStartupFailure(error);
             } finally {
                 ready.countDown();
             }
         });
         try {
             if (!ready.await(START_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                released.set(true);
                 startupError = new IllegalStateException("dewarp renderer startup timeout");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            released.set(true);
             startupError = interrupted;
         }
         if (startupError == null && cameraSurface != null && cameraSurface.isValid()) return true;
+        reportStartupFailure(startupError == null
+                ? new IllegalStateException("dewarp renderer unavailable") : startupError);
         release();
         return false;
     }
@@ -241,9 +280,6 @@ final class CameraDewarpRenderer {
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition");
         texCoordLocation = GLES20.glGetAttribLocation(program, "aTexCoord");
         textureMatrixLocation = GLES20.glGetUniformLocation(program, "uTextureMatrix");
-        strengthLocation = GLES20.glGetUniformLocation(program, "uStrength");
-        centerLocation = GLES20.glGetUniformLocation(program, "uCenter");
-        zoomLocation = GLES20.glGetUniformLocation(program, "uZoom");
         textureLocation = GLES20.glGetUniformLocation(program, "uTexture");
         int[] textures = new int[1];
         GLES20.glGenTextures(1, textures, 0);
@@ -267,12 +303,17 @@ final class CameraDewarpRenderer {
             } catch (Throwable error) {
                 Log.e(TAG, "Dewarp frame failed", error);
                 texture.setOnFrameAvailableListener(null);
+                metricsActive = false;
+                handler.removeCallbacks(metricsTick);
+                if (runtimeFailureReported.compareAndSet(false, true)) {
+                    emitEvent(new Event("dewarp_frame_failed",
+                            appliedConfig == null ? config : appliedConfig,
+                            vertices == null ? 0 : vertices.capacity() / 4, -1, error));
+                }
             }
         }, handler);
         cameraSurface = new Surface(cameraTexture);
-        vertices = ByteBuffer.allocateDirect(VERTICES.length * 4)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        vertices.put(VERTICES).position(0);
+        installMapping(config);
         metricsStartedNs = SystemClock.elapsedRealtimeNanos();
         metricsActive = true;
         handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
@@ -289,8 +330,6 @@ final class CameraDewarpRenderer {
             cameraTexture.updateTexImage();
             cameraTexture.getTransformMatrix(textureMatrix);
             recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
-            CameraDewarpConfig value = config;
-
             GLES20.glViewport(0, 0, width, height);
             GLES20.glClearColor(0, 0, 0, 1);
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
@@ -305,16 +344,13 @@ final class CameraDewarpRenderer {
             GLES20.glEnableVertexAttribArray(texCoordLocation);
             GLES20.glUniformMatrix4fv(
                     textureMatrixLocation, 1, false, textureMatrix, 0);
-            GLES20.glUniform1f(strengthLocation,
-                    value.enabled ? value.strength / 100.0f : 0.0f);
-            GLES20.glUniform2f(centerLocation,
-                    value.centerX / 100.0f, value.centerY / 100.0f);
-            GLES20.glUniform1f(zoomLocation,
-                    value.enabled ? value.zoom / 100.0f : 1.0f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
             GLES20.glUniform1i(textureLocation, 0);
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            indices.position(0);
+            GLES20.glDrawElements(
+                    GLES20.GL_TRIANGLES, indexCount,
+                    GLES20.GL_UNSIGNED_SHORT, indices);
             long swapStartedNs = SystemClock.elapsedRealtimeNanos();
             require(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "EGL swap failed");
             swapNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
@@ -324,6 +360,44 @@ final class CameraDewarpRenderer {
             RENDERS_IN_FLIGHT.decrementAndGet();
             if (swapped) recordCompletedRender(completedNs - renderStartedNs, swapNs);
         }
+    }
+
+    private void applyLatestMapping() {
+        mappingUpdatePosted.set(false);
+        if (released.get()) return;
+        CameraDewarpConfig latest = config;
+        if (appliedConfig != null && appliedConfig.sameMapping(latest)) return;
+        try {
+            installMapping(latest);
+        } catch (Throwable error) {
+            Log.e(TAG, "Dewarp mesh update failed", error);
+            String kind = mappingFailureKind(appliedConfig, latest);
+            emitEvent(new Event(
+                    kind, latest,
+                    vertices == null ? 0 : vertices.capacity() / 4, -1, error));
+        }
+        if (!released.get() && config != latest
+                && mappingUpdatePosted.compareAndSet(false, true)) {
+            handler.post(this::applyLatestMapping);
+        }
+    }
+
+    private void installMapping(CameraDewarpConfig value) {
+        long startedNs = SystemClock.elapsedRealtimeNanos();
+        CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(value, width, height);
+        FloatBuffer nextVertices = ByteBuffer.allocateDirect(mesh.vertices.length * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        nextVertices.put(mesh.vertices).position(0);
+        ShortBuffer nextIndices = ByteBuffer.allocateDirect(mesh.indices.length * 2)
+                .order(ByteOrder.nativeOrder()).asShortBuffer();
+        nextIndices.put(mesh.indices).position(0);
+        vertices = nextVertices;
+        indices = nextIndices;
+        indexCount = mesh.indices.length;
+        appliedConfig = value;
+        long generationNs = SystemClock.elapsedRealtimeNanos() - startedNs;
+        emitEvent(new Event(
+                "dewarp_mesh_applied", value, mesh.vertexCount(), generationNs, null));
     }
 
     private void recordCallback(long nowNs) {
@@ -398,6 +472,10 @@ final class CameraDewarpRenderer {
         textureId = 0;
         if (program != 0) GLES20.glDeleteProgram(program);
         program = 0;
+        vertices = null;
+        indices = null;
+        indexCount = 0;
+        appliedConfig = null;
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -412,6 +490,38 @@ final class CameraDewarpRenderer {
         eglSurface = EGL14.EGL_NO_SURFACE;
         eglContext = EGL14.EGL_NO_CONTEXT;
         eglDisplay = EGL14.EGL_NO_DISPLAY;
+    }
+
+    private void emitEvent(Event event) {
+        emitEvent(event, false);
+    }
+
+    private void emitEvent(Event event, boolean allowReleased) {
+        if ((!allowReleased && released.get()) || eventSink == null) return;
+        try {
+            eventSink.accept(event);
+        } catch (Throwable error) {
+            Log.w(TAG, "Dewarp event sink failed", error);
+        }
+    }
+
+    private void reportStartupFailure(Throwable error) {
+        if (!startupFailureReported.compareAndSet(false, true)) return;
+        emitEvent(new Event("dewarp_fallback_raw", config, 0, -1, error), true);
+    }
+
+    static String mappingFailureKind(
+            CameraDewarpConfig applied, CameraDewarpConfig requested) {
+        if (requested == null) throw new IllegalArgumentException("requested config required");
+        if (applied == null || (!applied.enabled && requested.enabled)) {
+            return "dewarp_fallback_raw";
+        }
+        return "dewarp_pipeline_failed";
+    }
+
+    static boolean isFatalEventKind(String kind) {
+        return "dewarp_frame_failed".equals(kind)
+                || "dewarp_pipeline_failed".equals(kind);
     }
 
     private static int linkProgram(String vertexSource, String fragmentSource) {

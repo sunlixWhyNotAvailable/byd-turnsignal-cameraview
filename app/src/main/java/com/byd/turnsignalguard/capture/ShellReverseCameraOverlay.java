@@ -49,6 +49,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         else {
             root.setCornerRadiusDp(spec.cornerRadiusDp);
             root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
+            root.applyRawFallbackLayout(spec.rawFallbackLayout);
             root.applyLayout(spec.layout);
             window.alpha = 0.0f;
             windows.updateViewLayout(root, window);
@@ -174,6 +175,45 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "buffer_height", stats.bufferHeight);
     }
 
+    @Override
+    public void onReverseDewarpEvent(
+            int cameraIndex, CameraDewarpRenderer.Event event) {
+        int generation = cameraIndex >= 1 && cameraIndex <= surfaceGenerations.length
+                ? surfaceGenerations[cameraIndex - 1] : 0;
+        emit(event.kind,
+                "camera_owner", CameraHelperMain.CAMERA_OWNER_REVERSE,
+                "camera_index", cameraIndex,
+                "request_id", requestId,
+                "surface_generation", generation,
+                "lens", event.lens,
+                "enabled", event.enabled,
+                "fov_degrees", event.fovDegrees,
+                "mesh_vertices", event.vertexCount,
+                "generation_ms", event.generationMs,
+                "error", event.error);
+        if (CameraDewarpRenderer.isFatalEventKind(event.kind)) {
+            hideFailedRenderer();
+            emit("reverse_overlay_error", "stage", event.kind,
+                    "request_id", requestId,
+                    "camera_index", cameraIndex,
+                    "surface_generation", generation,
+                    "error", event.error);
+        }
+    }
+
+    private void hideFailedRenderer() {
+        visible = false;
+        completedFrameRequestId = 0;
+        if (root == null || window == null || windows == null) return;
+        try {
+            window.alpha = 0.0f;
+            windows.updateViewLayout(root, window);
+        } catch (Throwable error) {
+            emit("reverse_overlay_error", "stage", "hide_failed_renderer",
+                    "request_id", requestId, "error", summary(error));
+        }
+    }
+
     private void createWindow(
             Display display, Point size, CameraShellProtocol.ReverseOverlaySpec spec)
             throws Exception {
@@ -185,6 +225,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.setCallback(this);
         nextRoot.setCornerRadiusDp(spec.cornerRadiusDp);
         nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
+        nextRoot.applyRawFallbackLayout(spec.rawFallbackLayout);
         nextRoot.applyLayout(spec.layout);
         WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
                 size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,

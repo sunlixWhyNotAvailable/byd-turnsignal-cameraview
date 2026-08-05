@@ -14,8 +14,9 @@ android {
         applicationId = "com.byd.turnsignalguard.capture"
         minSdk = 26
         targetSdk = 29
-        versionCode = 53
-        versionName = "0.43.1"
+        versionCode = 54
+        versionName = "0.44.0"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         buildConfigField(
             "String",
             "UPDATE_RELEASE_API_URL",
@@ -37,6 +38,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core:1.13.1")
+    androidTestImplementation("junit:junit:4.13.2")
     testImplementation("junit:junit:4.13.2")
 }
 

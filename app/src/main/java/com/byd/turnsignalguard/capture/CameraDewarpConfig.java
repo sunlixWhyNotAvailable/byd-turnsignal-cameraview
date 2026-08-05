@@ -6,53 +6,49 @@ final class CameraDewarpConfig {
     static final int LENS_LEFT = 1;
     static final int LENS_RIGHT = 2;
     static final int LENS_REAR = 3;
+    static final int LENS_FRONT = 4;
 
-    static final int DEFAULT_STRENGTH = 25;
-    static final int DEFAULT_CENTER = 50;
-    static final int DEFAULT_ZOOM = 115;
+    static final int MIN_FOV_DEGREES = 60;
+    static final int DEFAULT_FOV_DEGREES = 100;
+    static final int MAX_FOV_DEGREES = 140;
 
+    final int lens;
     final boolean enabled;
-    final int strength;
-    final int centerX;
-    final int centerY;
-    final int zoom;
+    final int fovDegrees;
 
-    private CameraDewarpConfig(
-            boolean enabled, int strength, int centerX, int centerY, int zoom) {
+    private CameraDewarpConfig(int lens, boolean enabled, int fovDegrees) {
+        if (!isValidLens(lens)) throw new IllegalArgumentException("invalid camera lens");
+        this.lens = lens;
         this.enabled = enabled;
-        this.strength = clamp(strength, 0, 100);
-        this.centerX = clamp(centerX, 0, 100);
-        this.centerY = clamp(centerY, 0, 100);
-        this.zoom = clamp(zoom, 100, 160);
+        this.fovDegrees = clamp(fovDegrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES);
     }
 
-    static CameraDewarpConfig disabled() {
-        return of(false, DEFAULT_STRENGTH, DEFAULT_CENTER, DEFAULT_CENTER, DEFAULT_ZOOM);
+    static CameraDewarpConfig disabled(int lens) {
+        return of(lens, false, DEFAULT_FOV_DEGREES);
     }
 
-    static CameraDewarpConfig of(
-            boolean enabled, int strength, int centerX, int centerY, int zoom) {
-        return new CameraDewarpConfig(enabled, strength, centerX, centerY, zoom);
+    static CameraDewarpConfig of(int lens, boolean enabled, int fovDegrees) {
+        return new CameraDewarpConfig(lens, enabled, fovDegrees);
     }
 
     static CameraDewarpConfig load(SharedPreferences preferences, int lens) {
         String prefix = prefix(lens);
-        return of(
-                preferences.getBoolean(prefix + "enabled", false),
-                preferences.getInt(prefix + "strength", DEFAULT_STRENGTH),
-                preferences.getInt(prefix + "center_x", DEFAULT_CENTER),
-                preferences.getInt(prefix + "center_y", DEFAULT_CENTER),
-                preferences.getInt(prefix + "zoom", DEFAULT_ZOOM));
+        try {
+            int fov = preferences.getInt(prefix + "fov", DEFAULT_FOV_DEGREES);
+            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES) {
+                return disabled(lens);
+            }
+            return of(lens, preferences.getBoolean(prefix + "enabled", false), fov);
+        } catch (RuntimeException invalidPreferences) {
+            return disabled(lens);
+        }
     }
 
-    static void save(SharedPreferences preferences, int lens, CameraDewarpConfig value) {
-        String prefix = prefix(lens);
+    static void save(SharedPreferences preferences, CameraDewarpConfig value) {
+        String prefix = prefix(value.lens);
         preferences.edit()
                 .putBoolean(prefix + "enabled", value.enabled)
-                .putInt(prefix + "strength", value.strength)
-                .putInt(prefix + "center_x", value.centerX)
-                .putInt(prefix + "center_y", value.centerY)
-                .putInt(prefix + "zoom", value.zoom)
+                .putInt(prefix + "fov", value.fovDegrees)
                 .apply();
     }
 
@@ -67,22 +63,42 @@ final class CameraDewarpConfig {
         throw new IllegalArgumentException("invalid reverse camera index");
     }
 
+    static int lensForDirectCamera(int cameraIndex) {
+        if (cameraIndex == 1) return LENS_REAR;
+        if (cameraIndex == 2) return LENS_LEFT;
+        if (cameraIndex == 3) return LENS_RIGHT;
+        if (cameraIndex == 4) return LENS_FRONT;
+        throw new IllegalArgumentException("invalid direct camera index");
+    }
+
+    static boolean isValidLens(int lens) {
+        return lens >= LENS_LEFT && lens <= LENS_FRONT;
+    }
+
     boolean usesGpu() {
         return enabled;
     }
 
     CameraDewarpConfig withEnabled(boolean value) {
-        return of(value, strength, centerX, centerY, zoom);
+        return of(lens, value, fovDegrees);
     }
 
-    CameraDewarpConfig withValues(int nextStrength, int nextCenterX, int nextCenterY, int nextZoom) {
-        return of(enabled, nextStrength, nextCenterX, nextCenterY, nextZoom);
+    CameraDewarpConfig withFov(int value) {
+        return of(lens, enabled, value);
+    }
+
+    boolean sameMapping(CameraDewarpConfig other) {
+        return other != null
+                && lens == other.lens
+                && enabled == other.enabled
+                && fovDegrees == other.fovDegrees;
     }
 
     private static String prefix(int lens) {
-        if (lens == LENS_LEFT) return "camera_dewarp_left_";
-        if (lens == LENS_RIGHT) return "camera_dewarp_right_";
-        if (lens == LENS_REAR) return "camera_dewarp_rear_";
+        if (lens == LENS_LEFT) return "camera_dewarp_v2_left_";
+        if (lens == LENS_RIGHT) return "camera_dewarp_v2_right_";
+        if (lens == LENS_REAR) return "camera_dewarp_v2_rear_";
+        if (lens == LENS_FRONT) return "camera_dewarp_v2_front_";
         throw new IllegalArgumentException("invalid camera lens");
     }
 
