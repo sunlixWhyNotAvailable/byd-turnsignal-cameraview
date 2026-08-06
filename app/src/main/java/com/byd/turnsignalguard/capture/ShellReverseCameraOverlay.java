@@ -59,7 +59,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "width", size.x, "height", size.y,
                 "rear_dewarp", spec.rearDewarp.enabled,
                 "left_dewarp", spec.leftDewarp.enabled,
-                "right_dewarp", spec.rightDewarp.enabled);
+                "right_dewarp", spec.rightDewarp.enabled,
+                "rear_display_mode", spec.layout.rear.displayMode,
+                "left_display_mode", spec.layout.rearLeft.displayMode,
+                "right_display_mode", spec.layout.rearRight.displayMode);
     }
 
     SurfaceSnapshot acquireSurfaces(int expectedRequestId) {
@@ -188,6 +191,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "lens", event.lens,
                 "enabled", event.enabled,
                 "fov_degrees", event.fovDegrees,
+                "projection", CameraDewarpConfig.projectionLabel(event.projection),
                 "mesh_vertices", event.vertexCount,
                 "generation_ms", event.generationMs,
                 "error", event.error);

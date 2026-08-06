@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 17;
+    static final int VERSION = 18;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -347,6 +347,7 @@ final class CameraShellProtocol {
                 writeRect(parcel, pane.destination);
                 writeRect(parcel, pane.sourceCrop);
                 parcel.writeInt(pane.rotationDegrees);
+                parcel.writeInt(pane.displayMode);
                 parcel.writeInt(pane.zOrder);
             }
         }
@@ -381,6 +382,7 @@ final class CameraShellProtocol {
                 float[] destination = readRect(parcel);
                 float[] crop = readRect(parcel);
                 int rotationDegrees = parcel.readInt();
+                int displayMode = parcel.readInt();
                 int zOrder = parcel.readInt();
                 validateRect(destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
                 validateRect(crop, 0.0f);
@@ -390,11 +392,16 @@ final class CameraShellProtocol {
                 if (!CameraRotation.isValid(rotationDegrees)) {
                     throw new IllegalArgumentException("invalid reverse rotation");
                 }
+                if (!ReverseCameraLayout.isValidDisplayMode(displayMode)) {
+                    throw new IllegalArgumentException("invalid reverse display mode");
+                }
                 layout = ReverseCameraLayout.withPane(layout, cameraIndex,
                         ReverseCameraLayout.destination(destination[0], destination[1],
                                 destination[2], destination[3]),
                         ReverseCameraLayout.sourceCrop(crop[0], crop[1],
                                 crop[2], crop[3]), rotationDegrees);
+                layout = ReverseCameraLayout.withDisplayMode(
+                        layout, cameraIndex, displayMode);
                 indexes[i] = cameraIndex;
                 zOrders[i] = zOrder;
             }
@@ -445,6 +452,9 @@ final class CameraShellProtocol {
                 validateModelRect(pane.sourceCrop, 0.0f);
                 if (!CameraRotation.isValid(pane.rotationDegrees)) {
                     throw new IllegalArgumentException("invalid reverse rotation");
+                }
+                if (!ReverseCameraLayout.isValidDisplayMode(pane.displayMode)) {
+                    throw new IllegalArgumentException("invalid reverse display mode");
                 }
                 if (pane.zOrder < 0 || pane.zOrder >= zSeen.length || zSeen[pane.zOrder]) {
                     throw new IllegalArgumentException("invalid reverse z-order");
@@ -498,29 +508,33 @@ final class CameraShellProtocol {
     }
 
     private static CameraDewarpConfig readDewarp(Parcel parcel) {
-        return decodeDewarp(new int[]{parcel.readInt(), parcel.readInt(), parcel.readInt()});
+        return decodeDewarp(new int[]{
+                parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt()});
     }
 
     static int[] encodeDewarp(CameraDewarpConfig value) {
         if (value == null) throw new IllegalArgumentException("dewarp config required");
-        return new int[]{value.lens, value.enabled ? 1 : 0, value.fovDegrees};
+        return new int[]{
+                value.lens, value.enabled ? 1 : 0, value.fovDegrees, value.projection};
     }
 
     static CameraDewarpConfig decodeDewarp(int[] wire) {
-        if (wire == null || wire.length != 3) {
+        if (wire == null || wire.length != 4) {
             throw new IllegalArgumentException("invalid dewarp wire record");
         }
-        return decodeDewarp(wire[0], wire[1], wire[2]);
+        return decodeDewarp(wire[0], wire[1], wire[2], wire[3]);
     }
 
-    static CameraDewarpConfig decodeDewarp(int lens, int enabled, int fovDegrees) {
+    static CameraDewarpConfig decodeDewarp(
+            int lens, int enabled, int fovDegrees, int projection) {
         if (!CameraDewarpConfig.isValidLens(lens)
                 || (enabled != 0 && enabled != 1)
                 || fovDegrees < CameraDewarpConfig.MIN_FOV_DEGREES
-                || fovDegrees > CameraDewarpConfig.MAX_FOV_DEGREES) {
+                || fovDegrees > CameraDewarpConfig.MAX_FOV_DEGREES
+                || !CameraDewarpConfig.isValidProjection(projection)) {
             throw new IllegalArgumentException("invalid dewarp config");
         }
-        return CameraDewarpConfig.of(lens, enabled == 1, fovDegrees);
+        return CameraDewarpConfig.of(lens, enabled == 1, fovDegrees, projection);
     }
 
     private static void writeCrop(Parcel parcel, DirectCameraCrop crop) {

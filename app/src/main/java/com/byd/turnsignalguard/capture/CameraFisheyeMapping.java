@@ -28,7 +28,8 @@ final class CameraFisheyeMapping {
             for (int column = 0; column < MESH_COLUMNS; column++) {
                 double outputX = column / (double) (MESH_COLUMNS - 1);
                 double[] source = mapOutputToSource(
-                        calibration, config.fovDegrees, outputWidth, outputHeight,
+                        calibration, config.projection, config.fovDegrees,
+                        outputWidth, outputHeight,
                         outputX, outputY);
                 vertices[cursor++] = (float) (outputX * 2.0 - 1.0);
                 vertices[cursor++] = (float) (1.0 - outputY * 2.0);
@@ -59,21 +60,44 @@ final class CameraFisheyeMapping {
     static double[] mapOutputToSource(
             int lens, int fovDegrees, int outputWidth, int outputHeight,
             double outputX, double outputY) {
+        return mapOutputToSource(lens, CameraDewarpConfig.PROJECTION_RECTILINEAR,
+                fovDegrees, outputWidth, outputHeight, outputX, outputY);
+    }
+
+    static double[] mapOutputToSource(
+            int lens, int projection, int fovDegrees, int outputWidth, int outputHeight,
+            double outputX, double outputY) {
         return mapOutputToSource(
-                calibration(lens), fovDegrees, outputWidth, outputHeight, outputX, outputY);
+                calibration(lens), projection, fovDegrees,
+                outputWidth, outputHeight, outputX, outputY);
     }
 
     private static double[] mapOutputToSource(
-            Calibration calibration, int fovDegrees, int outputWidth, int outputHeight,
-            double outputX, double outputY) {
+            Calibration calibration, int projection, int fovDegrees,
+            int outputWidth, int outputHeight, double outputX, double outputY) {
         double fovRadians = Math.toRadians(fovDegrees);
+        if (projection == CameraDewarpConfig.PROJECTION_CYLINDRICAL) {
+            double yaw = (outputX - 0.5) * fovRadians;
+            double cylinderY = (outputY - 0.5)
+                    * outputHeight / outputWidth * fovRadians;
+            return mapRayToSource(
+                    calibration, Math.sin(yaw), cylinderY, Math.cos(yaw));
+        }
+        if (projection != CameraDewarpConfig.PROJECTION_RECTILINEAR) {
+            throw new IllegalArgumentException("invalid camera projection");
+        }
         double outputFocal = outputWidth / (2.0 * Math.tan(fovRadians / 2.0));
         double x = (outputX * outputWidth - outputWidth / 2.0) / outputFocal;
         double y = (outputY * outputHeight - outputHeight / 2.0) / outputFocal;
+        return mapRayToSource(calibration, x, y, 1.0);
+    }
+
+    private static double[] mapRayToSource(
+            Calibration calibration, double x, double y, double z) {
         double radius = Math.hypot(x, y);
         double scale = 1.0;
         if (radius > 1.0e-12) {
-            double theta = Math.atan(radius);
+            double theta = Math.atan2(radius, z);
             double theta2 = theta * theta;
             double theta4 = theta2 * theta2;
             double theta6 = theta4 * theta2;

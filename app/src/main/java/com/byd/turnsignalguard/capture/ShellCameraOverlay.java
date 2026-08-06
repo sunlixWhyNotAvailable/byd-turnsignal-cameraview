@@ -265,7 +265,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "display_name", windows.getDefaultDisplay().getName(),
                 "dewarp_enabled", spec.dewarp.enabled,
                 "dewarp_lens", spec.dewarp.lens,
-                "dewarp_fov_degrees", spec.dewarp.fovDegrees);
+                "dewarp_fov_degrees", spec.dewarp.fovDegrees,
+                "dewarp_projection",
+                CameraDewarpConfig.projectionLabel(spec.dewarp.projection));
     }
 
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
@@ -367,6 +369,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "lens", event.lens,
                 "enabled", event.enabled,
                 "fov_degrees", event.fovDegrees,
+                "projection", CameraDewarpConfig.projectionLabel(event.projection),
                 "mesh_vertices", event.vertexCount,
                 "generation_ms", event.generationMs,
                 "error", event.error);

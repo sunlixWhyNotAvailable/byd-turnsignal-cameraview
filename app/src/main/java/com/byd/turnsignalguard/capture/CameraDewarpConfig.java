@@ -10,35 +10,53 @@ final class CameraDewarpConfig {
 
     static final int MIN_FOV_DEGREES = 60;
     static final int DEFAULT_FOV_DEGREES = 100;
-    static final int MAX_FOV_DEGREES = 140;
+    static final int MAX_FOV_DEGREES = 170;
+
+    static final int PROJECTION_RECTILINEAR = 0;
+    static final int PROJECTION_CYLINDRICAL = 1;
+    static final int DEFAULT_PROJECTION = PROJECTION_RECTILINEAR;
 
     final int lens;
     final boolean enabled;
     final int fovDegrees;
+    final int projection;
 
-    private CameraDewarpConfig(int lens, boolean enabled, int fovDegrees) {
+    private CameraDewarpConfig(
+            int lens, boolean enabled, int fovDegrees, int projection) {
         if (!isValidLens(lens)) throw new IllegalArgumentException("invalid camera lens");
+        if (!isValidProjection(projection)) {
+            throw new IllegalArgumentException("invalid camera projection");
+        }
         this.lens = lens;
         this.enabled = enabled;
         this.fovDegrees = clamp(fovDegrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES);
+        this.projection = projection;
     }
 
     static CameraDewarpConfig disabled(int lens) {
-        return of(lens, false, DEFAULT_FOV_DEGREES);
+        return of(lens, false, DEFAULT_FOV_DEGREES, DEFAULT_PROJECTION);
     }
 
     static CameraDewarpConfig of(int lens, boolean enabled, int fovDegrees) {
-        return new CameraDewarpConfig(lens, enabled, fovDegrees);
+        return of(lens, enabled, fovDegrees, DEFAULT_PROJECTION);
+    }
+
+    static CameraDewarpConfig of(
+            int lens, boolean enabled, int fovDegrees, int projection) {
+        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection);
     }
 
     static CameraDewarpConfig load(SharedPreferences preferences, int lens) {
         String prefix = prefix(lens);
         try {
             int fov = preferences.getInt(prefix + "fov", DEFAULT_FOV_DEGREES);
-            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES) {
+            int projection = preferences.getInt(prefix + "projection", DEFAULT_PROJECTION);
+            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
+                    || !isValidProjection(projection)) {
                 return disabled(lens);
             }
-            return of(lens, preferences.getBoolean(prefix + "enabled", false), fov);
+            return of(lens, preferences.getBoolean(prefix + "enabled", false),
+                    fov, projection);
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -49,6 +67,7 @@ final class CameraDewarpConfig {
         preferences.edit()
                 .putBoolean(prefix + "enabled", value.enabled)
                 .putInt(prefix + "fov", value.fovDegrees)
+                .putInt(prefix + "projection", value.projection)
                 .apply();
     }
 
@@ -75,23 +94,37 @@ final class CameraDewarpConfig {
         return lens >= LENS_LEFT && lens <= LENS_FRONT;
     }
 
+    static boolean isValidProjection(int projection) {
+        return projection >= PROJECTION_RECTILINEAR
+                && projection <= PROJECTION_CYLINDRICAL;
+    }
+
+    static String projectionLabel(int projection) {
+        return projection == PROJECTION_CYLINDRICAL ? "Cylindrical" : "Rectilinear";
+    }
+
     boolean usesGpu() {
         return enabled;
     }
 
     CameraDewarpConfig withEnabled(boolean value) {
-        return of(lens, value, fovDegrees);
+        return of(lens, value, fovDegrees, projection);
     }
 
     CameraDewarpConfig withFov(int value) {
-        return of(lens, enabled, value);
+        return of(lens, enabled, value, projection);
+    }
+
+    CameraDewarpConfig withProjection(int value) {
+        return of(lens, enabled, fovDegrees, value);
     }
 
     boolean sameMapping(CameraDewarpConfig other) {
         return other != null
                 && lens == other.lens
                 && enabled == other.enabled
-                && fovDegrees == other.fovDegrees;
+                && fovDegrees == other.fovDegrees
+                && projection == other.projection;
     }
 
     private static String prefix(int lens) {

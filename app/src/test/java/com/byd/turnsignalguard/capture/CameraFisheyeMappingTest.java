@@ -32,26 +32,51 @@ public final class CameraFisheyeMappingTest {
     public void meshIsFiniteIndexedAndTracksExactMapping() {
         for (int fov : new int[]{60, 100, 140}) {
             CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(
-                    CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, fov),
+                    CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, fov,
+                            CameraDewarpConfig.PROJECTION_RECTILINEAR),
                     1920, 1300);
-            assertEquals(CameraFisheyeMapping.MESH_COLUMNS
-                    * CameraFisheyeMapping.MESH_ROWS, mesh.vertexCount());
-            assertEquals((CameraFisheyeMapping.MESH_COLUMNS - 1)
-                    * (CameraFisheyeMapping.MESH_ROWS - 1) * 6, mesh.indices.length);
-            for (int vertex = 0; vertex < mesh.vertexCount(); vertex++) {
-                int offset = vertex * 4;
-                for (int field = 0; field < 4; field++) {
-                    assertTrue(Float.isFinite(mesh.vertices[offset + field]));
-                }
-                assertTrue(mesh.vertices[offset + 2] >= 0.0f
-                        && mesh.vertices[offset + 2] <= 1.0f);
-                assertTrue(mesh.vertices[offset + 3] >= 0.0f
-                        && mesh.vertices[offset + 3] <= 1.0f);
-            }
-            for (short index : mesh.indices) {
-                assertTrue(Short.toUnsignedInt(index) < mesh.vertexCount());
-            }
-            assertTrue(maxInterpolationError(mesh, fov) < 0.25);
+            assertMesh(mesh, true);
+            assertTrue(maxInterpolationError(mesh,
+                    CameraDewarpConfig.PROJECTION_RECTILINEAR, fov) < 0.25);
+        }
+
+        CameraFisheyeMapping.Mesh wide = CameraFisheyeMapping.buildMesh(
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 170,
+                        CameraDewarpConfig.PROJECTION_RECTILINEAR), 1920, 1300);
+        assertMesh(wide, false);
+        assertTrue(hasOutOfBoundsUv(wide));
+        assertTrue(maxInterpolationError(wide,
+                CameraDewarpConfig.PROJECTION_RECTILINEAR, 170) < 3.0);
+    }
+
+    @Test
+    public void cylindricalMappingHasStableWideAngleGeometry() {
+        double[] center = CameraFisheyeMapping.mapOutputToSource(
+                CameraDewarpConfig.LENS_LEFT,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL,
+                100, 1920, 1300, 0.5, 0.5);
+        assertEquals(960.0, center[0], EPSILON);
+        assertEquals(650.0, center[1], EPSILON);
+        double[] leftEdge = CameraFisheyeMapping.mapOutputToSource(
+                CameraDewarpConfig.LENS_LEFT,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL,
+                100, 1920, 1300, 0.0, 0.5);
+        assertEquals(526.971629, leftEdge[0], EPSILON);
+        assertEquals(650.0, leftEdge[1], EPSILON);
+        double[] rightEdge = CameraFisheyeMapping.mapOutputToSource(
+                CameraDewarpConfig.LENS_LEFT,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL,
+                100, 1920, 1300, 1.0, 0.5);
+        assertEquals(1920.0, leftEdge[0] + rightEdge[0], EPSILON);
+
+        for (int fov : new int[]{60, 100, 170}) {
+            CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(
+                    CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, fov,
+                            CameraDewarpConfig.PROJECTION_CYLINDRICAL),
+                    1920, 1300);
+            assertMesh(mesh, true);
+            assertTrue(maxInterpolationError(mesh,
+                    CameraDewarpConfig.PROJECTION_CYLINDRICAL, fov) < 0.25);
         }
     }
 
@@ -75,7 +100,43 @@ public final class CameraFisheyeMappingTest {
                 CameraDewarpConfig.LENS_LEFT, 100, 1920, 1300, x, y);
     }
 
-    private static double maxInterpolationError(CameraFisheyeMapping.Mesh mesh, int fov) {
+    private static void assertMesh(
+            CameraFisheyeMapping.Mesh mesh, boolean requireSourceBounds) {
+        assertEquals(CameraFisheyeMapping.MESH_COLUMNS
+                * CameraFisheyeMapping.MESH_ROWS, mesh.vertexCount());
+        assertEquals((CameraFisheyeMapping.MESH_COLUMNS - 1)
+                * (CameraFisheyeMapping.MESH_ROWS - 1) * 6, mesh.indices.length);
+        for (int vertex = 0; vertex < mesh.vertexCount(); vertex++) {
+            int offset = vertex * 4;
+            for (int field = 0; field < 4; field++) {
+                assertTrue(Float.isFinite(mesh.vertices[offset + field]));
+            }
+            if (requireSourceBounds) {
+                assertTrue(mesh.vertices[offset + 2] >= 0.0f
+                        && mesh.vertices[offset + 2] <= 1.0f);
+                assertTrue(mesh.vertices[offset + 3] >= 0.0f
+                        && mesh.vertices[offset + 3] <= 1.0f);
+            }
+        }
+        for (short index : mesh.indices) {
+            assertTrue(Short.toUnsignedInt(index) < mesh.vertexCount());
+        }
+    }
+
+    private static boolean hasOutOfBoundsUv(CameraFisheyeMapping.Mesh mesh) {
+        for (int vertex = 0; vertex < mesh.vertexCount(); vertex++) {
+            int offset = vertex * 4;
+            if (mesh.vertices[offset + 2] < 0.0f || mesh.vertices[offset + 2] > 1.0f
+                    || mesh.vertices[offset + 3] < 0.0f
+                    || mesh.vertices[offset + 3] > 1.0f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static double maxInterpolationError(
+            CameraFisheyeMapping.Mesh mesh, int projection, int fov) {
         double max = 0.0;
         double[] offsets = {0.17, 0.43, 0.79};
         for (int row = 0; row < CameraFisheyeMapping.MESH_ROWS - 1; row += 7) {
@@ -88,7 +149,7 @@ public final class CameraFisheyeMappingTest {
                         double outputY = (row + localY)
                                 / (CameraFisheyeMapping.MESH_ROWS - 1.0);
                         double[] exact = CameraFisheyeMapping.mapOutputToSource(
-                                CameraDewarpConfig.LENS_LEFT, fov,
+                                CameraDewarpConfig.LENS_LEFT, projection, fov,
                                 1920, 1300, outputX, outputY);
                         double[] interpolated = interpolate(mesh, column, row, localX, localY);
                         max = Math.max(max, Math.hypot(

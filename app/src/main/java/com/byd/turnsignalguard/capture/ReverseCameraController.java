@@ -457,6 +457,8 @@ final class ReverseCameraController {
                         prefix + "rotation_degrees", pane.rotationDegrees));
                 layout = ReverseCameraLayout.withPane(
                         layout, pane.cameraIndex, destination, crop, rotationDegrees);
+                layout = ReverseCameraLayout.withDisplayMode(
+                        layout, pane.cameraIndex, readDisplayMode(settings, pane.cameraIndex));
             }
             for (int z = 0; z < 3; z++) {
                 int cameraIndex = settings.getInt(PREF_PREFIX + "z_" + z, z + 1);
@@ -483,6 +485,7 @@ final class ReverseCameraController {
                     .putFloat(prefix + "width", pane.destination.width)
                     .putFloat(prefix + "height", pane.destination.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
+                    .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, dewarped);
         }
@@ -503,6 +506,8 @@ final class ReverseCameraController {
                     .putFloat(prefix + "width", pane.destination.width)
                     .putFloat(prefix + "height", pane.destination.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
+                    .putInt(displayModeKey(pane.cameraIndex),
+                            ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, false);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, true);
@@ -544,6 +549,28 @@ final class ReverseCameraController {
         }
         return PREF_PREFIX + cameraIndex + "_"
                 + (dewarped ? "dewarp_v2_crop_" : "crop_") + field;
+    }
+
+    static String displayModeKey(int cameraIndex) {
+        switch (cameraIndex) {
+            case ReverseCameraLayout.REAR_CAMERA_INDEX:
+            case ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX:
+            case ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX:
+                return PREF_PREFIX + cameraIndex + "_display_mode";
+            default:
+                throw new IllegalArgumentException("unsupported reverse camera index: "
+                        + cameraIndex);
+        }
+    }
+
+    private static int readDisplayMode(SharedPreferences settings, int cameraIndex) {
+        try {
+            return ReverseCameraLayout.normalizeDisplayMode(
+                    settings.getInt(displayModeKey(cameraIndex),
+                            ReverseCameraLayout.DEFAULT_DISPLAY_MODE));
+        } catch (Throwable ignored) {
+            return ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
+        }
     }
 
     private static String sourceCropSeedKey(int cameraIndex) {

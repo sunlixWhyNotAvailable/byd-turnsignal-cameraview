@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(54, BuildConfig.VERSION_CODE);
+        assertEquals(55, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -1068,7 +1068,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(17, CameraShellProtocol.VERSION);
+        assertEquals(18, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -1124,28 +1124,38 @@ public final class AdbCoreTest {
                         CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT))
                         .validate(1920, 1080));
         CameraDewarpConfig decoded = CameraShellProtocol.decodeDewarp(
-                CameraDewarpConfig.LENS_RIGHT, 1, 115);
+                CameraDewarpConfig.LENS_RIGHT, 1, 115,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL);
         assertEquals(CameraDewarpConfig.LENS_RIGHT, decoded.lens);
         assertTrue(decoded.enabled);
         assertEquals(115, decoded.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, decoded.projection);
         int[] dewarpWire = CameraShellProtocol.encodeDewarp(decoded);
-        assertArrayEquals(new int[]{CameraDewarpConfig.LENS_RIGHT, 1, 115}, dewarpWire);
+        assertArrayEquals(new int[]{CameraDewarpConfig.LENS_RIGHT, 1, 115,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL}, dewarpWire);
         CameraDewarpConfig roundTrip = CameraShellProtocol.decodeDewarp(dewarpWire);
         assertEquals(decoded.lens, roundTrip.lens);
         assertEquals(decoded.enabled, roundTrip.enabled);
         assertEquals(decoded.fovDegrees, roundTrip.fovDegrees);
+        assertEquals(decoded.projection, roundTrip.projection);
         assertThrows(IllegalArgumentException.class,
                 () -> CameraShellProtocol.decodeDewarp(new int[]{1, 0}));
         assertThrows(IllegalArgumentException.class,
                 () -> CameraShellProtocol.decodeDewarp((int[]) null));
         assertThrows(IllegalArgumentException.class,
                 () -> CameraShellProtocol.decodeDewarp(
-                        CameraDewarpConfig.LENS_LEFT, 2, 100));
-        assertThrows(IllegalArgumentException.class,
-                () -> CameraShellProtocol.decodeDewarp(0, 0, 100));
+                        CameraDewarpConfig.LENS_LEFT, 2, 100,
+                        CameraDewarpConfig.PROJECTION_RECTILINEAR));
         assertThrows(IllegalArgumentException.class,
                 () -> CameraShellProtocol.decodeDewarp(
-                        CameraDewarpConfig.LENS_LEFT, 0, 141));
+                        0, 0, 100, CameraDewarpConfig.PROJECTION_RECTILINEAR));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(
+                        CameraDewarpConfig.LENS_LEFT, 0, 171,
+                        CameraDewarpConfig.PROJECTION_RECTILINEAR));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.decodeDewarp(
+                        CameraDewarpConfig.LENS_LEFT, 0, 100, 9));
         assertThrows(IllegalArgumentException.class, () ->
                 new CameraShellProtocol.OverlaySpec(
                         CameraProfile.REAR_RIGHT, 1, CameraDisplayTarget.TABLET,

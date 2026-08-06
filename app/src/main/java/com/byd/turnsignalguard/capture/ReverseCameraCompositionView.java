@@ -346,7 +346,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             params.topMargin = baseRect.top;
             pane.setLayoutParams(params);
             pane.setZ(1.0f + value.zOrder);
-            pane.applyTransform(sourceCrop, value.rotationDegrees);
+            pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode);
         }
     }
 
@@ -373,6 +373,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         boolean freshFrame;
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(0, 0, 1, 1);
         int rotationDegrees;
+        int displayMode = ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
 
         PaneView(Context context, int cameraIndex) {
             super(context);
@@ -396,18 +397,23 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             addOnLayoutChangeListener((view, left, top, right, bottom,
                     oldLeft, oldTop, oldRight, oldBottom) ->
-                    applyTransform(crop, rotationDegrees));
+                    applyTransform(crop, rotationDegrees, displayMode));
         }
 
-        void applyTransform(ReverseCameraLayout.Rect value, int degrees) {
+        void applyTransform(
+                ReverseCameraLayout.Rect value, int degrees, int nextDisplayMode) {
             crop = value;
             rotationDegrees = CameraRotation.clamp(degrees);
+            displayMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);
             int width = getWidth();
             int height = getHeight();
             if (width <= 0 || height <= 0) return;
 
-            ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
-                    value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT);
+            boolean fit = displayMode == ReverseCameraLayout.DISPLAY_MODE_FIT;
+            ReverseCameraLayout.PixelRect fitted = fit
+                    ? ReverseCameraLayout.fitSourceCrop(
+                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT)
+                    : new ReverseCameraLayout.PixelRect(0, 0, width, height);
             FrameLayout.LayoutParams textureParams =
                     (FrameLayout.LayoutParams) texture.getLayoutParams();
             if (textureParams.width != fitted.width || textureParams.height != fitted.height
@@ -419,15 +425,25 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 textureParams.topMargin = fitted.top;
                 texture.setLayoutParams(textureParams);
             }
+            ReverseCameraLayout.Rect transformCrop = value;
+            int transformMode = CameraRotation.MODE_FIT;
+            if (displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL) {
+                transformCrop = ReverseCameraLayout.coverSourceCrop(
+                        value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT);
+                transformMode = CameraRotation.MODE_FILL;
+            } else if (displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
+                transformMode = CameraRotation.MODE_ALIGNED;
+            }
             Matrix transform = new Matrix();
             CameraRotation.setSourceCropTransform(
                     transform,
-                    new RectF(value.left * fitted.width, value.top * fitted.height,
-                            value.right() * fitted.width,
-                            value.bottom() * fitted.height),
+                    new RectF(transformCrop.left * fitted.width,
+                            transformCrop.top * fitted.height,
+                            transformCrop.right() * fitted.width,
+                            transformCrop.bottom() * fitted.height),
                     new RectF(0, 0, fitted.width, fitted.height),
                     rotationDegrees,
-                    CameraRotation.MODE_FIT,
+                    transformMode,
                     new RectF(0, 0, fitted.width, fitted.height),
                     ReverseCameraLayout.mirrorHorizontally(cameraIndex));
             texture.setRotation(0.0f);

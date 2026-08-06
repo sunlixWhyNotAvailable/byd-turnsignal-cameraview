@@ -21,8 +21,12 @@ public final class CameraDewarpConfigTest {
         assertTrue(value.usesGpu());
         assertFalse(CameraDewarpConfig.disabled(
                 CameraDewarpConfig.LENS_LEFT).usesGpu());
+        assertEquals(CameraDewarpConfig.PROJECTION_RECTILINEAR, value.projection);
         assertThrows(IllegalArgumentException.class,
                 () -> CameraDewarpConfig.of(0, true, 100));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraDewarpConfig.of(
+                        CameraDewarpConfig.LENS_LEFT, true, 100, 2));
 
         assertEquals(CameraDewarpConfig.LENS_LEFT,
                 CameraDewarpConfig.lensFor(CameraProfile.of(CameraProfile.REAR_LEFT)));
@@ -48,19 +52,32 @@ public final class CameraDewarpConfigTest {
                 preferences, CameraDewarpConfig.LENS_LEFT);
         assertFalse(migrated.enabled);
         assertEquals(CameraDewarpConfig.DEFAULT_FOV_DEGREES, migrated.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_RECTILINEAR, migrated.projection);
 
-        CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                CameraDewarpConfig.LENS_LEFT, true, 112));
+        preferences.edit()
+                .putBoolean("camera_dewarp_v2_left_enabled", true)
+                .putInt("camera_dewarp_v2_left_fov", 112)
+                .apply();
         CameraDewarpConfig restored = CameraDewarpConfig.load(
                 preferences, CameraDewarpConfig.LENS_LEFT);
         assertTrue(restored.enabled);
         assertEquals(112, restored.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_RECTILINEAR, restored.projection);
 
-        preferences.edit().putInt("camera_dewarp_v2_left_fov", 200).apply();
+        CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, true, 165,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        restored = CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_LEFT);
+        assertTrue(restored.enabled);
+        assertEquals(165, restored.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, restored.projection);
+
+        preferences.edit().putInt("camera_dewarp_v2_left_projection", 7).apply();
         CameraDewarpConfig invalid = CameraDewarpConfig.load(
                 preferences, CameraDewarpConfig.LENS_LEFT);
         assertFalse(invalid.enabled);
         assertEquals(CameraDewarpConfig.DEFAULT_FOV_DEGREES, invalid.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_RECTILINEAR, invalid.projection);
     }
 
     @Test
@@ -153,6 +170,10 @@ public final class CameraDewarpConfigTest {
         assertEquals("dewarp_pipeline_failed",
                 CameraDewarpRenderer.mappingFailureKind(correctedLeft,
                         correctedLeft.withFov(110)));
+        assertEquals("dewarp_pipeline_failed",
+                CameraDewarpRenderer.mappingFailureKind(correctedLeft,
+                        correctedLeft.withProjection(
+                                CameraDewarpConfig.PROJECTION_CYLINDRICAL)));
         assertTrue(CameraDewarpRenderer.isFatalEventKind("dewarp_frame_failed"));
         assertTrue(CameraDewarpRenderer.isFatalEventKind("dewarp_pipeline_failed"));
         assertFalse(CameraDewarpRenderer.isFatalEventKind("dewarp_fallback_raw"));

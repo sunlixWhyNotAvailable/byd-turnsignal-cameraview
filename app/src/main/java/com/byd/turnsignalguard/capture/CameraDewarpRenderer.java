@@ -105,6 +105,7 @@ final class CameraDewarpRenderer {
         final int lens;
         final boolean enabled;
         final int fovDegrees;
+        final int projection;
         final int vertexCount;
         final double generationMs;
         final String error;
@@ -116,6 +117,8 @@ final class CameraDewarpRenderer {
             lens = config == null ? 0 : config.lens;
             enabled = config != null && config.enabled;
             fovDegrees = config == null ? 0 : config.fovDegrees;
+            projection = config == null
+                    ? CameraDewarpConfig.DEFAULT_PROJECTION : config.projection;
             this.vertexCount = vertexCount;
             generationMs = generationNs < 0 ? -1.0 : generationNs / 1_000_000.0;
             this.error = error == null ? null

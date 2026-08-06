@@ -10,6 +10,10 @@ final class ReverseCameraLayout {
     static final int REAR_LEFT_CAMERA_INDEX = 2;
     static final int REAR_RIGHT_CAMERA_INDEX = 3;
     static final float MIN_DESTINATION_SIZE = 0.08f;
+    static final int DISPLAY_MODE_FIT = 0;
+    static final int DISPLAY_MODE_FILL = 1;
+    static final int DISPLAY_MODE_STRETCH = 2;
+    static final int DEFAULT_DISPLAY_MODE = DISPLAY_MODE_FIT;
 
     private static final int BACK_Z = 0;
     private static final int FRONT_Z = 2;
@@ -36,11 +40,14 @@ final class ReverseCameraLayout {
         return new ReverseCameraLayout(
                 destination(0.0f, 0.0f, 1.0f, 1.0f),
                 new Pane(REAR, REAR_CAMERA_INDEX,
-                        destination(0.0f, 0.0f, 1.0f, 0.5f), fullCrop, 0, 0),
+                        destination(0.0f, 0.0f, 1.0f, 0.5f), fullCrop, 0, 0,
+                        DEFAULT_DISPLAY_MODE),
                 new Pane(REAR_LEFT, REAR_LEFT_CAMERA_INDEX,
-                        destination(0.0f, 0.5f, 0.5f, 0.5f), fullCrop, 1, 0),
+                        destination(0.0f, 0.5f, 0.5f, 0.5f), fullCrop, 1, 0,
+                        DEFAULT_DISPLAY_MODE),
                 new Pane(REAR_RIGHT, REAR_RIGHT_CAMERA_INDEX,
-                        destination(0.5f, 0.5f, 0.5f, 0.5f), fullCrop, 2, 0));
+                        destination(0.5f, 0.5f, 0.5f, 0.5f), fullCrop, 2, 0,
+                        DEFAULT_DISPLAY_MODE));
     }
 
     static boolean mirrorHorizontally(int cameraIndex) {
@@ -86,7 +93,8 @@ final class ReverseCameraLayout {
         return layout.replace(cameraIndex,
                 new Pane(name(cameraIndex), cameraIndex, safeDestination, safeSourceCrop,
                         layout.pane(cameraIndex).zOrder,
-                        layout.pane(cameraIndex).rotationDegrees));
+                        layout.pane(cameraIndex).rotationDegrees,
+                        layout.pane(cameraIndex).displayMode));
     }
 
     static ReverseCameraLayout withPane(
@@ -104,7 +112,18 @@ final class ReverseCameraLayout {
         if (safeDegrees == pane.rotationDegrees) return layout;
         return layout.replace(cameraIndex, new Pane(
                 pane.name, pane.cameraIndex, pane.destination, pane.sourceCrop,
-                pane.zOrder, safeDegrees));
+                pane.zOrder, safeDegrees, pane.displayMode));
+    }
+
+    static ReverseCameraLayout withDisplayMode(
+            ReverseCameraLayout layout, int cameraIndex, int displayMode) {
+        if (layout == null) throw new IllegalArgumentException("layout is required");
+        Pane pane = layout.pane(cameraIndex);
+        int safeMode = normalizeDisplayMode(displayMode);
+        if (safeMode == pane.displayMode) return layout;
+        return layout.replace(cameraIndex, new Pane(
+                pane.name, pane.cameraIndex, pane.destination, pane.sourceCrop,
+                pane.zOrder, pane.rotationDegrees, safeMode));
     }
 
     static ReverseCameraLayout withBackground(
@@ -178,6 +197,35 @@ final class ReverseCameraLayout {
                 (destinationWidth - width) / 2,
                 (destinationHeight - height) / 2,
                 width, height);
+    }
+
+    static Rect coverSourceCrop(
+            Rect crop, int destinationWidth, int destinationHeight,
+            int sourceWidth, int sourceHeight) {
+        if (crop == null || destinationWidth <= 0 || destinationHeight <= 0
+                || sourceWidth <= 0 || sourceHeight <= 0) {
+            throw new IllegalArgumentException("positive crop and bounds are required");
+        }
+        float cropAspect = crop.width * sourceWidth / (crop.height * sourceHeight);
+        float destinationAspect = (float) destinationWidth / destinationHeight;
+        float width = crop.width;
+        float height = crop.height;
+        if (destinationAspect > cropAspect) {
+            height = crop.width * sourceWidth / (destinationAspect * sourceHeight);
+        } else if (destinationAspect < cropAspect) {
+            width = destinationAspect * crop.height * sourceHeight / sourceWidth;
+        }
+        float left = crop.left + (crop.width - width) / 2.0f;
+        float top = crop.top + (crop.height - height) / 2.0f;
+        return sourceCrop(left, top, width, height);
+    }
+
+    static boolean isValidDisplayMode(int displayMode) {
+        return displayMode >= DISPLAY_MODE_FIT && displayMode <= DISPLAY_MODE_STRETCH;
+    }
+
+    static int normalizeDisplayMode(int displayMode) {
+        return isValidDisplayMode(displayMode) ? displayMode : DEFAULT_DISPLAY_MODE;
     }
 
     Pane pane(int cameraIndex) {
@@ -290,18 +338,21 @@ final class ReverseCameraLayout {
 
         private Pane(
                 String name, int cameraIndex, Rect destination, Rect sourceCrop, int zOrder,
-                int rotationDegrees) {
+                int rotationDegrees, int displayMode) {
             this.name = name;
             this.cameraIndex = cameraIndex;
             this.destination = destination;
             this.sourceCrop = sourceCrop;
             this.zOrder = zOrder;
             this.rotationDegrees = CameraRotation.clamp(rotationDegrees);
+            this.displayMode = normalizeDisplayMode(displayMode);
         }
+
+        final int displayMode;
 
         private Pane withZOrder(int nextZOrder) {
             return new Pane(name, cameraIndex, destination, sourceCrop,
-                    nextZOrder, rotationDegrees);
+                    nextZOrder, rotationDegrees, displayMode);
         }
     }
 
@@ -333,7 +384,7 @@ final class ReverseCameraLayout {
         final int width;
         final int height;
 
-        private PixelRect(int left, int top, int width, int height) {
+        PixelRect(int left, int top, int width, int height) {
             this.left = left;
             this.top = top;
             this.width = width;

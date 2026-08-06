@@ -194,6 +194,7 @@ public final class CameraProbeActivity extends Activity
     private Switch reverseCameraSwitch;
     private final SeekBar[] reverseCropSliders = new SeekBar[4];
     private final TextView[] reverseCropValues = new TextView[4];
+    private Spinner reverseDisplayModeInput;
     private final Button[] reversePaneButtons = new Button[4];
     private final Button[] reverseNudgeButtons = new Button[4];
     private final Button[] reverseInspectorButtons = new Button[4];
@@ -203,6 +204,7 @@ public final class CameraProbeActivity extends Activity
     private Button reverseLowerButton;
     private Button reverseRaiseButton;
     private boolean reverseCropUiUpdating;
+    private boolean reverseDisplayModeUiUpdating;
     private boolean reverseRotationUiUpdating;
     private int reverseInspectorMode = REVERSE_INSPECTOR_POSITION;
     private View activePreview;
@@ -234,10 +236,12 @@ public final class CameraProbeActivity extends Activity
     private Switch calibrationDewarpSwitch;
     private SeekBar calibrationDewarpFovSlider;
     private TextView calibrationDewarpFovValue;
+    private Spinner calibrationDewarpProjectionInput;
     private boolean calibrationDewarpUiUpdating;
     private Switch reverseDewarpSwitch;
     private SeekBar reverseDewarpFovSlider;
     private TextView reverseDewarpFovValue;
+    private Spinner reverseDewarpProjectionInput;
     private boolean reverseDewarpUiUpdating;
     private View guardPage;
     private View calibrationPage;
@@ -826,7 +830,9 @@ public final class CameraProbeActivity extends Activity
         record("camera_preview_renderer_failed",
                 "target", calibration ? "camera_calibration" : "production",
                 "kind", event.kind, "lens", event.lens,
-                "fov", event.fovDegrees, "error", event.error);
+                "fov", event.fovDegrees,
+                "projection", CameraDewarpConfig.projectionLabel(event.projection),
+                "error", event.error);
         if (activePreview == view) closeCamera("dewarp_renderer_failed");
         TextView status = calibration ? calibrationStatus : cameraStatus;
         status.setText("Помилка корекції камери; відкрийте preview повторно");
@@ -864,7 +870,9 @@ public final class CameraProbeActivity extends Activity
             int cameraIndex, CameraDewarpRenderer.Event event) {
         record("reverse_preview_dewarp_event", "camera_index", cameraIndex,
                 "kind", event.kind, "lens", event.lens,
-                "fov", event.fovDegrees, "error", event.error);
+                "fov", event.fovDegrees,
+                "projection", CameraDewarpConfig.projectionLabel(event.projection),
+                "error", event.error);
         if (!CameraDewarpRenderer.isFatalEventKind(event.kind)
                 || activePreview != reverseCameraPreview) return;
         closeCamera("reverse_dewarp_renderer_failed");
@@ -1276,6 +1284,23 @@ public final class CameraProbeActivity extends Activity
                     LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
             crop.addView(cell, new LinearLayout.LayoutParams(0, dp(60), 1));
         }
+        LinearLayout displayModeCell = new LinearLayout(this);
+        displayModeCell.setOrientation(LinearLayout.VERTICAL);
+        TextView displayModeLabel = label("Відображення");
+        displayModeLabel.setTextSize(12);
+        displayModeLabel.setGravity(Gravity.CENTER);
+        displayModeCell.addView(displayModeLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(22)));
+        reverseDisplayModeInput = new Spinner(this);
+        ArrayAdapter<String> displayModeAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_item,
+                new String[]{"Fit", "Fill", "Stretch"});
+        displayModeAdapter.setDropDownViewResource(
+                android.R.layout.simple_spinner_dropdown_item);
+        reverseDisplayModeInput.setAdapter(displayModeAdapter);
+        displayModeCell.addView(reverseDisplayModeInput, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+        crop.addView(displayModeCell, new LinearLayout.LayoutParams(0, dp(60), 1));
         LinearLayout zRow = new LinearLayout(this);
         reverseLowerButton = button("Нижче");
         reverseRaiseButton = button("Вище");
@@ -1363,6 +1388,34 @@ public final class CameraProbeActivity extends Activity
         });
         reverseLowerButton.setOnClickListener(view -> changeReverseZ(false));
         reverseRaiseButton.setOnClickListener(view -> changeReverseZ(true));
+        reverseDisplayModeInput.setOnItemSelectedListener(
+                new AdapterView.OnItemSelectedListener() {
+                    @Override
+                    public void onItemSelected(
+                            AdapterView<?> parent, View view, int position, long id) {
+                        if (reverseDisplayModeUiUpdating
+                                || !ReverseCameraLayout.isValidDisplayMode(position)
+                                || reverseCameraEditor == null
+                                || reverseCameraEditor.selectedCamera()
+                                        == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+                            return;
+                        }
+                        int cameraIndex = reverseCameraEditor.selectedCamera();
+                        if (reverseCameraLayout.pane(cameraIndex).displayMode == position) return;
+                        reverseCameraLayout = ReverseCameraLayout.withDisplayMode(
+                                reverseCameraLayout, cameraIndex, position);
+                        reverseCameraEditor.setLayoutModel(reverseCameraLayout);
+                        reverseCameraPreview.applyLayout(reverseCameraLayout);
+                        ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
+                        CameraHelperService.reverseCameraSettingsChanged(
+                                CameraProbeActivity.this);
+                        record("reverse_display_mode_changed",
+                                "camera_index", cameraIndex,
+                                "mode", reverseDisplayModeLabel(position));
+                    }
+
+                    @Override public void onNothingSelected(AdapterView<?> parent) {}
+                });
         updateReversePaneControls(ReverseCameraLayout.REAR_CAMERA_INDEX);
         return root;
     }
@@ -1438,6 +1491,11 @@ public final class CameraProbeActivity extends Activity
             reverseCropValues[i].setText(labels[i] + ": " + percent + "%");
         }
         reverseCropUiUpdating = false;
+        reverseDisplayModeUiUpdating = true;
+        reverseDisplayModeInput.setSelection(background
+                ? ReverseCameraLayout.DEFAULT_DISPLAY_MODE : pane.displayMode, false);
+        reverseDisplayModeInput.setEnabled(!background);
+        reverseDisplayModeUiUpdating = false;
         reverseRotationUiUpdating = true;
         int rotationDegrees = background ? CameraRotation.DEFAULT_DEGREES
                 : pane.rotationDegrees;
@@ -1454,6 +1512,12 @@ public final class CameraProbeActivity extends Activity
         }
         reverseLowerButton.setEnabled(!background && pane.zOrder > 0);
         reverseRaiseButton.setEnabled(!background && pane.zOrder < 2);
+    }
+
+    private static String reverseDisplayModeLabel(int mode) {
+        if (mode == ReverseCameraLayout.DISPLAY_MODE_FILL) return "Fill";
+        if (mode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) return "Stretch";
+        return "Fit";
     }
 
     private void updateReverseRotation(int degrees) {
@@ -2193,6 +2257,26 @@ public final class CameraProbeActivity extends Activity
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(37)));
         row.addView(cell, new LinearLayout.LayoutParams(0, dp(58), 1));
 
+        LinearLayout projectionCell = new LinearLayout(this);
+        projectionCell.setOrientation(LinearLayout.VERTICAL);
+        TextView projectionLabel = label("Проєкція");
+        projectionLabel.setTextSize(12);
+        projectionLabel.setGravity(Gravity.CENTER);
+        projectionCell.addView(projectionLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(20)));
+        Spinner projectionInput = new Spinner(this);
+        ArrayAdapter<String> projectionAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_item,
+                new String[]{"Rectilinear", "Cylindrical"});
+        projectionAdapter.setDropDownViewResource(
+                android.R.layout.simple_spinner_dropdown_item);
+        projectionInput.setAdapter(projectionAdapter);
+        if (reverse) reverseDewarpProjectionInput = projectionInput;
+        else calibrationDewarpProjectionInput = projectionInput;
+        projectionCell.addView(projectionInput, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+        row.addView(projectionCell, new LinearLayout.LayoutParams(dp(190), dp(58)));
+
         Button reset = button("Скинути корекцію");
         reset.setOnClickListener(view -> {
             int lens = selectedDewarpLens(reverse);
@@ -2208,6 +2292,24 @@ public final class CameraProbeActivity extends Activity
             CameraDewarpConfig current = dewarpFromControls(reverse).withEnabled(checked);
             applyDewarpConfig(reverse, current, true);
         });
+        projectionInput.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(
+                    AdapterView<?> parent, View view, int position, long id) {
+                boolean updating = reverse
+                        ? reverseDewarpUiUpdating : calibrationDewarpUiUpdating;
+                if (updating || !CameraDewarpConfig.isValidProjection(position)) return;
+                int lens = selectedDewarpLens(reverse);
+                if (lens == 0
+                        || CameraDewarpConfig.load(preferences, lens).projection == position) {
+                    return;
+                }
+                applyDewarpConfig(reverse,
+                        dewarpFromControls(reverse).withProjection(position), true);
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
         return row;
     }
 
@@ -2218,18 +2320,25 @@ public final class CameraProbeActivity extends Activity
     private CameraDewarpConfig dewarpFromControls(boolean reverse) {
         Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
         SeekBar slider = reverse ? reverseDewarpFovSlider : calibrationDewarpFovSlider;
+        Spinner projectionInput = reverse
+                ? reverseDewarpProjectionInput : calibrationDewarpProjectionInput;
         int lens = selectedDewarpLens(reverse);
         if (lens == 0 || slider == null) {
             return CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
         }
+        int projection = projectionInput == null
+                ? CameraDewarpConfig.DEFAULT_PROJECTION
+                : projectionInput.getSelectedItemPosition();
         return CameraDewarpConfig.of(lens, toggle != null && toggle.isChecked(),
-                CameraDewarpConfig.MIN_FOV_DEGREES + slider.getProgress());
+                CameraDewarpConfig.MIN_FOV_DEGREES + slider.getProgress(), projection);
     }
 
     private void updateDewarpUi(boolean reverse, CameraDewarpConfig value) {
         Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
         SeekBar slider = reverse ? reverseDewarpFovSlider : calibrationDewarpFovSlider;
         TextView fovValue = reverse ? reverseDewarpFovValue : calibrationDewarpFovValue;
+        Spinner projectionInput = reverse
+                ? reverseDewarpProjectionInput : calibrationDewarpProjectionInput;
         if (toggle == null) return;
         if (reverse) reverseDewarpUiUpdating = true;
         else calibrationDewarpUiUpdating = true;
@@ -2238,6 +2347,7 @@ public final class CameraProbeActivity extends Activity
             calibrationCropOverlay.setGridVisible(value.enabled);
         }
         slider.setProgress(value.fovDegrees - CameraDewarpConfig.MIN_FOV_DEGREES);
+        if (projectionInput != null) projectionInput.setSelection(value.projection, false);
         fovValue.setText("FOV: " + value.fovDegrees + "°");
         setDewarpControlsEnabled(reverse, true);
         if (reverse) reverseDewarpUiUpdating = false;
@@ -2247,8 +2357,11 @@ public final class CameraProbeActivity extends Activity
     private void setDewarpControlsEnabled(boolean reverse, boolean enabled) {
         Switch toggle = reverse ? reverseDewarpSwitch : calibrationDewarpSwitch;
         SeekBar slider = reverse ? reverseDewarpFovSlider : calibrationDewarpFovSlider;
+        Spinner projectionInput = reverse
+                ? reverseDewarpProjectionInput : calibrationDewarpProjectionInput;
         if (toggle != null) toggle.setEnabled(enabled);
         if (slider != null) slider.setEnabled(enabled);
+        if (projectionInput != null) projectionInput.setEnabled(enabled);
     }
 
     private void applyDewarpConfig(
@@ -2285,6 +2398,7 @@ public final class CameraProbeActivity extends Activity
         CameraHelperService.reverseCameraSettingsChanged(this);
         record("camera_dewarp_changed", "lens", lens, "enabled", value.enabled,
                 "fov_degrees", value.fovDegrees,
+                "projection", CameraDewarpConfig.projectionLabel(value.projection),
                 "crop_mode_changed", previous.enabled != value.enabled);
     }
 
@@ -2574,6 +2688,7 @@ public final class CameraProbeActivity extends Activity
         DirectCameraCrop.save(preferences, profile, dewarp.enabled, crop);
         record("direct_crop_saved", "camera_id", profile.id, "camera", profile.wireName,
                 "dewarp_enabled", dewarp.enabled,
+                "dewarp_projection", CameraDewarpConfig.projectionLabel(dewarp.projection),
                 "x", crop.left, "y", crop.top,
                 "width", crop.width, "height", crop.height,
                 "aspect", DirectCameraCrop.aspectLabel(crop.aspectMode),

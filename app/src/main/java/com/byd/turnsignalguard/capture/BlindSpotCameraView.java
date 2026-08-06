@@ -164,7 +164,8 @@ final class BlindSpotCameraView extends TextureView
                         if (rendererGeneration != dewarpGeneration) return;
                         boolean currentMapping = dewarpConfig.lens == event.lens
                                 && dewarpConfig.enabled == event.enabled
-                                && dewarpConfig.fovDegrees == event.fovDegrees;
+                                && dewarpConfig.fovDegrees == event.fovDegrees
+                                && dewarpConfig.projection == event.projection;
                         if (CameraDewarpRenderer.isFatalEventKind(event.kind)) {
                             setAlpha(0.0f);
                         }
