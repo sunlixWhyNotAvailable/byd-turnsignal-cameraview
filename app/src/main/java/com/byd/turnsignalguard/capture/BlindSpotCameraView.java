@@ -39,8 +39,11 @@ final class BlindSpotCameraView extends TextureView
     private Consumer<CameraDewarpRenderer.Stats> dewarpStatsSink;
     private Consumer<CameraDewarpRenderer.Event> dewarpEventSink;
     private int dewarpGeneration;
+    private long dewarpRequestToken;
     private boolean forceDewarpPipeline;
     private boolean externalTransform;
+    private float dewarpRoiCenterX = 0.5f;
+    private float dewarpRoiCenterY = 0.5f;
     private DirectCameraCrop requestedCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop rawFallbackCrop = DirectCameraCrop.defaultFor(false);
     private boolean rawFallbackActive;
@@ -74,13 +77,33 @@ final class BlindSpotCameraView extends TextureView
 
     void applyDewarpConfig(CameraDewarpConfig value) {
         if (value == null) throw new IllegalArgumentException("dewarp config is required");
-        boolean mappingChanged = !dewarpConfig.sameMapping(value);
+        applyEffectiveDewarpConfig(value.withRoiCenter(
+                dewarpRoiCenterX, dewarpRoiCenterY));
+    }
+
+    void applyDewarpSourceRoi(float left, float top, float width, float height) {
+        if (!Float.isFinite(left) || !Float.isFinite(top)
+                || !Float.isFinite(width) || !Float.isFinite(height)
+                || left < 0.0f || top < 0.0f || width <= 0.0f || height <= 0.0f
+                || left + width > 1.0001f || top + height > 1.0001f) {
+            throw new IllegalArgumentException("invalid normalized dewarp ROI");
+        }
+        dewarpRoiCenterX = left + width / 2.0f;
+        dewarpRoiCenterY = top + height / 2.0f;
+        applyEffectiveDewarpConfig(dewarpConfig.withRoiCenter(
+                dewarpRoiCenterX, dewarpRoiCenterY));
+    }
+
+    private void applyEffectiveDewarpConfig(CameraDewarpConfig value) {
+        long nextToken = CameraDewarpRenderer.nextRequestToken(
+                dewarpRequestToken, dewarpConfig, value);
+        boolean mappingChanged = nextToken != dewarpRequestToken;
         dewarpConfig = value;
+        dewarpRequestToken = nextToken;
         if (dewarpRenderer != null) {
-            if (mappingChanged) {
-                setAlpha(0.0f);
-            }
-            dewarpRenderer.update(value);
+            if (!mappingChanged) return;
+            setAlpha(0.0f);
+            dewarpRenderer.update(value, dewarpRequestToken);
         }
         else if (cameraSurface != null) setRawFallbackActive(value.enabled);
     }
@@ -123,6 +146,9 @@ final class BlindSpotCameraView extends TextureView
         int height = getHeight();
         if (width <= 0 || height <= 0) return;
         DirectCameraCrop directCrop = rawFallbackActive ? rawFallbackCrop : requestedCrop;
+        if (!rawFallbackActive && dewarpRenderer != null && dewarpConfig.enabled) {
+            directCrop = requestedCrop.centered();
+        }
         Matrix transform = new Matrix();
         CameraRotation.setSourceCropTransform(
                 transform,
@@ -154,7 +180,8 @@ final class BlindSpotCameraView extends TextureView
         if (usesDewarpPipeline()) {
             int rendererGeneration = ++dewarpGeneration;
             dewarpRenderer = CameraDewarpRenderer.start(
-                    texture, BUFFER_WIDTH, BUFFER_HEIGHT, dewarpConfig,
+                    texture, BUFFER_WIDTH, BUFFER_HEIGHT,
+                    dewarpConfig, dewarpRequestToken,
                     stats -> post(() -> {
                         if (rendererGeneration != dewarpGeneration
                                 || dewarpRenderer == null) return;
@@ -162,18 +189,18 @@ final class BlindSpotCameraView extends TextureView
                         if (sink != null) sink.accept(stats);
                     }), event -> post(() -> {
                         if (rendererGeneration != dewarpGeneration) return;
-                        boolean currentMapping = dewarpConfig.lens == event.lens
-                                && dewarpConfig.enabled == event.enabled
-                                && dewarpConfig.fovDegrees == event.fovDegrees
-                                && dewarpConfig.projection == event.projection;
+                        if (!CameraDewarpRenderer.shouldHandleEvent(
+                                event.kind, event.requestToken,
+                                dewarpRequestToken)) return;
                         if (CameraDewarpRenderer.isFatalEventKind(event.kind)) {
                             setAlpha(0.0f);
                         }
-                        if (currentMapping && "dewarp_fallback_raw".equals(event.kind)) {
+                        if ("dewarp_fallback_raw".equals(event.kind)) {
                             setRawFallbackActive(true);
                             setAlpha(1.0f);
-                        } else if (currentMapping && "dewarp_mesh_applied".equals(event.kind)) {
+                        } else if ("dewarp_mesh_applied".equals(event.kind)) {
                             setRawFallbackActive(false);
+                            applyCurrentCrop();
                             setAlpha(1.0f);
                         }
                         Consumer<CameraDewarpRenderer.Event> sink = dewarpEventSink;
@@ -186,7 +213,7 @@ final class BlindSpotCameraView extends TextureView
             // Startup is synchronous; invalidate any events queued before a timeout fallback.
             if (dewarpRenderer == null) dewarpGeneration++;
         }
-        setAlpha(1.0f);
+        setAlpha(dewarpRenderer != null && dewarpConfig.enabled ? 0.0f : 1.0f);
         setRawFallbackActive(dewarpRenderer == null && dewarpConfig.enabled);
         if (dewarpRenderer != null) {
             cameraSurface = dewarpRenderer.cameraSurface();

@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(55, BuildConfig.VERSION_CODE);
+        assertEquals(57, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -964,6 +964,33 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void calibrationDisplayCropUsesRawForFallbackWithoutChangingMetadata() {
+        DirectCameraCrop raw = DirectCameraCrop.of(
+                0.08f, 0.16f, 0.58f, 0.41f, DirectCameraCrop.ASPECT_FREE,
+                37, CameraRotation.MODE_ALIGNED);
+        DirectCameraCrop corrected = CameraProbeActivity.calibrationDisplayCrop(
+                raw, true, false);
+        DirectCameraCrop fallback = CameraProbeActivity.calibrationDisplayCrop(
+                raw, true, true);
+        DirectCameraCrop disabled = CameraProbeActivity.calibrationDisplayCrop(
+                raw, false, false);
+
+        assertEquals((1.0f - raw.width) / 2.0f, corrected.left, 0.0001f);
+        assertEquals((1.0f - raw.height) / 2.0f, corrected.top, 0.0001f);
+        assertEquals(raw.left, fallback.left, 0.0001f);
+        assertEquals(raw.top, fallback.top, 0.0001f);
+        assertEquals(raw.left, disabled.left, 0.0001f);
+        assertEquals(raw.top, disabled.top, 0.0001f);
+        for (DirectCameraCrop crop : new DirectCameraCrop[]{corrected, fallback, disabled}) {
+            assertEquals(raw.width, crop.width, 0.0001f);
+            assertEquals(raw.height, crop.height, 0.0001f);
+            assertEquals(raw.aspectMode, crop.aspectMode);
+            assertEquals(raw.rotationDegrees, crop.rotationDegrees);
+            assertEquals(raw.rotationMode, crop.rotationMode);
+        }
+    }
+
+    @Test
     public void productionPreviewRetriesOnlyForCurrentFrameWait() {
         assertTrue(CameraProbeActivity.shouldRetryProductionPreviewFrame(
                 true, true, true, true));
@@ -1068,7 +1095,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(18, CameraShellProtocol.VERSION);
+        assertEquals(19, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -1368,7 +1395,7 @@ public final class AdbCoreTest {
         ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
                 layout.rear.sourceCrop, 1920, 540,
                 ReverseCameraCompositionView.SOURCE_WIDTH,
-                ReverseCameraCompositionView.SOURCE_HEIGHT);
+                ReverseCameraCompositionView.SOURCE_HEIGHT, 0);
         assertEquals(561, fitted.left);
         assertEquals(0, fitted.top);
         assertEquals(798, fitted.width);
@@ -1379,7 +1406,7 @@ public final class AdbCoreTest {
                 ReverseCameraLayout.sourceCrop(0.2f, 0.1f, 0.4f, 0.7f),
                 960, 540,
                 ReverseCameraCompositionView.SOURCE_WIDTH,
-                ReverseCameraCompositionView.SOURCE_HEIGHT);
+                ReverseCameraCompositionView.SOURCE_HEIGHT, 0);
         assertEquals(252, partial.left);
         assertEquals(0, partial.top);
         assertEquals(456, partial.width);

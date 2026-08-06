@@ -20,17 +20,27 @@ final class CameraDewarpConfig {
     final boolean enabled;
     final int fovDegrees;
     final int projection;
+    final float roiCenterX;
+    final float roiCenterY;
 
     private CameraDewarpConfig(
-            int lens, boolean enabled, int fovDegrees, int projection) {
+            int lens, boolean enabled, int fovDegrees, int projection,
+            float roiCenterX, float roiCenterY) {
         if (!isValidLens(lens)) throw new IllegalArgumentException("invalid camera lens");
         if (!isValidProjection(projection)) {
             throw new IllegalArgumentException("invalid camera projection");
+        }
+        if (!Float.isFinite(roiCenterX) || !Float.isFinite(roiCenterY)
+                || roiCenterX < 0.0f || roiCenterX > 1.0f
+                || roiCenterY < 0.0f || roiCenterY > 1.0f) {
+            throw new IllegalArgumentException("invalid dewarp ROI center");
         }
         this.lens = lens;
         this.enabled = enabled;
         this.fovDegrees = clamp(fovDegrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES);
         this.projection = projection;
+        this.roiCenterX = roiCenterX;
+        this.roiCenterY = roiCenterY;
     }
 
     static CameraDewarpConfig disabled(int lens) {
@@ -43,7 +53,8 @@ final class CameraDewarpConfig {
 
     static CameraDewarpConfig of(
             int lens, boolean enabled, int fovDegrees, int projection) {
-        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection);
+        return new CameraDewarpConfig(
+                lens, enabled, fovDegrees, projection, 0.5f, 0.5f);
     }
 
     static CameraDewarpConfig load(SharedPreferences preferences, int lens) {
@@ -108,23 +119,33 @@ final class CameraDewarpConfig {
     }
 
     CameraDewarpConfig withEnabled(boolean value) {
-        return of(lens, value, fovDegrees, projection);
+        return new CameraDewarpConfig(
+                lens, value, fovDegrees, projection, roiCenterX, roiCenterY);
     }
 
     CameraDewarpConfig withFov(int value) {
-        return of(lens, enabled, value, projection);
+        return new CameraDewarpConfig(
+                lens, enabled, value, projection, roiCenterX, roiCenterY);
     }
 
     CameraDewarpConfig withProjection(int value) {
-        return of(lens, enabled, fovDegrees, value);
+        return new CameraDewarpConfig(
+                lens, enabled, fovDegrees, value, roiCenterX, roiCenterY);
+    }
+
+    CameraDewarpConfig withRoiCenter(float x, float y) {
+        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection, x, y);
     }
 
     boolean sameMapping(CameraDewarpConfig other) {
-        return other != null
-                && lens == other.lens
-                && enabled == other.enabled
-                && fovDegrees == other.fovDegrees
-                && projection == other.projection;
+        if (other == null || lens != other.lens || enabled != other.enabled) return false;
+        if (!enabled) return true;
+        return fovDegrees == other.fovDegrees
+                && projection == other.projection
+                && Float.floatToIntBits(roiCenterX)
+                        == Float.floatToIntBits(other.roiCenterX)
+                && Float.floatToIntBits(roiCenterY)
+                        == Float.floatToIntBits(other.roiCenterY);
     }
 
     private static String prefix(int lens) {

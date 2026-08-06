@@ -213,6 +213,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
         nextPreview.setDewarpEventSink(this::emitDewarpEvent);
         nextPreview.applyRawFallbackCrop(spec.rawFallbackCrop);
+        nextPreview.applyDewarpSourceRoi(
+                spec.rawFallbackCrop.left, spec.rawFallbackCrop.top,
+                spec.rawFallbackCrop.width, spec.rawFallbackCrop.height);
         nextPreview.applyDewarpConfig(spec.dewarp);
         nextPreview.applyDirectCameraCrop(spec.crop());
         nextRoot.addView(nextPreview, new FrameLayout.LayoutParams(
@@ -273,6 +276,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
         visible = false;
         preview.applyRawFallbackCrop(spec.rawFallbackCrop);
+        preview.applyDewarpSourceRoi(
+                spec.rawFallbackCrop.left, spec.rawFallbackCrop.top,
+                spec.rawFallbackCrop.width, spec.rawFallbackCrop.height);
         preview.applyDewarpConfig(spec.dewarp);
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();

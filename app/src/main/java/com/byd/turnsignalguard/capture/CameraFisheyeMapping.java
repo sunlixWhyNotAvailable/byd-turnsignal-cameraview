@@ -5,6 +5,10 @@ final class CameraFisheyeMapping {
     static final int SOURCE_HEIGHT = 1300;
     static final int MESH_COLUMNS = 97;
     static final int MESH_ROWS = 65;
+    // First positive root of 1 + 3*k1*t^2 + 5*k2*t^4 + 7*k3*t^6 + 9*k4*t^8
+    // for the fixed stock calibration: the end of its invertible radial branch.
+    private static final double MAX_INVERTIBLE_THETA = 2.00078250962346;
+    private static final int INVERSE_ITERATIONS = 48;
 
     private static final Calibration[] STOCK_BY_LENS = {
             null, stockCalibration(), stockCalibration(), stockCalibration(), stockCalibration()
@@ -20,8 +24,11 @@ final class CameraFisheyeMapping {
         if (!config.enabled) return identityMesh();
 
         Calibration calibration = calibration(config.lens);
+        Basis basis = basisForSource(
+                calibration, config.roiCenterX, config.roiCenterY);
         int vertexCount = MESH_COLUMNS * MESH_ROWS;
         float[] vertices = new float[vertexCount * 4];
+        boolean[] validRays = new boolean[vertexCount];
         int cursor = 0;
         for (int row = 0; row < MESH_ROWS; row++) {
             double outputY = row / (double) (MESH_ROWS - 1);
@@ -29,12 +36,14 @@ final class CameraFisheyeMapping {
                 double outputX = column / (double) (MESH_COLUMNS - 1);
                 double[] source = mapOutputToSource(
                         calibration, config.projection, config.fovDegrees,
-                        outputWidth, outputHeight,
+                        outputWidth, outputHeight, basis,
                         outputX, outputY);
                 vertices[cursor++] = (float) (outputX * 2.0 - 1.0);
                 vertices[cursor++] = (float) (1.0 - outputY * 2.0);
                 vertices[cursor++] = (float) (source[0] / calibration.width);
                 vertices[cursor++] = (float) (1.0 - source[1] / calibration.height);
+                validRays[row * MESH_COLUMNS + column] = !isInvalidRay(
+                        calibration, source);
             }
         }
 
@@ -46,15 +55,21 @@ final class CameraFisheyeMapping {
                 int topRight = topLeft + 1;
                 int bottomLeft = topLeft + MESH_COLUMNS;
                 int bottomRight = bottomLeft + 1;
-                indices[cursor++] = (short) topLeft;
-                indices[cursor++] = (short) bottomLeft;
-                indices[cursor++] = (short) topRight;
-                indices[cursor++] = (short) topRight;
-                indices[cursor++] = (short) bottomLeft;
-                indices[cursor++] = (short) bottomRight;
+                if (validRays[topLeft] && validRays[bottomLeft]
+                        && validRays[topRight]) {
+                    indices[cursor++] = (short) topLeft;
+                    indices[cursor++] = (short) bottomLeft;
+                    indices[cursor++] = (short) topRight;
+                }
+                if (validRays[topRight] && validRays[bottomLeft]
+                        && validRays[bottomRight]) {
+                    indices[cursor++] = (short) topRight;
+                    indices[cursor++] = (short) bottomLeft;
+                    indices[cursor++] = (short) bottomRight;
+                }
             }
         }
-        return new Mesh(vertices, indices);
+        return new Mesh(vertices, java.util.Arrays.copyOf(indices, cursor));
     }
 
     static double[] mapOutputToSource(
@@ -67,21 +82,35 @@ final class CameraFisheyeMapping {
     static double[] mapOutputToSource(
             int lens, int projection, int fovDegrees, int outputWidth, int outputHeight,
             double outputX, double outputY) {
+        Calibration calibration = calibration(lens);
         return mapOutputToSource(
-                calibration(lens), projection, fovDegrees,
-                outputWidth, outputHeight, outputX, outputY);
+                calibration, projection, fovDegrees, outputWidth, outputHeight,
+                basisForSource(calibration, 0.5, 0.5), outputX, outputY);
+    }
+
+    static double[] mapOutputToSource(
+            CameraDewarpConfig config, int outputWidth, int outputHeight,
+            double outputX, double outputY) {
+        if (config == null) throw new IllegalArgumentException("dewarp config is required");
+        Calibration calibration = calibration(config.lens);
+        return mapOutputToSource(
+                calibration, config.projection, config.fovDegrees,
+                outputWidth, outputHeight,
+                basisForSource(calibration, config.roiCenterX, config.roiCenterY),
+                outputX, outputY);
     }
 
     private static double[] mapOutputToSource(
             Calibration calibration, int projection, int fovDegrees,
-            int outputWidth, int outputHeight, double outputX, double outputY) {
+            int outputWidth, int outputHeight, Basis basis,
+            double outputX, double outputY) {
         double fovRadians = Math.toRadians(fovDegrees);
         if (projection == CameraDewarpConfig.PROJECTION_CYLINDRICAL) {
             double yaw = (outputX - 0.5) * fovRadians;
             double cylinderY = (outputY - 0.5)
                     * outputHeight / outputWidth * fovRadians;
-            return mapRayToSource(
-                    calibration, Math.sin(yaw), cylinderY, Math.cos(yaw));
+            return mapLocalRayToSource(
+                    calibration, basis, Math.sin(yaw), cylinderY, Math.cos(yaw));
         }
         if (projection != CameraDewarpConfig.PROJECTION_RECTILINEAR) {
             throw new IllegalArgumentException("invalid camera projection");
@@ -89,7 +118,15 @@ final class CameraFisheyeMapping {
         double outputFocal = outputWidth / (2.0 * Math.tan(fovRadians / 2.0));
         double x = (outputX * outputWidth - outputWidth / 2.0) / outputFocal;
         double y = (outputY * outputHeight - outputHeight / 2.0) / outputFocal;
-        return mapRayToSource(calibration, x, y, 1.0);
+        return mapLocalRayToSource(calibration, basis, x, y, 1.0);
+    }
+
+    private static double[] mapLocalRayToSource(
+            Calibration calibration, Basis basis, double x, double y, double z) {
+        return mapRayToSource(calibration,
+                basis.rightX * x + basis.downX * y + basis.forwardX * z,
+                basis.rightY * x + basis.downY * y + basis.forwardY * z,
+                basis.rightZ * x + basis.downZ * y + basis.forwardZ * z);
     }
 
     private static double[] mapRayToSource(
@@ -98,6 +135,9 @@ final class CameraFisheyeMapping {
         double scale = 1.0;
         if (radius > 1.0e-12) {
             double theta = Math.atan2(radius, z);
+            if (theta > MAX_INVERTIBLE_THETA) {
+                return new double[]{-calibration.width, -calibration.height};
+            }
             double theta2 = theta * theta;
             double theta4 = theta2 * theta2;
             double theta6 = theta4 * theta2;
@@ -113,6 +153,65 @@ final class CameraFisheyeMapping {
                 calibration.fx * x * scale + calibration.cx,
                 calibration.fy * y * scale + calibration.cy
         };
+    }
+
+    private static boolean isInvalidRay(Calibration calibration, double[] source) {
+        return source[0] == -calibration.width && source[1] == -calibration.height;
+    }
+
+    private static Basis basisForSource(
+            Calibration calibration, double normalizedX, double normalizedY) {
+        double dx = (normalizedX * calibration.width - calibration.cx) / calibration.fx;
+        double dy = (normalizedY * calibration.height - calibration.cy) / calibration.fy;
+        double thetaDistorted = Math.hypot(dx, dy);
+        if (thetaDistorted <= 1.0e-12) return Basis.identity();
+
+        double maxInvertibleRadius = distortedTheta(
+                calibration, MAX_INVERTIBLE_THETA);
+        if (thetaDistorted > maxInvertibleRadius) {
+            throw new CalibratedDomainException(
+                    "dewarp ROI center is outside calibrated fisheye domain");
+        }
+        double low = 0.0;
+        double high = MAX_INVERTIBLE_THETA;
+        for (int i = 0; i < INVERSE_ITERATIONS; i++) {
+            double middle = (low + high) / 2.0;
+            if (distortedTheta(calibration, middle) < thetaDistorted) low = middle;
+            else high = middle;
+        }
+        double theta = (low + high) / 2.0;
+        double radialScale = Math.sin(theta) / thetaDistorted;
+        double forwardX = dx * radialScale;
+        double forwardY = dy * radialScale;
+        double forwardZ = Math.cos(theta);
+        double rightLength = Math.hypot(forwardX, forwardZ);
+        double rightX;
+        double rightZ;
+        if (rightLength <= 1.0e-12) {
+            rightX = 1.0;
+            rightZ = 0.0;
+        } else {
+            rightX = forwardZ / rightLength;
+            rightZ = -forwardX / rightLength;
+        }
+        return new Basis(
+                rightX, 0.0, rightZ,
+                forwardY * rightZ,
+                forwardZ * rightX - forwardX * rightZ,
+                -forwardY * rightX,
+                forwardX, forwardY, forwardZ);
+    }
+
+    private static double distortedTheta(Calibration calibration, double theta) {
+        double theta2 = theta * theta;
+        double theta4 = theta2 * theta2;
+        double theta6 = theta4 * theta2;
+        double theta8 = theta4 * theta4;
+        return theta * (1.0
+                + calibration.k1 * theta2
+                + calibration.k2 * theta4
+                + calibration.k3 * theta6
+                + calibration.k4 * theta8);
     }
 
     private static Calibration calibration(int lens) {
@@ -150,6 +249,45 @@ final class CameraFisheyeMapping {
 
         int vertexCount() {
             return vertices.length / 4;
+        }
+    }
+
+    static final class CalibratedDomainException extends IllegalArgumentException {
+        CalibratedDomainException(String message) {
+            super(message);
+        }
+    }
+
+    private static final class Basis {
+        final double rightX;
+        final double rightY;
+        final double rightZ;
+        final double downX;
+        final double downY;
+        final double downZ;
+        final double forwardX;
+        final double forwardY;
+        final double forwardZ;
+
+        Basis(
+                double rightX, double rightY, double rightZ,
+                double downX, double downY, double downZ,
+                double forwardX, double forwardY, double forwardZ) {
+            this.rightX = rightX;
+            this.rightY = rightY;
+            this.rightZ = rightZ;
+            this.downX = downX;
+            this.downY = downY;
+            this.downZ = downZ;
+            this.forwardX = forwardX;
+            this.forwardY = forwardY;
+            this.forwardZ = forwardZ;
+        }
+
+        static Basis identity() {
+            return new Basis(1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0);
         }
     }
 

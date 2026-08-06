@@ -844,8 +844,8 @@ final class BlindSpotOverlayController {
         int[] displaySize = CameraDisplayTarget.displaySize(context, target);
         CameraDewarpConfig dewarp = CameraDewarpConfig.load(
                 settings, CameraDewarpConfig.lensFor(profile));
-        DirectCameraCrop crop = DirectCameraCrop.load(settings, profile, dewarp.enabled);
-        DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile, false);
+        DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
+        DirectCameraCrop crop = dewarp.enabled ? rawCrop.centered() : rawCrop;
         int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
         int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;

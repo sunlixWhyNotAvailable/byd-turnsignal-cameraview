@@ -69,7 +69,7 @@ final class CameraDewarpRenderer {
     private final AtomicBoolean runtimeFailureReported = new AtomicBoolean();
     private final AtomicBoolean released = new AtomicBoolean();
     private final AtomicBoolean cleanupStarted = new AtomicBoolean();
-    private volatile CameraDewarpConfig config;
+    private volatile MappingRequest request;
     private Handler handler;
     private Surface cameraSurface;
     private SurfaceTexture cameraTexture;
@@ -85,7 +85,12 @@ final class CameraDewarpRenderer {
     private FloatBuffer vertices;
     private ShortBuffer indices;
     private int indexCount;
-    private CameraDewarpConfig appliedConfig;
+    private MappingRequest appliedRequest;
+    private MappingRequest pendingMeshRequest;
+    private MappingRequest pendingRenderedRequest;
+    private String pendingEventKind;
+    private int pendingMeshVertexCount;
+    private long pendingMeshGenerationNs = -1;
     private final float[] textureMatrix = new float[16];
     private Throwable startupError;
     private long metricsStartedNs;
@@ -102,6 +107,8 @@ final class CameraDewarpRenderer {
 
     static final class Event {
         final String kind;
+        final CameraDewarpConfig mapping;
+        final long requestToken;
         final int lens;
         final boolean enabled;
         final int fovDegrees;
@@ -111,9 +118,12 @@ final class CameraDewarpRenderer {
         final String error;
 
         Event(
-                String kind, CameraDewarpConfig config, int vertexCount,
+                String kind, MappingRequest request, int vertexCount,
                 long generationNs, Throwable error) {
             this.kind = kind;
+            CameraDewarpConfig config = request == null ? null : request.config;
+            mapping = config;
+            requestToken = request == null ? 0 : request.token;
             lens = config == null ? 0 : config.lens;
             enabled = config != null && config.enabled;
             fovDegrees = config == null ? 0 : config.fovDegrees;
@@ -123,6 +133,17 @@ final class CameraDewarpRenderer {
             generationMs = generationNs < 0 ? -1.0 : generationNs / 1_000_000.0;
             this.error = error == null ? null
                     : error.getClass().getSimpleName() + ": " + error.getMessage();
+        }
+    }
+
+    static final class MappingRequest {
+        final CameraDewarpConfig config;
+        final long token;
+
+        MappingRequest(CameraDewarpConfig config, long token) {
+            if (config == null) throw new IllegalArgumentException("dewarp config is required");
+            this.config = config;
+            this.token = token;
         }
     }
 
@@ -169,21 +190,23 @@ final class CameraDewarpRenderer {
     }
 
     private CameraDewarpRenderer(
-            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
+            SurfaceTexture outputTexture, int width, int height,
+            CameraDewarpConfig config, long requestToken,
             Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         this.outputTexture = outputTexture;
         this.width = width;
         this.height = height;
-        this.config = config;
+        request = new MappingRequest(config, requestToken);
         this.statsSink = statsSink;
         this.eventSink = eventSink;
     }
 
     static CameraDewarpRenderer start(
-            SurfaceTexture outputTexture, int width, int height, CameraDewarpConfig config,
+            SurfaceTexture outputTexture, int width, int height,
+            CameraDewarpConfig config, long requestToken,
             Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
-                outputTexture, width, height, config, statsSink, eventSink);
+                outputTexture, width, height, config, requestToken, statsSink, eventSink);
         return renderer.startInternal() ? renderer : null;
     }
 
@@ -191,10 +214,12 @@ final class CameraDewarpRenderer {
         return cameraSurface;
     }
 
-    void update(CameraDewarpConfig value) {
+    void update(CameraDewarpConfig value, long requestToken) {
         if (value == null) throw new IllegalArgumentException("dewarp config is required");
         if (released.get()) return;
-        config = value;
+        MappingRequest current = request;
+        if (requestToken <= current.token) return;
+        request = new MappingRequest(value, requestToken);
         Handler activeHandler = handler;
         if (activeHandler != null && mappingUpdatePosted.compareAndSet(false, true)) {
             activeHandler.post(this::applyLatestMapping);
@@ -310,13 +335,18 @@ final class CameraDewarpRenderer {
                 handler.removeCallbacks(metricsTick);
                 if (runtimeFailureReported.compareAndSet(false, true)) {
                     emitEvent(new Event("dewarp_frame_failed",
-                            appliedConfig == null ? config : appliedConfig,
+                            appliedRequest == null ? request : appliedRequest,
                             vertices == null ? 0 : vertices.capacity() / 4, -1, error));
                 }
             }
         }, handler);
         cameraSurface = new Surface(cameraTexture);
-        installMapping(config);
+        MappingRequest initial = request;
+        try {
+            installMapping(initial, initial.config, "dewarp_mesh_applied");
+        } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
+            installRawFallback(initial);
+        }
         metricsStartedNs = SystemClock.elapsedRealtimeNanos();
         metricsActive = true;
         handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
@@ -329,6 +359,7 @@ final class CameraDewarpRenderer {
         long renderStartedNs = SystemClock.elapsedRealtimeNanos();
         boolean swapped = false;
         long swapNs = 0;
+        MappingRequest renderedRequest = appliedRequest;
         try {
             cameraTexture.updateTexImage();
             cameraTexture.getTransformMatrix(textureMatrix);
@@ -358,6 +389,7 @@ final class CameraDewarpRenderer {
             require(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "EGL swap failed");
             swapNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
             swapped = true;
+            emitAppliedMeshAfterSwap(renderedRequest);
         } finally {
             long completedNs = SystemClock.elapsedRealtimeNanos();
             RENDERS_IN_FLIGHT.decrementAndGet();
@@ -368,26 +400,55 @@ final class CameraDewarpRenderer {
     private void applyLatestMapping() {
         mappingUpdatePosted.set(false);
         if (released.get()) return;
-        CameraDewarpConfig latest = config;
-        if (appliedConfig != null && appliedConfig.sameMapping(latest)) return;
-        try {
-            installMapping(latest);
-        } catch (Throwable error) {
-            Log.e(TAG, "Dewarp mesh update failed", error);
-            String kind = mappingFailureKind(appliedConfig, latest);
-            emitEvent(new Event(
-                    kind, latest,
-                    vertices == null ? 0 : vertices.capacity() / 4, -1, error));
+        MappingRequest latest = request;
+        if (canReuseAppliedMapping(appliedRequest, latest)) {
+            armPendingAck("dewarp_mesh_applied", latest, appliedRequest,
+                    vertices.capacity() / 4, 0);
+        } else {
+            try {
+                installMapping(latest, latest.config, "dewarp_mesh_applied");
+            } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
+                try {
+                    installRawFallback(latest);
+                } catch (Throwable fallbackError) {
+                    Log.e(TAG, "Dewarp raw fallback mesh failed", fallbackError);
+                    emitEvent(new Event(
+                            "dewarp_pipeline_failed", latest,
+                            vertices == null ? 0 : vertices.capacity() / 4,
+                            -1, fallbackError));
+                }
+            } catch (Throwable error) {
+                Log.e(TAG, "Dewarp mesh update failed", error);
+                String kind = mappingFailureKind(
+                        appliedRequest == null ? null : appliedRequest.config,
+                        latest.config);
+                emitEvent(new Event(
+                        kind, latest,
+                        vertices == null ? 0 : vertices.capacity() / 4, -1, error));
+            }
         }
-        if (!released.get() && config != latest
+        if (!released.get() && request != latest
                 && mappingUpdatePosted.compareAndSet(false, true)) {
             handler.post(this::applyLatestMapping);
         }
     }
 
-    private void installMapping(CameraDewarpConfig value) {
+    private void installRawFallback(MappingRequest value) {
+        CameraDewarpConfig identity = CameraDewarpConfig.disabled(value.config.lens);
+        if (appliedRequest != null && appliedRequest.config.sameMapping(identity)) {
+            armPendingAck("dewarp_fallback_raw", value, appliedRequest,
+                    vertices.capacity() / 4, 0);
+            return;
+        }
+        installMapping(value, identity, "dewarp_fallback_raw");
+    }
+
+    private void installMapping(
+            MappingRequest value, CameraDewarpConfig renderedConfig,
+            String eventKind) {
         long startedNs = SystemClock.elapsedRealtimeNanos();
-        CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(value, width, height);
+        CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(
+                renderedConfig, width, height);
         FloatBuffer nextVertices = ByteBuffer.allocateDirect(mesh.vertices.length * 4)
                 .order(ByteOrder.nativeOrder()).asFloatBuffer();
         nextVertices.put(mesh.vertices).position(0);
@@ -397,10 +458,53 @@ final class CameraDewarpRenderer {
         vertices = nextVertices;
         indices = nextIndices;
         indexCount = mesh.indices.length;
-        appliedConfig = value;
-        long generationNs = SystemClock.elapsedRealtimeNanos() - startedNs;
+        appliedRequest = renderedConfig == value.config
+                ? value : new MappingRequest(renderedConfig, value.token);
+        armPendingAck(eventKind, value, appliedRequest, mesh.vertexCount(),
+                SystemClock.elapsedRealtimeNanos() - startedNs);
+    }
+
+    private void armPendingAck(
+            String eventKind, MappingRequest value, MappingRequest rendered,
+            int vertexCount, long generationNs) {
+        pendingEventKind = eventKind;
+        pendingMeshRequest = value;
+        pendingRenderedRequest = rendered;
+        pendingMeshVertexCount = vertexCount;
+        pendingMeshGenerationNs = generationNs;
+    }
+
+    private void emitAppliedMeshAfterSwap(MappingRequest renderedRequest) {
+        MappingRequest pending = pendingMeshRequest;
+        if (!shouldEmitAppliedMesh(
+                true, pending, pendingRenderedRequest, renderedRequest, request)) return;
+        String eventKind = pendingEventKind;
+        int vertexCount = pendingMeshVertexCount;
+        long generationNs = pendingMeshGenerationNs;
+        pendingEventKind = null;
+        pendingMeshRequest = null;
+        pendingRenderedRequest = null;
+        pendingMeshVertexCount = 0;
+        pendingMeshGenerationNs = -1;
         emitEvent(new Event(
-                "dewarp_mesh_applied", value, mesh.vertexCount(), generationNs, null));
+                eventKind, pending, vertexCount, generationNs, null));
+    }
+
+    static boolean shouldEmitAppliedMesh(
+            boolean swapSucceeded,
+            MappingRequest pending,
+            MappingRequest expectedRendered,
+            MappingRequest rendered,
+            MappingRequest requested) {
+        return swapSucceeded && pending != null && expectedRendered != null
+                && pending == requested
+                && expectedRendered == rendered;
+    }
+
+    static boolean canReuseAppliedMapping(
+            MappingRequest applied, MappingRequest requested) {
+        return applied != null && requested != null
+                && applied.config.sameMapping(requested.config);
     }
 
     private void recordCallback(long nowNs) {
@@ -478,7 +582,12 @@ final class CameraDewarpRenderer {
         vertices = null;
         indices = null;
         indexCount = 0;
-        appliedConfig = null;
+        appliedRequest = null;
+        pendingEventKind = null;
+        pendingMeshRequest = null;
+        pendingRenderedRequest = null;
+        pendingMeshVertexCount = 0;
+        pendingMeshGenerationNs = -1;
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -510,7 +619,7 @@ final class CameraDewarpRenderer {
 
     private void reportStartupFailure(Throwable error) {
         if (!startupFailureReported.compareAndSet(false, true)) return;
-        emitEvent(new Event("dewarp_fallback_raw", config, 0, -1, error), true);
+        emitEvent(new Event("dewarp_fallback_raw", request, 0, -1, error), true);
     }
 
     static String mappingFailureKind(
@@ -525,6 +634,25 @@ final class CameraDewarpRenderer {
     static boolean isFatalEventKind(String kind) {
         return "dewarp_frame_failed".equals(kind)
                 || "dewarp_pipeline_failed".equals(kind);
+    }
+
+    static long nextRequestToken(
+            long currentToken, CameraDewarpConfig current,
+            CameraDewarpConfig requested) {
+        if (current == null || requested == null) {
+            throw new IllegalArgumentException("dewarp configs are required");
+        }
+        return current.sameMapping(requested) ? currentToken : currentToken + 1;
+    }
+
+    static boolean shouldHandleEvent(String kind, long eventToken, long currentToken) {
+        if ("dewarp_frame_failed".equals(kind)) return true;
+        if ("dewarp_mesh_applied".equals(kind)
+                || "dewarp_fallback_raw".equals(kind)
+                || "dewarp_pipeline_failed".equals(kind)) {
+            return eventToken == currentToken;
+        }
+        return true;
     }
 
     private static int linkProgram(String vertexSource, String fragmentSource) {

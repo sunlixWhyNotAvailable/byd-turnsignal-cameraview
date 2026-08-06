@@ -81,6 +81,15 @@ final class ReverseCameraLayout {
                 safeHeight);
     }
 
+    static Rect centeredSourceCrop(Rect crop) {
+        if (crop == null) throw new IllegalArgumentException("source crop is required");
+        return sourceCrop(
+                (1.0f - crop.width) / 2.0f,
+                (1.0f - crop.height) / 2.0f,
+                crop.width,
+                crop.height);
+    }
+
     static ReverseCameraLayout withPane(
             ReverseCameraLayout layout, int cameraIndex, Rect destination, Rect sourceCrop) {
         if (layout == null || destination == null || sourceCrop == null) {
@@ -179,12 +188,13 @@ final class ReverseCameraLayout {
 
     static PixelRect fitSourceCrop(
             Rect crop, int destinationWidth, int destinationHeight,
-            int sourceWidth, int sourceHeight) {
+            int sourceWidth, int sourceHeight, int rotationDegrees) {
         if (crop == null || destinationWidth <= 0 || destinationHeight <= 0
                 || sourceWidth <= 0 || sourceHeight <= 0) {
             throw new IllegalArgumentException("positive crop and bounds are required");
         }
-        float contentAspect = crop.width * sourceWidth / (crop.height * sourceHeight);
+        float contentAspect = rotatedAspect(
+                crop.width * sourceWidth, crop.height * sourceHeight, rotationDegrees);
         float destinationAspect = (float) destinationWidth / destinationHeight;
         int width = destinationWidth;
         int height = destinationHeight;
@@ -199,25 +209,54 @@ final class ReverseCameraLayout {
                 width, height);
     }
 
-    static Rect coverSourceCrop(
+    static float[] rotatedSourceCropTransform(
             Rect crop, int destinationWidth, int destinationHeight,
-            int sourceWidth, int sourceHeight) {
+            int sourceWidth, int sourceHeight, int rotationDegrees, boolean fill) {
         if (crop == null || destinationWidth <= 0 || destinationHeight <= 0
                 || sourceWidth <= 0 || sourceHeight <= 0) {
             throw new IllegalArgumentException("positive crop and bounds are required");
         }
-        float cropAspect = crop.width * sourceWidth / (crop.height * sourceHeight);
-        float destinationAspect = (float) destinationWidth / destinationHeight;
-        float width = crop.width;
-        float height = crop.height;
-        if (destinationAspect > cropAspect) {
-            height = crop.width * sourceWidth / (destinationAspect * sourceHeight);
-        } else if (destinationAspect < cropAspect) {
-            width = destinationAspect * crop.height * sourceHeight / sourceWidth;
-        }
-        float left = crop.left + (crop.width - width) / 2.0f;
-        float top = crop.top + (crop.height - height) / 2.0f;
-        return sourceCrop(left, top, width, height);
+        double radians = Math.toRadians(CameraRotation.clamp(rotationDegrees));
+        double cosine = Math.cos(radians);
+        double sine = Math.sin(radians);
+        double absoluteCosine = Math.abs(cosine);
+        double absoluteSine = Math.abs(sine);
+        double cropWidth = crop.width * sourceWidth;
+        double cropHeight = crop.height * sourceHeight;
+        double scale = fill
+                ? Math.max(
+                        (absoluteCosine * destinationWidth
+                                + absoluteSine * destinationHeight) / cropWidth,
+                        (absoluteSine * destinationWidth
+                                + absoluteCosine * destinationHeight) / cropHeight)
+                : Math.min(
+                        destinationWidth
+                                / (absoluteCosine * cropWidth
+                                + absoluteSine * cropHeight),
+                        destinationHeight
+                                / (absoluteSine * cropWidth
+                                + absoluteCosine * cropHeight));
+        double centerX = (crop.left + crop.width / 2.0d) * sourceWidth;
+        double centerY = (crop.top + crop.height / 2.0d) * sourceHeight;
+        return new float[]{
+                (float) (scale * cosine * sourceWidth / destinationWidth),
+                (float) (-scale * sine * sourceHeight / destinationHeight),
+                (float) (destinationWidth / 2.0d
+                        - scale * cosine * centerX + scale * sine * centerY),
+                (float) (scale * sine * sourceWidth / destinationWidth),
+                (float) (scale * cosine * sourceHeight / destinationHeight),
+                (float) (destinationHeight / 2.0d
+                        - scale * sine * centerX - scale * cosine * centerY),
+                0.0f, 0.0f, 1.0f
+        };
+    }
+
+    private static float rotatedAspect(float width, float height, int rotationDegrees) {
+        double radians = Math.toRadians(CameraRotation.clamp(rotationDegrees));
+        double cosine = Math.abs(Math.cos(radians));
+        double sine = Math.abs(Math.sin(radians));
+        return (float) ((cosine * width + sine * height)
+                / (sine * width + cosine * height));
     }
 
     static boolean isValidDisplayMode(int displayMode) {

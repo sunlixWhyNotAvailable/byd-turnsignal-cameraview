@@ -107,64 +107,31 @@ final class DirectCameraCrop {
         throw new IllegalArgumentException("invalid crop field: " + field);
     }
 
-    static String preferenceKey(CameraProfile profile, int field, boolean dewarped) {
-        if (!dewarped) return preferenceKey(profile, field);
-        if (profile == null) throw new IllegalArgumentException("camera profile required");
-        return "direct_crop_dewarp_v2_" + profile.wireName + "_" + fieldName(field);
-    }
-
-    static DirectCameraCrop load(
-            SharedPreferences preferences, CameraProfile profile, boolean dewarped) {
-        if (dewarped) seedDewarpedCrop(preferences, profile);
+    static DirectCameraCrop load(SharedPreferences preferences, CameraProfile profile) {
         DirectCameraCrop fallback = defaultFor(profile);
         return of(
-                preferences.getFloat(preferenceKey(profile, 0, dewarped), fallback.left),
-                preferences.getFloat(preferenceKey(profile, 1, dewarped), fallback.top),
-                preferences.getFloat(preferenceKey(profile, 2, dewarped), fallback.width),
-                preferences.getFloat(preferenceKey(profile, 3, dewarped), fallback.height),
-                preferences.getInt(preferenceKey(profile, 4, dewarped), fallback.aspectMode),
-                preferences.getInt(preferenceKey(profile, 5, dewarped),
+                preferences.getFloat(preferenceKey(profile, 0), fallback.left),
+                preferences.getFloat(preferenceKey(profile, 1), fallback.top),
+                preferences.getFloat(preferenceKey(profile, 2), fallback.width),
+                preferences.getFloat(preferenceKey(profile, 3), fallback.height),
+                preferences.getInt(preferenceKey(profile, 4), fallback.aspectMode),
+                preferences.getInt(preferenceKey(profile, 5),
                         fallback.rotationDegrees),
-                preferences.getInt(preferenceKey(profile, 6, dewarped),
+                preferences.getInt(preferenceKey(profile, 6),
                         fallback.rotationMode));
     }
 
     static void save(
-            SharedPreferences preferences, CameraProfile profile,
-            boolean dewarped, DirectCameraCrop crop) {
-        SharedPreferences.Editor editor = preferences.edit()
-                .putFloat(preferenceKey(profile, 0, dewarped), crop.left)
-                .putFloat(preferenceKey(profile, 1, dewarped), crop.top)
-                .putFloat(preferenceKey(profile, 2, dewarped), crop.width)
-                .putFloat(preferenceKey(profile, 3, dewarped), crop.height)
-                .putInt(preferenceKey(profile, 4, dewarped), crop.aspectMode)
-                .putInt(preferenceKey(profile, 5, dewarped), crop.rotationDegrees)
-                .putInt(preferenceKey(profile, 6, dewarped), crop.rotationMode);
-        if (dewarped) editor.putBoolean(dewarpSeedKey(profile), true);
-        editor.apply();
-    }
-
-    private static void seedDewarpedCrop(
-            SharedPreferences preferences, CameraProfile profile) {
-        if (preferences.getBoolean(dewarpSeedKey(profile), false)) return;
-        save(preferences, profile, true, load(preferences, profile, false));
-    }
-
-    private static String dewarpSeedKey(CameraProfile profile) {
-        return "direct_crop_dewarp_v2_" + profile.wireName + "_seeded";
-    }
-
-    private static String fieldName(int field) {
-        switch (field) {
-            case 0: return "x";
-            case 1: return "y";
-            case 2: return "width";
-            case 3: return "height";
-            case 4: return "aspect";
-            case 5: return "rotation";
-            case 6: return "rotation_mode";
-            default: throw new IllegalArgumentException("invalid crop field: " + field);
-        }
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        preferences.edit()
+                .putFloat(preferenceKey(profile, 0), crop.left)
+                .putFloat(preferenceKey(profile, 1), crop.top)
+                .putFloat(preferenceKey(profile, 2), crop.width)
+                .putFloat(preferenceKey(profile, 3), crop.height)
+                .putInt(preferenceKey(profile, 4), crop.aspectMode)
+                .putInt(preferenceKey(profile, 5), crop.rotationDegrees)
+                .putInt(preferenceKey(profile, 6), crop.rotationMode)
+                .apply();
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera, int aspectMode) {
@@ -239,6 +206,13 @@ final class DirectCameraCrop {
         return safeMode == rotationMode ? this
                 : new DirectCameraCrop(left, top, width, height, aspectMode,
                         rotationDegrees, safeMode).constrainAligned();
+    }
+
+    DirectCameraCrop centered() {
+        return new DirectCameraCrop(
+                (1.0f - width) / 2.0f,
+                (1.0f - height) / 2.0f,
+                width, height, aspectMode, rotationDegrees, rotationMode);
     }
 
     DirectCameraCrop move(float dx, float dy) {

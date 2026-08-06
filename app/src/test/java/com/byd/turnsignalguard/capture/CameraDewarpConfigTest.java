@@ -6,7 +6,6 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -63,14 +62,19 @@ public final class CameraDewarpConfigTest {
         assertTrue(restored.enabled);
         assertEquals(112, restored.fovDegrees);
         assertEquals(CameraDewarpConfig.PROJECTION_RECTILINEAR, restored.projection);
+        assertEquals(0.5f, restored.roiCenterX, 0.0f);
+        assertEquals(0.5f, restored.roiCenterY, 0.0f);
 
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_LEFT, true, 165,
-                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL)
+                .withRoiCenter(0.2f, 0.8f));
         restored = CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_LEFT);
         assertTrue(restored.enabled);
         assertEquals(165, restored.fovDegrees);
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, restored.projection);
+        assertEquals(0.5f, restored.roiCenterX, 0.0f);
+        assertEquals(0.5f, restored.roiCenterY, 0.0f);
 
         preferences.edit().putInt("camera_dewarp_v2_left_projection", 7).apply();
         CameraDewarpConfig invalid = CameraDewarpConfig.load(
@@ -81,29 +85,150 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
-    public void turnCropSeedsOnceAndThenRemainsIndependent() {
+    public void runtimeRoiIsValidatedAndPreservedByMappingChanges() {
+        CameraDewarpConfig centered = CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, true, 100);
+        CameraDewarpConfig aimed = centered.withRoiCenter(0.25f, 0.75f);
+        assertFalse(centered.sameMapping(aimed));
+        assertEquals(0.25f, aimed.withEnabled(false).roiCenterX, 0.0f);
+        assertEquals(0.75f, aimed.withFov(120).roiCenterY, 0.0f);
+        assertEquals(0.25f, aimed.withProjection(
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL).roiCenterX, 0.0f);
+        assertThrows(IllegalArgumentException.class,
+                () -> centered.withRoiCenter(Float.NaN, 0.5f));
+        assertThrows(IllegalArgumentException.class,
+                () -> centered.withRoiCenter(-0.01f, 0.5f));
+        assertThrows(IllegalArgumentException.class,
+                () -> centered.withRoiCenter(0.5f, 1.01f));
+    }
+
+    @Test
+    public void disabledMappingIgnoresParametersUnusedByIdentityPipeline() {
+        CameraDewarpConfig disabled = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        CameraDewarpConfig differentUnusedParameters = CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, false, 165,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL)
+                .withRoiCenter(0.2f, 0.8f);
+
+        assertTrue(disabled.sameMapping(differentUnusedParameters));
+        assertFalse(disabled.sameMapping(CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_RIGHT)));
+        assertFalse(disabled.sameMapping(disabled.withEnabled(true)));
+    }
+
+    @Test
+    public void coalescedAbaReturnGetsOnlyCurrentPostSwapAcknowledgement() {
+        CameraDewarpConfig a = CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, true, 100);
+        CameraDewarpRenderer.MappingRequest a1 = new CameraDewarpRenderer.MappingRequest(a, 1);
+        CameraDewarpRenderer.MappingRequest b2 = new CameraDewarpRenderer.MappingRequest(
+                a.withFov(120), 2);
+        CameraDewarpRenderer.MappingRequest a3 = new CameraDewarpRenderer.MappingRequest(
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 100), 3);
+
+        assertEquals(2L, CameraDewarpRenderer.nextRequestToken(
+                a1.token, a1.config, b2.config));
+        assertEquals(3L, CameraDewarpRenderer.nextRequestToken(
+                b2.token, b2.config, a3.config));
+        assertTrue(CameraDewarpRenderer.canReuseAppliedMapping(a1, a3));
+        assertFalse(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                false, a3, a1, a1, a3));
+        assertFalse(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, null, a1, a1, a3));
+        assertFalse(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, a1, a1, a1, a3));
+        assertFalse(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, a3, a1, b2, a3));
+        assertTrue(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, a3, a1, a1, a3));
+        assertFalse(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_mesh_applied", a1.token, a3.token));
+        assertTrue(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_mesh_applied", a3.token, a3.token));
+    }
+
+    @Test
+    public void domainFallbackWaitsForIdentitySwapAndCanRestoreCorrection() {
+        CameraDewarpRenderer.MappingRequest supportedA =
+                new CameraDewarpRenderer.MappingRequest(CameraDewarpConfig.of(
+                        CameraDewarpConfig.LENS_LEFT, true, 120), 1);
+        CameraDewarpRenderer.MappingRequest unsupportedB =
+                new CameraDewarpRenderer.MappingRequest(CameraDewarpConfig.of(
+                        CameraDewarpConfig.LENS_LEFT, true, 170)
+                        .withRoiCenter(0.005f, 0.005f), 2);
+        CameraDewarpRenderer.MappingRequest rawIdentity =
+                new CameraDewarpRenderer.MappingRequest(CameraDewarpConfig.disabled(
+                        CameraDewarpConfig.LENS_LEFT), 2);
+
+        assertFalse(CameraDewarpRenderer.canReuseAppliedMapping(
+                supportedA, unsupportedB));
+        assertFalse(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                false, unsupportedB, rawIdentity, rawIdentity, unsupportedB));
+        assertTrue(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, unsupportedB, rawIdentity, rawIdentity, unsupportedB));
+        CameraDewarpRenderer.Event fallback = new CameraDewarpRenderer.Event(
+                "dewarp_fallback_raw", unsupportedB, 4, 0, null);
+        assertEquals(unsupportedB.token, fallback.requestToken);
+        assertTrue(unsupportedB.config.sameMapping(fallback.mapping));
+        assertFalse(CameraDewarpRenderer.shouldHandleEvent(
+                fallback.kind, fallback.requestToken, 3));
+
+        CameraDewarpRenderer.MappingRequest supportedC =
+                new CameraDewarpRenderer.MappingRequest(supportedA.config, 3);
+        assertFalse(CameraDewarpRenderer.canReuseAppliedMapping(
+                rawIdentity, supportedC));
+        assertTrue(CameraDewarpRenderer.shouldEmitAppliedMesh(
+                true, supportedC, supportedC, supportedC, supportedC));
+    }
+
+    @Test
+    public void disabledRoiEditKeepsRequestTokenAndDoesNotNeedNewMapping() {
+        CameraDewarpConfig disabled = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        CameraDewarpConfig roiEdit = disabled.withRoiCenter(0.2f, 0.8f);
+        assertEquals(7L, CameraDewarpRenderer.nextRequestToken(
+                7L, disabled, roiEdit));
+        assertEquals(8L, CameraDewarpRenderer.nextRequestToken(
+                7L, disabled, disabled.withEnabled(true)));
+    }
+
+    @Test
+    public void turnCropUsesOnlyRawKeysAndCentersWithoutChangingMetadata() {
         SharedPreferences preferences = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
         DirectCameraCrop raw = DirectCameraCrop.of(
                 0.10f, 0.12f, 0.55f, 0.60f, DirectCameraCrop.ASPECT_FREE,
-                7, CameraRotation.MODE_FILL);
-        DirectCameraCrop.save(preferences, profile, false, raw);
+                37, CameraRotation.MODE_ALIGNED);
+        DirectCameraCrop.save(preferences, profile, raw);
+        String legacyX = "direct_crop_dewarp_v2_" + profile.wireName + "_x";
+        preferences.edit().putFloat(legacyX, 0.77f).apply();
 
-        DirectCameraCrop seeded = DirectCameraCrop.load(preferences, profile, true);
-        assertCropEquals(raw, seeded);
-        DirectCameraCrop corrected = DirectCameraCrop.of(
-                0.20f, 0.18f, 0.48f, 0.52f, DirectCameraCrop.ASPECT_FREE,
-                -4, CameraRotation.MODE_FIT);
-        DirectCameraCrop.save(preferences, profile, true, corrected);
+        CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, true, 120));
+        assertCropEquals(raw, DirectCameraCrop.load(preferences, profile));
+        CameraDewarpConfig.save(preferences, CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT));
+        assertCropEquals(raw, DirectCameraCrop.load(preferences, profile));
 
-        assertCropEquals(raw, DirectCameraCrop.load(preferences, profile, false));
-        assertCropEquals(corrected, DirectCameraCrop.load(preferences, profile, true));
-        assertNotEquals(DirectCameraCrop.preferenceKey(profile, 0, false),
-                DirectCameraCrop.preferenceKey(profile, 0, true));
+        DirectCameraCrop centered = raw.centered();
+        assertEquals((1.0f - raw.width) / 2.0f, centered.left, 0.0f);
+        assertEquals((1.0f - raw.height) / 2.0f, centered.top, 0.0f);
+        assertEquals(raw.width, centered.width, 0.0f);
+        assertEquals(raw.height, centered.height, 0.0f);
+        assertEquals(raw.aspectMode, centered.aspectMode);
+        assertEquals(raw.rotationDegrees, centered.rotationDegrees);
+        assertEquals(raw.rotationMode, centered.rotationMode);
+
+        DirectCameraCrop replacement = DirectCameraCrop.of(
+                0.2f, 0.2f, 0.4f, 0.45f, DirectCameraCrop.ASPECT_FREE);
+        DirectCameraCrop.save(preferences, profile, replacement);
+        assertCropEquals(replacement, DirectCameraCrop.load(preferences, profile));
+        assertEquals(0.77f, preferences.getFloat(legacyX, -1.0f), 0.0f);
     }
 
     @Test
-    public void reverseCropSwitchesWithoutChangingSharedLayout() {
+    public void reverseCropIgnoresAndDoesNotOverwriteLegacyCorrectedKeys() {
         SharedPreferences preferences = new TestSharedPreferences();
         ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
         ReverseCameraLayout raw = defaults;
@@ -114,43 +239,27 @@ public final class CameraDewarpConfigTest {
                             0.03f * index, 0.04f * index, 0.70f, 0.68f), index * 4);
         }
         ReverseCameraController.saveLayout(preferences, raw);
-
+        float[] legacyLeft = {0.71f, 0.72f, 0.73f};
         for (int index = 1; index <= 3; index++) {
+            preferences.edit().putFloat(ReverseCameraController.sourceCropKey(
+                    index, "left", true), legacyLeft[index - 1]).apply();
             CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                     CameraDewarpConfig.lensForReverseCamera(index), true, 100));
         }
-        ReverseCameraLayout seeded = ReverseCameraController.loadLayout(preferences);
-        ReverseCameraLayout corrected = seeded;
+        ReverseCameraLayout enabled = ReverseCameraController.loadLayout(preferences);
         for (int index = 1; index <= 3; index++) {
-            ReverseCameraLayout.Pane rawPane = raw.pane(index);
-            ReverseCameraLayout.Pane seededPane = seeded.pane(index);
-            assertRectEquals(rawPane.sourceCrop, seededPane.sourceCrop);
-            assertRectEquals(rawPane.destination, seededPane.destination);
-            assertEquals(index * 4, seededPane.rotationDegrees);
-            corrected = ReverseCameraLayout.withPane(
-                    corrected, index, seededPane.destination,
-                    ReverseCameraLayout.sourceCrop(
-                            0.05f * index, 0.06f * index, 0.60f, 0.58f),
-                    seededPane.rotationDegrees);
-        }
-        ReverseCameraController.saveLayout(preferences, corrected);
-        ReverseCameraLayout persistedRaw = ReverseCameraController.loadRawLayout(preferences);
-        for (int index = 1; index <= 3; index++) {
-            assertRectEquals(raw.pane(index).sourceCrop,
-                    persistedRaw.pane(index).sourceCrop);
+            assertRectEquals(raw.pane(index).sourceCrop, enabled.pane(index).sourceCrop);
             CameraDewarpConfig.save(preferences, CameraDewarpConfig.disabled(
                     CameraDewarpConfig.lensForReverseCamera(index)));
         }
         ReverseCameraLayout disabled = ReverseCameraController.loadLayout(preferences);
         for (int index = 1; index <= 3; index++) {
             assertRectEquals(raw.pane(index).sourceCrop, disabled.pane(index).sourceCrop);
-            CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                    CameraDewarpConfig.lensForReverseCamera(index), true, 100));
         }
-        ReverseCameraLayout enabled = ReverseCameraController.loadLayout(preferences);
+        ReverseCameraController.saveLayout(preferences, enabled);
         for (int index = 1; index <= 3; index++) {
-            assertRectEquals(corrected.pane(index).sourceCrop,
-                    enabled.pane(index).sourceCrop);
+            assertEquals(legacyLeft[index - 1], preferences.getFloat(
+                    ReverseCameraController.sourceCropKey(index, "left", true), -1.0f), 0.0f);
         }
     }
 
@@ -177,6 +286,20 @@ public final class CameraDewarpConfigTest {
         assertTrue(CameraDewarpRenderer.isFatalEventKind("dewarp_frame_failed"));
         assertTrue(CameraDewarpRenderer.isFatalEventKind("dewarp_pipeline_failed"));
         assertFalse(CameraDewarpRenderer.isFatalEventKind("dewarp_fallback_raw"));
+    }
+
+    @Test
+    public void staleMappingEventsCannotAffectNewerMappingButFrameFailureCan() {
+        assertFalse(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_pipeline_failed", 2, 3));
+        assertFalse(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_fallback_raw", 2, 3));
+        assertFalse(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_mesh_applied", 2, 3));
+        assertTrue(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_pipeline_failed", 3, 3));
+        assertTrue(CameraDewarpRenderer.shouldHandleEvent(
+                "dewarp_frame_failed", 2, 3));
     }
 
     private static void assertCropEquals(DirectCameraCrop expected, DirectCameraCrop actual) {

@@ -1,8 +1,11 @@
 package com.byd.turnsignalguard.capture;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
@@ -125,9 +128,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
             CameraDewarpConfig rear,
             CameraDewarpConfig left,
             CameraDewarpConfig right) {
-        panes[0].texture.applyDewarpConfig(rear);
-        panes[1].texture.applyDewarpConfig(left);
-        panes[2].texture.applyDewarpConfig(right);
+        panes[0].applyDewarpConfig(rear);
+        panes[1].applyDewarpConfig(left);
+        panes[2].applyDewarpConfig(right);
+        applyModel();
     }
 
     boolean dewarpPipelineCompatible(
@@ -321,6 +325,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private void applyModel() {
         int width = getWidth();
         int height = getHeight();
+        for (PaneView pane : panes) {
+            ReverseCameraLayout.Rect rawCrop = model.pane(pane.cameraIndex).sourceCrop;
+            pane.texture.applyDewarpSourceRoi(
+                    rawCrop.left, rawCrop.top, rawCrop.width, rawCrop.height);
+        }
         if (width <= 0 || height <= 0) return;
         ReverseCameraLayout.PixelRect backgroundRect =
                 ReverseCameraLayout.project(model.background, width, height);
@@ -334,9 +343,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
         backgroundPane.setZ(0.0f);
         for (PaneView pane : panes) {
             ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
-            ReverseCameraLayout.Rect sourceCrop = pane.texture.usesRawFallback()
-                    ? rawFallbackModel.pane(pane.cameraIndex).sourceCrop
-                    : value.sourceCrop;
+            ReverseCameraLayout.Rect rawCrop = value.sourceCrop;
+            ReverseCameraLayout.Rect sourceCrop = pane.dewarpConfig.enabled
+                    && !pane.texture.usesRawFallback()
+                    ? ReverseCameraLayout.centeredSourceCrop(rawCrop)
+                    : rawCrop;
             ReverseCameraLayout.PixelRect baseRect =
                     ReverseCameraLayout.project(value.destination, width, height);
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) pane.getLayoutParams();
@@ -365,7 +376,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private static final class PaneView extends FrameLayout {
         final int cameraIndex;
         final BlindSpotCameraView texture;
+        final CropMaskView cropMask;
         final View cover;
+        CameraDewarpConfig dewarpConfig;
         Surface surface;
         int generation;
         int armedGeneration;
@@ -378,6 +391,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         PaneView(Context context, int cameraIndex) {
             super(context);
             this.cameraIndex = cameraIndex;
+            dewarpConfig = CameraDewarpConfig.disabled(
+                    CameraDewarpConfig.lensForReverseCamera(cameraIndex));
             setClipChildren(true);
             setClipToOutline(true);
             setOutlineProvider(ViewOutlineProvider.BACKGROUND);
@@ -391,6 +406,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
             texture.setExternalTransform(true);
             addView(texture, new FrameLayout.LayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+            cropMask = new CropMaskView(context);
+            addView(cropMask, new FrameLayout.LayoutParams(
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             cover = new View(context);
             cover.setBackgroundColor(Color.BLACK);
             addView(cover, new FrameLayout.LayoutParams(
@@ -398,6 +416,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
             addOnLayoutChangeListener((view, left, top, right, bottom,
                     oldLeft, oldTop, oldRight, oldBottom) ->
                     applyTransform(crop, rotationDegrees, displayMode));
+        }
+
+        void applyDewarpConfig(CameraDewarpConfig value) {
+            if (value == null) throw new IllegalArgumentException("dewarp config is required");
+            dewarpConfig = value;
+            texture.applyDewarpConfig(value);
         }
 
         void applyTransform(
@@ -412,7 +436,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             boolean fit = displayMode == ReverseCameraLayout.DISPLAY_MODE_FIT;
             ReverseCameraLayout.PixelRect fitted = fit
                     ? ReverseCameraLayout.fitSourceCrop(
-                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT)
+                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT,
+                            rotationDegrees)
                     : new ReverseCameraLayout.PixelRect(0, 0, width, height);
             FrameLayout.LayoutParams textureParams =
                     (FrameLayout.LayoutParams) texture.getLayoutParams();
@@ -425,27 +450,42 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 textureParams.topMargin = fitted.top;
                 texture.setLayoutParams(textureParams);
             }
-            ReverseCameraLayout.Rect transformCrop = value;
-            int transformMode = CameraRotation.MODE_FIT;
-            if (displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL) {
-                transformCrop = ReverseCameraLayout.coverSourceCrop(
-                        value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT);
-                transformMode = CameraRotation.MODE_FILL;
-            } else if (displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
-                transformMode = CameraRotation.MODE_ALIGNED;
-            }
             Matrix transform = new Matrix();
-            CameraRotation.setSourceCropTransform(
-                    transform,
-                    new RectF(transformCrop.left * fitted.width,
-                            transformCrop.top * fitted.height,
-                            transformCrop.right() * fitted.width,
-                            transformCrop.bottom() * fitted.height),
-                    new RectF(0, 0, fitted.width, fitted.height),
-                    rotationDegrees,
-                    transformMode,
-                    new RectF(0, 0, fitted.width, fitted.height),
-                    ReverseCameraLayout.mirrorHorizontally(cameraIndex));
+            if (displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
+                cropMask.setCrop(null);
+                CameraRotation.setSourceCropTransform(
+                        transform,
+                        new RectF(value.left * fitted.width,
+                                value.top * fitted.height,
+                                value.right() * fitted.width,
+                                value.bottom() * fitted.height),
+                        new RectF(0, 0, fitted.width, fitted.height),
+                        rotationDegrees,
+                        CameraRotation.MODE_ALIGNED,
+                        new RectF(0, 0, fitted.width, fitted.height),
+                        ReverseCameraLayout.mirrorHorizontally(cameraIndex));
+            } else {
+                transform.setValues(ReverseCameraLayout.rotatedSourceCropTransform(
+                        value, fitted.width, fitted.height, SOURCE_WIDTH, SOURCE_HEIGHT,
+                        rotationDegrees,
+                        displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL));
+                if (ReverseCameraLayout.mirrorHorizontally(cameraIndex)) {
+                    transform.postScale(-1.0f, 1.0f,
+                            fitted.width / 2.0f, fitted.height / 2.0f);
+                }
+                float[] visibleCrop = new float[]{
+                        value.left * fitted.width, value.top * fitted.height,
+                        value.right() * fitted.width, value.top * fitted.height,
+                        value.right() * fitted.width, value.bottom() * fitted.height,
+                        value.left * fitted.width, value.bottom() * fitted.height
+                };
+                transform.mapPoints(visibleCrop);
+                for (int i = 0; i < visibleCrop.length; i += 2) {
+                    visibleCrop[i] += fitted.left;
+                    visibleCrop[i + 1] += fitted.top;
+                }
+                cropMask.setCrop(visibleCrop);
+            }
             texture.setRotation(0.0f);
             texture.setScaleX(1.0f);
             texture.setScaleY(1.0f);
@@ -462,6 +502,36 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
         private static float dp(Context context, int value) {
             return value * context.getResources().getDisplayMetrics().density;
+        }
+    }
+
+    private static final class CropMaskView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+        private float[] crop;
+
+        CropMaskView(Context context) {
+            super(context);
+            paint.setColor(Color.BLACK);
+        }
+
+        void setCrop(float[] value) {
+            crop = value;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (crop == null) return;
+            path.reset();
+            path.setFillType(Path.FillType.EVEN_ODD);
+            path.addRect(0, 0, getWidth(), getHeight(), Path.Direction.CW);
+            path.moveTo(crop[0], crop[1]);
+            for (int i = 2; i < crop.length; i += 2) {
+                path.lineTo(crop[i], crop[i + 1]);
+            }
+            path.close();
+            canvas.drawPath(path, paint);
         }
     }
 }

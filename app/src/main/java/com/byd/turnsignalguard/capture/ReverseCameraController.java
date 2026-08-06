@@ -420,15 +420,14 @@ final class ReverseCameraController {
     }
 
     static ReverseCameraLayout loadLayout(SharedPreferences settings) {
-        return loadLayout(settings, false);
+        return readLayout(settings);
     }
 
     static ReverseCameraLayout loadRawLayout(SharedPreferences settings) {
-        return loadLayout(settings, true);
+        return readLayout(settings);
     }
 
-    private static ReverseCameraLayout loadLayout(
-            SharedPreferences settings, boolean forceRawCrop) {
+    private static ReverseCameraLayout readLayout(SharedPreferences settings) {
         try {
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
             ReverseCameraLayout.Rect defaultBackground = layout.background;
@@ -449,10 +448,8 @@ final class ReverseCameraController {
                         settings.getFloat(prefix + "top", pane.destination.top),
                         settings.getFloat(prefix + "width", pane.destination.width),
                         settings.getFloat(prefix + "height", pane.destination.height));
-                boolean dewarped = !forceRawCrop && CameraDewarpConfig.load(settings,
-                        CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex)).enabled;
                 ReverseCameraLayout.Rect crop = loadSourceCrop(
-                        settings, pane.cameraIndex, pane.sourceCrop, dewarped);
+                        settings, pane.cameraIndex, pane.sourceCrop);
                 int rotationDegrees = CameraRotation.clamp(settings.getInt(
                         prefix + "rotation_degrees", pane.rotationDegrees));
                 layout = ReverseCameraLayout.withPane(
@@ -478,8 +475,6 @@ final class ReverseCameraController {
                 .putFloat(PREF_PREFIX + "background_height", layout.background.height);
         for (ReverseCameraLayout.Pane pane : layout.panes()) {
             String prefix = PREF_PREFIX + pane.cameraIndex + "_";
-            boolean dewarped = CameraDewarpConfig.load(settings,
-                    CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex)).enabled;
             editor.putFloat(prefix + "left", pane.destination.left)
                     .putFloat(prefix + "top", pane.destination.top)
                     .putFloat(prefix + "width", pane.destination.width)
@@ -487,7 +482,7 @@ final class ReverseCameraController {
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
-            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, dewarped);
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
         }
         editor.apply();
     }
@@ -509,36 +504,28 @@ final class ReverseCameraController {
                     .putInt(displayModeKey(pane.cameraIndex),
                             ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
-            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, false);
-            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, true);
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
         }
         editor.apply();
     }
 
     private static ReverseCameraLayout.Rect loadSourceCrop(
             SharedPreferences settings, int cameraIndex,
-            ReverseCameraLayout.Rect fallback, boolean dewarped) {
-        if (dewarped && !settings.getBoolean(sourceCropSeedKey(cameraIndex), false)) {
-            SharedPreferences.Editor editor = settings.edit();
-            writeSourceCrop(editor, cameraIndex,
-                    loadSourceCrop(settings, cameraIndex, fallback, false), true);
-            editor.apply();
-        }
+            ReverseCameraLayout.Rect fallback) {
         return ReverseCameraLayout.sourceCrop(
-                settings.getFloat(sourceCropKey(cameraIndex, "left", dewarped), fallback.left),
-                settings.getFloat(sourceCropKey(cameraIndex, "top", dewarped), fallback.top),
-                settings.getFloat(sourceCropKey(cameraIndex, "width", dewarped), fallback.width),
-                settings.getFloat(sourceCropKey(cameraIndex, "height", dewarped), fallback.height));
+                settings.getFloat(sourceCropKey(cameraIndex, "left", false), fallback.left),
+                settings.getFloat(sourceCropKey(cameraIndex, "top", false), fallback.top),
+                settings.getFloat(sourceCropKey(cameraIndex, "width", false), fallback.width),
+                settings.getFloat(sourceCropKey(cameraIndex, "height", false), fallback.height));
     }
 
     private static void writeSourceCrop(
             SharedPreferences.Editor editor, int cameraIndex,
-            ReverseCameraLayout.Rect crop, boolean dewarped) {
-        editor.putFloat(sourceCropKey(cameraIndex, "left", dewarped), crop.left)
-                .putFloat(sourceCropKey(cameraIndex, "top", dewarped), crop.top)
-                .putFloat(sourceCropKey(cameraIndex, "width", dewarped), crop.width)
-                .putFloat(sourceCropKey(cameraIndex, "height", dewarped), crop.height);
-        if (dewarped) editor.putBoolean(sourceCropSeedKey(cameraIndex), true);
+            ReverseCameraLayout.Rect crop) {
+        editor.putFloat(sourceCropKey(cameraIndex, "left", false), crop.left)
+                .putFloat(sourceCropKey(cameraIndex, "top", false), crop.top)
+                .putFloat(sourceCropKey(cameraIndex, "width", false), crop.width)
+                .putFloat(sourceCropKey(cameraIndex, "height", false), crop.height);
     }
 
     static String sourceCropKey(int cameraIndex, String field, boolean dewarped) {
@@ -571,10 +558,6 @@ final class ReverseCameraController {
         } catch (Throwable ignored) {
             return ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
         }
-    }
-
-    private static String sourceCropSeedKey(int cameraIndex) {
-        return PREF_PREFIX + cameraIndex + "_dewarp_v2_crop_seeded";
     }
 
     private static void release(Surface[] surfaces) {

@@ -153,21 +153,214 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
-    public void coverCropKeepsCenterAndMatchesDestinationAspect() {
+    public void rawCropIsAuthoritativeAndLegacyCorrectedKeysStayUntouched() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "left", false), 0.12f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "top", false), 0.22f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "width", false), 0.42f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "height", false), 0.52f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "left", true), 0.77f);
+        CameraDewarpConfig.save(settings, CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, true, 120));
+
+        ReverseCameraLayout layout = ReverseCameraController.loadLayout(settings);
+        ReverseCameraLayout rawLayout = ReverseCameraController.loadRawLayout(settings);
+        assertEquals(0.12f, layout.rearLeft.sourceCrop.left, 0.0001f);
+        assertEquals(0.22f, layout.rearLeft.sourceCrop.top, 0.0001f);
+        assertEquals(0.42f, layout.rearLeft.sourceCrop.width, 0.0001f);
+        assertEquals(0.52f, layout.rearLeft.sourceCrop.height, 0.0001f);
+        assertEquals(layout.rearLeft.sourceCrop.left,
+                rawLayout.rearLeft.sourceCrop.left, 0.0f);
+        assertEquals(layout.rearLeft.sourceCrop.top,
+                rawLayout.rearLeft.sourceCrop.top, 0.0f);
+
+        ReverseCameraController.saveLayout(settings, layout);
+        assertEquals(0.77f, settings.getFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "left", true), -1.0f), 0.0f);
+    }
+
+    @Test
+    public void fitAndFillUseUniformRotatedCropAtZeroFortyFiveAndNinetyDegrees() {
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(
                 0.1f, 0.2f, 0.8f, 0.6f);
-        ReverseCameraLayout.Rect covered = ReverseCameraLayout.coverSourceCrop(
-                crop, 1600, 600,
+        int paneWidth = 1600;
+        int paneHeight = 900;
+        int[] rotations = {0, 45, 90};
+        for (int rotation : rotations) {
+            ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
+                    crop, paneWidth, paneHeight,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotation);
+            assertEquals(rotatedAspect(crop, rotation),
+                    (float) fitted.width / fitted.height, 0.002f);
+
+            float[] fit = ReverseCameraLayout.rotatedSourceCropTransform(
+                    crop, fitted.width, fitted.height,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotation, false);
+            assertUniformPhysicalScale(fit, fitted.width, fitted.height);
+            assertCropFits(fit, crop, fitted.width, fitted.height);
+
+            float[] fill = ReverseCameraLayout.rotatedSourceCropTransform(
+                    crop, paneWidth, paneHeight,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotation, true);
+            assertUniformPhysicalScale(fill, paneWidth, paneHeight);
+            assertPaneCovered(fill, crop, paneWidth, paneHeight);
+        }
+
+        float scaleAt29 = physicalScale(ReverseCameraLayout.rotatedSourceCropTransform(
+                crop, paneWidth, paneHeight,
                 ReverseCameraCompositionView.SOURCE_WIDTH,
-                ReverseCameraCompositionView.SOURCE_HEIGHT);
-        float coveredAspect = covered.width * ReverseCameraCompositionView.SOURCE_WIDTH
-                / (covered.height * ReverseCameraCompositionView.SOURCE_HEIGHT);
-        assertEquals(1600.0f / 600.0f, coveredAspect, 0.0001f);
-        assertEquals(crop.left + crop.width / 2.0f,
-                covered.left + covered.width / 2.0f, 0.0001f);
-        assertEquals(crop.top + crop.height / 2.0f,
-                covered.top + covered.height / 2.0f, 0.0001f);
-        assertTrue(covered.width <= crop.width);
-        assertTrue(covered.height <= crop.height);
+                ReverseCameraCompositionView.SOURCE_HEIGHT, 29, true), paneWidth);
+        float scaleAt30 = physicalScale(ReverseCameraLayout.rotatedSourceCropTransform(
+                crop, paneWidth, paneHeight,
+                ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT, 30, true), paneWidth);
+        assertEquals(scaleAt29, scaleAt30, 0.05f);
+    }
+
+    @Test
+    public void capturedFortyByFiftyCropsAtFortyTwoDegreesStayBounded() {
+        ReverseCameraLayout.Rect[] crops = {
+                ReverseCameraLayout.sourceCrop(0.0f, 0.25f, 0.4f, 0.5f),
+                ReverseCameraLayout.sourceCrop(0.6f, 0.25f, 0.4f, 0.5f)
+        };
+        int[] rotations = {42, -42};
+        float referenceScale = -1.0f;
+        for (int i = 0; i < crops.length; i++) {
+            ReverseCameraLayout.Rect crop = crops[i];
+            ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
+                    crop, 960, 495,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotations[i]);
+            assertEquals(499, fitted.width);
+            assertEquals(495, fitted.height);
+            float[] fit = ReverseCameraLayout.rotatedSourceCropTransform(
+                    crop, fitted.width, fitted.height,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotations[i], false);
+            assertCropFits(fit, crop, fitted.width, fitted.height);
+
+            float[] fill = ReverseCameraLayout.rotatedSourceCropTransform(
+                    crop, 960, 495,
+                    ReverseCameraCompositionView.SOURCE_WIDTH,
+                    ReverseCameraCompositionView.SOURCE_HEIGHT, rotations[i], true);
+            for (float value : fill) assertTrue(Float.isFinite(value));
+            assertPaneCovered(fill, crop, 960, 495);
+            float scale = physicalScale(fill, 960);
+            assertEquals(1.5542f, scale, 0.001f);
+            assertTrue(scale < 2.0f);
+            if (referenceScale < 0.0f) referenceScale = scale;
+            else assertEquals(referenceScale, scale, 0.0001f);
+
+            float[] mirrored = mirrorHorizontally(fill, 960);
+            assertTrue(determinant(fill) * determinant(mirrored) < 0.0f);
+            float centerX = (crop.left + crop.width / 2.0f) * 960;
+            float centerY = (crop.top + crop.height / 2.0f) * 495;
+            assertEquals(480.0f, map(mirrored, centerX, centerY)[0], 0.01f);
+            assertEquals(247.5f, map(mirrored, centerX, centerY)[1], 0.01f);
+
+            ReverseCameraLayout.Rect centered =
+                    ReverseCameraLayout.centeredSourceCrop(crop);
+            assertEquals(0.3f, centered.left, 0.0001f);
+            assertEquals(0.25f, centered.top, 0.0001f);
+            assertEquals(crop.width, centered.width, 0.0f);
+            assertEquals(crop.height, centered.height, 0.0f);
+        }
+    }
+
+    private static void assertCropFits(
+            float[] transform, ReverseCameraLayout.Rect crop, int width, int height) {
+        float left = crop.left * width;
+        float top = crop.top * height;
+        float right = crop.right() * width;
+        float bottom = crop.bottom() * height;
+        float[][] corners = {
+                map(transform, left, top), map(transform, right, top),
+                map(transform, right, bottom), map(transform, left, bottom)
+        };
+        for (float[] corner : corners) {
+            assertTrue(corner[0] >= -1.0f && corner[0] <= width + 1.0f);
+            assertTrue(corner[1] >= -1.0f && corner[1] <= height + 1.0f);
+        }
+        assertEquals(width / 2.0f,
+                map(transform, (left + right) / 2.0f, (top + bottom) / 2.0f)[0], 0.01f);
+        assertEquals(height / 2.0f,
+                map(transform, (left + right) / 2.0f, (top + bottom) / 2.0f)[1], 0.01f);
+    }
+
+    private static void assertPaneCovered(
+            float[] transform, ReverseCameraLayout.Rect crop, int width, int height) {
+        float[][] corners = {
+                inverseMap(transform, 0, 0), inverseMap(transform, width, 0),
+                inverseMap(transform, width, height), inverseMap(transform, 0, height)
+        };
+        for (float[] corner : corners) {
+            assertTrue(corner[0] >= crop.left * width - 0.01f);
+            assertTrue(corner[0] <= crop.right() * width + 0.01f);
+            assertTrue(corner[1] >= crop.top * height - 0.01f);
+            assertTrue(corner[1] <= crop.bottom() * height + 0.01f);
+        }
+    }
+
+    private static void assertUniformPhysicalScale(
+            float[] transform, int width, int height) {
+        float xScale = physicalScale(transform, width);
+        float yScale = (float) Math.hypot(
+                transform[1] * height / ReverseCameraCompositionView.SOURCE_HEIGHT,
+                transform[4] * height / ReverseCameraCompositionView.SOURCE_HEIGHT);
+        assertEquals(xScale, yScale, 0.0001f);
+    }
+
+    private static float physicalScale(float[] transform, int width) {
+        return (float) Math.hypot(
+                transform[0] * width / ReverseCameraCompositionView.SOURCE_WIDTH,
+                transform[3] * width / ReverseCameraCompositionView.SOURCE_WIDTH);
+    }
+
+    private static float[] map(float[] transform, float x, float y) {
+        return new float[]{
+                transform[0] * x + transform[1] * y + transform[2],
+                transform[3] * x + transform[4] * y + transform[5]
+        };
+    }
+
+    private static float[] inverseMap(float[] transform, float x, float y) {
+        float translatedX = x - transform[2];
+        float translatedY = y - transform[5];
+        float determinant = transform[0] * transform[4] - transform[1] * transform[3];
+        return new float[]{
+                (transform[4] * translatedX - transform[1] * translatedY) / determinant,
+                (-transform[3] * translatedX + transform[0] * translatedY) / determinant
+        };
+    }
+
+    private static float[] mirrorHorizontally(float[] transform, int width) {
+        return new float[]{
+                -transform[0], -transform[1], width - transform[2],
+                transform[3], transform[4], transform[5],
+                transform[6], transform[7], transform[8]
+        };
+    }
+
+    private static float determinant(float[] transform) {
+        return transform[0] * transform[4] - transform[1] * transform[3];
+    }
+
+    private static float rotatedAspect(ReverseCameraLayout.Rect crop, int degrees) {
+        double radians = Math.toRadians(degrees);
+        double cosine = Math.abs(Math.cos(radians));
+        double sine = Math.abs(Math.sin(radians));
+        double width = crop.width * ReverseCameraCompositionView.SOURCE_WIDTH;
+        double height = crop.height * ReverseCameraCompositionView.SOURCE_HEIGHT;
+        return (float) ((cosine * width + sine * height)
+                / (sine * width + cosine * height));
     }
 }

@@ -84,6 +84,7 @@ final class CameraCropOverlayView extends View {
         canvas.drawRect(0, 0, getWidth(), getHeight(), shade);
         canvas.restore();
         canvas.drawPath(cropPath, border);
+        if (!isEnabled()) return;
         drawHandles(canvas, corners);
         if (crop.rotationMode == CameraRotation.MODE_ALIGNED) {
             float[] rotationHandle = rotationHandle(corners);
@@ -96,6 +97,7 @@ final class CameraCropOverlayView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (!isEnabled()) return false;
         if (getWidth() == 0 || getHeight() == 0) return false;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
