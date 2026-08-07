@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(57, BuildConfig.VERSION_CODE);
+        assertEquals(58, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -747,6 +747,8 @@ public final class AdbCoreTest {
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("preview_handoff"));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("replace_preview"));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("replace_with_stock_avm"));
+        assertFalse(CameraProbeActivity.isIntermediateCameraClose(
+                "replace_with_multi_preview"));
         assertFalse(CameraProbeActivity.isIntermediateCameraClose("user_close"));
         assertTrue(CameraProbeActivity.isInvalidStockSurfaceError(
                 "stock_avm_shell", "get_camera_input_surface",

@@ -4988,7 +4988,8 @@ public final class CameraProbeActivity extends Activity
 
     static boolean isIntermediateCameraClose(String reason) {
         return "preview_handoff".equals(reason)
-                || (reason != null && reason.startsWith("replace_"));
+                || (reason != null && reason.startsWith("replace_")
+                        && !"replace_with_multi_preview".equals(reason));
     }
 
     static boolean isInvalidStockSurfaceError(
