@@ -71,11 +71,14 @@ final class CameraDewarpRenderer {
     private final AtomicBoolean cleanupStarted = new AtomicBoolean();
     private volatile MappingRequest request;
     private Handler handler;
-    private Surface cameraSurface;
+    private volatile Surface cameraSurface;
     private SurfaceTexture cameraTexture;
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
+    private EGLConfig eglConfig;
+    private EGLSurface rawMirrorSurface = EGL14.EGL_NO_SURFACE;
+    private EGLSurface correctedMirrorSurface = EGL14.EGL_NO_SURFACE;
     private int program;
     private int textureId;
     private int positionLocation;
@@ -85,6 +88,9 @@ final class CameraDewarpRenderer {
     private FloatBuffer vertices;
     private ShortBuffer indices;
     private int indexCount;
+    private FloatBuffer rawVertices;
+    private ShortBuffer rawIndices;
+    private int rawIndexCount;
     private MappingRequest appliedRequest;
     private MappingRequest pendingMeshRequest;
     private MappingRequest pendingRenderedRequest;
@@ -214,6 +220,49 @@ final class CameraDewarpRenderer {
         return cameraSurface;
     }
 
+    boolean canRecreateCameraInput() {
+        return !released.get() && handler != null && cameraTexture != null;
+    }
+
+    void recreateCameraInput(Consumer<Surface> ready, Consumer<Throwable> failed) {
+        Handler activeHandler = handler;
+        if (released.get() || activeHandler == null) {
+            failed.accept(new IllegalStateException("dewarp renderer unavailable"));
+            return;
+        }
+        activeHandler.post(() -> {
+            try {
+                releaseCameraInput();
+                createCameraInput();
+                ready.accept(cameraSurface);
+            } catch (Throwable error) {
+                failed.accept(error);
+            }
+        });
+    }
+
+    void setRawMirror(SurfaceTexture texture) {
+        setMirror(texture, true);
+    }
+
+    void setCorrectedMirror(SurfaceTexture texture) {
+        setMirror(texture, false);
+    }
+
+    private void setMirror(SurfaceTexture texture, boolean raw) {
+        Handler activeHandler = handler;
+        if (released.get() || activeHandler == null) return;
+        activeHandler.post(() -> {
+            try {
+                replaceMirror(texture, raw);
+            } catch (Throwable error) {
+                emitEvent(new Event("dewarp_mirror_failed",
+                        appliedRequest == null ? request : appliedRequest,
+                        0, -1, error));
+            }
+        });
+    }
+
     void update(CameraDewarpConfig value, long requestToken) {
         if (value == null) throw new IllegalArgumentException("dewarp config is required");
         if (released.get()) return;
@@ -295,10 +344,11 @@ final class CameraDewarpRenderer {
         require(EGL14.eglChooseConfig(
                 eglDisplay, attributes, 0, configs, 0, 1, count, 0) && count[0] > 0,
                 "EGL config unavailable");
-        eglContext = EGL14.eglCreateContext(eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT,
+        eglConfig = configs[0];
+        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT,
                 new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE}, 0);
         require(eglContext != EGL14.EGL_NO_CONTEXT, "EGL context failed");
-        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, configs[0], outputTexture,
+        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, outputTexture,
                 new int[]{EGL14.EGL_NONE}, 0);
         require(eglSurface != EGL14.EGL_NO_SURFACE, "EGL window surface failed");
         require(EGL14.eglMakeCurrent(
@@ -321,9 +371,28 @@ final class CameraDewarpRenderer {
                 GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
                 GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        cameraTexture = new SurfaceTexture(textureId);
-        cameraTexture.setDefaultBufferSize(width, height);
-        cameraTexture.setOnFrameAvailableListener(texture -> {
+        CameraFisheyeMapping.Mesh rawMesh = CameraFisheyeMapping.buildMesh(
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), width, height);
+        rawVertices = floatBuffer(rawMesh.vertices);
+        rawIndices = shortBuffer(rawMesh.indices);
+        rawIndexCount = rawMesh.indices.length;
+        createCameraInput();
+        MappingRequest initial = request;
+        try {
+            installMapping(initial, initial.config, "dewarp_mesh_applied");
+        } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
+            installRawFallback(initial);
+        }
+        metricsStartedNs = SystemClock.elapsedRealtimeNanos();
+        metricsActive = true;
+        handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
+    }
+
+    private void createCameraInput() {
+        SurfaceTexture input = new SurfaceTexture(textureId);
+        input.setDefaultBufferSize(width, height);
+        input.setOnFrameAvailableListener(texture -> {
+            if (texture != cameraTexture) return;
             long callbackNs = SystemClock.elapsedRealtimeNanos();
             recordCallback(callbackNs);
             try {
@@ -340,16 +409,42 @@ final class CameraDewarpRenderer {
                 }
             }
         }, handler);
-        cameraSurface = new Surface(cameraTexture);
-        MappingRequest initial = request;
-        try {
-            installMapping(initial, initial.config, "dewarp_mesh_applied");
-        } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
-            installRawFallback(initial);
+        cameraTexture = input;
+        cameraSurface = new Surface(input);
+    }
+
+    private void releaseCameraInput() {
+        SurfaceTexture input = cameraTexture;
+        cameraTexture = null;
+        if (input != null) input.setOnFrameAvailableListener(null);
+        Surface surface = cameraSurface;
+        cameraSurface = null;
+        if (surface != null) surface.release();
+        if (input != null) input.release();
+    }
+
+    private void replaceMirror(SurfaceTexture texture, boolean raw) {
+        require(EGL14.eglMakeCurrent(
+                eglDisplay, eglSurface, eglSurface, eglContext),
+                "EGL primary makeCurrent failed");
+        EGLSurface previous = raw ? rawMirrorSurface : correctedMirrorSurface;
+        if (previous != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(eglDisplay, previous);
         }
-        metricsStartedNs = SystemClock.elapsedRealtimeNanos();
-        metricsActive = true;
-        handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
+        EGLSurface next = EGL14.EGL_NO_SURFACE;
+        if (texture != null) {
+            texture.setDefaultBufferSize(width, height);
+            next = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, texture,
+                    new int[]{EGL14.EGL_NONE}, 0);
+            if (next == EGL14.EGL_NO_SURFACE) {
+                emitEvent(new Event("dewarp_mirror_failed",
+                        appliedRequest == null ? request : appliedRequest,
+                        0, -1, new IllegalStateException(
+                                (raw ? "raw" : "corrected") + " mirror attach failed")));
+            }
+        }
+        if (raw) rawMirrorSurface = next;
+        else correctedMirrorSurface = next;
     }
 
     private void renderFrame() {
@@ -364,36 +459,66 @@ final class CameraDewarpRenderer {
             cameraTexture.updateTexImage();
             cameraTexture.getTransformMatrix(textureMatrix);
             recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
-            GLES20.glViewport(0, 0, width, height);
-            GLES20.glClearColor(0, 0, 0, 1);
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-            GLES20.glUseProgram(program);
-            vertices.position(0);
-            GLES20.glVertexAttribPointer(
-                    positionLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
-            vertices.position(2);
-            GLES20.glVertexAttribPointer(
-                    texCoordLocation, 2, GLES20.GL_FLOAT, false, 16, vertices);
-            GLES20.glEnableVertexAttribArray(positionLocation);
-            GLES20.glEnableVertexAttribArray(texCoordLocation);
-            GLES20.glUniformMatrix4fv(
-                    textureMatrixLocation, 1, false, textureMatrix, 0);
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
-            GLES20.glUniform1i(textureLocation, 0);
-            indices.position(0);
-            GLES20.glDrawElements(
-                    GLES20.GL_TRIANGLES, indexCount,
-                    GLES20.GL_UNSIGNED_SHORT, indices);
             long swapStartedNs = SystemClock.elapsedRealtimeNanos();
-            require(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "EGL swap failed");
+            drawAndSwap(eglSurface, vertices, indices, indexCount);
             swapNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
             swapped = true;
             emitAppliedMeshAfterSwap(renderedRequest);
+            renderMirror(true);
+            renderMirror(false);
+            require(EGL14.eglMakeCurrent(
+                    eglDisplay, eglSurface, eglSurface, eglContext),
+                    "EGL primary restore failed");
         } finally {
             long completedNs = SystemClock.elapsedRealtimeNanos();
             RENDERS_IN_FLIGHT.decrementAndGet();
             if (swapped) recordCompletedRender(completedNs - renderStartedNs, swapNs);
+        }
+    }
+
+    private void drawAndSwap(
+            EGLSurface surface, FloatBuffer drawVertices,
+            ShortBuffer drawIndices, int drawIndexCount) {
+        require(EGL14.eglMakeCurrent(
+                eglDisplay, surface, surface, eglContext), "EGL makeCurrent failed");
+        GLES20.glViewport(0, 0, width, height);
+        GLES20.glClearColor(0, 0, 0, 1);
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+        GLES20.glUseProgram(program);
+        drawVertices.position(0);
+        GLES20.glVertexAttribPointer(
+                positionLocation, 2, GLES20.GL_FLOAT, false, 16, drawVertices);
+        drawVertices.position(2);
+        GLES20.glVertexAttribPointer(
+                texCoordLocation, 2, GLES20.GL_FLOAT, false, 16, drawVertices);
+        GLES20.glEnableVertexAttribArray(positionLocation);
+        GLES20.glEnableVertexAttribArray(texCoordLocation);
+        GLES20.glUniformMatrix4fv(textureMatrixLocation, 1, false, textureMatrix, 0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
+        GLES20.glUniform1i(textureLocation, 0);
+        drawIndices.position(0);
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, drawIndexCount,
+                GLES20.GL_UNSIGNED_SHORT, drawIndices);
+        require(EGL14.eglSwapBuffers(eglDisplay, surface), "EGL swap failed");
+    }
+
+    private void renderMirror(boolean raw) {
+        EGLSurface surface = raw ? rawMirrorSurface : correctedMirrorSurface;
+        if (surface == EGL14.EGL_NO_SURFACE) return;
+        try {
+            drawAndSwap(surface,
+                    raw ? rawVertices : vertices,
+                    raw ? rawIndices : indices,
+                    raw ? rawIndexCount : indexCount);
+        } catch (Throwable error) {
+            EGL14.eglDestroySurface(eglDisplay, surface);
+            if (raw) rawMirrorSurface = EGL14.EGL_NO_SURFACE;
+            else correctedMirrorSurface = EGL14.EGL_NO_SURFACE;
+            emitEvent(new Event("dewarp_mirror_failed",
+                    appliedRequest == null ? request : appliedRequest,
+                    0, -1, new IllegalStateException(
+                            (raw ? "raw" : "corrected") + " mirror failed", error)));
         }
     }
 
@@ -462,6 +587,20 @@ final class CameraDewarpRenderer {
                 ? value : new MappingRequest(renderedConfig, value.token);
         armPendingAck(eventKind, value, appliedRequest, mesh.vertexCount(),
                 SystemClock.elapsedRealtimeNanos() - startedNs);
+    }
+
+    private static FloatBuffer floatBuffer(float[] values) {
+        FloatBuffer buffer = ByteBuffer.allocateDirect(values.length * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        buffer.put(values).position(0);
+        return buffer;
+    }
+
+    private static ShortBuffer shortBuffer(short[] values) {
+        ShortBuffer buffer = ByteBuffer.allocateDirect(values.length * 2)
+                .order(ByteOrder.nativeOrder()).asShortBuffer();
+        buffer.put(values).position(0);
+        return buffer;
     }
 
     private void armPendingAck(
@@ -570,11 +709,7 @@ final class CameraDewarpRenderer {
     private void releaseGl() {
         metricsActive = false;
         if (handler != null) handler.removeCallbacks(metricsTick);
-        if (cameraTexture != null) cameraTexture.setOnFrameAvailableListener(null);
-        if (cameraSurface != null) cameraSurface.release();
-        cameraSurface = null;
-        if (cameraTexture != null) cameraTexture.release();
-        cameraTexture = null;
+        releaseCameraInput();
         if (textureId != 0) GLES20.glDeleteTextures(1, new int[]{textureId}, 0);
         textureId = 0;
         if (program != 0) GLES20.glDeleteProgram(program);
@@ -591,6 +726,12 @@ final class CameraDewarpRenderer {
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+            if (rawMirrorSurface != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglDestroySurface(eglDisplay, rawMirrorSurface);
+            }
+            if (correctedMirrorSurface != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglDestroySurface(eglDisplay, correctedMirrorSurface);
+            }
             if (eglSurface != EGL14.EGL_NO_SURFACE) {
                 EGL14.eglDestroySurface(eglDisplay, eglSurface);
             }
@@ -599,9 +740,15 @@ final class CameraDewarpRenderer {
             }
             EGL14.eglTerminate(eglDisplay);
         }
+        rawMirrorSurface = EGL14.EGL_NO_SURFACE;
+        correctedMirrorSurface = EGL14.EGL_NO_SURFACE;
         eglSurface = EGL14.EGL_NO_SURFACE;
         eglContext = EGL14.EGL_NO_CONTEXT;
         eglDisplay = EGL14.EGL_NO_DISPLAY;
+        eglConfig = null;
+        rawVertices = null;
+        rawIndices = null;
+        rawIndexCount = 0;
     }
 
     private void emitEvent(Event event) {

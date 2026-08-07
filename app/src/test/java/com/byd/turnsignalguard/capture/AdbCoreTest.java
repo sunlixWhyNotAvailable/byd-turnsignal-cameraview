@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(58, BuildConfig.VERSION_CODE);
+        assertEquals(59, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -963,33 +963,6 @@ public final class AdbCoreTest {
         assertTrue(free.right() <= 1.0f);
         free = free.resize(DirectCameraCrop.EDGE_BOTTOM, 0.0f, 2.0f);
         assertEquals(1.0f, free.bottom(), 0.0001f);
-    }
-
-    @Test
-    public void calibrationDisplayCropUsesRawForFallbackWithoutChangingMetadata() {
-        DirectCameraCrop raw = DirectCameraCrop.of(
-                0.08f, 0.16f, 0.58f, 0.41f, DirectCameraCrop.ASPECT_FREE,
-                37, CameraRotation.MODE_ALIGNED);
-        DirectCameraCrop corrected = CameraProbeActivity.calibrationDisplayCrop(
-                raw, true, false);
-        DirectCameraCrop fallback = CameraProbeActivity.calibrationDisplayCrop(
-                raw, true, true);
-        DirectCameraCrop disabled = CameraProbeActivity.calibrationDisplayCrop(
-                raw, false, false);
-
-        assertEquals((1.0f - raw.width) / 2.0f, corrected.left, 0.0001f);
-        assertEquals((1.0f - raw.height) / 2.0f, corrected.top, 0.0001f);
-        assertEquals(raw.left, fallback.left, 0.0001f);
-        assertEquals(raw.top, fallback.top, 0.0001f);
-        assertEquals(raw.left, disabled.left, 0.0001f);
-        assertEquals(raw.top, disabled.top, 0.0001f);
-        for (DirectCameraCrop crop : new DirectCameraCrop[]{corrected, fallback, disabled}) {
-            assertEquals(raw.width, crop.width, 0.0001f);
-            assertEquals(raw.height, crop.height, 0.0001f);
-            assertEquals(raw.aspectMode, crop.aspectMode);
-            assertEquals(raw.rotationDegrees, crop.rotationDegrees);
-            assertEquals(raw.rotationMode, crop.rotationMode);
-        }
     }
 
     @Test

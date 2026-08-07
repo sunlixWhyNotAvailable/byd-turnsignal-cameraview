@@ -131,7 +131,19 @@ final class ReverseCameraEditorView extends View {
         stroke.setStrokeWidth(dp(pane.cameraIndex == selectedCamera ? 5 : 3));
         canvas.drawRect(rect, fill);
         canvas.drawRect(rect, stroke);
-        canvas.drawText(LABELS[index], rect.left + dp(8), rect.top + dp(22), text);
+        if (index == 0) {
+            text.setTextAlign(Paint.Align.CENTER);
+            Paint.FontMetrics metrics = text.getFontMetrics();
+            canvas.drawText(LABELS[index], rect.centerX(),
+                    rect.centerY() - (metrics.ascent + metrics.descent) / 2.0f, text);
+        } else if (index == 1) {
+            text.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText(LABELS[index], rect.left + dp(8), rect.bottom - dp(8), text);
+        } else {
+            text.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText(LABELS[index], rect.right - dp(8), rect.bottom - dp(8), text);
+        }
+        text.setTextAlign(Paint.Align.LEFT);
         if (pane.cameraIndex == selectedCamera) {
             fill.setColor(color);
             float radius = dp(8);
@@ -152,7 +164,9 @@ final class ReverseCameraEditorView extends View {
                 ? 5 : 3));
         canvas.drawRect(rect, fill);
         canvas.drawRect(rect, stroke);
-        canvas.drawText("Background", rect.left + dp(8), rect.top + dp(22), text);
+        text.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText("Background", rect.centerX(), rect.top + dp(22), text);
+        text.setTextAlign(Paint.Align.LEFT);
         if (selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID) {
             fill.setColor(BACKGROUND_COLOR);
             float radius = dp(8);

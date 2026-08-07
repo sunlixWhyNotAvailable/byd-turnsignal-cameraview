@@ -153,7 +153,7 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
-    public void rawCropIsAuthoritativeAndLegacyCorrectedKeysStayUntouched() {
+    public void correctedCropMigratesFromCenteredRawAndLegacyKeysStayUntouched() {
         TestSharedPreferences settings = new TestSharedPreferences();
         int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
         settings.putFloat(ReverseCameraController.sourceCropKey(
@@ -171,14 +171,21 @@ public final class ReverseCameraLayoutTest {
 
         ReverseCameraLayout layout = ReverseCameraController.loadLayout(settings);
         ReverseCameraLayout rawLayout = ReverseCameraController.loadRawLayout(settings);
-        assertEquals(0.12f, layout.rearLeft.sourceCrop.left, 0.0001f);
-        assertEquals(0.22f, layout.rearLeft.sourceCrop.top, 0.0001f);
+        assertEquals((1.0f - 0.42f) / 2.0f,
+                layout.rearLeft.sourceCrop.left, 0.0001f);
+        assertEquals((1.0f - 0.52f) / 2.0f,
+                layout.rearLeft.sourceCrop.top, 0.0001f);
         assertEquals(0.42f, layout.rearLeft.sourceCrop.width, 0.0001f);
         assertEquals(0.52f, layout.rearLeft.sourceCrop.height, 0.0001f);
-        assertEquals(layout.rearLeft.sourceCrop.left,
-                rawLayout.rearLeft.sourceCrop.left, 0.0f);
-        assertEquals(layout.rearLeft.sourceCrop.top,
-                rawLayout.rearLeft.sourceCrop.top, 0.0f);
+        assertEquals(0.12f, rawLayout.rearLeft.sourceCrop.left, 0.0001f);
+        assertEquals(0.22f, rawLayout.rearLeft.sourceCrop.top, 0.0001f);
+
+        ReverseCameraLayout.Rect corrected = ReverseCameraLayout.sourceCrop(
+                0.31f, 0.19f, 0.38f, 0.44f);
+        ReverseCameraController.saveSourceCrop(settings, cameraIndex, corrected, true);
+        layout = ReverseCameraController.loadLayout(settings);
+        assertEquals(0.31f, layout.rearLeft.sourceCrop.left, 0.0001f);
+        assertEquals(0.19f, layout.rearLeft.sourceCrop.top, 0.0001f);
 
         ReverseCameraController.saveLayout(settings, layout);
         assertEquals(0.77f, settings.getFloat(ReverseCameraController.sourceCropKey(

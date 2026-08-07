@@ -31,4 +31,16 @@ public final class CameraTransitionTest {
         assertFalse(transition.complete(token));
         assertFalse(transition.pending());
     }
+
+    @Test
+    public void reverseInputResetWaitsForEveryNewSurfaceGeneration() {
+        int[] previous = {1, 1, 1};
+
+        assertFalse(ReverseCameraCompositionView.generationsAdvanced(
+                previous, new int[]{2, 1, 2}));
+        assertFalse(ReverseCameraCompositionView.generationsAdvanced(
+                previous, new int[]{1, 1, 1}));
+        assertTrue(ReverseCameraCompositionView.generationsAdvanced(
+                previous, new int[]{2, 2, 2}));
+    }
 }

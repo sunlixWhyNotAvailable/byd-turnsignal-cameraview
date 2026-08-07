@@ -194,7 +194,7 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
-    public void turnCropUsesOnlyRawKeysAndCentersWithoutChangingMetadata() {
+    public void turnCropPersistsIndependentCorrectedGeometryAndIgnoresLegacyKeys() {
         SharedPreferences preferences = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
         DirectCameraCrop raw = DirectCameraCrop.of(
@@ -207,28 +207,35 @@ public final class CameraDewarpConfigTest {
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_LEFT, true, 120));
         assertCropEquals(raw, DirectCameraCrop.load(preferences, profile));
-        CameraDewarpConfig.save(preferences, CameraDewarpConfig.disabled(
-                CameraDewarpConfig.LENS_LEFT));
-        assertCropEquals(raw, DirectCameraCrop.load(preferences, profile));
-
         DirectCameraCrop centered = raw.centered();
-        assertEquals((1.0f - raw.width) / 2.0f, centered.left, 0.0f);
-        assertEquals((1.0f - raw.height) / 2.0f, centered.top, 0.0f);
-        assertEquals(raw.width, centered.width, 0.0f);
-        assertEquals(raw.height, centered.height, 0.0f);
-        assertEquals(raw.aspectMode, centered.aspectMode);
-        assertEquals(raw.rotationDegrees, centered.rotationDegrees);
-        assertEquals(raw.rotationMode, centered.rotationMode);
+        assertCropEquals(centered,
+                DirectCameraCrop.loadCorrected(preferences, profile, raw));
+
+        DirectCameraCrop corrected = raw.withGeometry(DirectCameraCrop.of(
+                0.22f, 0.18f, 0.42f, 0.46f, DirectCameraCrop.ASPECT_FREE));
+        DirectCameraCrop.saveCorrected(preferences, profile, corrected);
+        assertCropEquals(corrected,
+                DirectCameraCrop.loadCorrected(preferences, profile, raw));
 
         DirectCameraCrop replacement = DirectCameraCrop.of(
-                0.2f, 0.2f, 0.4f, 0.45f, DirectCameraCrop.ASPECT_FREE);
+                0.2f, 0.2f, 0.4f, 0.45f, DirectCameraCrop.ASPECT_FOUR_THREE,
+                11, CameraRotation.MODE_FILL);
         DirectCameraCrop.save(preferences, profile, replacement);
         assertCropEquals(replacement, DirectCameraCrop.load(preferences, profile));
+        DirectCameraCrop reframed = DirectCameraCrop.preserveCenterAndAspect(
+                corrected, replacement);
+        assertEquals(corrected.left + corrected.width / 2.0f,
+                reframed.left + reframed.width / 2.0f, 0.0001f);
+        assertEquals(corrected.top + corrected.height / 2.0f,
+                reframed.top + reframed.height / 2.0f, 0.0001f);
+        assertEquals(replacement.aspectMode, reframed.aspectMode);
+        assertEquals(replacement.rotationDegrees, reframed.rotationDegrees);
+        assertEquals(replacement.rotationMode, reframed.rotationMode);
         assertEquals(0.77f, preferences.getFloat(legacyX, -1.0f), 0.0f);
     }
 
     @Test
-    public void reverseCropIgnoresAndDoesNotOverwriteLegacyCorrectedKeys() {
+    public void reverseCropUsesV3CorrectedGeometryAndKeepsLegacyKeysUntouched() {
         SharedPreferences preferences = new TestSharedPreferences();
         ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
         ReverseCameraLayout raw = defaults;
@@ -248,16 +255,24 @@ public final class CameraDewarpConfigTest {
         }
         ReverseCameraLayout enabled = ReverseCameraController.loadLayout(preferences);
         for (int index = 1; index <= 3; index++) {
-            assertRectEquals(raw.pane(index).sourceCrop, enabled.pane(index).sourceCrop);
+            assertRectEquals(ReverseCameraLayout.centeredSourceCrop(
+                    raw.pane(index).sourceCrop), enabled.pane(index).sourceCrop);
+            ReverseCameraLayout.Rect corrected = ReverseCameraLayout.sourceCrop(
+                    0.1f * index, 0.05f * index, 0.4f, 0.5f);
+            ReverseCameraController.saveSourceCrop(
+                    preferences, index, corrected, true);
             CameraDewarpConfig.save(preferences, CameraDewarpConfig.disabled(
                     CameraDewarpConfig.lensForReverseCamera(index)));
         }
         ReverseCameraLayout disabled = ReverseCameraController.loadLayout(preferences);
         for (int index = 1; index <= 3; index++) {
             assertRectEquals(raw.pane(index).sourceCrop, disabled.pane(index).sourceCrop);
+            CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
+                    CameraDewarpConfig.lensForReverseCamera(index), true, 100));
         }
-        ReverseCameraController.saveLayout(preferences, enabled);
+        enabled = ReverseCameraController.loadLayout(preferences);
         for (int index = 1; index <= 3; index++) {
+            assertEquals(0.1f * index, enabled.pane(index).sourceCrop.left, 0.0001f);
             assertEquals(legacyLeft[index - 1], preferences.getFloat(
                     ReverseCameraController.sourceCropKey(index, "left", true), -1.0f), 0.0f);
         }

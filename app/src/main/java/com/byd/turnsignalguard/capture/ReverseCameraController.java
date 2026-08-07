@@ -420,7 +420,18 @@ final class ReverseCameraController {
     }
 
     static ReverseCameraLayout loadLayout(SharedPreferences settings) {
-        return readLayout(settings);
+        ReverseCameraLayout layout = readLayout(settings);
+        for (ReverseCameraLayout.Pane pane : layout.panes()) {
+            CameraDewarpConfig dewarp = CameraDewarpConfig.load(
+                    settings, CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex));
+            if (!dewarp.enabled) continue;
+            layout = ReverseCameraLayout.withPane(layout, pane.cameraIndex,
+                    pane.destination, loadCorrectedSourceCrop(
+                            settings, pane.cameraIndex,
+                            ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop)),
+                    pane.rotationDegrees);
+        }
+        return layout;
     }
 
     static ReverseCameraLayout loadRawLayout(SharedPreferences settings) {
@@ -482,7 +493,9 @@ final class ReverseCameraController {
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
-            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
+            CameraDewarpConfig dewarp = CameraDewarpConfig.load(
+                    settings, CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex));
+            writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, dewarp.enabled);
         }
         editor.apply();
     }
@@ -505,6 +518,8 @@ final class ReverseCameraController {
                             ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
+            writeSourceCrop(editor, pane.cameraIndex,
+                    ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop), true);
         }
         editor.apply();
     }
@@ -522,10 +537,44 @@ final class ReverseCameraController {
     private static void writeSourceCrop(
             SharedPreferences.Editor editor, int cameraIndex,
             ReverseCameraLayout.Rect crop) {
-        editor.putFloat(sourceCropKey(cameraIndex, "left", false), crop.left)
-                .putFloat(sourceCropKey(cameraIndex, "top", false), crop.top)
-                .putFloat(sourceCropKey(cameraIndex, "width", false), crop.width)
-                .putFloat(sourceCropKey(cameraIndex, "height", false), crop.height);
+        writeSourceCrop(editor, cameraIndex, crop, false);
+    }
+
+    private static ReverseCameraLayout.Rect loadCorrectedSourceCrop(
+            SharedPreferences settings, int cameraIndex,
+            ReverseCameraLayout.Rect fallback) {
+        String prefix = correctedSourceCropPrefix(cameraIndex);
+        return ReverseCameraLayout.sourceCrop(
+                settings.getFloat(prefix + "left", fallback.left),
+                settings.getFloat(prefix + "top", fallback.top),
+                settings.getFloat(prefix + "width", fallback.width),
+                settings.getFloat(prefix + "height", fallback.height));
+    }
+
+    static void saveSourceCrop(SharedPreferences settings, int cameraIndex,
+            ReverseCameraLayout.Rect crop, boolean corrected) {
+        SharedPreferences.Editor editor = settings.edit();
+        writeSourceCrop(editor, cameraIndex, crop, corrected);
+        editor.apply();
+    }
+
+    private static void writeSourceCrop(
+            SharedPreferences.Editor editor, int cameraIndex,
+            ReverseCameraLayout.Rect crop, boolean corrected) {
+        String prefix = corrected ? correctedSourceCropPrefix(cameraIndex) : null;
+        editor.putFloat(corrected ? prefix + "left"
+                        : sourceCropKey(cameraIndex, "left", false), crop.left)
+                .putFloat(corrected ? prefix + "top"
+                        : sourceCropKey(cameraIndex, "top", false), crop.top)
+                .putFloat(corrected ? prefix + "width"
+                        : sourceCropKey(cameraIndex, "width", false), crop.width)
+                .putFloat(corrected ? prefix + "height"
+                        : sourceCropKey(cameraIndex, "height", false), crop.height);
+    }
+
+    private static String correctedSourceCropPrefix(int cameraIndex) {
+        CameraDewarpConfig.lensForReverseCamera(cameraIndex);
+        return PREF_PREFIX + cameraIndex + "_corrected_v3_crop_";
     }
 
     static String sourceCropKey(int cameraIndex, String field, boolean dewarped) {

@@ -29,11 +29,15 @@ final class BlindSpotCameraView extends TextureView
         default void onDewarpFallbackChanged(BlindSpotCameraView view) {}
         default void onCameraRenderFailed(
                 BlindSpotCameraView view, CameraDewarpRenderer.Event event) {}
+        default void onCameraSurfaceRecreationFailed(
+                BlindSpotCameraView view, Throwable error) {}
     }
 
     private Callback callback;
     private Surface cameraSurface;
     private CameraDewarpRenderer dewarpRenderer;
+    private SurfaceTexture rawMirrorTexture;
+    private SurfaceTexture correctedMirrorTexture;
     private CameraDewarpConfig dewarpConfig =
             CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
     private Consumer<CameraDewarpRenderer.Stats> dewarpStatsSink;
@@ -66,6 +70,32 @@ final class BlindSpotCameraView extends TextureView
 
     boolean isCameraSurfaceReady() {
         return cameraSurface != null && cameraSurface.isValid();
+    }
+
+    boolean canRecreateCameraInputSurface() {
+        return dewarpRenderer != null && dewarpRenderer.canRecreateCameraInput();
+    }
+
+    void recreateCameraInputSurface() {
+        CameraDewarpRenderer renderer = dewarpRenderer;
+        int rendererGeneration = dewarpGeneration;
+        if (renderer == null || !renderer.canRecreateCameraInput()) {
+            throw new IllegalStateException("camera input recreation unavailable");
+        }
+        cameraSurface = null;
+        renderer.recreateCameraInput(surface -> post(() -> {
+            if (rendererGeneration != dewarpGeneration || renderer != dewarpRenderer) {
+                return;
+            }
+            cameraSurface = surface;
+            if (callback != null) {
+                callback.onCameraSurfaceAvailable(
+                        this, surface, getWidth(), getHeight());
+            }
+        }), error -> post(() -> {
+            if (rendererGeneration != dewarpGeneration || renderer != dewarpRenderer) return;
+            if (callback != null) callback.onCameraSurfaceRecreationFailed(this, error);
+        }));
     }
 
     void setForceDewarpPipeline(boolean value) {
@@ -124,6 +154,16 @@ final class BlindSpotCameraView extends TextureView
         externalTransform = value;
     }
 
+    void setRawMirrorTexture(SurfaceTexture texture) {
+        rawMirrorTexture = texture;
+        if (dewarpRenderer != null) dewarpRenderer.setRawMirror(texture);
+    }
+
+    void setCorrectedMirrorTexture(SurfaceTexture texture) {
+        correctedMirrorTexture = texture;
+        if (dewarpRenderer != null) dewarpRenderer.setCorrectedMirror(texture);
+    }
+
     void applyDirectCameraCrop(DirectCameraCrop crop) {
         requestedCrop = crop;
         configureBuffer();
@@ -146,9 +186,6 @@ final class BlindSpotCameraView extends TextureView
         int height = getHeight();
         if (width <= 0 || height <= 0) return;
         DirectCameraCrop directCrop = rawFallbackActive ? rawFallbackCrop : requestedCrop;
-        if (!rawFallbackActive && dewarpRenderer != null && dewarpConfig.enabled) {
-            directCrop = requestedCrop.centered();
-        }
         Matrix transform = new Matrix();
         CameraRotation.setSourceCropTransform(
                 transform,
@@ -212,6 +249,10 @@ final class BlindSpotCameraView extends TextureView
                     }));
             // Startup is synchronous; invalidate any events queued before a timeout fallback.
             if (dewarpRenderer == null) dewarpGeneration++;
+            else {
+                dewarpRenderer.setRawMirror(rawMirrorTexture);
+                dewarpRenderer.setCorrectedMirror(correctedMirrorTexture);
+            }
         }
         setAlpha(dewarpRenderer != null && dewarpConfig.enabled ? 0.0f : 1.0f);
         setRawFallbackActive(dewarpRenderer == null && dewarpConfig.enabled);

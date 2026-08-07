@@ -134,6 +134,65 @@ final class DirectCameraCrop {
                 .apply();
     }
 
+    static DirectCameraCrop loadCorrected(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop raw) {
+        String prefix = correctedPrefix(profile);
+        if (!preferences.contains(prefix + "left")) return raw.centered();
+        DirectCameraCrop stored = of(
+                preferences.getFloat(prefix + "left", raw.left),
+                preferences.getFloat(prefix + "top", raw.top),
+                preferences.getFloat(prefix + "width", raw.width),
+                preferences.getFloat(prefix + "height", raw.height),
+                raw.aspectMode, 0, CameraRotation.MODE_FIT);
+        return preserveCenterAndAspect(stored, raw);
+    }
+
+    static void saveCorrected(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        String prefix = correctedPrefix(profile);
+        preferences.edit()
+                .putFloat(prefix + "left", crop.left)
+                .putFloat(prefix + "top", crop.top)
+                .putFloat(prefix + "width", crop.width)
+                .putFloat(prefix + "height", crop.height)
+                .apply();
+    }
+
+    static DirectCameraCrop preserveCenterAndAspect(
+            DirectCameraCrop corrected, DirectCameraCrop raw) {
+        float centerX = corrected.left + corrected.width / 2.0f;
+        float centerY = corrected.top + corrected.height / 2.0f;
+        DirectCameraCrop shaped = of(
+                0.0f, 0.0f, corrected.width, corrected.height,
+                raw.aspectMode, raw.rotationDegrees, raw.rotationMode);
+        DirectCameraCrop geometry = of(
+                centerX - shaped.width / 2.0f, centerY - shaped.height / 2.0f,
+                shaped.width, shaped.height, raw.aspectMode,
+                0, CameraRotation.MODE_FIT);
+        return raw.withGeometry(geometry);
+    }
+
+    DirectCameraCrop withGeometry(DirectCameraCrop geometry) {
+        return new DirectCameraCrop(
+                geometry.left, geometry.top, geometry.width, geometry.height,
+                geometry.aspectMode, rotationDegrees, rotationMode);
+    }
+
+    DirectCameraCrop withOutputTransform(int degrees, int mode) {
+        return new DirectCameraCrop(left, top, width, height, aspectMode,
+                CameraRotation.clamp(degrees),
+                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT);
+    }
+
+    DirectCameraCrop geometryOnly() {
+        return of(left, top, width, height, aspectMode, 0, CameraRotation.MODE_FIT);
+    }
+
+    private static String correctedPrefix(CameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        return "direct_crop_v3_corrected_" + profile.id + "_";
+    }
+
     static DirectCameraCrop defaultFor(boolean rightCamera, int aspectMode) {
         float width = 0.65f;
         float height = width * heightPerWidth(
