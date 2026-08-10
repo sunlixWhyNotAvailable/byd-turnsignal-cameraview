@@ -40,6 +40,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private TextureView previewBase;
     private View previewBaseCover;
     private Surface previewBaseSurface;
+    private final BlindSpotCameraView.InputGeneration previewBaseInputGeneration =
+            new BlindSpotCameraView.InputGeneration();
     private int previewBaseGeneration;
     private Callback callback;
     private ReverseCameraLayout model = ReverseCameraLayout.defaults();
@@ -73,12 +75,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             @Override
             public void onSurfaceTextureAvailable(
                     SurfaceTexture texture, int width, int height) {
-                texture.setDefaultBufferSize(1920, 990);
-                if (previewBaseSurface != null) previewBaseSurface.release();
-                previewBaseSurface = new Surface(texture);
-                previewBaseGeneration++;
-                clearFrames();
-                notifySurfacesReady();
+                createPreviewBaseInput(texture);
             }
 
             @Override
@@ -99,7 +96,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
             @Override
             public void onSurfaceTextureUpdated(SurfaceTexture texture) {
-                acceptFrame(FrameBarrier.SOURCE_BASE, previewBaseGeneration);
+                acceptFrame(
+                        FrameBarrier.SOURCE_BASE, previewBaseInputGeneration.frame());
             }
         });
         addView(previewBase, 0, new FrameLayout.LayoutParams(
@@ -185,6 +183,25 @@ final class ReverseCameraCompositionView extends FrameLayout {
         return surfacesReady() && previewBaseSurface != null && previewBaseSurface.isValid();
     }
 
+    void retirePreviewInputs() {
+        clearFrames();
+        if (previewBaseSurface != null) previewBaseSurface.release();
+        previewBaseSurface = null;
+        for (PaneView pane : panes) {
+            pane.texture.retireCameraInput();
+            pane.surface = null;
+        }
+    }
+
+    void ensurePreviewInputs() {
+        if (previewBase != null && previewBaseSurface == null
+                && previewBase.isAvailable() && previewBase.getSurfaceTexture() != null) {
+            createPreviewBaseInput(previewBase.getSurfaceTexture());
+        }
+        for (PaneView pane : panes) pane.texture.ensureCameraInput();
+        notifySurfacesReady();
+    }
+
     SurfaceBundle acquireSurfaces(int requestId) {
         if (requestId <= 0 || !surfacesReady()) {
             throw new IllegalStateException("reverse Surfaces unavailable");
@@ -204,9 +221,31 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
         SurfaceBundle direct = acquireSurfaces(requestId);
         Surface[] surfaces = new Surface[direct.surfaces.length + 1];
+        int[] generations = new int[direct.generations.length + 1];
         surfaces[0] = previewBaseSurface;
         System.arraycopy(direct.surfaces, 0, surfaces, 1, direct.surfaces.length);
-        return new SurfaceBundle(requestId, direct.generations, surfaces);
+        generations[0] = previewBaseGeneration;
+        System.arraycopy(direct.generations, 0, generations, 1,
+                direct.generations.length);
+        return new SurfaceBundle(requestId, generations, surfaces);
+    }
+
+    void armPreviewFrames(int requestId, int[] expectedGenerations) {
+        if (requestId <= 0 || expectedGenerations == null
+                || expectedGenerations.length != panes.length + 1
+                || expectedGenerations[0] != previewBaseGeneration
+                || previewBaseSurface == null || !previewBaseSurface.isValid()) {
+            throw new IllegalStateException("stale reverse preview input");
+        }
+        int[] directGenerations = new int[panes.length];
+        for (int i = 0; i < panes.length; i++) {
+            directGenerations[i] = expectedGenerations[i + 1];
+            if (directGenerations[i] != panes[i].generation || panes[i].surface == null) {
+                throw new IllegalStateException("stale reverse Surface");
+            }
+        }
+        setAllCovers(View.VISIBLE);
+        frameBarrier.arm(requestId, expectedGenerations[0], directGenerations);
     }
 
     void armFrames(int requestId, int[] expectedGenerations) {
@@ -253,8 +292,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
             @Override
             public void onCameraSurfaceAvailable(
                     BlindSpotCameraView view, Surface surface, int width, int height) {
+                onCameraSurfaceAvailable(view, surface, width, height,
+                        view.cameraInputGeneration());
+            }
+
+            @Override
+            public void onCameraSurfaceAvailable(
+                    BlindSpotCameraView view, Surface surface, int width, int height,
+                    int inputGeneration) {
                 pane.surface = surface;
-                pane.generation++;
+                pane.generation = inputGeneration;
                 clearFrames();
                 applyModel();
                 notifySurfacesReady();
@@ -278,7 +325,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
             @Override
             public void onCameraFrameUpdated(BlindSpotCameraView view) {
-                acceptFrame(cameraIndex, pane.generation);
+                onCameraFrameUpdated(view, view.cameraInputGeneration());
+            }
+
+            @Override
+            public void onCameraFrameUpdated(
+                    BlindSpotCameraView view, int inputGeneration) {
+                acceptFrame(cameraIndex,
+                        previewBase == null ? pane.generation : inputGeneration);
             }
 
             @Override
@@ -319,13 +373,15 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private void maybeReportFrames() {
         int requestId = frameBarrier.requestId();
-        int[] generations = currentGenerations();
+        int[] directGenerations = currentDirectGenerations();
         int baseGeneration = previewBase == null ? 0 : previewBaseGeneration;
-        if (!frameBarrier.readyPending(requestId, baseGeneration, generations)
+        if (!frameBarrier.readyPending(requestId, baseGeneration, directGenerations)
                 || callback == null) return;
+        int[] generations = currentGenerations();
         callback.onReverseFramesReady(requestId, generations);
-        if (!frameBarrier.recordReadyEvent(requestId, baseGeneration, generations)
-                || !frameBarrier.reveal(requestId, baseGeneration, generations)) return;
+        if (!frameBarrier.recordReadyEvent(requestId, baseGeneration, directGenerations)
+                || !frameBarrier.reveal(
+                        requestId, baseGeneration, directGenerations)) return;
         setAllCovers(View.GONE);
     }
 
@@ -335,9 +391,27 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private int[] currentGenerations() {
+        int[] direct = currentDirectGenerations();
+        if (previewBase == null) return direct;
+        int[] values = new int[direct.length + 1];
+        values[0] = previewBaseGeneration;
+        System.arraycopy(direct, 0, values, 1, direct.length);
+        return values;
+    }
+
+    private int[] currentDirectGenerations() {
         int[] values = new int[panes.length];
         for (int i = 0; i < panes.length; i++) values[i] = panes[i].generation;
         return values;
+    }
+
+    private void createPreviewBaseInput(SurfaceTexture texture) {
+        texture.setDefaultBufferSize(1920, 990);
+        if (previewBaseSurface != null) previewBaseSurface.release();
+        previewBaseSurface = new Surface(texture);
+        previewBaseGeneration = previewBaseInputGeneration.next();
+        clearFrames();
+        notifySurfacesReady();
     }
 
     static final class FrameBarrier {

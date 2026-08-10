@@ -226,14 +226,8 @@ final class CameraShellProtocol {
                     || x > displayWidth - width || y > displayHeight - height) {
                 throw new IllegalArgumentException("overlay geometry outside display");
             }
-            if (!finite(cropLeft) || !finite(cropTop)
-                    || !finite(cropWidth) || !finite(cropHeight)
-                    || cropLeft < 0.0f || cropTop < 0.0f
-                    || cropWidth <= 0.0f || cropHeight <= 0.0f
-                    || cropLeft + cropWidth > 1.0001f
-                    || cropTop + cropHeight > 1.0001f) {
-                throw new IllegalArgumentException("invalid normalized crop");
-            }
+            SourceCropPolicy.requireValid(
+                    cropLeft, cropTop, cropWidth, cropHeight);
             if (cropAspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
                     || cropAspectMode > DirectCameraCrop.ASPECT_FREE) {
                 throw new IllegalArgumentException("invalid crop aspect mode");
@@ -264,12 +258,9 @@ final class CameraShellProtocol {
         }
 
         private static void validateCrop(DirectCameraCrop crop) {
-            if (!finite(crop.left) || !finite(crop.top)
-                    || !finite(crop.width) || !finite(crop.height)
-                    || crop.left < 0.0f || crop.top < 0.0f
-                    || crop.width <= 0.0f || crop.height <= 0.0f
-                    || crop.right() > 1.0001f || crop.bottom() > 1.0001f
-                    || crop.aspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
+            SourceCropPolicy.requireValid(
+                    crop.left, crop.top, crop.width, crop.height);
+            if (crop.aspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
                     || crop.aspectMode > DirectCameraCrop.ASPECT_FREE
                     || !CameraRotation.isValid(crop.rotationDegrees)
                     || !CameraRotation.isValidMode(crop.rotationMode)) {
@@ -367,7 +358,7 @@ final class CameraShellProtocol {
             ReverseCameraLayout.Rect[] rawCrops = new ReverseCameraLayout.Rect[3];
             for (int i = 0; i < rawCrops.length; i++) {
                 float[] crop = readRect(parcel);
-                validateRect(crop, 0.0f);
+                validateSourceRect(crop);
                 rawCrops[i] = ReverseCameraLayout.sourceCrop(
                         crop[0], crop[1], crop[2], crop[3]);
             }
@@ -385,7 +376,7 @@ final class CameraShellProtocol {
                 int displayMode = parcel.readInt();
                 int zOrder = parcel.readInt();
                 validateRect(destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
-                validateRect(crop, 0.0f);
+                validateSourceRect(crop);
                 if (zOrder < 0 || zOrder > 2) {
                     throw new IllegalArgumentException("invalid reverse z-order");
                 }
@@ -449,7 +440,7 @@ final class CameraShellProtocol {
                     throw new IllegalArgumentException("invalid reverse camera mapping");
                 }
                 validateModelRect(pane.destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
-                validateModelRect(pane.sourceCrop, 0.0f);
+                validateSourceRect(pane.sourceCrop);
                 if (!CameraRotation.isValid(pane.rotationDegrees)) {
                     throw new IllegalArgumentException("invalid reverse rotation");
                 }
@@ -466,7 +457,7 @@ final class CameraShellProtocol {
                 if (pane.cameraIndex != rawIndex++) {
                     throw new IllegalArgumentException("invalid reverse raw camera mapping");
                 }
-                validateModelRect(pane.sourceCrop, 0.0f);
+                validateSourceRect(pane.sourceCrop);
             }
         }
 
@@ -485,6 +476,15 @@ final class CameraShellProtocol {
         private static void validateModelRect(
                 ReverseCameraLayout.Rect rect, float minimumSize) {
             validateRect(new float[]{rect.left, rect.top, rect.width, rect.height}, minimumSize);
+        }
+
+        private static void validateSourceRect(ReverseCameraLayout.Rect rect) {
+            SourceCropPolicy.requireValid(
+                    rect.left, rect.top, rect.width, rect.height);
+        }
+
+        private static void validateSourceRect(float[] rect) {
+            SourceCropPolicy.requireValid(rect[0], rect[1], rect[2], rect[3]);
         }
 
         private static void validateRect(float[] rect, float minimumSize) {
@@ -555,11 +555,8 @@ final class CameraShellProtocol {
         int aspectMode = parcel.readInt();
         int rotationDegrees = parcel.readInt();
         int rotationMode = parcel.readInt();
-        if (!Float.isFinite(left) || !Float.isFinite(top)
-                || !Float.isFinite(width) || !Float.isFinite(height)
-                || left < 0.0f || top < 0.0f || width <= 0.0f || height <= 0.0f
-                || left + width > 1.0001f || top + height > 1.0001f
-                || aspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
+        SourceCropPolicy.requireValid(left, top, width, height);
+        if (aspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
                 || aspectMode > DirectCameraCrop.ASPECT_FREE
                 || !CameraRotation.isValid(rotationDegrees)
                 || !CameraRotation.isValidMode(rotationMode)) {

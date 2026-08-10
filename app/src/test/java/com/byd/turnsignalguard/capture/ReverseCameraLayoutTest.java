@@ -2,11 +2,74 @@ package com.byd.turnsignalguard.capture;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public final class ReverseCameraLayoutTest {
+    @Test
+    public void sourceCropUsesOnePercentFloorWithoutChangingDestinationMinimum() {
+        assertThrows(IllegalArgumentException.class, () ->
+                ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 0.0099f, 0.01f));
+        assertThrows(IllegalArgumentException.class, () ->
+                ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 0.01f, 0.0099f));
+        ReverseCameraLayout.Rect accepted = ReverseCameraLayout.sourceCrop(
+                0.99f, 0.99f, 0.01f, 0.01f);
+        assertEquals(0.01f, accepted.width, 0.0f);
+        assertEquals(0.01f, accepted.height, 0.0f);
+
+        ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(
+                0.5f, 0.5f, 0.01f, 0.01f);
+        assertEquals(ReverseCameraLayout.MIN_DESTINATION_SIZE,
+                destination.width, 0.0f);
+        assertEquals(ReverseCameraLayout.MIN_DESTINATION_SIZE,
+                destination.height, 0.0f);
+    }
+
+    @Test
+    public void activeReverseRawAndCorrectedCropsMigrateIdempotently() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "left", false), 0.4f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "top", false), 0.4f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "width", false), 0.005f);
+        settings.putFloat(ReverseCameraController.sourceCropKey(
+                cameraIndex, "height", false), 0.0025f);
+
+        ReverseCameraLayout.Rect raw = ReverseCameraController
+                .loadRawLayout(settings).pane(cameraIndex).sourceCrop;
+        assertEquals(0.4025f, raw.left + raw.width / 2.0f, 0.0001f);
+        assertEquals(0.40125f, raw.top + raw.height / 2.0f, 0.0001f);
+        assertEquals(0.02f, raw.width, 0.0001f);
+        assertEquals(0.01f, raw.height, 0.0001f);
+
+        String correctedPrefix = "reverse_camera_" + cameraIndex
+                + "_corrected_v3_crop_";
+        settings.putFloat(correctedPrefix + "left", 0.7f);
+        settings.putFloat(correctedPrefix + "top", 0.3f);
+        settings.putFloat(correctedPrefix + "width", 0.004f);
+        settings.putFloat(correctedPrefix + "height", 0.008f);
+        ReverseCameraLayout.Rect corrected = ReverseCameraController
+                .loadCorrectedSourceCrop(settings, cameraIndex, raw);
+        assertEquals(0.702f, corrected.left + corrected.width / 2.0f, 0.0001f);
+        assertEquals(0.304f, corrected.top + corrected.height / 2.0f, 0.0001f);
+        assertEquals(0.01f, corrected.width, 0.0001f);
+        assertEquals(0.02f, corrected.height, 0.0001f);
+
+        Map<String, ?> afterFirstLoad = new HashMap<>(settings.getAll());
+        ReverseCameraController.loadRawLayout(settings);
+        ReverseCameraController.loadCorrectedSourceCrop(
+                settings, cameraIndex, raw);
+        assertEquals(afterFirstLoad, settings.getAll());
+    }
+
     @Test
     public void backgroundStaysBelowIndependentCameraOrdering() {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();

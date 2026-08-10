@@ -2,9 +2,13 @@ package com.byd.turnsignalguard.capture;
 
 import org.junit.Test;
 
+import java.util.function.Consumer;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public final class CameraTransitionTest {
@@ -38,9 +42,6 @@ public final class CameraTransitionTest {
         assertTrue(ReverseCameraController.matchesCameraOpenEvent(44, 44));
         assertFalse(ReverseCameraController.matchesCameraOpenEvent(44, 43));
         assertFalse(ReverseCameraController.matchesCameraOpenEvent(0, 44));
-        assertFalse(ReverseCameraController.shouldAttemptReverseCameraClose(true, true));
-        assertTrue(ReverseCameraController.shouldAttemptReverseCameraClose(false, true));
-        assertTrue(ReverseCameraController.shouldAttemptReverseCameraClose(false, false));
     }
 
     @Test
@@ -65,21 +66,30 @@ public final class CameraTransitionTest {
     }
 
     @Test
-    public void lifecycleRetainsAnAttachedAutomaticPreviewWithoutReopen() {
-        assertTrue(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, true, false, false, true, 41));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, false, false, false, true, 41));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, true, true, false, true, 41));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, true, false, true, true, 41));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, true, false, false, false, 41));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                false, true, true, false, false, true, 0));
-        assertFalse(CameraProbeActivity.shouldRetainActivityPreviewAcrossStop(
-                true, true, true, false, false, true, 41));
+    public void lifecycleDetachesAutomaticPreviewAndReopensWithNewIdentity() {
+        CameraProbeActivity.ActivityCameraLifecycle lifecycle =
+                new CameraProbeActivity.ActivityCameraLifecycle();
+        lifecycle.selectTab(1);
+        lifecycle.onResume();
+        lifecycle.armAutoIntent(1, 0, 0);
+        lifecycle.workerEpochChanged(7, 1);
+        CameraProbeActivity.ActivityCameraLifecycle.Request first =
+                lifecycle.beginRequest(1, 41, true, new int[]{5});
+        assertTrue(lifecycle.acceptOpened(
+                new CameraEventKey(7, 3, CameraHelperMain.CAMERA_OWNER_ACTIVITY,
+                        41, 9, 1)));
+
+        lifecycle.onPause();
+        lifecycle.armAutoIntent(1, first.requestId, first.consumerGeneration);
+        lifecycle.detach(false);
+        lifecycle.onResume();
+
+        assertTrue(lifecycle.shouldOpenAutomatic(0));
+        CameraProbeActivity.ActivityCameraLifecycle.Request second =
+                lifecycle.beginRequest(1, 42, true, new int[]{6});
+        assertNotEquals(first.requestId, second.requestId);
+        assertEquals(0, second.consumerGeneration);
+        assertNotEquals(first.inputGenerations[0], second.inputGenerations[0]);
     }
 
     @Test
@@ -195,5 +205,98 @@ public final class CameraTransitionTest {
         assertTrue(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(14, 14));
         assertFalse(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(0, 13));
         assertFalse(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(14, 13));
+    }
+
+    @Test
+    public void delayedRegisterFollowedByStopLeavesNoCallback() {
+        CameraProbeActivity.HelperCallbackRegistration<Object> registration =
+                new CameraProbeActivity.HelperCallbackRegistration<>();
+        CameraHelperMain.CallbackSlot<Object> callbacks = new CameraHelperMain.CallbackSlot<>();
+        Object helper = new Object();
+        Object callback = new Object();
+        long generation = CameraProbeActivity.nextHelperCallbackRegistrationGeneration();
+
+        assertNull(registration.start());
+        assertSame(helper, registration.connected(helper));
+        CameraProbeActivity.HelperCallbackRegistration.Operation<Object> register =
+                registration.queue(helper, generation);
+        CameraProbeActivity.HelperCallbackRegistration.Operation<Object> detach =
+                registration.stop();
+        assertSame(helper, detach.connection);
+        assertEquals(generation, detach.generation);
+
+        // The serialized register completes after stop requested its matching detach.
+        assertTrue(callbacks.register(callback, generation));
+        assertFalse(registration.registered(register));
+        assertTrue(callbacks.detach(callback, generation));
+        registration.detached(detach);
+
+        assertNull(callbacks.current());
+        assertFalse(registration.registered());
+    }
+
+    @Test
+    public void staleActivityARegisterDetachAndDeathCannotReplaceActivityB() {
+        CameraHelperMain.CallbackSlot<Consumer<String>> callbacks =
+                new CameraHelperMain.CallbackSlot<>();
+        int[] openedA = {0};
+        int[] openedB = {0};
+        Consumer<String> callbackA = event -> openedA[0]++;
+        Consumer<String> callbackB = event -> openedB[0]++;
+
+        assertTrue(callbacks.register(callbackA, 1));
+        callbackA.accept("helper_connected");
+        assertTrue(callbacks.register(callbackB, 2));
+        callbackB.accept("helper_connected");
+        boolean staleAccepted = callbacks.register(callbackA, 1);
+        if (staleAccepted) callbackA.accept("helper_connected");
+        assertFalse(staleAccepted);
+        assertFalse(callbacks.detach(callbackA, 1));
+        // The death recipient uses the same exact-pair detach path.
+        assertFalse(callbacks.detach(callbackA, 1));
+        callbacks.current().accept("camera_opened");
+
+        assertSame(callbackB, callbacks.current());
+        assertEquals(1, openedA[0]);
+        assertEquals(2, openedB[0]);
+    }
+
+    @Test
+    public void rapidStopResumeFinalRegistrationReceivesOpenedEvent() {
+        Object helper = new Object();
+        CameraProbeActivity.HelperCallbackRegistration<Object> registration =
+                new CameraProbeActivity.HelperCallbackRegistration<>();
+        CameraHelperMain.CallbackSlot<Consumer<String>> callbacks =
+                new CameraHelperMain.CallbackSlot<>();
+        int[] opened = {0};
+        Consumer<String> callback = event -> opened[0]++;
+
+        assertNull(registration.start());
+        assertSame(helper, registration.connected(helper));
+        long firstGeneration = CameraProbeActivity.nextHelperCallbackRegistrationGeneration();
+        CameraProbeActivity.HelperCallbackRegistration.Operation<Object> first =
+                registration.queue(helper, firstGeneration);
+        assertTrue(callbacks.register(callback, firstGeneration));
+        assertTrue(registration.registered(first));
+
+        CameraProbeActivity.HelperCallbackRegistration.Operation<Object> detach =
+                registration.stop();
+        assertSame(helper, detach.connection);
+        assertSame(helper, registration.start());
+        long resumedGeneration = CameraProbeActivity.nextHelperCallbackRegistrationGeneration();
+        assertTrue(resumedGeneration > firstGeneration);
+        CameraProbeActivity.HelperCallbackRegistration.Operation<Object> resumed =
+                registration.queue(helper, resumedGeneration);
+
+        // The serialized detach runs before the resume registration.
+        assertTrue(callbacks.detach(callback, detach.generation));
+        registration.detached(detach);
+        assertTrue(callbacks.register(callback, resumedGeneration));
+        assertTrue(registration.registered(resumed));
+        assertFalse(callbacks.detach(callback, firstGeneration));
+        callbacks.current().accept("camera_opened");
+
+        assertEquals(1, opened[0]);
+        assertTrue(registration.registered());
     }
 }

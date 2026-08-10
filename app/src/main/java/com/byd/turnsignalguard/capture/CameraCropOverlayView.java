@@ -11,6 +11,10 @@ import android.view.MotionEvent;
 import android.view.View;
 
 final class CameraCropOverlayView extends View {
+    interface CropMutation {
+        DirectCameraCrop apply();
+    }
+
     interface Listener {
         void onCropChanged(DirectCameraCrop crop, boolean finished);
     }
@@ -116,17 +120,20 @@ final class CameraCropOverlayView extends View {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (gestureStart == null) return false;
-                if (rotating) {
-                    RectF startRect = screenRect(gestureStart);
-                    int degrees = Math.round((float) Math.toDegrees(Math.atan2(
-                            event.getY() - startRect.centerY(),
-                            event.getX() - startRect.centerX())) + 90.0f);
-                    crop = gestureStart.withRotation(normalizeDegrees(degrees));
-                } else if (moving) {
-                    crop = gestureStart.move(
-                            (event.getX() - downX) / getWidth(),
-                            (event.getY() - downY) / getHeight());
-                } else {
+                DirectCameraCrop previous = crop;
+                crop = keepLastValid(previous, () -> {
+                    if (rotating) {
+                        RectF startRect = screenRect(gestureStart);
+                        int degrees = Math.round((float) Math.toDegrees(Math.atan2(
+                                event.getY() - startRect.centerY(),
+                                event.getX() - startRect.centerX())) + 90.0f);
+                        return gestureStart.withRotation(normalizeDegrees(degrees));
+                    }
+                    if (moving) {
+                        return gestureStart.move(
+                                (event.getX() - downX) / getWidth(),
+                                (event.getY() - downY) / getHeight());
+                    }
                     float dxPixels = event.getX() - downX;
                     float dyPixels = event.getY() - downY;
                     double radians = Math.toRadians(-gestureStart.rotationDegrees);
@@ -134,8 +141,9 @@ final class CameraCropOverlayView extends View {
                             - Math.sin(radians) * dyPixels) / getWidth();
                     float localDy = (float) (Math.sin(radians) * dxPixels
                             + Math.cos(radians) * dyPixels) / getHeight();
-                    crop = gestureStart.resize(dragEdges, localDx, localDy);
-                }
+                    return gestureStart.resize(dragEdges, localDx, localDy);
+                });
+                if (crop == previous) return true;
                 invalidate();
                 notifyChanged(false);
                 return true;
@@ -157,6 +165,18 @@ final class CameraCropOverlayView extends View {
     public boolean performClick() {
         super.performClick();
         return true;
+    }
+
+    static DirectCameraCrop keepLastValid(
+            DirectCameraCrop previous, CropMutation mutation) {
+        if (previous == null || mutation == null) {
+            throw new IllegalArgumentException("crop mutation is required");
+        }
+        try {
+            return mutation.apply();
+        } catch (IllegalArgumentException invalidAlignedCrop) {
+            return previous;
+        }
     }
 
     private int hitEdges(RectF rect, float x, float y) {

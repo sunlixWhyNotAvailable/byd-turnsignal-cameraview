@@ -47,8 +47,7 @@ final class DirectCameraCrop {
     static final float SOURCE_WIDTH = 1920.0f;
     static final float SOURCE_HEIGHT = 1300.0f;
     static final float OUTPUT_ASPECT = 4.0f / 3.0f;
-    private static final float MIN_WIDTH = Float.MIN_NORMAL;
-    private static final float MIN_HEIGHT = Float.MIN_NORMAL;
+    private static final float LEGACY_MIN_SIZE = Float.MIN_NORMAL;
     private static final float TOUCH_MIN_WIDTH = 0.18f;
     private static final float TOUCH_MIN_HEIGHT = 0.18f;
 
@@ -111,16 +110,24 @@ final class DirectCameraCrop {
 
     static DirectCameraCrop load(SharedPreferences preferences, CameraProfile profile) {
         DirectCameraCrop fallback = defaultFor(profile);
-        return of(
-                preferences.getFloat(preferenceKey(profile, 0), fallback.left),
-                preferences.getFloat(preferenceKey(profile, 1), fallback.top),
-                preferences.getFloat(preferenceKey(profile, 2), fallback.width),
-                preferences.getFloat(preferenceKey(profile, 3), fallback.height),
-                preferences.getInt(preferenceKey(profile, 4), fallback.aspectMode),
-                preferences.getInt(preferenceKey(profile, 5),
-                        fallback.rotationDegrees),
-                preferences.getInt(preferenceKey(profile, 6),
-                        fallback.rotationMode));
+        try {
+            DirectCameraCrop stored = normalized(
+                    preferences.getFloat(preferenceKey(profile, 0), fallback.left),
+                    preferences.getFloat(preferenceKey(profile, 1), fallback.top),
+                    preferences.getFloat(preferenceKey(profile, 2), fallback.width),
+                    preferences.getFloat(preferenceKey(profile, 3), fallback.height),
+                    preferences.getInt(preferenceKey(profile, 4), fallback.aspectMode),
+                    preferences.getInt(preferenceKey(profile, 5),
+                            fallback.rotationDegrees),
+                    preferences.getInt(preferenceKey(profile, 6),
+                            fallback.rotationMode), LEGACY_MIN_SIZE);
+            DirectCameraCrop migrated = migrateActive(stored);
+            if (migrated != stored) save(preferences, profile, migrated);
+            return migrated;
+        } catch (IllegalArgumentException invalidActiveValue) {
+            save(preferences, profile, fallback);
+            return fallback;
+        }
     }
 
     static void save(
@@ -145,13 +152,22 @@ final class DirectCameraCrop {
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop raw) {
         String prefix = correctedPrefix(profile);
         if (!preferences.contains(prefix + "left")) return raw.centered();
-        DirectCameraCrop stored = of(
-                preferences.getFloat(prefix + "left", raw.left),
-                preferences.getFloat(prefix + "top", raw.top),
-                preferences.getFloat(prefix + "width", raw.width),
-                preferences.getFloat(prefix + "height", raw.height),
-                raw.aspectMode, 0, CameraRotation.MODE_FIT);
-        return preserveCenterAndAspect(stored, raw);
+        try {
+            DirectCameraCrop stored = normalized(
+                    preferences.getFloat(prefix + "left", raw.left),
+                    preferences.getFloat(prefix + "top", raw.top),
+                    preferences.getFloat(prefix + "width", raw.width),
+                    preferences.getFloat(prefix + "height", raw.height),
+                    raw.aspectMode, 0, CameraRotation.MODE_FIT, LEGACY_MIN_SIZE);
+            DirectCameraCrop migrated = migrateActive(stored);
+            DirectCameraCrop result = preserveCenterAndAspect(migrated, raw);
+            if (migrated != stored) saveCorrected(preferences, profile, result);
+            return result;
+        } catch (IllegalArgumentException invalidActiveValue) {
+            DirectCameraCrop fallback = raw.centered();
+            saveCorrected(preferences, profile, fallback);
+            return fallback;
+        }
     }
 
     static void saveCorrected(
@@ -187,13 +203,14 @@ final class DirectCameraCrop {
     DirectCameraCrop withGeometry(DirectCameraCrop geometry) {
         return new DirectCameraCrop(
                 geometry.left, geometry.top, geometry.width, geometry.height,
-                geometry.aspectMode, rotationDegrees, rotationMode);
+                geometry.aspectMode, rotationDegrees, rotationMode).constrainAligned();
     }
 
     DirectCameraCrop withOutputTransform(int degrees, int mode) {
         return new DirectCameraCrop(left, top, width, height, aspectMode,
                 CameraRotation.clamp(degrees),
-                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT);
+                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT)
+                .constrainAligned();
     }
 
     DirectCameraCrop geometryOnly() {
@@ -232,6 +249,13 @@ final class DirectCameraCrop {
     static DirectCameraCrop of(
             float left, float top, float width, float height, int aspectMode,
             int rotationDegrees, int rotationMode) {
+        return normalized(left, top, width, height, aspectMode,
+                rotationDegrees, rotationMode, SourceCropPolicy.MIN_SIZE);
+    }
+
+    private static DirectCameraCrop normalized(
+            float left, float top, float width, float height, int aspectMode,
+            int rotationDegrees, int rotationMode, float minimumSize) {
         int safeMode = sanitizeAspectMode(aspectMode);
         int safeRotation = CameraRotation.clamp(rotationDegrees);
         int safeRotationMode = CameraRotation.isValidMode(rotationMode)
@@ -239,25 +263,27 @@ final class DirectCameraCrop {
         if (safeMode != ASPECT_FREE) {
             float ratio = heightPerWidth(safeMode);
             float maxWidth = Math.min(1.0f, 1.0f / ratio);
+            float minWidth = Math.min(maxWidth,
+                    Math.max(minimumSize, minimumSize / ratio));
             float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
-                    Math.min(MIN_WIDTH, maxWidth), maxWidth);
+                    minWidth, maxWidth);
             float safeHeight = safeWidth * ratio;
             return new DirectCameraCrop(
                     clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                     clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
                     safeWidth, safeHeight, safeMode, safeRotation,
-                    safeRotationMode).constrainAligned();
+                    safeRotationMode).constrainAligned(minimumSize);
         }
 
         float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
-                MIN_WIDTH, 1.0f);
+                minimumSize, 1.0f);
         float safeHeight = clamp(finite(height) && height > 0.0f ? height
-                : safeWidth * heightPerWidth(ASPECT_FOUR_THREE), MIN_HEIGHT, 1.0f);
+                : safeWidth * heightPerWidth(ASPECT_FOUR_THREE), minimumSize, 1.0f);
         return new DirectCameraCrop(
                 clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                 clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
                 safeWidth, safeHeight, safeMode, safeRotation,
-                safeRotationMode).constrainAligned();
+                safeRotationMode).constrainAligned(minimumSize);
     }
 
     static DirectCameraCrop parsePercent(
@@ -281,18 +307,7 @@ final class DirectCameraCrop {
     static DirectCameraCrop requireNormalized(
             float left, float top, float width, float height, int aspectMode,
             int rotationDegrees, int rotationMode) {
-        if (!finite(left) || !finite(top) || !finite(width) || !finite(height)) {
-            throw new IllegalArgumentException("X/Y/W/H мають бути скінченними");
-        }
-        if (left < 0.0f || top < 0.0f) {
-            throw new IllegalArgumentException("X/Y мають бути не менше 0");
-        }
-        if (width < MIN_WIDTH || height < MIN_HEIGHT) {
-            throw new IllegalArgumentException("W/H мають бути більше 0");
-        }
-        if (left + width > 1.0f || top + height > 1.0f) {
-            throw new IllegalArgumentException("X + W та Y + H мають бути не більше 100");
-        }
+        SourceCropPolicy.requireValid(left, top, width, height);
         if (aspectMode < ASPECT_FOUR_THREE || aspectMode > ASPECT_FREE
                 || !CameraRotation.isValid(rotationDegrees)
                 || !CameraRotation.isValidMode(rotationMode)) {
@@ -304,7 +319,16 @@ final class DirectCameraCrop {
                     "W/H не відповідають " + aspectLabel(aspectMode));
         }
         return new DirectCameraCrop(
-                left, top, width, height, aspectMode, rotationDegrees, rotationMode);
+                left, top, width, height, aspectMode, rotationDegrees, rotationMode)
+                .constrainAligned();
+    }
+
+    private static DirectCameraCrop migrateActive(DirectCameraCrop stored) {
+        if (!SourceCropPolicy.needsMigration(stored.width, stored.height)) return stored;
+        float[] geometry = SourceCropPolicy.migrate(
+                stored.left, stored.top, stored.width, stored.height);
+        return of(geometry[0], geometry[1], geometry[2], geometry[3],
+                stored.aspectMode, stored.rotationDegrees, stored.rotationMode);
     }
 
     DirectCameraCrop mirrored() {
@@ -431,7 +455,13 @@ final class DirectCameraCrop {
     }
 
     private DirectCameraCrop constrainAligned() {
-        if (rotationMode != CameraRotation.MODE_ALIGNED || rotationDegrees == 0) return this;
+        return constrainAligned(SourceCropPolicy.MIN_SIZE);
+    }
+
+    private DirectCameraCrop constrainAligned(float minimumSize) {
+        if (rotationMode != CameraRotation.MODE_ALIGNED || rotationDegrees == 0) {
+            return requireFinalGeometry(minimumSize);
+        }
         double radians = Math.toRadians(rotationDegrees);
         double cosine = Math.abs(Math.cos(radians));
         double sine = Math.abs(Math.sin(radians));
@@ -457,7 +487,20 @@ final class DirectCameraCrop {
                 (float) ((centerY - pixelHeight / 2.0d) / SOURCE_HEIGHT),
                 (float) (pixelWidth / SOURCE_WIDTH),
                 (float) (pixelHeight / SOURCE_HEIGHT),
-                aspectMode, rotationDegrees, rotationMode);
+                aspectMode, rotationDegrees, rotationMode)
+                .requireFinalGeometry(minimumSize);
+    }
+
+    private DirectCameraCrop requireFinalGeometry(float minimumSize) {
+        if (minimumSize >= SourceCropPolicy.MIN_SIZE) {
+            SourceCropPolicy.requireValid(left, top, width, height);
+        } else if (!finite(left) || !finite(top) || !finite(width) || !finite(height)
+                || left < 0.0f || top < 0.0f
+                || width < minimumSize || height < minimumSize
+                || right() > 1.0f || bottom() > 1.0f) {
+            throw new IllegalArgumentException("invalid normalized source crop");
+        }
+        return this;
     }
 
     float outputAspect() {

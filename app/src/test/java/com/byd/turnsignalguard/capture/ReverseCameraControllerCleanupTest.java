@@ -67,6 +67,47 @@ public final class ReverseCameraControllerCleanupTest {
         assertFalse(harness.throwFirstWindowClose);
     }
 
+    @Test
+    public void windowFirstProductionPathClosesCameraAfterAsyncWindowSuccess() {
+        Harness harness = new Harness(true);
+
+        harness.coordinator.startWindowThenCamera();
+        assertTrue(harness.closeRequestIds.isEmpty());
+        Consumer<Boolean> callback = harness.windowCallbacks.get(0);
+        callback.accept(true);
+
+        assertEquals(Arrays.asList(47), harness.closeRequestIds);
+        assertEquals(1, harness.coordinator.closeAttempts());
+        assertEquals(1, harness.priorityReleases);
+        assertEquals(1, harness.stoppedEvents);
+        assertNull(harness.active[0]);
+
+        callback.accept(true);
+        assertEquals(Arrays.asList(47), harness.closeRequestIds);
+        assertEquals(1, harness.priorityReleases);
+        assertEquals(1, harness.stoppedEvents);
+    }
+
+    @Test
+    public void failClosedInvalidationMakesQueuedCleanupRetriesNoOps() {
+        Harness harness = new Harness(false);
+
+        harness.coordinator.startCameraThenWindow();
+        harness.windowCallbacks.get(0).accept(false);
+        Runnable staleRetry = harness.retry;
+        assertTrue(staleRetry != null);
+
+        harness.active[0] = null;
+        harness.retry = null;
+        for (int i = 0; i < 6; i++) staleRetry.run();
+
+        assertEquals(Arrays.asList(47), harness.closeRequestIds);
+        assertEquals(1, harness.windowCallbacks.size());
+        assertEquals(1, harness.coordinator.closeAttempts());
+        assertEquals(0, harness.priorityReleases);
+        assertEquals(0, harness.stoppedEvents);
+    }
+
     private static final class Harness {
         final ReverseCameraController.CleanupCloseCoordinator[] active =
                 new ReverseCameraController.CleanupCloseCoordinator[1];

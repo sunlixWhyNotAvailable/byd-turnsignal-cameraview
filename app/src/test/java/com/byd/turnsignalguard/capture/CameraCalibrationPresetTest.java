@@ -48,6 +48,14 @@ public final class CameraCalibrationPresetTest {
                 "0", "0", "0", "20", DirectCameraCrop.ASPECT_FREE,
                 0, CameraRotation.MODE_FIT));
         assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
+                "0", "0", "0.99", "1.00", DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT));
+        DirectCameraCrop minimum = DirectCameraCrop.parsePercent(
+                "0", "0", "1,00", "1.00", DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT);
+        assertEquals(0.01f, minimum.width, 0.0f);
+        assertEquals(0.01f, minimum.height, 0.0f);
+        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
                 "0", "0", "40", "44.50", DirectCameraCrop.ASPECT_FOUR_THREE,
                 0, CameraRotation.MODE_FIT));
         assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
@@ -67,6 +75,8 @@ public final class CameraCalibrationPresetTest {
         assertThrows(IllegalArgumentException.class, () ->
                 ReverseCameraLayout.sourceCrop(
                         0.0f, 0.0f, Float.MIN_VALUE, 0.25f));
+        assertThrows(IllegalArgumentException.class, () ->
+                ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 0.0099f, 0.25f));
     }
 
     @Test
@@ -127,6 +137,22 @@ public final class CameraCalibrationPresetTest {
                 DirectCameraCrop.loadCorrected(preferences, profile, unchanged));
         assertFalse(CameraDewarpConfig.load(
                 preferences, CameraDewarpConfig.LENS_LEFT).enabled);
+
+        String presetPrefix = "camera_calibration_preset_v1_rear_left_";
+        preferences.putFloat(presetPrefix + "corrected_w", corrected.width);
+        preferences.putFloat(presetPrefix + "raw_w", 0.0099f);
+        Map<String, ?> beforeRawFloorRejection = new HashMap<>(preferences.getAll());
+        assertFalse(CameraCalibrationPreset.loadCamera(preferences, profile));
+        assertEquals(beforeRawFloorRejection, preferences.getAll());
+        assertCrop(unchanged, DirectCameraCrop.load(preferences, profile));
+
+        preferences.putFloat(presetPrefix + "raw_w", raw.width);
+        preferences.putFloat(presetPrefix + "corrected_h", 0.0099f);
+        Map<String, ?> beforeCorrectedFloorRejection =
+                new HashMap<>(preferences.getAll());
+        assertFalse(CameraCalibrationPreset.loadCamera(preferences, profile));
+        assertEquals(beforeCorrectedFloorRejection, preferences.getAll());
+        assertCrop(unchanged, DirectCameraCrop.load(preferences, profile));
     }
 
     @Test
@@ -264,8 +290,8 @@ public final class CameraCalibrationPresetTest {
     public void invalidReversePresetNeverChangesActiveSettings() {
         assertInvalidReversePreset("version", 2);
         assertInvalidReversePreset("destination_x", Float.NaN);
-        assertInvalidReversePreset("raw_w", Float.MIN_VALUE);
-        assertInvalidReversePreset("corrected_h", Float.MIN_VALUE);
+        assertInvalidReversePreset("raw_w", 0.0099f);
+        assertInvalidReversePreset("corrected_h", 0.0099f);
         assertInvalidReversePreset("rotation", 181);
         assertInvalidReversePreset("mode", 99);
         assertInvalidReversePreset("correction", null);

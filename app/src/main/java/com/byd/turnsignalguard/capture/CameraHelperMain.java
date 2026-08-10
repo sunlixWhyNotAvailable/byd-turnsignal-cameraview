@@ -62,10 +62,13 @@ final class CameraHelperMain {
     static final class HelperBinder extends Binder {
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
         private final TurnSignalController turnController;
+        private final CameraWorkerClient workerClient;
+        private final boolean cameraWorkerMode;
+        private final long workerEpoch;
         private final Consumer<String> logSink;
         private final SharedPreferences counters;
         private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
-        private IBinder callback;
+        private final CallbackSlot<IBinder> callbacks = new CallbackSlot<>();
         private int cameraId = -1;
         private String cameraTag = "none";
         private String discoveryError;
@@ -75,7 +78,7 @@ final class CameraHelperMain {
         private int producerCameraId = -1;
         private int producerEpoch;
         private DirectCameraSourceHub rawSourceHub;
-        private boolean unconfirmedOneShotOwner;
+        private long oneShotOwnerQuarantineEpoch;
         private Surface surface;
         private int previewIndex;
         private Surface[] multiSurfaces = new Surface[0];
@@ -99,10 +102,30 @@ final class CameraHelperMain {
 
         HelperBinder(Context context, Consumer<String> logSink) {
             this.logSink = logSink;
+            cameraWorkerMode = false;
+            workerEpoch = 0;
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             migrateLegacyCounters(context);
             turnController = new TurnSignalController(
                     context, mainHandler, this::acceptShellEvent, this::acceptControllerEvent);
+            workerClient = new CameraWorkerClient(
+                    context, mainHandler, this::acceptWorkerEvent);
+        }
+
+        private HelperBinder(
+                Context context, Consumer<String> logSink, long workerEpoch) {
+            this.logSink = logSink;
+            cameraWorkerMode = true;
+            this.workerEpoch = workerEpoch;
+            counters = null;
+            turnController = null;
+            workerClient = null;
+        }
+
+        static HelperBinder cameraWorker(
+                Context context, Consumer<String> logSink, long workerEpoch) {
+            if (workerEpoch == 0) throw new IllegalArgumentException("worker epoch required");
+            return new HelperBinder(context, logSink, workerEpoch);
         }
 
         void startGuardRuntime() {
@@ -130,9 +153,15 @@ final class CameraHelperMain {
 
         void shutdown(boolean terminateShells) {
             turnController.shutdown(terminateShells);
-            closeCamera("service_destroyed");
+            workerClient.shutdown("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", terminateShells);
+        }
+
+        synchronized void shutdownCameraWorker(String reason) {
+            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
+            workerCloseAll(reason);
+            emit("camera_worker_shutdown", "reason", reason);
         }
 
         @Override
@@ -141,9 +170,13 @@ final class CameraHelperMain {
             try {
                 data.enforceInterface(DESCRIPTOR);
                 if (code == TX_REGISTER_CALLBACK) {
-                    registerCallback(data.readStrongBinder());
+                    IBinder newCallback = data.readStrongBinder();
+                    long registrationGeneration = data.readLong();
+                    boolean accepted = registerCallback(
+                            newCallback, registrationGeneration);
                     reply.writeNoException();
-                    reply.writeString(result("callback_registered", null));
+                    reply.writeString(result(accepted
+                            ? "callback_registered" : "callback_registration_stale", null));
                     return true;
                 }
                 if (code == TX_OPEN) {
@@ -181,7 +214,13 @@ final class CameraHelperMain {
                     return true;
                 }
                 if (code == TX_DETACH_CALLBACK) {
-                    callback = null;
+                    IBinder expectedCallback = data.readStrongBinder();
+                    long registrationGeneration = data.readLong();
+                    if (expectedCallback == null || registrationGeneration <= 0) {
+                        throw new IllegalArgumentException(
+                                "Expected callback identity is invalid");
+                    }
+                    callbacks.detach(expectedCallback, registrationGeneration);
                     reply.writeNoException();
                     reply.writeString(result("callback_detached", null));
                     return true;
@@ -244,6 +283,7 @@ final class CameraHelperMain {
         }
 
         synchronized boolean discoverCamera() {
+            if (!cameraWorkerMode) return workerClient.discoverCamera();
             cameraId = -1;
             cameraTag = "none";
             discoveryError = null;
@@ -286,19 +326,28 @@ final class CameraHelperMain {
             }
         }
 
-        private void registerCallback(IBinder newCallback) throws RemoteException {
+        private boolean registerCallback(
+                IBinder newCallback, long registrationGeneration) throws RemoteException {
             if (newCallback == null) throw new IllegalArgumentException("Callback is null");
-            callback = newCallback;
-            newCallback.linkToDeath(
-                    () -> mainHandler.post(() -> disconnectCallback(newCallback)), 0);
+            if (!callbacks.register(newCallback, registrationGeneration)) return false;
+            try {
+                newCallback.linkToDeath(
+                        () -> mainHandler.post(() -> disconnectCallback(
+                                newCallback, registrationGeneration)), 0);
+            } catch (RemoteException error) {
+                callbacks.detach(newCallback, registrationGeneration);
+                throw error;
+            }
             emit("helper_connected", "uid", Process.myUid());
             emitCounters();
             emitMusicJournalSnapshot();
             emit("reverse_camera_state",
                     "active", activeReverseControllerRequestId > 0,
                     "request_id", activeReverseControllerRequestId);
+            workerClient.reportState();
             discoverCamera();
             turnController.reportStatus();
+            return true;
         }
 
         private static int requestId(Object... fields) {
@@ -311,9 +360,9 @@ final class CameraHelperMain {
             return 0;
         }
 
-        private synchronized void disconnectCallback(IBinder disconnected) {
-            if (callback != disconnected) return;
-            callback = null;
+        private synchronized void disconnectCallback(
+                IBinder disconnected, long registrationGeneration) {
+            if (!callbacks.detach(disconnected, registrationGeneration)) return;
             try {
                 closeCameraForOwner(CAMERA_OWNER_ACTIVITY, "callback_died");
             } catch (Throwable error) {
@@ -339,6 +388,20 @@ final class CameraHelperMain {
                 String requestedCameraTag,
                 String requestedCameraOwner,
                 int requestId) {
+            if (!cameraWorkerMode) {
+                String workerTag = isAllowedDirectCameraTag(requestedCameraTag)
+                        ? requestedCameraTag : "pano_h";
+                if ("pano_h".equals(workerTag)) {
+                    return workerClient.openGroup(
+                            requestedCameraOwner, new Surface[]{requestedSurface},
+                            new int[]{requestedIndex}, requestId,
+                            requestedView == null ? "unknown" : requestedView,
+                            persistentActivityExclusive(stockInput), stockInput, null);
+                }
+                return workerClient.openDirect(
+                        requestedSurface, workerTag, requestedIndex,
+                        requestedCameraOwner, requestId, true);
+            }
             if (requestedIndex < 0 || requestedIndex > 4) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Preview index must be 0..4");
@@ -367,7 +430,23 @@ final class CameraHelperMain {
                 return result("camera_busy", "reverse camera owns AVM",
                         requestedCameraId, requestedCameraTag);
             }
-            if (closeExisting) closeCamera("replace_preview");
+            if (closeExisting) {
+                String closeResult = closeCamera("replace_preview");
+                if (!isSuccessfulCameraCloseResult(closeResult)) {
+                    oneShotOwnerQuarantineEpoch = workerEpoch;
+                    requestedSurface.release();
+                    String error = "prior camera owner close was not confirmed";
+                    emit("camera_error", "stage", "one_shot_owner_unconfirmed",
+                            "camera_owner", requestedCameraOwner,
+                            "request_id", requestId,
+                            "preview_index", requestedIndex,
+                            "producer_epoch", producerEpoch,
+                            "error", error);
+                    return result("camera_error", error,
+                            requestedCameraId, requestedCameraTag);
+                }
+            }
+            producerEpoch++;
             if (requestedCameraId < 0) {
                 requestedSurface.release();
                 String error = discoveryError == null ? "Camera was not discovered" : discoveryError;
@@ -379,6 +458,7 @@ final class CameraHelperMain {
 
             Object opened = null;
             try {
+                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -416,6 +496,7 @@ final class CameraHelperMain {
                         "request_id", requestId,
                         "renderer", stockInput ? "stock_avm_shell" : "direct_avm",
                         "view", viewName, "preview_index", previewIndex,
+                        "producer_epoch", producerEpoch,
                         "input_for_stock_avm", stockInput,
                         "add_surface", added, "set_surface", set, "start_preview", started);
                 return result("camera_opened", null, requestedCameraId, requestedCameraTag);
@@ -433,7 +514,8 @@ final class CameraHelperMain {
                         "camera_tag", requestedCameraTag, "view", requestedView,
                         "camera_owner", requestedCameraOwner,
                         "request_id", requestId,
-                        "preview_index", requestedIndex, "error", message);
+                        "preview_index", requestedIndex,
+                        "producer_epoch", producerEpoch, "error", message);
                 return result("camera_error", message,
                         requestedCameraId, requestedCameraTag);
             }
@@ -657,6 +739,7 @@ final class CameraHelperMain {
             boolean[] attached = new boolean[indexes.length];
             boolean activityAttached = false;
             try {
+                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -820,6 +903,11 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Camera tag is not allowed: " + requestedTag);
             }
+            if (!cameraWorkerMode) {
+                return workerClient.openDirect(
+                        requestedSurface, requestedTag, requestedIndex,
+                        requestedOwner, requestId, exclusive);
+            }
             if ("pano_h".equals(requestedTag)) {
                 ConsumerGroup group = CAMERA_OWNER_OVERLAY.equals(requestedOwner)
                         ? overlayGroup : activityGroup;
@@ -948,6 +1036,18 @@ final class CameraHelperMain {
         }
 
         synchronized String closeCamera(String reason) {
+            if (!cameraWorkerMode) {
+                boolean closeStock = stockCameraRequested;
+                int stockRequestId = pendingStockCameraRequestId;
+                stockCameraRequested = false;
+                pendingStockCameraRequestId = 0;
+                releaseSurfaces(pendingReversePreviewSurfaces);
+                pendingReversePreviewSurfaces = new Surface[0];
+                pendingReversePreviewRequestId = 0;
+                String result = workerClient.closeAll(reason);
+                if (closeStock) turnController.closeStockAvm(reason, stockRequestId);
+                return result;
+            }
             if (persistentPanoProducer) {
                 if ("service_destroyed".equals(reason)) {
                     return tearDownPersistentProducer(reason, null);
@@ -1039,7 +1139,7 @@ final class CameraHelperMain {
                 }
                 if (first != null) {
                     error = summary(first);
-                    unconfirmedOneShotOwner = true;
+                    oneShotOwnerQuarantineEpoch = workerEpoch;
                 }
                 emit("camera_closed", "reason", reason == null ? "unknown" : reason,
                         "view", activeView, "preview_index", activeIndex,
@@ -1047,6 +1147,7 @@ final class CameraHelperMain {
                         "camera_id", closedCameraId, "camera_tag", closedCameraTag,
                         "camera_owner", closedCameraOwner,
                         "request_id", closedRequestId,
+                        "producer_epoch", producerEpoch,
                         "error", error == null ? "" : error);
             }
             if (activeCamera == null
@@ -1068,8 +1169,29 @@ final class CameraHelperMain {
             return closeCameraForOwner(expectedOwner, reason, currentRequestId(expectedOwner));
         }
 
+        boolean resetCameraWorkerRecovery(CameraWorkerProtocol.Owner owner) {
+            if (cameraWorkerMode) {
+                throw new IllegalStateException("recovery reset belongs to controller process");
+            }
+            return workerClient.resetRecovery(owner);
+        }
+
         synchronized String closeCameraForOwner(
                 String expectedOwner, String reason, int expectedRequestId) {
+            if (!cameraWorkerMode) {
+                String result = workerClient.closeOwner(
+                        expectedOwner, reason, expectedRequestId);
+                if (CAMERA_OWNER_ACTIVITY.equals(expectedOwner)
+                        && stockCameraRequested
+                        && (expectedRequestId <= 0
+                                || expectedRequestId == pendingStockCameraRequestId)) {
+                    int stockRequestId = pendingStockCameraRequestId;
+                    stockCameraRequested = false;
+                    pendingStockCameraRequestId = 0;
+                    turnController.closeStockAvm(reason, stockRequestId);
+                }
+                return result;
+            }
             if (persistentPanoProducer) {
                 ConsumerGroup group = groupForOwner(expectedOwner);
                 if (group == null) return result("camera_close_ignored", null);
@@ -1120,6 +1242,49 @@ final class CameraHelperMain {
                     CAMERA_OWNER_REVERSE, reason, expectedRequestId));
         }
 
+        synchronized String workerOpenGroup(
+                String owner, Surface[] requestedSurfaces, int[] requestedIndexes,
+                int requestId, String requestedView, boolean exclusive,
+                boolean shellOwned, int[] profileIds) {
+            if (!cameraWorkerMode || !CameraWorkerProtocol.allowedOwner(owner)) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("camera worker owner rejected");
+            }
+            ConsumerGroup group = groupForOwner(owner);
+            return attachPersistentGroup(
+                    group, requestedSurfaces, requestedIndexes, requestId,
+                    requestedView, exclusive, false, profileIds, "worker_open");
+        }
+
+        synchronized String workerOpenDirect(
+                Surface requestedSurface, String tag, int index,
+                String owner, int requestId, boolean exclusive) {
+            if (!cameraWorkerMode) {
+                requestedSurface.release();
+                throw new IllegalStateException("direct open outside camera worker");
+            }
+            return openDirectCamera(
+                    requestedSurface, tag, index, owner, requestId, exclusive);
+        }
+
+        synchronized String workerCloseOwner(
+                String owner, String reason, int requestId) {
+            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
+            return closeCameraForOwner(owner, reason, requestId);
+        }
+
+        synchronized String workerCloseAll(String reason) {
+            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
+            if (persistentPanoProducer) {
+                return tearDownPersistentProducer(reason, null);
+            }
+            return closeOneShotCamera(reason, false);
+        }
+
+        synchronized int workerProducerEpoch() {
+            return producerEpoch;
+        }
+
         private synchronized String attachPersistentGroup(
                 ConsumerGroup target,
                 Surface[] requestedSurfaces,
@@ -1130,6 +1295,11 @@ final class CameraHelperMain {
                 boolean shellOwned,
                 int[] profileIds,
                 String errorStage) {
+            if (!cameraWorkerMode) {
+                return workerClient.openGroup(
+                        target.owner, requestedSurfaces, requestedIndexes, requestId,
+                        requestedView, exclusive, shellOwned, profileIds);
+            }
             String validation = validateBatch(requestedSurfaces, requestedIndexes);
             if (validation != null) {
                 releaseSurfaces(requestedSurfaces);
@@ -1149,7 +1319,7 @@ final class CameraHelperMain {
                 return persistentBusy(target.owner, requestId, errorStage);
             }
             if (rejectUnconfirmedOwner(
-                    unconfirmedOneShotOwner,
+                    oneShotOwnerQuarantineEpoch == workerEpoch,
                     () -> releaseSurfaces(requestedSurfaces), this::emit,
                     target.owner, requestId, requestedIndexes)) {
                 return result("camera_error", "prior camera owner close was not confirmed",
@@ -1159,7 +1329,7 @@ final class CameraHelperMain {
                 String closeResult = closeOneShotCamera(
                         "replace_with_persistent_pano", false);
                 if (!canOpenPersistentAfterOneShotClose(closeResult)) {
-                    unconfirmedOneShotOwner = true;
+                    oneShotOwnerQuarantineEpoch = workerEpoch;
                     rejectUnconfirmedOwner(true,
                             () -> releaseSurfaces(requestedSurfaces), this::emit,
                             target.owner, requestId, requestedIndexes);
@@ -1168,6 +1338,8 @@ final class CameraHelperMain {
                 }
             }
 
+            boolean startingProducer = shouldStartPersistentProducer(camera != null);
+            if (startingProducer) producerEpoch++;
             int requestedCameraId = panoCameraId();
             if (requestedCameraId < 0) {
                 releaseSurfaces(requestedSurfaces);
@@ -1178,7 +1350,7 @@ final class CameraHelperMain {
                 return result("camera_error", error, requestedCameraId, "pano_h");
             }
 
-            if (shouldStartPersistentProducer(camera != null)) {
+            if (startingProducer) {
                 return openPersistentProducer(
                         target, requestedSurfaces, requestedIndexes, requestId,
                         requestedView, exclusive, shellOwned, profileIds,
@@ -1239,6 +1411,7 @@ final class CameraHelperMain {
             Object opened = null;
             DirectCameraSourceHub openedHub = null;
             try {
+                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -1270,7 +1443,6 @@ final class CameraHelperMain {
                 eventCallback = callbackProxy;
                 persistentPanoProducer = true;
                 producerCameraId = requestedCameraId;
-                producerEpoch++;
                 refreshPersistentLegacyState();
                 emit("camera_producer_opened", "camera_id", requestedCameraId,
                         "camera_tag", "pano_h", "producer_epoch", producerEpoch,
@@ -1300,6 +1472,7 @@ final class CameraHelperMain {
                         "camera_tag", "pano_h", "camera_owner", target.owner,
                         "request_id", requestId,
                         "preview_indexes", Arrays.toString(requestedIndexes),
+                        "producer_epoch", producerEpoch,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, "pano_h");
             }
@@ -1510,6 +1683,7 @@ final class CameraHelperMain {
         }
 
         private int currentRequestId(String owner) {
+            if (!cameraWorkerMode) return workerClient.currentRequestId(owner);
             ConsumerGroup group = groupForOwner(owner);
             if (group != null && group.has()) return group.requestId;
             return CAMERA_OWNER_ACTIVITY.equals(owner) ? pendingStockCameraRequestId : 0;
@@ -1575,6 +1749,12 @@ final class CameraHelperMain {
                 }
             }
             return null;
+        }
+
+        static void requireCameraWorkerOwnership(boolean cameraWorkerMode) {
+            if (!cameraWorkerMode) {
+                throw new IllegalStateException("AVMCamera is owned only by :camera worker");
+            }
         }
 
         private static void releaseAndClear(ConsumerGroup group) {
@@ -2551,6 +2731,10 @@ final class CameraHelperMain {
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
+            if (!cameraWorkerMode) {
+                workerClient.closeShellOwnedActivity("camera_shell_died");
+                return;
+            }
             if (persistentPanoProducer
                     && shellDeathInvalidatesConsumer(
                             activityGroup.owner, activityGroup.shellOwned)) {
@@ -2607,6 +2791,41 @@ final class CameraHelperMain {
             if (key != null) emitCounters();
         }
 
+        private void acceptWorkerEvent(String line) {
+            boolean closeStock = false;
+            boolean reversePreviewFailure = false;
+            int requestId = 0;
+            try {
+                JSONObject event = new JSONObject(line);
+                String kind = event.optString("kind");
+                requestId = event.optInt("request_id", 0);
+                synchronized (this) {
+                    closeStock = shouldCloseStockForWorkerTerminal(
+                            stockCameraRequested, pendingStockCameraRequestId,
+                            activeCameraRequestId, requestId, kind,
+                            event.optString("camera_owner"));
+                    reversePreviewFailure = "camera_error".equals(kind)
+                            && matchesPendingCameraRequest(
+                                    pendingReversePreviewRequestId, requestId);
+                }
+            } catch (Throwable ignored) {
+            }
+            acceptShellEvent(line);
+            if (closeStock && !reversePreviewFailure) {
+                turnController.closeStockAvm("camera_worker_terminal", requestId);
+            }
+        }
+
+        static boolean shouldCloseStockForWorkerTerminal(
+                boolean stockRequested, int pendingRequestId, int activeRequestId,
+                int eventRequestId, String kind, String owner) {
+            return ("camera_error".equals(kind) || "camera_closed".equals(kind))
+                    && CAMERA_OWNER_ACTIVITY.equals(owner)
+                    && matchesCurrentStockRequest(
+                            stockRequested, pendingRequestId,
+                            activeRequestId, eventRequestId);
+        }
+
         private void emitMusicJournalSnapshot() {
             JSONArray events = new JSONArray();
             synchronized (musicJournal) {
@@ -2661,7 +2880,7 @@ final class CameraHelperMain {
             logSink.accept(line);
             IBinder current;
             synchronized (this) {
-                current = callback;
+                current = callbacks.current();
             }
             if (current == null) return;
             Parcel data = Parcel.obtain();
@@ -2706,6 +2925,36 @@ final class CameraHelperMain {
             } catch (Throwable ignored) {
                 return "{\"kind\":\"adb_authorization_request\",\"result\":\"error\"}";
             }
+        }
+    }
+
+    static final class CallbackSlot<T> {
+        private T current;
+        private long currentGeneration;
+        private long latestGeneration;
+
+        synchronized boolean register(T value, long generation) {
+            if (value == null) throw new IllegalArgumentException("callback is null");
+            if (generation <= 0) {
+                throw new IllegalArgumentException("callback generation is invalid");
+            }
+            if (generation <= latestGeneration) return false;
+            latestGeneration = generation;
+            current = value;
+            currentGeneration = generation;
+            return true;
+        }
+
+        synchronized boolean detach(T expected, long generation) {
+            if (expected == null || current != expected
+                    || currentGeneration != generation) return false;
+            current = null;
+            currentGeneration = 0;
+            return true;
+        }
+
+        synchronized T current() {
+            return current;
         }
     }
 

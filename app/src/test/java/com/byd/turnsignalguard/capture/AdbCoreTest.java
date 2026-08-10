@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(63, BuildConfig.VERSION_CODE);
+        assertEquals(64, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -923,8 +923,6 @@ public final class AdbCoreTest {
                 "camera_closed", "vendor close failed"));
         assertTrue(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
                 "already_closed", ""));
-        assertTrue(ReverseCameraController.shouldAttemptReverseCameraClose(
-                false, true));
     }
 
     private static IBinder proxyBinder() {

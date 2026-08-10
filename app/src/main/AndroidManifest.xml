@@ -41,6 +41,12 @@
             android:exported="false"
             android:stopWithTask="false" />
 
+        <service
+            android:name=".CameraWorkerService"
+            android:exported="false"
+            android:process=":camera"
+            android:stopWithTask="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

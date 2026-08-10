@@ -234,11 +234,15 @@ final class CameraCalibrationPreset {
         float y = readFloat(preferences, prefix + "y");
         float width = readFloat(preferences, prefix + "w");
         float height = readFloat(preferences, prefix + "h");
-        if (x < 0.0f || y < 0.0f || width <= 0.0f || height <= 0.0f
-                || x + width > 1.0f || y + height > 1.0f
-                || destination && (width < ReverseCameraLayout.MIN_DESTINATION_SIZE
-                        || height < ReverseCameraLayout.MIN_DESTINATION_SIZE)) {
-            throw new IllegalArgumentException("invalid preset geometry");
+        if (destination) {
+            if (x < 0.0f || y < 0.0f || width <= 0.0f || height <= 0.0f
+                    || x + width > 1.0f || y + height > 1.0f
+                    || width < ReverseCameraLayout.MIN_DESTINATION_SIZE
+                    || height < ReverseCameraLayout.MIN_DESTINATION_SIZE) {
+                throw new IllegalArgumentException("invalid preset geometry");
+            }
+        } else {
+            SourceCropPolicy.requireValid(x, y, width, height);
         }
         return destination
                 ? ReverseCameraLayout.destination(x, y, width, height)

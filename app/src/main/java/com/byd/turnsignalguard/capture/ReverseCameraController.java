@@ -52,6 +52,8 @@ final class ReverseCameraController {
     private long cameraShellEpoch;
     private CleanupCloseCoordinator activeCleanup;
     private Runnable cleanupRetryTask;
+    private CameraWorkerEventGate cameraEvents;
+    private final ReverseRecoveryLatch recovery = new ReverseRecoveryLatch();
     private final Runnable cleanupRetry = () -> {
         cleanupRetryScheduled = false;
         Runnable task = cleanupRetryTask;
@@ -99,9 +101,17 @@ final class ReverseCameraController {
         try {
             String kind = event.optString("kind");
             if ("reverse_gear_state".equals(kind)) {
-                gearValid = event.optBoolean("valid", false)
+                boolean nextGearValid = event.optBoolean("valid", false)
                         && event.optBoolean("listener_ok", false);
-                reverse = gearValid && event.optBoolean("reverse", false);
+                boolean nextReverse = nextGearValid && event.optBoolean("reverse", false);
+                CameraHelperMain.HelperBinder activeHelper = helper;
+                if (recovery.acceptGear(
+                        nextGearValid, nextReverse, activeHelper != null)) {
+                    activeHelper.resetCameraWorkerRecovery(CameraWorkerProtocol.Owner.REVERSE);
+                    emit("reverse_camera_recovery_rearmed", "reason", "new_gear_engagement");
+                }
+                gearValid = nextGearValid;
+                reverse = nextReverse;
                 handler.removeCallbacks(gearFreshnessTimeout);
                 if (reverse) {
                     handler.postDelayed(gearFreshnessTimeout, GEAR_FRESHNESS_MS);
@@ -122,14 +132,31 @@ final class ReverseCameraController {
                 reverse = false;
                 handler.removeCallbacks(gearFreshnessTimeout);
                 stop("gear_helper_unavailable", false);
+            } else if ("camera_consumer_attached".equals(kind)
+                    && "helper".equals(event.optString("source"))
+                    && "reverse".equals(event.optString("camera_owner"))) {
+                acceptCameraEvent(event);
             } else if ("camera_opened".equals(kind)
+                    && "helper".equals(event.optString("source"))
                     && "reverse".equals(event.optString("camera_owner"))) {
-                cameraOpened(event.optInt("request_id", -1));
+                cameraOpened(event);
             } else if ("camera_error".equals(kind)
+                    && "helper".equals(event.optString("source"))
                     && "reverse".equals(event.optString("camera_owner"))) {
-                int requestId = event.optInt("request_id", -1);
-                if (matchesCameraOpenEvent(activeRequestId, requestId)) {
-                    fail("camera_open_error");
+                if (acceptCameraEvent(event)) {
+                    if (event.optBoolean("recovery_exhausted", false)
+                            && "camera_worker_recovery_exhausted".equals(
+                                    event.optString("stage"))) {
+                        recoveryExhausted();
+                    } else {
+                        fail("camera_open_error");
+                    }
+                }
+            } else if ("camera_closed".equals(kind)
+                    && "helper".equals(event.optString("source"))
+                    && "reverse".equals(event.optString("camera_owner"))) {
+                if (acceptCameraEvent(event)) {
+                    fail("camera_closed");
                 }
             } else if ("reverse_overlay_first_frames".equals(kind)) {
                 framesReady(event.optInt("request_id", -1));
@@ -176,6 +203,7 @@ final class ReverseCameraController {
         visible = false;
         stopping = false;
         activeCleanup = null;
+        cameraEvents = null;
         prioritySink.accept(false);
         helper = null;
         emit("reverse_camera_runtime_reset", "reason", "service_shutdown");
@@ -183,6 +211,7 @@ final class ReverseCameraController {
 
     private void evaluate() {
         if (shutdown) return;
+        if (recovery.blocked()) return;
         if (!enabled() || !gearValid || !reverse || helper == null) {
             stop(!enabled() ? "disabled" : !gearValid ? "invalid_gear"
                     : !reverse ? "not_reverse" : "helper_unavailable", false);
@@ -197,6 +226,8 @@ final class ReverseCameraController {
         if (activeHelper == null) return;
         int requestId = nextRequestId();
         activeRequestId = requestId;
+        cameraEvents = new CameraWorkerEventGate(
+                CameraHelperMain.CAMERA_OWNER_REVERSE, requestId);
         generations = new int[0];
         visible = false;
         prioritySink.accept(true);
@@ -243,8 +274,8 @@ final class ReverseCameraController {
                 "generations", Arrays.toString(generations));
     }
 
-    private void cameraOpened(int requestId) {
-        if (!matchesCameraOpenEvent(activeRequestId, requestId)
+    private void cameraOpened(JSONObject event) {
+        if (!acceptCameraEvent(event)
                 || generations.length != 3 || stopping || helper == null) return;
         handler.removeCallbacks(firstFrameTimeout);
         handler.postDelayed(firstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
@@ -255,7 +286,7 @@ final class ReverseCameraController {
 
     private void framesReady(int requestId) {
         if (requestId != activeRequestId || generations.length != 3
-                || stopping || helper == null) return;
+                || stopping || helper == null || !cameraRevealAuthorized()) return;
         handler.removeCallbacks(firstFrameTimeout);
         helper.setReverseOverlayVisible(requestId, generations, true, null);
         visible = true;
@@ -269,6 +300,50 @@ final class ReverseCameraController {
         stop(reason, true);
     }
 
+    private void recoveryExhausted() {
+        if (!recovery.exhaust()) return;
+        String reason = "camera_worker_recovery_exhausted";
+        cancelTimers();
+        handler.removeCallbacks(gearFreshnessTimeout);
+        clearCleanupRetry();
+        activeCleanup = null;
+        int requestId = activeRequestId;
+        int[] closingGenerations = generations;
+        boolean wasVisible = visible;
+        activeRequestId = 0;
+        generations = new int[0];
+        visible = false;
+        stopping = false;
+        cameraEvents = null;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null && requestId > 0) {
+            if (wasVisible && closingGenerations.length == 3) {
+                try {
+                    activeHelper.setReverseOverlayVisible(
+                            requestId, closingGenerations, false, null);
+                } catch (Throwable error) {
+                    emit("reverse_camera_error", "stage", "fail_closed_hide",
+                            "request_id", requestId, "error", summary(error));
+                }
+            }
+            try {
+                activeHelper.closeReverseCamera(reason, requestId);
+            } catch (Throwable error) {
+                emit("reverse_camera_error", "stage", "fail_closed_camera",
+                        "request_id", requestId, "error", summary(error));
+            }
+            try {
+                activeHelper.closeReverseOverlayWindow(reason, ignored -> {});
+            } catch (Throwable error) {
+                emit("reverse_camera_error", "stage", "fail_closed_window",
+                        "request_id", requestId, "error", summary(error));
+            }
+        }
+        prioritySink.accept(false);
+        emit("reverse_camera_stopped", "request_id", requestId, "reason", reason,
+                "recovery_exhausted", true);
+    }
+
     private void stop(String reason, boolean retryAfter) {
         if (stopping) return;
         cancelTimers();
@@ -278,6 +353,7 @@ final class ReverseCameraController {
         activeRequestId = 0;
         generations = new int[0];
         visible = false;
+        cameraEvents = null;
         if (closingRequestId == 0) {
             prioritySink.accept(false);
             if (retryAfter) scheduleRetry(reason);
@@ -351,7 +427,8 @@ final class ReverseCameraController {
     }
 
     private void scheduleRetry(String reason) {
-        if (!enabled() || !gearValid || !reverse || helper == null || retryScheduled) return;
+        if (recovery.blocked() || !enabled() || !gearValid || !reverse
+                || helper == null || retryScheduled) return;
         retryScheduled = true;
         handler.postDelayed(retry, RETRY_MS);
         emit("reverse_camera_retry", "reason", reason, "delay_ms", RETRY_MS);
@@ -373,6 +450,7 @@ final class ReverseCameraController {
         visible = false;
         stopping = false;
         activeCleanup = null;
+        cameraEvents = null;
         prioritySink.accept(false);
         emit("reverse_camera_runtime_reset", "reason", reason);
     }
@@ -390,9 +468,41 @@ final class ReverseCameraController {
         return activeRequestId > 0 && eventRequestId == activeRequestId;
     }
 
-    static boolean shouldAttemptReverseCameraClose(
-            boolean cameraClosed, boolean cameraCloseAttempted) {
-        return !cameraClosed;
+    private boolean acceptCameraEvent(JSONObject event) {
+        return cameraEvents != null && cameraEvents.accepts(event);
+    }
+
+    private boolean cameraRevealAuthorized() {
+        return cameraEvents != null && cameraEvents.boundKey() != null;
+    }
+
+    static final class ReverseRecoveryLatch {
+        private boolean exhausted;
+        private boolean leftReverse;
+
+        boolean exhaust() {
+            if (exhausted) return false;
+            exhausted = true;
+            leftReverse = false;
+            return true;
+        }
+
+        boolean acceptGear(boolean valid, boolean reverse, boolean resetAvailable) {
+            if (!exhausted || !valid) return false;
+            if (!reverse) {
+                leftReverse = true;
+                return false;
+            }
+            if (!leftReverse) return false;
+            leftReverse = false;
+            if (!resetAvailable) return false;
+            exhausted = false;
+            return true;
+        }
+
+        boolean blocked() {
+            return exhausted;
+        }
     }
 
     interface CameraCloser {
@@ -617,7 +727,7 @@ final class ReverseCameraController {
     private static ReverseCameraLayout.Rect loadSourceCrop(
             SharedPreferences settings, int cameraIndex,
             ReverseCameraLayout.Rect fallback) {
-        return ReverseCameraLayout.sourceCrop(
+        return loadActiveSourceCrop(settings, cameraIndex, false,
                 settings.getFloat(sourceCropKey(cameraIndex, "left", false), fallback.left),
                 settings.getFloat(sourceCropKey(cameraIndex, "top", false), fallback.top),
                 settings.getFloat(sourceCropKey(cameraIndex, "width", false), fallback.width),
@@ -634,11 +744,24 @@ final class ReverseCameraController {
             SharedPreferences settings, int cameraIndex,
             ReverseCameraLayout.Rect fallback) {
         String prefix = correctedSourceCropPrefix(cameraIndex);
-        return ReverseCameraLayout.sourceCrop(
+        return loadActiveSourceCrop(settings, cameraIndex, true,
                 settings.getFloat(prefix + "left", fallback.left),
                 settings.getFloat(prefix + "top", fallback.top),
                 settings.getFloat(prefix + "width", fallback.width),
                 settings.getFloat(prefix + "height", fallback.height));
+    }
+
+    private static ReverseCameraLayout.Rect loadActiveSourceCrop(
+            SharedPreferences settings, int cameraIndex, boolean corrected,
+            float left, float top, float width, float height) {
+        boolean migrate = SourceCropPolicy.needsMigration(width, height);
+        float[] geometry = migrate
+                ? SourceCropPolicy.migrate(left, top, width, height)
+                : new float[]{left, top, width, height};
+        ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(
+                geometry[0], geometry[1], geometry[2], geometry[3]);
+        if (migrate) saveSourceCrop(settings, cameraIndex, crop, corrected);
+        return crop;
     }
 
     static void saveSourceCrop(SharedPreferences settings, int cameraIndex,
