@@ -9,9 +9,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ResultReceiver;
 import android.os.SystemClock;
 
 import org.json.JSONObject;
@@ -42,16 +44,21 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_CAMERA_WARNING_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
+    private static final String ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.CAMERA_TRIGGER_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.MUSIC_SETTINGS_CHANGED";
     private static final String ACTION_AUTO_START_CHANGED =
             "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
+    private static final String ACTION_FLUSH_LOGS =
+            "com.byd.turnsignalguard.capture.action.FLUSH_LOGS";
     private static final String ACTION_SHUTDOWN =
             "com.byd.turnsignalguard.capture.action.SHUTDOWN";
     private static final String EXTRA_ENABLED = "enabled";
     private static final String EXTRA_REASON = "reason";
+    private static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
 
@@ -139,6 +146,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_CAMERA_WARNING_SETTINGS_CHANGED));
     }
 
+    static void cameraTriggerSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED));
+    }
+
     static void reverseCameraSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
@@ -162,6 +174,12 @@ public final class CameraHelperService extends Service {
         GuardRecovery.setUserShutdownActive(context, true);
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_SHUTDOWN));
+    }
+
+    static void flushLogs(Context context, ResultReceiver receiver) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_FLUSH_LOGS)
+                .putExtra(EXTRA_FLUSH_RECEIVER, receiver));
     }
 
     @Override
@@ -196,7 +214,12 @@ public final class CameraHelperService extends Service {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
-        if (ACTION_ACTIVITY_OPEN.equals(action)) {
+        if (ACTION_FLUSH_LOGS.equals(action)) {
+            flushLogWriter();
+            ResultReceiver receiver = intent == null
+                    ? null : intent.getParcelableExtra(EXTRA_FLUSH_RECEIVER);
+            if (receiver != null) receiver.send(0, Bundle.EMPTY);
+        } else if (ACTION_ACTIVITY_OPEN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, false);
             activityVisible = true;
             overlay.setUiHidden(true);
@@ -238,6 +261,8 @@ public final class CameraHelperService extends Service {
             clusterFullscreen.settingsChanged();
         } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {
             overlay.applyWarningSettings();
+        } else if (ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED.equals(action)) {
+            overlay.applyTriggerSettings();
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {

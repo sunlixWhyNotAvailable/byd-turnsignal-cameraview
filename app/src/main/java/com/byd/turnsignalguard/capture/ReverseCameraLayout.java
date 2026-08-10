@@ -69,7 +69,7 @@ final class ReverseCameraLayout {
 
     static Rect sourceCrop(float left, float top, float width, float height) {
         requireFinite(left, top, width, height);
-        if (width <= 0.0f || height <= 0.0f) {
+        if (width < Float.MIN_NORMAL || height < Float.MIN_NORMAL) {
             throw new IllegalArgumentException("source crop size must be positive");
         }
         float safeWidth = Math.min(width, 1.0f);

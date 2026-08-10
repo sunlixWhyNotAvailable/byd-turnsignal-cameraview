@@ -27,9 +27,21 @@ final class CameraProbeSettingsPanel {
     private final Button adbRetryButton;
     private final Button updateButton;
     private final Button clearLogsButton;
+    private final Button shareLogsButton;
     private final Button shutdownButton;
+    private final boolean shareLogsAvailable;
+    private boolean logExportInProgress;
+    private boolean clearLogsAllowed = true;
+    private boolean shareLogsAllowed;
 
     CameraProbeSettingsPanel(CameraProbeActivity activity, SharedPreferences preferences) {
+        this(activity, preferences, null);
+    }
+
+    CameraProbeSettingsPanel(
+            CameraProbeActivity activity,
+            SharedPreferences preferences,
+            Runnable shareLogsAction) {
         this.activity = activity;
         this.preferences = preferences;
 
@@ -110,6 +122,16 @@ final class CameraProbeSettingsPanel {
         root.addView(actions, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(56)));
 
+        shareLogsButton = activity.button("Поділитися логами");
+        shareLogsAvailable = shareLogsAction != null;
+        shareLogsAllowed = shareLogsAvailable;
+        shareLogsButton.setEnabled(shareLogsAvailable);
+        if (shareLogsAction != null) {
+            shareLogsButton.setOnClickListener(view -> shareLogsAction.run());
+        }
+        root.addView(shareLogsButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+
         autoStartSwitch.setOnCheckedChangeListener((button, checked) ->
                 activity.onSettingsAutoStartChanged(checked));
         updateButton.setOnClickListener(view -> activity.runManualUpdateCheck());
@@ -140,7 +162,16 @@ final class CameraProbeSettingsPanel {
         backgroundStartSettingsButton.setEnabled(backgroundStartEnabled);
         shutdownButton.setEnabled(!shutdownRequested);
         adbRetryButton.setEnabled(adbRetryEnabled);
-        clearLogsButton.setEnabled(clearLogsEnabled);
+        clearLogsAllowed = clearLogsEnabled;
+        shareLogsAllowed = shareLogsAvailable && !shutdownRequested;
+        clearLogsButton.setEnabled(clearLogsAllowed && !logExportInProgress);
+        shareLogsButton.setEnabled(shareLogsAllowed && !logExportInProgress);
+    }
+
+    void setLogExportInProgress(boolean inProgress) {
+        logExportInProgress = inProgress;
+        clearLogsButton.setEnabled(clearLogsAllowed && !inProgress);
+        shareLogsButton.setEnabled(shareLogsAllowed && !inProgress);
     }
 
     void setUpdateButton(String text, boolean enabled) {

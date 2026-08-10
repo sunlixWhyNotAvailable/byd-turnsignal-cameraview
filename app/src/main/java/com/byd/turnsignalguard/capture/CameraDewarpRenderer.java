@@ -220,27 +220,6 @@ final class CameraDewarpRenderer {
         return cameraSurface;
     }
 
-    boolean canRecreateCameraInput() {
-        return !released.get() && handler != null && cameraTexture != null;
-    }
-
-    void recreateCameraInput(Consumer<Surface> ready, Consumer<Throwable> failed) {
-        Handler activeHandler = handler;
-        if (released.get() || activeHandler == null) {
-            failed.accept(new IllegalStateException("dewarp renderer unavailable"));
-            return;
-        }
-        activeHandler.post(() -> {
-            try {
-                releaseCameraInput();
-                createCameraInput();
-                ready.accept(cameraSurface);
-            } catch (Throwable error) {
-                failed.accept(error);
-            }
-        });
-    }
-
     void setRawMirror(SurfaceTexture texture) {
         setMirror(texture, true);
     }

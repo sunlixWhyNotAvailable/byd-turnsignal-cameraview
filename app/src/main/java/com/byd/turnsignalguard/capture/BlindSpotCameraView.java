@@ -29,8 +29,6 @@ final class BlindSpotCameraView extends TextureView
         default void onDewarpFallbackChanged(BlindSpotCameraView view) {}
         default void onCameraRenderFailed(
                 BlindSpotCameraView view, CameraDewarpRenderer.Event event) {}
-        default void onCameraSurfaceRecreationFailed(
-                BlindSpotCameraView view, Throwable error) {}
     }
 
     private Callback callback;
@@ -70,32 +68,6 @@ final class BlindSpotCameraView extends TextureView
 
     boolean isCameraSurfaceReady() {
         return cameraSurface != null && cameraSurface.isValid();
-    }
-
-    boolean canRecreateCameraInputSurface() {
-        return dewarpRenderer != null && dewarpRenderer.canRecreateCameraInput();
-    }
-
-    void recreateCameraInputSurface() {
-        CameraDewarpRenderer renderer = dewarpRenderer;
-        int rendererGeneration = dewarpGeneration;
-        if (renderer == null || !renderer.canRecreateCameraInput()) {
-            throw new IllegalStateException("camera input recreation unavailable");
-        }
-        cameraSurface = null;
-        renderer.recreateCameraInput(surface -> post(() -> {
-            if (rendererGeneration != dewarpGeneration || renderer != dewarpRenderer) {
-                return;
-            }
-            cameraSurface = surface;
-            if (callback != null) {
-                callback.onCameraSurfaceAvailable(
-                        this, surface, getWidth(), getHeight());
-            }
-        }), error -> post(() -> {
-            if (rendererGeneration != dewarpGeneration || renderer != dewarpRenderer) return;
-            if (callback != null) callback.onCameraSurfaceRecreationFailed(this, error);
-        }));
     }
 
     void setForceDewarpPipeline(boolean value) {

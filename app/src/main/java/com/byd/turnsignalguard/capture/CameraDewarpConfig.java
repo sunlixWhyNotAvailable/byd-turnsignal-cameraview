@@ -74,12 +74,16 @@ final class CameraDewarpConfig {
     }
 
     static void save(SharedPreferences preferences, CameraDewarpConfig value) {
+        SharedPreferences.Editor editor = preferences.edit();
+        write(editor, value);
+        editor.apply();
+    }
+
+    static void write(SharedPreferences.Editor editor, CameraDewarpConfig value) {
         String prefix = prefix(value.lens);
-        preferences.edit()
-                .putBoolean(prefix + "enabled", value.enabled)
+        editor.putBoolean(prefix + "enabled", value.enabled)
                 .putInt(prefix + "fov", value.fovDegrees)
-                .putInt(prefix + "projection", value.projection)
-                .apply();
+                .putInt(prefix + "projection", value.projection);
     }
 
     static int lensFor(CameraProfile profile) {

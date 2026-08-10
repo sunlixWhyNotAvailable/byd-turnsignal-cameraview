@@ -3,6 +3,7 @@ package com.byd.turnsignalguard.capture;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -17,6 +18,7 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -24,9 +26,11 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
 import android.os.SystemClock;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.text.method.DigitsKeyListener;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -51,6 +55,8 @@ import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.core.content.FileProvider;
 
 import org.json.JSONObject;
 
@@ -98,6 +104,9 @@ public final class CameraProbeActivity extends Activity
     private static final int REVERSE_INSPECTOR_CROP = 1;
     private static final int REVERSE_INSPECTOR_ROTATION = 2;
     private static final int REVERSE_INSPECTOR_CORRECTION = 3;
+    private static final int CROP_STAGE_NONE = -1;
+    private static final int CROP_STAGE_RAW = 0;
+    private static final int CROP_STAGE_CORRECTED = 1;
     private static final String PREF_FRONT_CAMERA_ENABLED = "camera_front_enabled";
     private static final String PREF_FRONT_CAMERA_MIN_SPEED = "camera_front_min_speed_kph";
     private static final String PREF_FRONT_CAMERA_MAX_SPEED = "camera_front_max_speed_kph";
@@ -118,6 +127,7 @@ public final class CameraProbeActivity extends Activity
 
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService logExportExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AppUpdateManager updateManager = new AppUpdateManager();
     private final CameraTransition cameraTransition = new CameraTransition();
@@ -134,6 +144,8 @@ public final class CameraProbeActivity extends Activity
     private SharedPreferences preferences;
     private Switch guardSwitch;
     private Switch cameraSwitch;
+    private Switch rearSharpTurnSwitch;
+    private Switch rearBsdOnlySwitch;
     private Switch frontCameraSwitch;
     private Switch frontTurnRequiredSwitch;
     private EditText outwardInput;
@@ -142,6 +154,7 @@ public final class CameraProbeActivity extends Activity
     private EditText maxSpeedInput;
     private EditText cameraMinSpeedInput;
     private EditText cameraMaxSpeedInput;
+    private EditText rearSharpTurnAngleInput;
     private EditText frontCameraMinSpeedInput;
     private EditText frontCameraMaxSpeedInput;
     private EditText frontCameraMinAngleInput;
@@ -166,7 +179,6 @@ public final class CameraProbeActivity extends Activity
     private TextView debugCameraStatus;
     private TextView directCameraStatus;
     private TextView calibrationStatus;
-    private TextView calibrationCropValues;
     private TextView calibrationResultTitle;
     private TextView reverseCameraStatus;
     private TextView debugLayoutTitle;
@@ -189,9 +201,18 @@ public final class CameraProbeActivity extends Activity
     private CameraCropOverlayView calibrationRawCropOverlay;
     private View calibrationRawPane;
     private View calibrationCorrectedPane;
+    private final TextView[] calibrationCropTitles = new TextView[2];
+    private final TextView[] calibrationCropReadouts = new TextView[2];
+    private final Button[] calibrationCropInputButtons = new Button[2];
+    private FrameLayout calibrationControlsHost;
+    private View calibrationNormalControls;
+    private View calibrationCropInputControls;
+    private final EditText[] calibrationCropInputs = new EditText[4];
+    private int calibrationCropInputStage = CROP_STAGE_NONE;
+    private Button calibrationPresetLoadButton;
+    private Button calibrationMirrorButton;
     private DirectCameraCrop calibrationRawCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop calibrationCorrectedCrop = DirectCameraCrop.defaultFor(false);
-    private TextView calibrationSourceTitle;
     private ImageView calibrationCropPreview;
     private FrameLayout calibrationSourceHost;
     private View calibrationSourceFrame;
@@ -211,6 +232,16 @@ public final class CameraProbeActivity extends Activity
     private CameraCropOverlayView reverseCalibrationRawOverlay;
     private CameraCropOverlayView reverseCalibrationCorrectedOverlay;
     private View reverseCalibrationCorrectedStage;
+    private final TextView[] reverseCalibrationCropTitles = new TextView[2];
+    private final TextView[] reverseCalibrationCropReadouts = new TextView[2];
+    private final Button[] reverseCalibrationCropInputButtons = new Button[2];
+    private FrameLayout reverseCalibrationControlsHost;
+    private View reverseCalibrationNormalControls;
+    private View reverseCalibrationCropInputControls;
+    private final EditText[] reverseCalibrationCropInputs = new EditText[4];
+    private int reverseCalibrationCropInputStage = CROP_STAGE_NONE;
+    private Button reversePresetLoadButton;
+    private Button reverseMirrorButton;
     private ImageView reverseCalibrationLivePreview;
     private FrameLayout reverseCalibrationLiveFrame;
     private int reverseCalibrationCameraIndex = -1;
@@ -281,9 +312,6 @@ public final class CameraProbeActivity extends Activity
     private volatile boolean directCameraSurfaceReady;
     private volatile boolean calibrationSurfaceReady;
     private volatile boolean reverseCameraSurfacesReady;
-    private boolean reverseInputResetPending;
-    private boolean reverseInputResetOnResume;
-    private int[] reverseInputResetGenerations;
     private volatile boolean cameraDiscovered;
     private volatile boolean requestedOpen;
     private boolean telemetryReady;
@@ -297,14 +325,21 @@ public final class CameraProbeActivity extends Activity
     private boolean backgroundStartSettingsActive;
     private boolean backgroundStartSettingsStartScheduled;
     private boolean helperBound;
+    private volatile boolean helperCallbackRegistered;
     private boolean shutdownRequested;
     private boolean activityResumed;
+    private boolean resumeAutoPreviewOnResume;
+    private int resumeAutoPreviewRequestId;
+    private int resumeAutoPreviewTab = -1;
+    private boolean retainedActivityPreview;
+    private int retainedActivityPreviewRequestId;
+    private int retainedActivityPreviewTab = -1;
     private boolean activityDestroyed;
     private boolean updateCheckInFlight;
+    private boolean logExportInProgress;
     private boolean debugHorizontal = true;
     private int selectedCameraId = CameraProfile.REAR_LEFT;
     private int calibrationCameraId = CameraProfile.REAR_LEFT;
-    private boolean pendingDirectCalibration;
     private boolean calibrationCopyPending;
     private final float[] cameraX = new float[CameraProfile.COUNT];
     private final float[] cameraY = new float[CameraProfile.COUNT];
@@ -316,13 +351,10 @@ public final class CameraProbeActivity extends Activity
     private float dragStartY;
     private int pendingDiagnosticAvmModeIndex = -1;
     private int pendingCameraViewpoint = -1;
-    private int pendingDirectCameraIndex = -1;
-    private String pendingDirectCameraTag;
     private int activeCameraViewpoint = -1;
     private int activeDirectCameraIndex = -1;
     private int retryStockViewpoint = -1;
     private boolean retryStockDebug;
-    private int retryDirectCameraIndex = -1;
     private boolean cameraShellRecoveryPending;
     private boolean cameraShellAvailable;
     private boolean invalidStockSurfaceRetryUsed;
@@ -338,10 +370,10 @@ public final class CameraProbeActivity extends Activity
     private int selectedDebugMode;
     private int activityCameraRequestSequence;
     private int activeActivityCameraRequestId;
+    private int activeReverseControllerRequestId;
     private AlertDialog updateDialog;
     private AlertDialog updateProgressDialog;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
-    private final Runnable finishDirectCameraHandoff = this::openPendingDirectCamera;
     private final Runnable productionPreviewFirstFrameTimeout =
             this::handleProductionPreviewFirstFrameTimeout;
     private final Runnable copyCalibrationFrame = this::copyCalibrationFrame;
@@ -390,6 +422,7 @@ public final class CameraProbeActivity extends Activity
         @Override
         public void onServiceDisconnected(ComponentName name) {
             helper = null;
+            helperCallbackRegistered = false;
             adbAuthPending = false;
             adbAuthMode = null;
             adbAuthorizationRequested = false;
@@ -398,12 +431,13 @@ public final class CameraProbeActivity extends Activity
             manualTurnRequestPending = false;
             cameraDiscovered = false;
             requestedOpen = false;
+            clearResumeAutoPreview();
+            clearRetainedActivityPreview();
             cameraTransition.cancel();
             cameraShellRecoveryPending = false;
             cameraShellAvailable = false;
             retryStockViewpoint = -1;
             retryStockDebug = false;
-            retryDirectCameraIndex = -1;
             guardStatus.setText("Службу зупинено");
             settingsPanel.setServiceStatus("Службу зупинено");
             settingsPanel.setAdbStatus("ADB/helper недоступний");
@@ -420,6 +454,7 @@ public final class CameraProbeActivity extends Activity
             activeCameraViewpoint = -1;
             activeDirectCameraIndex = -1;
             activeActivityCameraRequestId = 0;
+            activeReverseControllerRequestId = 0;
             record("helper_service_disconnected");
             updateControls();
         }
@@ -472,16 +507,22 @@ public final class CameraProbeActivity extends Activity
         invalidStockSurfaceRetryUsed = false;
         CameraHelperService.activityOpened(this);
         if (!helperBound) startAndBindHelperService();
-        if (helper != null) ipcExecutor.execute(this::registerCallback);
+        if (helper != null && !helperCallbackRegistered) {
+            ipcExecutor.execute(this::registerCallback);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         activityResumed = true;
-        if (reverseInputResetOnResume) {
-            reverseInputResetOnResume = false;
-            requestReverseInputReset("activity_resumed");
+        if (resumeAutoPreviewOnResume) {
+            if (!resumeRetainedActivityPreview("activity_resumed")) {
+                record("activity_camera_reopen", "reason", "activity_resumed",
+                        "selected_tab", selectedTab,
+                        "request_id", resumeAutoPreviewRequestId);
+                resumeSelectedCameraPreview();
+            }
         }
         resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
         showCachedUpdateIfAvailable();
@@ -495,6 +536,9 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     protected void onPause() {
+        if (!shutdownRequested) {
+            armResumeAutoPreviewIfNeeded();
+        }
         activityResumed = false;
         mainHandler.removeCallbacks(runStartupUpdateCheck);
         cancelPendingBackgroundStartSettings();
@@ -533,22 +577,25 @@ public final class CameraProbeActivity extends Activity
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
         stopReverseCalibrationCopies(false);
+        if (!shutdownRequested) armResumeAutoPreviewIfNeeded();
+        else clearResumeAutoPreview();
+        boolean transitionWasPending = cameraTransition.pending();
         cameraTransition.cancel();
         retryStockViewpoint = -1;
         retryStockDebug = false;
-        retryDirectCameraIndex = -1;
         cameraShellRecoveryPending = false;
         if (!shutdownRequested) {
             if (cameraMinSpeedInput != null && cameraMaxSpeedInput != null) {
                 saveRearCameraSpeedRange();
             }
+            if (rearSharpTurnAngleInput != null) saveRearTriggerPolicy();
             if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
                     && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
-            if (activePreview == reverseCameraPreview && requestedOpen) {
-                reverseInputResetOnResume = true;
+            boolean retained = retainActivityPreviewAcrossStop(transitionWasPending);
+            if (!retained) {
+                closeCamera("activity_stopped");
+                detachHelperCallback();
             }
-            closeCamera("activity_stopped");
-            detachHelperCallback();
             CameraHelperService.activityClosed(this);
         }
         super.onStop();
@@ -557,15 +604,20 @@ public final class CameraProbeActivity extends Activity
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
+        if (requestedOpen || cameraHandoffPending) closeCamera("activity_destroyed");
+        clearResumeAutoPreview();
+        clearRetainedActivityPreview();
         mainHandler.removeCallbacks(runStartupUpdateCheck);
         stopCalibrationCopies(true);
         stopReverseCalibrationCopies(true);
+        detachHelperCallback();
         if (helperBound) {
             unbindService(helperConnection);
             helperBound = false;
         }
         ipcExecutor.shutdown();
         updateExecutor.shutdownNow();
+        logExportExecutor.shutdownNow();
         if (updateDialog != null) updateDialog.dismiss();
         if (updateProgressDialog != null) updateProgressDialog.dismiss();
         super.onDestroy();
@@ -589,6 +641,106 @@ public final class CameraProbeActivity extends Activity
 
     void runManualUpdateCheck() {
         runUpdateCheck(true);
+    }
+
+    private void confirmDiagnosticLogShare() {
+        if (logExportInProgress || shutdownRequested || activityDestroyed) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Поділитися логами")
+                .setMessage("Архів міститиме всі збережені логи застосунку та, якщо ADB "
+                        + "вже авторизовано, системні logcat/DropBox. Дані не редагуються й "
+                        + "можуть містити приватну або системну інформацію. Передавайте "
+                        + "архів лише приватним довіреним каналом.")
+                .setNegativeButton("Скасувати", null)
+                .setPositiveButton("Створити", (dialog, which) -> startDiagnosticLogExport())
+                .show();
+    }
+
+    private void startDiagnosticLogExport() {
+        if (logExportInProgress || shutdownRequested || activityDestroyed) return;
+        logExportInProgress = true;
+        settingsPanel.setLogExportInProgress(true);
+        record("diagnostic_log_export", "state", "flush_requested");
+        try {
+            CameraHelperService.flushLogs(this, new ResultReceiver(mainHandler) {
+                @Override
+                protected void onReceiveResult(int resultCode, Bundle resultData) {
+                    exportDiagnosticLogsAfterFlush();
+                }
+            });
+        } catch (Throwable error) {
+            finishDiagnosticLogExport(null, error);
+        }
+    }
+
+    private void exportDiagnosticLogsAfterFlush() {
+        if (!logExportInProgress || activityDestroyed) {
+            logExportInProgress = false;
+            return;
+        }
+        final DiagnosticLogExporter.Snapshot snapshot;
+        try {
+            snapshot = DiagnosticLogExporter.snapshot(this);
+        } catch (Throwable error) {
+            finishDiagnosticLogExport(null, error);
+            return;
+        }
+        record("diagnostic_log_export", "state", "snapshot_ready",
+                "source_count", snapshot.sources.size());
+        try {
+            logExportExecutor.execute(() -> {
+                File archive = null;
+                Throwable failure = null;
+                try {
+                    archive = DiagnosticLogExporter.export(this, snapshot);
+                } catch (Throwable error) {
+                    failure = error;
+                }
+                File result = archive;
+                Throwable error = failure;
+                mainHandler.post(() -> finishDiagnosticLogExport(result, error));
+            });
+        } catch (Throwable error) {
+            finishDiagnosticLogExport(null, error);
+        }
+    }
+
+    private void finishDiagnosticLogExport(File archive, Throwable error) {
+        logExportInProgress = false;
+        if (!activityDestroyed && settingsPanel != null) {
+            settingsPanel.setLogExportInProgress(false);
+        }
+        if (error != null) {
+            record("diagnostic_log_export", "state", "failed", "error", error.toString());
+            if (activityResumed && !activityDestroyed) {
+                Toast.makeText(this, "Не вдалося створити архів логів", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (archive == null) return;
+        if (!activityResumed || activityDestroyed) {
+            boolean deleted = archive.delete();
+            record("diagnostic_log_export", "state", "chooser_skipped",
+                    "reason", "activity_inactive", "archive_deleted", deleted);
+            return;
+        }
+        try {
+            Uri uri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", archive);
+            Intent share = new Intent(Intent.ACTION_SEND)
+                    .setType("application/zip")
+                    .putExtra(Intent.EXTRA_STREAM, uri);
+            share.setClipData(ClipData.newUri(
+                    getContentResolver(), "BYD Turn Signal Guard logs", uri));
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            record("diagnostic_log_export", "state", "chooser_opened",
+                    "archive", archive.getName(), "bytes", archive.length());
+            startActivity(Intent.createChooser(share, "Поділитися логами"));
+        } catch (Throwable shareError) {
+            record("diagnostic_log_export", "state", "share_failed",
+                    "error", shareError.toString());
+            Toast.makeText(this, "Не вдалося відкрити меню поширення", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void runUpdateCheck(boolean force) {
@@ -727,6 +879,7 @@ public final class CameraProbeActivity extends Activity
 
     private void attachHelper(IBinder received) {
         helper = received;
+        helperCallbackRegistered = false;
         telemetryReady = false;
         cameraDiscovered = false;
         guardStatus.setText("Підключення телеметрії...");
@@ -881,16 +1034,6 @@ public final class CameraProbeActivity extends Activity
 
     @Override
     public void onReverseSurfacesReady(int[] generations) {
-        if (reverseInputResetPending) {
-            if (!ReverseCameraCompositionView.generationsAdvanced(
-                    reverseInputResetGenerations, generations)) return;
-            record("reverse_preview_surface_reset", "state", "ready",
-                    "old_generations", java.util.Arrays.toString(
-                            reverseInputResetGenerations),
-                    "new_generations", java.util.Arrays.toString(generations));
-            reverseInputResetPending = false;
-            reverseInputResetGenerations = null;
-        }
         reverseCameraSurfacesReady = true;
         record("reverse_preview_surfaces", "state", "ready",
                 "generations", java.util.Arrays.toString(generations));
@@ -914,17 +1057,6 @@ public final class CameraProbeActivity extends Activity
         record("reverse_preview_surfaces", "state", "destroyed",
                 "camera_index", cameraIndex, "generation", generation);
         if (activePreview == reverseCameraPreview) closeCamera("reverse_surface_destroyed");
-        updateControls();
-    }
-
-    @Override
-    public void onReverseSurfaceRecreationFailed(int cameraIndex, Throwable error) {
-        reverseInputResetPending = false;
-        reverseInputResetGenerations = null;
-        reverseCameraSurfacesReady = false;
-        reverseCameraStatus.setText("Помилка оновлення camera surfaces");
-        record("reverse_preview_surface_reset", "state", "failed",
-                "camera_index", cameraIndex, "error", error.toString());
         updateControls();
     }
 
@@ -996,7 +1128,8 @@ public final class CameraProbeActivity extends Activity
         debugPage = buildCombinedDebugPanel();
         ScrollView settingsScroll = new ScrollView(this);
         settingsScroll.setFillViewport(true);
-        settingsPanel = new CameraProbeSettingsPanel(this, preferences);
+        settingsPanel = new CameraProbeSettingsPanel(
+                this, preferences, this::confirmDiagnosticLogShare);
         settingsScroll.addView(settingsPanel.view(), new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         settingsPage = settingsScroll;
@@ -1038,10 +1171,17 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void selectTab(int tab) {
+        cancelCalibrationCropInput();
+        cancelReverseCropInput();
         if (tab == TAB_DIRECT_CAMERA_DEBUG) tab = TAB_CAMERA_DEBUG;
         if (!isValidTab(tab)) tab = TAB_GUARD;
-        if (selectedTab != tab) invalidStockSurfaceRetryUsed = false;
         int previousTab = selectedTab;
+        if (previousTab != tab) {
+            invalidStockSurfaceRetryUsed = false;
+            clearResumeAutoPreview();
+            retryStockViewpoint = -1;
+            retryStockDebug = false;
+        }
         selectedTab = tab;
         if (previousTab == TAB_REVERSE_CAMERAS && tab != TAB_REVERSE_CAMERAS
                 && reverseCalibrationCameraIndex > 0) {
@@ -1053,6 +1193,7 @@ public final class CameraProbeActivity extends Activity
         boolean transitionStarted = false;
         if (previousTab != -1 && previousTab != tab
                 && (requestedOpen || cameraHandoffPending)) {
+            if (isAutoPreviewTab(tab)) armResumeAutoPreview();
             transitionStarted = closeCameraForTransition("camera_tab_changed");
         }
         guardPage.setVisibility(tab == TAB_GUARD ? View.VISIBLE : View.GONE);
@@ -1074,6 +1215,12 @@ public final class CameraProbeActivity extends Activity
         cameraDebugTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERA_DEBUG));
         settingsTabButton.setBackgroundColor(tabColor(tab == TAB_SETTINGS));
         preferences.edit().putInt("selected_tab", tab).apply();
+        if (!transitionStarted && previousTab != tab && isAutoPreviewTab(tab)) {
+            armResumeAutoPreview();
+        }
+        if (previousTab == -1 && isAutoPreviewTab(tab)) {
+            armResumeAutoPreview();
+        }
         if (!transitionStarted && tab == TAB_CAMERA_CALIBRATION) {
             maybeOpenCalibrationCamera();
         }
@@ -1198,6 +1345,7 @@ public final class CameraProbeActivity extends Activity
     void requestAppShutdown() {
         if (shutdownRequested) return;
         shutdownRequested = true;
+        clearResumeAutoPreview();
         record("user_shutdown_requested", "auto_start",
                 GuardRecovery.isAutoStartEnabled(this), "guard_enabled",
                 guardSwitch != null && guardSwitch.isChecked());
@@ -1464,7 +1612,8 @@ public final class CameraProbeActivity extends Activity
         reverseCalibrationRawOverlay = new CameraCropOverlayView(this);
         configureReverseMirror(reverseCalibrationRawMirror, true);
         sourceRow.addView(buildReverseCalibrationStage(
-                "RAW", reverseCalibrationRawMirror, reverseCalibrationRawOverlay),
+                "RAW", CROP_STAGE_RAW,
+                reverseCalibrationRawMirror, reverseCalibrationRawOverlay),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1));
 
         reverseCalibrationCorrectedMirror = new TextureView(this);
@@ -1472,7 +1621,7 @@ public final class CameraProbeActivity extends Activity
         reverseCalibrationCorrectedOverlay = new CameraCropOverlayView(this);
         configureReverseMirror(reverseCalibrationCorrectedMirror, false);
         reverseCalibrationCorrectedStage = buildReverseCalibrationStage(
-                "CORRECTED", reverseCalibrationCorrectedMirror,
+                "CORRECTED", CROP_STAGE_CORRECTED, reverseCalibrationCorrectedMirror,
                 reverseCalibrationCorrectedOverlay);
         sourceRow.addView(reverseCalibrationCorrectedStage,
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1));
@@ -1519,76 +1668,74 @@ public final class CameraProbeActivity extends Activity
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         correctionPanel.setVisibility(View.GONE);
-        root.addView(controlHost, new LinearLayout.LayoutParams(
+        reverseCalibrationNormalControls = controlHost;
+        reverseCalibrationCropInputControls = buildCropInputControls(true);
+        reverseCalibrationCropInputControls.setVisibility(View.GONE);
+        reverseCalibrationControlsHost = new FrameLayout(this);
+        reverseCalibrationControlsHost.addView(reverseCalibrationNormalControls,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        reverseCalibrationControlsHost.addView(reverseCalibrationCropInputControls,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(reverseCalibrationControlsHost, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(84)));
         LinearLayout actions = new LinearLayout(this);
         Button rotation = button("Поворот");
         Button correction = button("Корекція");
+        Button savePreset = button("Зберегти");
+        reversePresetLoadButton = button("Завантажити");
+        reverseMirrorButton = button("Дзеркало →");
+        reverseMirrorButton.setTextSize(10);
         Button back = button("Назад");
         rotation.setOnClickListener(view -> {
+            cancelReverseCropInput();
             rotationPanel.setVisibility(View.VISIBLE);
             correctionPanel.setVisibility(View.GONE);
             rotation.setBackgroundColor(tabColor(true));
             correction.setBackgroundColor(tabColor(false));
         });
         correction.setOnClickListener(view -> {
+            cancelReverseCropInput();
             rotationPanel.setVisibility(View.GONE);
             correctionPanel.setVisibility(View.VISIBLE);
             rotation.setBackgroundColor(tabColor(false));
             correction.setBackgroundColor(tabColor(true));
         });
         back.setOnClickListener(view -> closeReverseCalibration());
+        savePreset.setOnClickListener(view -> saveReverseCalibrationPreset());
+        reversePresetLoadButton.setOnClickListener(
+                view -> loadReverseCalibrationPreset());
+        reverseMirrorButton.setOnClickListener(view -> mirrorReverseCalibration());
         rotation.setBackgroundColor(tabColor(true));
         actions.addView(rotation, new LinearLayout.LayoutParams(0, dp(38), 1));
         actions.addView(correction, new LinearLayout.LayoutParams(0, dp(38), 1));
+        actions.addView(savePreset, new LinearLayout.LayoutParams(0, dp(38), 1));
+        actions.addView(reversePresetLoadButton,
+                new LinearLayout.LayoutParams(0, dp(38), 1));
+        actions.addView(reverseMirrorButton,
+                new LinearLayout.LayoutParams(0, dp(38), 1));
         actions.addView(back, new LinearLayout.LayoutParams(0, dp(38), 1));
         root.addView(actions);
 
         reverseCalibrationRawOverlay.setListener((crop, finished) -> {
             if (reverseCalibrationCameraIndex <= 0) return;
-            ReverseCameraLayout.Pane pane = reverseRawCalibrationLayout
-                    .pane(reverseCalibrationCameraIndex);
-            ReverseCameraLayout.Rect value = reverseRect(crop);
-            reverseRawCalibrationLayout = ReverseCameraLayout.withPane(
-                    reverseRawCalibrationLayout, reverseCalibrationCameraIndex,
-                    pane.destination, value);
-            reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
-            boolean corrected = CameraDewarpConfig.load(preferences,
-                    CameraDewarpConfig.lensForReverseCamera(
-                            reverseCalibrationCameraIndex)).enabled;
-            if (!corrected) {
-                ReverseCameraLayout.Pane active = reverseCameraLayout
-                        .pane(reverseCalibrationCameraIndex);
-                reverseCameraLayout = ReverseCameraLayout.withPane(
-                        reverseCameraLayout, reverseCalibrationCameraIndex,
-                        active.destination, value);
-                reverseCameraPreview.applyLayout(reverseCameraLayout);
-            }
-            renderReverseCalibrationCrop();
-            if (finished) persistReverseCalibrationCrop(value, false);
+            applyReverseCalibrationCrop(reverseRect(crop), false, finished);
         });
         reverseCalibrationCorrectedOverlay.setListener((crop, finished) -> {
             if (reverseCalibrationCameraIndex <= 0) return;
-            ReverseCameraLayout.Pane pane = reverseCameraLayout
-                    .pane(reverseCalibrationCameraIndex);
-            ReverseCameraLayout.Rect value = reverseRect(crop);
-            reverseCameraLayout = ReverseCameraLayout.withPane(
-                    reverseCameraLayout, reverseCalibrationCameraIndex,
-                    pane.destination, value);
-            reverseCameraPreview.applyLayout(reverseCameraLayout);
-            renderReverseCalibrationCrop();
-            if (finished) persistReverseCalibrationCrop(value, true);
+            applyReverseCalibrationCrop(reverseRect(crop), true, finished);
         });
         return root;
     }
 
     private View buildReverseCalibrationStage(
-            String title, TextureView preview, CameraCropOverlayView overlay) {
+            String title, int stageIndex,
+            TextureView preview, CameraCropOverlayView overlay) {
         LinearLayout stage = new LinearLayout(this);
         stage.setOrientation(LinearLayout.VERTICAL);
-        TextView heading = label(title);
-        heading.setGravity(Gravity.CENTER);
-        stage.addView(heading, new LinearLayout.LayoutParams(
+        stage.addView(buildCropHeader(title, true, stageIndex),
+                new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
         FrameLayout host = new FrameLayout(this);
         host.setBackgroundColor(Color.BLACK);
@@ -1664,6 +1811,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void closeReverseCalibration() {
+        cancelReverseCropInput();
         stopReverseCalibrationCopies(true);
         if (reverseCalibrationCameraIndex > 0) {
             reverseCameraPreview.setEditorRawMirror(reverseCalibrationCameraIndex, null);
@@ -1694,6 +1842,9 @@ public final class CameraProbeActivity extends Activity
                 CameraDewarpConfig.lensForReverseCamera(reverseCalibrationCameraIndex));
         boolean rawFallback = reverseCameraPreview.editorUsesRawFallback(
                 reverseCalibrationCameraIndex);
+        if (rawFallback && reverseCalibrationCropInputStage == CROP_STAGE_CORRECTED) {
+            cancelReverseCropInput();
+        }
         ReverseCameraLayout.Rect raw = reverseRawCalibrationLayout
                 .pane(reverseCalibrationCameraIndex).sourceCrop;
         ReverseCameraLayout.Rect corrected = reverseCameraLayout
@@ -1704,12 +1855,48 @@ public final class CameraProbeActivity extends Activity
         reverseCalibrationCorrectedOverlay.setEnabled(dewarp.enabled && !rawFallback);
         reverseCalibrationCorrectedStage.setVisibility(
                 dewarp.enabled ? View.VISIBLE : View.GONE);
+        updateReverseCalibrationCropReadouts();
         reverseDisplayModeUiUpdating = true;
         reverseDisplayModeInput.setSelection(reverseCameraLayout
                 .pane(reverseCalibrationCameraIndex).displayMode, false);
         reverseDisplayModeUiUpdating = false;
         renderReverseCalibrationCrop();
         startReverseCalibrationCopies();
+    }
+
+    private void updateReverseCalibrationCropReadouts() {
+        if (reverseCalibrationCameraIndex <= 0
+                || reverseCalibrationCropReadouts[CROP_STAGE_RAW] == null
+                || reverseRawCalibrationLayout == null || reverseCameraLayout == null) return;
+        CameraDewarpConfig dewarp = CameraDewarpConfig.load(preferences,
+                CameraDewarpConfig.lensForReverseCamera(reverseCalibrationCameraIndex));
+        boolean rawFallback = reverseCameraPreview.editorUsesRawFallback(
+                reverseCalibrationCameraIndex);
+        ReverseCameraLayout.Rect raw = reverseRawCalibrationLayout
+                .pane(reverseCalibrationCameraIndex).sourceCrop;
+        ReverseCameraLayout.Rect corrected = reverseCameraLayout
+                .pane(reverseCalibrationCameraIndex).sourceCrop;
+        reverseCalibrationCropReadouts[CROP_STAGE_RAW].setText(cropCoordinates(
+                raw.left, raw.top, raw.width, raw.height));
+        reverseCalibrationCropReadouts[CROP_STAGE_CORRECTED].setText(cropCoordinates(
+                corrected.left, corrected.top, corrected.width, corrected.height));
+        reverseCalibrationCropTitles[CROP_STAGE_CORRECTED].setText(
+                rawFallback ? "CORR · RAW" : "CORRECTED");
+        reverseCalibrationCropInputButtons[CROP_STAGE_RAW].setEnabled(true);
+        reverseCalibrationCropInputButtons[CROP_STAGE_CORRECTED]
+                .setEnabled(dewarp.enabled && !rawFallback);
+        if (reversePresetLoadButton != null) {
+            reversePresetLoadButton.setEnabled(CameraCalibrationPreset.hasReverse(
+                    preferences, reverseCalibrationCameraIndex));
+        }
+        int mirrorTarget = CameraCalibrationPreset.reverseMirrorTarget(
+                reverseCalibrationCameraIndex);
+        if (reverseMirrorButton != null) {
+            reverseMirrorButton.setVisibility(mirrorTarget < 0 ? View.GONE : View.VISIBLE);
+            reverseMirrorButton.setText(reverseCalibrationCameraIndex
+                    == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
+                    ? "← Дзеркало" : "Дзеркало →");
+        }
     }
 
     private void persistReverseCalibrationCrop(
@@ -1721,6 +1908,40 @@ public final class CameraProbeActivity extends Activity
                 "stage", corrected ? "corrected" : "raw",
                 "left", crop.left, "top", crop.top,
                 "width", crop.width, "height", crop.height);
+    }
+
+    private void applyReverseCalibrationCrop(
+            ReverseCameraLayout.Rect value, boolean corrected, boolean persist) {
+        if (reverseCalibrationCameraIndex <= 0) return;
+        if (corrected) {
+            ReverseCameraLayout.Pane pane = reverseCameraLayout
+                    .pane(reverseCalibrationCameraIndex);
+            reverseCameraLayout = ReverseCameraLayout.withPane(
+                    reverseCameraLayout, reverseCalibrationCameraIndex,
+                    pane.destination, value);
+            reverseCameraPreview.applyLayout(reverseCameraLayout);
+        } else {
+            ReverseCameraLayout.Pane pane = reverseRawCalibrationLayout
+                    .pane(reverseCalibrationCameraIndex);
+            reverseRawCalibrationLayout = ReverseCameraLayout.withPane(
+                    reverseRawCalibrationLayout, reverseCalibrationCameraIndex,
+                    pane.destination, value);
+            reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
+            CameraDewarpConfig dewarp = CameraDewarpConfig.load(preferences,
+                    CameraDewarpConfig.lensForReverseCamera(
+                            reverseCalibrationCameraIndex));
+            if (!dewarp.enabled) {
+                ReverseCameraLayout.Pane active = reverseCameraLayout
+                        .pane(reverseCalibrationCameraIndex);
+                reverseCameraLayout = ReverseCameraLayout.withPane(
+                        reverseCameraLayout, reverseCalibrationCameraIndex,
+                        active.destination, value);
+                reverseCameraPreview.applyLayout(reverseCameraLayout);
+            }
+        }
+        updateReverseCalibrationCropReadouts();
+        renderReverseCalibrationCrop();
+        if (persist) persistReverseCalibrationCrop(value, corrected);
     }
 
     private static DirectCameraCrop reverseCrop(ReverseCameraLayout.Rect crop) {
@@ -2037,6 +2258,38 @@ public final class CameraProbeActivity extends Activity
         maxSpeedRow.addView(maxSpeedUnit, new LinearLayout.LayoutParams(dp(72), dp(46)));
         rearPolicy.addView(maxSpeedRow);
 
+        LinearLayout rearTriggerRow = new LinearLayout(this);
+        rearTriggerRow.setOrientation(LinearLayout.HORIZONTAL);
+        rearTriggerRow.setGravity(Gravity.CENTER_VERTICAL);
+        rearSharpTurnSwitch = new Switch(this);
+        rearSharpTurnSwitch.setText("Різкий поворот");
+        rearSharpTurnSwitch.setTextColor(Color.WHITE);
+        rearSharpTurnSwitch.setTextSize(14);
+        rearSharpTurnSwitch.setChecked(preferences.getBoolean(
+                BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false));
+        rearTriggerRow.addView(rearSharpTurnSwitch,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        rearSharpTurnAngleInput = numberInput(Math.round(preferences.getFloat(
+                BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ANGLE,
+                BlindSpotOverlayController.DEFAULT_REAR_SHARP_TURN_ANGLE_DEG)));
+        rearSharpTurnAngleInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        rearTriggerRow.addView(rearSharpTurnAngleInput,
+                new LinearLayout.LayoutParams(dp(72), dp(42)));
+        TextView rearAngleUnit = label("°");
+        rearAngleUnit.setTextSize(15);
+        rearAngleUnit.setGravity(Gravity.CENTER);
+        rearTriggerRow.addView(rearAngleUnit,
+                new LinearLayout.LayoutParams(dp(32), dp(46)));
+        rearBsdOnlySwitch = new Switch(this);
+        rearBsdOnlySwitch.setText("Лише BSD");
+        rearBsdOnlySwitch.setTextColor(Color.WHITE);
+        rearBsdOnlySwitch.setTextSize(14);
+        rearBsdOnlySwitch.setChecked(preferences.getBoolean(
+                BlindSpotOverlayController.PREF_REAR_BSD_ONLY, false));
+        rearTriggerRow.addView(rearBsdOnlySwitch,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        rearPolicy.addView(rearTriggerRow);
+
         LinearLayout warningRow = new LinearLayout(this);
         warningRow.setOrientation(LinearLayout.HORIZONTAL);
         warningRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -2216,6 +2469,22 @@ public final class CameraProbeActivity extends Activity
         cameraMaxSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
             if (!hasFocus) saveRearCameraSpeedRange();
         });
+        rearSharpTurnSwitch.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(
+                    BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, checked).apply();
+            record("rear_sharp_turn_setting", "enabled", checked);
+            CameraHelperService.cameraTriggerSettingsChanged(this);
+            updateControls();
+        });
+        rearSharpTurnAngleInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveRearTriggerPolicy();
+        });
+        rearBsdOnlySwitch.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(
+                    BlindSpotOverlayController.PREF_REAR_BSD_ONLY, checked).apply();
+            record("rear_bsd_only_setting", "enabled", checked);
+            CameraHelperService.cameraTriggerSettingsChanged(this);
+        });
         frontCameraSwitch.setOnCheckedChangeListener((button, checked) -> {
             preferences.edit().putBoolean(PREF_FRONT_CAMERA_ENABLED, checked).apply();
             record("front_camera_toggle", "enabled", checked);
@@ -2320,6 +2589,226 @@ public final class CameraProbeActivity extends Activity
         return panel;
     }
 
+    private View buildCropHeader(String title, boolean reverse, int stage) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView heading = label(title);
+        heading.setTextSize(8);
+        heading.setGravity(Gravity.CENTER);
+        TextView values = label("");
+        values.setTextSize(8);
+        values.setGravity(Gravity.CENTER);
+        Button input = button("Ввести");
+        input.setTextSize(10);
+        input.setPadding(0, 0, 0, 0);
+        if (reverse) {
+            reverseCalibrationCropTitles[stage] = heading;
+            reverseCalibrationCropReadouts[stage] = values;
+            reverseCalibrationCropInputButtons[stage] = input;
+            input.setOnClickListener(view -> openReverseCropInput(stage));
+        } else {
+            calibrationCropTitles[stage] = heading;
+            calibrationCropReadouts[stage] = values;
+            calibrationCropInputButtons[stage] = input;
+            input.setOnClickListener(view -> openCalibrationCropInput(stage));
+        }
+        row.addView(heading, new LinearLayout.LayoutParams(dp(78), dp(28)));
+        row.addView(values, new LinearLayout.LayoutParams(0, dp(28), 1));
+        row.addView(input, new LinearLayout.LayoutParams(dp(70), dp(28)));
+        return row;
+    }
+
+    private View buildCropInputControls(boolean reverse) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackgroundColor(Color.rgb(24, 24, 24));
+        EditText[] inputs = reverse ? reverseCalibrationCropInputs : calibrationCropInputs;
+        String[] labels = {"X, %", "Y, %", "W, %", "H, %"};
+        for (int i = 0; i < inputs.length; i++) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            TextView title = label(labels[i]);
+            title.setTextSize(10);
+            title.setGravity(Gravity.CENTER);
+            EditText input = new EditText(this);
+            input.setSingleLine(true);
+            input.setTextColor(Color.WHITE);
+            input.setTextSize(14);
+            input.setGravity(Gravity.CENTER);
+            input.setSelectAllOnFocus(true);
+            input.setInputType(InputType.TYPE_CLASS_NUMBER
+                    | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            input.setKeyListener(DigitsKeyListener.getInstance("0123456789-.,"));
+            inputs[i] = input;
+            cell.addView(title, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(12)));
+            cell.addView(input, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(34)));
+            row.addView(cell, new LinearLayout.LayoutParams(0, dp(46), 1));
+        }
+        Button apply = button("Застосувати");
+        Button cancel = button("Скасувати");
+        apply.setOnClickListener(view -> {
+            if (reverse) applyReverseCropInput();
+            else applyCalibrationCropInput();
+        });
+        cancel.setOnClickListener(view -> {
+            if (reverse) cancelReverseCropInput();
+            else cancelCalibrationCropInput();
+        });
+        row.addView(apply, new LinearLayout.LayoutParams(0, dp(44), 1));
+        row.addView(cancel, new LinearLayout.LayoutParams(0, dp(44), 1));
+        return row;
+    }
+
+    private void openCalibrationCropInput(int requestedStage) {
+        boolean correctedEnabled = calibrationDewarpSwitch != null
+                && calibrationDewarpSwitch.isChecked();
+        int stage = requestedStage == CROP_STAGE_CORRECTED && !correctedEnabled
+                ? CROP_STAGE_RAW : requestedStage;
+        if (stage == CROP_STAGE_CORRECTED && calibrationPreview.usesRawFallback()) return;
+        calibrationCropInputStage = stage;
+        DirectCameraCrop crop = stage == CROP_STAGE_CORRECTED
+                ? calibrationCorrectedCrop : calibrationRawCrop;
+        fillCropInputs(calibrationCropInputs,
+                crop.left, crop.top, crop.width, crop.height);
+        calibrationNormalControls.setVisibility(View.GONE);
+        calibrationCropInputControls.setVisibility(View.VISIBLE);
+        calibrationCropInputs[0].requestFocus();
+    }
+
+    private void applyCalibrationCropInput() {
+        if (calibrationCropInputStage == CROP_STAGE_NONE) return;
+        if (calibrationCropInputStage == CROP_STAGE_CORRECTED
+                && (calibrationDewarpSwitch == null
+                        || !calibrationDewarpSwitch.isChecked()
+                        || calibrationPreview.usesRawFallback())) {
+            cancelCalibrationCropInput();
+            Toast.makeText(this, "CORRECTED зараз недоступний",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        DirectCameraCrop current = calibrationCropInputStage == CROP_STAGE_CORRECTED
+                ? calibrationCorrectedCrop : calibrationRawCrop;
+        try {
+            DirectCameraCrop crop = DirectCameraCrop.parsePercent(
+                    calibrationCropInputs[0].getText().toString(),
+                    calibrationCropInputs[1].getText().toString(),
+                    calibrationCropInputs[2].getText().toString(),
+                    calibrationCropInputs[3].getText().toString(),
+                    current.aspectMode, current.rotationDegrees, current.rotationMode);
+            if (calibrationCropInputStage == CROP_STAGE_CORRECTED) {
+                calibrationCorrectedCrop = crop;
+                saveCalibrationCrop(crop);
+            } else {
+                calibrationRawCrop = crop;
+                saveCalibrationRawCrop(crop);
+            }
+            cancelCalibrationCropInput();
+        } catch (IllegalArgumentException error) {
+            showCropInputError(calibrationCropInputs, error.getMessage());
+        }
+    }
+
+    private void cancelCalibrationCropInput() {
+        calibrationCropInputStage = CROP_STAGE_NONE;
+        if (calibrationNormalControls != null) {
+            calibrationNormalControls.setVisibility(View.VISIBLE);
+        }
+        if (calibrationCropInputControls != null) {
+            calibrationCropInputControls.setVisibility(View.GONE);
+        }
+        clearCropInputErrors(calibrationCropInputs);
+    }
+
+    private void openReverseCropInput(int stage) {
+        if (reverseCalibrationCameraIndex <= 0) return;
+        CameraDewarpConfig dewarp = CameraDewarpConfig.load(preferences,
+                CameraDewarpConfig.lensForReverseCamera(reverseCalibrationCameraIndex));
+        if (stage == CROP_STAGE_CORRECTED
+                && (!dewarp.enabled || reverseCameraPreview.editorUsesRawFallback(
+                        reverseCalibrationCameraIndex))) return;
+        reverseCalibrationCropInputStage = stage;
+        ReverseCameraLayout.Rect crop = stage == CROP_STAGE_CORRECTED
+                ? reverseCameraLayout.pane(reverseCalibrationCameraIndex).sourceCrop
+                : reverseRawCalibrationLayout.pane(reverseCalibrationCameraIndex).sourceCrop;
+        fillCropInputs(reverseCalibrationCropInputs,
+                crop.left, crop.top, crop.width, crop.height);
+        reverseCalibrationNormalControls.setVisibility(View.GONE);
+        reverseCalibrationCropInputControls.setVisibility(View.VISIBLE);
+        reverseCalibrationCropInputs[0].requestFocus();
+    }
+
+    private void applyReverseCropInput() {
+        if (reverseCalibrationCropInputStage == CROP_STAGE_NONE) return;
+        CameraDewarpConfig dewarp = reverseCalibrationCameraIndex <= 0
+                ? null : CameraDewarpConfig.load(preferences,
+                        CameraDewarpConfig.lensForReverseCamera(
+                                reverseCalibrationCameraIndex));
+        if (reverseCalibrationCropInputStage == CROP_STAGE_CORRECTED
+                && (dewarp == null || !dewarp.enabled
+                        || reverseCameraPreview.editorUsesRawFallback(
+                                reverseCalibrationCameraIndex))) {
+            cancelReverseCropInput();
+            Toast.makeText(this, "CORRECTED зараз недоступний",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            DirectCameraCrop crop = DirectCameraCrop.parsePercent(
+                    reverseCalibrationCropInputs[0].getText().toString(),
+                    reverseCalibrationCropInputs[1].getText().toString(),
+                    reverseCalibrationCropInputs[2].getText().toString(),
+                    reverseCalibrationCropInputs[3].getText().toString(),
+                    DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT);
+            applyReverseCalibrationCrop(reverseRect(crop),
+                    reverseCalibrationCropInputStage == CROP_STAGE_CORRECTED, true);
+            cancelReverseCropInput();
+        } catch (IllegalArgumentException error) {
+            showCropInputError(reverseCalibrationCropInputs, error.getMessage());
+        }
+    }
+
+    private void cancelReverseCropInput() {
+        reverseCalibrationCropInputStage = CROP_STAGE_NONE;
+        if (reverseCalibrationNormalControls != null) {
+            reverseCalibrationNormalControls.setVisibility(View.VISIBLE);
+        }
+        if (reverseCalibrationCropInputControls != null) {
+            reverseCalibrationCropInputControls.setVisibility(View.GONE);
+        }
+        clearCropInputErrors(reverseCalibrationCropInputs);
+    }
+
+    private static void fillCropInputs(
+            EditText[] inputs, float x, float y, float width, float height) {
+        float[] values = {x, y, width, height};
+        for (int i = 0; i < inputs.length; i++) {
+            inputs[i].setText(String.format(Locale.US, "%.2f", values[i] * 100.0f));
+        }
+    }
+
+    private void showCropInputError(EditText[] inputs, String message) {
+        inputs[0].setError(message);
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    private static void clearCropInputErrors(EditText[] inputs) {
+        for (EditText input : inputs) {
+            if (input != null) {
+                input.setError(null);
+                input.clearFocus();
+            }
+        }
+    }
+
+    private static String cropCoordinates(
+            float x, float y, float width, float height) {
+        return String.format(Locale.US, "X %.2f%%  Y %.2f%%\nW %.2f%%  H %.2f%%",
+                x * 100.0f, y * 100.0f, width * 100.0f, height * 100.0f);
+    }
+
     private View buildCameraCalibrationPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -2344,15 +2833,6 @@ public final class CameraProbeActivity extends Activity
         panel.addView(controls, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
-        LinearLayout utilityControls = new LinearLayout(this);
-        utilityControls.setOrientation(LinearLayout.HORIZONTAL);
-        calibrationResetButton = button("Скинути crop + кут");
-        calibrationStopButton = button("Stop");
-        utilityControls.addView(calibrationResetButton,
-                new LinearLayout.LayoutParams(0, dp(42), 1));
-        utilityControls.addView(calibrationStopButton,
-                new LinearLayout.LayoutParams(0, dp(42), 1));
-
         LinearLayout aspectControls = new LinearLayout(this);
         aspectControls.setOrientation(LinearLayout.HORIZONTAL);
         for (int mode = DirectCameraCrop.ASPECT_FOUR_THREE;
@@ -2364,15 +2844,39 @@ public final class CameraProbeActivity extends Activity
             aspectControls.addView(aspectButton,
                     new LinearLayout.LayoutParams(0, dp(46), 1));
         }
-        aspectControls.addView(utilityControls,
-                new LinearLayout.LayoutParams(0, dp(42), 2));
-        panel.addView(aspectControls, new LinearLayout.LayoutParams(
+        calibrationResetButton = button("Скинути");
+        calibrationStopButton = button("Stop");
+        Button savePreset = button("Зберегти");
+        calibrationPresetLoadButton = button("Завантажити");
+        calibrationMirrorButton = button("Віддзеркалити →");
+        calibrationMirrorButton.setTextSize(10);
+        aspectControls.addView(calibrationResetButton,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        aspectControls.addView(calibrationStopButton,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        aspectControls.addView(savePreset,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        aspectControls.addView(calibrationPresetLoadButton,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        aspectControls.addView(calibrationMirrorButton,
+                new LinearLayout.LayoutParams(0, dp(46), 1));
+        calibrationNormalControls = aspectControls;
+        calibrationCropInputControls = buildCropInputControls(false);
+        calibrationCropInputControls.setVisibility(View.GONE);
+        calibrationControlsHost = new FrameLayout(this);
+        calibrationControlsHost.addView(calibrationNormalControls,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        calibrationControlsHost.addView(calibrationCropInputControls,
+                new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        panel.addView(calibrationControlsHost, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-
-        calibrationCropValues = statusText("");
-        calibrationCropValues.setGravity(Gravity.CENTER);
-        panel.addView(calibrationCropValues, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
+        savePreset.setOnClickListener(view -> saveCameraCalibrationPreset());
+        calibrationPresetLoadButton.setOnClickListener(
+                view -> loadCameraCalibrationPreset());
+        calibrationMirrorButton.setOnClickListener(
+                view -> mirrorCameraCalibration());
 
         LinearLayout rotationModeRow = new LinearLayout(this);
         rotationModeRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -2438,9 +2942,8 @@ public final class CameraProbeActivity extends Activity
 
         LinearLayout rawPane = new LinearLayout(this);
         rawPane.setOrientation(LinearLayout.VERTICAL);
-        TextView rawTitle = label("RAW");
-        rawTitle.setGravity(Gravity.CENTER);
-        rawPane.addView(rawTitle, new LinearLayout.LayoutParams(
+        rawPane.addView(buildCropHeader("RAW", false, CROP_STAGE_RAW),
+                new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
         FrameLayout rawHost = new FrameLayout(this);
         rawHost.setBackgroundColor(Color.BLACK);
@@ -2496,9 +2999,8 @@ public final class CameraProbeActivity extends Activity
 
         LinearLayout sourcePane = new LinearLayout(this);
         sourcePane.setOrientation(LinearLayout.VERTICAL);
-        calibrationSourceTitle = label("RAW");
-        calibrationSourceTitle.setGravity(Gravity.CENTER);
-        sourcePane.addView(calibrationSourceTitle, new LinearLayout.LayoutParams(
+        sourcePane.addView(buildCropHeader("CORRECTED", false, CROP_STAGE_CORRECTED),
+                new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
         calibrationSourceHost = new FrameLayout(this);
         calibrationSourceHost.setBackgroundColor(Color.BLACK);
@@ -2702,6 +3204,8 @@ public final class CameraProbeActivity extends Activity
 
         Button reset = button("Скинути корекцію");
         reset.setOnClickListener(view -> {
+            if (reverse) cancelReverseCropInput();
+            else cancelCalibrationCropInput();
             int lens = selectedDewarpLens(reverse);
             if (lens == 0) return;
             CameraDewarpConfig value = CameraDewarpConfig.disabled(lens);
@@ -2740,6 +3244,8 @@ public final class CameraProbeActivity extends Activity
         toggle.setOnCheckedChangeListener((button, checked) -> {
             boolean updating = reverse ? reverseDewarpUiUpdating : calibrationDewarpUiUpdating;
             if (updating) return;
+            if (reverse) cancelReverseCropInput();
+            else cancelCalibrationCropInput();
             CameraDewarpConfig current = dewarpFromControls(reverse).withEnabled(checked);
             applyDewarpConfig(reverse, current, true);
         });
@@ -2750,6 +3256,8 @@ public final class CameraProbeActivity extends Activity
                 boolean updating = reverse
                         ? reverseDewarpUiUpdating : calibrationDewarpUiUpdating;
                 if (updating || !CameraDewarpConfig.isValidProjection(position)) return;
+                if (reverse) cancelReverseCropInput();
+                else cancelCalibrationCropInput();
                 int lens = selectedDewarpLens(reverse);
                 if (lens == 0
                         || CameraDewarpConfig.load(preferences, lens).projection == position) {
@@ -2944,6 +3452,10 @@ public final class CameraProbeActivity extends Activity
 
     private void selectDebugMode(int mode) {
         int next = clamp(mode, 0, 1);
+        if (selectedDebugMode != next) {
+            retryStockViewpoint = -1;
+            retryStockDebug = false;
+        }
         if (selectedDebugMode != next && (requestedOpen || cameraHandoffPending)
                 && (activePreview == directCameraPreview || activePreview == debugPreview)) {
             closeCamera("debug_subtab_changed");
@@ -3128,6 +3640,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void selectCalibrationCamera(int cameraId, boolean open) {
+        cancelCalibrationCropInput();
         if (!CameraProfile.isValid(cameraId)) return;
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
@@ -3156,6 +3669,110 @@ public final class CameraProbeActivity extends Activity
         if (open && !switchingOpenCamera) openCalibrationCamera(profile.previewIndex);
     }
 
+    private void saveCameraCalibrationPreset() {
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        CameraCalibrationPreset.saveCamera(preferences, profile);
+        updateCalibrationCropReadouts();
+        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+        record("camera_calibration_preset_saved", "camera", profile.wireName);
+    }
+
+    private void loadCameraCalibrationPreset() {
+        cancelCalibrationCropInput();
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        if (!CameraCalibrationPreset.loadCamera(preferences, profile)) {
+            Toast.makeText(this, "Пресет відсутній або некоректний",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        refreshCalibrationSettings("camera_preset_loaded");
+        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+    }
+
+    private void mirrorCameraCalibration() {
+        cancelCalibrationCropInput();
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        CameraCalibrationPreset.mirrorCamera(preferences, profile);
+        refreshCalibrationSettings("camera_calibration_mirrored");
+        Toast.makeText(this, "Налаштування віддзеркалено",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void saveReverseCalibrationPreset() {
+        if (reverseCalibrationCameraIndex <= 0) return;
+        CameraCalibrationPreset.saveReverse(preferences, reverseCalibrationCameraIndex);
+        updateReverseCalibrationCropReadouts();
+        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+        record("reverse_calibration_preset_saved",
+                "camera_index", reverseCalibrationCameraIndex);
+    }
+
+    private void loadReverseCalibrationPreset() {
+        cancelReverseCropInput();
+        if (reverseCalibrationCameraIndex <= 0
+                || !CameraCalibrationPreset.loadReverse(
+                        preferences, reverseCalibrationCameraIndex)) {
+            Toast.makeText(this, "Пресет відсутній або некоректний",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        refreshCalibrationSettings("reverse_preset_loaded");
+        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+    }
+
+    private void mirrorReverseCalibration() {
+        cancelReverseCropInput();
+        if (reverseCalibrationCameraIndex <= 0
+                || !CameraCalibrationPreset.mirrorReverse(
+                        preferences, reverseCalibrationCameraIndex)) return;
+        refreshCalibrationSettings("reverse_calibration_mirrored");
+        Toast.makeText(this, "Налаштування віддзеркалено",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void refreshCalibrationSettings(String reason) {
+        CameraProfile calibrationProfile = CameraProfile.of(calibrationCameraId);
+        CameraDewarpConfig calibrationDewarp = CameraDewarpConfig.load(
+                preferences, CameraDewarpConfig.lensFor(calibrationProfile));
+        calibrationRawCrop = DirectCameraCrop.load(preferences, calibrationProfile);
+        calibrationCorrectedCrop = DirectCameraCrop.loadCorrected(
+                preferences, calibrationProfile, calibrationRawCrop);
+        if (calibrationPreview != null) {
+            calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
+            applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
+            calibrationPreview.applyDewarpConfig(calibrationDewarp);
+            updateDewarpUi(false, calibrationDewarp);
+        }
+
+        CameraProfile previewProfile = CameraProfile.of(selectedCameraId);
+        if (cameraPreview != null) {
+            DirectCameraCrop raw = DirectCameraCrop.load(preferences, previewProfile);
+            cameraPreview.applyRawFallbackCrop(raw);
+            applyDewarpSourceRoi(cameraPreview, raw);
+            cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
+            cameraPreview.applyDewarpConfig(CameraDewarpConfig.load(
+                    preferences, CameraDewarpConfig.lensFor(previewProfile)));
+            updateProductionPreviewSize();
+        }
+
+        applyReversePreviewDewarpConfigs();
+        if (reverseCameraPreview != null && reverseCameraEditor != null) {
+            int selected = reverseCameraEditor.selectedCamera();
+            reverseRawCalibrationLayout = ReverseCameraController.loadRawLayout(preferences);
+            reverseCameraLayout = ReverseCameraController.loadLayout(preferences);
+            reverseCameraEditor.setLayoutModel(reverseCameraLayout);
+            reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
+            reverseCameraPreview.applyLayout(reverseCameraLayout);
+            updateReversePaneControls(selected);
+            if (reverseCalibrationCameraIndex > 0) updateReverseCalibrationDisplay();
+        }
+        updateCalibrationCropReadouts();
+        CameraHelperService.cameraSettingsChanged(this);
+        CameraHelperService.reverseCameraSettingsChanged(this);
+        record(reason, "camera_id", calibrationCameraId,
+                "reverse_camera_index", reverseCalibrationCameraIndex);
+    }
+
     private DirectCameraCrop loadCalibrationCrop(int cameraId) {
         CameraProfile profile = CameraProfile.of(cameraId);
         CameraDewarpConfig dewarp = CameraDewarpConfig.load(
@@ -3167,6 +3784,10 @@ public final class CameraProbeActivity extends Activity
 
     private void updateCalibrationDisplay(boolean correctionEnabled) {
         boolean rawFallback = calibrationPreview != null && calibrationPreview.usesRawFallback();
+        if ((!correctionEnabled || rawFallback)
+                && calibrationCropInputStage == CROP_STAGE_CORRECTED) {
+            cancelCalibrationCropInput();
+        }
         if (calibrationRawPane != null) {
             calibrationRawPane.setVisibility(correctionEnabled ? View.VISIBLE : View.GONE);
         }
@@ -3180,9 +3801,12 @@ public final class CameraProbeActivity extends Activity
                 ? calibrationCorrectedCrop : calibrationRawCrop;
         calibrationCropOverlay.setCrop(crop.geometryOnly());
         setCalibrationEditingState(correctionEnabled, rawFallback);
-        if (calibrationSourceTitle != null) {
-            calibrationSourceTitle.setText(!correctionEnabled
-                    ? "RAW" : rawFallback ? "CORRECTED · RAW fallback" : "CORRECTED");
+        if (calibrationCropTitles[CROP_STAGE_RAW] != null) {
+            calibrationCropTitles[CROP_STAGE_RAW].setText("RAW");
+        }
+        if (calibrationCropTitles[CROP_STAGE_CORRECTED] != null) {
+            calibrationCropTitles[CROP_STAGE_CORRECTED].setText(!correctionEnabled
+                    ? "RAW" : rawFallback ? "CORRECTED · RAW" : "CORRECTED");
         }
         updateCalibrationUi(crop);
         renderCalibrationCrop();
@@ -3240,6 +3864,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void resetCalibrationCrop() {
+        cancelCalibrationCropInput();
         DirectCameraCrop crop = DirectCameraCrop.defaultFor(
                 CameraProfile.of(calibrationCameraId).right(),
                 calibrationRawCrop.aspectMode);
@@ -3254,6 +3879,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void selectCalibrationAspect(int aspectMode) {
+        cancelCalibrationCropInput();
         calibrationRawCrop = calibrationRawCrop.withAspectMode(aspectMode);
         calibrationCorrectedCrop = DirectCameraCrop.preserveCenterAndAspect(
                 calibrationCorrectedCrop, calibrationRawCrop);
@@ -3271,7 +3897,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void updateCalibrationUi(DirectCameraCrop crop) {
-        updateCalibrationCropValues(crop);
+        updateCalibrationCropReadouts();
         if (calibrationResultTitle != null) {
             calibrationResultTitle.setText(
                     "Фактичний crop " + DirectCameraCrop.aspectLabel(crop.aspectMode)
@@ -3301,15 +3927,31 @@ public final class CameraProbeActivity extends Activity
         }
     }
 
-    private void updateCalibrationCropValues(DirectCameraCrop crop) {
-        calibrationCropValues.setText(String.format(Locale.US,
-                "%s %s/%s: x %.1f%%  y %.1f%%  w %.1f%%  h %.1f%%  rot %d°",
-                CameraProfile.of(calibrationCameraId).wireName,
-                DirectCameraCrop.aspectLabel(crop.aspectMode),
-                CameraRotation.modeLabel(crop.rotationMode),
-                crop.left * 100.0f, crop.top * 100.0f,
-                crop.width * 100.0f, crop.height * 100.0f,
-                crop.rotationDegrees));
+    private void updateCalibrationCropReadouts() {
+        if (calibrationCropReadouts[CROP_STAGE_RAW] == null) return;
+        boolean correctionEnabled = calibrationDewarpSwitch != null
+                && calibrationDewarpSwitch.isChecked();
+        boolean rawFallback = calibrationPreview != null
+                && calibrationPreview.usesRawFallback();
+        DirectCameraCrop source = correctionEnabled
+                ? calibrationCorrectedCrop : calibrationRawCrop;
+        calibrationCropReadouts[CROP_STAGE_RAW].setText(cropCoordinates(
+                calibrationRawCrop.left, calibrationRawCrop.top,
+                calibrationRawCrop.width, calibrationRawCrop.height));
+        calibrationCropReadouts[CROP_STAGE_CORRECTED].setText(cropCoordinates(
+                source.left, source.top, source.width, source.height));
+        calibrationCropInputButtons[CROP_STAGE_RAW].setEnabled(true);
+        calibrationCropInputButtons[CROP_STAGE_CORRECTED]
+                .setEnabled(!correctionEnabled || !rawFallback);
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        if (calibrationPresetLoadButton != null) {
+            calibrationPresetLoadButton.setEnabled(
+                    CameraCalibrationPreset.hasCamera(preferences, profile));
+        }
+        if (calibrationMirrorButton != null) {
+            calibrationMirrorButton.setText(profile.right()
+                    ? "← Віддзеркалити" : "Віддзеркалити →");
+        }
     }
 
     private void fitAspectFrame(FrameLayout host, View frame, float aspect) {
@@ -3329,6 +3971,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openCalibrationCamera(int index) {
+        if (!canStartActivityCamera()) return;
         IBinder current = helper;
         Surface surface = calibrationPreview.getCameraSurface();
         if (current == null || !calibrationSurfaceReady || !surface.isValid()
@@ -3341,22 +3984,17 @@ public final class CameraProbeActivity extends Activity
         activePreview = calibrationPreview;
         activePreviewCover = calibrationPreviewCover;
         activeCameraViewpoint = -1;
-        cameraHandoffPending = true;
-        pendingDirectCalibration = true;
-        pendingDirectCameraIndex = index;
-        pendingDirectCameraTag = "pano_h";
-        calibrationStatus.setText("Preparing pano_h / index " + index + "...");
-        record("camera_preview_handoff", "state", "started",
+        calibrationStatus.setText("Opening pano_h / index " + index + "...");
+        record("camera_preview_attach", "state", "started",
                 "renderer", "direct_crop_calibration", "camera_tag", "pano_h",
-                "preview_index", index, "delay_ms", CAMERA_PREVIEW_HANDOFF_MS);
+                "preview_index", index, "exclusive", false);
         CameraHelperService.cameraPreviewStarted(this);
-        calibrationPreview.postDelayed(
-                finishDirectCameraHandoff, CAMERA_PREVIEW_HANDOFF_MS);
-        updateControls();
+        openDirectCameraNow("pano_h", index, true);
     }
 
     private void maybeOpenCalibrationCamera() {
-        if (selectedTab != TAB_CAMERA_CALIBRATION || helper == null || !cameraDiscovered
+        if (!canAutoOpenSelectedPreview()
+                || selectedTab != TAB_CAMERA_CALIBRATION || helper == null || !cameraDiscovered
                 || !calibrationSurfaceReady || requestedOpen || cameraHandoffPending
                 || cameraTransition.pending()
                 || checkSelfPermission(Manifest.permission.CAMERA)
@@ -3372,6 +4010,7 @@ public final class CameraProbeActivity extends Activity
             calibrationPreview.applyDewarpConfig(CameraDewarpConfig.load(
                     preferences, CameraDewarpConfig.lensFor(profile)));
             openCalibrationCamera(CameraProfile.of(calibrationCameraId).previewIndex);
+            if (cameraHandoffPending || requestedOpen) clearResumeAutoPreview();
         }
     }
 
@@ -3671,6 +4310,14 @@ public final class CameraProbeActivity extends Activity
             if (minimum < 0 || minimum > maximum || maximum > 300) {
                 throw new NumberFormatException();
             }
+            int savedMinimum = preferences.getInt(
+                    BlindSpotOverlayController.PREF_MIN_SPEED,
+                    DEFAULT_CAMERA_MIN_SPEED_KPH);
+            int savedMaximum = preferences.getInt(
+                    BlindSpotOverlayController.PREF_MAX_SPEED,
+                    DEFAULT_CAMERA_MAX_SPEED_KPH);
+            if (!cameraPolicyChanged(
+                    savedMinimum, savedMaximum, minimum, maximum)) return;
             preferences.edit()
                     .putInt(BlindSpotOverlayController.PREF_MIN_SPEED, minimum)
                     .putInt(BlindSpotOverlayController.PREF_MAX_SPEED, maximum)
@@ -3689,6 +4336,26 @@ public final class CameraProbeActivity extends Activity
         }
     }
 
+    private void saveRearTriggerPolicy() {
+        try {
+            int angle = Integer.parseInt(rearSharpTurnAngleInput.getText().toString());
+            if (angle < 0 || angle > 780) throw new NumberFormatException();
+            float saved = preferences.getFloat(
+                    BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ANGLE,
+                    BlindSpotOverlayController.DEFAULT_REAR_SHARP_TURN_ANGLE_DEG);
+            if (Float.compare(saved, angle) == 0) return;
+            preferences.edit().putFloat(
+                    BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ANGLE, angle).apply();
+            record("rear_sharp_turn_setting", "threshold_deg", angle);
+            CameraHelperService.cameraTriggerSettingsChanged(this);
+        } catch (NumberFormatException error) {
+            rearSharpTurnAngleInput.setText(String.valueOf(Math.round(preferences.getFloat(
+                    BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ANGLE,
+                    BlindSpotOverlayController.DEFAULT_REAR_SHARP_TURN_ANGLE_DEG))));
+            cameraStatus.setText("Кут різкого повороту має бути 0..780°");
+        }
+    }
+
     private void saveFrontCameraPolicy() {
         try {
             int minimum = Integer.parseInt(frontCameraMinSpeedInput.getText().toString());
@@ -3696,6 +4363,14 @@ public final class CameraProbeActivity extends Activity
             int angle = Integer.parseInt(frontCameraMinAngleInput.getText().toString());
             if (minimum < 0 || minimum > maximum || maximum > 300
                     || angle < 0 || angle > 780) throw new NumberFormatException();
+            int savedMinimum = preferences.getInt(
+                    PREF_FRONT_CAMERA_MIN_SPEED, DEFAULT_FRONT_CAMERA_MIN_SPEED_KPH);
+            int savedMaximum = preferences.getInt(
+                    PREF_FRONT_CAMERA_MAX_SPEED, DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH);
+            float savedAngle = preferences.getFloat(
+                    PREF_FRONT_CAMERA_MIN_ANGLE, DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG);
+            if (!frontCameraPolicyChanged(savedMinimum, savedMaximum, savedAngle,
+                    minimum, maximum, angle)) return;
             preferences.edit()
                     .putInt(PREF_FRONT_CAMERA_MIN_SPEED, minimum)
                     .putInt(PREF_FRONT_CAMERA_MAX_SPEED, maximum)
@@ -4002,6 +4677,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openCamera(String viewName) {
+        if (!canStartActivityCamera()) return;
         IBinder current = helper;
         Surface surface = debugPreview.getHolder().getSurface();
         if (current == null || !debugSurfaceReady || !surface.isValid()) {
@@ -4025,6 +4701,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openDirectCamera(int index) {
+        if (!canStartActivityCamera()) return;
         IBinder current = helper;
         Surface surface = directCameraPreview.getHolder().getSurface();
         if (current == null || !directCameraSurfaceReady || !surface.isValid()
@@ -4037,23 +4714,18 @@ public final class CameraProbeActivity extends Activity
         activePreview = directCameraPreview;
         activePreviewCover = directCameraPreviewCover;
         activeCameraViewpoint = -1;
-        cameraHandoffPending = true;
-        pendingDirectCalibration = false;
-        pendingDirectCameraIndex = index;
-        pendingDirectCameraTag = "pano_h";
         directCameraStatus.setText(
-                "Preparing pano_h / index " + index + "...");
-        record("camera_preview_handoff", "state", "started",
+                "Opening pano_h / index " + index + "...");
+        record("camera_preview_attach", "state", "started",
                 "renderer", "direct_avm", "camera_tag", "pano_h",
-                "preview_index", index, "delay_ms", CAMERA_PREVIEW_HANDOFF_MS);
+                "preview_index", index, "exclusive", true);
         CameraHelperService.cameraPreviewStarted(this);
-        directCameraPreview.postDelayed(
-                finishDirectCameraHandoff, CAMERA_PREVIEW_HANDOFF_MS);
-        updateControls();
+        openDirectCameraNow("pano_h", index, false);
     }
 
     private void maybeOpenReversePreview() {
-        if (selectedTab != TAB_REVERSE_CAMERAS || helper == null || !cameraDiscovered
+        if (!canAutoOpenSelectedPreview()
+                || selectedTab != TAB_REVERSE_CAMERAS || helper == null || !cameraDiscovered
                 || reverseCameraPreview == null || !reverseCameraSurfacesReady
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED
@@ -4080,34 +4752,16 @@ public final class CameraProbeActivity extends Activity
         CameraHelperService.cameraPreviewStarted(this);
         record("reverse_preview_open", "request_id", requestId,
                 "generations", java.util.Arrays.toString(bundle.generations));
+        clearResumeAutoPreview();
         updateControls();
         IBinder current = helper;
         ipcExecutor.execute(() -> transactOpenReversePreview(
                 current, bundle.surfaces, requestId));
     }
 
-    private void requestReverseInputReset(String trigger) {
-        if (reverseCameraPreview == null || reverseInputResetPending) return;
-        try {
-            int[] generations = reverseCameraPreview.recreateDirectInputSurfaces();
-            if (generations == null) return;
-            reverseInputResetPending = true;
-            reverseInputResetGenerations = generations;
-            reverseCameraSurfacesReady = false;
-            reverseCameraStatus.setText("Оновлення camera surfaces...");
-            record("reverse_preview_surface_reset", "state", "started",
-                    "trigger", trigger,
-                    "old_generations", java.util.Arrays.toString(generations));
-        } catch (Throwable error) {
-            reverseCameraSurfacesReady = false;
-            reverseCameraStatus.setText("Помилка оновлення camera surfaces");
-            record("reverse_preview_surface_reset", "state", "failed",
-                    "trigger", trigger, "error", error.toString());
-        }
-    }
-
     private void maybeOpenProductionPreview() {
-        if (selectedTab != TAB_CAMERAS || helper == null || !cameraDiscovered
+        if (!canAutoOpenSelectedPreview()
+                || selectedTab != TAB_CAMERAS || helper == null || !cameraDiscovered
                 || cameraPreview == null || !cameraSurfaceReady
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED
@@ -4118,25 +4772,11 @@ public final class CameraProbeActivity extends Activity
         openStockAvm(profile.right()
                 ? StockAvmPreview.VIEW_BLIND_SPOT_RIGHT
                 : StockAvmPreview.VIEW_BLIND_SPOT_LEFT, false);
-    }
-
-    private void openPendingDirectCamera() {
-        if (!cameraHandoffPending || pendingDirectCameraIndex < 0) return;
-        int index = pendingDirectCameraIndex;
-        String cameraTag = pendingDirectCameraTag;
-        boolean calibration = pendingDirectCalibration;
-        cameraHandoffPending = false;
-        pendingDirectCalibration = false;
-        pendingDirectCameraIndex = -1;
-        pendingDirectCameraTag = null;
-        record("camera_preview_handoff", "state", "completed",
-                "renderer", calibration ? "direct_crop_calibration" : "direct_avm",
-                "camera_tag", cameraTag,
-                "preview_index", index);
-        openDirectCameraNow(cameraTag, index, calibration);
+        if (cameraHandoffPending || requestedOpen) clearResumeAutoPreview();
     }
 
     private void openDirectCameraNow(String cameraTag, int index, boolean calibration) {
+        if (!canStartActivityCamera()) return;
         IBinder current = helper;
         View target = calibration ? calibrationPreview : directCameraPreview;
         View cover = calibration ? calibrationPreviewCover : directCameraPreviewCover;
@@ -4167,8 +4807,13 @@ public final class CameraProbeActivity extends Activity
                 "camera_tag", cameraTag, "preview_index", index,
                 "request_id", requestId);
         updateControls();
+        boolean exclusive = activityPreviewUsesExclusiveConsumer(!calibration);
         ipcExecutor.execute(() -> transactOpenDirect(
-                current, surface, cameraTag, index, requestId));
+                current, surface, cameraTag, index, requestId, exclusive));
+    }
+
+    static boolean activityPreviewUsesExclusiveConsumer(boolean manualOrDebug) {
+        return manualOrDebug;
     }
 
     private static int previewIndex(String viewName) {
@@ -4189,6 +4834,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openStockAvm(int viewpoint, boolean debug) {
+        if (!canStartActivityCamera()) return;
         View target = debug ? debugPreview : cameraPreview;
         boolean surfaceReady = debug ? debugSurfaceReady : cameraSurfaceReady;
         Surface surface = debug
@@ -4230,6 +4876,10 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openPendingStockAvm() {
+        if (!canStartActivityCamera()) {
+            closeCamera("activity_paused");
+            return;
+        }
         if (!cameraHandoffPending) return;
         int viewpoint = pendingCameraViewpoint;
         boolean debug = pendingCameraDebug;
@@ -4240,6 +4890,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openStockAvmNow(int viewpoint, boolean debug) {
+        if (!canStartActivityCamera()) return;
         IBinder current = helper;
         View target = debug ? debugPreview : cameraPreview;
         View cover = debug ? debugPreviewCover : cameraPreviewCover;
@@ -4284,7 +4935,7 @@ public final class CameraProbeActivity extends Activity
                     "camera_id", profile.id, "camera", profile.wireName);
             updateControls();
             ipcExecutor.execute(() -> transactOpenDirect(
-                    current, surface, "pano_h", previewIndex, requestId));
+                    current, surface, "pano_h", previewIndex, requestId, false));
             return;
         }
         applyDebugPreviewMode();
@@ -4347,29 +4998,34 @@ public final class CameraProbeActivity extends Activity
     }
 
     private boolean closeCamera(String reason) {
-        if (!requestedOpen && !cameraHandoffPending) return false;
+        clearRetainedActivityPreview();
+        if (!requestedOpen && !cameraHandoffPending) {
+            if (!shouldPreserveAutoPreviewAfterClose(reason)) {
+                clearResumeAutoPreview();
+            }
+            return false;
+        }
+        if (!shouldPreserveAutoPreviewAfterClose(reason)) {
+            clearResumeAutoPreview();
+        }
         cancelProductionPreviewFirstFrameWait();
         TextView status = activeCameraStatus();
         if (cameraHandoffPending) {
             cameraPreview.removeCallbacks(finishCameraHandoff);
             debugPreview.removeCallbacks(finishCameraHandoff);
-            directCameraPreview.removeCallbacks(finishDirectCameraHandoff);
-            calibrationPreview.removeCallbacks(finishDirectCameraHandoff);
             cameraHandoffPending = false;
             pendingCameraViewpoint = -1;
-            pendingDirectCalibration = false;
-            pendingDirectCameraIndex = -1;
-            pendingDirectCameraTag = null;
             record("camera_preview_handoff", "state", "canceled", "reason", reason);
         }
         boolean wasOpen = requestedOpen;
+        int closingRequestId = activeActivityCameraRequestId;
         requestedOpen = false;
         stopCalibrationCopies(true);
         clearPreview(reason);
         IBinder current = helper;
         record("close_requested", "reason", reason);
         if (wasOpen && current != null) {
-            ipcExecutor.execute(() -> transactClose(current, reason));
+            ipcExecutor.execute(() -> transactClose(current, reason, closingRequestId));
         }
         CameraHelperService.cameraPreviewStopped(this);
         status.setText("Camera closed");
@@ -4383,6 +5039,9 @@ public final class CameraProbeActivity extends Activity
     }
 
     private boolean closeCameraForTransition(String reason) {
+        if (isAutoPreviewTab(selectedTab) && !shutdownRequested) {
+            armResumeAutoPreview();
+        }
         String token = cameraTransition.begin(reason);
         boolean waiting = closeCamera(token);
         if (!waiting) finishCameraTransition(token, "local");
@@ -4401,24 +5060,20 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void resumeSelectedCameraPreview() {
-        if (cameraTransition.pending()) return;
+        if (cameraTransition.pending() || !canResumeSelectedPreview()) return;
         if (retryStockViewpoint >= 0) {
             int viewpoint = retryStockViewpoint;
             boolean debug = retryStockDebug;
             retryStockViewpoint = -1;
             retryStockDebug = false;
             openStockAvm(viewpoint, debug);
-            return;
-        }
-        if (retryDirectCameraIndex >= 0) {
-            int index = retryDirectCameraIndex;
-            retryDirectCameraIndex = -1;
-            openDirectCamera(index);
+            if (requestedOpen || cameraHandoffPending) clearResumeAutoPreview();
             return;
         }
         if (selectedTab == TAB_CAMERA_CALIBRATION) maybeOpenCalibrationCamera();
         else if (selectedTab == TAB_CAMERAS) maybeOpenProductionPreview();
         else if (selectedTab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
+        if (requestedOpen || cameraHandoffPending) clearResumeAutoPreview();
     }
 
     private TextView cameraStatus(boolean debug) {
@@ -4441,13 +5096,14 @@ public final class CameraProbeActivity extends Activity
 
     private void registerCallback() {
         IBinder current = helper;
-        if (current == null) return;
+        if (current == null || helperCallbackRegistered) return;
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
             data.writeStrongBinder(callback);
             requireTransaction(current, CameraHelperMain.TX_REGISTER_CALLBACK, data, reply);
+            helperCallbackRegistered = true;
             record("ipc_reply", "operation", "register_callback", "reply", reply.readString());
             runOnUiThread(() -> {
                 pushGuardConfig();
@@ -4463,7 +5119,9 @@ public final class CameraProbeActivity extends Activity
 
     private void detachHelperCallback() {
         IBinder current = helper;
-        if (current != null) ipcExecutor.execute(() -> transactSimple(
+        if (current == null || !helperCallbackRegistered) return;
+        helperCallbackRegistered = false;
+        ipcExecutor.execute(() -> transactSimple(
                 current, CameraHelperMain.TX_DETACH_CALLBACK, "detach_callback"));
     }
 
@@ -4520,7 +5178,8 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void transactOpenDirect(
-            IBinder current, Surface surface, String cameraTag, int index, int requestId) {
+            IBinder current, Surface surface, String cameraTag, int index, int requestId,
+            boolean exclusive) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -4529,10 +5188,11 @@ public final class CameraProbeActivity extends Activity
             data.writeString(cameraTag);
             data.writeInt(index);
             data.writeInt(requestId);
+            data.writeInt(exclusive ? 1 : 0);
             requireTransaction(current, CameraHelperMain.TX_OPEN_DIRECT, data, reply);
             record("ipc_reply", "operation", "open_direct",
                     "camera_tag", cameraTag, "preview_index", index,
-                    "request_id", requestId,
+                    "request_id", requestId, "exclusive", exclusive,
                     "reply", reply.readString());
         } catch (Throwable error) {
             record("ipc_error", "operation", "open_direct",
@@ -4640,15 +5300,17 @@ public final class CameraProbeActivity extends Activity
         return debug && enabled;
     }
 
-    private void transactClose(IBinder current, String reason) {
+    private void transactClose(IBinder current, String reason, int requestId) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
             data.writeString(reason);
+            data.writeInt(requestId);
             requireTransaction(current, CameraHelperMain.TX_CLOSE, data, reply);
             String result = reply.readString();
-            record("ipc_reply", "operation", "close", "reply", result);
+            record("ipc_reply", "operation", "close",
+                    "request_id", requestId, "reply", result);
             if (CameraTransition.owns(reason)) {
                 JSONObject json = new JSONObject(result);
                 if (!"stock_avm_shell_close_queued".equals(json.optString("kind"))) {
@@ -4656,7 +5318,8 @@ public final class CameraProbeActivity extends Activity
                 }
             }
         } catch (Throwable error) {
-            record("ipc_error", "operation", "close", "error", error.toString());
+            record("ipc_error", "operation", "close",
+                    "request_id", requestId, "error", error.toString());
             if (CameraTransition.owns(reason)) {
                 runOnUiThread(() -> finishCameraTransition(reason, "ipc_error"));
             }
@@ -4916,11 +5579,37 @@ public final class CameraProbeActivity extends Activity
                 String kind = json.optString("kind");
                 musicPanel.acceptEvent(json);
                 handleCameraLaneEvent(json);
+                if ("reverse_camera_start".equals(kind)) {
+                    int requestId = json.optInt("request_id", -1);
+                    if (requestId > 0) activeReverseControllerRequestId = requestId;
+                }
+                if ("reverse_camera_state".equals(kind)) {
+                    int previousRequestId = activeReverseControllerRequestId;
+                    activeReverseControllerRequestId = normalizedReverseCameraRequestId(
+                            json.optInt("request_id", 0));
+                    if (shouldResumeAfterReverseCameraState(
+                            hasResumeAutoPreviewIntent(0), previousRequestId,
+                            activeReverseControllerRequestId)) {
+                        if (!resumeRetainedActivityPreview("reverse_state_cleared")) {
+                            resumeSelectedCameraPreview();
+                        }
+                    }
+                    updateControls();
+                    return;
+                }
                 if ("reverse_camera_stopped".equals(kind)) {
-                    if ("not_reverse".equals(json.optString("reason"))) {
-                        requestReverseInputReset("reverse_camera_stopped");
+                    int requestId = json.optInt("request_id", -1);
+                    if (shouldHandleReverseCameraStopped(requestId)) {
+                        if (!resumeRetainedActivityPreview("reverse_camera_stopped")) {
+                            resumeSelectedCameraPreview();
+                        }
                     } else {
-                        maybeOpenReversePreview();
+                        record("activity_camera_event_ignored", "kind", kind,
+                                "request_id", requestId,
+                                "resume_request_id", resumeAutoPreviewRequestId,
+                                "selected_tab", selectedTab,
+                                "resume_tab", resumeAutoPreviewTab,
+                                "activity_resumed", activityResumed);
                     }
                     updateControls();
                     return;
@@ -4983,8 +5672,7 @@ public final class CameraProbeActivity extends Activity
                     maybeOpenReversePreview();
                 } else if ("camera_error".equals(kind)) {
                     int requestId = json.optInt("request_id", -1);
-                    if (!isCurrentOrIdleActivityCameraTerminalEvent(
-                            activeActivityCameraRequestId, requestId)) {
+                    if (!isCurrentActivityCameraTerminalEvent(requestId)) {
                         record("activity_camera_event_ignored", "kind", kind,
                                 "request_id", requestId,
                                 "active_request_id", activeActivityCameraRequestId,
@@ -5009,6 +5697,7 @@ public final class CameraProbeActivity extends Activity
                             }
                         }
                         boolean resumeOverlay = requestedOpen;
+                        clearRetainedActivityPreview();
                         requestedOpen = false;
                         activeActivityCameraRequestId = 0;
                         stopCalibrationCopies(true);
@@ -5021,15 +5710,17 @@ public final class CameraProbeActivity extends Activity
                     }
                 } else if ("camera_closed".equals(kind)) {
                     int requestId = json.optInt("request_id", -1);
-                    if (!isCurrentOrIdleActivityCameraTerminalEvent(
-                            activeActivityCameraRequestId, requestId)) {
+                    String reason = json.optString("reason");
+                    boolean takeoverClose = "replace_with_multi_preview".equals(reason);
+                    if ((!isCurrentActivityCameraTerminalEvent(requestId)
+                            || takeoverClose && requestId <= 0)
+                            && !CameraTransition.owns(reason)) {
                         record("activity_camera_event_ignored", "kind", kind,
                                 "request_id", requestId,
                                 "active_request_id", activeActivityCameraRequestId,
                                 "source", json.optString("source"));
                         return;
                     }
-                    String reason = json.optString("reason");
                     if (CameraTransition.owns(reason)) {
                         if ("stock_avm_shell".equals(json.optString("renderer"))) {
                             finishCameraTransition(reason, "shell_callback");
@@ -5038,7 +5729,11 @@ public final class CameraProbeActivity extends Activity
                                     "source", json.optString("source"));
                         }
                     } else if (!isIntermediateCameraClose(reason)) {
+                        if (shouldArmAutoPreviewAfterCameraClose(reason)) {
+                            armResumeAutoPreview();
+                        }
                         boolean resumeOverlay = requestedOpen;
+                        clearRetainedActivityPreview();
                         requestedOpen = false;
                         activeActivityCameraRequestId = 0;
                         stopCalibrationCopies(true);
@@ -5180,29 +5875,40 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void handleActivityCameraShellDied(JSONObject event) {
+        cameraShellAvailable = false;
         boolean transitionPending = cameraTransition.pending();
-        boolean hadCamera = shouldRecoverActivityCamera(
-                requestedOpen, cameraHandoffPending, transitionPending);
-        if (!hadCamera) return;
-        if (activePreview == debugPreview && activeCameraViewpoint >= 0) {
+        boolean hadResumeIntent = resumeAutoPreviewOnResume
+                && isAutoPreviewTab(selectedTab);
+        boolean shellDependentSelection = selectedTab == TAB_REVERSE_CAMERAS
+                || selectedTab == TAB_CAMERA_DEBUG && selectedDebugMode == 1;
+        boolean invalidate = shouldInvalidateActivityForCameraShellDeath(
+                activePreview == debugPreview,
+                activePreview == reverseCameraPreview,
+                cameraHandoffPending && pendingCameraDebug,
+                shellDependentSelection
+                        && (transitionPending || hadResumeIntent || hasScopedShellRetry()));
+        if (!invalidate) {
+            record("activity_camera_shell_death_ignored",
+                    "selected_tab", selectedTab,
+                    "active_direct_preview", activePreview == cameraPreview
+                            || activePreview == calibrationPreview
+                            || activePreview == directCameraPreview,
+                    "camera_shell_epoch", event.optLong("camera_shell_epoch", 0));
+            return;
+        }
+        if (activePreview == debugPreview && selectedTab == TAB_CAMERA_DEBUG
+                && activeCameraViewpoint >= 0) {
             retryStockViewpoint = activeCameraViewpoint;
             retryStockDebug = true;
-        } else if (activePreview == directCameraPreview && activeDirectCameraIndex >= 0) {
-            retryDirectCameraIndex = activeDirectCameraIndex;
         }
+        if (isAutoPreviewTab(selectedTab)) armResumeAutoPreview();
         cameraShellRecoveryPending = true;
-        cameraShellAvailable = false;
         boolean previewClaimed = requestedOpen || cameraHandoffPending;
         cameraTransition.cancel();
         cameraPreview.removeCallbacks(finishCameraHandoff);
         debugPreview.removeCallbacks(finishCameraHandoff);
-        directCameraPreview.removeCallbacks(finishDirectCameraHandoff);
-        calibrationPreview.removeCallbacks(finishDirectCameraHandoff);
         cameraHandoffPending = false;
         pendingCameraViewpoint = -1;
-        pendingDirectCalibration = false;
-        pendingDirectCameraIndex = -1;
-        pendingDirectCameraTag = null;
         requestedOpen = false;
         stopCalibrationCopies(true);
         clearPreview("camera_shell_died");
@@ -5212,10 +5918,7 @@ public final class CameraProbeActivity extends Activity
         activeDirectCameraIndex = -1;
         activeActivityCameraRequestId = 0;
         if (previewClaimed) CameraHelperService.cameraPreviewStopped(this);
-        cameraStatus.setText("Camera helper відновлюється...");
         debugCameraStatus.setText("Camera helper відновлюється...");
-        directCameraStatus.setText("Camera helper відновлюється...");
-        calibrationStatus.setText("Camera helper відновлюється...");
         reverseCameraStatus.setText("Camera helper відновлюється...");
         record("activity_camera_output_invalidated",
                 "camera_shell_epoch", event.optLong("camera_shell_epoch", 0),
@@ -5224,6 +5927,11 @@ public final class CameraProbeActivity extends Activity
 
     private void handleActivityCameraShellAttached(JSONObject event) {
         cameraShellAvailable = true;
+        if ((!resumeAutoPreviewOnResume && !hasScopedShellRetry())
+                || (!isAutoPreviewTab(selectedTab) && !hasScopedShellRetry())) {
+            cameraShellRecoveryPending = false;
+            return;
+        }
         resumeActivityCameraAfterShellRecovery(
                 "camera_shell_attached", event.optLong("camera_shell_epoch", 0));
     }
@@ -5231,6 +5939,10 @@ public final class CameraProbeActivity extends Activity
     private void resumeActivityCameraAfterShellRecovery(String reason, long epoch) {
         if (!shouldResumeActivityCameraRecovery(
                 cameraShellRecoveryPending, activityResumed, cameraShellAvailable)) return;
+        if (!hasResumeAutoPreviewIntent(0) && !hasScopedShellRetry()) {
+            cameraShellRecoveryPending = false;
+            return;
+        }
         cameraShellRecoveryPending = false;
         record("activity_camera_reopen",
                 "reason", reason,
@@ -5244,9 +5956,240 @@ public final class CameraProbeActivity extends Activity
         return requestedOpen || handoffPending || transitionPending;
     }
 
+    static boolean shouldInvalidateActivityForCameraShellDeath(
+            boolean stockPreviewActive,
+            boolean reversePreviewActive,
+            boolean stockHandoffPending,
+            boolean shellDependentRecoveryPending) {
+        return stockPreviewActive || reversePreviewActive
+                || stockHandoffPending || shellDependentRecoveryPending;
+    }
+
+    private void armResumeAutoPreviewIfNeeded() {
+        if (shutdownRequested || !shouldResumeActivityPreviewAfterStop(
+                false, isAutoPreviewTab(selectedTab), requestedOpen,
+                cameraHandoffPending, cameraTransition.pending())) return;
+        armResumeAutoPreview();
+    }
+
+    private void armResumeAutoPreview() {
+        if (shutdownRequested || !isAutoPreviewTab(selectedTab)) return;
+        resumeAutoPreviewOnResume = true;
+        resumeAutoPreviewRequestId = activeActivityCameraRequestId;
+        resumeAutoPreviewTab = selectedTab;
+    }
+
+    private void clearResumeAutoPreview() {
+        resumeAutoPreviewOnResume = false;
+        resumeAutoPreviewRequestId = 0;
+        resumeAutoPreviewTab = -1;
+    }
+
+    private boolean retainActivityPreviewAcrossStop(boolean transitionPending) {
+        if (!shouldRetainActivityPreviewAcrossStop(
+                shutdownRequested, isAutoPreviewTab(selectedTab), requestedOpen,
+                cameraHandoffPending, transitionPending, activePreview != null,
+                activeActivityCameraRequestId)) return false;
+        retainedActivityPreview = true;
+        retainedActivityPreviewRequestId = activeActivityCameraRequestId;
+        retainedActivityPreviewTab = selectedTab;
+        clearPreview("activity_stopped_retained");
+        record("activity_camera_retained", "state", "hidden",
+                "selected_tab", selectedTab,
+                "request_id", activeActivityCameraRequestId);
+        return true;
+    }
+
+    private boolean resumeRetainedActivityPreview(String reason) {
+        if (!retainedActivityPreview) return false;
+        if (!activityResumed || shouldDeferActivityPreviewForReverse(
+                activeReverseControllerRequestId)) return true;
+        if (!requestedOpen || activePreview == null
+                || selectedTab != retainedActivityPreviewTab
+                || activeActivityCameraRequestId != retainedActivityPreviewRequestId) {
+            clearRetainedActivityPreview();
+            return false;
+        }
+        try {
+            if (activePreview == cameraPreview) {
+                armProductionPreviewFirstFrame();
+            } else if (activePreview == calibrationPreview) {
+                if (calibrationPreviewCover != null) {
+                    calibrationPreviewCover.setVisibility(View.VISIBLE);
+                }
+            } else if (activePreview == reverseCameraPreview) {
+                ReverseCameraCompositionView.SurfaceBundle bundle =
+                        reverseCameraPreview.acquirePreviewSurfaces(
+                                activeActivityCameraRequestId);
+                reverseCameraPreview.armFrames(
+                        activeActivityCameraRequestId, bundle.generations);
+            }
+        } catch (Throwable error) {
+            record("activity_camera_retained", "state", "surface_invalid",
+                    "selected_tab", selectedTab,
+                    "request_id", activeActivityCameraRequestId,
+                    "error", error.toString());
+            clearRetainedActivityPreview();
+            closeCameraForTransition("retained_surface_invalid");
+            return true;
+        }
+        int requestId = activeActivityCameraRequestId;
+        clearRetainedActivityPreview();
+        clearResumeAutoPreview();
+        record("activity_camera_retained", "state", "resumed",
+                "reason", reason, "selected_tab", selectedTab,
+                "request_id", requestId);
+        return true;
+    }
+
+    private void clearRetainedActivityPreview() {
+        retainedActivityPreview = false;
+        retainedActivityPreviewRequestId = 0;
+        retainedActivityPreviewTab = -1;
+    }
+
+    static boolean shouldRetainActivityPreviewAcrossStop(
+            boolean shutdown, boolean autoPreviewTab, boolean requestedOpen,
+            boolean handoffPending, boolean transitionPending,
+            boolean hasActivePreview, int requestId) {
+        return !shutdown && autoPreviewTab && requestedOpen
+                && !handoffPending && !transitionPending
+                && hasActivePreview && requestId > 0;
+    }
+
+    private boolean canStartActivityCamera() {
+        return activityResumed && !shutdownRequested && !activityDestroyed;
+    }
+
+    private boolean canAutoOpenSelectedPreview() {
+        return shouldAutoOpenSelectedPreview(
+                hasResumeAutoPreviewIntent(0), activeReverseControllerRequestId);
+    }
+
+    private boolean hasResumeAutoPreviewIntent(int eventRequestId) {
+        return shouldResumeActivityPreview(
+                activityResumed, shutdownRequested, activityDestroyed,
+                resumeAutoPreviewOnResume, selectedTab, resumeAutoPreviewTab,
+                resumeAutoPreviewRequestId, eventRequestId);
+    }
+
+    private boolean canResumeSelectedPreview() {
+        return canStartActivityCamera()
+                && !shouldDeferActivityPreviewForReverse(activeReverseControllerRequestId)
+                && (!cameraShellRecoveryPending || cameraShellAvailable)
+                && (hasResumeAutoPreviewIntent(0) || hasScopedShellRetry());
+    }
+
+    static boolean shouldDeferActivityPreviewForReverse(int activeRequestId) {
+        return activeRequestId > 0;
+    }
+
+    static boolean shouldAutoOpenSelectedPreview(
+            boolean restoreIntent, int activeReverseRequestId) {
+        return restoreIntent && !shouldDeferActivityPreviewForReverse(activeReverseRequestId);
+    }
+
+    static boolean cameraPolicyChanged(
+            int savedMinimum, int savedMaximum, int minimum, int maximum) {
+        return savedMinimum != minimum || savedMaximum != maximum;
+    }
+
+    static boolean frontCameraPolicyChanged(
+            int savedMinimum, int savedMaximum, float savedAngle,
+            int minimum, int maximum, float angle) {
+        return cameraPolicyChanged(savedMinimum, savedMaximum, minimum, maximum)
+                || Float.compare(savedAngle, angle) != 0;
+    }
+
+    private boolean hasScopedShellRetry() {
+        return selectedTab == TAB_CAMERA_DEBUG
+                && retryStockViewpoint >= 0 && retryStockDebug;
+    }
+
+    private boolean shouldHandleReverseCameraStopped(int eventRequestId) {
+        int previousRequestId = activeReverseControllerRequestId;
+        activeReverseControllerRequestId = reverseRequestAfterStopped(
+                activeReverseControllerRequestId, eventRequestId);
+        return previousRequestId > 0 && activeReverseControllerRequestId == 0
+                && hasResumeAutoPreviewIntent(0);
+    }
+
+    static int reverseRequestAfterStopped(int activeRequestId, int eventRequestId) {
+        return activeRequestId > 0 && eventRequestId == activeRequestId
+                ? 0 : activeRequestId;
+    }
+
+    static int normalizedReverseCameraRequestId(int reportedRequestId) {
+        return Math.max(0, reportedRequestId);
+    }
+
+    static boolean shouldResumeAfterReverseCameraState(
+            boolean restoreIntent, int previousRequestId, int reportedRequestId) {
+        return restoreIntent && previousRequestId > 0 && reportedRequestId == 0;
+    }
+
+    private boolean isCurrentActivityCameraTerminalEvent(int eventRequestId) {
+        return isCurrentActivityCameraTerminalEvent(
+                activeActivityCameraRequestId, eventRequestId);
+    }
+
+    private boolean shouldPreserveAutoPreviewAfterClose(String reason) {
+        if (shutdownRequested) return false;
+        if (CameraTransition.owns(reason)
+                || "activity_stopped".equals(reason)
+                || "replace_with_multi_preview".equals(reason)) return true;
+        return !activityResumed && resumeAutoPreviewOnResume;
+    }
+
+    private boolean shouldArmAutoPreviewAfterCameraClose(String reason) {
+        return shouldArmAutoPreviewAfterTakeover(
+                shutdownRequested, activityResumed, isAutoPreviewTab(selectedTab), reason);
+    }
+
+    static boolean shouldArmAutoPreviewAfterTakeover(
+            boolean shutdown, boolean resumed, boolean autoPreviewTab, String reason) {
+        return !shutdown && resumed && autoPreviewTab
+                && "replace_with_multi_preview".equals(reason);
+    }
+
+    static boolean shouldResumeActivityPreviewAfterStop(
+            boolean shutdown, boolean autoPreviewTab,
+            boolean requestedOpen, boolean handoffPending, boolean transitionPending) {
+        return !shutdown && autoPreviewTab
+                && shouldRecoverActivityCamera(
+                        requestedOpen, handoffPending, transitionPending);
+    }
+
+    private static boolean isAutoPreviewTab(int tab) {
+        return tab == TAB_CAMERAS
+                || tab == TAB_CAMERA_CALIBRATION
+                || tab == TAB_REVERSE_CAMERAS;
+    }
+
     static boolean shouldResumeActivityCameraRecovery(
             boolean pending, boolean resumed, boolean shellAvailable) {
         return pending && resumed && shellAvailable;
+    }
+
+    static boolean shouldResumeActivityPreview(
+            boolean activityResumed, boolean shutdown, boolean destroyed,
+            boolean autoIntent, int selectedTab, int intentTab,
+            int expectedRequestId, int eventRequestId) {
+        return activityResumed && !shutdown && !destroyed && autoIntent
+                && isAutoPreviewTab(selectedTab) && selectedTab == intentTab
+                && (eventRequestId <= 0
+                        || expectedRequestId > 0 && expectedRequestId == eventRequestId);
+    }
+
+    static boolean isCurrentActivityCameraTerminalEvent(
+            int activeRequestId, int eventRequestId) {
+        return activeRequestId > 0
+                ? eventRequestId == activeRequestId : eventRequestId <= 0;
+    }
+
+    static boolean shouldHandleReverseCameraStopped(
+            boolean restoreIntent, int activeRequestId, int eventRequestId) {
+        return restoreIntent && activeRequestId > 0 && eventRequestId == activeRequestId;
     }
 
     private void updateCounters() {
@@ -5365,6 +6308,12 @@ public final class CameraProbeActivity extends Activity
         boolean selectedCameraEnabled = CameraProfile.of(selectedCameraId).front()
                 ? frontCameraEnabled : rearCameraEnabled;
         if (cameraMinSpeedInput != null) cameraMinSpeedInput.setEnabled(rearCameraEnabled);
+        if (rearSharpTurnSwitch != null) rearSharpTurnSwitch.setEnabled(rearCameraEnabled);
+        if (rearSharpTurnAngleInput != null) {
+            rearSharpTurnAngleInput.setEnabled(
+                    rearCameraEnabled && rearSharpTurnSwitch.isChecked());
+        }
+        if (rearBsdOnlySwitch != null) rearBsdOnlySwitch.setEnabled(rearCameraEnabled);
         if (frontCameraMinSpeedInput != null) {
             frontCameraMinSpeedInput.setEnabled(frontCameraEnabled);
         }

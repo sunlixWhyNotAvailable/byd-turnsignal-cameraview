@@ -3,4 +3,7 @@
     <files-path
         name="updates"
         path="updates/" />
+    <cache-path
+        name="shared_logs"
+        path="shared_logs/" />
 </paths>

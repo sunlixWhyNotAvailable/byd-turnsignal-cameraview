@@ -19,7 +19,9 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
@@ -27,6 +29,14 @@ public final class CameraShellMain {
     private static final long LOG_FLUSH_DELAY_MS = 250;
 
     private CameraShellMain() {}
+
+    static Map<String, Object> eventFieldMap(Object... fields) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < fields.length; i += 2) {
+            values.put(String.valueOf(fields[i]), fields[i + 1]);
+        }
+        return values;
+    }
 
     public static void main(String[] args) throws Exception {
         if (args.length != 2) throw new IllegalArgumentException(
@@ -190,11 +200,10 @@ public final class CameraShellMain {
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_ARM_FRAME) {
-                    int cameraId = data.readInt();
-                    int requestId = data.readInt();
-                    int surfaceGeneration = data.readInt();
+                    OverlayFrameArm arm = OverlayFrameArm.fromWireFields(
+                            data.readInt(), data.readInt(), data.readInt(), data.readInt());
                     runOnMain(() -> {
-                        overlay(cameraId).armFirstFrame(requestId, surfaceGeneration);
+                        overlay(arm.cameraId).armFirstFrame(arm);
                         return null;
                     });
                     reply.writeNoException();
@@ -436,8 +445,14 @@ public final class CameraShellMain {
                 json.put("wall_time", new SimpleDateFormat(
                         "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(new Date()));
                 json.put("t_ms", SystemClock.elapsedRealtime());
-                for (int i = 0; i + 1 < fields.length; i += 2) {
-                    json.put(String.valueOf(fields[i]), fields[i + 1]);
+                if ("camera_overlay_first_frame".equals(kind)) {
+                    for (Map.Entry<String, Object> field : eventFieldMap(fields).entrySet()) {
+                        json.put(field.getKey(), field.getValue());
+                    }
+                } else {
+                    for (int i = 0; i + 1 < fields.length; i += 2) {
+                        json.put(String.valueOf(fields[i]), fields[i + 1]);
+                    }
                 }
                 line = json.toString();
             } catch (Throwable error) {

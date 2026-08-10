@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(59, BuildConfig.VERSION_CODE);
+        assertEquals(63, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -490,6 +490,8 @@ public final class AdbCoreTest {
                 BlindSpotOverlayController.preparationDecision(4, 1, 1));
         assertEquals(BlindSpotOverlayController.PREPARATION_RETRY,
                 BlindSpotOverlayController.preparationDecision(0, 0, 0));
+        assertTrue(BlindSpotOverlayController.shouldRebuildAfterCameraDiscovery(false));
+        assertFalse(BlindSpotOverlayController.shouldRebuildAfterCameraDiscovery(true));
 
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 0, 720));
         assertTrue(CameraProbeActivity.shouldRetryCalibrationCopy(true, 1280, 0));
@@ -787,6 +789,7 @@ public final class AdbCoreTest {
         assertTrue(cameraLaunch.contains("bydturnguard_camera"));
         assertTrue(cameraLaunch.contains("CameraShellMain 10058 5"));
         assertTrue(cameraLaunch.contains("setsid app_process /system/bin"));
+        assertTrue(cameraLaunch.contains("camera_helper_stop_timeout"));
         assertFalse(cameraLaunch.contains("TurnSignalShellMain"));
     }
 
@@ -856,6 +859,16 @@ public final class AdbCoreTest {
         assertTrue(CameraProbeActivity.shouldRecoverActivityCamera(false, true, false));
         assertTrue(CameraProbeActivity.shouldRecoverActivityCamera(false, false, true));
         assertFalse(CameraProbeActivity.shouldRecoverActivityCamera(false, false, false));
+        assertFalse(CameraProbeActivity.shouldInvalidateActivityForCameraShellDeath(
+                false, false, false, false));
+        assertTrue(CameraProbeActivity.shouldInvalidateActivityForCameraShellDeath(
+                true, false, false, false));
+        assertTrue(CameraProbeActivity.shouldInvalidateActivityForCameraShellDeath(
+                false, true, false, false));
+        assertTrue(CameraProbeActivity.shouldInvalidateActivityForCameraShellDeath(
+                false, false, true, false));
+        assertTrue(CameraProbeActivity.shouldInvalidateActivityForCameraShellDeath(
+                false, false, false, true));
         assertTrue(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, true, true));
         assertFalse(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, false, true));
         assertFalse(CameraProbeActivity.shouldResumeActivityCameraRecovery(true, true, false));
@@ -888,6 +901,30 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalController.shouldQueueCameraRecovery(false, false));
         assertFalse(TurnSignalController.shouldQueueCameraRecovery(false, true));
         assertFalse(TurnSignalController.shouldQueueCameraRecovery(true, false));
+    }
+
+    @Test
+    public void reverseCleanupRequiresExactSuccessfulCameraCloseResult() {
+        assertTrue(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "camera_closed", ""));
+        assertTrue(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "already_closed", ""));
+        assertFalse(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "camera_closed", "close failed"));
+        assertFalse(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "camera_close_ignored", ""));
+        assertFalse(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "camera_closed", null));
+        assertFalse(CameraHelperMain.HelperBinder.isSuccessfulCameraCloseResult(null));
+
+        // A failed first close is retried for the same request; an idempotent
+        // already_closed response then confirms cleanup.
+        assertFalse(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "camera_closed", "vendor close failed"));
+        assertTrue(CameraHelperMain.HelperBinder.isSuccessfulCameraClose(
+                "already_closed", ""));
+        assertTrue(ReverseCameraController.shouldAttemptReverseCameraClose(
+                false, true));
     }
 
     private static IBinder proxyBinder() {

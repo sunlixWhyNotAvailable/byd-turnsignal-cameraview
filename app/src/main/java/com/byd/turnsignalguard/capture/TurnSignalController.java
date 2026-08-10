@@ -14,6 +14,7 @@ import org.json.JSONObject;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
@@ -310,15 +311,16 @@ final class TurnSignalController {
         });
     }
 
-    void armCameraOverlayFrame(int cameraId, int requestId, int surfaceGeneration) {
+    void armCameraOverlayFrame(OverlayFrameArm arm) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
-                transactOverlayFrame(value, cameraId, requestId, surfaceGeneration);
+                transactOverlayFrame(value, arm);
             } catch (Throwable error) {
                 emit("camera_overlay_error", "stage", "arm_first_frame",
-                        "camera_id", cameraId, "request_id", requestId,
-                        "surface_generation", surfaceGeneration,
+                        "camera_id", arm.cameraId, "request_id", arm.requestId,
+                        "surface_generation", arm.surfaceGeneration,
+                        "frame_arm_epoch", arm.frameArmEpoch,
                         "error", summary(error));
             }
         });
@@ -1002,17 +1004,22 @@ final class TurnSignalController {
     }
 
     private boolean cameraPing(IBinder value) {
-        if (value == null || !value.isBinderAlive()) return false;
+        return cameraHelperPid(value) > 0;
+    }
+
+    private int cameraHelperPid(IBinder value) {
+        if (value == null || !value.isBinderAlive()) return -1;
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
-            if (!value.transact(CameraShellProtocol.TX_PING, data, reply, 0)) return false;
+            if (!value.transact(CameraShellProtocol.TX_PING, data, reply, 0)) return -1;
             reply.readException();
-            return reply.readInt() == CameraShellProtocol.VERSION
-                    && reply.readInt() == BuildConfig.VERSION_CODE;
+            if (reply.readInt() != CameraShellProtocol.VERSION
+                    || reply.readInt() != BuildConfig.VERSION_CODE) return -1;
+            return reply.readInt();
         } catch (Throwable error) {
-            return false;
+            return -1;
         } finally {
             data.recycle();
             reply.recycle();
@@ -1105,15 +1112,13 @@ final class TurnSignalController {
         }
     }
 
-    private static void transactOverlayFrame(
-            IBinder value, int cameraId, int requestId, int surfaceGeneration) throws Exception {
+    private static void transactOverlayFrame(IBinder value, OverlayFrameArm arm)
+            throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
-            data.writeInt(cameraId);
-            data.writeInt(requestId);
-            data.writeInt(surfaceGeneration);
+            for (int field : arm.wireFields()) data.writeInt(field);
             requireTransact(
                     value, CameraShellProtocol.TX_OVERLAY_ARM_FRAME, data, reply);
         } finally {
@@ -1426,9 +1431,18 @@ final class TurnSignalController {
     }
 
     private void shutdownCameraHelper() {
-        IBinder value = cameraHelper;
+        IBinder cached;
+        long cachedEpoch;
+        synchronized (this) {
+            cached = cameraHelper;
+            cachedEpoch = cameraHelper == null ? 0 : cameraHelperEpoch;
+        }
+        IBinder value = cached;
         if (value == null || !value.isBinderAlive()) value = resolveCameraHelper();
-        if (value == null || !value.isBinderAlive()) return;
+        if (value == null || !value.isBinderAlive()) {
+            if (cached != null) clearCameraHelper(cached, cachedEpoch);
+            return;
+        }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -1440,7 +1454,8 @@ final class TurnSignalController {
         } finally {
             data.recycle();
             reply.recycle();
-            clearCameraHelper(value);
+            if (cached != null) clearCameraHelper(cached, cachedEpoch);
+            if (value != cached) clearCameraHelper(value);
         }
     }
 
@@ -1535,13 +1550,18 @@ final class TurnSignalController {
         String process = CameraShellProtocol.PROCESS_NAME;
         return "for pid in $(pidof " + process
                 + " 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; "
+                + "wait_count=0; while [ -n \"$(pidof " + process + " 2>/dev/null)\" ] "
+                + "&& [ \"$wait_count\" -lt 30 ]; do sleep 0.1; "
+                + "wait_count=$((wait_count + 1)); done; "
+                + "if [ -n \"$(pidof " + process + " 2>/dev/null)\" ]; then "
+                + "echo camera_helper_stop_timeout; false; else "
                 + "rm -f " + CameraShellProtocol.LOCK_PATH + "; "
                 + "CLASSPATH=" + apk
                 + " setsid app_process /system/bin --nice-name=" + process + " "
                 + CameraShellProtocol.HELPER_CLASS + " " + appUid + " " + versionCode
                 + " </dev/null >" + CameraShellProtocol.LOG_PATH + " 2>&1 & "
                 + "for i in 1 2 3; do service list 2>/dev/null | grep -q "
-                + CameraShellProtocol.SERVICE_NAME + " && break; sleep 1; done";
+                + CameraShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
     }
 
     private synchronized void installHelper(IBinder value, int pid) throws Exception {
@@ -1795,5 +1815,75 @@ final class TurnSignalController {
         synchronized LocalAdbClient.PromptMode mode() {
             return mode;
         }
+    }
+}
+
+final class OverlayFrameArm {
+    static final String CAMERA_ID = "camera_id";
+    static final String REQUEST_ID = "request_id";
+    static final String SURFACE_GENERATION = "surface_generation";
+    static final String FRAME_ARM_EPOCH = "frame_arm_epoch";
+
+    final int cameraId;
+    final int requestId;
+    final int surfaceGeneration;
+    final int frameArmEpoch;
+
+    private OverlayFrameArm(
+            int cameraId, int requestId, int surfaceGeneration, int frameArmEpoch) {
+        if (cameraId < 0 || cameraId >= CameraProfile.COUNT) {
+            throw new IllegalArgumentException("camera id out of range");
+        }
+        if (requestId <= 0 || surfaceGeneration <= 0 || frameArmEpoch <= 0) {
+            throw new IllegalArgumentException("positive overlay frame identity required");
+        }
+        this.cameraId = cameraId;
+        this.requestId = requestId;
+        this.surfaceGeneration = surfaceGeneration;
+        this.frameArmEpoch = frameArmEpoch;
+    }
+
+    static OverlayFrameArm create(
+            int cameraId, int requestId, int surfaceGeneration, int frameArmEpoch) {
+        return new OverlayFrameArm(cameraId, requestId, surfaceGeneration, frameArmEpoch);
+    }
+
+    static OverlayFrameArm fromWireFields(
+            int cameraId, int requestId, int surfaceGeneration, int frameArmEpoch) {
+        return create(cameraId, requestId, surfaceGeneration, frameArmEpoch);
+    }
+
+    static OverlayFrameArm fromEvent(JSONObject event) {
+        return create(
+                event.optInt(CAMERA_ID, -1),
+                event.optInt(REQUEST_ID, -1),
+                event.optInt(SURFACE_GENERATION, -1),
+                event.optInt(FRAME_ARM_EPOCH, -1));
+    }
+
+    static OverlayFrameArm fromEventFields(Map<String, Object> fields) {
+        return create(
+                intField(fields, CAMERA_ID),
+                intField(fields, REQUEST_ID),
+                intField(fields, SURFACE_GENERATION),
+                intField(fields, FRAME_ARM_EPOCH));
+    }
+
+    int[] wireFields() {
+        return new int[]{cameraId, requestId, surfaceGeneration, frameArmEpoch};
+    }
+
+    Object[] eventFields() {
+        return new Object[]{
+                REQUEST_ID, requestId,
+                SURFACE_GENERATION, surfaceGeneration,
+                FRAME_ARM_EPOCH, frameArmEpoch
+        };
+    }
+
+    private static int intField(Map<String, Object> fields, String key) {
+        Object value = fields.get(key);
+        if (!(value instanceof Number)) throw new IllegalArgumentException(key + " missing");
+        return ((Number) value).intValue();
     }
 }

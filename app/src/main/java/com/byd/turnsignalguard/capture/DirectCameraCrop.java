@@ -47,8 +47,10 @@ final class DirectCameraCrop {
     static final float SOURCE_WIDTH = 1920.0f;
     static final float SOURCE_HEIGHT = 1300.0f;
     static final float OUTPUT_ASPECT = 4.0f / 3.0f;
-    private static final float MIN_WIDTH = 0.18f;
-    private static final float MIN_HEIGHT = 0.18f;
+    private static final float MIN_WIDTH = Float.MIN_NORMAL;
+    private static final float MIN_HEIGHT = Float.MIN_NORMAL;
+    private static final float TOUCH_MIN_WIDTH = 0.18f;
+    private static final float TOUCH_MIN_HEIGHT = 0.18f;
 
     final float left;
     final float top;
@@ -123,15 +125,20 @@ final class DirectCameraCrop {
 
     static void save(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
-        preferences.edit()
-                .putFloat(preferenceKey(profile, 0), crop.left)
+        SharedPreferences.Editor editor = preferences.edit();
+        write(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void write(
+            SharedPreferences.Editor editor, CameraProfile profile, DirectCameraCrop crop) {
+        editor.putFloat(preferenceKey(profile, 0), crop.left)
                 .putFloat(preferenceKey(profile, 1), crop.top)
                 .putFloat(preferenceKey(profile, 2), crop.width)
                 .putFloat(preferenceKey(profile, 3), crop.height)
                 .putInt(preferenceKey(profile, 4), crop.aspectMode)
                 .putInt(preferenceKey(profile, 5), crop.rotationDegrees)
-                .putInt(preferenceKey(profile, 6), crop.rotationMode)
-                .apply();
+                .putInt(preferenceKey(profile, 6), crop.rotationMode);
     }
 
     static DirectCameraCrop loadCorrected(
@@ -149,13 +156,18 @@ final class DirectCameraCrop {
 
     static void saveCorrected(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCorrected(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void writeCorrected(
+            SharedPreferences.Editor editor, CameraProfile profile, DirectCameraCrop crop) {
         String prefix = correctedPrefix(profile);
-        preferences.edit()
-                .putFloat(prefix + "left", crop.left)
+        editor.putFloat(prefix + "left", crop.left)
                 .putFloat(prefix + "top", crop.top)
                 .putFloat(prefix + "width", crop.width)
-                .putFloat(prefix + "height", crop.height)
-                .apply();
+                .putFloat(prefix + "height", crop.height);
     }
 
     static DirectCameraCrop preserveCenterAndAspect(
@@ -227,7 +239,7 @@ final class DirectCameraCrop {
         if (safeMode != ASPECT_FREE) {
             float ratio = heightPerWidth(safeMode);
             float maxWidth = Math.min(1.0f, 1.0f / ratio);
-            float safeWidth = clamp(finite(width) ? width : 0.65f,
+            float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
                     Math.min(MIN_WIDTH, maxWidth), maxWidth);
             float safeHeight = safeWidth * ratio;
             return new DirectCameraCrop(
@@ -237,14 +249,68 @@ final class DirectCameraCrop {
                     safeRotationMode).constrainAligned();
         }
 
-        float safeWidth = clamp(finite(width) ? width : 0.65f, MIN_WIDTH, 1.0f);
-        float safeHeight = clamp(finite(height) ? height
+        float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
+                MIN_WIDTH, 1.0f);
+        float safeHeight = clamp(finite(height) && height > 0.0f ? height
                 : safeWidth * heightPerWidth(ASPECT_FOUR_THREE), MIN_HEIGHT, 1.0f);
         return new DirectCameraCrop(
                 clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                 clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
                 safeWidth, safeHeight, safeMode, safeRotation,
                 safeRotationMode).constrainAligned();
+    }
+
+    static DirectCameraCrop parsePercent(
+            String x, String y, String width, String height, int aspectMode,
+            int rotationDegrees, int rotationMode) {
+        float left = parsePercentValue(x, "X");
+        float top = parsePercentValue(y, "Y");
+        float parsedWidth = parsePercentValue(width, "W");
+        float parsedHeight = parsePercentValue(height, "H");
+        int safeAspect = sanitizeAspectMode(aspectMode);
+        if (safeAspect != ASPECT_FREE) {
+            if (!matchesAspectAtTwoDecimals(parsedWidth, parsedHeight, safeAspect)) {
+                throw new IllegalArgumentException(
+                        "W/H не відповідають " + aspectLabel(safeAspect));
+            }
+        }
+        return requireNormalized(left, top, parsedWidth, parsedHeight, safeAspect,
+                rotationDegrees, rotationMode);
+    }
+
+    static DirectCameraCrop requireNormalized(
+            float left, float top, float width, float height, int aspectMode,
+            int rotationDegrees, int rotationMode) {
+        if (!finite(left) || !finite(top) || !finite(width) || !finite(height)) {
+            throw new IllegalArgumentException("X/Y/W/H мають бути скінченними");
+        }
+        if (left < 0.0f || top < 0.0f) {
+            throw new IllegalArgumentException("X/Y мають бути не менше 0");
+        }
+        if (width < MIN_WIDTH || height < MIN_HEIGHT) {
+            throw new IllegalArgumentException("W/H мають бути більше 0");
+        }
+        if (left + width > 1.0f || top + height > 1.0f) {
+            throw new IllegalArgumentException("X + W та Y + H мають бути не більше 100");
+        }
+        if (aspectMode < ASPECT_FOUR_THREE || aspectMode > ASPECT_FREE
+                || !CameraRotation.isValid(rotationDegrees)
+                || !CameraRotation.isValidMode(rotationMode)) {
+            throw new IllegalArgumentException("Некоректний aspect/rotation mode");
+        }
+        if (aspectMode != ASPECT_FREE
+                && !matchesAspectAtTwoDecimals(width, height, aspectMode)) {
+            throw new IllegalArgumentException(
+                    "W/H не відповідають " + aspectLabel(aspectMode));
+        }
+        return new DirectCameraCrop(
+                left, top, width, height, aspectMode, rotationDegrees, rotationMode);
+    }
+
+    DirectCameraCrop mirrored() {
+        return new DirectCameraCrop(
+                1.0f - left - width, top, width, height, aspectMode,
+                -rotationDegrees, rotationMode);
     }
 
     DirectCameraCrop withAspectMode(int mode) {
@@ -300,7 +366,7 @@ final class DirectCameraCrop {
                     >= Math.abs(dy * SOURCE_HEIGHT) ? widthFromX : widthFromY;
             float maxWidthX = dragLeft ? anchorX : 1.0f - anchorX;
             float maxHeight = dragTop ? anchorY : 1.0f - anchorY;
-            float safeWidth = clamp(requestedWidth, MIN_WIDTH,
+            float safeWidth = clamp(requestedWidth, TOUCH_MIN_WIDTH,
                     Math.min(maxWidthX, maxHeight / ratio));
             return new DirectCameraCrop(
                     dragLeft ? anchorX - safeWidth : anchorX,
@@ -315,7 +381,7 @@ final class DirectCameraCrop {
             float centerY = top + height / 2.0f;
             float maxWidthX = dragLeft ? anchorX : 1.0f - anchorX;
             float maxWidthY = 2.0f * Math.min(centerY, 1.0f - centerY) / ratio;
-            float safeWidth = clamp(Math.abs(anchorX - movingX), MIN_WIDTH,
+            float safeWidth = clamp(Math.abs(anchorX - movingX), TOUCH_MIN_WIDTH,
                     Math.min(maxWidthX, maxWidthY));
             return new DirectCameraCrop(dragLeft ? anchorX - safeWidth : anchorX,
                     centerY - safeWidth * ratio / 2.0f,
@@ -329,7 +395,7 @@ final class DirectCameraCrop {
         float maxHeight = dragTop ? anchorY : 1.0f - anchorY;
         float maxWidthX = 2.0f * Math.min(centerX, 1.0f - centerX);
         float safeWidth = clamp(Math.abs(anchorY - movingY) / ratio,
-                MIN_WIDTH, Math.min(maxWidthX, maxHeight / ratio));
+                TOUCH_MIN_WIDTH, Math.min(maxWidthX, maxHeight / ratio));
         return new DirectCameraCrop(centerX - safeWidth / 2.0f,
                 dragTop ? anchorY - safeWidth * ratio : anchorY,
                 safeWidth, safeWidth * ratio, aspectMode,
@@ -347,10 +413,18 @@ final class DirectCameraCrop {
         float nextTop = top;
         float nextRight = right();
         float nextBottom = bottom();
-        if (dragLeft) nextLeft = clamp(left + dx, 0.0f, nextRight - MIN_WIDTH);
-        if (dragRight) nextRight = clamp(right() + dx, nextLeft + MIN_WIDTH, 1.0f);
-        if (dragTop) nextTop = clamp(top + dy, 0.0f, nextBottom - MIN_HEIGHT);
-        if (dragBottom) nextBottom = clamp(bottom() + dy, nextTop + MIN_HEIGHT, 1.0f);
+        if (dragLeft) {
+            nextLeft = clamp(left + dx, 0.0f, nextRight - TOUCH_MIN_WIDTH);
+        }
+        if (dragRight) {
+            nextRight = clamp(right() + dx, nextLeft + TOUCH_MIN_WIDTH, 1.0f);
+        }
+        if (dragTop) {
+            nextTop = clamp(top + dy, 0.0f, nextBottom - TOUCH_MIN_HEIGHT);
+        }
+        if (dragBottom) {
+            nextBottom = clamp(bottom() + dy, nextTop + TOUCH_MIN_HEIGHT, 1.0f);
+        }
         return new DirectCameraCrop(nextLeft, nextTop,
                 nextRight - nextLeft, nextBottom - nextTop, ASPECT_FREE,
                 rotationDegrees, rotationMode).constrainAligned();
@@ -428,8 +502,24 @@ final class DirectCameraCrop {
         return SOURCE_WIDTH / (SOURCE_HEIGHT * outputAspect);
     }
 
+    private static boolean matchesAspectAtTwoDecimals(
+            float width, float height, int aspectMode) {
+        return Math.round(height * 10000.0f)
+                == Math.round(width * heightPerWidth(aspectMode) * 10000.0f);
+    }
+
     private static boolean finite(float value) {
         return !Float.isNaN(value) && !Float.isInfinite(value);
+    }
+
+    private static float parsePercentValue(String value, String field) {
+        try {
+            float parsed = Float.parseFloat(value.trim().replace(',', '.')) / 100.0f;
+            if (!finite(parsed)) throw new NumberFormatException();
+            return parsed;
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException(field + " має бути числом");
+        }
     }
 
     private static float clamp(float value, float minimum, float maximum) {

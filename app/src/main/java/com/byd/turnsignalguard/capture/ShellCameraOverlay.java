@@ -40,8 +40,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int requestId;
     private int surfaceGeneration;
     private int armedFrameRequestId;
+    private int armedFrameEpoch;
     private int armedFrameUpdates;
     private int completedFrameRequestId;
+    private int completedFrameEpoch;
     private boolean visible;
     private int warningEdge;
     private int activeTarget = -1;
@@ -85,8 +87,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         clearWarning("overlay_prepare");
         requestId = spec.requestId;
         armedFrameRequestId = 0;
+        armedFrameEpoch = 0;
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         if (root == null) createWindow(spec);
         else updateWindow(spec);
         if (preview.isCameraSurfaceReady()) emitSurfaceReady(true);
@@ -103,13 +107,17 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         return new SurfaceSnapshot(requestId, surfaceGeneration, surface);
     }
 
-    void armFirstFrame(int expectedRequestId, int expectedSurfaceGeneration) {
-        requireCurrent(expectedRequestId, expectedSurfaceGeneration);
-        armedFrameRequestId = expectedRequestId;
+    void armFirstFrame(OverlayFrameArm arm) {
+        if (arm.cameraId != cameraId) throw new IllegalArgumentException("camera id changed");
+        requireCurrent(arm.requestId, arm.surfaceGeneration);
+        armedFrameRequestId = arm.requestId;
+        armedFrameEpoch = arm.frameArmEpoch;
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         emit("camera_overlay_frame", "state", "armed",
-                "request_id", requestId, "surface_generation", surfaceGeneration);
+                "request_id", requestId, "surface_generation", surfaceGeneration,
+                "frame_arm_epoch", arm.frameArmEpoch);
     }
 
     void setVisible(
@@ -117,7 +125,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         if (root == null) throw new IllegalStateException("overlay window unavailable");
         if (nextVisible) {
             requireCurrent(expectedRequestId, expectedSurfaceGeneration);
-            if (completedFrameRequestId != expectedRequestId) {
+            if (completedFrameRequestId != expectedRequestId
+                    || completedFrameEpoch != armedFrameEpoch || armedFrameEpoch <= 0) {
                 throw new IllegalStateException("first frame not confirmed");
             }
         }
@@ -178,8 +187,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         visible = false;
         requestId = 0;
         armedFrameRequestId = 0;
+        armedFrameEpoch = 0;
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         try {
             if (activeWindows != null) activeWindows.removeViewImmediate(activeRoot);
             emit("camera_overlay_window", "state", "removed",
@@ -306,8 +317,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         if (view != preview) return;
         surfaceGeneration++;
         armedFrameRequestId = 0;
+        armedFrameEpoch = 0;
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         emitSurfaceReady(false);
     }
 
@@ -324,8 +337,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
         if (view != preview) return;
         armedFrameRequestId = 0;
+        armedFrameEpoch = 0;
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         visible = false;
         clearWarning("surface_destroyed");
         emit("camera_overlay_surface", "state", "destroyed",
@@ -335,13 +350,16 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     @Override
     public void onCameraFrameUpdated(BlindSpotCameraView view) {
         if (view != preview || armedFrameRequestId == 0 || armedFrameRequestId != requestId
-                || completedFrameRequestId == armedFrameRequestId) {
+                || armedFrameEpoch <= 0
+                || (completedFrameRequestId == armedFrameRequestId
+                        && completedFrameEpoch == armedFrameEpoch)) {
             return;
         }
         if (!isFramePastStaleBuffer(++armedFrameUpdates)) return;
         completedFrameRequestId = armedFrameRequestId;
-        emit("camera_overlay_first_frame", "request_id", requestId,
-                "surface_generation", surfaceGeneration);
+        completedFrameEpoch = armedFrameEpoch;
+        emit("camera_overlay_first_frame", OverlayFrameArm.create(
+                cameraId, requestId, surfaceGeneration, armedFrameEpoch).eventFields());
     }
 
     private void emitDewarpStats(CameraDewarpRenderer.Stats stats) {
@@ -390,7 +408,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
     private void hideFailedRenderer() {
         visible = false;
+        armedFrameRequestId = 0;
+        armedFrameEpoch = 0;
         completedFrameRequestId = 0;
+        completedFrameEpoch = 0;
         clearWarning("dewarp_failed");
         if (root == null || layout == null || windows == null) return;
         try {
@@ -465,11 +486,15 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emit(String kind, Object... fields) {
+        eventSink.accept(kind, tagCameraId(cameraId, fields));
+    }
+
+    static Object[] tagCameraId(int cameraId, Object... fields) {
         Object[] tagged = new Object[fields.length + 2];
-        tagged[0] = "camera_id";
+        tagged[0] = OverlayFrameArm.CAMERA_ID;
         tagged[1] = cameraId;
         System.arraycopy(fields, 0, tagged, 2, fields.length);
-        eventSink.accept(kind, tagged);
+        return tagged;
     }
 
     private int dp(int value) {

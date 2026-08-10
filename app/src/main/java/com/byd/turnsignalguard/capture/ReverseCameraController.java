@@ -10,6 +10,7 @@ import org.json.JSONObject;
 import java.util.Arrays;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 final class ReverseCameraController {
     static final String PREF_ENABLED = "reverse_camera_enabled";
@@ -49,16 +50,13 @@ final class ReverseCameraController {
     private int activeRequestId;
     private int[] generations = new int[0];
     private long cameraShellEpoch;
-    private CameraHelperMain.HelperBinder cleanupHelper;
-    private String cleanupReason;
-    private boolean cleanupRetryAfter;
-    private int cleanupRequestId;
-    private boolean cleanupCameraClosed;
+    private CleanupCloseCoordinator activeCleanup;
+    private Runnable cleanupRetryTask;
     private final Runnable cleanupRetry = () -> {
         cleanupRetryScheduled = false;
-        if (!stopping || shutdown) return;
-        closeWindow(cleanupHelper, cleanupReason, cleanupRetryAfter,
-                cleanupRequestId, cleanupCameraClosed);
+        Runnable task = cleanupRetryTask;
+        cleanupRetryTask = null;
+        if (task != null) task.run();
     };
 
     ReverseCameraController(
@@ -177,6 +175,7 @@ final class ReverseCameraController {
         generations = new int[0];
         visible = false;
         stopping = false;
+        activeCleanup = null;
         prioritySink.accept(false);
         helper = null;
         emit("reverse_camera_runtime_reset", "reason", "service_shutdown");
@@ -286,81 +285,60 @@ final class ReverseCameraController {
         }
         stopping = true;
         CameraHelperMain.HelperBinder activeHelper = helper;
-        Runnable closeCamera = () -> closeCameraAndWindow(
-                activeHelper, reason, retryAfter, closingRequestId);
+        CleanupCloseCoordinator cleanup = new CleanupCloseCoordinator(
+                closingRequestId,
+                candidate -> !shutdown && stopping && activeCleanup == candidate,
+                requestId -> activeHelper == null
+                        || activeHelper.closeReverseCamera(reason, requestId),
+                closed -> {
+                    if (activeHelper == null) closed.accept(true);
+                    else activeHelper.closeReverseOverlayWindow(reason, closed);
+                },
+                this::scheduleCleanupRetry,
+                this::clearCleanupRetry,
+                cameraClosed -> emit("reverse_camera_cleanup_retry",
+                        "request_id", closingRequestId,
+                        "reason", reason, "camera_closed", cameraClosed,
+                        "delay_ms", RETRY_MS),
+                error -> emit("reverse_camera_error", "stage", "close_camera",
+                        "request_id", closingRequestId, "error", summary(error)),
+                error -> emit("reverse_camera_error", "stage", "queue_close",
+                        "error", summary(error)),
+                state -> finishStop(reason, retryAfter, state));
+        activeCleanup = cleanup;
+        Runnable closeCamera = cleanup::startCameraThenWindow;
         if (activeHelper != null && wasVisible && closingGenerations.length == 3) {
             try {
                 activeHelper.setReverseOverlayVisible(
                         closingRequestId, closingGenerations, false,
                         hidden -> {
                             if (hidden) closeCamera.run();
-                            else closeWindowBeforeCamera(
-                                    activeHelper, reason, retryAfter, closingRequestId);
+                            else cleanup.startWindowThenCamera();
                         });
             } catch (Throwable error) {
                 emit("reverse_camera_error", "stage", "queue_hide",
                         "error", summary(error));
-                closeWindowBeforeCamera(activeHelper, reason, retryAfter, closingRequestId);
+                cleanup.startWindowThenCamera();
             }
         } else {
             closeCamera.run();
         }
     }
 
-    private void closeCameraAndWindow(
-            CameraHelperMain.HelperBinder activeHelper, String reason,
-            boolean retryAfter, int closingRequestId) {
-        if (activeHelper != null) activeHelper.closeReverseCamera(reason);
-        closeWindow(activeHelper, reason, retryAfter, closingRequestId, true);
+    private void finishStop(
+            String reason, boolean retryAfter, CleanupCloseCoordinator state) {
+        if (shutdown || activeCleanup != state) return;
+        activeCleanup = null;
+        stopping = false;
+        prioritySink.accept(false);
+        emit("reverse_camera_stopped", "request_id", state.requestId,
+                "reason", reason);
+        if (retryAfter) scheduleRetry(reason);
+        else evaluate();
     }
 
-    private void closeWindowBeforeCamera(
-            CameraHelperMain.HelperBinder activeHelper, String reason,
-            boolean retryAfter, int closingRequestId) {
-        closeWindow(activeHelper, reason, retryAfter, closingRequestId, false);
-    }
-
-    private void closeWindow(
-            CameraHelperMain.HelperBinder activeHelper, String reason,
-            boolean retryAfter, int closingRequestId, boolean cameraClosed) {
-        Consumer<Boolean> closed = success -> {
-            if (shutdown) return;
-            if (!success) {
-                emit("reverse_camera_cleanup_retry", "request_id", closingRequestId,
-                        "reason", reason, "camera_closed", cameraClosed,
-                        "delay_ms", RETRY_MS);
-                scheduleCleanupRetry(activeHelper, reason, retryAfter,
-                        closingRequestId, cameraClosed);
-                return;
-            }
-            clearCleanupRetry();
-            if (!cameraClosed && activeHelper != null) activeHelper.closeReverseCamera(reason);
-            stopping = false;
-            prioritySink.accept(false);
-            emit("reverse_camera_stopped", "request_id", closingRequestId,
-                    "reason", reason);
-            if (retryAfter) scheduleRetry(reason);
-            else evaluate();
-        };
-        if (activeHelper != null) {
-            try {
-                activeHelper.closeReverseOverlayWindow(reason, closed);
-            } catch (Throwable error) {
-                emit("reverse_camera_error", "stage", "queue_close",
-                        "error", summary(error));
-                closed.accept(helper == null || helper != activeHelper);
-            }
-        } else closed.accept(true);
-    }
-
-    private void scheduleCleanupRetry(
-            CameraHelperMain.HelperBinder activeHelper, String reason,
-            boolean retryAfter, int closingRequestId, boolean cameraClosed) {
-        cleanupHelper = activeHelper;
-        cleanupReason = reason;
-        cleanupRetryAfter = retryAfter;
-        cleanupRequestId = closingRequestId;
-        cleanupCameraClosed = cameraClosed;
+    private void scheduleCleanupRetry(Runnable task) {
+        cleanupRetryTask = task;
         if (cleanupRetryScheduled) return;
         cleanupRetryScheduled = true;
         handler.postDelayed(cleanupRetry, RETRY_MS);
@@ -369,11 +347,7 @@ final class ReverseCameraController {
     private void clearCleanupRetry() {
         if (cleanupRetryScheduled) handler.removeCallbacks(cleanupRetry);
         cleanupRetryScheduled = false;
-        cleanupHelper = null;
-        cleanupReason = null;
-        cleanupRetryAfter = false;
-        cleanupRequestId = 0;
-        cleanupCameraClosed = false;
+        cleanupRetryTask = null;
     }
 
     private void scheduleRetry(String reason) {
@@ -398,6 +372,7 @@ final class ReverseCameraController {
         generations = new int[0];
         visible = false;
         stopping = false;
+        activeCleanup = null;
         prioritySink.accept(false);
         emit("reverse_camera_runtime_reset", "reason", reason);
     }
@@ -413,6 +388,121 @@ final class ReverseCameraController {
 
     static boolean matchesCameraOpenEvent(int activeRequestId, int eventRequestId) {
         return activeRequestId > 0 && eventRequestId == activeRequestId;
+    }
+
+    static boolean shouldAttemptReverseCameraClose(
+            boolean cameraClosed, boolean cameraCloseAttempted) {
+        return !cameraClosed;
+    }
+
+    interface CameraCloser {
+        boolean close(int requestId) throws Throwable;
+    }
+
+    interface WindowCloser {
+        void close(Consumer<Boolean> callback) throws Throwable;
+    }
+
+    static final class CleanupCloseCoordinator {
+        final int requestId;
+        private final Predicate<CleanupCloseCoordinator> current;
+        private final CameraCloser cameraCloser;
+        private final WindowCloser windowCloser;
+        private final Consumer<Runnable> retryScheduler;
+        private final Runnable retryCanceller;
+        private final Consumer<Boolean> retrySink;
+        private final Consumer<Throwable> cameraErrorSink;
+        private final Consumer<Throwable> windowErrorSink;
+        private final Consumer<CleanupCloseCoordinator> finishedSink;
+        private boolean cameraClosed;
+        private int closeAttempts;
+        private boolean finished;
+
+        CleanupCloseCoordinator(
+                int requestId,
+                Predicate<CleanupCloseCoordinator> current,
+                CameraCloser cameraCloser,
+                WindowCloser windowCloser,
+                Consumer<Runnable> retryScheduler,
+                Runnable retryCanceller,
+                Consumer<Boolean> retrySink,
+                Consumer<Throwable> cameraErrorSink,
+                Consumer<Throwable> windowErrorSink,
+                Consumer<CleanupCloseCoordinator> finishedSink) {
+            this.requestId = requestId;
+            this.current = current;
+            this.cameraCloser = cameraCloser;
+            this.windowCloser = windowCloser;
+            this.retryScheduler = retryScheduler;
+            this.retryCanceller = retryCanceller;
+            this.retrySink = retrySink;
+            this.cameraErrorSink = cameraErrorSink;
+            this.windowErrorSink = windowErrorSink;
+            this.finishedSink = finishedSink;
+        }
+
+        void startCameraThenWindow() {
+            if (!isCurrent()) return;
+            attemptCameraClose();
+            closeWindow(true);
+        }
+
+        void startWindowThenCamera() {
+            closeWindow(false);
+        }
+
+        private void closeWindow(boolean cameraAttemptedThisPass) {
+            if (!isCurrent()) return;
+            try {
+                windowCloser.close(success ->
+                        windowClosed(success, cameraAttemptedThisPass));
+            } catch (Throwable error) {
+                windowErrorSink.accept(error);
+                windowClosed(false, cameraAttemptedThisPass);
+            }
+        }
+
+        private void windowClosed(boolean success, boolean cameraAttemptedThisPass) {
+            if (!isCurrent()) return;
+            if (!success) {
+                scheduleRetry();
+                return;
+            }
+            retryCanceller.run();
+            if (!cameraClosed && !cameraAttemptedThisPass) attemptCameraClose();
+            if (!cameraClosed) {
+                scheduleRetry();
+                return;
+            }
+            finished = true;
+            finishedSink.accept(this);
+        }
+
+        private void attemptCameraClose() {
+            closeAttempts++;
+            try {
+                cameraClosed |= cameraCloser.close(requestId);
+            } catch (Throwable error) {
+                cameraErrorSink.accept(error);
+            }
+        }
+
+        private void scheduleRetry() {
+            retrySink.accept(cameraClosed);
+            retryScheduler.accept(() -> closeWindow(false));
+        }
+
+        private boolean isCurrent() {
+            return !finished && current.test(this);
+        }
+
+        int closeAttempts() {
+            return closeAttempts;
+        }
+
+        boolean cameraClosed() {
+            return cameraClosed;
+        }
     }
 
     private void emit(String kind, Object... fields) {
@@ -540,7 +630,7 @@ final class ReverseCameraController {
         writeSourceCrop(editor, cameraIndex, crop, false);
     }
 
-    private static ReverseCameraLayout.Rect loadCorrectedSourceCrop(
+    static ReverseCameraLayout.Rect loadCorrectedSourceCrop(
             SharedPreferences settings, int cameraIndex,
             ReverseCameraLayout.Rect fallback) {
         String prefix = correctedSourceCropPrefix(cameraIndex);
@@ -558,7 +648,7 @@ final class ReverseCameraController {
         editor.apply();
     }
 
-    private static void writeSourceCrop(
+    static void writeSourceCrop(
             SharedPreferences.Editor editor, int cameraIndex,
             ReverseCameraLayout.Rect crop, boolean corrected) {
         String prefix = corrected ? correctedSourceCropPrefix(cameraIndex) : null;
@@ -597,6 +687,16 @@ final class ReverseCameraController {
                 throw new IllegalArgumentException("unsupported reverse camera index: "
                         + cameraIndex);
         }
+    }
+
+    static String paneSettingKey(int cameraIndex, String field) {
+        CameraDewarpConfig.lensForReverseCamera(cameraIndex);
+        if (!"left".equals(field) && !"top".equals(field)
+                && !"width".equals(field) && !"height".equals(field)
+                && !"rotation_degrees".equals(field)) {
+            throw new IllegalArgumentException("invalid reverse pane field");
+        }
+        return PREF_PREFIX + cameraIndex + "_" + field;
     }
 
     private static int readDisplayMode(SharedPreferences settings, int cameraIndex) {

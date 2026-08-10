@@ -25,6 +25,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private int completedFrameRequestId;
     private boolean visible;
     private boolean closing;
+    private boolean blockedRevealReported;
 
     ShellReverseCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
         this.context = context;
@@ -44,6 +45,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         }
         requestId = spec.requestId;
         completedFrameRequestId = 0;
+        blockedRevealReported = false;
         visible = false;
         if (root == null) createWindow(display, size, spec);
         else {
@@ -75,6 +77,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         requireRequest(expectedRequestId);
         root.armFrames(expectedRequestId, expectedGenerations);
         completedFrameRequestId = 0;
+        blockedRevealReported = false;
         emit("reverse_overlay_frame", "state", "armed",
                 "request_id", requestId,
                 "surface_generations", Arrays.toString(expectedGenerations));
@@ -85,6 +88,12 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         if (nextVisible) {
             if (!root.framesReady(expectedRequestId, expectedGenerations)
                     || completedFrameRequestId != expectedRequestId) {
+                if (!blockedRevealReported) {
+                    blockedRevealReported = true;
+                    emit("reverse_overlay_frame", "state", "reveal_blocked",
+                            "request_id", requestId,
+                            "surface_generations", Arrays.toString(expectedGenerations));
+                }
                 throw new IllegalStateException("reverse first frames not confirmed");
             }
         }
@@ -120,6 +129,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         completedFrameRequestId = 0;
         surfaceGenerations = new int[3];
         closing = false;
+        blockedRevealReported = false;
     }
 
     boolean isOpen() {
@@ -141,6 +151,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         completedFrameRequestId = frameRequestId;
         emit("reverse_overlay_first_frames", "request_id", requestId,
                 "surface_generations", Arrays.toString(generations));
+    }
+
+    @Override
+    public void onReverseFrameGateBlocked(
+            int frameRequestId, String reason, int source, int expectedGeneration,
+            int actualGeneration) {
+        emit("reverse_overlay_frame", "state", "frame_blocked",
+                "request_id", frameRequestId, "reason", reason,
+                "source", source, "expected_generation", expectedGeneration,
+                "actual_generation", actualGeneration);
     }
 
     @Override
