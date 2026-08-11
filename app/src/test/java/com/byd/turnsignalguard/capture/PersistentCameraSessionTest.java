@@ -119,8 +119,8 @@ public final class PersistentCameraSessionTest {
         FakeShellClose shell = new FakeShellClose(trace);
 
         session.startProducer(camera, fanout, session.activityGroup,
-                surfaces(1), new int[]{0}, 41,
-                "reverse_preview_with_stock_base", true, true);
+                surfaces(4), new int[]{0, 1, 2, 3}, 41,
+                "reverse_preview_with_stock_base", false, true, true);
         session.attach(camera, session.reverseGroup,
                 surfaces(3), new int[]{1, 2, 3}, 42,
                 "reverse_overlay", true, false,
@@ -134,8 +134,41 @@ public final class PersistentCameraSessionTest {
         assertEquals(41, terminal.field("request_id"));
         assertEquals("replace_with_multi_preview", terminal.field("reason"));
         assertEquals(4, terminal.field("producer_epoch"));
-        assertEquals(0, countPrefix(trace.values, "remove:"));
+        assertEquals(1, count(trace.values, "add:0"));
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertEquals(0, count(trace.values, "source:0"));
+        assertEquals(0, count(trace.values, "target-add:0"));
         assertTrue(trace.values.contains("shell:replace_with_multi_preview:41"));
+    }
+
+    @Test
+    public void directInputIsNotRemovedTwiceAfterPartialDetachFailure() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+
+        session.startProducer(camera, fanout, session.activityGroup,
+                surfaces(4), new int[]{0, 1, 2, 3}, 43,
+                "reverse_preview_with_stock_base", false, true, true);
+        fanout.failDetachCall = 1;
+
+        CameraHelperMain.HelperBinder.PersistentSessionFailure failure;
+        try {
+            session.close(camera, session.activityGroup, "camera_shell_died", 43,
+                    events, shell, 7, 4);
+            fail("partial detach should fail");
+            return;
+        } catch (CameraHelperMain.HelperBinder.PersistentSessionFailure expected) {
+            failure = expected;
+        }
+        assertTrue(failure.fatal);
+        session.tearDown(camera, failure.reason, failure.getCause(),
+                true, 43, false, shell, events, 4);
+
+        assertEquals(1, count(trace.values, "remove:0"));
     }
 
     @Test
@@ -235,7 +268,7 @@ public final class PersistentCameraSessionTest {
         session.startProducer(camera, fanout, session.overlayGroup,
                 surfaces(1), new int[]{2}, 76, "rear_left", false, false);
 
-        assertTrue(session.failConsumer(null, 2,
+        assertTrue(session.failConsumer(camera, null, 2,
                 new IllegalStateException("swap failed"), events,
                 new FakeShellClose(trace), 7, 7));
 
@@ -433,7 +466,7 @@ public final class PersistentCameraSessionTest {
         session.overlayGroup.attached = false;
         fanout.failAttachCall = 3;
 
-        assertTrue(session.failConsumer(null, 3,
+        assertTrue(session.failConsumer(camera, null, 3,
                 new IllegalStateException("swap failed"), events,
                 new FakeShellClose(trace), 7, 14));
 

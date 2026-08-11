@@ -16,6 +16,10 @@ final class CameraTransition {
         return pendingToken != null;
     }
 
+    boolean matches(String token) {
+        return pendingToken != null && pendingToken.equals(token);
+    }
+
     boolean complete(String token) {
         if (pendingToken == null || !pendingToken.equals(token)) return false;
         pendingToken = null;
@@ -28,5 +32,9 @@ final class CameraTransition {
 
     static boolean owns(String reason) {
         return reason != null && reason.startsWith(PREFIX);
+    }
+
+    static boolean reasonEquals(String token, String reason) {
+        return owns(token) && reason != null && token.endsWith(":" + reason);
     }
 }

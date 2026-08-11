@@ -69,7 +69,7 @@ public final class CameraShellMain {
         }
     }
 
-    private static final class ShellBinder extends Binder {
+    static final class ShellBinder extends Binder {
         private final Handler handler;
         private final int appUid;
         private final int versionCode;
@@ -342,7 +342,18 @@ public final class CameraShellMain {
         }
 
         private void closePreview(String reason, int expectedRequestId) {
-            if (!preview.isOpen()) return;
+            if (!preview.isOpen()) {
+                int requestId = expectedRequestId > 0
+                        ? expectedRequestId : activePreviewRequestId;
+                activePreviewRequestId = 0;
+                if (requestId > 0) {
+                    emit("camera_closed", "renderer", "stock_avm_shell",
+                            "view", "unknown",
+                            "reason", reason == null ? "unknown" : reason,
+                            "request_id", requestId, "error", "");
+                }
+                return;
+            }
             if (expectedRequestId > 0 && expectedRequestId != activePreviewRequestId) {
                 emit("camera_close_ignored", "renderer", "stock_avm_shell",
                         "reason", reason == null ? "unknown" : reason,

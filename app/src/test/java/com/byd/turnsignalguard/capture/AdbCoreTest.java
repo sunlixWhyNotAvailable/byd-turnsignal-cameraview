@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(64, BuildConfig.VERSION_CODE);
+        assertEquals(69, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -898,6 +898,10 @@ public final class AdbCoreTest {
                 true, 33, 0, 32));
         assertFalse(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
                 false, 33, 33, 33));
+        assertEquals(41, CameraHelperMain.HelperBinder.cameraRequestIdForClose(
+                true, 41, 0));
+        assertEquals(42, CameraHelperMain.HelperBinder.cameraRequestIdForClose(
+                false, 41, 42));
         assertTrue(TurnSignalController.shouldQueueCameraRecovery(false, false));
         assertFalse(TurnSignalController.shouldQueueCameraRecovery(false, true));
         assertFalse(TurnSignalController.shouldQueueCameraRecovery(true, false));

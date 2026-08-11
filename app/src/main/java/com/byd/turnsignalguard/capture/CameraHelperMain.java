@@ -49,6 +49,8 @@ final class CameraHelperMain {
     static final String CAMERA_OWNER_ACTIVITY = "activity";
     static final String CAMERA_OWNER_OVERLAY = "overlay";
     static final String CAMERA_OWNER_REVERSE = "reverse";
+    static final String ACTIVITY_RESUME_COLD_RESET = "activity_resume_cold_reset";
+    static final String COLD_RESET_DEFERRED_REVERSE = "camera_close_deferred_reverse";
 
     private static final String TAG = "BydCameraProbe";
     private static final String COUNTER_PREFS = "lifetime_counters";
@@ -59,12 +61,9 @@ final class CameraHelperMain {
     };
     private CameraHelperMain() {}
 
-    static final class HelperBinder extends Binder {
+    static class HelperBinder extends Binder {
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
         private final TurnSignalController turnController;
-        private final CameraWorkerClient workerClient;
-        private final boolean cameraWorkerMode;
-        private final long workerEpoch;
         private final Consumer<String> logSink;
         private final SharedPreferences counters;
         private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
@@ -78,7 +77,7 @@ final class CameraHelperMain {
         private int producerCameraId = -1;
         private int producerEpoch;
         private DirectCameraSourceHub rawSourceHub;
-        private long oneShotOwnerQuarantineEpoch;
+        private boolean unconfirmedOneShotOwner;
         private Surface surface;
         private int previewIndex;
         private Surface[] multiSurfaces = new Surface[0];
@@ -102,30 +101,10 @@ final class CameraHelperMain {
 
         HelperBinder(Context context, Consumer<String> logSink) {
             this.logSink = logSink;
-            cameraWorkerMode = false;
-            workerEpoch = 0;
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             migrateLegacyCounters(context);
             turnController = new TurnSignalController(
                     context, mainHandler, this::acceptShellEvent, this::acceptControllerEvent);
-            workerClient = new CameraWorkerClient(
-                    context, mainHandler, this::acceptWorkerEvent);
-        }
-
-        private HelperBinder(
-                Context context, Consumer<String> logSink, long workerEpoch) {
-            this.logSink = logSink;
-            cameraWorkerMode = true;
-            this.workerEpoch = workerEpoch;
-            counters = null;
-            turnController = null;
-            workerClient = null;
-        }
-
-        static HelperBinder cameraWorker(
-                Context context, Consumer<String> logSink, long workerEpoch) {
-            if (workerEpoch == 0) throw new IllegalArgumentException("worker epoch required");
-            return new HelperBinder(context, logSink, workerEpoch);
         }
 
         void startGuardRuntime() {
@@ -153,15 +132,9 @@ final class CameraHelperMain {
 
         void shutdown(boolean terminateShells) {
             turnController.shutdown(terminateShells);
-            workerClient.shutdown("service_destroyed");
+            closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", terminateShells);
-        }
-
-        synchronized void shutdownCameraWorker(String reason) {
-            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
-            workerCloseAll(reason);
-            emit("camera_worker_shutdown", "reason", reason);
         }
 
         @Override
@@ -194,9 +167,17 @@ final class CameraHelperMain {
                 if (code == TX_CLOSE) {
                     String reason = data.readString();
                     int requestId = data.readInt();
-                    requireActivityRequestId(requestId);
-                    String result = closeCameraForOwner(
-                            CAMERA_OWNER_ACTIVITY, reason, requestId);
+                    String result;
+                    if (requestId == 0 && CameraTransition.reasonEquals(
+                            reason, ACTIVITY_RESUME_COLD_RESET)) {
+                        result = shouldDeferActivityColdReset(activeReverseControllerRequestId)
+                                ? result(COLD_RESET_DEFERRED_REVERSE, null)
+                                : closeCamera(reason);
+                    } else {
+                        requireActivityRequestId(requestId);
+                        result = closeCameraForOwner(
+                                CAMERA_OWNER_ACTIVITY, reason, requestId);
+                    }
                     reply.writeNoException();
                     reply.writeString(result);
                     return true;
@@ -283,7 +264,6 @@ final class CameraHelperMain {
         }
 
         synchronized boolean discoverCamera() {
-            if (!cameraWorkerMode) return workerClient.discoverCamera();
             cameraId = -1;
             cameraTag = "none";
             discoveryError = null;
@@ -344,7 +324,6 @@ final class CameraHelperMain {
             emit("reverse_camera_state",
                     "active", activeReverseControllerRequestId > 0,
                     "request_id", activeReverseControllerRequestId);
-            workerClient.reportState();
             discoverCamera();
             turnController.reportStatus();
             return true;
@@ -358,6 +337,10 @@ final class CameraHelperMain {
                 }
             }
             return 0;
+        }
+
+        static boolean shouldDeferActivityColdReset(int reverseRequestId) {
+            return reverseRequestId > 0;
         }
 
         private synchronized void disconnectCallback(
@@ -388,20 +371,6 @@ final class CameraHelperMain {
                 String requestedCameraTag,
                 String requestedCameraOwner,
                 int requestId) {
-            if (!cameraWorkerMode) {
-                String workerTag = isAllowedDirectCameraTag(requestedCameraTag)
-                        ? requestedCameraTag : "pano_h";
-                if ("pano_h".equals(workerTag)) {
-                    return workerClient.openGroup(
-                            requestedCameraOwner, new Surface[]{requestedSurface},
-                            new int[]{requestedIndex}, requestId,
-                            requestedView == null ? "unknown" : requestedView,
-                            persistentActivityExclusive(stockInput), stockInput, null);
-                }
-                return workerClient.openDirect(
-                        requestedSurface, workerTag, requestedIndex,
-                        requestedCameraOwner, requestId, true);
-            }
             if (requestedIndex < 0 || requestedIndex > 4) {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Preview index must be 0..4");
@@ -430,23 +399,7 @@ final class CameraHelperMain {
                 return result("camera_busy", "reverse camera owns AVM",
                         requestedCameraId, requestedCameraTag);
             }
-            if (closeExisting) {
-                String closeResult = closeCamera("replace_preview");
-                if (!isSuccessfulCameraCloseResult(closeResult)) {
-                    oneShotOwnerQuarantineEpoch = workerEpoch;
-                    requestedSurface.release();
-                    String error = "prior camera owner close was not confirmed";
-                    emit("camera_error", "stage", "one_shot_owner_unconfirmed",
-                            "camera_owner", requestedCameraOwner,
-                            "request_id", requestId,
-                            "preview_index", requestedIndex,
-                            "producer_epoch", producerEpoch,
-                            "error", error);
-                    return result("camera_error", error,
-                            requestedCameraId, requestedCameraTag);
-                }
-            }
-            producerEpoch++;
+            if (closeExisting) closeCamera("replace_preview");
             if (requestedCameraId < 0) {
                 requestedSurface.release();
                 String error = discoveryError == null ? "Camera was not discovered" : discoveryError;
@@ -458,7 +411,6 @@ final class CameraHelperMain {
 
             Object opened = null;
             try {
-                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -496,7 +448,6 @@ final class CameraHelperMain {
                         "request_id", requestId,
                         "renderer", stockInput ? "stock_avm_shell" : "direct_avm",
                         "view", viewName, "preview_index", previewIndex,
-                        "producer_epoch", producerEpoch,
                         "input_for_stock_avm", stockInput,
                         "add_surface", added, "set_surface", set, "start_preview", started);
                 return result("camera_opened", null, requestedCameraId, requestedCameraTag);
@@ -514,8 +465,7 @@ final class CameraHelperMain {
                         "camera_tag", requestedCameraTag, "view", requestedView,
                         "camera_owner", requestedCameraOwner,
                         "request_id", requestId,
-                        "preview_index", requestedIndex,
-                        "producer_epoch", producerEpoch, "error", message);
+                        "preview_index", requestedIndex, "error", message);
                 return result("camera_error", message,
                         requestedCameraId, requestedCameraTag);
             }
@@ -630,10 +580,23 @@ final class CameraHelperMain {
                 return;
             }
             Surface[] combined = {inputSurface, direct[0], direct[1], direct[2]};
-            String openResult = attachPersistentGroup(
-                    activityGroup, combined, new int[]{0, 1, 2, 3}, requestId,
-                    "reverse_preview_with_stock_base", false, true,
-                    null, "reverse_preview_open");
+            String openResult;
+            try {
+                openResult = attachPersistentGroup(
+                        activityGroup, combined, new int[]{0, 1, 2, 3}, requestId,
+                        "reverse_preview_with_stock_base", false, true,
+                        null, "reverse_preview_open", true);
+            } catch (Throwable error) {
+                // attachPersistentGroup owns and releases the combined Surfaces on
+                // validation failure. Consume the callback here so its wrapper
+                // cannot release the stock input a second time.
+                stockCameraRequested = false;
+                emit("camera_error", "stage", "reverse_preview_open",
+                        "camera_tag", "pano_h", "camera_owner", CAMERA_OWNER_ACTIVITY,
+                        "request_id", requestId, "error", summary(error));
+                turnController.closeStockAvm("reverse_preview_direct_open_failed", requestId);
+                return;
+            }
             emit("camera_input_surface_attached", "view", viewName,
                     "result", openResult, "preview_indexes", "[0, 1, 2, 3]");
             if (openResult.contains("camera_error") || openResult.contains("camera_busy")) {
@@ -739,7 +702,6 @@ final class CameraHelperMain {
             boolean[] attached = new boolean[indexes.length];
             boolean activityAttached = false;
             try {
-                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -903,11 +865,6 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Camera tag is not allowed: " + requestedTag);
             }
-            if (!cameraWorkerMode) {
-                return workerClient.openDirect(
-                        requestedSurface, requestedTag, requestedIndex,
-                        requestedOwner, requestId, exclusive);
-            }
             if ("pano_h".equals(requestedTag)) {
                 ConsumerGroup group = CAMERA_OWNER_OVERLAY.equals(requestedOwner)
                         ? overlayGroup : activityGroup;
@@ -1036,22 +993,13 @@ final class CameraHelperMain {
         }
 
         synchronized String closeCamera(String reason) {
-            if (!cameraWorkerMode) {
-                boolean closeStock = stockCameraRequested;
-                int stockRequestId = pendingStockCameraRequestId;
-                stockCameraRequested = false;
-                pendingStockCameraRequestId = 0;
-                releaseSurfaces(pendingReversePreviewSurfaces);
-                pendingReversePreviewSurfaces = new Surface[0];
-                pendingReversePreviewRequestId = 0;
-                String result = workerClient.closeAll(reason);
-                if (closeStock) turnController.closeStockAvm(reason, stockRequestId);
-                return result;
+            if (CameraTransition.reasonEquals(reason, ACTIVITY_RESUME_COLD_RESET)
+                    || "service_destroyed".equals(reason)) {
+                return persistentPanoProducer
+                        ? tearDownPersistentProducer(reason, null)
+                        : closeOneShotCamera(reason, false);
             }
             if (persistentPanoProducer) {
-                if ("service_destroyed".equals(reason)) {
-                    return tearDownPersistentProducer(reason, null);
-                }
                 ConsumerGroup active = reverseGroup.has()
                         ? reverseGroup : activityGroup.has() ? activityGroup : overlayGroup;
                 return active.has()
@@ -1139,7 +1087,7 @@ final class CameraHelperMain {
                 }
                 if (first != null) {
                     error = summary(first);
-                    oneShotOwnerQuarantineEpoch = workerEpoch;
+                    unconfirmedOneShotOwner = true;
                 }
                 emit("camera_closed", "reason", reason == null ? "unknown" : reason,
                         "view", activeView, "preview_index", activeIndex,
@@ -1169,29 +1117,8 @@ final class CameraHelperMain {
             return closeCameraForOwner(expectedOwner, reason, currentRequestId(expectedOwner));
         }
 
-        boolean resetCameraWorkerRecovery(CameraWorkerProtocol.Owner owner) {
-            if (cameraWorkerMode) {
-                throw new IllegalStateException("recovery reset belongs to controller process");
-            }
-            return workerClient.resetRecovery(owner);
-        }
-
         synchronized String closeCameraForOwner(
                 String expectedOwner, String reason, int expectedRequestId) {
-            if (!cameraWorkerMode) {
-                String result = workerClient.closeOwner(
-                        expectedOwner, reason, expectedRequestId);
-                if (CAMERA_OWNER_ACTIVITY.equals(expectedOwner)
-                        && stockCameraRequested
-                        && (expectedRequestId <= 0
-                                || expectedRequestId == pendingStockCameraRequestId)) {
-                    int stockRequestId = pendingStockCameraRequestId;
-                    stockCameraRequested = false;
-                    pendingStockCameraRequestId = 0;
-                    turnController.closeStockAvm(reason, stockRequestId);
-                }
-                return result;
-            }
             if (persistentPanoProducer) {
                 ConsumerGroup group = groupForOwner(expectedOwner);
                 if (group == null) return result("camera_close_ignored", null);
@@ -1222,11 +1149,14 @@ final class CameraHelperMain {
                         "request_reason", reason == null ? "unknown" : reason);
                 return result("camera_close_ignored", null, activeCameraId, activeCameraTag);
             }
-            if (expectedRequestId > 0 && activeCameraRequestId != expectedRequestId) {
+            int closeRequestId = cameraRequestIdForClose(
+                    stockCameraRequested, pendingStockCameraRequestId,
+                    activeCameraRequestId);
+            if (expectedRequestId > 0 && closeRequestId != expectedRequestId) {
                 emit("camera_close_ignored", "reason", "request_mismatch",
                         "expected_owner", expectedOwner,
                         "expected_request_id", expectedRequestId,
-                        "active_request_id", activeCameraRequestId,
+                        "active_request_id", closeRequestId,
                         "request_reason", reason == null ? "unknown" : reason);
                 return result("camera_close_ignored", null, activeCameraId, activeCameraTag);
             }
@@ -1242,47 +1172,20 @@ final class CameraHelperMain {
                     CAMERA_OWNER_REVERSE, reason, expectedRequestId));
         }
 
-        synchronized String workerOpenGroup(
-                String owner, Surface[] requestedSurfaces, int[] requestedIndexes,
-                int requestId, String requestedView, boolean exclusive,
-                boolean shellOwned, int[] profileIds) {
-            if (!cameraWorkerMode || !CameraWorkerProtocol.allowedOwner(owner)) {
-                releaseSurfaces(requestedSurfaces);
-                throw new IllegalArgumentException("camera worker owner rejected");
-            }
-            ConsumerGroup group = groupForOwner(owner);
+        private synchronized String attachPersistentGroup(
+                ConsumerGroup target,
+                Surface[] requestedSurfaces,
+                int[] requestedIndexes,
+                int requestId,
+                String requestedView,
+                boolean exclusive,
+                boolean shellOwned,
+                int[] profileIds,
+                String errorStage) {
             return attachPersistentGroup(
-                    group, requestedSurfaces, requestedIndexes, requestId,
-                    requestedView, exclusive, false, profileIds, "worker_open");
-        }
-
-        synchronized String workerOpenDirect(
-                Surface requestedSurface, String tag, int index,
-                String owner, int requestId, boolean exclusive) {
-            if (!cameraWorkerMode) {
-                requestedSurface.release();
-                throw new IllegalStateException("direct open outside camera worker");
-            }
-            return openDirectCamera(
-                    requestedSurface, tag, index, owner, requestId, exclusive);
-        }
-
-        synchronized String workerCloseOwner(
-                String owner, String reason, int requestId) {
-            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
-            return closeCameraForOwner(owner, reason, requestId);
-        }
-
-        synchronized String workerCloseAll(String reason) {
-            if (!cameraWorkerMode) throw new IllegalStateException("not camera worker");
-            if (persistentPanoProducer) {
-                return tearDownPersistentProducer(reason, null);
-            }
-            return closeOneShotCamera(reason, false);
-        }
-
-        synchronized int workerProducerEpoch() {
-            return producerEpoch;
+                    target, requestedSurfaces, requestedIndexes, requestId,
+                    requestedView, exclusive, shellOwned, profileIds,
+                    errorStage, false);
         }
 
         private synchronized String attachPersistentGroup(
@@ -1294,12 +1197,8 @@ final class CameraHelperMain {
                 boolean exclusive,
                 boolean shellOwned,
                 int[] profileIds,
-                String errorStage) {
-            if (!cameraWorkerMode) {
-                return workerClient.openGroup(
-                        target.owner, requestedSurfaces, requestedIndexes, requestId,
-                        requestedView, exclusive, shellOwned, profileIds);
-            }
+                String errorStage,
+                boolean firstSurfaceDirect) {
             String validation = validateBatch(requestedSurfaces, requestedIndexes);
             if (validation != null) {
                 releaseSurfaces(requestedSurfaces);
@@ -1319,7 +1218,7 @@ final class CameraHelperMain {
                 return persistentBusy(target.owner, requestId, errorStage);
             }
             if (rejectUnconfirmedOwner(
-                    oneShotOwnerQuarantineEpoch == workerEpoch,
+                    unconfirmedOneShotOwner,
                     () -> releaseSurfaces(requestedSurfaces), this::emit,
                     target.owner, requestId, requestedIndexes)) {
                 return result("camera_error", "prior camera owner close was not confirmed",
@@ -1329,7 +1228,7 @@ final class CameraHelperMain {
                 String closeResult = closeOneShotCamera(
                         "replace_with_persistent_pano", false);
                 if (!canOpenPersistentAfterOneShotClose(closeResult)) {
-                    oneShotOwnerQuarantineEpoch = workerEpoch;
+                    unconfirmedOneShotOwner = true;
                     rejectUnconfirmedOwner(true,
                             () -> releaseSurfaces(requestedSurfaces), this::emit,
                             target.owner, requestId, requestedIndexes);
@@ -1338,8 +1237,6 @@ final class CameraHelperMain {
                 }
             }
 
-            boolean startingProducer = shouldStartPersistentProducer(camera != null);
-            if (startingProducer) producerEpoch++;
             int requestedCameraId = panoCameraId();
             if (requestedCameraId < 0) {
                 releaseSurfaces(requestedSurfaces);
@@ -1350,11 +1247,11 @@ final class CameraHelperMain {
                 return result("camera_error", error, requestedCameraId, "pano_h");
             }
 
-            if (startingProducer) {
+            if (shouldStartPersistentProducer(camera != null)) {
                 return openPersistentProducer(
                         target, requestedSurfaces, requestedIndexes, requestId,
                         requestedView, exclusive, shellOwned, profileIds,
-                        errorStage, requestedCameraId);
+                        errorStage, requestedCameraId, firstSurfaceDirect);
             }
 
             try {
@@ -1363,7 +1260,7 @@ final class CameraHelperMain {
                         requestedSurfaces, requestedIndexes, requestId,
                         requestedView, exclusive, shellOwned,
                         this::emit, this::cancelPendingStock,
-                        requestedCameraId, producerEpoch);
+                        requestedCameraId, producerEpoch, firstSurfaceDirect);
             } catch (PersistentSessionFailure error) {
                 if (!error.requestedOwnedBySession) releaseSurfaces(requestedSurfaces);
                 if (error.fatal) {
@@ -1407,11 +1304,11 @@ final class CameraHelperMain {
                 boolean shellOwned,
                 int[] profileIds,
                 String errorStage,
-                int requestedCameraId) {
+                int requestedCameraId,
+                boolean firstSurfaceDirect) {
             Object opened = null;
             DirectCameraSourceHub openedHub = null;
             try {
-                requireCameraWorkerOwnership(cameraWorkerMode);
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = avm.getMethod("open", int.class).invoke(null, requestedCameraId);
                 if (opened == null) opened = openWithConstructor(avm, requestedCameraId);
@@ -1437,12 +1334,14 @@ final class CameraHelperMain {
                 rawSourceHub = openedHub;
                 persistentSession.startProducer(
                         port, openedHub, target, requestedSurfaces, requestedIndexes,
-                        requestId, requestedView, exclusive, shellOwned);
+                        requestId, requestedView, exclusive, shellOwned,
+                        firstSurfaceDirect);
 
                 camera = opened;
                 eventCallback = callbackProxy;
                 persistentPanoProducer = true;
                 producerCameraId = requestedCameraId;
+                producerEpoch++;
                 refreshPersistentLegacyState();
                 emit("camera_producer_opened", "camera_id", requestedCameraId,
                         "camera_tag", "pano_h", "producer_epoch", producerEpoch,
@@ -1472,7 +1371,6 @@ final class CameraHelperMain {
                         "camera_tag", "pano_h", "camera_owner", target.owner,
                         "request_id", requestId,
                         "preview_indexes", Arrays.toString(requestedIndexes),
-                        "producer_epoch", producerEpoch,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, "pano_h");
             }
@@ -1484,7 +1382,8 @@ final class CameraHelperMain {
             boolean handled;
             try {
                 handled = persistentSession.failConsumer(
-                        failedSurface, index, error, this::emit, this::cancelPendingStock,
+                        new ReflectivePersistentCameraPort(camera), failedSurface, index,
+                        error, this::emit, this::cancelPendingStock,
                         producerCameraId, producerEpoch);
             } catch (PersistentSessionFailure failure) {
                 tearDownPersistentProducer(
@@ -1566,6 +1465,7 @@ final class CameraHelperMain {
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
+            releaseActivityPreview();
             TeardownOutcome outcome = persistentSession.tearDown(
                     active == null ? null : new ReflectivePersistentCameraPort(active),
                     reason, failure, closeStock, stockRequestId,
@@ -1683,7 +1583,6 @@ final class CameraHelperMain {
         }
 
         private int currentRequestId(String owner) {
-            if (!cameraWorkerMode) return workerClient.currentRequestId(owner);
             ConsumerGroup group = groupForOwner(owner);
             if (group != null && group.has()) return group.requestId;
             return CAMERA_OWNER_ACTIVITY.equals(owner) ? pendingStockCameraRequestId : 0;
@@ -1749,12 +1648,6 @@ final class CameraHelperMain {
                 }
             }
             return null;
-        }
-
-        static void requireCameraWorkerOwnership(boolean cameraWorkerMode) {
-            if (!cameraWorkerMode) {
-                throw new IllegalStateException("AVMCamera is owned only by :camera worker");
-            }
         }
 
         private static void releaseAndClear(ConsumerGroup group) {
@@ -1979,6 +1872,13 @@ final class CameraHelperMain {
                     || activeRequestId == 0 && expectedRequestId == 0;
         }
 
+        static int cameraRequestIdForClose(
+                boolean stockRequested, int pendingStockRequestId,
+                int activeRequestId) {
+            return stockRequested && pendingStockRequestId > 0
+                    ? pendingStockRequestId : activeRequestId;
+        }
+
         static PersistentCloseDecision persistentCloseDecision(
                 boolean hasConsumer, int activeRequestId, int expectedRequestId) {
             if (!hasConsumer) return PersistentCloseDecision.ALREADY_CLOSED;
@@ -2039,23 +1939,34 @@ final class CameraHelperMain {
                     ConsumerGroup target,
                     Surface[] surfaces, int[] indexes, int requestId,
                     String view, boolean exclusive, boolean shellOwned) throws Exception {
+                startProducer(port, requestedFanout, target, surfaces, indexes, requestId,
+                        view, exclusive, shellOwned, false);
+            }
+
+            void startProducer(
+                    PersistentCameraPort port, PersistentSurfaceFanout requestedFanout,
+                    ConsumerGroup target,
+                    Surface[] surfaces, int[] indexes, int requestId,
+                    String view, boolean exclusive, boolean shellOwned,
+                    boolean firstSurfaceDirect) throws Exception {
                 fanout = requestedFanout;
                 boolean targetAttached = false;
                 try {
-                    fanout.attach(surfaces, indexes);
+                    attachGroup(port, surfaces, indexes, firstSurfaceDirect);
                     targetAttached = true;
-                    ensureSources(port, indexes);
+                    ensureSources(port, fanoutIndexes(indexes, firstSurfaceDirect));
                     if (!port.start()) {
                         throw new IllegalStateException("startPreview returned false");
                     }
                     target.set(surfaces, indexes, requestId,
-                            view, exclusive, shellOwned, true);
+                            view, exclusive, shellOwned, true, firstSurfaceDirect);
                     producerOpen = true;
                     restoreFailure = null;
                 } catch (Throwable error) {
                     if (targetAttached) {
                         try {
-                            fanout.detach(surfaces);
+                            detachRequestedGroup(
+                                    port, surfaces, indexes, firstSurfaceDirect);
                         } catch (Throwable ignored) {
                             // The failed hub is released below.
                         }
@@ -2078,8 +1989,19 @@ final class CameraHelperMain {
                     String view, boolean exclusive, boolean shellOwned,
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) throws PersistentSessionFailure {
+                attach(port, target, surfaces, indexes, requestId, view,
+                        exclusive, shellOwned, events, shellClose, cameraId, epoch, false);
+            }
+
+            void attach(
+                    PersistentCameraPort port, ConsumerGroup target,
+                    Surface[] surfaces, int[] indexes, int requestId,
+                    String view, boolean exclusive, boolean shellOwned,
+                    PersistentEventSink events, PersistentShellCloseSink shellClose,
+                    int cameraId, int epoch,
+                    boolean firstSurfaceDirect) throws PersistentSessionFailure {
                 try {
-                    ensureSources(port, indexes);
+                    ensureSources(port, fanoutIndexes(indexes, firstSurfaceDirect));
                 } catch (BatchAttachException error) {
                     throw new PersistentSessionFailure(
                             "raw_source_attach_failed", root(error), true,
@@ -2093,7 +2015,7 @@ final class CameraHelperMain {
                 ConsumerGroup[] detached = groupsToDetach(target, exclusive);
                 for (ConsumerGroup group : detached) {
                     try {
-                        detachGroup(group);
+                        detachGroup(port, group);
                     } catch (Throwable error) {
                         throw new PersistentSessionFailure(
                                 "consumer_detach_failed", root(error), true,
@@ -2102,16 +2024,21 @@ final class CameraHelperMain {
                 }
 
                 try {
-                    fanout.attach(surfaces, indexes);
+                    attachGroup(port, surfaces, indexes, firstSurfaceDirect);
                 } catch (Throwable error) {
                     restoreFailure = null;
-                    restoreGroups(detached, events, shellClose, cameraId, epoch);
+                    boolean rollbackFailed = error instanceof BatchAttachException
+                            && ((BatchAttachException) error).rollbackFailed;
+                    if (!rollbackFailed) {
+                        restoreGroups(port, detached, events, shellClose, cameraId, epoch);
+                    }
                     throw new PersistentSessionFailure(
-                            "consumer_attach_failed", root(error), false, false, false);
+                            "consumer_attach_failed", root(error),
+                            rollbackFailed, false, false);
                 }
 
                 target.set(surfaces, indexes, requestId,
-                        view, exclusive, shellOwned, true);
+                        view, exclusive, shellOwned, true, firstSurfaceDirect);
                 boolean shellCloseQueued = false;
                 if (target == reverseGroup && activityGroup.has()) {
                     ConsumerGroup.Snapshot preempted = activityGroup.snapshot();
@@ -2126,10 +2053,10 @@ final class CameraHelperMain {
                     preempted.release();
                 }
                 if (!exclusive && !restoreCompatibleGroups(
-                        events, shellClose, cameraId, epoch)) {
+                        port, events, shellClose, cameraId, epoch)) {
                     Throwable restoreError = restoreFailure;
                     if (!rollbackRequestedTarget(
-                            target, previous, events, shellClose, cameraId, epoch)) {
+                            port, target, previous, events, shellClose, cameraId, epoch)) {
                         throw new PersistentSessionFailure(
                                 "consumer_restore_rollback_failed", restoreFailure, true,
                                 true, shellCloseQueued);
@@ -2153,17 +2080,18 @@ final class CameraHelperMain {
                 }
                 ConsumerGroup.Snapshot closed = group.snapshot();
                 try {
-                    detachGroup(group);
+                    detachGroup(port, group);
                 } catch (Throwable error) {
                     throw new PersistentSessionFailure(
-                            "consumer_detach_failed", root(error), false,
+                            "consumer_detach_failed", root(error),
+                            group.firstSurfaceDirect,
                             false, false);
                 }
                 group.clear();
                 closed.release();
                 boolean shellCloseQueued = closed.shellOwned
                         && shellClose.close(reason, closed.requestId);
-                restoreCompatibleGroups(events, shellClose, cameraId, epoch);
+                restoreCompatibleGroups(port, events, shellClose, cameraId, epoch);
                 emitConsumerClosed(events, closed.owner, closed.requestId,
                         closed.view, closed.indexes, reason, cameraId, epoch);
                 return new CloseOutcome(decision, shellCloseQueued);
@@ -2187,6 +2115,8 @@ final class CameraHelperMain {
                             "producer_epoch", epoch, "error", terminalError);
                 }
                 if (port != null) {
+                    Throwable directError = detachDirectInputs(port);
+                    if (first == null) first = directError;
                     Throwable detachError = detachSources(port);
                     if (first == null) first = detachError;
                     Throwable closeError = stopAndClosePersistentProducer(port);
@@ -2237,6 +2167,7 @@ final class CameraHelperMain {
             }
 
             private boolean restoreCompatibleGroups(
+                    PersistentCameraPort port,
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) {
                 restoreFailure = null;
@@ -2244,19 +2175,22 @@ final class CameraHelperMain {
                     return true;
                 }
                 return restoreGroups(
-                        new ConsumerGroup[]{overlayGroup, activityGroup},
+                        port, new ConsumerGroup[]{overlayGroup, activityGroup},
                         events, shellClose, cameraId, epoch);
             }
 
             private boolean restoreGroups(
-                    ConsumerGroup[] groups, PersistentEventSink events,
+                    PersistentCameraPort port, ConsumerGroup[] groups,
+                    PersistentEventSink events,
                     PersistentShellCloseSink shellClose, int cameraId, int epoch) {
                 boolean restored = true;
                 for (ConsumerGroup group : groups) {
                     if (!group.has() || group.attached) continue;
                     try {
-                        fanout.attach(group.surfaces, group.indexes);
+                        attachGroup(port, group.surfaces, group.indexes,
+                                group.firstSurfaceDirect);
                         group.attached = true;
+                        group.directSurfaceAttached = group.firstSurfaceDirect;
                         events.emit("camera_consumer_attached",
                                 "camera_owner", group.owner,
                                 "request_id", group.requestId,
@@ -2275,12 +2209,13 @@ final class CameraHelperMain {
             }
 
             private boolean rollbackRequestedTarget(
-                    ConsumerGroup target, ConsumerGroup.Snapshot previous,
+                    PersistentCameraPort port, ConsumerGroup target,
+                    ConsumerGroup.Snapshot previous,
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) {
                 ConsumerGroup.Snapshot requested = target.snapshot();
                 try {
-                    detachGroup(target);
+                    detachGroup(port, target);
                 } catch (Throwable error) {
                     restoreFailure = root(error);
                     if (previous.surfaces.length > 0) {
@@ -2298,9 +2233,11 @@ final class CameraHelperMain {
                     return true;
                 }
                 try {
-                    fanout.attach(previous.surfaces, previous.indexes);
+                    attachGroup(port, previous.surfaces, previous.indexes,
+                            previous.firstSurfaceDirect);
                     target.set(previous.surfaces, previous.indexes, previous.requestId,
-                            previous.view, previous.exclusive, previous.shellOwned, true);
+                            previous.view, previous.exclusive, previous.shellOwned,
+                            true, previous.firstSurfaceDirect);
                     events.emit("camera_consumer_attached",
                             "camera_owner", previous.owner,
                             "request_id", previous.requestId,
@@ -2341,21 +2278,43 @@ final class CameraHelperMain {
                 failed.release();
             }
 
-            private void detachGroup(ConsumerGroup group) throws Exception {
+            private void detachGroup(
+                    PersistentCameraPort port, ConsumerGroup group) throws Exception {
                 if (!group.attached) return;
-                fanout.detach(group.surfaces);
+                Exception first = null;
+                if (group.directSurfaceAttached) {
+                    try {
+                        if (!port.remove(group.surfaces[0], group.indexes[0])) {
+                            first = new IllegalStateException(
+                                    "rmPreviewSurface returned false for direct index "
+                                            + group.indexes[0]);
+                        } else {
+                            group.directSurfaceAttached = false;
+                        }
+                    } catch (Exception error) {
+                        first = error;
+                    }
+                }
+                try {
+                    fanout.detach(fanoutSurfaces(
+                            group.surfaces, group.firstSurfaceDirect));
+                } catch (Exception error) {
+                    if (first == null) first = error;
+                }
+                if (first != null) throw first;
                 group.attached = false;
             }
 
             boolean failConsumer(
-                    Surface failedSurface, int failedIndex, Throwable error,
+                    PersistentCameraPort port, Surface failedSurface,
+                    int failedIndex, Throwable error,
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) throws PersistentSessionFailure {
                 ConsumerGroup group = groupContaining(failedSurface);
                 if (group == null) return false;
                 ConsumerGroup.Snapshot failed = group.snapshot();
                 try {
-                    detachGroup(group);
+                    detachGroup(port, group);
                 } catch (Throwable cleanupError) {
                     throw new PersistentSessionFailure(
                             "consumer_detach_failed", root(cleanupError), true,
@@ -2375,7 +2334,7 @@ final class CameraHelperMain {
                         failed.view, failed.indexes, "consumer_render_failed",
                         cameraId, epoch);
                 failed.release();
-                restoreCompatibleGroups(events, shellClose, cameraId, epoch);
+                restoreCompatibleGroups(port, events, shellClose, cameraId, epoch);
                 return true;
             }
 
@@ -2389,6 +2348,117 @@ final class CameraHelperMain {
             private static boolean contains(Surface[] surfaces, Surface target) {
                 for (Surface surface : surfaces) if (surface == target) return true;
                 return false;
+            }
+
+            private void attachGroup(
+                    PersistentCameraPort port, Surface[] surfaces, int[] indexes,
+                    boolean firstSurfaceDirect) throws Exception {
+                Surface[] targets = fanoutSurfaces(surfaces, firstSurfaceDirect);
+                int[] targetIndexes = fanoutIndexes(indexes, firstSurfaceDirect);
+                boolean fanoutAttached = false;
+                boolean directAttempted = false;
+                try {
+                    fanout.attach(targets, targetIndexes);
+                    fanoutAttached = true;
+                    if (firstSurfaceDirect) {
+                        directAttempted = true;
+                        if (!port.add(surfaces[0], indexes[0])) {
+                            throw new IllegalStateException(
+                                    "addPreviewSurface returned false for direct index "
+                                            + indexes[0]);
+                        }
+                    }
+                } catch (Exception error) {
+                    Exception rollbackError = null;
+                    if (directAttempted) {
+                        try {
+                            if (!port.remove(surfaces[0], indexes[0])) {
+                                rollbackError = new IllegalStateException(
+                                        "rmPreviewSurface returned false for direct index "
+                                                + indexes[0]);
+                            }
+                        } catch (Exception cleanupError) {
+                            rollbackError = cleanupError;
+                        }
+                    }
+                    if (fanoutAttached) {
+                        try {
+                            fanout.detach(targets);
+                        } catch (Exception cleanupError) {
+                            if (rollbackError == null) rollbackError = cleanupError;
+                        }
+                    }
+                    if (rollbackError != null) {
+                        error.addSuppressed(rollbackError);
+                        throw new BatchAttachException(error, true);
+                    }
+                    throw error;
+                }
+            }
+
+            private void detachRequestedGroup(
+                    PersistentCameraPort port, Surface[] surfaces, int[] indexes,
+                    boolean firstSurfaceDirect) throws Exception {
+                Exception first = null;
+                if (firstSurfaceDirect) {
+                    try {
+                        if (!port.remove(surfaces[0], indexes[0])) {
+                            first = new IllegalStateException(
+                                    "rmPreviewSurface returned false for direct index "
+                                            + indexes[0]);
+                        }
+                    } catch (Exception error) {
+                        first = error;
+                    }
+                }
+                try {
+                    fanout.detach(fanoutSurfaces(surfaces, firstSurfaceDirect));
+                } catch (Exception error) {
+                    if (first == null) first = error;
+                }
+                if (first != null) throw first;
+            }
+
+            private Throwable detachDirectInputs(PersistentCameraPort port) {
+                Throwable first = null;
+                for (ConsumerGroup group : new ConsumerGroup[]{
+                        activityGroup, overlayGroup, reverseGroup}) {
+                    if (!group.directSurfaceAttached) continue;
+                    try {
+                        if (!port.remove(group.surfaces[0], group.indexes[0])) {
+                            if (first == null) {
+                                first = new IllegalStateException(
+                                        "rmPreviewSurface returned false for direct index "
+                                                + group.indexes[0]);
+                            }
+                        } else {
+                            group.directSurfaceAttached = false;
+                        }
+                    } catch (Throwable error) {
+                        if (first == null) first = root(error);
+                    }
+                }
+                return first;
+            }
+
+            private static Surface[] fanoutSurfaces(
+                    Surface[] surfaces, boolean firstSurfaceDirect) {
+                if (!firstSurfaceDirect) return surfaces;
+                if (surfaces.length < 2) {
+                    throw new IllegalArgumentException(
+                            "direct input plus at least one fanout Surface required");
+                }
+                return Arrays.copyOfRange(surfaces, 1, surfaces.length);
+            }
+
+            private static int[] fanoutIndexes(
+                    int[] indexes, boolean firstSurfaceDirect) {
+                if (!firstSurfaceDirect) return indexes;
+                if (indexes.length < 2) {
+                    throw new IllegalArgumentException(
+                            "direct input plus at least one fanout index required");
+                }
+                return Arrays.copyOfRange(indexes, 1, indexes.length);
             }
 
             private void ensureSources(PersistentCameraPort port, int[] indexes)
@@ -2526,6 +2596,8 @@ final class CameraHelperMain {
             boolean exclusive;
             boolean shellOwned;
             boolean attached;
+            boolean firstSurfaceDirect;
+            boolean directSurfaceAttached;
 
             ConsumerGroup(String owner) {
                 this.owner = owner;
@@ -2539,6 +2611,15 @@ final class CameraHelperMain {
                     Surface[] nextSurfaces, int[] nextIndexes, int nextRequestId,
                     String nextView, boolean nextExclusive,
                     boolean nextShellOwned, boolean nextAttached) {
+                set(nextSurfaces, nextIndexes, nextRequestId, nextView,
+                        nextExclusive, nextShellOwned, nextAttached, false);
+            }
+
+            void set(
+                    Surface[] nextSurfaces, int[] nextIndexes, int nextRequestId,
+                    String nextView, boolean nextExclusive,
+                    boolean nextShellOwned, boolean nextAttached,
+                    boolean nextFirstSurfaceDirect) {
                 surfaces = nextSurfaces;
                 indexes = nextIndexes.clone();
                 requestId = nextRequestId;
@@ -2546,12 +2627,14 @@ final class CameraHelperMain {
                 exclusive = nextExclusive;
                 shellOwned = nextShellOwned;
                 attached = nextAttached;
+                firstSurfaceDirect = nextFirstSurfaceDirect;
+                directSurfaceAttached = nextAttached && nextFirstSurfaceDirect;
             }
 
             Snapshot snapshot() {
                 return new Snapshot(
                         owner, surfaces, indexes, requestId, view,
-                        exclusive, shellOwned, attached);
+                        exclusive, shellOwned, attached, firstSurfaceDirect);
             }
 
             void clear() {
@@ -2562,6 +2645,8 @@ final class CameraHelperMain {
                 exclusive = false;
                 shellOwned = false;
                 attached = false;
+                firstSurfaceDirect = false;
+                directSurfaceAttached = false;
             }
 
             static final class Snapshot {
@@ -2573,11 +2658,13 @@ final class CameraHelperMain {
                 final boolean exclusive;
                 final boolean shellOwned;
                 final boolean attached;
+                final boolean firstSurfaceDirect;
 
                 Snapshot(
                         String owner, Surface[] surfaces, int[] indexes,
                         int requestId, String view, boolean exclusive,
-                        boolean shellOwned, boolean attached) {
+                        boolean shellOwned, boolean attached,
+                        boolean firstSurfaceDirect) {
                     this.owner = owner;
                     this.surfaces = surfaces;
                     this.indexes = indexes.clone();
@@ -2586,6 +2673,7 @@ final class CameraHelperMain {
                     this.exclusive = exclusive;
                     this.shellOwned = shellOwned;
                     this.attached = attached;
+                    this.firstSurfaceDirect = firstSurfaceDirect;
                 }
 
                 void release() {
@@ -2731,10 +2819,6 @@ final class CameraHelperMain {
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
-            if (!cameraWorkerMode) {
-                workerClient.closeShellOwnedActivity("camera_shell_died");
-                return;
-            }
             if (persistentPanoProducer
                     && shellDeathInvalidatesConsumer(
                             activityGroup.owner, activityGroup.shellOwned)) {
@@ -2789,41 +2873,6 @@ final class CameraHelperMain {
             if (key != null) incrementCounter(key);
             forwardLine(line);
             if (key != null) emitCounters();
-        }
-
-        private void acceptWorkerEvent(String line) {
-            boolean closeStock = false;
-            boolean reversePreviewFailure = false;
-            int requestId = 0;
-            try {
-                JSONObject event = new JSONObject(line);
-                String kind = event.optString("kind");
-                requestId = event.optInt("request_id", 0);
-                synchronized (this) {
-                    closeStock = shouldCloseStockForWorkerTerminal(
-                            stockCameraRequested, pendingStockCameraRequestId,
-                            activeCameraRequestId, requestId, kind,
-                            event.optString("camera_owner"));
-                    reversePreviewFailure = "camera_error".equals(kind)
-                            && matchesPendingCameraRequest(
-                                    pendingReversePreviewRequestId, requestId);
-                }
-            } catch (Throwable ignored) {
-            }
-            acceptShellEvent(line);
-            if (closeStock && !reversePreviewFailure) {
-                turnController.closeStockAvm("camera_worker_terminal", requestId);
-            }
-        }
-
-        static boolean shouldCloseStockForWorkerTerminal(
-                boolean stockRequested, int pendingRequestId, int activeRequestId,
-                int eventRequestId, String kind, String owner) {
-            return ("camera_error".equals(kind) || "camera_closed".equals(kind))
-                    && CAMERA_OWNER_ACTIVITY.equals(owner)
-                    && matchesCurrentStockRequest(
-                            stockRequested, pendingRequestId,
-                            activeRequestId, eventRequestId);
         }
 
         private void emitMusicJournalSnapshot() {
