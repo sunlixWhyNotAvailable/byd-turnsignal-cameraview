@@ -619,7 +619,7 @@ public final class CameraProbeActivity extends Activity
         // Its reply may still arrive on the serialized IPC executor; treat it
         // as stale and let the next resume issue one fresh reset.
         boolean retainColdReset = shouldRetainColdResetAfterCancel(
-                activityResumed, shutdownRequested, hasAutoPreviewIntent());
+                activityResumed, shutdownRequested);
         activityColdResetInFlight = false;
         if (retainColdReset) activityColdResetRequired = true;
         retryStockViewpoint = -1;
@@ -5772,7 +5772,7 @@ public final class CameraProbeActivity extends Activity
         if (activityColdResetInFlight && !cameraTransition.pending()) {
             activityColdResetInFlight = false;
             if (shouldRetainColdResetAfterCancel(
-                    activityResumed, shutdownRequested, hasAutoPreviewIntent())) {
+                    activityResumed, shutdownRequested)) {
                 activityColdResetRequired = true;
             }
         }
@@ -5896,8 +5896,8 @@ public final class CameraProbeActivity extends Activity
     }
 
     static boolean shouldRetainColdResetAfterCancel(
-            boolean activityResumed, boolean shutdownRequested, boolean autoIntent) {
-        return !activityResumed && !shutdownRequested && autoIntent;
+            boolean activityResumed, boolean shutdownRequested) {
+        return !activityResumed && !shutdownRequested;
     }
 
     static int expectedColdResetShellRequestId(

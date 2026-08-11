@@ -78,15 +78,13 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
-    public void canceledColdResetRetainsRequirementOnlyForNextResume() {
+    public void stoppedActivityRequiresColdResetEvenWithoutPreviewIntent() {
         assertTrue(CameraProbeActivity.shouldRetainColdResetAfterCancel(
-                false, false, true));
+                false, false));
         assertFalse(CameraProbeActivity.shouldRetainColdResetAfterCancel(
-                true, false, true));
+                true, false));
         assertFalse(CameraProbeActivity.shouldRetainColdResetAfterCancel(
-                false, true, true));
-        assertFalse(CameraProbeActivity.shouldRetainColdResetAfterCancel(
-                false, false, false));
+                false, true));
     }
 
     @Test
