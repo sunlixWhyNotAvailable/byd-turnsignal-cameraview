@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(69, BuildConfig.VERSION_CODE);
+        assertEquals(70, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -473,15 +473,12 @@ public final class AdbCoreTest {
                 false, true, false, true));
         assertEquals("overlay_disabled", BlindSpotOverlayController.cameraRetryBlockReason(
                 false, false, false, true));
-        assertEquals("overlay_suspended", BlindSpotOverlayController.cameraRetryBlockReason(
+        assertEquals("overlay_hard_blocked", BlindSpotOverlayController.cameraRetryBlockReason(
                 false, true, true, true));
         assertEquals("helper_unavailable", BlindSpotOverlayController.cameraRetryBlockReason(
                 false, true, false, false));
         assertEquals("shutdown", BlindSpotOverlayController.cameraRetryBlockReason(
                 true, true, false, true));
-        assertTrue(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 4, 4));
-        assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(true, 2, 4));
-        assertFalse(BlindSpotOverlayController.shouldOverrideCameraRetry(false, 4, 4));
         assertEquals(BlindSpotOverlayController.PREPARATION_WAIT,
                 BlindSpotOverlayController.preparationDecision(4, 3, 0));
         assertEquals(BlindSpotOverlayController.PREPARATION_OPEN,
@@ -507,27 +504,12 @@ public final class AdbCoreTest {
                 "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_discovery", CameraHelperMain.CAMERA_OWNER_OVERLAY));
-        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
-        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                false, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
-        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_REVERSE, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
-        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "apa"));
         assertTrue(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
                 "camera_opened", "stock_avm_shell"));
         assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
                 "camera_error", "stock_avm_shell"));
         assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
                 "camera_opened", "direct_blind_spot"));
-        assertEquals(0, CameraProbeActivity.normalizeReverseInspector(3, true));
-        assertEquals(3, CameraProbeActivity.normalizeReverseInspector(3, false));
-        assertEquals(0, CameraProbeActivity.normalizeReverseInspector(9, false));
     }
 
     @Test
@@ -637,8 +619,6 @@ public final class AdbCoreTest {
         assertEquals("correction_count",
                 CameraHelperMain.lifetimeCounterKey("correction_confirmed"));
         assertEquals(null, CameraHelperMain.lifetimeCounterKey("telemetry_sample"));
-        assertArrayEquals(new String[]{"pano_h", "pano_l", "apa", "byd_apa"},
-                CameraHelperMain.directCameraTags());
         assertTrue(CameraHelperMain.isAllowedDirectCameraTag("pano_h"));
         assertTrue(CameraHelperMain.isAllowedDirectCameraTag("byd_apa"));
         assertFalse(CameraHelperMain.isAllowedDirectCameraTag("front"));
@@ -689,11 +669,6 @@ public final class AdbCoreTest {
         assertFalse(StockAvmPreview.isDisplayReadyStatus("Initialized"));
         assertTrue(StockAvmPreview.isDisplayReadyStatus("Configured"));
         assertTrue(StockAvmPreview.isDisplayReadyStatus("Started"));
-        assertEquals(0, BlindSpotOverlayController.directionToShow(false, 2, 30.0f, 20));
-        assertEquals(0, BlindSpotOverlayController.directionToShow(true, 2, 19.9f, 20));
-        assertEquals(0, BlindSpotOverlayController.directionToShow(true, 6, 30.0f, 20));
-        assertEquals(2, BlindSpotOverlayController.directionToShow(true, 2, 20.0f, 20));
-        assertEquals(4, BlindSpotOverlayController.directionToShow(true, 4, 30.0f, 20));
         assertFalse(BlindSpotWarningRuntime.isValidRaw(-1));
         assertTrue(BlindSpotWarningRuntime.isValidRaw(0));
         assertTrue(BlindSpotWarningRuntime.isValidRaw(1));
@@ -733,17 +708,6 @@ public final class AdbCoreTest {
                 BlindSpotOverlayController.warningEdge(
                         CameraShellProtocol.WARNING_MODE_PULSE, true, 4,
                         true, 0, true, 1));
-        assertEquals(2, BlindSpotOverlayController.previewIndexForDirection(2));
-        assertEquals(3, BlindSpotOverlayController.previewIndexForDirection(4));
-        assertEquals(-1, BlindSpotOverlayController.previewIndexForDirection(6));
-        assertTrue(BlindSpotOverlayController.isMatchingFirstFrame(
-                7, 2, 7, 2, 3, 3));
-        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
-                6, 2, 7, 2, 3, 3));
-        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
-                7, 1, 7, 2, 3, 3));
-        assertFalse(BlindSpotOverlayController.isMatchingFirstFrame(
-                7, 2, 7, 2, 2, 3));
         assertFalse(ShellCameraOverlay.isFramePastStaleBuffer(1));
         assertTrue(ShellCameraOverlay.isFramePastStaleBuffer(2));
         assertTrue(CameraProbeActivity.isIntermediateCameraClose("preview_handoff"));
@@ -771,10 +735,6 @@ public final class AdbCoreTest {
                 BlindSpotOverlayController.DEFAULT_RIGHT_POSITION, false), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.legacyPosition(8, false), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.legacyPosition(8, true), 0.0f);
-        assertArrayEquals(new int[]{691, 518},
-                BlindSpotOverlayController.fitFourThree(691, 917, 636));
-        assertArrayEquals(new int[]{848, 636},
-                BlindSpotOverlayController.fitFourThree(1152, 917, 636));
         assertArrayEquals(new int[]{889, 500},
                 BlindSpotOverlayController.fitAspect(1000, 1000, 500, 16.0f / 9.0f));
         assertArrayEquals(new int[]{500, 500},
@@ -880,10 +840,6 @@ public final class AdbCoreTest {
                 true, 12, 12, "camera_shell_helper"));
         assertFalse(CameraProbeActivity.isCurrentActivityCameraEvent(
                 false, 12, 12, "helper"));
-        assertTrue(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(0, -1));
-        assertTrue(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, 14));
-        assertFalse(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, 13));
-        assertFalse(CameraProbeActivity.isCurrentOrIdleActivityCameraTerminalEvent(14, -1));
         assertTrue(CameraHelperMain.HelperBinder.matchesPendingCameraRequest(21, 21));
         assertFalse(CameraHelperMain.HelperBinder.matchesPendingCameraRequest(22, 21));
         assertTrue(CameraHelperMain.HelperBinder.matchesCurrentStockRequest(
@@ -1443,19 +1399,16 @@ public final class AdbCoreTest {
         assertEquals(2, layout.rear.zOrder);
         assertEquals(0, layout.rearLeft.zOrder);
         assertEquals(1, layout.rearRight.zOrder);
-        layout = ReverseCameraLayout.sendToBack(
-                layout, ReverseCameraLayout.REAR_CAMERA_INDEX);
-        assertEquals(0, layout.rear.zOrder);
-        assertEquals(1, layout.rearLeft.zOrder);
-        assertEquals(2, layout.rearRight.zOrder);
         layout = ReverseCameraLayout.raise(
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
-        assertEquals(2, layout.rearLeft.zOrder);
-        assertEquals(1, layout.rearRight.zOrder);
+        assertEquals(2, layout.rear.zOrder);
+        assertEquals(1, layout.rearLeft.zOrder);
+        assertEquals(0, layout.rearRight.zOrder);
         layout = ReverseCameraLayout.lower(
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
-        assertEquals(1, layout.rearLeft.zOrder);
-        assertEquals(2, layout.rearRight.zOrder);
+        assertEquals(2, layout.rear.zOrder);
+        assertEquals(0, layout.rearLeft.zOrder);
+        assertEquals(1, layout.rearRight.zOrder);
     }
 
     @Test
@@ -1463,9 +1416,6 @@ public final class AdbCoreTest {
         CameraHelperMain.HelperBinder.ActivityPreviewState<String> preview =
                 new CameraHelperMain.HelperBinder.ActivityPreviewState<>();
         preview.set("surface", 2, true);
-        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
         CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> reverseEntry =
                 preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
                         preview.has(), CameraHelperMain.CAMERA_OWNER_REVERSE));
@@ -1474,9 +1424,6 @@ public final class AdbCoreTest {
         assertFalse(reverseEntry.release);
         assertTrue(preview.has());
         assertFalse(preview.attached());
-        assertFalse(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_REVERSE, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
         CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> reverseExit =
                 preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
                         preview.has(), CameraHelperMain.CAMERA_OWNER_REVERSE));
@@ -1485,9 +1432,6 @@ public final class AdbCoreTest {
         assertTrue(preview.has());
         preview.setAttached(true);
         assertTrue(preview.attached());
-        assertTrue(CameraHelperMain.HelperBinder.canAttachActivityPreview(
-                true, CameraHelperMain.CAMERA_OWNER_OVERLAY, "pano_h",
-                CameraHelperMain.CAMERA_OWNER_ACTIVITY, "pano_h"));
         CameraHelperMain.HelperBinder.ActivityPreviewState.Snapshot<String> activityClose =
                 preview.close(CameraHelperMain.HelperBinder.shouldPreserveActivityPreview(
                         preview.has(), CameraHelperMain.CAMERA_OWNER_ACTIVITY));

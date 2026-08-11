@@ -102,6 +102,7 @@ final class BlindSpotOverlayController {
     private CameraHelperMain.HelperBinder helper;
     private boolean suspended;
     private boolean reversePriority;
+    private boolean hardBlocked;
     private long cameraShellEpoch;
     private boolean uiHidden;
     private boolean shutdown;
@@ -129,14 +130,6 @@ final class BlindSpotOverlayController {
         for (CameraProfile profile : CameraProfile.values()) {
             panes[profile.id] = new PaneState(profile);
         }
-    }
-
-    static int directionToShow(boolean valid, int blink, float speedKph, int minSpeedKph) {
-        int mask = CameraProfile.desiredMask(valid, blink, speedKph, Float.NaN,
-                true, minSpeedKph, 300, false, 0, 300, true, 10.0f);
-        if ((mask & CameraProfile.of(CameraProfile.REAR_LEFT).bit()) != 0) return BLINK_LEFT;
-        if ((mask & CameraProfile.of(CameraProfile.REAR_RIGHT).bit()) != 0) return BLINK_RIGHT;
-        return 0;
     }
 
     static int desiredCameraMask(
@@ -308,21 +301,6 @@ final class BlindSpotOverlayController {
                 0, MAX_CORNER_RADIUS_DP);
     }
 
-    static int previewIndexForDirection(int direction) {
-        if (direction == BLINK_LEFT) return CameraProfile.of(CameraProfile.REAR_LEFT).previewIndex;
-        if (direction == BLINK_RIGHT) return CameraProfile.of(CameraProfile.REAR_RIGHT).previewIndex;
-        return -1;
-    }
-
-    static boolean isMatchingFirstFrame(
-            int eventRequestId, int eventGeneration,
-            int activeRequestId, int activeGeneration,
-            int displayedPreviewIndex, int requestedPreviewIndex) {
-        return eventRequestId == activeRequestId
-                && eventGeneration == activeGeneration
-                && displayedPreviewIndex == requestedPreviewIndex;
-    }
-
     static int[] fitAspect(
             int requestedWidth, int maxWidth, int maxHeight, float aspect) {
         float safeAspect = Float.isFinite(aspect) && aspect > 0.0f
@@ -331,11 +309,6 @@ final class BlindSpotOverlayController {
                 Math.min(Math.max(1, maxWidth),
                         Math.round(Math.max(1, maxHeight) * safeAspect))));
         return new int[]{width, Math.max(1, Math.round(width / safeAspect))};
-    }
-
-    static int[] fitFourThree(int requestedWidth, int maxWidth, int maxHeight) {
-        return fitAspect(requestedWidth, maxWidth, maxHeight,
-                DirectCameraCrop.OUTPUT_ASPECT);
     }
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
@@ -349,7 +322,7 @@ final class BlindSpotOverlayController {
         handler.post(() -> {
             if (suspended == value) return;
             suspended = value;
-            priorityChanged("preview_handoff");
+            updateHardBlock("preview_handoff");
         });
     }
 
@@ -357,49 +330,41 @@ final class BlindSpotOverlayController {
         handler.post(() -> {
             if (reversePriority == value) return;
             reversePriority = value;
-            priorityChanged("reverse_priority");
+            updateHardBlock("reverse_priority");
         });
     }
 
-    private void priorityChanged(String reason) {
-        if (suspended || reversePriority) {
-            hideAll(reason);
-            return;
-        }
-        String unavailable = cameraUnavailableReason();
-        if (unavailable != null) {
-            destroyAll(unavailable);
-            return;
-        }
-        if (shouldRearmPreparedOverlay(false, cameraSessionOpen)) {
-            rearmPreparedOverlay();
-        } else if (!cameraOpenPending) {
+    static boolean isHardBlocked(
+            boolean uiHidden, boolean suspended, boolean reversePriority) {
+        return uiHidden || suspended || reversePriority;
+    }
+
+    private boolean isHardBlocked() {
+        return isHardBlocked(uiHidden, suspended, reversePriority);
+    }
+
+    static int hardBlockEdge(boolean previous, boolean next) {
+        return previous == next ? 0 : next ? 1 : -1;
+    }
+
+    private void updateHardBlock(String reason) {
+        boolean next = isHardBlocked();
+        int edge = hardBlockEdge(hardBlocked, next);
+        if (edge == 0) return;
+        hardBlocked = next;
+        if (edge > 0) {
+            cancelCameraRetry("overlay_hard_blocked");
+            destroyAll(reason);
+        } else {
             applySettingsOnMain();
         }
     }
 
-    static boolean shouldRearmPreparedOverlay(boolean blocked, boolean sessionOpen) {
-        return !blocked && sessionOpen;
-    }
-
-    private void rearmPreparedOverlay() {
-        if (!cameraSessionOpen || helper == null) return;
-        for (PaneState pane : panes) {
-            if (!pane.expected || pane.failed || pane.generation <= 0) continue;
-            int frameArmEpoch = pane.freshness.arm();
-            OverlayFrameArm arm = OverlayFrameArm.create(
-                    pane.profile.id, pane.requestId, pane.generation, frameArmEpoch);
-            helper.armOverlayFirstFrame(arm);
-            handler.postDelayed(() -> firstFrameTimedOut(arm),
-                    FIRST_FRAME_TIMEOUT_MS);
-        }
-        evaluate();
-    }
-
     void setUiHidden(boolean value) {
         handler.post(() -> {
+            if (uiHidden == value) return;
             uiHidden = value;
-            evaluate();
+            updateHardBlock("ui_hidden");
         });
     }
 
@@ -441,7 +406,8 @@ final class BlindSpotOverlayController {
                         nextLeftValid, nextLeftRaw, nextRightValid, nextRightRaw));
             } else if ("camera_discovery".equals(kind) && event.optBoolean("ok")) {
                 handler.post(() -> {
-                    if (shouldRebuildAfterCameraDiscovery(hasPreparedOverlay())) {
+                    if (!isHardBlocked()
+                            && shouldRebuildAfterCameraDiscovery(hasPreparedOverlay())) {
                         applySettingsOnMain();
                     }
                 });
@@ -510,6 +476,7 @@ final class BlindSpotOverlayController {
     }
 
     private void applySettingsOnMain() {
+        if (isHardBlocked()) return;
         migrateOverlayPreferences(settings);
         if (cameraUnavailableReason() != null) {
             destroyAll(cameraUnavailableReason());
@@ -521,8 +488,7 @@ final class BlindSpotOverlayController {
     private String cameraUnavailableReason() {
         if (shutdown) return "overlay_shutdown";
         if (!anyLaneEnabled()) return "overlay_disabled";
-        if (suspended) return "overlay_suspended";
-        if (reversePriority) return "reverse_priority";
+        if (isHardBlocked()) return "overlay_hard_blocked";
         if (helper == null) return "helper_unavailable";
         if (windows == null) return "window_manager_unavailable";
         return null;
@@ -534,6 +500,7 @@ final class BlindSpotOverlayController {
     }
 
     private void rebuild(String reason) {
+        if (isHardBlocked()) return;
         cancelCameraRetry(reason);
         destroyAll(reason);
         if (cameraUnavailableReason() != null) return;
@@ -588,7 +555,7 @@ final class BlindSpotOverlayController {
     }
 
     private void maybeOpenCamera() {
-        if (cameraOpenPending || cameraSessionOpen || helper == null) return;
+        if (isHardBlocked() || cameraOpenPending || cameraSessionOpen || helper == null) return;
         List<PaneState> ready = new ArrayList<>();
         int expected = 0;
         int resolved = 0;
@@ -654,7 +621,7 @@ final class BlindSpotOverlayController {
         if (pane == null || pane.requestId != arm.requestId
                 || pane.generation != arm.surfaceGeneration
                 || !pane.freshness.shouldTimeout(arm.frameArmEpoch)
-                || suspended || reversePriority) return;
+                || isHardBlocked()) return;
         cameraUnavailable("first_frame_timeout_" + pane.profile.wireName);
     }
 
@@ -780,7 +747,7 @@ final class BlindSpotOverlayController {
                         DEFAULT_REAR_SHARP_TURN_ANGLE_DEG),
                 settings.getBoolean(PREF_REAR_BSD_ONLY, false),
                 leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
-        if (suspended || reversePriority || uiHidden) desired = 0;
+        if (isHardBlocked()) desired = 0;
         for (PaneState pane : panes) {
             boolean show = (desired & pane.profile.bit()) != 0
                     && pane.expected && pane.freshness.ready() && !pane.failed;
@@ -811,13 +778,9 @@ final class BlindSpotOverlayController {
         for (PaneState pane : panes) {
             if (!pane.profile.rear() || !pane.freshness.ready()
                     || pane.generation <= 0) continue;
-            boolean active = pane.profile.right()
-                    ? BlindSpotWarningRuntime.isActiveRaw(rightBsdValid, rightBsdRaw)
-                    : BlindSpotWarningRuntime.isActiveRaw(leftBsdValid, leftBsdRaw);
-            int edge = pane.visible && active && mode != CameraShellProtocol.WARNING_MODE_OFF
-                    ? (pane.profile.right() ? CameraShellProtocol.WARNING_EDGE_RIGHT
-                            : CameraShellProtocol.WARNING_EDGE_LEFT)
-                    : CameraShellProtocol.WARNING_EDGE_NONE;
+            int edge = warningEdge(mode, pane.visible,
+                    pane.profile.right() ? BLINK_RIGHT : BLINK_LEFT,
+                    leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
             int appliedMode = edge == CameraShellProtocol.WARNING_EDGE_NONE
                     ? CameraShellProtocol.WARNING_MODE_OFF : mode;
             if (pane.warningEdge == edge && pane.warningMode == appliedMode) continue;
@@ -878,22 +841,16 @@ final class BlindSpotOverlayController {
 
     private String cameraRetryBlockReason() {
         return cameraRetryBlockReason(
-                shutdown, anyLaneEnabled(), suspended || reversePriority, helper != null);
+                shutdown, anyLaneEnabled(), isHardBlocked(), helper != null);
     }
 
     static String cameraRetryBlockReason(
-            boolean shutdown, boolean enabled, boolean suspended, boolean helperAvailable) {
+            boolean shutdown, boolean enabled, boolean hardBlocked, boolean helperAvailable) {
         if (shutdown) return "shutdown";
         if (!enabled) return "overlay_disabled";
-        if (suspended) return "overlay_suspended";
+        if (hardBlocked) return "overlay_hard_blocked";
         if (!helperAvailable) return "helper_unavailable";
         return null;
-    }
-
-    static boolean shouldOverrideCameraRetry(
-            boolean retryActive, int activeBlink, int requestedDirection) {
-        return retryActive && activeBlink == requestedDirection
-                && previewIndexForDirection(requestedDirection) >= 0;
     }
 
     private void cancelCameraRetry(String reason) {

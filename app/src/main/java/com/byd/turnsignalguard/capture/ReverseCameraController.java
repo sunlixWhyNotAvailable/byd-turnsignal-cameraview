@@ -390,11 +390,6 @@ final class ReverseCameraController {
         return activeRequestId > 0 && eventRequestId == activeRequestId;
     }
 
-    static boolean shouldAttemptReverseCameraClose(
-            boolean cameraClosed, boolean cameraCloseAttempted) {
-        return !cameraClosed;
-    }
-
     interface CameraCloser {
         boolean close(int requestId) throws Throwable;
     }

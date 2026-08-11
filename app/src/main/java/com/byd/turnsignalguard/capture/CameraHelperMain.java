@@ -2740,15 +2740,6 @@ final class CameraHelperMain {
             }
         }
 
-        static boolean canAttachActivityPreview(
-                boolean cameraOpen, String activeOwner, String activeTag,
-                String requestedOwner, String requestedTag) {
-            return cameraOpen
-                    && CAMERA_OWNER_OVERLAY.equals(activeOwner)
-                    && CAMERA_OWNER_ACTIVITY.equals(requestedOwner)
-                    && requestedTag != null && requestedTag.equals(activeTag);
-        }
-
         private static Surface[] readReverseSurfaces(Parcel data) {
             int count = data.readInt();
             if (count != 4) {
@@ -3037,10 +3028,6 @@ final class CameraHelperMain {
             if (allowed.equals(tag)) return true;
         }
         return false;
-    }
-
-    static String[] directCameraTags() {
-        return DIRECT_CAMERA_TAGS.clone();
     }
 
     private static Object openWithConstructor(Class<?> avm, int cameraId) throws Exception {

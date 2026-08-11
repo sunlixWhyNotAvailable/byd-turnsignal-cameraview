@@ -160,11 +160,6 @@ final class ReverseCameraLayout {
         return reorder(layout, cameraIndex, true);
     }
 
-    static ReverseCameraLayout sendToBack(
-            ReverseCameraLayout layout, int cameraIndex) {
-        return reorder(layout, cameraIndex, false);
-    }
-
     static ReverseCameraLayout raise(ReverseCameraLayout layout, int cameraIndex) {
         return moveOne(layout, cameraIndex, 1);
     }

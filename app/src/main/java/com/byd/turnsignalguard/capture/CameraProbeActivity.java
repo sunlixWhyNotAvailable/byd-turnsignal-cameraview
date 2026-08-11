@@ -2213,14 +2213,6 @@ public final class CameraProbeActivity extends Activity
         if (position != null) position.setBackgroundColor(tabColor(true));
     }
 
-    static int normalizeReverseInspector(int requestedMode, boolean background) {
-        if (background || requestedMode < REVERSE_INSPECTOR_POSITION
-                || requestedMode > REVERSE_INSPECTOR_CORRECTION) {
-            return REVERSE_INSPECTOR_POSITION;
-        }
-        return requestedMode;
-    }
-
     private void updateReversePaneControls(int cameraIndex) {
         if (reverseCameraLayout == null) return;
         int[] paneIds = {ReverseCameraLayout.BACKGROUND_PANE_ID,
@@ -6702,11 +6694,6 @@ public final class CameraProbeActivity extends Activity
         return activeRequestId > 0;
     }
 
-    static boolean shouldAutoOpenSelectedPreview(
-            boolean restoreIntent, int activeReverseRequestId) {
-        return restoreIntent && !shouldDeferActivityPreviewForReverse(activeReverseRequestId);
-    }
-
     static boolean cameraPolicyChanged(
             int savedMinimum, int savedMaximum, int minimum, int maximum) {
         return savedMinimum != minimum || savedMaximum != maximum;
@@ -6923,16 +6910,6 @@ public final class CameraProbeActivity extends Activity
     static boolean shouldResumeActivityCameraRecovery(
             boolean pending, boolean resumed, boolean shellAvailable) {
         return pending && resumed && shellAvailable;
-    }
-
-    static boolean shouldResumeActivityPreview(
-            boolean activityResumed, boolean shutdown, boolean destroyed,
-            boolean autoIntent, int selectedTab, int intentTab,
-            int expectedRequestId, int eventRequestId) {
-        return activityResumed && !shutdown && !destroyed && autoIntent
-                && isAutoPreviewTab(selectedTab) && selectedTab == intentTab
-                && (eventRequestId <= 0
-                        || expectedRequestId > 0 && expectedRequestId == eventRequestId);
     }
 
     static boolean isCurrentActivityCameraTerminalEvent(
@@ -7207,11 +7184,6 @@ public final class CameraProbeActivity extends Activity
             boolean requestedOpen, int activeRequestId, int eventRequestId, String source) {
         return requestedOpen && "helper".equals(source)
                 && activeRequestId > 0 && eventRequestId == activeRequestId;
-    }
-
-    static boolean isCurrentOrIdleActivityCameraTerminalEvent(
-            int activeRequestId, int eventRequestId) {
-        return activeRequestId <= 0 || eventRequestId == activeRequestId;
     }
 
     static boolean isIntermediateCameraClose(String reason) {

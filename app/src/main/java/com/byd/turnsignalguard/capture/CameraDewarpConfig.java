@@ -97,14 +97,6 @@ final class CameraDewarpConfig {
         throw new IllegalArgumentException("invalid reverse camera index");
     }
 
-    static int lensForDirectCamera(int cameraIndex) {
-        if (cameraIndex == 1) return LENS_REAR;
-        if (cameraIndex == 2) return LENS_LEFT;
-        if (cameraIndex == 3) return LENS_RIGHT;
-        if (cameraIndex == 4) return LENS_FRONT;
-        throw new IllegalArgumentException("invalid direct camera index");
-    }
-
     static boolean isValidLens(int lens) {
         return lens >= LENS_LEFT && lens <= LENS_FRONT;
     }

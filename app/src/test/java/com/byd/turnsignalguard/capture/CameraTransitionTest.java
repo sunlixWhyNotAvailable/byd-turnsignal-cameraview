@@ -51,9 +51,6 @@ public final class CameraTransitionTest {
     @Test
     public void foregroundTabSwitchDoesNotRequireLifecycleReset() {
         assertFalse(CameraProbeActivity.shouldDeferActivityPreviewForReverse(0));
-        assertTrue(CameraProbeActivity.shouldAutoOpenSelectedPreview(true, 0));
-        assertFalse(CameraProbeActivity.shouldAutoOpenSelectedPreview(true, 31));
-        assertFalse(CameraProbeActivity.shouldAutoOpenSelectedPreview(false, 0));
         assertTrue(CameraProbeActivity.shouldResumeActivityPreviewAfterStop(
                 false, true, true, false, false));
         assertFalse(CameraProbeActivity.shouldAutoRecoverAfterCameraShellDeath(true));
@@ -138,10 +135,41 @@ public final class CameraTransitionTest {
     }
 
     @Test
-    public void overlayPriorityHandoffPreservesPreparedSession() {
-        assertFalse(BlindSpotOverlayController.shouldRearmPreparedOverlay(true, true));
-        assertTrue(BlindSpotOverlayController.shouldRearmPreparedOverlay(false, true));
-        assertFalse(BlindSpotOverlayController.shouldRearmPreparedOverlay(false, false));
+    public void overlayHardBlockIncludesEveryLifecycleFlag() {
+        assertFalse(BlindSpotOverlayController.isHardBlocked(false, false, false));
+        assertTrue(BlindSpotOverlayController.isHardBlocked(true, false, false));
+        assertTrue(BlindSpotOverlayController.isHardBlocked(false, true, false));
+        assertTrue(BlindSpotOverlayController.isHardBlocked(false, false, true));
+    }
+
+    @Test
+    public void overlayHardBlockDispatchesOnlyAggregateEdges() {
+        boolean blocked = false;
+        int enters = 0;
+        int exits = 0;
+        boolean[][] states = {
+                {false, false, false},
+                {true, false, false},
+                {true, true, false},
+                {false, true, false},
+                {false, false, false},
+                {false, false, true},
+                {true, false, true},
+                {true, false, false},
+                {false, false, false}
+        };
+        for (boolean[] state : states) {
+            boolean next = BlindSpotOverlayController.isHardBlocked(
+                    state[0], state[1], state[2]);
+            int edge = BlindSpotOverlayController.hardBlockEdge(blocked, next);
+            if (edge > 0) enters++;
+            if (edge < 0) exits++;
+            if (edge != 0) blocked = next;
+        }
+
+        assertEquals(2, enters);
+        assertEquals(2, exits);
+        assertFalse(blocked);
     }
 
     @Test

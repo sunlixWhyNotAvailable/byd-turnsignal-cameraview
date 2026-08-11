@@ -176,8 +176,6 @@ public final class ReverseCameraLayoutTest {
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.05f, 0.02f);
         layout = ReverseCameraLayout.bringToFront(
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
-        layout = ReverseCameraLayout.sendToBack(
-                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         layout = ReverseCameraLayout.raise(
                 layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         layout = ReverseCameraLayout.lower(

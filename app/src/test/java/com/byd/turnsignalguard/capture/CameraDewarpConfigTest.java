@@ -36,8 +36,6 @@ public final class CameraDewarpConfigTest {
         assertEquals(CameraDewarpConfig.LENS_REAR,
                 CameraDewarpConfig.lensForReverseCamera(
                         ReverseCameraLayout.REAR_CAMERA_INDEX));
-        assertEquals(CameraDewarpConfig.LENS_FRONT,
-                CameraDewarpConfig.lensForDirectCamera(4));
     }
 
     @Test
