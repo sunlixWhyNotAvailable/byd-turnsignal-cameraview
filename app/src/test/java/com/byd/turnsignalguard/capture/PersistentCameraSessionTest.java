@@ -24,6 +24,64 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class PersistentCameraSessionTest {
     @Test
+    public void producerBootstrapsKnownGoodSidePairBeforeAnyLogicalConsumer()
+            throws Exception {
+        Trace calibrationTrace = new Trace();
+        CameraHelperMain.HelperBinder.PersistentSession calibration = session();
+        calibration.startProducer(new FakeCameraPort(calibrationTrace),
+                new FakeFanout(calibrationTrace), calibration.activityGroup,
+                surfaces(1), new int[]{2}, 1, "calibration", false, false);
+
+        assertTrue(calibrationTrace.values.indexOf("add:2")
+                < calibrationTrace.values.indexOf("add:3"));
+        assertTrue(calibrationTrace.values.indexOf("add:3")
+                < calibrationTrace.values.indexOf("start"));
+        assertTrue(calibrationTrace.values.indexOf("start")
+                < calibrationTrace.values.indexOf("target-add:2"));
+
+        Trace reverseTrace = new Trace();
+        CameraHelperMain.HelperBinder.PersistentSession reverse = session();
+        reverse.startProducer(new FakeCameraPort(reverseTrace),
+                new FakeFanout(reverseTrace), reverse.activityGroup,
+                surfaces(4), new int[]{0, 1, 2, 3}, 2,
+                "reverse_preview_with_stock_base", false, true, true);
+
+        assertTrue(reverseTrace.values.indexOf("add:3")
+                < reverseTrace.values.indexOf("start"));
+        assertTrue(reverseTrace.values.indexOf("start")
+                < reverseTrace.values.indexOf("add:0"));
+        assertTrue(reverseTrace.values.indexOf("start")
+                < reverseTrace.values.indexOf("add:1"));
+    }
+
+    @Test
+    public void startupAttachFailureStopsProducerBeforeFanoutRelease() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        camera.removeResult = false;
+        FakeFanout fanout = new FakeFanout(trace);
+        fanout.failAttachCall = 1;
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+
+        try {
+            session.startProducer(camera, fanout, session.activityGroup,
+                    surfaces(1), new int[]{2}, 3,
+                    "calibration", false, false);
+            fail("logical attach should fail");
+        } catch (IllegalStateException expected) {
+            assertEquals("attach failed", expected.getMessage());
+        }
+        CameraHelperMain.HelperBinder.closeFailedPersistentProducer(camera, fanout);
+
+        assertTrue(trace.values.indexOf("start")
+                < trace.values.indexOf("stop"));
+        assertTrue(trace.values.indexOf("stop")
+                < trace.values.indexOf("close"));
+        assertTrue(trace.values.indexOf("close")
+                < trace.values.indexOf("fanout-close"));
+    }
+
+    @Test
     public void lifecycleCloseAndReopenNeverReattachesVendorSource() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);

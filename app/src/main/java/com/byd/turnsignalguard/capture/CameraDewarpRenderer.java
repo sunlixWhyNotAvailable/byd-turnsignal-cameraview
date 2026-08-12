@@ -18,6 +18,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
+import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,6 +27,7 @@ import java.util.function.Consumer;
 
 final class CameraDewarpRenderer {
     private static final String TAG = "CameraDewarpRenderer";
+    private static final String MATRIX_LOG_TAG = "BydCameraProbe";
     private static final int START_TIMEOUT_MS = 1500;
     private static final long METRICS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
@@ -98,6 +100,7 @@ final class CameraDewarpRenderer {
     private int pendingMeshVertexCount;
     private long pendingMeshGenerationNs = -1;
     private final float[] textureMatrix = new float[16];
+    private boolean inputMatrixReported;
     private Throwable startupError;
     private long metricsStartedNs;
     private long lastCallbackNs;
@@ -437,6 +440,16 @@ final class CameraDewarpRenderer {
         try {
             cameraTexture.updateTexImage();
             cameraTexture.getTransformMatrix(textureMatrix);
+            if (!inputMatrixReported) {
+                inputMatrixReported = true;
+                Log.i(MATRIX_LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
+                        + "\"source\":\"camera_dewarp_renderer\","
+                        + "\"stage\":\"dewarp_input\","
+                        + "\"renderer_id\":" + System.identityHashCode(this) + ","
+                        + "\"width\":" + width + ","
+                        + "\"height\":" + height + ","
+                        + "\"matrix\":" + Arrays.toString(textureMatrix) + "}");
+            }
             recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
             long swapStartedNs = SystemClock.elapsedRealtimeNanos();
             drawAndSwap(eglSurface, vertices, indices, indexCount);

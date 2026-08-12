@@ -6131,6 +6131,12 @@ public final class CameraProbeActivity extends Activity
                     hideCameraPolicyStatus(frontCameraPolicyStatus);
                 }
             } else if ("camera_error".equals(kind)) {
+                if (isExpectedOverlayColdResetClose(
+                        event.optString("stage"), event.optString("error"))) {
+                    hideCameraPolicyStatus(rearCameraPolicyStatus);
+                    hideCameraPolicyStatus(frontCameraPolicyStatus);
+                    return;
+                }
                 String error = "Помилка: " + event.optString("error");
                 if (cameraSwitch.isChecked()) {
                     showCameraPolicyStatus(rearCameraPolicyStatus, error);
@@ -7167,6 +7173,12 @@ public final class CameraProbeActivity extends Activity
                 && ("camera_opened".equals(kind)
                         || "camera_error".equals(kind)
                         || "camera_closed".equals(kind));
+    }
+
+    static boolean isExpectedOverlayColdResetClose(String stage, String error) {
+        return stage != null && stage.equals(error)
+                && CameraTransition.reasonEquals(
+                        stage, CameraHelperMain.ACTIVITY_RESUME_COLD_RESET);
     }
 
     private void recordIgnoredActivityCameraEvent(

@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(71, BuildConfig.VERSION_CODE);
+        assertEquals(72, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -504,6 +504,13 @@ public final class AdbCoreTest {
                 "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_discovery", CameraHelperMain.CAMERA_OWNER_OVERLAY));
+        String coldReset = "activity_transition:3:activity_resume_cold_reset";
+        assertTrue(CameraProbeActivity.isExpectedOverlayColdResetClose(
+                coldReset, coldReset));
+        assertFalse(CameraProbeActivity.isExpectedOverlayColdResetClose(
+                coldReset, "rmPreviewSurface returned false"));
+        assertFalse(CameraProbeActivity.isExpectedOverlayColdResetClose(
+                "raw_source_failed", "raw_source_failed"));
         assertTrue(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
                 "camera_opened", "stock_avm_shell"));
         assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(

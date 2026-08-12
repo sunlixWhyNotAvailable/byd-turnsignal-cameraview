@@ -11,12 +11,14 @@ import android.opengl.GLES20;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.util.Log;
 import android.view.Surface;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +33,7 @@ final class DirectCameraSourceHub
 
     private static final int CALL_TIMEOUT_MS = 1500;
     private static final int MAX_INDEX = 4;
+    private static final String LOG_TAG = "BydCameraProbe";
     private static final String VERTEX_SHADER =
             "attribute vec2 aPosition;\n"
                     + "attribute vec2 aTexCoord;\n"
@@ -218,6 +221,16 @@ final class DirectCameraSourceHub
             makeCurrent(idleSurface);
             source.texture.updateTexImage();
             source.texture.getTransformMatrix(source.matrix);
+            if (!source.matrixReported) {
+                source.matrixReported = true;
+                Log.i(LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
+                        + "\"source\":\"direct_camera_source_hub\","
+                        + "\"stage\":\"avm_source\","
+                        + "\"preview_index\":" + source.index + ","
+                        + "\"surface_texture_id\":"
+                        + System.identityHashCode(source.texture) + ","
+                        + "\"matrix\":" + Arrays.toString(source.matrix) + "}");
+            }
         } catch (Throwable error) {
             sourceFailureReported = true;
             listener.onSourceFailure(source.index, error);
@@ -413,6 +426,7 @@ final class DirectCameraSourceHub
         final SurfaceTexture texture;
         final Surface surface;
         final float[] matrix = new float[16];
+        boolean matrixReported;
 
         Source(int index, int textureName, SurfaceTexture texture, Surface surface) {
             this.index = index;

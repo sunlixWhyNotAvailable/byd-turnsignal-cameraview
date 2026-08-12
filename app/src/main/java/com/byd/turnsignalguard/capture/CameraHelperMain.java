@@ -1307,6 +1307,7 @@ final class CameraHelperMain {
                 int requestedCameraId,
                 boolean firstSurfaceDirect) {
             Object opened = null;
+            PersistentCameraPort openedPort = null;
             DirectCameraSourceHub openedHub = null;
             try {
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
@@ -1318,6 +1319,7 @@ final class CameraHelperMain {
                         callbackType.getClassLoader(), new Class<?>[]{callbackType}, eventHandler());
                 avm.getMethod("setEventCallback", callbackType).invoke(opened, callbackProxy);
                 PersistentCameraPort port = new ReflectivePersistentCameraPort(opened);
+                openedPort = port;
                 openedHub = DirectCameraSourceHub.create(new DirectCameraSourceHub.Listener() {
                     @Override
                     public void onConsumerFailure(
@@ -1350,18 +1352,24 @@ final class CameraHelperMain {
                 return result("camera_opened", null, requestedCameraId, "pano_h");
             } catch (Throwable error) {
                 if (rawSourceHub == openedHub) rawSourceHub = null;
-                if (openedHub != null) {
-                    try {
-                        openedHub.close();
-                    } catch (Throwable closeError) {
-                        error.addSuppressed(closeError);
+                if (openedPort != null) {
+                    Throwable closeError = closeFailedPersistentProducer(
+                            openedPort, openedHub);
+                    if (closeError != null) error.addSuppressed(closeError);
+                } else {
+                    if (opened != null) {
+                        try {
+                            closeProducerObject(opened);
+                        } catch (Throwable closeError) {
+                            error.addSuppressed(root(closeError));
+                        }
                     }
-                }
-                if (opened != null) {
-                    try {
-                        closeProducerObject(opened);
-                    } catch (Throwable closeError) {
-                        Log.e(TAG, "Persistent producer cleanup failed", root(closeError));
+                    if (openedHub != null) {
+                        try {
+                            openedHub.close();
+                        } catch (Throwable closeError) {
+                            error.addSuppressed(root(closeError));
+                        }
                     }
                 }
                 releaseSurfaces(requestedSurfaces);
@@ -1494,6 +1502,19 @@ final class CameraHelperMain {
                 port.close();
             } catch (Throwable error) {
                 if (first == null) first = root(error);
+            }
+            return first;
+        }
+
+        static Throwable closeFailedPersistentProducer(
+                PersistentCameraPort port, PersistentSurfaceFanout fanout) {
+            Throwable first = stopAndClosePersistentProducer(port);
+            if (fanout != null) {
+                try {
+                    fanout.close();
+                } catch (Throwable error) {
+                    if (first == null) first = root(error);
+                }
             }
             return first;
         }
@@ -1925,6 +1946,7 @@ final class CameraHelperMain {
         }
 
         static final class PersistentSession {
+            private static final int[] STABLE_BOOTSTRAP_INDEXES = {2, 3};
             final ConsumerGroup activityGroup = new ConsumerGroup(CAMERA_OWNER_ACTIVITY);
             final ConsumerGroup overlayGroup = new ConsumerGroup(CAMERA_OWNER_OVERLAY);
             final ConsumerGroup reverseGroup = new ConsumerGroup(CAMERA_OWNER_REVERSE);
@@ -1952,12 +1974,13 @@ final class CameraHelperMain {
                 fanout = requestedFanout;
                 boolean targetAttached = false;
                 try {
-                    attachGroup(port, surfaces, indexes, firstSurfaceDirect);
-                    targetAttached = true;
-                    ensureSources(port, fanoutIndexes(indexes, firstSurfaceDirect));
+                    ensureSources(port, STABLE_BOOTSTRAP_INDEXES);
                     if (!port.start()) {
                         throw new IllegalStateException("startPreview returned false");
                     }
+                    attachGroup(port, surfaces, indexes, firstSurfaceDirect);
+                    targetAttached = true;
+                    ensureSources(port, fanoutIndexes(indexes, firstSurfaceDirect));
                     target.set(surfaces, indexes, requestId,
                             view, exclusive, shellOwned, true, firstSurfaceDirect);
                     producerOpen = true;
@@ -1971,12 +1994,8 @@ final class CameraHelperMain {
                             // The failed hub is released below.
                         }
                     }
-                    detachSources(port);
-                    try {
-                        fanout.close();
-                    } catch (Throwable closeError) {
-                        error.addSuppressed(closeError);
-                    }
+                    Throwable detachError = detachSources(port);
+                    if (detachError != null) error.addSuppressed(detachError);
                     fanout = null;
                     clearSources();
                     throw error;
