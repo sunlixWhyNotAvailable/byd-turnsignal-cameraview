@@ -491,6 +491,7 @@ public final class CameraProbeActivity extends Activity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        migrateCameraFrameAspects();
         backgroundStartSettingsRequired = GuardRecovery.isAutoStartEnabled(this)
                 && !preferences.getBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, false);
         lifetimeActivations = preferences.getLong("activation_count", 0);
@@ -850,13 +851,35 @@ public final class CameraProbeActivity extends Activity
         AppUpdateManager.UpdateInfo available = AppUpdateManager.cachedAvailable();
         if (!activityResumed || activityDestroyed || available == null
                 || updateDialog != null || updateProgressDialog != null) return;
-        String message = "Встановлена версія: " + BuildConfig.VERSION_NAME
-                + "\nДоступна версія: " + available.version;
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(20), dp(12), dp(20), dp(12));
+        TextView versions = label("Встановлена версія: " + BuildConfig.VERSION_NAME
+                + "\nДоступна версія: " + available.version);
+        versions.setTextSize(16);
+        body.addView(versions, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         String notes = available.releaseNotes == null ? "" : available.releaseNotes.trim();
-        if (!notes.isEmpty()) message += "\n\n" + notes;
+        if (!notes.isEmpty()) {
+            TextView releaseNotes = label("");
+            releaseNotes.setTextSize(16);
+            releaseNotes.setLineSpacing(0.0f, 1.15f);
+            releaseNotes.setPadding(0, dp(16), 0, 0);
+            releaseNotes.setText(ReleaseNotesMarkdown.render(notes));
+            body.addView(releaseNotes, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(body, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
         updateDialog = new AlertDialog.Builder(this)
                 .setTitle("Доступне оновлення")
-                .setMessage(message)
+                .setView(scroll)
                 .setPositiveButton("Оновити", (dialog, which) -> {
                     AppUpdateManager.clearCachedAvailable();
                     startUpdateDownload(available);
@@ -1129,6 +1152,18 @@ public final class CameraProbeActivity extends Activity
         if (activePreview == view) closeCamera("dewarp_renderer_failed");
         TextView status = calibration ? calibrationStatus : cameraStatus;
         status.setText("Помилка корекції камери; відкрийте preview повторно");
+    }
+
+    private void onCalibrationDewarpStats(CameraDewarpRenderer.Stats stats) {
+        int requestId = activeActivityCameraRequestId;
+        if (!CameraDewarpStatsEvent.shouldRecord(
+                activityResumed, requestedOpen,
+                activePreview == calibrationPreview, requestId)) return;
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        CameraDewarpConfig config = CameraDewarpConfig.load(
+                preferences, CameraDewarpConfig.lensFor(profile));
+        record("camera_dewarp_stats", CameraDewarpStatsEvent.calibration(
+                requestId, calibrationCameraId, config, stats));
     }
 
     @Override
@@ -3126,6 +3161,7 @@ public final class CameraProbeActivity extends Activity
         calibrationPreview.setAlpha(1.0f);
         calibrationPreview.setForceDewarpPipeline(true);
         calibrationPreview.setCallback(this);
+        calibrationPreview.setDewarpStatsSink(this::onCalibrationDewarpStats);
         calibrationPreview.applyRawFallbackCrop(FULL_CALIBRATION_CROP);
         calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
         calibrationPreview.applyDewarpConfig(CameraDewarpConfig.load(
@@ -3915,6 +3951,18 @@ public final class CameraProbeActivity extends Activity
                 ? DirectCameraCrop.loadCorrected(preferences, profile, raw) : raw;
     }
 
+    private void migrateCameraFrameAspects() {
+        for (CameraProfile profile : CameraProfile.values()) {
+            DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+            CameraDewarpConfig dewarp = CameraDewarpConfig.load(
+                    preferences, CameraDewarpConfig.lensFor(profile));
+            DirectCameraCrop active = dewarp.enabled
+                    ? DirectCameraCrop.loadCorrected(preferences, profile, raw) : raw;
+            BlindSpotOverlayController.readFrameAspect(
+                    preferences, profile, active.outputAspect());
+        }
+    }
+
     private void updateCalibrationDisplay(boolean correctionEnabled) {
         boolean rawFallback = calibrationPreview != null && calibrationPreview.usesRawFallback();
         CalibrationUiState ui = calibrationUiState(correctionEnabled, rawFallback);
@@ -4662,10 +4710,13 @@ public final class CameraProbeActivity extends Activity
                 || cameraScaleInput == null || cameraPositionWidget.getWidth() == 0) return;
         int scale = cameraScale[selectedCameraId];
         DirectCameraCrop crop = loadCalibrationCrop(selectedCameraId);
+        CameraProfile profile = CameraProfile.of(selectedCameraId);
+        float frameAspect = BlindSpotOverlayController.readFrameAspect(
+                preferences, profile, crop.outputAspect());
         int requestedWidth = cameraPositionWidget.getWidth() * scale / 100;
         int[] size = BlindSpotOverlayController.fitAspect(requestedWidth,
                 cameraPositionWidget.getWidth(), cameraPositionWidget.getHeight(),
-                crop.outputAspect());
+                frameAspect);
         int width = size[0];
         int height = size[1];
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams)
@@ -5271,6 +5322,19 @@ public final class CameraProbeActivity extends Activity
         }
         resumeSelectedCameraPreview();
         updateControls();
+    }
+
+    @Override
+    public void onReverseDewarpStats(
+            int cameraIndex, CameraDewarpRenderer.Stats stats) {
+        int requestId = activeActivityCameraRequestId;
+        if (!CameraDewarpStatsEvent.shouldRecord(
+                activityResumed, requestedOpen,
+                activePreview == reverseCameraPreview, requestId)) return;
+        int lens = CameraDewarpConfig.lensForReverseCamera(cameraIndex);
+        CameraDewarpConfig config = CameraDewarpConfig.load(preferences, lens);
+        record("camera_dewarp_stats", CameraDewarpStatsEvent.reverse(
+                requestId, cameraIndex, config, stats));
     }
 
     private void renewSelectedPreviewInputForTabSwitch() {

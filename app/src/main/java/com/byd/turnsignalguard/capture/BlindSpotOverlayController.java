@@ -30,6 +30,10 @@ final class BlindSpotOverlayController {
     static final String PREF_RIGHT_SCALE = "camera_right_scale_percent";
     static final String PREF_FRONT_LEFT_SCALE = "camera_front_left_scale_percent";
     static final String PREF_FRONT_RIGHT_SCALE = "camera_front_right_scale_percent";
+    static final String PREF_LEFT_FRAME_ASPECT = "camera_left_frame_aspect";
+    static final String PREF_RIGHT_FRAME_ASPECT = "camera_right_frame_aspect";
+    static final String PREF_FRONT_LEFT_FRAME_ASPECT = "camera_front_left_frame_aspect";
+    static final String PREF_FRONT_RIGHT_FRAME_ASPECT = "camera_front_right_frame_aspect";
     static final String PREF_LEFT_TARGET = "camera_left_display_target";
     static final String PREF_RIGHT_TARGET = "camera_right_display_target";
     static final String PREF_FRONT_LEFT_TARGET = "camera_front_left_display_target";
@@ -284,6 +288,34 @@ final class BlindSpotOverlayController {
                 : DEFAULT_SCALE_PERCENT;
         return clamp(settings.getInt(scaleKey(profile), fallback),
                 MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    }
+
+    /**
+     * Reads the profile's stable production frame aspect, migrating it once from the
+     * caller's current active crop aspect when the key is absent or invalid.
+     *
+     * Activity calibration must call this after loading its active crop and pass that
+     * crop's {@link DirectCameraCrop#outputAspect()} as {@code fallback}.
+     */
+    static float readFrameAspect(
+            SharedPreferences settings, CameraProfile profile, float fallback) {
+        float safeFallback = isValidFrameAspect(fallback)
+                ? fallback : DirectCameraCrop.OUTPUT_ASPECT;
+        String key = frameAspectKey(profile);
+        if (settings.contains(key)) {
+            try {
+                float stored = settings.getFloat(key, safeFallback);
+                if (isValidFrameAspect(stored)) return stored;
+            } catch (ClassCastException ignored) {
+                // Repair malformed preference values below.
+            }
+        }
+        settings.edit().putFloat(key, safeFallback).apply();
+        return safeFallback;
+    }
+
+    static boolean isValidFrameAspect(float aspect) {
+        return Float.isFinite(aspect) && aspect > 0.0f;
     }
 
     static int readTarget(SharedPreferences settings, boolean right) {
@@ -922,12 +954,13 @@ final class BlindSpotOverlayController {
         DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop crop = dewarp.enabled
                 ? DirectCameraCrop.loadCorrected(settings, profile, rawCrop) : rawCrop;
+        float frameAspect = readFrameAspect(settings, profile, crop.outputAspect());
         int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
         int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
         int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
         int[] geometry = overlayGeometry(
                 displaySize[0], displaySize[1], readScale(settings, profile),
-                crop.outputAspect(), readPosition(settings, profile, false),
+                frameAspect, readPosition(settings, profile, false),
                 readPosition(settings, profile, true),
                 marginX, topMargin, bottomMargin);
         return new CameraShellProtocol.OverlaySpec(
@@ -965,6 +998,13 @@ final class BlindSpotOverlayController {
         if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_SCALE;
         if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_SCALE;
         return PREF_FRONT_RIGHT_SCALE;
+    }
+
+    static String frameAspectKey(CameraProfile profile) {
+        if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_FRAME_ASPECT;
+        if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_FRAME_ASPECT;
+        if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_FRAME_ASPECT;
+        return PREF_FRONT_RIGHT_FRAME_ASPECT;
     }
 
     private static String targetKey(CameraProfile profile) {
