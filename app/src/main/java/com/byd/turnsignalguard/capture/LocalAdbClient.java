@@ -112,6 +112,75 @@ final class LocalAdbClient {
         }
     }
 
+    /** Executes a fixed shell command while streaming raw stdout without UTF-8 buffering. */
+    static Result executeAuthorizedStreaming(
+            Context context,
+            String fixedCommand,
+            OutputStream output,
+            long maxBytes,
+            BiConsumer<String, Object[]> eventSink) {
+        if (output == null) return Result.failed("output_required", "", -1, "unavailable");
+        if (maxBytes < 0) return Result.failed("invalid_stream_limit", "", -1, "unavailable");
+        synchronized (LOCK) {
+            Connection connection = null;
+            try {
+                OpenResult open = Connection.open(
+                        context.getApplicationContext(), PromptMode.NEVER,
+                        NO_CANCELLATION, eventSink);
+                if (open.connection == null) {
+                    return Result.authorizationRequired(
+                            open.authorizationError, open.publicKeySent, open.fingerprint);
+                }
+                connection = open.connection;
+                StreamShellResult shell = connection.shellTo(fixedCommand, output, maxBytes);
+                return shell.exitCode == 0
+                        ? Result.ok("", shell.exitCode, open.fingerprint, false)
+                        : Result.failed("shell_exit_" + shell.exitCode, "",
+                                shell.exitCode, open.fingerprint);
+            } catch (TooLargeException tooLarge) {
+                return Result.failed("too_large", "", -1, "unavailable");
+            } catch (Throwable error) {
+                return Result.failed(summary(error), "", -1, "unavailable");
+            } finally {
+                if (connection != null) connection.close();
+            }
+        }
+    }
+
+    static Result executeAuthorizedText(
+            Context context,
+            String fixedCommand,
+            long maxBytes,
+            BiConsumer<String, Object[]> eventSink) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Result result = executeAuthorizedStreaming(
+                context, fixedCommand, output, maxBytes, eventSink);
+        String text = new String(output.toByteArray(), StandardCharsets.UTF_8);
+        if (result.ok) {
+            return Result.ok(text, result.exitCode, result.fingerprint, result.publicKeySent);
+        }
+        return result.authorizationRequired
+                ? Result.authorizationRequired(result.error, result.publicKeySent, result.fingerprint)
+                : Result.failed(result.error, text, result.exitCode, result.fingerprint);
+    }
+
+    static Result parseStreamingResponseForTest(
+            byte[] response, String marker, OutputStream output, long maxBytes) {
+        try {
+            StreamShellResult shell = Connection.finishStream(
+                    output, maxBytes, 0L, response,
+                    marker.getBytes(StandardCharsets.US_ASCII));
+            return shell.exitCode == 0
+                    ? Result.ok("", shell.exitCode, "test", false)
+                    : Result.failed("shell_exit_" + shell.exitCode, "",
+                            shell.exitCode, "test");
+        } catch (TooLargeException tooLarge) {
+            return Result.failed("too_large", "", -1, "test");
+        } catch (IOException error) {
+            return Result.failed(summary(error), "", -1, "test");
+        }
+    }
+
     private static Result connectOnly(
             Context context,
             PromptMode mode,
@@ -345,6 +414,87 @@ final class LocalAdbClient {
             }
         }
 
+        StreamShellResult shellTo(String command, OutputStream output, long maxBytes)
+                throws IOException {
+            int localId = 1;
+            int remoteId = 0;
+            String marker = "__BYD_TURN_GUARD_STREAM_EXIT_"
+                    + Long.toHexString(System.nanoTime()) + "__:";
+            byte[] markerBytes = marker.getBytes(StandardCharsets.US_ASCII);
+            int tailLimit = markerBytes.length + 24;
+            ByteArrayOutputStream pending = new ByteArrayOutputStream(tailLimit + 4096);
+            long written = 0L;
+            AdbPacket.write(out, AdbPacket.A_OPEN, localId, 0,
+                    nul("shell:" + command + "\necho " + marker + "$?"));
+            while (true) {
+                AdbPacket packet = AdbPacket.read(in);
+                if (packet.arg1 != localId) throw new IOException("Unexpected ADB stream id");
+                if (packet.command == AdbPacket.A_OKAY) {
+                    if (remoteId != 0 && remoteId != packet.arg0) {
+                        throw new IOException("ADB remote id changed");
+                    }
+                    remoteId = packet.arg0;
+                } else if (packet.command == AdbPacket.A_WRTE) {
+                    if (remoteId == 0) remoteId = packet.arg0;
+                    if (remoteId != packet.arg0) throw new IOException("ADB WRTE remote id changed");
+                    pending.write(packet.payload, 0, packet.payload.length);
+                    if (pending.size() > tailLimit) {
+                        byte[] bytes = pending.toByteArray();
+                        int flush = bytes.length - tailLimit;
+                        if (written > maxBytes - flush) throw new TooLargeException();
+                        output.write(bytes, 0, flush);
+                        written += flush;
+                        pending.reset();
+                        pending.write(bytes, flush, bytes.length - flush);
+                    }
+                    AdbPacket.write(out, AdbPacket.A_OKAY, localId, remoteId, null);
+                } else if (packet.command == AdbPacket.A_CLSE) {
+                    if (remoteId == 0) remoteId = packet.arg0;
+                    AdbPacket.write(out, AdbPacket.A_CLSE, localId, remoteId, null);
+                    return finishStream(
+                            output, maxBytes, written, pending.toByteArray(), markerBytes);
+                } else {
+                    throw new IOException("Unexpected ADB shell packet");
+                }
+            }
+        }
+
+        private static StreamShellResult finishStream(
+                OutputStream output,
+                long maxBytes,
+                long written,
+                byte[] tail,
+                byte[] markerBytes) throws IOException {
+            int markerIndex = lastIndexOf(tail, markerBytes);
+            int dataLength = markerIndex >= 0 ? markerIndex : tail.length;
+            if (written > maxBytes - dataLength) throw new TooLargeException();
+            if (dataLength > 0) output.write(tail, 0, dataLength);
+            written += dataLength;
+            int exitCode = -1;
+            if (markerIndex >= 0) {
+                int start = markerIndex + markerBytes.length;
+                int end = start;
+                while (end < tail.length && tail[end] >= '0' && tail[end] <= '9') end++;
+                try {
+                    exitCode = Integer.parseInt(new String(
+                            tail, start, end - start, StandardCharsets.US_ASCII));
+                } catch (NumberFormatException ignored) {
+                    exitCode = -1;
+                }
+            }
+            return new StreamShellResult(exitCode, written);
+        }
+
+        private static int lastIndexOf(byte[] value, byte[] needle) {
+            outer: for (int i = value.length - needle.length; i >= 0; i--) {
+                for (int j = 0; j < needle.length; j++) {
+                    if (value[i + j] != needle[j]) continue outer;
+                }
+                return i;
+            }
+            return -1;
+        }
+
         void close() {
             clearPending(socket);
             LocalAdbClient.close(socket);
@@ -443,6 +593,20 @@ final class LocalAdbClient {
                 return new ShellResult(raw.substring(0, index).trim(), -1);
             }
         }
+    }
+
+    private static final class StreamShellResult {
+        final int exitCode;
+        final long bytesWritten;
+
+        StreamShellResult(int exitCode, long bytesWritten) {
+            this.exitCode = exitCode;
+            this.bytesWritten = bytesWritten;
+        }
+    }
+
+    private static final class TooLargeException extends IOException {
+        TooLargeException() { super("stream limit exceeded"); }
     }
 
     private static KeyPair loadOrCreateKeys(Context context) throws Exception {

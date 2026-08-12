@@ -43,8 +43,35 @@ final class DiagnosticLogExporter {
                     "system/logcat-all.txt",
                     "logcat -b all -d 2>/dev/null | tail -c 4194304"),
             new CollectorSpec(
+                    "system/logcat-crash-threadtime.txt",
+                    "logcat -b crash -v threadtime -d 2>/dev/null | tail -c 2097152"),
+            new CollectorSpec(
+                    "system/dropbox-crash.txt",
+                    "for tag in system_server_crash system_app_crash data_app_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec(
+                    "system/dropbox-native-crash.txt",
+                    "for tag in system_server_native_crash system_app_native_crash data_app_native_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec(
+                    "system/dropbox-anr.txt",
+                    "for tag in system_server_anr system_app_anr data_app_anr; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec(
+                    "system/dropbox-tombstone.txt",
+                    "for tag in system_server_tombstone system_app_tombstone data_app_tombstone; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec(
+                    "system/dropbox-watchdog.txt",
+                    "for tag in system_server_watchdog system_server_wtf; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec(
                     "system/dropbox.txt",
-                    "dumpsys dropbox --print 2>/dev/null | tail -c 2097152")
+                    "dumpsys dropbox --print 2>/dev/null | tail -c 2097152"),
+            new CollectorSpec(
+                    "system/tombstones-latest.txt",
+                    "for file in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 3); do printf '\\n--- %s ---\\n' \"$file\"; tail -c 524288 \"$file\" 2>/dev/null; done"),
+            new CollectorSpec(
+                    "system/firmware-platform-abi.txt",
+                    "for prop in ro.build.version.release ro.build.version.incremental ro.build.version.security_patch ro.build.id ro.build.display.id ro.product.board ro.board.platform ro.hardware ro.boot.hardware ro.product.cpu.abi ro.product.cpu.abilist; do printf '%s=' \"$prop\"; getprop \"$prop\"; done"),
+            new CollectorSpec(
+                    "system/byd-avc-package.txt",
+                    "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20")
     };
 
     private DiagnosticLogExporter() {}
@@ -91,6 +118,10 @@ final class DiagnosticLogExporter {
                 Build.PRODUCT,
                 Build.DEVICE,
                 Build.VERSION.RELEASE,
+                Build.VERSION.INCREMENTAL,
+                Build.BOARD,
+                Build.HARDWARE,
+                joinAbis(Build.SUPPORTED_ABIS),
                 Build.VERSION.SDK_INT);
         return export(
                 context.getCacheDir(),
@@ -203,13 +234,11 @@ final class DiagnosticLogExporter {
                     zip.write(output);
                     zip.closeEntry();
                     record.archivedBytes = output.length;
-                    record.status = result.ok ? "included" : "partial";
+                    record.status = isPermissionDenied(result.error)
+                            ? "permission_denied" : result.ok ? "included" : "partial";
                 } else {
-                    record.status = result.ok ? "included" : "missing";
-                    if (result.ok) {
-                        zip.putNextEntry(new ZipEntry(collector.entry));
-                        zip.closeEntry();
-                    }
+                    record.status = isPermissionDenied(result.error)
+                            ? "permission_denied" : result.ok ? "missing" : "error";
                 }
             }
 
@@ -277,6 +306,10 @@ final class DiagnosticLogExporter {
                 .append(",\"product\":").append(quote(identity.product))
                 .append(",\"device\":").append(quote(identity.device))
                 .append(",\"android_release\":").append(quote(identity.androidRelease))
+                .append(",\"firmware\":").append(quote(identity.firmware))
+                .append(",\"board\":").append(quote(identity.board))
+                .append(",\"platform\":").append(quote(identity.platform))
+                .append(",\"abi\":").append(quote(identity.abi))
                 .append(",\"sdk\":").append(identity.sdk)
                 .append("},\"sources\":[");
         for (int i = 0; i < records.size(); i++) {
@@ -321,6 +354,27 @@ final class DiagnosticLogExporter {
         return escaped.append('"').toString();
     }
 
+    private static boolean isPermissionDenied(String error) {
+        if (error == null) return false;
+        String normalized = error.toLowerCase(Locale.US);
+        return normalized.contains("authorization_required")
+                || normalized.contains("authorization_rejected")
+                || normalized.contains("permission_denied")
+                || normalized.contains("permission denied")
+                || normalized.contains("shell_exit_13");
+    }
+
+    private static String joinAbis(String[] abis) {
+        if (abis == null || abis.length == 0) return "";
+        StringBuilder joined = new StringBuilder();
+        for (String abi : abis) {
+            if (abi == null || abi.isEmpty()) continue;
+            if (joined.length() > 0) joined.append(',');
+            joined.append(abi);
+        }
+        return joined.toString();
+    }
+
     private static CommandResult fromAdbResult(LocalAdbClient.Result result) {
         if (result.ok) return CommandResult.success(result.output);
         String error = result.authorizationRequired ? "authorization_required" : result.error;
@@ -361,6 +415,7 @@ final class DiagnosticLogExporter {
 
     private static void deleteOlderArchives(File directory, File current) {
         File[] files = directory.listFiles(file -> file.isFile()
+                && file.getName().startsWith("byd-turnsignal-diagnostics-")
                 && file.getName().endsWith(".zip") && !file.equals(current));
         if (files == null) return;
         for (File file : files) file.delete();
@@ -406,6 +461,10 @@ final class DiagnosticLogExporter {
         final String product;
         final String device;
         final String androidRelease;
+        final String firmware;
+        final String board;
+        final String platform;
+        final String abi;
         final int sdk;
 
         Identity(
@@ -418,6 +477,24 @@ final class DiagnosticLogExporter {
                 String device,
                 String androidRelease,
                 int sdk) {
+            this(packageName, versionName, versionCode, manufacturer, model, product, device,
+                    androidRelease, "", "", "", "", sdk);
+        }
+
+        Identity(
+                String packageName,
+                String versionName,
+                int versionCode,
+                String manufacturer,
+                String model,
+                String product,
+                String device,
+                String androidRelease,
+                String firmware,
+                String board,
+                String platform,
+                String abi,
+                int sdk) {
             this.packageName = packageName;
             this.versionName = versionName;
             this.versionCode = versionCode;
@@ -426,6 +503,10 @@ final class DiagnosticLogExporter {
             this.product = product;
             this.device = device;
             this.androidRelease = androidRelease;
+            this.firmware = firmware;
+            this.board = board;
+            this.platform = platform;
+            this.abi = abi;
             this.sdk = sdk;
         }
     }

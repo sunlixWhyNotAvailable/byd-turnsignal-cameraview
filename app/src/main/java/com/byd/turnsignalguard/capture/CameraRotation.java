@@ -50,13 +50,10 @@ final class CameraRotation {
             };
             transform.setPolyToPoly(source, 0, target, 0, 4);
         } else {
-            RectF effectiveCrop = mode == MODE_FILL
-                    ? fillCrop(sourceCrop, sourceBounds, safeDegrees)
-                    : sourceCrop;
-            transform.setRectToRect(
-                    effectiveCrop, destination, Matrix.ScaleToFit.FILL);
-            transform.preRotate(
-                    safeDegrees, effectiveCrop.centerX(), effectiveCrop.centerY());
+            transform.setValues(proportionalTransformValues(
+                    sourceCrop.left, sourceCrop.top, sourceCrop.right, sourceCrop.bottom,
+                    destination.left, destination.top, destination.right, destination.bottom,
+                    safeDegrees, mode, false));
         }
         if (mirrorHorizontally) {
             transform.postScale(-1.0f, 1.0f,
@@ -79,24 +76,49 @@ final class CameraRotation {
         return points;
     }
 
-    private static RectF fillCrop(RectF crop, RectF bounds, int degrees) {
-        if (bounds == null || degrees == 0) return crop;
+    /**
+     * Pure geometry seam for the proportional FIT/FILL transform. It intentionally uses only
+     * primitive values so JVM tests do not need to execute Android's Matrix implementation.
+     */
+    static float[] proportionalTransformValues(
+            float sourceLeft, float sourceTop, float sourceRight, float sourceBottom,
+            float destinationLeft, float destinationTop,
+            float destinationRight, float destinationBottom,
+            int degrees, int mode, boolean mirrorHorizontally) {
+        double cropWidth = sourceRight - sourceLeft;
+        double cropHeight = sourceBottom - sourceTop;
+        double destinationWidth = destinationRight - destinationLeft;
+        double destinationHeight = destinationBottom - destinationTop;
+        if (!(cropWidth > 0.0d) || !(cropHeight > 0.0d)
+                || !(destinationWidth > 0.0d) || !(destinationHeight > 0.0d)) {
+            throw new IllegalArgumentException("positive crop and destination are required");
+        }
+
         double radians = Math.toRadians(degrees);
         double cosine = Math.abs(Math.cos(radians));
         double sine = Math.abs(Math.sin(radians));
-        double extentX = cosine * crop.width() / 2.0d + sine * crop.height() / 2.0d;
-        double extentY = sine * crop.width() / 2.0d + cosine * crop.height() / 2.0d;
-        if (extentX <= 0.0d || extentY <= 0.0d) return crop;
-        double scale = Math.min(1.0d, Math.min(
-                Math.min((crop.centerX() - bounds.left) / extentX,
-                        (bounds.right - crop.centerX()) / extentX),
-                Math.min((crop.centerY() - bounds.top) / extentY,
-                        (bounds.bottom - crop.centerY()) / extentY)));
-        if (scale >= 0.999999d) return crop;
-        float halfWidth = (float) (crop.width() * Math.max(0.0d, scale) / 2.0d);
-        float halfHeight = (float) (crop.height() * Math.max(0.0d, scale) / 2.0d);
-        return new RectF(
-                crop.centerX() - halfWidth, crop.centerY() - halfHeight,
-                crop.centerX() + halfWidth, crop.centerY() + halfHeight);
+        double rotatedWidth = cosine * cropWidth + sine * cropHeight;
+        double rotatedHeight = sine * cropWidth + cosine * cropHeight;
+        double scale = mode == MODE_FILL
+                ? Math.max(destinationWidth / rotatedWidth, destinationHeight / rotatedHeight)
+                : Math.min(destinationWidth / rotatedWidth, destinationHeight / rotatedHeight);
+        double sourceCenterX = (sourceLeft + sourceRight) / 2.0d;
+        double sourceCenterY = (sourceTop + sourceBottom) / 2.0d;
+        double destinationCenterX = (destinationLeft + destinationRight) / 2.0d;
+        double destinationCenterY = (destinationTop + destinationBottom) / 2.0d;
+        double signedHorizontal = mirrorHorizontally ? -1.0d : 1.0d;
+        double m00 = signedHorizontal * scale * Math.cos(radians);
+        double m01 = signedHorizontal * -scale * Math.sin(radians);
+        double m10 = scale * Math.sin(radians);
+        double m11 = scale * Math.cos(radians);
+        return new float[]{
+                (float) m00,
+                (float) m01,
+                (float) (destinationCenterX - m00 * sourceCenterX - m01 * sourceCenterY),
+                (float) m10,
+                (float) m11,
+                (float) (destinationCenterY - m10 * sourceCenterX - m11 * sourceCenterY),
+                0.0f, 0.0f, 1.0f
+        };
     }
 }

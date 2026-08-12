@@ -11,6 +11,7 @@ import android.opengl.GLES20;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
@@ -29,9 +30,11 @@ final class DirectCameraSourceHub
     interface Listener {
         void onConsumerFailure(Surface surface, int index, Throwable error);
         void onSourceFailure(int index, Throwable error);
+        void onStats(int index, Stats stats);
     }
 
     private static final int CALL_TIMEOUT_MS = 1500;
+    private static final long STATS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
     private static final int MAX_INDEX = 4;
     private static final String LOG_TAG = "BydCameraProbe";
     private static final String VERTEX_SHADER =
@@ -217,6 +220,8 @@ final class DirectCameraSourceHub
 
     private void render(Source source) {
         if (closed || sourceFailureReported) return;
+        long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
+        long updateStartedNs = callbackStartedNs;
         try {
             makeCurrent(idleSurface);
             source.texture.updateTexImage();
@@ -236,11 +241,22 @@ final class DirectCameraSourceHub
             listener.onSourceFailure(source.index, error);
             return;
         }
+        long updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
+        int targetCount = 0;
+        int swapCount = 0;
+        long drawTotalNs = 0L;
+        long drawMaxNs = 0L;
         for (int i = targets.size() - 1; i >= 0; i--) {
             Target target = targets.get(i);
             if (target.index != source.index) continue;
+            targetCount++;
+            long drawStartedNs = SystemClock.elapsedRealtimeNanos();
             try {
                 draw(source, target);
+                long drawNs = SystemClock.elapsedRealtimeNanos() - drawStartedNs;
+                drawTotalNs += drawNs;
+                drawMaxNs = Math.max(drawMaxNs, drawNs);
+                swapCount++;
             } catch (Throwable error) {
                 EGL14.eglDestroySurface(display, target.eglSurface);
                 targets.remove(i);
@@ -248,6 +264,17 @@ final class DirectCameraSourceHub
             }
         }
         makeCurrent(idleSurface);
+        Stats stats = source.stats.record(
+                callbackStartedNs,
+                updateNs,
+                drawTotalNs,
+                drawMaxNs,
+                swapCount,
+                SystemClock.elapsedRealtimeNanos() - callbackStartedNs,
+                targetCount,
+                1920,
+                source.index == 0 ? 990 : 1300);
+        if (stats != null) listener.onStats(source.index, stats);
     }
 
     private void draw(Source source, Target target) {
@@ -426,6 +453,7 @@ final class DirectCameraSourceHub
         final SurfaceTexture texture;
         final Surface surface;
         final float[] matrix = new float[16];
+        final StatsWindow stats = new StatsWindow();
         boolean matrixReported;
 
         Source(int index, int textureName, SurfaceTexture texture, Surface surface) {
@@ -433,6 +461,128 @@ final class DirectCameraSourceHub
             this.textureName = textureName;
             this.texture = texture;
             this.surface = surface;
+        }
+    }
+
+    static final class Stats {
+        final int callbacks;
+        final int callbackGaps;
+        final long callbackGapTotalNs;
+        final long callbackGapMaxNs;
+        final long updateTotalNs;
+        final long updateMaxNs;
+        final int swaps;
+        final long drawTotalNs;
+        final long drawMaxNs;
+        final long renderTotalNs;
+        final long renderMaxNs;
+        final int targetsCurrent;
+        final int targetsMax;
+        final int sourceWidth;
+        final int sourceHeight;
+
+        Stats(
+                int callbacks,
+                int callbackGaps,
+                long callbackGapTotalNs,
+                long callbackGapMaxNs,
+                long updateTotalNs,
+                long updateMaxNs,
+                int swaps,
+                long drawTotalNs,
+                long drawMaxNs,
+                long renderTotalNs,
+                long renderMaxNs,
+                int targetsCurrent,
+                int targetsMax,
+                int sourceWidth,
+                int sourceHeight) {
+            this.callbacks = callbacks;
+            this.callbackGaps = callbackGaps;
+            this.callbackGapTotalNs = callbackGapTotalNs;
+            this.callbackGapMaxNs = callbackGapMaxNs;
+            this.updateTotalNs = updateTotalNs;
+            this.updateMaxNs = updateMaxNs;
+            this.swaps = swaps;
+            this.drawTotalNs = drawTotalNs;
+            this.drawMaxNs = drawMaxNs;
+            this.renderTotalNs = renderTotalNs;
+            this.renderMaxNs = renderMaxNs;
+            this.targetsCurrent = targetsCurrent;
+            this.targetsMax = targetsMax;
+            this.sourceWidth = sourceWidth;
+            this.sourceHeight = sourceHeight;
+        }
+    }
+
+    static final class StatsWindow {
+        private long startedNs = -1L;
+        private long previousCallbackNs = -1L;
+        private int callbacks;
+        private int callbackGaps;
+        private long callbackGapTotalNs;
+        private long callbackGapMaxNs;
+        private long updateTotalNs;
+        private long updateMaxNs;
+        private int swaps;
+        private long drawTotalNs;
+        private long drawMaxNs;
+        private long renderTotalNs;
+        private long renderMaxNs;
+        private int targetsMax;
+
+        Stats record(
+                long callbackNs,
+                long updateNs,
+                long frameDrawTotalNs,
+                long frameDrawMaxNs,
+                int frameSwaps,
+                long renderNs,
+                int targetsCurrent,
+                int sourceWidth,
+                int sourceHeight) {
+            if (startedNs < 0L) startedNs = callbackNs;
+            if (previousCallbackNs >= 0L) {
+                long gap = Math.max(0L, callbackNs - previousCallbackNs);
+                callbackGaps++;
+                callbackGapTotalNs += gap;
+                callbackGapMaxNs = Math.max(callbackGapMaxNs, gap);
+            }
+            previousCallbackNs = callbackNs;
+            callbacks++;
+            updateTotalNs += Math.max(0L, updateNs);
+            updateMaxNs = Math.max(updateMaxNs, updateNs);
+            swaps += Math.max(0, frameSwaps);
+            drawTotalNs += Math.max(0L, frameDrawTotalNs);
+            drawMaxNs = Math.max(drawMaxNs, frameDrawMaxNs);
+            renderTotalNs += Math.max(0L, renderNs);
+            renderMaxNs = Math.max(renderMaxNs, renderNs);
+            targetsMax = Math.max(targetsMax, targetsCurrent);
+            if (callbackNs - startedNs < STATS_INTERVAL_NS) return null;
+
+            Stats result = new Stats(
+                    callbacks, callbackGaps, callbackGapTotalNs, callbackGapMaxNs,
+                    updateTotalNs, updateMaxNs, swaps, drawTotalNs, drawMaxNs,
+                    renderTotalNs, renderMaxNs, targetsCurrent, targetsMax,
+                    sourceWidth, sourceHeight);
+            reset(callbackNs);
+            return result;
+        }
+
+        private void reset(long callbackNs) {
+            startedNs = callbackNs;
+            callbacks = 0;
+            callbackGaps = 0;
+            callbackGapTotalNs = 0L;
+            callbackGapMaxNs = 0L;
+            updateTotalNs = 0L;
+            updateMaxNs = 0L;
+            swaps = 0;
+            drawTotalNs = 0L;
+            drawMaxNs = 0L;
+            renderTotalNs = 0L;
+            renderMaxNs = 0L;
+            targetsMax = 0;
         }
     }
 

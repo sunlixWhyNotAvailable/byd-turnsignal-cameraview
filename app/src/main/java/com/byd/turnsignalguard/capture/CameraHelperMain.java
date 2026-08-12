@@ -76,6 +76,7 @@ final class CameraHelperMain {
         private boolean persistentPanoProducer;
         private int producerCameraId = -1;
         private int producerEpoch;
+        private int sourceHubGeneration;
         private DirectCameraSourceHub rawSourceHub;
         private boolean unconfirmedOneShotOwner;
         private Surface surface;
@@ -1320,6 +1321,7 @@ final class CameraHelperMain {
                 avm.getMethod("setEventCallback", callbackType).invoke(opened, callbackProxy);
                 PersistentCameraPort port = new ReflectivePersistentCameraPort(opened);
                 openedPort = port;
+                int openedHubGeneration = ++sourceHubGeneration;
                 openedHub = DirectCameraSourceHub.create(new DirectCameraSourceHub.Listener() {
                     @Override
                     public void onConsumerFailure(
@@ -1331,6 +1333,37 @@ final class CameraHelperMain {
                     @Override
                     public void onSourceFailure(int index, Throwable error) {
                         mainHandler.post(() -> acceptRawSourceFailure(index, error));
+                    }
+
+                    @Override
+                    public void onStats(int index, DirectCameraSourceHub.Stats stats) {
+                        mainHandler.post(() -> {
+                            if (sourceHubGeneration != openedHubGeneration
+                                    || !persistentPanoProducer) return;
+                            emit("camera_source_hub_stats",
+                                "producer_epoch", producerEpoch,
+                                "preview_index", index,
+                                "source_width", stats.sourceWidth,
+                                "source_height", stats.sourceHeight,
+                                "callbacks", stats.callbacks,
+                                "callback_gap_avg_ms", averageMs(
+                                        stats.callbackGapTotalNs, stats.callbackGaps),
+                                "callback_gap_max_ms", milliseconds(
+                                        stats.callbackGapMaxNs),
+                                "update_tex_image_avg_ms", averageMs(
+                                        stats.updateTotalNs, stats.callbacks),
+                                "update_tex_image_max_ms", milliseconds(
+                                        stats.updateMaxNs),
+                                "draw_swaps", stats.swaps,
+                                "draw_swap_avg_ms", averageMs(
+                                        stats.drawTotalNs, stats.swaps),
+                                "draw_swap_max_ms", milliseconds(stats.drawMaxNs),
+                                "render_avg_ms", averageMs(
+                                        stats.renderTotalNs, stats.callbacks),
+                                "render_max_ms", milliseconds(stats.renderMaxNs),
+                                "targets_current", stats.targetsCurrent,
+                                "targets_max", stats.targetsMax);
+                        });
                     }
                 });
                 rawSourceHub = openedHub;
@@ -1504,6 +1537,14 @@ final class CameraHelperMain {
                 if (first == null) first = root(error);
             }
             return first;
+        }
+
+        private static double averageMs(long totalNs, int count) {
+            return count <= 0 ? 0.0d : totalNs / 1_000_000.0d / count;
+        }
+
+        private static double milliseconds(long nanoseconds) {
+            return nanoseconds / 1_000_000.0d;
         }
 
         static Throwable closeFailedPersistentProducer(

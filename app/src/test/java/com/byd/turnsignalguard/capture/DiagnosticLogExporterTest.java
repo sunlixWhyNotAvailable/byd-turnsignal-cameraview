@@ -41,7 +41,7 @@ public final class DiagnosticLogExporterTest {
         File cache = temporary.newFolder("cache-success");
         File outputDirectory = new File(cache, "shared_logs");
         assertTrue(outputDirectory.mkdirs());
-        File old = new File(outputDirectory, "old.zip");
+        File old = new File(outputDirectory, "byd-turnsignal-diagnostics-old.zip");
         write(old, "old");
 
         File archive = DiagnosticLogExporter.export(
@@ -83,7 +83,16 @@ public final class DiagnosticLogExporterTest {
                 "tail -c 1048576 /data/local/tmp/bydturnguard_helper.log 2>/dev/null",
                 "tail -c 1048576 /data/local/tmp/bydturnguard_camera.log 2>/dev/null",
                 "logcat -b all -d 2>/dev/null | tail -c 4194304",
-                "dumpsys dropbox --print 2>/dev/null | tail -c 2097152"
+                "logcat -b crash -v threadtime -d 2>/dev/null | tail -c 2097152",
+                "for tag in system_server_crash system_app_crash data_app_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "for tag in system_server_native_crash system_app_native_crash data_app_native_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "for tag in system_server_anr system_app_anr data_app_anr; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "for tag in system_server_tombstone system_app_tombstone data_app_tombstone; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "for tag in system_server_watchdog system_server_wtf; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "dumpsys dropbox --print 2>/dev/null | tail -c 2097152",
+                "for file in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 3); do printf '\\n--- %s ---\\n' \"$file\"; tail -c 524288 \"$file\" 2>/dev/null; done",
+                "for prop in ro.build.version.release ro.build.version.incremental ro.build.version.security_patch ro.build.id ro.build.display.id ro.product.board ro.board.platform ro.hardware ro.boot.hardware ro.product.cpu.abi ro.product.cpu.abilist; do printf '%s=' \"$prop\"; getprop \"$prop\"; done",
+                "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20"
         };
         assertArrayEquals(expected, DiagnosticLogExporter.fixedCommands());
 
@@ -118,6 +127,85 @@ public final class DiagnosticLogExporterTest {
         assertFalse(manifest.contains("serial"));
         assertFalse(manifest.contains("android_id"));
         assertFalse(manifest.contains("fingerprint"));
+    }
+
+    @Test
+    public void recordsIndependentCollectorFailureStatuses() throws Exception {
+        List<String> commands = new ArrayList<>();
+        DiagnosticLogExporter.CommandRunner runner = command -> {
+            int index = commands.size();
+            commands.add(command);
+            switch (index) {
+                case 0:
+                    return DiagnosticLogExporter.CommandResult.success("helper");
+                case 1:
+                    return DiagnosticLogExporter.CommandResult.success("");
+                case 2:
+                    return DiagnosticLogExporter.CommandResult.failure(
+                            "partial logcat", "shell_exit_1", 1);
+                case 3:
+                    return DiagnosticLogExporter.CommandResult.failure(
+                        "", "shell_exit_13", 13);
+                default:
+                    return DiagnosticLogExporter.CommandResult.failure(
+                            "", "shell_exit_1", 1);
+            }
+        };
+
+        File archive = DiagnosticLogExporter.export(
+                temporary.newFolder("cache-statuses"),
+                new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                identity(),
+                runner,
+                5000L);
+
+        String manifest = readEntry(archive, "manifest.json");
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/bydturnguard_helper.log\",\"status\":\"included\""));
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/bydturnguard_camera.log\",\"status\":\"missing\""));
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/logcat-all.txt\",\"status\":\"partial\""));
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/logcat-crash-threadtime.txt\",\"status\":\"permission_denied\""));
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/dropbox-crash.txt\",\"status\":\"error\""));
+        assertTrue(manifest.contains("\"error\":\"shell_exit_13\""));
+        assertEquals(DiagnosticLogExporter.fixedCommands().length, commands.size());
+    }
+
+    @Test
+    public void fixedCollectorsStayAllowlistedAndBounded() {
+        for (String command : DiagnosticLogExporter.fixedCommands()) {
+            assertFalse(command.contains("bugreport"));
+        }
+        assertTrue(DiagnosticLogExporter.fixedCommands()[10].contains("head -n 3"));
+        assertTrue(DiagnosticLogExporter.fixedCommands()[10].contains("tail -c 524288"));
+        assertTrue(DiagnosticLogExporter.fixedCommands()[11].contains("ro.product.cpu.abilist"));
+        assertTrue(DiagnosticLogExporter.fixedCommands()[12].contains("com.byd.avc"));
+    }
+
+    @Test
+    public void successfulExportPreservesCompatibilityZip() throws Exception {
+        File cache = temporary.newFolder("cache-compatible");
+        File outputDirectory = new File(cache, "shared_logs");
+        assertTrue(outputDirectory.mkdirs());
+        File compatibility = new File(outputDirectory, "legacy.zip");
+        File oldDiagnostic = new File(
+                outputDirectory, "byd-turnsignal-diagnostics-older.zip");
+        write(compatibility, "legacy");
+        write(oldDiagnostic, "old diagnostic");
+
+        File archive = DiagnosticLogExporter.export(
+                cache,
+                new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                identity(),
+                command -> missing(),
+                5500L);
+
+        assertTrue(archive.exists());
+        assertTrue(compatibility.exists());
+        assertFalse(oldDiagnostic.exists());
     }
 
     @Test

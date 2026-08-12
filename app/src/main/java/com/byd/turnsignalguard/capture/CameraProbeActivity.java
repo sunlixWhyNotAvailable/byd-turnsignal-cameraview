@@ -340,6 +340,7 @@ public final class CameraProbeActivity extends Activity
     private boolean activityDestroyed;
     private boolean updateCheckInFlight;
     private boolean logExportInProgress;
+    private boolean compatibilityExportInProgress;
     private boolean debugHorizontal = true;
     private int selectedCameraId = CameraProfile.REAR_LEFT;
     private int calibrationCameraId = CameraProfile.REAR_LEFT;
@@ -708,7 +709,8 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void confirmDiagnosticLogShare() {
-        if (logExportInProgress || shutdownRequested || activityDestroyed) return;
+        if (logExportInProgress || compatibilityExportInProgress
+                || shutdownRequested || activityDestroyed) return;
         new AlertDialog.Builder(this)
                 .setTitle("Поділитися логами")
                 .setMessage("Архів міститиме всі збережені логи застосунку та, якщо ADB "
@@ -721,7 +723,8 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void startDiagnosticLogExport() {
-        if (logExportInProgress || shutdownRequested || activityDestroyed) return;
+        if (logExportInProgress || compatibilityExportInProgress
+                || shutdownRequested || activityDestroyed) return;
         logExportInProgress = true;
         settingsPanel.setLogExportInProgress(true);
         record("diagnostic_log_export", "state", "flush_requested");
@@ -1120,6 +1123,82 @@ public final class CameraProbeActivity extends Activity
                 "camera_id", selectedCameraId);
     }
 
+    private void confirmCompatibilityBundleShare() {
+        if (logExportInProgress || compatibilityExportInProgress
+                || shutdownRequested || activityDestroyed) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Пакет сумісності авто")
+                .setMessage("Пакет може містити великі пропрієтарні файли BYD/DiLink,"
+                        + " системні метадані та приватні технічні дані. Створення є"
+                        + " найкращою спробою: недоступні файли буде позначено, але вони"
+                        + " не зупинять архів. Передавайте пакет лише довіреним каналом.")
+                .setNegativeButton("Скасувати", null)
+                .setPositiveButton("Створити", (dialog, which) -> startCompatibilityBundleExport())
+                .show();
+    }
+
+    private void startCompatibilityBundleExport() {
+        if (logExportInProgress || compatibilityExportInProgress
+                || shutdownRequested || activityDestroyed) return;
+        compatibilityExportInProgress = true;
+        settingsPanel.setCompatibilityExportInProgress(true);
+        record("compatibility_bundle_export", "state", "started");
+        try {
+            logExportExecutor.execute(() -> {
+                File archive = null;
+                Throwable failure = null;
+                try {
+                    archive = CompatibilityBundleExporter.export(this, preferences);
+                } catch (Throwable error) {
+                    failure = error;
+                }
+                File result = archive;
+                Throwable error = failure;
+                mainHandler.post(() -> finishCompatibilityBundleExport(result, error));
+            });
+        } catch (Throwable error) {
+            finishCompatibilityBundleExport(null, error);
+        }
+    }
+
+    private void finishCompatibilityBundleExport(File archive, Throwable error) {
+        compatibilityExportInProgress = false;
+        if (!activityDestroyed && settingsPanel != null) {
+            settingsPanel.setCompatibilityExportInProgress(false);
+        }
+        if (error != null) {
+            record("compatibility_bundle_export", "state", "failed", "error", error.toString());
+            if (activityResumed && !activityDestroyed) {
+                Toast.makeText(this, "Не вдалося створити пакет сумісності", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (archive == null) return;
+        if (!activityResumed || activityDestroyed) {
+            boolean deleted = archive.delete();
+            record("compatibility_bundle_export", "state", "chooser_skipped",
+                    "reason", "activity_inactive", "archive_deleted", deleted);
+            return;
+        }
+        try {
+            Uri uri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", archive);
+            Intent share = new Intent(Intent.ACTION_SEND)
+                    .setType("application/zip")
+                    .putExtra(Intent.EXTRA_STREAM, uri);
+            share.setClipData(ClipData.newUri(
+                    getContentResolver(), "BYD vehicle compatibility package", uri));
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            record("compatibility_bundle_export", "state", "chooser_opened",
+                    "archive", archive.getName(), "bytes", archive.length());
+            startActivity(Intent.createChooser(share, "Поділитися пакетом сумісності"));
+        } catch (Throwable shareError) {
+            record("compatibility_bundle_export", "state", "share_failed",
+                    "error", shareError.toString());
+            Toast.makeText(this, "Не вдалося відкрити меню поширення", Toast.LENGTH_LONG).show();
+        }
+    }
+
     private boolean markActivityCameraFresh(int requestId) {
         if (!activityResumed || !requestedOpen || !activeActivityCameraOpened
                 || requestId <= 0 || requestId != activeActivityCameraRequestId) {
@@ -1268,7 +1347,8 @@ public final class CameraProbeActivity extends Activity
         ScrollView settingsScroll = new ScrollView(this);
         settingsScroll.setFillViewport(true);
         settingsPanel = new CameraProbeSettingsPanel(
-                this, preferences, this::confirmDiagnosticLogShare);
+                this, preferences, this::confirmDiagnosticLogShare,
+                this::confirmCompatibilityBundleShare);
         settingsScroll.addView(settingsPanel.view(), new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         settingsPage = settingsScroll;

@@ -28,20 +28,32 @@ final class CameraProbeSettingsPanel {
     private final Button updateButton;
     private final Button clearLogsButton;
     private final Button shareLogsButton;
+    private final Button compatibilityBundleButton;
     private final Button shutdownButton;
     private final boolean shareLogsAvailable;
+    private final boolean compatibilityBundleAvailable;
     private boolean logExportInProgress;
+    private boolean compatibilityExportInProgress;
     private boolean clearLogsAllowed = true;
     private boolean shareLogsAllowed;
+    private boolean compatibilityBundleAllowed;
 
     CameraProbeSettingsPanel(CameraProbeActivity activity, SharedPreferences preferences) {
-        this(activity, preferences, null);
+        this(activity, preferences, null, null);
     }
 
     CameraProbeSettingsPanel(
             CameraProbeActivity activity,
             SharedPreferences preferences,
             Runnable shareLogsAction) {
+        this(activity, preferences, shareLogsAction, null);
+    }
+
+    CameraProbeSettingsPanel(
+            CameraProbeActivity activity,
+            SharedPreferences preferences,
+            Runnable shareLogsAction,
+            Runnable compatibilityBundleAction) {
         this.activity = activity;
         this.preferences = preferences;
 
@@ -132,6 +144,16 @@ final class CameraProbeSettingsPanel {
         root.addView(shareLogsButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
 
+        compatibilityBundleButton = activity.button("Створити пакет сумісності авто");
+        compatibilityBundleAvailable = compatibilityBundleAction != null;
+        compatibilityBundleAllowed = compatibilityBundleAvailable;
+        compatibilityBundleButton.setEnabled(compatibilityBundleAvailable);
+        if (compatibilityBundleAction != null) {
+            compatibilityBundleButton.setOnClickListener(view -> compatibilityBundleAction.run());
+        }
+        root.addView(compatibilityBundleButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+
         autoStartSwitch.setOnCheckedChangeListener((button, checked) ->
                 activity.onSettingsAutoStartChanged(checked));
         updateButton.setOnClickListener(view -> activity.runManualUpdateCheck());
@@ -164,14 +186,25 @@ final class CameraProbeSettingsPanel {
         adbRetryButton.setEnabled(adbRetryEnabled);
         clearLogsAllowed = clearLogsEnabled;
         shareLogsAllowed = shareLogsAvailable && !shutdownRequested;
-        clearLogsButton.setEnabled(clearLogsAllowed && !logExportInProgress);
-        shareLogsButton.setEnabled(shareLogsAllowed && !logExportInProgress);
+        compatibilityBundleAllowed = compatibilityBundleAvailable && !shutdownRequested;
+        updateExportButtons();
     }
 
     void setLogExportInProgress(boolean inProgress) {
         logExportInProgress = inProgress;
-        clearLogsButton.setEnabled(clearLogsAllowed && !inProgress);
-        shareLogsButton.setEnabled(shareLogsAllowed && !inProgress);
+        updateExportButtons();
+    }
+
+    void setCompatibilityExportInProgress(boolean inProgress) {
+        compatibilityExportInProgress = inProgress;
+        updateExportButtons();
+    }
+
+    private void updateExportButtons() {
+        boolean anyExport = logExportInProgress || compatibilityExportInProgress;
+        clearLogsButton.setEnabled(clearLogsAllowed && !anyExport);
+        shareLogsButton.setEnabled(shareLogsAllowed && !anyExport);
+        compatibilityBundleButton.setEnabled(compatibilityBundleAllowed && !anyExport);
     }
 
     void setUpdateButton(String text, boolean enabled) {
