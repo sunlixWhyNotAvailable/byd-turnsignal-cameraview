@@ -383,6 +383,9 @@ public final class CameraProbeActivity extends Activity
     private boolean automaticPreviewIntent;
     private int automaticPreviewIntentTab = -1;
     private int automaticPreviewIntentRequestId;
+    private final ResumeTabWarmup resumeTabWarmup = new ResumeTabWarmup();
+    private int transitionTargetTab = -1;
+    private boolean transitionTargetInputReady;
     private boolean activityClosePending;
     private boolean activityColdResetRequired;
     private boolean activityColdResetInFlight;
@@ -541,20 +544,14 @@ public final class CameraProbeActivity extends Activity
     protected void onResume() {
         super.onResume();
         activityResumed = true;
-        if (!activityColdResetRequired && !activityColdResetInFlight) {
-            ensureAutomaticPreviewInputs();
-        }
-        if (activityColdResetRequired) {
-            startActivityResumeColdReset();
-        } else if (hasAutoPreviewIntent()) {
+        ensureAutomaticPreviewInputs();
+        if (hasAutoPreviewIntent()) {
             record("activity_camera_reopen", "reason", "activity_resumed",
                     "selected_tab", selectedTab,
                     "request_id", automaticPreviewIntentRequestId);
             resumeSelectedCameraPreview();
         }
-        if (!activityColdResetRequired) {
-            resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
-        }
+        resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
         showCachedUpdateIfAvailable();
         scheduleStartupUpdateCheck();
         if (backgroundStartSettingsActive) {
@@ -610,20 +607,9 @@ public final class CameraProbeActivity extends Activity
         stopCalibrationCopies(true);
         stopReverseCalibrationCopies(false);
         if (!shutdownRequested) {
-            // A failed reset is a fail-closed latch for the current lifecycle.
-            // The next explicit stop starts a new lifecycle attempt and is the
-            // only place where that latch may be cleared.
-            activityColdResetFailed = false;
             armResumeAutoPreviewIfNeeded();
+            resumeTabWarmup.stopped();
         } else clearResumeAutoPreview();
-        cameraTransition.cancel();
-        // A reset started by a prior resume is no longer owned after stop.
-        // Its reply may still arrive on the serialized IPC executor; treat it
-        // as stale and let the next resume issue one fresh reset.
-        boolean retainColdReset = shouldRetainColdResetAfterCancel(
-                activityResumed, shutdownRequested);
-        activityColdResetInFlight = false;
-        if (retainColdReset) activityColdResetRequired = true;
         retryStockViewpoint = -1;
         retryStockDebug = false;
         cameraShellRecoveryPending = false;
@@ -634,11 +620,10 @@ public final class CameraProbeActivity extends Activity
             if (rearSharpTurnAngleInput != null) saveRearTriggerPolicy();
             if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
                     && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
-            if (hasAutoPreviewIntent() || requestedOpen || cameraHandoffPending) {
-                activityColdResetRequired = true;
+            if (shouldIssueActivityStoppedClose(cameraTransition.pending())) {
+                activityClosePending = activityClosePending
+                        || closeCamera("activity_stopped");
             }
-            boolean closePending = activityClosePending || closeCamera("activity_stopped");
-            if (activityColdResetRequired) activityClosePending = closePending;
             CameraHelperService.activityClosed(this);
         }
         // Keep the callback until onDestroy: stock-shell close completion and
@@ -649,6 +634,7 @@ public final class CameraProbeActivity extends Activity
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
+        resumeTabWarmup.clear();
         if (requestedOpen || cameraHandoffPending) closeCamera("activity_destroyed");
         clearResumeAutoPreview();
         mainHandler.removeCallbacks(runStartupUpdateCheck);
@@ -983,9 +969,6 @@ public final class CameraProbeActivity extends Activity
         updateControls();
         maybeOpenProductionPreview();
         enqueueHelperCallbackRegistration(registrationTarget);
-        if (activityResumed && activityColdResetRequired) {
-            startActivityResumeColdReset();
-        }
     }
 
     @Override
@@ -1405,6 +1388,9 @@ public final class CameraProbeActivity extends Activity
             retryStockDebug = false;
         }
         selectedTab = tab;
+        if (previousTab != tab && cameraTransition.pending()) {
+            captureCameraTransitionTarget();
+        }
         if (previousTab != tab) clearResumeAutoPreview();
         if (previousTab == TAB_REVERSE_CAMERAS && tab != TAB_REVERSE_CAMERAS
                 && reverseCalibrationCameraIndex > 0) {
@@ -1432,6 +1418,7 @@ public final class CameraProbeActivity extends Activity
         settingsPage.setVisibility(tab == TAB_SETTINGS ? View.VISIBLE : View.GONE);
         if (previousTab != -1 && previousTab != tab
                 && shouldRenewIdleTabInput(
+                        resumeTabWarmup.required(),
                         transitionAttempted, cameraTransition.pending(),
                         activityClosePending, closingActivityCameraRequestId)) {
             renewSelectedPreviewInputForTabSwitch();
@@ -5136,6 +5123,7 @@ public final class CameraProbeActivity extends Activity
             automaticPreviewIntent = true;
             automaticPreviewIntentTab = selectedTab;
             automaticPreviewIntentRequestId = requestId;
+            resumeTabWarmup.requested(requestId);
         }
         return requestId;
     }
@@ -5380,10 +5368,17 @@ public final class CameraProbeActivity extends Activity
         if (isAutoPreviewTab(selectedTab) && !shutdownRequested) {
             armResumeAutoPreview();
         }
+        captureCameraTransitionTarget();
+        boolean openWithoutHelper = requestedOpen && helper == null;
         String token = cameraTransition.begin(reason);
         boolean waiting = closeCamera(token);
-        if (!waiting && closingActivityCameraRequestId <= 0) {
-            finishCameraTransition(token, "local");
+        if (!waiting) {
+            if (openWithoutHelper) {
+                failCameraTransition(token, "helper unavailable");
+                return true;
+            } else {
+                finishCameraTransition(token, "local");
+            }
         }
         return waiting;
     }
@@ -5393,14 +5388,36 @@ public final class CameraProbeActivity extends Activity
             record("camera_transition_ignored", "token", token, "source", source);
             return;
         }
+        int targetTab = transitionTargetTab;
+        boolean targetInputReady = transitionTargetInputReady;
+        transitionTargetTab = -1;
+        transitionTargetInputReady = false;
         activityClosePending = false;
         closingActivityCameraRequestId = 0;
         record("camera_transition_completed", "token", token, "source", source,
                 "selected_tab", selectedTab);
-        if (CameraTransition.reasonEquals(token, "camera_tab_changed")) {
+        if (shouldRenewTransitionInputAfterClose(
+                        targetTab == selectedTab, targetInputReady,
+                        activityDestroyed, shutdownRequested)
+                && CameraTransition.reasonEquals(token, "camera_tab_changed")) {
             renewSelectedPreviewInputForTabSwitch();
         }
         resumeSelectedCameraPreview();
+        updateControls();
+    }
+
+    private void failCameraTransition(String token, String failure) {
+        if (!resolveFailedCameraTransition(cameraTransition, token)) {
+            record("camera_transition_ignored", "token", token, "source", "failure");
+            return;
+        }
+        transitionTargetTab = -1;
+        transitionTargetInputReady = false;
+        activityClosePending = false;
+        closingActivityCameraRequestId = 0;
+        clearResumeAutoPreview();
+        retireAutomaticPreviewInputs();
+        record("camera_transition_close_failed", "token", token, "error", failure);
         updateControls();
     }
 
@@ -5427,11 +5444,85 @@ public final class CameraProbeActivity extends Activity
         }
     }
 
+    private boolean selectedPreviewInputReady() {
+        if (selectedTab == TAB_CAMERA_CALIBRATION && calibrationPreview != null) {
+            return calibrationPreview.isCameraSurfaceReady();
+        }
+        return selectedTab == TAB_REVERSE_CAMERAS && reverseCameraPreview != null
+                && reverseCameraPreview.previewSurfacesReady();
+    }
+
+    private void captureCameraTransitionTarget() {
+        transitionTargetTab = selectedTab;
+        transitionTargetInputReady = selectedPreviewInputReady();
+    }
+
     static boolean shouldRenewIdleTabInput(
+            boolean resumedFromNonCameraTab,
             boolean transitionAttempted, boolean transitionPending,
             boolean activityClosePending, int closingRequestId) {
-        return !transitionAttempted && !transitionPending
+        return !resumedFromNonCameraTab
+                && !transitionAttempted && !transitionPending
                 && !activityClosePending && closingRequestId <= 0;
+    }
+
+    static boolean shouldIssueActivityStoppedClose(boolean transitionPending) {
+        return !transitionPending;
+    }
+
+    static boolean shouldRenewSelectedInputAfterClose(
+            boolean activityDestroyed, boolean shutdownRequested) {
+        return !activityDestroyed && !shutdownRequested;
+    }
+
+    static boolean shouldRenewTransitionInputAfterClose(
+            boolean targetStillSelected, boolean targetInputReady,
+            boolean activityDestroyed, boolean shutdownRequested) {
+        return targetStillSelected && targetInputReady
+                && shouldRenewSelectedInputAfterClose(activityDestroyed, shutdownRequested);
+    }
+
+    static boolean shouldRepeatTabTransitionAfterResume(
+            boolean resumedFromNonCameraTab, int warmupRequestId,
+            int activeRequestId, int eventRequestId) {
+        return resumedFromNonCameraTab && warmupRequestId > 0
+                && warmupRequestId == activeRequestId
+                && warmupRequestId == eventRequestId;
+    }
+
+    static final class ResumeTabWarmup {
+        private boolean required;
+        private int requestId;
+
+        void stopped() {
+            required = true;
+            requestId = 0;
+        }
+
+        void requested(int value) {
+            if (required) requestId = value;
+        }
+
+        boolean opened(int activeRequestId, int eventRequestId) {
+            if (!shouldRepeatTabTransitionAfterResume(
+                    required, requestId, activeRequestId, eventRequestId)) return false;
+            clear();
+            return true;
+        }
+
+        boolean required() {
+            return required;
+        }
+
+        void clear() {
+            required = false;
+            requestId = 0;
+        }
+    }
+
+    static boolean resolveFailedCameraTransition(
+            CameraTransition transition, String token) {
+        return transition.complete(token);
     }
 
     private void startActivityResumeColdReset() {
@@ -5457,8 +5548,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void resumeSelectedCameraPreview() {
-        if (cameraTransition.pending() || activityColdResetRequired
-                || activityColdResetInFlight || !canResumeSelectedPreview()) return;
+        if (cameraTransition.pending() || !canResumeSelectedPreview()) return;
         if (retryStockViewpoint >= 0) {
             int viewpoint = retryStockViewpoint;
             boolean debug = retryStockDebug;
@@ -5862,9 +5952,8 @@ public final class CameraProbeActivity extends Activity
             if (shouldCompleteCameraTransitionClose(error != null, queued, successful)) {
                 finishCameraTransition(reason, "ipc_reply");
             } else {
-                record("camera_transition_close_failed", "token", reason,
-                        "request_id", requestId,
-                        "error", error == null ? String.valueOf(result) : error.toString());
+                failCameraTransition(reason,
+                        error == null ? String.valueOf(result) : error.toString());
             }
         }
     }
@@ -5932,8 +6021,7 @@ public final class CameraProbeActivity extends Activity
         }
         activityClosePending = false;
         if (failure != null && !failure.trim().isEmpty()) {
-            activityColdResetRequired = false;
-            activityColdResetFailed = true;
+            clearResumeAutoPreview();
             retireAutomaticPreviewInputs();
             record("activity_camera_close", "state", "failed",
                     "reason", "activity_stopped", "request_id", requestId,
@@ -5946,12 +6034,9 @@ public final class CameraProbeActivity extends Activity
             return;
         }
         closingActivityCameraRequestId = 0;
-        if (activityColdResetRequired && !activityResumed) {
-            retireAutomaticPreviewInputs();
-        }
-        if (activityResumed && activityColdResetRequired) {
-            startActivityResumeColdReset();
-        }
+        if (!shouldRenewSelectedInputAfterClose(activityDestroyed, shutdownRequested)) return;
+        renewSelectedPreviewInputForTabSwitch();
+        if (activityResumed && hasAutoPreviewIntent()) resumeSelectedCameraPreview();
     }
 
     private static boolean isStockShellCloseQueued(String result) {
@@ -6312,8 +6397,7 @@ public final class CameraProbeActivity extends Activity
                     if (shouldResumeAfterReverseCameraState(
                             hasResumeAutoPreviewIntent(0), previousRequestId,
                             activeReverseControllerRequestId)) {
-                        if (activityColdResetRequired) startActivityResumeColdReset();
-                        else resumeSelectedCameraPreview();
+                        resumeSelectedCameraPreview();
                     }
                     updateControls();
                     return;
@@ -6321,8 +6405,7 @@ public final class CameraProbeActivity extends Activity
                 if ("reverse_camera_stopped".equals(kind)) {
                     int requestId = json.optInt("request_id", -1);
                     if (shouldHandleReverseCameraStopped(requestId)) {
-                        if (activityColdResetRequired) startActivityResumeColdReset();
-                        else resumeSelectedCameraPreview();
+                        resumeSelectedCameraPreview();
                     } else {
                         record("activity_camera_event_ignored", "kind", kind,
                                 "request_id", requestId,
@@ -6351,6 +6434,15 @@ public final class CameraProbeActivity extends Activity
                         activeActivityCameraFresh = false;
                         activeActivityConsumerGeneration = json.optInt(
                                 "consumer_generation", 0);
+                        if (resumeTabWarmup.opened(
+                                activeActivityCameraRequestId, requestId)) {
+                            record("activity_camera_warmup_transition",
+                                    "state", "started",
+                                    "request_id", requestId,
+                                    "selected_tab", selectedTab);
+                            closeCameraForTransition("camera_tab_changed");
+                            return;
+                        }
                         if (activePreview == cameraPreview) {
                             armProductionPreviewFirstFrame(requestId);
                         } else if (activePreview == calibrationPreview) {
@@ -6401,6 +6493,20 @@ public final class CameraProbeActivity extends Activity
                     maybeOpenReversePreview();
                 } else if ("camera_error".equals(kind)) {
                     int requestId = json.optInt("request_id", 0);
+                    if (isMatchingStockShellCloseError(
+                            json.optString("renderer"), json.optString("stage"),
+                            closingActivityCameraRequestId, requestId)) {
+                        String failure = json.optString("error", "stock shell close failed");
+                        String transitionToken = cameraTransition.pendingToken();
+                        if (transitionToken != null) {
+                            failCameraTransition(transitionToken, failure);
+                        } else if (activityClosePending) {
+                            finishActivityStoppedClose(requestId, failure);
+                        } else {
+                            recordIgnoredActivityCameraEvent(kind, json);
+                        }
+                        return;
+                    }
                     boolean accepted = isCurrentActivityCameraEvent(
                             requestedOpen, activeActivityCameraRequestId, requestId,
                             json.optString("source"));
@@ -6498,9 +6604,7 @@ public final class CameraProbeActivity extends Activity
                                     renderer, kind, error)) {
                                 finishCameraTransition(reason, "shell_callback");
                             } else {
-                                record("camera_transition_close_failed",
-                                        "token", reason, "request_id", requestId,
-                                        "error", error);
+                                failCameraTransition(reason, error);
                             }
                         } else {
                             record("camera_transition_close_observed", "token", reason,
@@ -6817,15 +6921,12 @@ public final class CameraProbeActivity extends Activity
     private boolean canAutoOpenSelectedPreview() {
         return canStartActivityCamera() && activeReverseControllerRequestId <= 0
                 && !requestedOpen && !cameraHandoffPending && !cameraTransition.pending()
-                && !activityColdResetRequired && !activityColdResetInFlight
-                && !activityColdResetFailed
                 && hasAutoPreviewIntent();
     }
 
     private boolean hasResumeAutoPreviewIntent(int eventRequestId) {
         return !shutdownRequested
                 && activityResumed && hasAutoPreviewIntent()
-                && !activityColdResetFailed
                 && (eventRequestId <= 0
                         || automaticPreviewIntentRequestId > 0
                         && automaticPreviewIntentRequestId == eventRequestId);
@@ -6834,8 +6935,6 @@ public final class CameraProbeActivity extends Activity
     private boolean canResumeSelectedPreview() {
         return canStartActivityCamera()
                 && !shouldDeferActivityPreviewForReverse(activeReverseControllerRequestId)
-                && !activityColdResetRequired && !activityColdResetInFlight
-                && !activityColdResetFailed
                 && (!cameraShellRecoveryPending || cameraShellAvailable)
                 && (hasResumeAutoPreviewIntent(0) || hasScopedShellRetry());
     }
@@ -7340,6 +7439,13 @@ public final class CameraProbeActivity extends Activity
             boolean requestedOpen, int activeRequestId, int eventRequestId, String source) {
         return requestedOpen && "helper".equals(source)
                 && activeRequestId > 0 && eventRequestId == activeRequestId;
+    }
+
+    static boolean isMatchingStockShellCloseError(
+            String renderer, String stage,
+            int closingRequestId, int eventRequestId) {
+        return "stock_avm_shell".equals(renderer) && "close".equals(stage)
+                && closingRequestId > 0 && closingRequestId == eventRequestId;
     }
 
     static boolean isIntermediateCameraClose(String reason) {

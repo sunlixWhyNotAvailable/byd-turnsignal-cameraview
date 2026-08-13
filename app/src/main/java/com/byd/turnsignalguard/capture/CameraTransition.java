@@ -20,6 +20,10 @@ final class CameraTransition {
         return pendingToken != null && pendingToken.equals(token);
     }
 
+    String pendingToken() {
+        return pendingToken;
+    }
+
     boolean complete(String token) {
         if (pendingToken == null || !pendingToken.equals(token)) return false;
         pendingToken = null;

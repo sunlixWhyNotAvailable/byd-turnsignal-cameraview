@@ -60,15 +60,83 @@ public final class CameraTransitionTest {
     @Test
     public void idleTabInputRenewalWaitsForEveryPriorCloseState() {
         assertTrue(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, false, false, 0));
+                false, false, false, false, 0));
         assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
-                true, false, false, 0));
+                true, false, false, false, 0));
         assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, true, false, 0));
+                false, true, false, false, 0));
         assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, false, true, 0));
+                false, false, true, false, 0));
         assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, false, false, 73));
+                false, false, false, true, 0));
+        assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
+                false, false, false, false, 73));
+    }
+
+    @Test
+    public void firstCameraAfterAnyResumeRepeatsExactTabTransitionOnce() {
+        CameraProbeActivity.ResumeTabWarmup warmup =
+                new CameraProbeActivity.ResumeTabWarmup();
+
+        warmup.stopped();
+        assertTrue(warmup.required());
+        warmup.requested(41);
+        assertFalse(warmup.opened(42, 41));
+        assertFalse(warmup.opened(41, 42));
+        assertTrue(warmup.opened(41, 41));
+        assertFalse(warmup.required());
+        assertFalse(warmup.opened(41, 41));
+    }
+
+    @Test
+    public void stockShellCloseErrorFailsOnlyMatchingClose() {
+        assertTrue(CameraProbeActivity.isMatchingStockShellCloseError(
+                "stock_avm_shell", "close", 51, 51));
+        assertFalse(CameraProbeActivity.isMatchingStockShellCloseError(
+                "stock_avm_shell", "open", 51, 51));
+        assertFalse(CameraProbeActivity.isMatchingStockShellCloseError(
+                "stock_avm_shell", "close", 51, 50));
+        assertFalse(CameraProbeActivity.isMatchingStockShellCloseError(
+                "direct_crop_calibration", "close", 51, 51));
+    }
+
+    @Test
+    public void stoppedActivityDoesNotDoubleClosePendingTabTransition() {
+        assertTrue(CameraProbeActivity.shouldIssueActivityStoppedClose(false));
+        assertFalse(CameraProbeActivity.shouldIssueActivityStoppedClose(true));
+    }
+
+    @Test
+    public void failedTransitionIsScopedAndCannotBlockResumeForever() {
+        CameraTransition transition = new CameraTransition();
+        String first = transition.begin("camera_tab_changed");
+        String current = transition.begin("camera_tab_changed");
+
+        assertFalse(CameraProbeActivity.resolveFailedCameraTransition(transition, first));
+        assertTrue(transition.pending());
+        assertTrue(CameraProbeActivity.resolveFailedCameraTransition(transition, current));
+        assertFalse(transition.pending());
+    }
+
+    @Test
+    public void lateCloseCannotRecreateInputAfterDestroyOrShutdown() {
+        assertTrue(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, false));
+        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(true, false));
+        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, true));
+    }
+
+    @Test
+    public void tabTransitionDoesNotRecreateInputCreatedByFirstVisibility() {
+        assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                true, false, false, false));
+        assertTrue(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                true, true, false, false));
+        assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                false, true, false, false));
+        assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                true, true, true, false));
+        assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                true, true, false, true));
     }
 
     @Test
@@ -91,9 +159,9 @@ public final class CameraTransitionTest {
     @Test
     public void deferredIdleEntryRenewsOnlyAfterMatchingCloseCompletes() {
         assertFalse(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, false, false, 91));
+                false, false, false, false, 91));
         assertTrue(CameraProbeActivity.shouldRenewIdleTabInput(
-                false, false, false, 0));
+                false, false, false, false, 0));
         assertTrue(CameraProbeActivity.shouldWaitForStockShellClose(
                 "reverse_preview_with_stock_base", ""));
         assertFalse(CameraProbeActivity.shouldWaitForStockShellClose(
