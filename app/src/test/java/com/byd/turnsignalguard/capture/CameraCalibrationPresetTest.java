@@ -112,14 +112,14 @@ public final class CameraCalibrationPresetTest {
         DirectCameraCrop active = crop(0.02f, 0.03f, 0.20f, 0.22f, -9);
         DirectCameraCrop.save(preferences, profile, active);
         DirectCameraCrop.saveCorrected(preferences, profile, active);
-        CameraDewarpConfig.save(preferences,
+        CameraDewarpConfig.saveForProfile(preferences, profile,
                 CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT));
         assertTrue(CameraCalibrationPreset.loadCamera(preferences, profile));
         assertCrop(raw, DirectCameraCrop.load(preferences, profile));
         assertGeometry(corrected,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw));
-        CameraDewarpConfig restored = CameraDewarpConfig.load(
-                preferences, CameraDewarpConfig.LENS_LEFT);
+        CameraDewarpConfig restored = CameraDewarpConfig.loadForProfile(
+                preferences, profile);
         assertTrue(restored.enabled);
         assertEquals(137, restored.fovDegrees);
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, restored.projection);
@@ -127,7 +127,7 @@ public final class CameraCalibrationPresetTest {
         DirectCameraCrop unchanged = crop(0.05f, 0.08f, 0.26f, 0.30f, -15);
         DirectCameraCrop.save(preferences, profile, unchanged);
         DirectCameraCrop.saveCorrected(preferences, profile, unchanged);
-        CameraDewarpConfig.save(preferences,
+        CameraDewarpConfig.saveForProfile(preferences, profile,
                 CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT));
         preferences.putFloat(
                 "camera_calibration_preset_v1_rear_left_corrected_w", Float.NaN);
@@ -135,8 +135,8 @@ public final class CameraCalibrationPresetTest {
         assertCrop(unchanged, DirectCameraCrop.load(preferences, profile));
         assertGeometry(unchanged,
                 DirectCameraCrop.loadCorrected(preferences, profile, unchanged));
-        assertFalse(CameraDewarpConfig.load(
-                preferences, CameraDewarpConfig.LENS_LEFT).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(
+                preferences, profile).enabled);
 
         String presetPrefix = "camera_calibration_preset_v1_rear_left_";
         preferences.putFloat(presetPrefix + "corrected_w", corrected.width);
@@ -191,8 +191,8 @@ public final class CameraCalibrationPresetTest {
             assertEquals(1.0f - corrected.left - corrected.width,
                     mirroredCorrected.left, EPSILON);
             assertEquals(corrected.top, mirroredCorrected.top, EPSILON);
-            CameraDewarpConfig targetDewarp = CameraDewarpConfig.load(
-                    preferences, CameraDewarpConfig.lensFor(target));
+            CameraDewarpConfig targetDewarp = CameraDewarpConfig.loadForProfile(
+                    preferences, target);
             assertEquals(CameraDewarpConfig.lensFor(target), targetDewarp.lens);
             assertTrue(targetDewarp.enabled);
             assertEquals(149, targetDewarp.fovDegrees);
@@ -262,8 +262,8 @@ public final class CameraCalibrationPresetTest {
             ReverseCameraLayout.Pane correctedTarget = ReverseCameraController
                     .loadLayout(preferences).pane(targetIndex);
             assertRectMirrored(sourceCorrected, correctedTarget.sourceCrop);
-            CameraDewarpConfig targetDewarp = CameraDewarpConfig.load(
-                    preferences, CameraDewarpConfig.lensForReverseCamera(targetIndex));
+            CameraDewarpConfig targetDewarp = CameraDewarpConfig.loadForReverse(
+                    preferences, targetIndex);
             assertEquals(CameraDewarpConfig.lensForReverseCamera(targetIndex),
                     targetDewarp.lens);
             assertTrue(targetDewarp.enabled);
@@ -284,6 +284,62 @@ public final class CameraCalibrationPresetTest {
         }
         assertFalse(CameraCalibrationPreset.mirrorReverse(
                 new TestSharedPreferences(), ReverseCameraLayout.REAR_CAMERA_INDEX));
+    }
+
+    @Test
+    public void presetsAndMirrorsOnlyChangeTheirTargetActivationScope() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraProfile rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT);
+        CameraProfile frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT);
+        CameraProfile rearRight = CameraProfile.of(CameraProfile.REAR_RIGHT);
+        CameraProfile frontRight = CameraProfile.of(CameraProfile.FRONT_RIGHT);
+        int reverseLeft = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+        int reverseRight = ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+
+        CameraDewarpConfig.saveForProfile(preferences, rearLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 130));
+        CameraDewarpConfig.saveForProfile(preferences, frontLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 130));
+        CameraDewarpConfig.saveForReverse(preferences, reverseLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 130));
+        CameraCalibrationPreset.saveCamera(preferences, rearLeft);
+        CameraDewarpConfig.saveForProfile(preferences, rearLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 131));
+
+        assertTrue(CameraCalibrationPreset.loadCamera(preferences, rearLeft));
+        assertTrue(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
+        assertFalse(CameraDewarpConfig.loadForReverse(preferences, reverseLeft).enabled);
+
+        CameraDewarpConfig.saveForProfile(preferences, frontRight,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 90));
+        CameraDewarpConfig.saveForReverse(preferences, reverseRight,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 90));
+        CameraCalibrationPreset.mirrorCamera(preferences, rearLeft);
+        assertTrue(CameraDewarpConfig.loadForProfile(preferences, rearRight).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, frontRight).enabled);
+        assertFalse(CameraDewarpConfig.loadForReverse(preferences, reverseRight).enabled);
+
+        CameraDewarpConfig.saveForReverse(preferences, reverseLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 145));
+        CameraCalibrationPreset.saveReverse(preferences, reverseLeft);
+        CameraDewarpConfig.saveForReverse(preferences, reverseLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 146));
+        CameraDewarpConfig.saveForProfile(preferences, rearLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 146));
+        assertTrue(CameraCalibrationPreset.loadReverse(preferences, reverseLeft));
+        assertTrue(CameraDewarpConfig.loadForReverse(preferences, reverseLeft).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
+
+        CameraDewarpConfig.saveForProfile(preferences, rearRight,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 91));
+        CameraDewarpConfig.saveForProfile(preferences, frontRight,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 91));
+        assertTrue(CameraCalibrationPreset.mirrorReverse(preferences, reverseLeft));
+        assertTrue(CameraDewarpConfig.loadForReverse(preferences, reverseRight).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearRight).enabled);
+        assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontRight).enabled);
     }
 
     @Test

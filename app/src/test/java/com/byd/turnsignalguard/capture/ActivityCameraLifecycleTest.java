@@ -2,6 +2,9 @@ package com.byd.turnsignalguard.capture;
 
 import org.junit.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
@@ -163,5 +166,37 @@ public final class ActivityCameraLifecycleTest {
         assertTrue(fallback.showCorrected);
         assertFalse(fallback.correctedEditable);
         assertFalse(fallback.liveUsesCorrected);
+    }
+
+    @Test
+    public void savedReversePaneRestoresExactSwitchBindingWithoutWrites() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        settings.putBoolean("camera_dewarp_v2_left_enabled", false);
+        CameraDewarpConfig.saveForReverse(settings,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT,
+                        true, 137, CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        CameraDewarpConfig.saveForReverse(settings,
+                ReverseCameraLayout.REAR_CAMERA_INDEX,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR,
+                        false, 120, CameraDewarpConfig.PROJECTION_RECTILINEAR));
+        ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        Map<String, ?> beforeRestore = new HashMap<>(settings.getAll());
+
+        CameraProbeActivity.ReversePaneUiBinding restored =
+                CameraProbeActivity.restoredReversePaneUiBinding(settings);
+
+        assertEquals(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                restored.cameraIndex);
+        assertTrue(restored.dewarp.enabled);
+        assertEquals(CameraDewarpConfig.LENS_LEFT, restored.dewarp.lens);
+        assertEquals(137, restored.dewarp.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
+                restored.dewarp.projection);
+        assertEquals(beforeRestore, settings.getAll());
+        assertFalse(settings.getBoolean("camera_dewarp_v2_left_enabled", true));
+        assertFalse(CameraDewarpConfig.loadForReverse(settings,
+                ReverseCameraLayout.REAR_CAMERA_INDEX).enabled);
     }
 }

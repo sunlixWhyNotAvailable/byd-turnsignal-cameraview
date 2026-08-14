@@ -106,7 +106,7 @@ final class CameraCalibrationPreset {
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
         return new CameraValue(raw,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw),
-                CameraDewarpConfig.load(preferences, CameraDewarpConfig.lensFor(profile)));
+                CameraDewarpConfig.loadForProfile(preferences, profile));
     }
 
     private static void applyCamera(
@@ -114,7 +114,7 @@ final class CameraCalibrationPreset {
         SharedPreferences.Editor editor = preferences.edit();
         DirectCameraCrop.write(editor, profile, value.raw);
         DirectCameraCrop.writeCorrected(editor, profile, value.corrected);
-        CameraDewarpConfig.write(editor, CameraDewarpConfig.of(
+        CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
         editor.apply();
@@ -129,8 +129,7 @@ final class CameraCalibrationPreset {
                         ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop));
         return new ReverseValue(pane.destination, pane.sourceCrop, corrected,
                 pane.rotationDegrees, pane.displayMode,
-                CameraDewarpConfig.load(preferences,
-                        CameraDewarpConfig.lensForReverseCamera(cameraIndex)));
+                CameraDewarpConfig.loadForReverse(preferences, cameraIndex));
     }
 
     private static void applyReverse(
@@ -149,7 +148,7 @@ final class CameraCalibrationPreset {
                 .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.raw, false);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
-        CameraDewarpConfig.write(editor, CameraDewarpConfig.of(
+        CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensForReverseCamera(cameraIndex),
                 value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection));
         editor.apply();

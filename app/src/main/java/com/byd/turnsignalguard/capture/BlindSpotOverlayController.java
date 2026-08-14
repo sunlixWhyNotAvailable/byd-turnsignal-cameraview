@@ -949,17 +949,24 @@ final class BlindSpotOverlayController {
             CameraProfile profile, int requestId) {
         int target = readTarget(settings, profile);
         int[] displaySize = CameraDisplayTarget.displaySize(context, target);
-        CameraDewarpConfig dewarp = CameraDewarpConfig.load(
-                settings, CameraDewarpConfig.lensFor(profile));
+        int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
+        int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
+        int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
+        return buildOverlaySpec(settings, profile, requestId, target,
+                displaySize[0], displaySize[1], marginX, topMargin, bottomMargin);
+    }
+
+    static CameraShellProtocol.OverlaySpec buildOverlaySpec(
+            SharedPreferences settings, CameraProfile profile, int requestId, int target,
+            int displayWidth, int displayHeight,
+            int marginX, int topMargin, int bottomMargin) {
+        CameraDewarpConfig dewarp = CameraDewarpConfig.loadForProfile(settings, profile);
         DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop crop = dewarp.enabled
                 ? DirectCameraCrop.loadCorrected(settings, profile, rawCrop) : rawCrop;
         float frameAspect = readFrameAspect(settings, profile, crop.outputAspect());
-        int marginX = target == CameraDisplayTarget.TABLET ? dp(16) : 0;
-        int topMargin = target == CameraDisplayTarget.TABLET ? dp(36) : 0;
-        int bottomMargin = target == CameraDisplayTarget.TABLET ? dp(88) : 0;
         int[] geometry = overlayGeometry(
-                displaySize[0], displaySize[1], readScale(settings, profile),
+                displayWidth, displayHeight, readScale(settings, profile),
                 frameAspect, readPosition(settings, profile, false),
                 readPosition(settings, profile, true),
                 marginX, topMargin, bottomMargin);

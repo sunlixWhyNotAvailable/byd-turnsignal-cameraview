@@ -14,6 +14,7 @@ import java.util.function.Predicate;
 
 final class ReverseCameraController {
     static final String PREF_ENABLED = "reverse_camera_enabled";
+    static final String PREF_EDITOR_SELECTION = "reverse_camera_editor_selection";
     static final boolean DEFAULT_ENABLED = false;
     private static final String PREF_PREFIX = "reverse_camera_";
     private static final long SURFACE_TIMEOUT_MS = 8_000;
@@ -201,15 +202,22 @@ final class ReverseCameraController {
         visible = false;
         emit("reverse_camera_start", "request_id", requestId);
         prioritySink.accept(true);
-        CameraShellProtocol.ReverseOverlaySpec spec =
-                new CameraShellProtocol.ReverseOverlaySpec(
-                        requestId, loadLayout(settings), loadRawLayout(settings),
-                        BlindSpotOverlayController.readCornerRadius(settings),
-                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_REAR),
-                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_LEFT),
-                        CameraDewarpConfig.load(settings, CameraDewarpConfig.LENS_RIGHT));
+        CameraShellProtocol.ReverseOverlaySpec spec = buildOverlaySpec(settings, requestId);
         activeHelper.prepareReverseOverlayWindow(
                 spec, this::surfacesAvailable, () -> overlayPrepared(requestId));
+    }
+
+    static CameraShellProtocol.ReverseOverlaySpec buildOverlaySpec(
+            SharedPreferences settings, int requestId) {
+        return new CameraShellProtocol.ReverseOverlaySpec(
+                requestId, loadLayout(settings), loadRawLayout(settings),
+                BlindSpotOverlayController.readCornerRadius(settings),
+                CameraDewarpConfig.loadForReverse(
+                        settings, ReverseCameraLayout.REAR_CAMERA_INDEX),
+                CameraDewarpConfig.loadForReverse(
+                        settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
+                CameraDewarpConfig.loadForReverse(
+                        settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
     }
 
     private void overlayPrepared(int requestId) {
@@ -504,11 +512,40 @@ final class ReverseCameraController {
         eventSink.accept(kind, fields);
     }
 
+    static int loadEditorSelection(SharedPreferences settings) {
+        try {
+            int selected = settings.getInt(
+                    PREF_EDITOR_SELECTION, ReverseCameraLayout.REAR_CAMERA_INDEX);
+            return isEditorSelection(selected)
+                    ? selected : ReverseCameraLayout.REAR_CAMERA_INDEX;
+        } catch (RuntimeException invalidPreference) {
+            return ReverseCameraLayout.REAR_CAMERA_INDEX;
+        }
+    }
+
+    static void saveEditorSelection(SharedPreferences settings, int selected) {
+        if (!isEditorSelection(selected)) {
+            throw new IllegalArgumentException("invalid reverse editor selection");
+        }
+        try {
+            if (settings.getInt(PREF_EDITOR_SELECTION, Integer.MIN_VALUE) == selected) return;
+        } catch (RuntimeException ignored) {
+            // Replace a malformed stored value with the explicit user selection.
+        }
+        settings.edit().putInt(PREF_EDITOR_SELECTION, selected).apply();
+    }
+
+    private static boolean isEditorSelection(int selected) {
+        return selected == ReverseCameraLayout.BACKGROUND_PANE_ID
+                || (selected >= ReverseCameraLayout.REAR_CAMERA_INDEX
+                && selected <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+    }
+
     static ReverseCameraLayout loadLayout(SharedPreferences settings) {
         ReverseCameraLayout layout = readLayout(settings);
         for (ReverseCameraLayout.Pane pane : layout.panes()) {
-            CameraDewarpConfig dewarp = CameraDewarpConfig.load(
-                    settings, CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex));
+            CameraDewarpConfig dewarp = CameraDewarpConfig.loadForReverse(
+                    settings, pane.cameraIndex);
             if (!dewarp.enabled) continue;
             layout = ReverseCameraLayout.withPane(layout, pane.cameraIndex,
                     pane.destination, loadCorrectedSourceCrop(
@@ -578,8 +615,8 @@ final class ReverseCameraController {
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
-            CameraDewarpConfig dewarp = CameraDewarpConfig.load(
-                    settings, CameraDewarpConfig.lensForReverseCamera(pane.cameraIndex));
+            CameraDewarpConfig dewarp = CameraDewarpConfig.loadForReverse(
+                    settings, pane.cameraIndex);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop, dewarp.enabled);
         }
         editor.apply();

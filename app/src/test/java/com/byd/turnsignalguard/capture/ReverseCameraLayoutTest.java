@@ -12,6 +12,31 @@ import java.util.Map;
 
 public final class ReverseCameraLayoutTest {
     @Test
+    public void editorSelectionSurvivesRecreationAndRejectsInvalidValues() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        assertEquals(ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraController.loadEditorSelection(settings));
+
+        ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.BACKGROUND_PANE_ID);
+        assertEquals(ReverseCameraLayout.BACKGROUND_PANE_ID,
+                ReverseCameraController.loadEditorSelection(settings));
+        ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        assertEquals(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraController.loadEditorSelection(settings));
+
+        settings.putInt(ReverseCameraController.PREF_EDITOR_SELECTION, 99);
+        assertEquals(ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraController.loadEditorSelection(settings));
+        settings.putString(ReverseCameraController.PREF_EDITOR_SELECTION, "invalid");
+        assertEquals(ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraController.loadEditorSelection(settings));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraController.saveEditorSelection(settings, 99));
+    }
+
+    @Test
     public void sourceCropUsesOnePercentFloorWithoutChangingDestinationMinimum() {
         assertThrows(IllegalArgumentException.class, () ->
                 ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 0.0099f, 0.01f));
