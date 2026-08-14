@@ -56,6 +56,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             window.alpha = 0.0f;
             windows.updateViewLayout(root, window);
         }
+        root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
         emit("reverse_overlay_prepare", "request_id", requestId,
                 "width", size.x, "height", size.y,
@@ -140,6 +141,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     public void onReverseSurfacesReady(int[] generations) {
         if (root == null) return;
         surfaceGenerations = generations.clone();
+        root.setDewarpStatsContext(requestId, surfaceGenerations);
         emit("reverse_overlay_surface", "state", "ready",
                 "request_id", requestId,
                 "surface_generations", Arrays.toString(surfaceGenerations));
@@ -179,23 +181,11 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     @Override
     public void onReverseDewarpStats(
             int cameraIndex, CameraDewarpRenderer.Stats stats) {
+        int generation = cameraIndex >= 1 && cameraIndex <= surfaceGenerations.length
+                ? surfaceGenerations[cameraIndex - 1] : 0;
+        if (stats.requestId != requestId || stats.contextGeneration != generation) return;
         emit("camera_dewarp_stats",
-                "camera_owner", CameraHelperMain.CAMERA_OWNER_REVERSE,
-                "camera_index", cameraIndex,
-                "request_id", requestId,
-                "visible", visible,
-                "interval_ms", stats.intervalMs,
-                "callbacks", stats.callbacks,
-                "completed_swaps", stats.completedSwaps,
-                "average_render_ms", stats.averageRenderMs,
-                "max_render_ms", stats.maxRenderMs,
-                "max_swap_ms", stats.maxSwapMs,
-                "max_callback_gap_ms", stats.maxCallbackGapMs,
-                "last_frame_age_ms", stats.lastFrameAgeMs,
-                "max_frame_age_ms", stats.maxFrameAgeMs,
-                "process_max_concurrent_renders", stats.processMaxConcurrentRenders,
-                "buffer_width", stats.bufferWidth,
-                "buffer_height", stats.bufferHeight);
+                CameraDewarpStatsEvent.shellReverse(cameraIndex, stats));
     }
 
     @Override

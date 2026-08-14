@@ -35,6 +35,7 @@ final class DirectCameraSourceHub
 
     private static final int CALL_TIMEOUT_MS = 1500;
     private static final long STATS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
+    private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final int MAX_INDEX = 4;
     private static final String LOG_TAG = "BydCameraProbe";
     private static final String VERTEX_SHADER =
@@ -221,11 +222,17 @@ final class DirectCameraSourceHub
     private void render(Source source) {
         if (closed || sourceFailureReported) return;
         long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
-        long updateStartedNs = callbackStartedNs;
+        long updatedNs;
+        long updateNs;
+        long producerTimestampNs;
         try {
             makeCurrent(idleSurface);
+            long updateStartedNs = SystemClock.elapsedRealtimeNanos();
             source.texture.updateTexImage();
+            updatedNs = SystemClock.elapsedRealtimeNanos();
+            updateNs = updatedNs - updateStartedNs;
             source.texture.getTransformMatrix(source.matrix);
+            producerTimestampNs = source.texture.getTimestamp();
             if (!source.matrixReported) {
                 source.matrixReported = true;
                 Log.i(LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
@@ -241,21 +248,38 @@ final class DirectCameraSourceHub
             listener.onSourceFailure(source.index, error);
             return;
         }
-        long updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
         int targetCount = 0;
         int swapCount = 0;
-        long drawTotalNs = 0L;
+        long preSwapTotalNs = 0L;
+        long preSwapMaxNs = 0L;
+        long swapWaitTotalNs = 0L;
+        long swapWaitMaxNs = 0L;
         long drawMaxNs = 0L;
+        long targetPixelsCurrent = 0L;
+        int targetWidthMax = 0;
+        int targetHeightMax = 0;
+        int targetDimensionCount = 0;
         for (int i = targets.size() - 1; i >= 0; i--) {
             Target target = targets.get(i);
             if (target.index != source.index) continue;
-            targetCount++;
-            long drawStartedNs = SystemClock.elapsedRealtimeNanos();
             try {
-                draw(source, target);
-                long drawNs = SystemClock.elapsedRealtimeNanos() - drawStartedNs;
-                drawTotalNs += drawNs;
-                drawMaxNs = Math.max(drawMaxNs, drawNs);
+                draw(source, target, source.drawTiming);
+                targetCount++;
+                preSwapTotalNs += source.drawTiming.preSwapNs;
+                preSwapMaxNs = Math.max(preSwapMaxNs, source.drawTiming.preSwapNs);
+                swapWaitTotalNs += source.drawTiming.swapWaitNs;
+                swapWaitMaxNs = Math.max(swapWaitMaxNs, source.drawTiming.swapWaitNs);
+                drawMaxNs = Math.max(drawMaxNs,
+                        source.drawTiming.preSwapNs + source.drawTiming.swapWaitNs);
+                targetPixelsCurrent += (long) source.drawTiming.width
+                        * source.drawTiming.height;
+                targetWidthMax = Math.max(targetWidthMax, source.drawTiming.width);
+                targetHeightMax = Math.max(targetHeightMax, source.drawTiming.height);
+                if (targetDimensionCount < source.targetWidths.length) {
+                    source.targetWidths[targetDimensionCount] = source.drawTiming.width;
+                    source.targetHeights[targetDimensionCount] = source.drawTiming.height;
+                    targetDimensionCount++;
+                }
                 swapCount++;
             } catch (Throwable error) {
                 EGL14.eglDestroySurface(display, target.eglSurface);
@@ -266,18 +290,30 @@ final class DirectCameraSourceHub
         makeCurrent(idleSurface);
         Stats stats = source.stats.record(
                 callbackStartedNs,
+                producerTimestampNs,
+                updatedNs,
                 updateNs,
-                drawTotalNs,
+                preSwapTotalNs,
+                preSwapMaxNs,
+                swapWaitTotalNs,
+                swapWaitMaxNs,
                 drawMaxNs,
                 swapCount,
                 SystemClock.elapsedRealtimeNanos() - callbackStartedNs,
                 targetCount,
+                targetPixelsCurrent,
+                targetWidthMax,
+                targetHeightMax,
+                source.targetWidths,
+                source.targetHeights,
+                targetDimensionCount,
                 1920,
                 source.index == 0 ? 990 : 1300);
         if (stats != null) listener.onStats(source.index, stats);
     }
 
-    private void draw(Source source, Target target) {
+    private void draw(Source source, Target target, DrawTiming timing) {
+        long startedNs = SystemClock.elapsedRealtimeNanos();
         makeCurrent(target.eglSurface);
         int[] width = new int[1];
         int[] height = new int[1];
@@ -300,8 +336,13 @@ final class DirectCameraSourceHub
         GLES20.glUniform1i(textureLocation, 0);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         require(GLES20.glGetError() == GLES20.GL_NO_ERROR, "GPU fanout draw failed");
+        long swapStartedNs = SystemClock.elapsedRealtimeNanos();
         require(EGL14.eglSwapBuffers(display, target.eglSurface),
                 "downstream buffer swap failed");
+        timing.preSwapNs = swapStartedNs - startedNs;
+        timing.swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+        timing.width = width[0];
+        timing.height = height[0];
     }
 
     private void releaseGl() {
@@ -454,6 +495,9 @@ final class DirectCameraSourceHub
         final Surface surface;
         final float[] matrix = new float[16];
         final StatsWindow stats = new StatsWindow();
+        final DrawTiming drawTiming = new DrawTiming();
+        final int[] targetWidths = new int[8];
+        final int[] targetHeights = new int[8];
         boolean matrixReported;
 
         Source(int index, int textureName, SurfaceTexture texture, Surface surface) {
@@ -465,51 +509,114 @@ final class DirectCameraSourceHub
     }
 
     static final class Stats {
+        final long intervalNs;
         final int callbacks;
         final int callbackGaps;
         final long callbackGapTotalNs;
         final long callbackGapMaxNs;
         final long updateTotalNs;
         final long updateMaxNs;
+        final int producerTimestampDeltas;
+        final long producerTimestampDeltaTotalNs;
+        final long producerTimestampDeltaMinNs;
+        final long producerTimestampDeltaMaxNs;
+        final int producerTimestampRepeated;
+        final int producerTimestampInvalid;
+        final int frameAgeSamples;
+        final int frameAgeNonPositive;
+        final int frameAgeFuture;
+        final int frameAgeStale;
+        final long frameAgeTotalNs;
+        final long frameAgeMaxNs;
         final int swaps;
-        final long drawTotalNs;
+        final long preSwapTotalNs;
+        final long preSwapMaxNs;
+        final long swapWaitTotalNs;
+        final long swapWaitMaxNs;
         final long drawMaxNs;
         final long renderTotalNs;
         final long renderMaxNs;
         final int targetsCurrent;
         final int targetsMax;
+        final long targetPixelsCurrent;
+        final long targetPixelsMax;
+        final int targetWidthMax;
+        final int targetHeightMax;
+        final String targetDimensions;
         final int sourceWidth;
         final int sourceHeight;
 
         Stats(
+                long intervalNs,
                 int callbacks,
                 int callbackGaps,
                 long callbackGapTotalNs,
                 long callbackGapMaxNs,
                 long updateTotalNs,
                 long updateMaxNs,
+                int producerTimestampDeltas,
+                long producerTimestampDeltaTotalNs,
+                long producerTimestampDeltaMinNs,
+                long producerTimestampDeltaMaxNs,
+                int producerTimestampRepeated,
+                int producerTimestampInvalid,
+                int frameAgeSamples,
+                int frameAgeNonPositive,
+                int frameAgeFuture,
+                int frameAgeStale,
+                long frameAgeTotalNs,
+                long frameAgeMaxNs,
                 int swaps,
-                long drawTotalNs,
+                long preSwapTotalNs,
+                long preSwapMaxNs,
+                long swapWaitTotalNs,
+                long swapWaitMaxNs,
                 long drawMaxNs,
                 long renderTotalNs,
                 long renderMaxNs,
                 int targetsCurrent,
                 int targetsMax,
+                long targetPixelsCurrent,
+                long targetPixelsMax,
+                int targetWidthMax,
+                int targetHeightMax,
+                String targetDimensions,
                 int sourceWidth,
                 int sourceHeight) {
+            this.intervalNs = intervalNs;
             this.callbacks = callbacks;
             this.callbackGaps = callbackGaps;
             this.callbackGapTotalNs = callbackGapTotalNs;
             this.callbackGapMaxNs = callbackGapMaxNs;
             this.updateTotalNs = updateTotalNs;
             this.updateMaxNs = updateMaxNs;
+            this.producerTimestampDeltas = producerTimestampDeltas;
+            this.producerTimestampDeltaTotalNs = producerTimestampDeltaTotalNs;
+            this.producerTimestampDeltaMinNs = producerTimestampDeltaMinNs;
+            this.producerTimestampDeltaMaxNs = producerTimestampDeltaMaxNs;
+            this.producerTimestampRepeated = producerTimestampRepeated;
+            this.producerTimestampInvalid = producerTimestampInvalid;
+            this.frameAgeSamples = frameAgeSamples;
+            this.frameAgeNonPositive = frameAgeNonPositive;
+            this.frameAgeFuture = frameAgeFuture;
+            this.frameAgeStale = frameAgeStale;
+            this.frameAgeTotalNs = frameAgeTotalNs;
+            this.frameAgeMaxNs = frameAgeMaxNs;
             this.swaps = swaps;
-            this.drawTotalNs = drawTotalNs;
+            this.preSwapTotalNs = preSwapTotalNs;
+            this.preSwapMaxNs = preSwapMaxNs;
+            this.swapWaitTotalNs = swapWaitTotalNs;
+            this.swapWaitMaxNs = swapWaitMaxNs;
             this.drawMaxNs = drawMaxNs;
             this.renderTotalNs = renderTotalNs;
             this.renderMaxNs = renderMaxNs;
             this.targetsCurrent = targetsCurrent;
             this.targetsMax = targetsMax;
+            this.targetPixelsCurrent = targetPixelsCurrent;
+            this.targetPixelsMax = targetPixelsMax;
+            this.targetWidthMax = targetWidthMax;
+            this.targetHeightMax = targetHeightMax;
+            this.targetDimensions = targetDimensions;
             this.sourceWidth = sourceWidth;
             this.sourceHeight = sourceHeight;
         }
@@ -524,21 +631,52 @@ final class DirectCameraSourceHub
         private long callbackGapMaxNs;
         private long updateTotalNs;
         private long updateMaxNs;
+        private long previousProducerTimestampNs = -1L;
+        private int producerTimestampDeltas;
+        private long producerTimestampDeltaTotalNs;
+        private long producerTimestampDeltaMinNs = Long.MAX_VALUE;
+        private long producerTimestampDeltaMaxNs;
+        private int producerTimestampRepeated;
+        private int producerTimestampInvalid;
+        private int frameAgeSamples;
+        private int frameAgeNonPositive;
+        private int frameAgeFuture;
+        private int frameAgeStale;
+        private long frameAgeTotalNs;
+        private long frameAgeMaxNs;
         private int swaps;
-        private long drawTotalNs;
+        private long preSwapTotalNs;
+        private long preSwapMaxNs;
+        private long swapWaitTotalNs;
+        private long swapWaitMaxNs;
         private long drawMaxNs;
         private long renderTotalNs;
         private long renderMaxNs;
         private int targetsMax;
+        private long targetPixelsMax;
+        private int targetWidthMax;
+        private int targetHeightMax;
+        private String targetDimensions = "";
 
         Stats record(
                 long callbackNs,
+                long producerTimestampNs,
+                long updatedNs,
                 long updateNs,
-                long frameDrawTotalNs,
+                long framePreSwapTotalNs,
+                long framePreSwapMaxNs,
+                long frameSwapWaitTotalNs,
+                long frameSwapWaitMaxNs,
                 long frameDrawMaxNs,
                 int frameSwaps,
                 long renderNs,
                 int targetsCurrent,
+                long targetPixelsCurrent,
+                int frameTargetWidthMax,
+                int frameTargetHeightMax,
+                int[] frameTargetWidths,
+                int[] frameTargetHeights,
+                int frameTargetCount,
                 int sourceWidth,
                 int sourceHeight) {
             if (startedNs < 0L) startedNs = callbackNs;
@@ -550,23 +688,93 @@ final class DirectCameraSourceHub
             }
             previousCallbackNs = callbackNs;
             callbacks++;
+            recordProducerTimestamp(producerTimestampNs, updatedNs);
             updateTotalNs += Math.max(0L, updateNs);
             updateMaxNs = Math.max(updateMaxNs, updateNs);
             swaps += Math.max(0, frameSwaps);
-            drawTotalNs += Math.max(0L, frameDrawTotalNs);
+            preSwapTotalNs += Math.max(0L, framePreSwapTotalNs);
+            preSwapMaxNs = Math.max(preSwapMaxNs, framePreSwapMaxNs);
+            swapWaitTotalNs += Math.max(0L, frameSwapWaitTotalNs);
+            swapWaitMaxNs = Math.max(swapWaitMaxNs, frameSwapWaitMaxNs);
             drawMaxNs = Math.max(drawMaxNs, frameDrawMaxNs);
             renderTotalNs += Math.max(0L, renderNs);
             renderMaxNs = Math.max(renderMaxNs, renderNs);
             targetsMax = Math.max(targetsMax, targetsCurrent);
+            targetPixelsMax = Math.max(targetPixelsMax, targetPixelsCurrent);
+            targetWidthMax = Math.max(targetWidthMax, frameTargetWidthMax);
+            targetHeightMax = Math.max(targetHeightMax, frameTargetHeightMax);
             if (callbackNs - startedNs < STATS_INTERVAL_NS) return null;
 
+            targetDimensions = formatDimensions(
+                    frameTargetWidths, frameTargetHeights, frameTargetCount);
+
             Stats result = new Stats(
+                    callbackNs - startedNs,
                     callbacks, callbackGaps, callbackGapTotalNs, callbackGapMaxNs,
-                    updateTotalNs, updateMaxNs, swaps, drawTotalNs, drawMaxNs,
+                    updateTotalNs, updateMaxNs,
+                    producerTimestampDeltas, producerTimestampDeltaTotalNs,
+                    producerTimestampDeltaMinNs == Long.MAX_VALUE
+                            ? 0L : producerTimestampDeltaMinNs,
+                    producerTimestampDeltaMaxNs, producerTimestampRepeated,
+                    producerTimestampInvalid, frameAgeSamples, frameAgeNonPositive,
+                    frameAgeFuture,
+                    frameAgeStale, frameAgeTotalNs,
+                    frameAgeMaxNs, swaps, preSwapTotalNs, preSwapMaxNs,
+                    swapWaitTotalNs, swapWaitMaxNs, drawMaxNs,
                     renderTotalNs, renderMaxNs, targetsCurrent, targetsMax,
+                    targetPixelsCurrent, targetPixelsMax, targetWidthMax, targetHeightMax,
+                    targetDimensions,
                     sourceWidth, sourceHeight);
             reset(callbackNs);
             return result;
+        }
+
+        private static String formatDimensions(int[] widths, int[] heights, int count) {
+            if (widths == null || heights == null || count <= 0) return "";
+            int safeCount = Math.min(count, Math.min(widths.length, heights.length));
+            StringBuilder value = new StringBuilder(safeCount * 12);
+            for (int i = 0; i < safeCount; i++) {
+                if (i > 0) value.append(';');
+                value.append(widths[i]).append('x').append(heights[i]);
+            }
+            return value.toString();
+        }
+
+        private void recordProducerTimestamp(long timestampNs, long nowNs) {
+            if (timestampNs <= 0L) {
+                producerTimestampInvalid++;
+                frameAgeNonPositive++;
+                return;
+            }
+            if (previousProducerTimestampNs > 0L) {
+                long deltaNs = timestampNs - previousProducerTimestampNs;
+                if (deltaNs == 0L) {
+                    producerTimestampRepeated++;
+                } else if (deltaNs > 0L) {
+                    producerTimestampDeltas++;
+                    producerTimestampDeltaTotalNs += deltaNs;
+                    producerTimestampDeltaMinNs = Math.min(
+                            producerTimestampDeltaMinNs, deltaNs);
+                    producerTimestampDeltaMaxNs = Math.max(
+                            producerTimestampDeltaMaxNs, deltaNs);
+                } else {
+                    producerTimestampInvalid++;
+                    return;
+                }
+            }
+            previousProducerTimestampNs = timestampNs;
+            if (nowNs >= timestampNs) {
+                long ageNs = nowNs - timestampNs;
+                if (ageNs <= MAX_VALID_FRAME_AGE_NS) {
+                    frameAgeSamples++;
+                    frameAgeTotalNs += ageNs;
+                    frameAgeMaxNs = Math.max(frameAgeMaxNs, ageNs);
+                } else {
+                    frameAgeStale++;
+                }
+            } else {
+                frameAgeFuture++;
+            }
         }
 
         private void reset(long callbackNs) {
@@ -577,13 +785,39 @@ final class DirectCameraSourceHub
             callbackGapMaxNs = 0L;
             updateTotalNs = 0L;
             updateMaxNs = 0L;
+            producerTimestampDeltas = 0;
+            producerTimestampDeltaTotalNs = 0L;
+            producerTimestampDeltaMinNs = Long.MAX_VALUE;
+            producerTimestampDeltaMaxNs = 0L;
+            producerTimestampRepeated = 0;
+            producerTimestampInvalid = 0;
+            frameAgeSamples = 0;
+            frameAgeNonPositive = 0;
+            frameAgeFuture = 0;
+            frameAgeStale = 0;
+            frameAgeTotalNs = 0L;
+            frameAgeMaxNs = 0L;
             swaps = 0;
-            drawTotalNs = 0L;
+            preSwapTotalNs = 0L;
+            preSwapMaxNs = 0L;
+            swapWaitTotalNs = 0L;
+            swapWaitMaxNs = 0L;
             drawMaxNs = 0L;
             renderTotalNs = 0L;
             renderMaxNs = 0L;
             targetsMax = 0;
+            targetPixelsMax = 0L;
+            targetWidthMax = 0;
+            targetHeightMax = 0;
+            targetDimensions = "";
         }
+    }
+
+    private static final class DrawTiming {
+        long preSwapNs;
+        long swapWaitNs;
+        int width;
+        int height;
     }
 
     private static final class Target {

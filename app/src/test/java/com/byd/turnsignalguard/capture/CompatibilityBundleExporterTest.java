@@ -227,7 +227,7 @@ public final class CompatibilityBundleExporterTest {
 
     private static CompatibilityBundleExporter.Identity identity() {
         return new CompatibilityBundleExporter.Identity(
-                "com.byd.turnsignalguard.capture", "0.48.6", 76,
+                "com.byd.turnsignalguard.capture", "0.48.7", 77,
                 "BYD", "Sea Lion", "DiLink", "tablet", "10", 29);
     }
 

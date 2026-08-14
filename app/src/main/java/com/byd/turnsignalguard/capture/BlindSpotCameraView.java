@@ -60,13 +60,22 @@ final class BlindSpotCameraView extends TextureView
     private DirectCameraCrop requestedCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop rawFallbackCrop = DirectCameraCrop.defaultFor(false);
     private boolean rawFallbackActive;
+    private int dewarpStatsRequestId;
+    private int dewarpStatsGeneration;
 
     BlindSpotCameraView(Context context) {
         super(context);
         setOpaque(true);
         setSurfaceTextureListener(this);
         addOnLayoutChangeListener((view, left, top, right, bottom,
-                oldLeft, oldTop, oldRight, oldBottom) -> applyCurrentCrop());
+                oldLeft, oldTop, oldRight, oldBottom) -> {
+            applyCurrentCrop();
+            if (dewarpRenderer != null) {
+                dewarpRenderer.updateStatsContext(
+                        dewarpStatsRequestId, dewarpStatsGeneration,
+                        getWidth(), getHeight());
+            }
+        });
     }
 
     void setCallback(Callback value) {
@@ -95,6 +104,8 @@ final class BlindSpotCameraView extends TextureView
         }
         cameraSurface = null;
         rawFallbackActive = false;
+        dewarpStatsRequestId = 0;
+        dewarpStatsGeneration = 0;
     }
 
     int ensureCameraInput() {
@@ -151,6 +162,16 @@ final class BlindSpotCameraView extends TextureView
 
     void setDewarpStatsSink(Consumer<CameraDewarpRenderer.Stats> value) {
         dewarpStatsSink = value;
+    }
+
+    void setDewarpStatsContext(int requestId, int generation) {
+        dewarpStatsRequestId = Math.max(0, requestId);
+        dewarpStatsGeneration = Math.max(0, generation);
+        if (dewarpRenderer != null) {
+            dewarpRenderer.updateStatsContext(
+                    dewarpStatsRequestId, dewarpStatsGeneration,
+                    getWidth(), getHeight());
+        }
     }
 
     void setDewarpEventSink(Consumer<CameraDewarpRenderer.Event> value) {
@@ -231,7 +252,9 @@ final class BlindSpotCameraView extends TextureView
             int rendererGeneration = ++dewarpGeneration;
             dewarpRenderer = CameraDewarpRenderer.start(
                     texture, BUFFER_WIDTH, BUFFER_HEIGHT,
-                    dewarpConfig, dewarpRequestToken,
+                    dewarpConfig, dewarpRequestToken, cameraGeneration,
+                    dewarpStatsRequestId, dewarpStatsGeneration,
+                    getWidth(), getHeight(),
                     stats -> post(() -> {
                         if (rendererGeneration != dewarpGeneration
                                 || dewarpRenderer == null) return;

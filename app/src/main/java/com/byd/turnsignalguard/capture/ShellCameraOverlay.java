@@ -93,6 +93,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         completedFrameEpoch = 0;
         if (root == null) createWindow(spec);
         else updateWindow(spec);
+        preview.setDewarpStatsContext(requestId, surfaceGeneration);
         if (preview.isCameraSurfaceReady()) emitSurfaceReady(true);
     }
 
@@ -316,6 +317,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != preview) return;
         surfaceGeneration++;
+        preview.setDewarpStatsContext(requestId, surfaceGeneration);
         armedFrameRequestId = 0;
         armedFrameEpoch = 0;
         armedFrameUpdates = 0;
@@ -363,25 +365,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emitDewarpStats(CameraDewarpRenderer.Stats stats) {
-        emit("camera_dewarp_stats",
-                "camera_owner", CameraHelperMain.CAMERA_OWNER_OVERLAY,
-                "camera_id", cameraId,
-                "camera_profile", CameraProfile.of(cameraId).wireName,
-                "request_id", requestId,
-                "surface_generation", surfaceGeneration,
-                "visible", visible,
-                "interval_ms", stats.intervalMs,
-                "callbacks", stats.callbacks,
-                "completed_swaps", stats.completedSwaps,
-                "average_render_ms", stats.averageRenderMs,
-                "max_render_ms", stats.maxRenderMs,
-                "max_swap_ms", stats.maxSwapMs,
-                "max_callback_gap_ms", stats.maxCallbackGapMs,
-                "last_frame_age_ms", stats.lastFrameAgeMs,
-                "max_frame_age_ms", stats.maxFrameAgeMs,
-                "process_max_concurrent_renders", stats.processMaxConcurrentRenders,
-                "buffer_width", stats.bufferWidth,
-                "buffer_height", stats.bufferHeight);
+        if (stats.requestId != requestId
+                || stats.contextGeneration != surfaceGeneration) return;
+        emit("camera_dewarp_stats", CameraDewarpStatsEvent.overlay(
+                cameraId, CameraProfile.of(cameraId).wireName, stats));
     }
 
     private void emitDewarpEvent(CameraDewarpRenderer.Event event) {

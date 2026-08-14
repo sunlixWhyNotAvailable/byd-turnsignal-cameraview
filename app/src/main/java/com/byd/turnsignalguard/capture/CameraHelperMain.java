@@ -1345,24 +1345,62 @@ final class CameraHelperMain {
                                 "preview_index", index,
                                 "source_width", stats.sourceWidth,
                                 "source_height", stats.sourceHeight,
+                                "interval_ms", milliseconds(stats.intervalNs),
                                 "callbacks", stats.callbacks,
+                                "processed_fps", ratePerSecond(
+                                        stats.callbacks, stats.intervalNs),
                                 "callback_gap_avg_ms", averageMs(
                                         stats.callbackGapTotalNs, stats.callbackGaps),
                                 "callback_gap_max_ms", milliseconds(
                                         stats.callbackGapMaxNs),
+                                "producer_timestamp_samples", stats.producerTimestampDeltas,
+                                "producer_timestamp_fps", ratePerSecond(
+                                        stats.producerTimestampDeltas,
+                                        stats.producerTimestampDeltaTotalNs),
+                                "producer_timestamp_delta_avg_ms", averageMs(
+                                        stats.producerTimestampDeltaTotalNs,
+                                        stats.producerTimestampDeltas),
+                                "producer_timestamp_delta_min_ms", milliseconds(
+                                        stats.producerTimestampDeltaMinNs),
+                                "producer_timestamp_delta_max_ms", milliseconds(
+                                        stats.producerTimestampDeltaMaxNs),
+                                "producer_timestamp_repeated", stats.producerTimestampRepeated,
+                                "producer_timestamp_invalid", stats.producerTimestampInvalid,
+                                "source_frame_age_samples", stats.frameAgeSamples,
+                                "source_frame_age_non_positive", stats.frameAgeNonPositive,
+                                "source_frame_age_future", stats.frameAgeFuture,
+                                "source_frame_age_stale", stats.frameAgeStale,
+                                "source_frame_age_avg_ms", stats.frameAgeSamples <= 0
+                                        ? -1.0d : averageMs(
+                                                stats.frameAgeTotalNs,
+                                                stats.frameAgeSamples),
+                                "source_frame_age_max_ms", stats.frameAgeSamples <= 0
+                                        ? -1.0d : milliseconds(stats.frameAgeMaxNs),
                                 "update_tex_image_avg_ms", averageMs(
                                         stats.updateTotalNs, stats.callbacks),
                                 "update_tex_image_max_ms", milliseconds(
                                         stats.updateMaxNs),
                                 "draw_swaps", stats.swaps,
+                                "pre_swap_avg_ms", averageMs(
+                                        stats.preSwapTotalNs, stats.swaps),
+                                "pre_swap_max_ms", milliseconds(stats.preSwapMaxNs),
+                                "swap_wait_avg_ms", averageMs(
+                                        stats.swapWaitTotalNs, stats.swaps),
+                                "swap_wait_max_ms", milliseconds(stats.swapWaitMaxNs),
                                 "draw_swap_avg_ms", averageMs(
-                                        stats.drawTotalNs, stats.swaps),
+                                        stats.preSwapTotalNs + stats.swapWaitTotalNs,
+                                        stats.swaps),
                                 "draw_swap_max_ms", milliseconds(stats.drawMaxNs),
                                 "render_avg_ms", averageMs(
                                         stats.renderTotalNs, stats.callbacks),
                                 "render_max_ms", milliseconds(stats.renderMaxNs),
                                 "targets_current", stats.targetsCurrent,
-                                "targets_max", stats.targetsMax);
+                                "targets_max", stats.targetsMax,
+                                "target_pixels_current", stats.targetPixelsCurrent,
+                                "target_pixels_max", stats.targetPixelsMax,
+                                "target_width_max", stats.targetWidthMax,
+                                "target_height_max", stats.targetHeightMax,
+                                "target_dimensions", stats.targetDimensions);
                         });
                     }
                 });
@@ -1545,6 +1583,11 @@ final class CameraHelperMain {
 
         private static double milliseconds(long nanoseconds) {
             return nanoseconds / 1_000_000.0d;
+        }
+
+        private static double ratePerSecond(long count, long intervalNs) {
+            return count <= 0 || intervalNs <= 0L
+                    ? 0.0d : count * 1_000_000_000.0d / intervalNs;
         }
 
         static Throwable closeFailedPersistentProducer(

@@ -98,7 +98,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(76, BuildConfig.VERSION_CODE);
+        assertEquals(77, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -765,29 +765,91 @@ public final class AdbCoreTest {
         CameraDewarpRenderer.Stats stats = new CameraDewarpRenderer.Stats(
                 2_000_000_000L,
                 12,
+                9,
                 10,
                 20_000_000L,
                 5_000_000L,
                 9_000_000L,
                 7_000_000L,
+                10_000_000L,
+                6_000_000L,
+                30_000_000L,
+                9_000_000L,
+                12_000_000L,
+                4,
+                6,
+                15_000_000L,
+                4_000_000L,
+                25_000_000L,
+                8_000_000L,
+                7_000_000L,
                 11_000_000L,
                 13_000_000L,
                 2,
+                3,
+                99,
+                7,
+                4,
+                CameraProfile.REAR_LEFT,
                 1920,
-                990);
+                990,
+                1280,
+                660,
+                new CameraDewarpRenderer.MappingRequest(
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), 44L));
 
         assertEquals(2_000L, stats.intervalMs);
         assertEquals(12, stats.callbacks);
+        assertEquals(9, stats.updateSamples);
+        assertEquals(6.0d, stats.callbackFps, 0.001d);
         assertEquals(10, stats.completedSwaps);
+        assertEquals(5.0d, stats.completedSwapFps, 0.001d);
         assertEquals(2.0d, stats.averageRenderMs, 0.001d);
         assertEquals(5.0d, stats.maxRenderMs, 0.001d);
-        assertEquals(9.0d, stats.maxSwapMs, 0.001d);
+        assertEquals(1.0d, stats.averageUpdateTexImageMs, 0.001d);
+        assertEquals(7.0d, stats.maxUpdateTexImageMs, 0.001d);
+        assertEquals(1.0d, stats.averagePreSwapMs, 0.001d);
+        assertEquals(6.0d, stats.maxPreSwapMs, 0.001d);
+        assertEquals(3.0d, stats.averageSwapWaitMs, 0.001d);
+        assertEquals(9.0d, stats.maxSwapWaitMs, 0.001d);
+        assertEquals(12.0d, stats.maxSwapMs, 0.001d);
+        assertEquals(4, stats.rawMirrorSwaps);
+        assertEquals(6, stats.correctedMirrorSwaps);
         assertEquals(7.0d, stats.maxCallbackGapMs, 0.001d);
         assertEquals(11.0d, stats.lastFrameAgeMs, 0.001d);
         assertEquals(13.0d, stats.maxFrameAgeMs, 0.001d);
         assertEquals(2, stats.processMaxConcurrentRenders);
+        assertEquals(3, stats.processActiveRenderers);
+        assertEquals(99, stats.rendererId);
+        assertEquals(7, stats.requestId);
+        assertEquals(4, stats.inputGeneration);
+        assertEquals(CameraProfile.REAR_LEFT, stats.contextGeneration);
         assertEquals(1920, stats.bufferWidth);
         assertEquals(990, stats.bufferHeight);
+        assertEquals(1280, stats.viewWidth);
+        assertEquals(660, stats.viewHeight);
+    }
+
+    @Test
+    public void dewarpStatsWindowRejectsEveryIdentityTransition() {
+        CameraDewarpRenderer.MappingRequest first =
+                new CameraDewarpRenderer.MappingRequest(
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), 1L);
+        CameraDewarpRenderer.MappingRequest second =
+                new CameraDewarpRenderer.MappingRequest(
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), 2L);
+        assertTrue(CameraDewarpRenderer.sameStatsWindow(
+                first, first, 7, 7, 4, 4, 1280, 1280, 660, 660));
+        assertFalse(CameraDewarpRenderer.sameStatsWindow(
+                first, second, 7, 7, 4, 4, 1280, 1280, 660, 660));
+        assertFalse(CameraDewarpRenderer.sameStatsWindow(
+                first, first, 7, 8, 4, 4, 1280, 1280, 660, 660));
+        assertFalse(CameraDewarpRenderer.sameStatsWindow(
+                first, first, 7, 7, 4, 5, 1280, 1280, 660, 660));
+        assertFalse(CameraDewarpRenderer.sameStatsWindow(
+                first, first, 7, 7, 4, 4, 1280, 1279, 660, 660));
+        assertFalse(CameraDewarpRenderer.sameStatsWindow(
+                first, first, 7, 7, 4, 4, 1280, 1280, 660, 659));
     }
 
     @Test

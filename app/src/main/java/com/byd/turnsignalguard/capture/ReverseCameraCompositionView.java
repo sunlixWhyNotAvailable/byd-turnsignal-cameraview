@@ -130,6 +130,13 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyModel();
     }
 
+    void setDewarpStatsContext(int requestId, int[] generations) {
+        if (generations == null || generations.length != panes.length) return;
+        for (int i = 0; i < panes.length; i++) {
+            panes[i].texture.setDewarpStatsContext(requestId, generations[i]);
+        }
+    }
+
     boolean dewarpPipelineCompatible(
             CameraDewarpConfig rear,
             CameraDewarpConfig left,

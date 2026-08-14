@@ -33,6 +33,7 @@ final class CameraDewarpRenderer {
     private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final AtomicInteger RENDERS_IN_FLIGHT = new AtomicInteger();
     private static final AtomicInteger MAX_RENDERS_IN_FLIGHT = new AtomicInteger();
+    private static final AtomicInteger ACTIVE_RENDERERS = new AtomicInteger();
     private static final String VERTEX_SHADER =
             "attribute vec2 aPosition;\n"
                     + "attribute vec2 aTexCoord;\n"
@@ -63,6 +64,7 @@ final class CameraDewarpRenderer {
     private final SurfaceTexture outputTexture;
     private final int width;
     private final int height;
+    private final int inputGeneration;
     private final Consumer<Stats> statsSink;
     private final Consumer<Event> eventSink;
     private final Runnable metricsTick = this::emitStatsTick;
@@ -108,11 +110,30 @@ final class CameraDewarpRenderer {
     private long completedSwapCount;
     private long totalRenderNs;
     private long maxRenderNs;
-    private long maxSwapNs;
+    private long updateTotalNs;
+    private long updateMaxNs;
+    private long updateSamples;
+    private long preSwapTotalNs;
+    private long preSwapMaxNs;
+    private long swapWaitTotalNs;
+    private long swapWaitMaxNs;
+    private long maxPrimarySwapNs;
+    private long rawMirrorSwapCount;
+    private long correctedMirrorSwapCount;
+    private long mirrorPreSwapTotalNs;
+    private long mirrorPreSwapMaxNs;
+    private long mirrorSwapWaitTotalNs;
+    private long mirrorSwapWaitMaxNs;
     private long maxCallbackGapNs;
     private long lastFrameAgeNs = -1;
     private long maxFrameAgeNs = -1;
     private boolean metricsActive;
+    private boolean activeRendererCounted;
+    private StatsContext statsContext;
+    private StatsContext metricsWindowContext;
+    private MappingRequest metricsWindowMapping;
+    private final SwapTiming primaryTiming = new SwapTiming();
+    private final SwapTiming mirrorTiming = new SwapTiming();
 
     static final class Event {
         final String kind;
@@ -156,37 +177,139 @@ final class CameraDewarpRenderer {
         }
     }
 
+    private static final class StatsContext {
+        final int requestId;
+        final int generation;
+        final int viewWidth;
+        final int viewHeight;
+
+        StatsContext(int requestId, int generation, int viewWidth, int viewHeight) {
+            this.requestId = Math.max(0, requestId);
+            this.generation = Math.max(0, generation);
+            this.viewWidth = Math.max(0, viewWidth);
+            this.viewHeight = Math.max(0, viewHeight);
+        }
+
+        boolean same(int nextRequestId, int nextGeneration, int width, int height) {
+            return requestId == Math.max(0, nextRequestId)
+                    && generation == Math.max(0, nextGeneration)
+                    && viewWidth == Math.max(0, width)
+                    && viewHeight == Math.max(0, height);
+        }
+    }
+
+    static boolean sameStatsWindow(
+            MappingRequest startedMapping, MappingRequest currentMapping,
+            int startedRequestId, int currentRequestId,
+            int startedGeneration, int currentGeneration,
+            int startedViewWidth, int currentViewWidth,
+            int startedViewHeight, int currentViewHeight) {
+        return startedMapping == currentMapping
+                && startedRequestId == currentRequestId
+                && startedGeneration == currentGeneration
+                && startedViewWidth == currentViewWidth
+                && startedViewHeight == currentViewHeight;
+    }
+
     static final class Stats {
         final long intervalMs;
         final long callbacks;
+        final long updateSamples;
         final long completedSwaps;
+        final double callbackFps;
+        final double completedSwapFps;
         final double averageRenderMs;
         final double maxRenderMs;
         final double maxSwapMs;
+        final double averageUpdateTexImageMs;
+        final double maxUpdateTexImageMs;
+        final double averagePreSwapMs;
+        final double maxPreSwapMs;
+        final double averageSwapWaitMs;
+        final double maxSwapWaitMs;
+        final long rawMirrorSwaps;
+        final long correctedMirrorSwaps;
+        final double averageMirrorPreSwapMs;
+        final double maxMirrorPreSwapMs;
+        final double averageMirrorSwapWaitMs;
+        final double maxMirrorSwapWaitMs;
         final double maxCallbackGapMs;
         final double lastFrameAgeMs;
         final double maxFrameAgeMs;
         final int processMaxConcurrentRenders;
+        final int processActiveRenderers;
+        final int rendererId;
+        final int requestId;
+        final int inputGeneration;
+        final int contextGeneration;
+        final long mappingRequestToken;
         final int bufferWidth;
         final int bufferHeight;
+        final int viewWidth;
+        final int viewHeight;
+        final CameraDewarpConfig mapping;
 
-        Stats(long intervalNs, long callbacks, long completedSwaps,
-                long totalRenderNs, long maxRenderNs, long maxSwapNs,
+        Stats(long intervalNs, long callbacks, long updateSamples, long completedSwaps,
+                long totalRenderNs, long maxRenderNs,
+                long updateTotalNs, long updateMaxNs,
+                long preSwapTotalNs, long preSwapMaxNs,
+                long swapWaitTotalNs, long swapWaitMaxNs,
+                long maxPrimarySwapNs,
+                long rawMirrorSwaps, long correctedMirrorSwaps,
+                long mirrorPreSwapTotalNs, long mirrorPreSwapMaxNs,
+                long mirrorSwapWaitTotalNs, long mirrorSwapWaitMaxNs,
                 long maxCallbackGapNs, long lastFrameAgeNs, long maxFrameAgeNs,
-                int processMaxConcurrentRenders, int bufferWidth, int bufferHeight) {
+                int processMaxConcurrentRenders, int processActiveRenderers, int rendererId,
+                int requestId, int inputGeneration, int contextGeneration,
+                int bufferWidth, int bufferHeight, int viewWidth, int viewHeight,
+                MappingRequest mappingRequest) {
             intervalMs = TimeUnit.NANOSECONDS.toMillis(intervalNs);
             this.callbacks = callbacks;
+            this.updateSamples = updateSamples;
             this.completedSwaps = completedSwaps;
+            callbackFps = ratePerSecond(callbacks, intervalNs);
+            completedSwapFps = ratePerSecond(completedSwaps, intervalNs);
             averageRenderMs = completedSwaps == 0 ? 0.0
                     : nanosToMillis(totalRenderNs) / completedSwaps;
             this.maxRenderMs = nanosToMillis(maxRenderNs);
-            this.maxSwapMs = nanosToMillis(maxSwapNs);
+            maxSwapMs = nanosToMillis(maxPrimarySwapNs);
+            averageUpdateTexImageMs = averageMillis(updateTotalNs, updateSamples);
+            maxUpdateTexImageMs = nanosToMillis(updateMaxNs);
+            averagePreSwapMs = averageMillis(preSwapTotalNs, completedSwaps);
+            maxPreSwapMs = nanosToMillis(preSwapMaxNs);
+            averageSwapWaitMs = averageMillis(swapWaitTotalNs, completedSwaps);
+            maxSwapWaitMs = nanosToMillis(swapWaitMaxNs);
+            this.rawMirrorSwaps = rawMirrorSwaps;
+            this.correctedMirrorSwaps = correctedMirrorSwaps;
+            long mirrorSwaps = rawMirrorSwaps + correctedMirrorSwaps;
+            averageMirrorPreSwapMs = averageMillis(mirrorPreSwapTotalNs, mirrorSwaps);
+            maxMirrorPreSwapMs = nanosToMillis(mirrorPreSwapMaxNs);
+            averageMirrorSwapWaitMs = averageMillis(mirrorSwapWaitTotalNs, mirrorSwaps);
+            maxMirrorSwapWaitMs = nanosToMillis(mirrorSwapWaitMaxNs);
             this.maxCallbackGapMs = nanosToMillis(maxCallbackGapNs);
             this.lastFrameAgeMs = optionalNanosToMillis(lastFrameAgeNs);
             this.maxFrameAgeMs = optionalNanosToMillis(maxFrameAgeNs);
             this.processMaxConcurrentRenders = processMaxConcurrentRenders;
+            this.processActiveRenderers = processActiveRenderers;
+            this.rendererId = rendererId;
+            this.requestId = requestId;
+            this.inputGeneration = inputGeneration;
+            this.contextGeneration = contextGeneration;
+            mappingRequestToken = mappingRequest == null ? 0L : mappingRequest.token;
             this.bufferWidth = bufferWidth;
             this.bufferHeight = bufferHeight;
+            this.viewWidth = viewWidth;
+            this.viewHeight = viewHeight;
+            mapping = mappingRequest == null ? null : mappingRequest.config;
+        }
+
+        private static double averageMillis(long totalNs, long count) {
+            return count <= 0L ? 0.0d : nanosToMillis(totalNs) / count;
+        }
+
+        private static double ratePerSecond(long count, long intervalNs) {
+            return intervalNs <= 0L ? 0.0d
+                    : count * 1_000_000_000.0d / intervalNs;
         }
 
         private static double nanosToMillis(long value) {
@@ -200,11 +323,15 @@ final class CameraDewarpRenderer {
 
     private CameraDewarpRenderer(
             SurfaceTexture outputTexture, int width, int height,
-            CameraDewarpConfig config, long requestToken,
+            CameraDewarpConfig config, long requestToken, int inputGeneration,
+            int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
             Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         this.outputTexture = outputTexture;
         this.width = width;
         this.height = height;
+        this.inputGeneration = inputGeneration;
+        statsContext = new StatsContext(
+                statsRequestId, statsGeneration, viewWidth, viewHeight);
         request = new MappingRequest(config, requestToken);
         this.statsSink = statsSink;
         this.eventSink = eventSink;
@@ -212,10 +339,12 @@ final class CameraDewarpRenderer {
 
     static CameraDewarpRenderer start(
             SurfaceTexture outputTexture, int width, int height,
-            CameraDewarpConfig config, long requestToken,
+            CameraDewarpConfig config, long requestToken, int inputGeneration,
+            int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
             Consumer<Stats> statsSink, Consumer<Event> eventSink) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
-                outputTexture, width, height, config, requestToken, statsSink, eventSink);
+                outputTexture, width, height, config, requestToken, inputGeneration,
+                statsRequestId, statsGeneration, viewWidth, viewHeight, statsSink, eventSink);
         return renderer.startInternal() ? renderer : null;
     }
 
@@ -255,6 +384,16 @@ final class CameraDewarpRenderer {
         if (activeHandler != null && mappingUpdatePosted.compareAndSet(false, true)) {
             activeHandler.post(this::applyLatestMapping);
         }
+    }
+
+    void updateStatsContext(int requestId, int generation, int width, int height) {
+        Handler activeHandler = handler;
+        if (released.get() || activeHandler == null) return;
+        activeHandler.post(() -> {
+            if (!statsContext.same(requestId, generation, width, height)) {
+                statsContext = new StatsContext(requestId, generation, width, height);
+            }
+        });
     }
 
     void release() {
@@ -366,7 +505,11 @@ final class CameraDewarpRenderer {
             installRawFallback(initial);
         }
         metricsStartedNs = SystemClock.elapsedRealtimeNanos();
+        metricsWindowMapping = appliedRequest;
+        metricsWindowContext = statsContext;
         metricsActive = true;
+        ACTIVE_RENDERERS.incrementAndGet();
+        activeRendererCounted = true;
         handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
     }
 
@@ -384,6 +527,10 @@ final class CameraDewarpRenderer {
                 texture.setOnFrameAvailableListener(null);
                 metricsActive = false;
                 handler.removeCallbacks(metricsTick);
+                if (activeRendererCounted) {
+                    ACTIVE_RENDERERS.decrementAndGet();
+                    activeRendererCounted = false;
+                }
                 if (runtimeFailureReported.compareAndSet(false, true)) {
                     emitEvent(new Event("dewarp_frame_failed",
                             appliedRequest == null ? request : appliedRequest,
@@ -435,10 +582,14 @@ final class CameraDewarpRenderer {
         MAX_RENDERS_IN_FLIGHT.accumulateAndGet(concurrent, Math::max);
         long renderStartedNs = SystemClock.elapsedRealtimeNanos();
         boolean swapped = false;
-        long swapNs = 0;
         MappingRequest renderedRequest = appliedRequest;
         try {
+            long updateStartedNs = SystemClock.elapsedRealtimeNanos();
             cameraTexture.updateTexImage();
+            long updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
+            updateSamples++;
+            updateTotalNs += updateNs;
+            updateMaxNs = Math.max(updateMaxNs, updateNs);
             cameraTexture.getTransformMatrix(textureMatrix);
             if (!inputMatrixReported) {
                 inputMatrixReported = true;
@@ -451,26 +602,25 @@ final class CameraDewarpRenderer {
                         + "\"matrix\":" + Arrays.toString(textureMatrix) + "}");
             }
             recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
-            long swapStartedNs = SystemClock.elapsedRealtimeNanos();
-            drawAndSwap(eglSurface, vertices, indices, indexCount);
-            swapNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+            drawAndSwap(eglSurface, vertices, indices, indexCount, primaryTiming);
             swapped = true;
             emitAppliedMeshAfterSwap(renderedRequest);
-            renderMirror(true);
-            renderMirror(false);
+            renderMirror(true, mirrorTiming);
+            renderMirror(false, mirrorTiming);
             require(EGL14.eglMakeCurrent(
                     eglDisplay, eglSurface, eglSurface, eglContext),
                     "EGL primary restore failed");
         } finally {
             long completedNs = SystemClock.elapsedRealtimeNanos();
             RENDERS_IN_FLIGHT.decrementAndGet();
-            if (swapped) recordCompletedRender(completedNs - renderStartedNs, swapNs);
+            if (swapped) recordCompletedRender(completedNs - renderStartedNs, primaryTiming);
         }
     }
 
     private void drawAndSwap(
             EGLSurface surface, FloatBuffer drawVertices,
-            ShortBuffer drawIndices, int drawIndexCount) {
+            ShortBuffer drawIndices, int drawIndexCount, SwapTiming timing) {
+        long startedNs = SystemClock.elapsedRealtimeNanos();
         require(EGL14.eglMakeCurrent(
                 eglDisplay, surface, surface, eglContext), "EGL makeCurrent failed");
         GLES20.glViewport(0, 0, width, height);
@@ -492,17 +642,26 @@ final class CameraDewarpRenderer {
         drawIndices.position(0);
         GLES20.glDrawElements(GLES20.GL_TRIANGLES, drawIndexCount,
                 GLES20.GL_UNSIGNED_SHORT, drawIndices);
+        long swapStartedNs = SystemClock.elapsedRealtimeNanos();
         require(EGL14.eglSwapBuffers(eglDisplay, surface), "EGL swap failed");
+        timing.preSwapNs = swapStartedNs - startedNs;
+        timing.swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
     }
 
-    private void renderMirror(boolean raw) {
+    private void renderMirror(boolean raw, SwapTiming timing) {
         EGLSurface surface = raw ? rawMirrorSurface : correctedMirrorSurface;
         if (surface == EGL14.EGL_NO_SURFACE) return;
         try {
             drawAndSwap(surface,
                     raw ? rawVertices : vertices,
                     raw ? rawIndices : indices,
-                    raw ? rawIndexCount : indexCount);
+                    raw ? rawIndexCount : indexCount, timing);
+            if (raw) rawMirrorSwapCount++;
+            else correctedMirrorSwapCount++;
+            mirrorPreSwapTotalNs += timing.preSwapNs;
+            mirrorPreSwapMaxNs = Math.max(mirrorPreSwapMaxNs, timing.preSwapNs);
+            mirrorSwapWaitTotalNs += timing.swapWaitNs;
+            mirrorSwapWaitMaxNs = Math.max(mirrorSwapWaitMaxNs, timing.swapWaitNs);
         } catch (Throwable error) {
             EGL14.eglDestroySurface(eglDisplay, surface);
             if (raw) rawMirrorSurface = EGL14.EGL_NO_SURFACE;
@@ -661,11 +820,16 @@ final class CameraDewarpRenderer {
         maxFrameAgeNs = Math.max(maxFrameAgeNs, ageNs);
     }
 
-    private void recordCompletedRender(long renderNs, long swapNs) {
+    private void recordCompletedRender(long renderNs, SwapTiming timing) {
         completedSwapCount++;
         totalRenderNs += renderNs;
         maxRenderNs = Math.max(maxRenderNs, renderNs);
-        maxSwapNs = Math.max(maxSwapNs, swapNs);
+        preSwapTotalNs += timing.preSwapNs;
+        preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
+        swapWaitTotalNs += timing.swapWaitNs;
+        swapWaitMaxNs = Math.max(swapWaitMaxNs, timing.swapWaitNs);
+        maxPrimarySwapNs = Math.max(
+                maxPrimarySwapNs, timing.preSwapNs + timing.swapWaitNs);
     }
 
     private void emitStatsTick() {
@@ -680,19 +844,52 @@ final class CameraDewarpRenderer {
     private void emitStats(long nowNs) {
         if (statsSink == null || metricsStartedNs == 0) return;
         long intervalNs = nowNs - metricsStartedNs;
-        Stats stats = new Stats(intervalNs, callbackCount, completedSwapCount,
-                totalRenderNs, maxRenderNs, maxSwapNs, maxCallbackGapNs,
-                lastFrameAgeNs, maxFrameAgeNs, MAX_RENDERS_IN_FLIGHT.get(), width, height);
+        MappingRequest completedWindowMapping = metricsWindowMapping;
+        StatsContext completedWindowContext = metricsWindowContext;
+        boolean stableWindow = sameStatsWindow(
+                completedWindowMapping, appliedRequest,
+                completedWindowContext.requestId, statsContext.requestId,
+                completedWindowContext.generation, statsContext.generation,
+                completedWindowContext.viewWidth, statsContext.viewWidth,
+                completedWindowContext.viewHeight, statsContext.viewHeight);
+        Stats stats = new Stats(intervalNs, callbackCount, updateSamples, completedSwapCount,
+                totalRenderNs, maxRenderNs, updateTotalNs, updateMaxNs,
+                preSwapTotalNs, preSwapMaxNs, swapWaitTotalNs, swapWaitMaxNs,
+                maxPrimarySwapNs,
+                rawMirrorSwapCount, correctedMirrorSwapCount,
+                mirrorPreSwapTotalNs, mirrorPreSwapMaxNs,
+                mirrorSwapWaitTotalNs, mirrorSwapWaitMaxNs,
+                maxCallbackGapNs, lastFrameAgeNs, maxFrameAgeNs,
+                MAX_RENDERS_IN_FLIGHT.get(), ACTIVE_RENDERERS.get(),
+                System.identityHashCode(this), completedWindowContext.requestId,
+                inputGeneration, completedWindowContext.generation,
+                width, height, completedWindowContext.viewWidth,
+                completedWindowContext.viewHeight, completedWindowMapping);
         metricsStartedNs = nowNs;
+        metricsWindowMapping = appliedRequest;
+        metricsWindowContext = statsContext;
         callbackCount = 0;
         completedSwapCount = 0;
         totalRenderNs = 0;
         maxRenderNs = 0;
-        maxSwapNs = 0;
+        updateTotalNs = 0;
+        updateMaxNs = 0;
+        updateSamples = 0;
+        preSwapTotalNs = 0;
+        preSwapMaxNs = 0;
+        swapWaitTotalNs = 0;
+        swapWaitMaxNs = 0;
+        maxPrimarySwapNs = 0;
+        rawMirrorSwapCount = 0;
+        correctedMirrorSwapCount = 0;
+        mirrorPreSwapTotalNs = 0;
+        mirrorPreSwapMaxNs = 0;
+        mirrorSwapWaitTotalNs = 0;
+        mirrorSwapWaitMaxNs = 0;
         maxCallbackGapNs = 0;
         maxFrameAgeNs = -1;
         try {
-            statsSink.accept(stats);
+            if (stableWindow) statsSink.accept(stats);
         } catch (Throwable error) {
             Log.w(TAG, "Dewarp stats sink failed", error);
         }
@@ -700,6 +897,10 @@ final class CameraDewarpRenderer {
 
     private void releaseGl() {
         metricsActive = false;
+        if (activeRendererCounted) {
+            ACTIVE_RENDERERS.decrementAndGet();
+            activeRendererCounted = false;
+        }
         if (handler != null) handler.removeCallbacks(metricsTick);
         releaseCameraInput();
         if (textureId != 0) GLES20.glDeleteTextures(1, new int[]{textureId}, 0);
@@ -715,6 +916,8 @@ final class CameraDewarpRenderer {
         pendingRenderedRequest = null;
         pendingMeshVertexCount = 0;
         pendingMeshGenerationNs = -1;
+        metricsWindowMapping = null;
+        metricsWindowContext = null;
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -829,5 +1032,10 @@ final class CameraDewarpRenderer {
 
     private static void require(boolean condition, String message) {
         if (!condition) throw new IllegalStateException(message);
+    }
+
+    private static final class SwapTiming {
+        long preSwapNs;
+        long swapWaitNs;
     }
 }

@@ -1217,15 +1217,14 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void onCalibrationDewarpStats(CameraDewarpRenderer.Stats stats) {
-        int requestId = activeActivityCameraRequestId;
         if (!CameraDewarpStatsEvent.shouldRecord(
                 activityResumed, requestedOpen,
-                activePreview == calibrationPreview, requestId)) return;
-        CameraProfile profile = CameraProfile.of(calibrationCameraId);
-        CameraDewarpConfig config = CameraDewarpConfig.load(
-                preferences, CameraDewarpConfig.lensFor(profile));
+                activePreview == calibrationPreview, activeActivityCameraRequestId)
+                || stats.requestId != activeActivityCameraRequestId
+                || stats.contextGeneration != calibrationPreview.cameraInputGeneration()
+                || stats.inputGeneration != calibrationPreview.cameraInputGeneration()) return;
         record("camera_dewarp_stats", CameraDewarpStatsEvent.calibration(
-                requestId, calibrationCameraId, config, stats));
+                stats.requestId, calibrationCameraId, stats));
     }
 
     @Override
@@ -4991,6 +4990,9 @@ public final class CameraProbeActivity extends Activity
         try {
             bundle = reverseCameraPreview.acquirePreviewSurfaces(requestId);
             beginActivityCameraRequest(true, requestId, bundle.generations);
+            reverseCameraPreview.setDewarpStatsContext(
+                    requestId, java.util.Arrays.copyOfRange(
+                            bundle.generations, 1, bundle.generations.length));
             pendingReversePreviewRequestId = requestId;
             pendingReversePreviewGenerations = bundle.generations.clone();
         } catch (Throwable error) {
@@ -5065,6 +5067,10 @@ public final class CameraProbeActivity extends Activity
                 calibration, calibration
                         ? new int[]{calibrationPreview.cameraInputGeneration()}
                         : new int[0]);
+        if (calibration) {
+            calibrationPreview.setDewarpStatsContext(
+                    requestId, calibrationPreview.cameraInputGeneration());
+        }
         showPreview(target, cover, false, false);
         requestedOpen = true;
         status.setText("Opening " + cameraTag + " / index " + index + "...");
@@ -5424,14 +5430,15 @@ public final class CameraProbeActivity extends Activity
     @Override
     public void onReverseDewarpStats(
             int cameraIndex, CameraDewarpRenderer.Stats stats) {
-        int requestId = activeActivityCameraRequestId;
         if (!CameraDewarpStatsEvent.shouldRecord(
                 activityResumed, requestedOpen,
-                activePreview == reverseCameraPreview, requestId)) return;
-        int lens = CameraDewarpConfig.lensForReverseCamera(cameraIndex);
-        CameraDewarpConfig config = CameraDewarpConfig.load(preferences, lens);
+                activePreview == reverseCameraPreview, activeActivityCameraRequestId)
+                || stats.requestId != activeActivityCameraRequestId
+                || cameraIndex < 1
+                || cameraIndex >= activeActivityInputGenerations.length
+                || stats.contextGeneration != activeActivityInputGenerations[cameraIndex]) return;
         record("camera_dewarp_stats", CameraDewarpStatsEvent.reverse(
-                requestId, cameraIndex, config, stats));
+                stats.requestId, cameraIndex, stats));
     }
 
     private void renewSelectedPreviewInputForTabSwitch() {
