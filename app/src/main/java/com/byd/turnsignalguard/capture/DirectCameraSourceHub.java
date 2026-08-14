@@ -24,7 +24,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 
-/** Stable full-frame GPU boundary between AVMCamera and logical preview consumers. */
+/** Stable GPU fan-out boundary between full-size AVMCamera sources and logical consumers. */
 final class DirectCameraSourceHub
         implements CameraHelperMain.HelperBinder.PersistentSurfaceFanout {
     interface Listener {

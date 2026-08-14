@@ -48,6 +48,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private ReverseCameraLayout rawFallbackModel = ReverseCameraLayout.defaults();
     private int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
     private final FrameBarrier frameBarrier = new FrameBarrier();
+    private int paneBufferViewportWidth;
+    private int paneBufferViewportHeight;
 
     ReverseCameraCompositionView(Context context) {
         super(context);
@@ -158,6 +160,62 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (value == null) throw new IllegalArgumentException("raw fallback layout is required");
         rawFallbackModel = value;
         applyModel();
+    }
+
+    void setPaneBoundedBuffers(int viewportWidth, int viewportHeight) {
+        int[][] bounds = paneBounds(model, viewportWidth, viewportHeight);
+        for (int i = 0; i < panes.length; i++) {
+            panes[i].texture.setPaneBoundedBuffer(bounds[i][0], bounds[i][1]);
+        }
+        paneBufferViewportWidth = viewportWidth;
+        paneBufferViewportHeight = viewportHeight;
+    }
+
+    boolean usesPaneGeometry(
+            ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
+        return samePaneGeometry(
+                model, paneBufferViewportWidth, paneBufferViewportHeight,
+                layout, viewportWidth, viewportHeight);
+    }
+
+    boolean usesPaneBoundedBuffers(
+            ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
+        int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight);
+        for (int i = 0; i < panes.length; i++) {
+            if (!panes[i].texture.usesPaneBoundedBuffer(
+                    bounds[i][0], bounds[i][1])) return false;
+        }
+        return true;
+    }
+
+    static int[][] paneBounds(
+            ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
+        if (layout == null) throw new IllegalArgumentException("reverse layout is required");
+        ReverseCameraLayout.Pane[] values = layout.panes();
+        int[][] result = new int[values.length][2];
+        for (int i = 0; i < values.length; i++) {
+            ReverseCameraLayout.PixelRect rect = ReverseCameraLayout.project(
+                    values[i].destination, viewportWidth, viewportHeight);
+            result[i][0] = Math.max(1, rect.width);
+            result[i][1] = Math.max(1, rect.height);
+        }
+        return result;
+    }
+
+    static boolean samePaneGeometry(
+            ReverseCameraLayout current, int currentViewportWidth, int currentViewportHeight,
+            ReverseCameraLayout next, int nextViewportWidth, int nextViewportHeight) {
+        if (currentViewportWidth != nextViewportWidth
+                || currentViewportHeight != nextViewportHeight) return false;
+        int[][] currentBounds = paneBounds(
+                current, currentViewportWidth, currentViewportHeight);
+        int[][] nextBounds = paneBounds(next, nextViewportWidth, nextViewportHeight);
+        if (currentBounds.length != nextBounds.length) return false;
+        for (int i = 0; i < currentBounds.length; i++) {
+            if (currentBounds[i][0] != nextBounds[i][0]
+                    || currentBounds[i][1] != nextBounds[i][1]) return false;
+        }
+        return true;
     }
 
     void setEditorRawMirror(int cameraIndex, SurfaceTexture texture) {

@@ -71,11 +71,17 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         DisplayMetrics metrics = new DisplayMetrics();
         display.getRealMetrics(metrics);
         spec.validate(metrics.widthPixels, metrics.heightPixels);
-        if (root != null && (activeTarget != spec.target
-                || activeDisplayId != display.getDisplayId()
-                || preview.usesDewarpPipeline() != spec.dewarp.usesGpu())) {
-            close(activeTarget != spec.target || activeDisplayId != display.getDisplayId()
-                    ? "display_target_changed" : "dewarp_pipeline_changed");
+        if (root != null) {
+            if (activeTarget != spec.target || activeDisplayId != display.getDisplayId()) {
+                close("display_target_changed");
+            } else if (preview.usesDewarpPipeline() != spec.dewarp.usesGpu()) {
+                close("dewarp_pipeline_changed");
+            } else if (!samePaneSize(
+                    layout.width, layout.height, spec.width, spec.height)) {
+                close("camera_geometry_changed");
+            } else if (!preview.usesPaneBoundedBuffer(spec.width, spec.height)) {
+                close("camera_buffer_size_changed");
+            }
         }
         if (root == null) {
             windowContext = context.createDisplayContext(display);
@@ -221,6 +227,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
         nextPreview.setAlpha(1.0f);
+        nextPreview.setPaneBoundedBuffer(spec.width, spec.height);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
         nextPreview.setDewarpEventSink(this::emitDewarpEvent);
@@ -414,6 +421,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         return updatesAfterArm >= 2;
     }
 
+    static boolean samePaneSize(
+            int currentWidth, int currentHeight, int nextWidth, int nextHeight) {
+        return currentWidth == nextWidth && currentHeight == nextHeight;
+    }
+
     private void configureWarningView(int edge) {
         boolean right = edge == CameraShellProtocol.WARNING_EDGE_RIGHT;
         GradientDrawable gradient = new GradientDrawable(
@@ -460,8 +472,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         emit("camera_overlay_surface", "state", "ready",
                 "request_id", requestId, "surface_generation", surfaceGeneration,
                 "reused", reused,
-                "buffer_width", BlindSpotCameraView.BUFFER_WIDTH,
-                "buffer_height", BlindSpotCameraView.BUFFER_HEIGHT);
+                "buffer_width", preview.cameraBufferWidth(),
+                "buffer_height", preview.cameraBufferHeight());
     }
 
     private void requireCurrent(int expectedRequestId, int expectedSurfaceGeneration) {

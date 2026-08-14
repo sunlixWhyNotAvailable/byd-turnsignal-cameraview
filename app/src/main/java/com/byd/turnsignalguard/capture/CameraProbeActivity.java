@@ -1017,8 +1017,8 @@ public final class CameraProbeActivity extends Activity
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.VISIBLE);
         record("surface_created", "target", "production", "valid", cameraSurfaceReady,
                 "width", width, "height", height,
-                "buffer_width", BlindSpotCameraView.BUFFER_WIDTH,
-                "buffer_height", BlindSpotCameraView.BUFFER_HEIGHT);
+                "buffer_width", view.cameraBufferWidth(),
+                "buffer_height", view.cameraBufferHeight());
         maybeOpenProductionPreview();
         updateControls();
     }
@@ -1046,8 +1046,8 @@ public final class CameraProbeActivity extends Activity
         cameraSurfaceReady = surface.isValid();
         record("surface_changed", "target", "production",
                 "width", width, "height", height,
-                "buffer_width", BlindSpotCameraView.BUFFER_WIDTH,
-                "buffer_height", BlindSpotCameraView.BUFFER_HEIGHT);
+                "buffer_width", view.cameraBufferWidth(),
+                "buffer_height", view.cameraBufferHeight());
         updateControls();
     }
 

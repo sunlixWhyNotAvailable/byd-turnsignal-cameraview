@@ -39,9 +39,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         display.getSize(size);
         spec.validate(size.x, size.y);
 
-        if (root != null && !root.dewarpPipelineCompatible(
-                spec.rearDewarp, spec.leftDewarp, spec.rightDewarp)) {
-            close("dewarp_pipeline_changed");
+        if (root != null) {
+            if (!root.dewarpPipelineCompatible(
+                    spec.rearDewarp, spec.leftDewarp, spec.rightDewarp)) {
+                close("dewarp_pipeline_changed");
+            } else if (!root.usesPaneGeometry(spec.layout, size.x, size.y)) {
+                close("camera_geometry_changed");
+            } else if (!root.usesPaneBoundedBuffers(spec.layout, size.x, size.y)) {
+                close("camera_buffer_size_changed");
+            }
         }
         requestId = spec.requestId;
         completedFrameRequestId = 0;
@@ -241,6 +247,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
         nextRoot.applyRawFallbackLayout(spec.rawFallbackLayout);
         nextRoot.applyLayout(spec.layout);
+        nextRoot.setPaneBoundedBuffers(size.x, size.y);
         WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
                 size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE

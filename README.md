@@ -52,6 +52,7 @@ After first launch:
 - Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
 - The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
 - Fisheye correction is off by default and adds one GPU render pass per corrected displayed view. Calibrate and performance-test it while parked before regular use.
+- Production camera fan-out and correction buffers preserve the AVM source aspect while staying within each displayed pane; the vendor AVM source itself remains full-resolution.
 - Simultaneous rear/front crops from the same physical side depend on duplicate-index Surface support and must pass the bundled parked probe before public release.
 - Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
 - Third-party metadata forwarding does not include album artwork. BYD's protected cover provider is unavailable to the shell helper, while stock Bluetooth, Local Media, and supported OEM players keep their native metadata path.

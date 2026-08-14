@@ -62,6 +62,8 @@ final class BlindSpotCameraView extends TextureView
     private boolean rawFallbackActive;
     private int dewarpStatsRequestId;
     private int dewarpStatsGeneration;
+    private int bufferWidth = BUFFER_WIDTH;
+    private int bufferHeight = BUFFER_HEIGHT;
 
     BlindSpotCameraView(Context context) {
         super(context);
@@ -92,6 +94,45 @@ final class BlindSpotCameraView extends TextureView
 
     boolean isCameraSurfaceReady() {
         return cameraSurface != null && cameraSurface.isValid();
+    }
+
+    void setPaneBoundedBuffer(int paneWidth, int paneHeight) {
+        if (cameraSurface != null) {
+            throw new IllegalStateException("camera buffer must be sized before attach");
+        }
+        int[] size = paneBoundedBufferSize(paneWidth, paneHeight);
+        bufferWidth = size[0];
+        bufferHeight = size[1];
+        configureBuffer();
+    }
+
+    boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight) {
+        int[] size = paneBoundedBufferSize(paneWidth, paneHeight);
+        return bufferWidth == size[0] && bufferHeight == size[1];
+    }
+
+    int cameraBufferWidth() {
+        return bufferWidth;
+    }
+
+    int cameraBufferHeight() {
+        return bufferHeight;
+    }
+
+    static int[] paneBoundedBufferSize(int paneWidth, int paneHeight) {
+        if (paneWidth <= 1 || paneHeight <= 1) {
+            return new int[]{BUFFER_WIDTH, BUFFER_HEIGHT};
+        }
+        int width = Math.min(BUFFER_WIDTH, paneWidth);
+        int height = Math.min(BUFFER_HEIGHT, paneHeight);
+        if ((long) width * BUFFER_HEIGHT <= (long) height * BUFFER_WIDTH) {
+            height = Math.min(height, Math.max(1,
+                    Math.round(width * (float) BUFFER_HEIGHT / BUFFER_WIDTH)));
+        } else {
+            width = Math.min(width, Math.max(1,
+                    Math.round(height * (float) BUFFER_WIDTH / BUFFER_HEIGHT)));
+        }
+        return new int[]{width, height};
     }
 
     void retireCameraInput() {
@@ -236,7 +277,7 @@ final class BlindSpotCameraView extends TextureView
     private void configureBuffer() {
         SurfaceTexture texture = getSurfaceTexture();
         if (texture == null) return;
-        texture.setDefaultBufferSize(BUFFER_WIDTH, BUFFER_HEIGHT);
+        texture.setDefaultBufferSize(bufferWidth, bufferHeight);
     }
 
     @Override
@@ -251,7 +292,7 @@ final class BlindSpotCameraView extends TextureView
         if (usesDewarpPipeline()) {
             int rendererGeneration = ++dewarpGeneration;
             dewarpRenderer = CameraDewarpRenderer.start(
-                    texture, BUFFER_WIDTH, BUFFER_HEIGHT,
+                    texture, bufferWidth, bufferHeight,
                     dewarpConfig, dewarpRequestToken, cameraGeneration,
                     dewarpStatsRequestId, dewarpStatsGeneration,
                     getWidth(), getHeight(),
