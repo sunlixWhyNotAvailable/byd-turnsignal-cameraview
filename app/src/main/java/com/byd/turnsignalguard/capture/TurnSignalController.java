@@ -19,6 +19,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 final class TurnSignalController {
     private static final long PING_MS = 5_000;
@@ -333,19 +336,22 @@ final class TurnSignalController {
 
     void setCameraOverlayVisible(
             int cameraId, int requestId, int surfaceGeneration,
-            boolean visible, Runnable completion) {
+            boolean visible, Consumer<Boolean> completion) {
         worker.execute(() -> {
+            boolean success = false;
             try {
                 IBinder value = ensureCameraHelper();
                 transactOverlayVisibility(
                         value, cameraId, requestId, surfaceGeneration, visible);
+                success = true;
             } catch (Throwable error) {
                 emit("camera_overlay_error", "stage", visible ? "show" : "hide",
                         "camera_id", cameraId, "request_id", requestId,
                         "surface_generation", surfaceGeneration,
                         "error", summary(error));
             } finally {
-                if (completion != null && !handler.post(completion)) {
+                final boolean result = success;
+                if (completion != null && !handler.post(() -> completion.accept(result))) {
                     emit("camera_overlay_error", "stage", "visibility_completion",
                             "request_id", requestId);
                 }
@@ -962,22 +968,32 @@ final class TurnSignalController {
     }
 
     private IBinder ensureCameraHelper() throws Exception {
-        IBinder value = cameraHelper;
-        if (!cameraPing(value)) {
-            LocalAdbClient.Result launch = LocalAdbClient.executeAuthorized(
-                    context, cameraLaunchCommand(context.getApplicationInfo().sourceDir,
-                            Process.myUid(), BuildConfig.VERSION_CODE), this::emit);
-            if (!launch.ok) {
-                throw new IllegalStateException("camera_shell_launch_failed: " + launch.error
-                        + (launch.output.isEmpty() ? "" : ": " + launch.output));
+        CameraHelperResolution resolution = resolveCameraHelperFlow(
+                cameraHelper,
+                this::cameraPing,
+                this::resolveCameraHelper,
+                () -> {
+                    LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
+                            context, cameraLaunchCommand(context.getApplicationInfo().sourceDir,
+                                    Process.myUid(), BuildConfig.VERSION_CODE), this::emit);
+                    if (result.ok) {
+                        emit("camera_shell_launch", "ok", true, "output", result.output);
+                    }
+                    return result;
+                },
+                SystemClock::elapsedRealtime,
+                Thread::sleep,
+                3_000);
+        IBinder value = resolution.binder;
+        LocalAdbClient.Result launch = resolution.launch;
+        if (launch != null) {
+            if (value == null) {
+                throw new IllegalStateException(cameraHelperFailureMessage(launch));
             }
-            emit("camera_shell_launch", "ok", true, "output", launch.output);
-            long deadline = SystemClock.elapsedRealtime() + 3_000;
-            do {
-                value = resolveCameraHelper();
-                if (cameraPing(value)) break;
-                Thread.sleep(100);
-            } while (SystemClock.elapsedRealtime() < deadline);
+            if (!launch.ok) {
+                emit("camera_shell_launch_reconciled", "launch_ok", false,
+                        "launch_error", launch.error, "output", launch.output);
+            }
         }
         if (!cameraPing(value)) throw new IllegalStateException("camera_shell_binder_timeout");
         if (cameraHelper != value) {
@@ -1666,6 +1682,41 @@ final class TurnSignalController {
         return event > 0 && event == current;
     }
 
+    static String cameraHelperFailureKind(boolean launchOk, boolean readyAfterLaunch) {
+        if (readyAfterLaunch) return "";
+        return launchOk ? "camera_shell_binder_timeout" : "camera_shell_launch_failed";
+    }
+
+    static String cameraHelperFailureMessage(LocalAdbClient.Result launch) {
+        String failure = cameraHelperFailureKind(launch.ok, false);
+        if (launch.ok) return failure;
+        return failure + ": " + launch.error
+                + (launch.output.isEmpty() ? "" : ": " + launch.output);
+    }
+
+    static CameraHelperResolution resolveCameraHelperFlow(
+            IBinder cached,
+            Predicate<IBinder> ping,
+            Supplier<IBinder> resolve,
+            Supplier<LocalAdbClient.Result> launch,
+            LongSupplier clock,
+            CameraHelperSleeper sleeper,
+            long timeoutMs) throws InterruptedException {
+        IBinder value = cached;
+        if (ping.test(value)) return new CameraHelperResolution(value, null);
+        value = resolve.get();
+        if (ping.test(value)) return new CameraHelperResolution(value, null);
+
+        LocalAdbClient.Result result = launch.get();
+        long deadline = clock.getAsLong() + timeoutMs;
+        do {
+            value = resolve.get();
+            if (ping.test(value)) return new CameraHelperResolution(value, result);
+            sleeper.sleep(100);
+        } while (clock.getAsLong() < deadline);
+        return new CameraHelperResolution(null, result);
+    }
+
     static boolean shouldQueueCameraRecovery(boolean stopped, boolean pending) {
         return !stopped && !pending;
     }
@@ -1720,6 +1771,21 @@ final class TurnSignalController {
 
         boolean healthy() {
             return binder != null && error.isEmpty();
+        }
+    }
+
+    @FunctionalInterface
+    interface CameraHelperSleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    static final class CameraHelperResolution {
+        final IBinder binder;
+        final LocalAdbClient.Result launch;
+
+        CameraHelperResolution(IBinder binder, LocalAdbClient.Result launch) {
+            this.binder = binder;
+            this.launch = launch;
         }
     }
 

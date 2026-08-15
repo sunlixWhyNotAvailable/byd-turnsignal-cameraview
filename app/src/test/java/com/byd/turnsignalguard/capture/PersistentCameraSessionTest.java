@@ -24,6 +24,26 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class PersistentCameraSessionTest {
     @Test
+    public void overlayActiveStateSurvivesConsumerGroupRestore() {
+        CameraHelperMain.HelperBinder.ConsumerGroup group =
+                new CameraHelperMain.HelperBinder.ConsumerGroup(
+                        CameraHelperMain.CAMERA_OWNER_OVERLAY);
+        group.set(surfaces(2), new int[]{2, 2}, 7, "overlay",
+                false, false, true);
+        group.active[0] = false;
+        CameraHelperMain.HelperBinder.ConsumerGroup.Snapshot snapshot = group.snapshot();
+
+        group.clear();
+        group.set(snapshot.surfaces, snapshot.indexes, snapshot.requestId,
+                snapshot.view, snapshot.exclusive, snapshot.shellOwned,
+                true, snapshot.firstSurfaceDirect);
+        group.restoreActive(snapshot.active);
+
+        assertFalse(group.active[0]);
+        assertTrue(group.active[1]);
+    }
+
+    @Test
     public void producerBootstrapsKnownGoodSidePairBeforeAnyLogicalConsumer()
             throws Exception {
         Trace calibrationTrace = new Trace();
@@ -537,6 +557,43 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void activeRestoreFailureDetachesAttachedTargetBeforeRelease() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+
+        session.startProducer(camera, fanout, session.overlayGroup,
+                surfaces(1), new int[]{2}, 151, "overlay", false, false);
+        session.overlayGroup.active[0] = false;
+        fanout.detach(session.overlayGroup.surfaces);
+        session.overlayGroup.attached = false;
+        fanout.failSetActiveCall = 1;
+
+        try {
+            session.attach(camera, session.activityGroup,
+                    surfaces(1), new int[]{3}, 152, "activity", false, false,
+                    events, new FakeShellClose(trace), 7, 15);
+            fail("restore should fail");
+        } catch (CameraHelperMain.HelperBinder.PersistentSessionFailure expected) {
+            assertEquals("consumer_restore_failed", expected.reason);
+            assertFalse(expected.fatal);
+        }
+
+        assertFalse(session.overlayGroup.has());
+        assertFalse(session.activityGroup.has());
+        assertEquals(0, fanout.activeTargets);
+        assertTrue(countPrefix(trace.values, "target-remove:") >= 3);
+        int overlayClosed = trace.values.indexOf("event:camera_closed");
+        int detachesBeforeRelease = 0;
+        for (int i = 0; i < overlayClosed; i++) {
+            if ("target-remove:1".equals(trace.values.get(i))) detachesBeforeRelease++;
+        }
+        assertTrue(detachesBeforeRelease >= 2);
+    }
+
+    @Test
     public void queuedLateHubCallCannotMutateAfterCancellation() throws Exception {
         DirectCameraSourceHub.SerializedCall<Integer> call =
                 new DirectCameraSourceHub.SerializedCall<>();
@@ -832,6 +889,8 @@ public final class PersistentCameraSessionTest {
         int activeTargets;
         int detachCalls;
         int failDetachCall;
+        int setActiveCalls;
+        int failSetActiveCall;
 
         FakeFanout(Trace trace) {
             this.trace = trace;
@@ -861,6 +920,15 @@ public final class PersistentCameraSessionTest {
             }
             activeTargets -= values.length;
             trace.values.add("target-remove:" + values.length);
+        }
+
+        @Override
+        public void setActive(Surface value, boolean active) {
+            setActiveCalls++;
+            if (setActiveCalls == failSetActiveCall) {
+                throw new IllegalStateException("setActive failed");
+            }
+            trace.values.add("target-active:" + System.identityHashCode(value) + ":" + active);
         }
 
         @Override

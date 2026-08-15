@@ -129,6 +129,14 @@ final class DirectCameraSourceHub
     }
 
     @Override
+    public void setActive(Surface surface, boolean active) throws Exception {
+        call(() -> {
+            setTargetActive(surface, active);
+            return null;
+        });
+    }
+
+    @Override
     public synchronized void close() {
         if (closed) return;
         closed = true;
@@ -219,6 +227,19 @@ final class DirectCameraSourceHub
         }
     }
 
+    private void setTargetActive(Surface surface, boolean active) {
+        for (Target target : targets) {
+            if (target.surface != surface) continue;
+            target.active = active;
+            return;
+        }
+        throw new IllegalStateException("downstream Surface is not attached");
+    }
+
+    static boolean shouldRenderTarget(int sourceIndex, int targetIndex, boolean active) {
+        return active && sourceIndex == targetIndex;
+    }
+
     private void render(Source source) {
         if (closed || sourceFailureReported) return;
         long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
@@ -261,7 +282,7 @@ final class DirectCameraSourceHub
         int targetDimensionCount = 0;
         for (int i = targets.size() - 1; i >= 0; i--) {
             Target target = targets.get(i);
-            if (target.index != source.index) continue;
+            if (!shouldRenderTarget(source.index, target.index, target.active)) continue;
             try {
                 draw(source, target, source.drawTiming);
                 targetCount++;
@@ -824,6 +845,7 @@ final class DirectCameraSourceHub
         final Surface surface;
         final int index;
         final EGLSurface eglSurface;
+        boolean active = true;
 
         Target(Surface surface, int index, EGLSurface eglSurface) {
             this.surface = surface;

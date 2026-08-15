@@ -814,9 +814,13 @@ final class CameraHelperMain {
 
         void setOverlayWindowVisible(
                 int cameraId, int requestId, int surfaceGeneration, boolean visible,
-                Runnable completion) {
+                Consumer<Boolean> completion) {
             turnController.setCameraOverlayVisible(
                     cameraId, requestId, surfaceGeneration, visible, completion);
+        }
+
+        synchronized void setOverlayTargetActive(Surface target, boolean active) throws Exception {
+            persistentSession.setActive(overlayGroup, target, active);
         }
 
         void setOverlayWindowWarning(
@@ -2022,6 +2026,7 @@ final class CameraHelperMain {
             Surface source(int index) throws Exception;
             void attach(Surface[] surfaces, int[] indexes) throws Exception;
             void detach(Surface[] surfaces) throws Exception;
+            void setActive(Surface surface, boolean active) throws Exception;
             void close();
         }
 
@@ -2038,6 +2043,7 @@ final class CameraHelperMain {
             final boolean[] sourceAttached = new boolean[5];
             boolean producerOpen;
             Throwable restoreFailure;
+            boolean restoreFailureFatal;
             PersistentSurfaceFanout fanout;
 
             void startProducer(
@@ -2158,6 +2164,11 @@ final class CameraHelperMain {
                 if (!exclusive && !restoreCompatibleGroups(
                         port, events, shellClose, cameraId, epoch)) {
                     Throwable restoreError = restoreFailure;
+                    if (restoreFailureFatal) {
+                        throw new PersistentSessionFailure(
+                                "consumer_restore_failed", restoreError, true,
+                                true, shellCloseQueued);
+                    }
                     if (!rollbackRequestedTarget(
                             port, target, previous, events, shellClose, cameraId, epoch)) {
                         throw new PersistentSessionFailure(
@@ -2239,6 +2250,7 @@ final class CameraHelperMain {
                 clearSources();
                 producerOpen = false;
                 restoreFailure = null;
+                restoreFailureFatal = false;
                 boolean shellCloseQueued = shellCloseAlreadyQueued;
                 if (closeStock && !shellCloseQueued) {
                     shellCloseQueued = shellClose.close(reason, stockRequestId);
@@ -2274,6 +2286,7 @@ final class CameraHelperMain {
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) {
                 restoreFailure = null;
+                restoreFailureFatal = false;
                 if (reverseGroup.has() || activityGroup.has() && activityGroup.exclusive) {
                     return true;
                 }
@@ -2287,6 +2300,7 @@ final class CameraHelperMain {
                     PersistentEventSink events,
                     PersistentShellCloseSink shellClose, int cameraId, int epoch) {
                 boolean restored = true;
+                restoreFailureFatal = false;
                 for (ConsumerGroup group : groups) {
                     if (!group.has() || group.attached) continue;
                     try {
@@ -2294,6 +2308,7 @@ final class CameraHelperMain {
                                 group.firstSurfaceDirect);
                         group.attached = true;
                         group.directSurfaceAttached = group.firstSurfaceDirect;
+                        applyActiveState(group);
                         events.emit("camera_consumer_attached",
                                 "camera_owner", group.owner,
                                 "request_id", group.requestId,
@@ -2303,6 +2318,13 @@ final class CameraHelperMain {
                     } catch (Throwable error) {
                         restoreFailure = error.getCause() == null
                                 ? root(error) : root(error.getCause());
+                        Throwable detachError = detachAfterRestoreFailure(port, group);
+                        if (detachError != null) {
+                            restoreFailureFatal = true;
+                            restoreFailure.addSuppressed(detachError);
+                            restored = false;
+                            continue;
+                        }
                         terminalClear(group, "consumer_restore_failed", restoreFailure,
                                 events, shellClose, cameraId, epoch);
                         restored = false;
@@ -2341,6 +2363,8 @@ final class CameraHelperMain {
                     target.set(previous.surfaces, previous.indexes, previous.requestId,
                             previous.view, previous.exclusive, previous.shellOwned,
                             true, previous.firstSurfaceDirect);
+                    target.restoreActive(previous.active);
+                    applyActiveState(target);
                     events.emit("camera_consumer_attached",
                             "camera_owner", previous.owner,
                             "request_id", previous.requestId,
@@ -2349,6 +2373,13 @@ final class CameraHelperMain {
                     return true;
                 } catch (Throwable error) {
                     restoreFailure = root(error);
+                    Throwable detachError = detachAfterRestoreFailure(port, target);
+                    if (detachError != null) {
+                        restoreFailureFatal = true;
+                        restoreFailure.addSuppressed(detachError);
+                        return false;
+                    }
+                    target.clear();
                     terminalSnapshot(previous, "consumer_restore_failed", restoreFailure,
                             events, shellClose, cameraId, epoch);
                     return true;
@@ -2363,6 +2394,16 @@ final class CameraHelperMain {
                 group.clear();
                 terminalSnapshot(failed, reason, error,
                         events, shellClose, cameraId, epoch);
+            }
+
+            private Throwable detachAfterRestoreFailure(
+                    PersistentCameraPort port, ConsumerGroup group) {
+                try {
+                    detachGroup(port, group);
+                    return null;
+                } catch (Throwable error) {
+                    return root(error);
+                }
             }
 
             private void terminalSnapshot(
@@ -2497,6 +2538,24 @@ final class CameraHelperMain {
                     }
                     throw error;
                 }
+            }
+
+            private void applyActiveState(ConsumerGroup group) throws Exception {
+                if (!group.attached || fanout == null) return;
+                for (int i = 0; i < group.surfaces.length; i++) {
+                    if (!group.active[i]) fanout.setActive(group.surfaces[i], false);
+                }
+            }
+
+            void setActive(ConsumerGroup group, Surface surface, boolean active)
+                    throws Exception {
+                if (fanout == null || !group.attached) {
+                    throw new IllegalStateException("overlay target is not attached");
+                }
+                int index = group.indexOf(surface);
+                if (index < 0) throw new IllegalStateException("overlay Surface is not attached");
+                fanout.setActive(surface, active);
+                group.active[index] = active;
             }
 
             private void detachRequestedGroup(
@@ -2694,6 +2753,7 @@ final class CameraHelperMain {
             final String owner;
             Surface[] surfaces = new Surface[0];
             int[] indexes = new int[0];
+            boolean[] active = new boolean[0];
             int requestId;
             String view;
             boolean exclusive;
@@ -2725,6 +2785,8 @@ final class CameraHelperMain {
                     boolean nextFirstSurfaceDirect) {
                 surfaces = nextSurfaces;
                 indexes = nextIndexes.clone();
+                active = new boolean[nextSurfaces.length];
+                Arrays.fill(active, true);
                 requestId = nextRequestId;
                 view = nextView;
                 exclusive = nextExclusive;
@@ -2737,12 +2799,29 @@ final class CameraHelperMain {
             Snapshot snapshot() {
                 return new Snapshot(
                         owner, surfaces, indexes, requestId, view,
-                        exclusive, shellOwned, attached, firstSurfaceDirect);
+                        exclusive, shellOwned, attached, firstSurfaceDirect, active);
+            }
+
+            int indexOf(Surface target) {
+                for (int i = 0; i < surfaces.length; i++) {
+                    if (surfaces[i] == target) return i;
+                }
+                return -1;
+            }
+
+            void restoreActive(boolean[] values) {
+                if (values == null || values.length != surfaces.length) {
+                    active = new boolean[surfaces.length];
+                    Arrays.fill(active, true);
+                } else {
+                    active = values.clone();
+                }
             }
 
             void clear() {
                 surfaces = new Surface[0];
                 indexes = new int[0];
+                active = new boolean[0];
                 requestId = 0;
                 view = null;
                 exclusive = false;
@@ -2762,12 +2841,13 @@ final class CameraHelperMain {
                 final boolean shellOwned;
                 final boolean attached;
                 final boolean firstSurfaceDirect;
+                final boolean[] active;
 
                 Snapshot(
                         String owner, Surface[] surfaces, int[] indexes,
                         int requestId, String view, boolean exclusive,
                         boolean shellOwned, boolean attached,
-                        boolean firstSurfaceDirect) {
+                        boolean firstSurfaceDirect, boolean[] active) {
                     this.owner = owner;
                     this.surfaces = surfaces;
                     this.indexes = indexes.clone();
@@ -2777,6 +2857,8 @@ final class CameraHelperMain {
                     this.shellOwned = shellOwned;
                     this.attached = attached;
                     this.firstSurfaceDirect = firstSurfaceDirect;
+                    this.active = active == null ? new boolean[surfaces.length] : active.clone();
+                    if (active == null) Arrays.fill(this.active, true);
                 }
 
                 void release() {

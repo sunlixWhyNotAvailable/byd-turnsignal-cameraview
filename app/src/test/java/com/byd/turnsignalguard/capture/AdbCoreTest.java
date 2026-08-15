@@ -25,6 +25,7 @@ import java.security.Signature;
 import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AdbCoreTest {
     private static final byte[] SHA1_DIGEST_INFO = new byte[]{
@@ -302,6 +303,84 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.TX_SHUTDOWN
                 > TurnSignalShellProtocol.TX_ATTACH_CONTROLLER);
         assertTrue(CameraShellProtocol.TX_SHUTDOWN > CameraShellProtocol.TX_CLOSE);
+    }
+
+    @Test
+    public void cameraHelperAdoptsResolvedBinderBeforeLaunching() throws Exception {
+        IBinder resolved = new android.os.Binder();
+        AtomicInteger launches = new AtomicInteger();
+        TurnSignalController.CameraHelperResolution result =
+                TurnSignalController.resolveCameraHelperFlow(
+                        null,
+                        value -> value == resolved,
+                        () -> resolved,
+                        () -> {
+                            launches.incrementAndGet();
+                            return LocalAdbClient.Result.ok("", 0, "", false);
+                        },
+                        () -> 0,
+                        millis -> { throw new AssertionError("pre-launch adoption slept"); },
+                        3_000);
+        assertEquals(resolved, result.binder);
+        assertEquals(null, result.launch);
+        assertEquals(0, launches.get());
+    }
+
+    @Test
+    public void cameraHelperReconcilesFailedLaunchAndKeepsFailureKindsDistinct()
+            throws Exception {
+        IBinder late = new android.os.Binder();
+        AtomicInteger resolveCalls = new AtomicInteger();
+        AtomicInteger launches = new AtomicInteger();
+        AtomicInteger now = new AtomicInteger();
+        TurnSignalController.CameraHelperResolution reconciled =
+                TurnSignalController.resolveCameraHelperFlow(
+                        null,
+                        value -> value == late,
+                        () -> resolveCalls.getAndIncrement() >= 2 ? late : null,
+                        () -> {
+                            launches.incrementAndGet();
+                            return LocalAdbClient.Result.failed(
+                                    "socket_timeout", "late-output", 1, "unavailable");
+                        },
+                        now::get,
+                        millis -> now.addAndGet((int) millis),
+                        3_000);
+        assertEquals(late, reconciled.binder);
+        assertEquals(1, launches.get());
+        assertEquals("socket_timeout", reconciled.launch.error);
+        assertEquals("late-output", reconciled.launch.output);
+
+        now.set(0);
+        TurnSignalController.CameraHelperResolution failed =
+                TurnSignalController.resolveCameraHelperFlow(
+                        null,
+                        value -> false,
+                        () -> null,
+                        () -> LocalAdbClient.Result.failed(
+                                "socket_timeout", "launch-output", 1, "unavailable"),
+                        now::get,
+                        millis -> now.addAndGet((int) millis),
+                        3_000);
+        assertEquals(null, failed.binder);
+        assertEquals(3_000, now.get());
+        assertEquals("camera_shell_launch_failed: socket_timeout: launch-output",
+                TurnSignalController.cameraHelperFailureMessage(failed.launch));
+
+        now.set(0);
+        TurnSignalController.CameraHelperResolution timedOut =
+                TurnSignalController.resolveCameraHelperFlow(
+                        null,
+                        value -> false,
+                        () -> null,
+                        () -> LocalAdbClient.Result.ok("", 0, "", false),
+                        now::get,
+                        millis -> now.addAndGet((int) millis),
+                        3_000);
+        assertEquals(null, timedOut.binder);
+        assertEquals(3_000, now.get());
+        assertEquals("camera_shell_binder_timeout",
+                TurnSignalController.cameraHelperFailureMessage(timedOut.launch));
     }
 
     @Test

@@ -7,6 +7,13 @@ import org.junit.Test;
 
 public final class DirectCameraSourceHubStatsTest {
     @Test
+    public void pausedTargetSkipsOnlyMatchingSurfaceAndLeavesOtherSameIndexActive() {
+        assertEquals(true, DirectCameraSourceHub.shouldRenderTarget(2, 2, true));
+        assertEquals(false, DirectCameraSourceHub.shouldRenderTarget(2, 2, false));
+        assertEquals(false, DirectCameraSourceHub.shouldRenderTarget(2, 3, true));
+    }
+
+    @Test
     public void reportsAndResetsFiveSecondPerSourceWindow() {
         DirectCameraSourceHub.StatsWindow first = new DirectCameraSourceHub.StatsWindow();
         DirectCameraSourceHub.StatsWindow second = new DirectCameraSourceHub.StatsWindow();

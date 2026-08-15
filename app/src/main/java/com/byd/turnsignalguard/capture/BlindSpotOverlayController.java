@@ -78,6 +78,10 @@ final class BlindSpotOverlayController {
     static final int PREPARATION_WAIT = 0;
     static final int PREPARATION_OPEN = 1;
     static final int PREPARATION_RETRY = 2;
+    static final int VISIBILITY_COMPLETION_STALE = 0;
+    static final int VISIBILITY_COMPLETION_FAILED = 1;
+    static final int VISIBILITY_COMPLETION_APPLY = 2;
+    static final int VISIBILITY_COMPLETION_PAUSE = 3;
 
     private final Context context;
     private final Handler handler;
@@ -613,6 +617,7 @@ final class BlindSpotOverlayController {
         for (int i = 0; i < ready.size(); i++) {
             PaneState pane = ready.get(i);
             surfaces[i] = pane.pendingSurface;
+            pane.surface = pane.pendingSurface;
             pane.pendingSurface = null;
             indexes[i] = pane.profile.previewIndex;
             cameraIds[i] = pane.profile.id;
@@ -626,7 +631,11 @@ final class BlindSpotOverlayController {
                     "preview_indexes", java.util.Arrays.toString(indexes),
                     "request_id", cameraOpenRequestId);
         } catch (Throwable error) {
-            for (Surface surface : surfaces) releaseSurface(surface);
+            for (int i = 0; i < surfaces.length; i++) {
+                releaseSurface(surfaces[i]);
+                PaneState pane = pane(cameraIds[i]);
+                if (pane != null && pane.surface == surfaces[i]) pane.surface = null;
+            }
             cameraUnavailable("open_direct_camera");
         }
     }
@@ -639,6 +648,9 @@ final class BlindSpotOverlayController {
         cancelCameraRetry("camera_opened");
         for (PaneState pane : panes) {
             if (!pane.expected || pane.failed || pane.generation <= 0) continue;
+            pane.targetActive = true;
+            pane.requestedVisible = false;
+            pane.activationPending = true;
             int frameArmEpoch = pane.freshness.arm();
             OverlayFrameArm arm = OverlayFrameArm.create(
                     pane.profile.id, pane.requestId, pane.generation, frameArmEpoch);
@@ -668,6 +680,7 @@ final class BlindSpotOverlayController {
                 "surface_generation", arm.surfaceGeneration,
                 "frame_arm_epoch", arm.frameArmEpoch,
                 "readiness", "first_frame");
+        pane.activationPending = false;
         evaluate();
     }
 
@@ -704,6 +717,12 @@ final class BlindSpotOverlayController {
     }
 
     private void cameraUnavailable(String reason) {
+        for (PaneState pane : panes) {
+            pane.visibilityToken++;
+            pane.visibilityPending = false;
+            pane.activationPending = false;
+            pane.requestedVisible = false;
+        }
         hideAll(reason);
         if (helper != null) helper.closeOverlayCamera(reason, cameraOpenRequestId);
         cameraOpenPending = false;
@@ -712,6 +731,7 @@ final class BlindSpotOverlayController {
         for (PaneState pane : panes) {
             pane.freshness.invalidate();
             pane.visible = false;
+            pane.targetActive = false;
         }
         scheduleCameraRetry(reason);
     }
@@ -781,24 +801,113 @@ final class BlindSpotOverlayController {
                 leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
         if (isHardBlocked()) desired = 0;
         for (PaneState pane : panes) {
-            boolean show = (desired & pane.profile.bit()) != 0
-                    && pane.expected && pane.freshness.ready() && !pane.failed;
-            setVisible(pane, show, show ? "trigger_active" : "trigger_inactive");
+            boolean requested = (desired & pane.profile.bit()) != 0
+                    && pane.expected && !pane.failed;
+            setVisible(pane, requested,
+                    requested ? "trigger_active" : "trigger_inactive");
         }
         applyWarnings();
     }
 
     private void setVisible(PaneState pane, boolean visible, String reason) {
-        if (pane.visible == visible) return;
-        pane.visible = visible;
-        if (helper != null && pane.requestId > 0 && pane.generation > 0) {
-            helper.setOverlayWindowVisible(pane.profile.id,
-                    pane.requestId, pane.generation, visible);
+        if (pane.requestedVisible == visible && pane.visibilityPending) return;
+        pane.requestedVisible = visible;
+        if (visible) {
+            if (!cameraSessionOpen) return;
+            if (pane.visible || pane.activationPending) return;
+            if (!pane.targetActive) {
+                try {
+                    if (helper == null || pane.surface == null) return;
+                    helper.setOverlayTargetActive(pane.surface, true);
+                    pane.targetActive = true;
+                    emit("overlay_target_state", "camera_id", pane.profile.id,
+                            "camera_profile", pane.profile.wireName, "active", true);
+                } catch (Throwable error) {
+                    cameraUnavailable("overlay_target_resume_" + pane.profile.wireName);
+                    return;
+                }
+            }
+            if (needsFreshFrameArm(
+                    pane.requestedVisible, pane.targetActive,
+                    pane.freshness.ready(), pane.activationPending)) {
+                int frameArmEpoch = pane.freshness.arm();
+                pane.activationPending = true;
+                OverlayFrameArm arm = OverlayFrameArm.create(
+                        pane.profile.id, pane.requestId, pane.generation, frameArmEpoch);
+                helper.armOverlayFirstFrame(arm);
+                handler.postDelayed(() -> firstFrameTimedOut(arm), FIRST_FRAME_TIMEOUT_MS);
+                return;
+            }
+            requestVisibility(pane, true, reason);
+            return;
         }
+
+        pane.activationPending = false;
+        pane.freshness.invalidate();
+        if (!pane.targetActive && !pane.visible) return;
+        requestVisibility(pane, false, reason);
+    }
+
+    static boolean needsFreshFrameArm(
+            boolean requestedVisible, boolean targetActive,
+            boolean frameReady, boolean activationPending) {
+        return requestedVisible && (!targetActive || !frameReady) && !activationPending;
+    }
+
+    static int visibilityCompletionAction(
+            long currentToken, long callbackToken, boolean success,
+            boolean completedVisible, boolean requestedVisible, boolean targetActive) {
+        if (currentToken != callbackToken) return VISIBILITY_COMPLETION_STALE;
+        if (!success) return VISIBILITY_COMPLETION_FAILED;
+        if (!completedVisible && !requestedVisible && targetActive) {
+            return VISIBILITY_COMPLETION_PAUSE;
+        }
+        return VISIBILITY_COMPLETION_APPLY;
+    }
+
+    private void requestVisibility(PaneState pane, boolean visible, String reason) {
+        if (helper == null || pane.requestId <= 0 || pane.generation <= 0) return;
+        long token = ++pane.visibilityToken;
+        pane.visibilityPending = true;
+        helper.setOverlayWindowVisible(pane.profile.id,
+                pane.requestId, pane.generation, visible,
+                success -> visibilityCompleted(
+                        pane, token, visible, reason, success));
+    }
+
+    private void visibilityCompleted(
+            PaneState pane, long token, boolean visible, String reason, boolean success) {
+        int action = visibilityCompletionAction(
+                pane.visibilityToken, token, success, visible,
+                pane.requestedVisible, pane.targetActive);
+        if (action == VISIBILITY_COMPLETION_STALE) return;
+        pane.visibilityPending = false;
+        if (!cameraSessionOpen) {
+            pane.targetActive = false;
+            return;
+        }
+        if (action == VISIBILITY_COMPLETION_FAILED) {
+            cameraUnavailable("overlay_visibility_"
+                    + (visible ? "show_" : "hide_") + pane.profile.wireName);
+            return;
+        }
+        pane.visible = visible;
         emit("overlay_visibility", "camera_id", pane.profile.id,
                 "camera_profile", pane.profile.wireName,
                 "visible", visible, "reason", reason,
                 "speed_kph", Float.isFinite(speedKph) ? speedKph : "unknown");
+        if (action == VISIBILITY_COMPLETION_PAUSE) {
+            try {
+                helper.setOverlayTargetActive(pane.surface, false);
+                pane.targetActive = false;
+                emit("overlay_target_state", "camera_id", pane.profile.id,
+                        "camera_profile", pane.profile.wireName, "active", false);
+            } catch (Throwable error) {
+                cameraUnavailable("overlay_target_pause_" + pane.profile.wireName);
+                return;
+            }
+        }
+        evaluate();
     }
 
     private void hideAll(String reason) {
@@ -1105,12 +1214,18 @@ final class BlindSpotOverlayController {
         boolean resolved;
         boolean failed;
         boolean visible;
+        boolean requestedVisible;
+        boolean targetActive;
+        boolean activationPending;
+        boolean visibilityPending;
+        long visibilityToken;
         int requestId;
         int generation;
         int target = -1;
         int warningEdge = CameraShellProtocol.WARNING_EDGE_NONE;
         int warningMode = CameraShellProtocol.WARNING_MODE_OFF;
         Surface pendingSurface;
+        Surface surface;
 
         PaneState(CameraProfile profile) {
             this.profile = profile;
@@ -1119,11 +1234,17 @@ final class BlindSpotOverlayController {
         void reset() {
             releaseSurface(pendingSurface);
             pendingSurface = null;
+            surface = null;
             expected = false;
             resolved = false;
             failed = false;
             freshness.invalidate();
             visible = false;
+            requestedVisible = false;
+            targetActive = false;
+            activationPending = false;
+            visibilityPending = false;
+            visibilityToken++;
             requestId = 0;
             generation = 0;
             target = -1;

@@ -9,6 +9,32 @@ import static org.junit.Assert.assertTrue;
 
 public final class OverlayFreshnessTest {
     @Test
+    public void visibilityCompletionOrdersHidePauseAndRejectsStaleOrFailedCallbacks() {
+        assertEquals(BlindSpotOverlayController.VISIBILITY_COMPLETION_PAUSE,
+                BlindSpotOverlayController.visibilityCompletionAction(
+                        4L, 4L, true, false, false, true));
+        assertEquals(BlindSpotOverlayController.VISIBILITY_COMPLETION_STALE,
+                BlindSpotOverlayController.visibilityCompletionAction(
+                        5L, 4L, true, false, false, true));
+        assertEquals(BlindSpotOverlayController.VISIBILITY_COMPLETION_FAILED,
+                BlindSpotOverlayController.visibilityCompletionAction(
+                        4L, 4L, false, false, false, true));
+        assertEquals(BlindSpotOverlayController.VISIBILITY_COMPLETION_APPLY,
+                BlindSpotOverlayController.visibilityCompletionAction(
+                        4L, 4L, true, true, true, true));
+    }
+
+    @Test
+    public void pausedRequestedOverlayMustResumeAndArmFreshFrames() {
+        assertTrue(BlindSpotOverlayController.needsFreshFrameArm(
+                true, false, false, false));
+        assertFalse(BlindSpotOverlayController.needsFreshFrameArm(
+                true, false, false, true));
+        assertFalse(BlindSpotOverlayController.needsFreshFrameArm(
+                true, true, true, false));
+    }
+
+    @Test
     public void rearmRejectsOldDeadlineAndDelayedFrame() {
         BlindSpotOverlayController.FrameFreshness freshness =
                 new BlindSpotOverlayController.FrameFreshness();
