@@ -99,7 +99,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(79, BuildConfig.VERSION_CODE);
+        assertEquals(80, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -596,6 +596,144 @@ public final class AdbCoreTest {
                 "camera_error", "stock_avm_shell"));
         assertFalse(CameraProbeActivity.shouldRearmStockSurfaceRecovery(
                 "camera_opened", "direct_blind_spot"));
+    }
+
+    @Test
+    public void telemetryGapCleanupPreservesBothDirectionLatches() {
+        assertTrue(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "telemetry_gap_or_invalid", 2));
+        assertTrue(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "telemetry_gap_or_invalid", 3));
+        assertFalse(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "telemetry_gap_or_invalid", -1));
+        assertFalse(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "telemetry_gap_or_invalid", 0));
+        assertFalse(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "telemetry_gap_or_invalid", 1));
+        assertFalse(TurnSignalGuardRuntime.shouldQueueTelemetryRecoveryCleanup(
+                "hazard_blink", 2));
+    }
+
+    @Test
+    public void telemetryGapCleanupWritesFixedNeutralOnceForLeftAndRight() {
+        for (int direction : new int[]{2, 3}) {
+            TurnSignalGuardRuntime.TelemetryRecoveryCleanup cleanup =
+                    new TurnSignalGuardRuntime.TelemetryRecoveryCleanup();
+            int[] write = {0, -1, -1};
+            assertTrue(cleanup.queue("telemetry_gap_or_invalid", direction));
+
+            assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.COMPLETED,
+                    cleanup.evaluate(
+                            true, true, direction, 1, 1,
+                            false, false, false, true,
+                            (featureId, payload) -> {
+                                write[0] += 1;
+                                write[1] = featureId;
+                                write[2] = payload;
+                                return true;
+                            }));
+            assertEquals(1, write[0]);
+            assertEquals(871366669, write[1]);
+            assertEquals(0, write[2]);
+
+            assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                    cleanup.evaluate(
+                            true, true, direction, 1, 1,
+                            false, false, false, true,
+                            (featureId, payload) -> {
+                                write[0] += 1;
+                                return true;
+                            }));
+            assertEquals(1, write[0]);
+        }
+    }
+
+    @Test
+    public void telemetryGapCleanupKeepsPendingUntilSafeIdleAndDoesNotRetryFailure() {
+        TurnSignalGuardRuntime.TelemetryRecoveryCleanup cleanup =
+                new TurnSignalGuardRuntime.TelemetryRecoveryCleanup();
+        int[] writes = {0};
+        java.util.function.BiPredicate<Integer, Integer> writer = (featureId, payload) -> {
+            writes[0] += 1;
+            return false;
+        };
+        assertTrue(cleanup.queue("telemetry_gap_or_invalid", 2));
+
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, false, 2, 1, 1,
+                        false, false, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 6, 1,
+                        false, false, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 7, 1,
+                        false, false, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 2,
+                        false, false, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        true, false, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        false, true, false, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        false, false, true, true, writer));
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        false, false, false, false, writer));
+        assertEquals(0, writes[0]);
+
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.FAILED,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        false, false, false, true, writer));
+        assertEquals(1, writes[0]);
+        assertEquals(TurnSignalGuardRuntime.TelemetryRecoveryCleanup.WAIT,
+                cleanup.evaluate(true, true, 2, 1, 1,
+                        false, false, false, true, writer));
+        assertEquals(1, writes[0]);
+    }
+
+    @Test
+    public void telemetryGapCleanupWaitsForHealthyNeutralOffIdleState() {
+        assertTrue(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 1,
+                false, false, false, true));
+        assertTrue(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 3, 1, 1,
+                false, false, false, true));
+
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                false, true, true, 2, 1, 1,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, false, true, 2, 1, 1,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, false, 2, 1, 1,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 0, 1, 1,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 2, 1,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 2,
+                false, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 1,
+                true, false, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 1,
+                false, true, false, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 1,
+                false, false, true, true));
+        assertFalse(TurnSignalGuardRuntime.canRunTelemetryRecoveryCleanup(
+                true, true, true, 2, 1, 1,
+                false, false, false, false));
     }
 
     @Test

@@ -12,6 +12,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.function.BiConsumer;
+import java.util.function.BiPredicate;
 import java.util.function.LongPredicate;
 
 final class TurnSignalGuardRuntime {
@@ -86,6 +87,8 @@ final class TurnSignalGuardRuntime {
     private boolean hazardCleanupPending;
     private boolean guardDisableResetPending;
     private boolean speedLimitCleanupPending;
+    private final TelemetryRecoveryCleanup telemetryRecoveryCleanup =
+            new TelemetryRecoveryCleanup();
     private int speedDeferredDirection;
     private boolean speedDeferredBlinkSeen;
     private long speedDeferredAt;
@@ -196,6 +199,7 @@ final class TurnSignalGuardRuntime {
         hazardCleanupPending = false;
         guardDisableResetPending = false;
         speedLimitCleanupPending = false;
+        telemetryRecoveryCleanup.clear();
         clearSpeedDeferredSession();
         handler.removeCallbacks(pollRunnable);
         resetSession();
@@ -329,6 +333,7 @@ final class TurnSignalGuardRuntime {
                 || !validMaxSpeed(maxSpeed)) {
             requestedEnabled = false;
             hazardCleanupPending = false;
+            telemetryRecoveryCleanup.clear();
             clearSpeedDeferredSession();
             resetSession();
             emit("guard_config", "requested", enabled, "active", false,
@@ -349,6 +354,7 @@ final class TurnSignalGuardRuntime {
         requestedEnabled = enabled;
         if (!enabled) {
             hazardCleanupPending = false;
+            telemetryRecoveryCleanup.clear();
             startupCleanupArmedGeneration = 0;
             startupCleanupFreshGeneration = 0;
         }
@@ -391,6 +397,7 @@ final class TurnSignalGuardRuntime {
         clearSpeedDeferredSession();
         hazardCleanupPending = false;
         speedLimitCleanupPending = false;
+        telemetryRecoveryCleanup.clear();
         startupCleanupArmedGeneration = generation;
         startupCleanupFreshGeneration = 0;
         startupCleanupPersistFailedGeneration = 0;
@@ -495,6 +502,7 @@ final class TurnSignalGuardRuntime {
         evaluateGuardDisableReset();
         evaluateHazardCleanup();
         evaluateSpeedLimitCleanup();
+        evaluateTelemetryRecoveryCleanup();
         evaluateNeutralization();
         evaluateCorrection(now);
         if (recovered && telemetryReady()) {
@@ -608,6 +616,45 @@ final class TurnSignalGuardRuntime {
             emit("speed_limit_latch_cleanup_failed",
                     "assumed_latch_state", assumedLatchState,
                     "speed_kph", latestSpeedKph, "max_speed_kph", maxSpeedKph);
+        }
+    }
+
+    private void evaluateTelemetryRecoveryCleanup() {
+        boolean controlIdle = !sessionActive
+                && speedDeferredDirection == 0
+                && pendingNeutralizeReason == null
+                && !hazardCleanupPending
+                && !guardDisableResetPending
+                && !speedLimitCleanupPending
+                && (startupCleanupArmedGeneration == 0
+                        || startupCleanupArmedGeneration != awakeSessionGeneration);
+        int previous = assumedLatchState;
+        int result = telemetryRecoveryCleanup.evaluate(
+                requestedEnabled,
+                telemetryReady(),
+                assumedLatchState,
+                latestBlink,
+                latestStalk,
+                writeInFlight,
+                manualCommandPending,
+                confirmationPending,
+                controlIdle,
+                (featureId, payload) -> featureId == TURN_SIGNAL_SET_FID
+                        && payload == 0
+                        && neutralizeControlLatch("telemetry_recovered_off_cleanup", true));
+        if (result == TelemetryRecoveryCleanup.SKIPPED) {
+            emit("telemetry_recovery_latch_cleanup_skipped", "reason", "already_neutral",
+                    "assumed_latch_state", assumedLatchState);
+        } else if (result == TelemetryRecoveryCleanup.COMPLETED) {
+            emit("telemetry_recovery_latch_cleanup_completed",
+                    "previous_assumed_latch_state", previous,
+                    "assumed_latch_state", assumedLatchState,
+                    "blink", latestBlink, "stalk", latestStalk);
+        } else if (result == TelemetryRecoveryCleanup.FAILED) {
+            emit("telemetry_recovery_latch_cleanup_failed",
+                    "previous_assumed_latch_state", previous,
+                    "assumed_latch_state", assumedLatchState,
+                    "blink", latestBlink, "stalk", latestStalk);
         }
     }
 
@@ -1137,11 +1184,19 @@ final class TurnSignalGuardRuntime {
     }
 
     private void suppress(String reason) {
+        boolean queueTelemetryRecoveryCleanup =
+                telemetryRecoveryCleanup.queue(reason, assumedLatchState);
         emit("guard_suppressed", "reason", reason,
                 "direction", directionName(sessionDirection),
                 "steering_deg", Float.isFinite(latestAngle) ? latestAngle : "unknown",
                 "blink", latestBlink, "corrections", corrections);
         resetSession();
+        if (queueTelemetryRecoveryCleanup) {
+            emit("telemetry_recovery_latch_cleanup_pending",
+                    "previous_reason", reason,
+                    "assumed_latch_state", assumedLatchState,
+                    "requested_payload", 0);
+        }
     }
 
     private void finishSessionForOff(String reason) {
@@ -1274,6 +1329,74 @@ final class TurnSignalGuardRuntime {
     static boolean canRunSpeedLimitCleanup(
             boolean pending, boolean enabled, boolean telemetryReady, int blink, int stalk) {
         return pending && enabled && telemetryReady && blink == BLINK_OFF && stalk == 1;
+    }
+
+    static boolean shouldQueueTelemetryRecoveryCleanup(String reason, int assumedPayload) {
+        return "telemetry_gap_or_invalid".equals(reason)
+                && isDirectionLatch(assumedPayload);
+    }
+
+    static boolean canRunTelemetryRecoveryCleanup(
+            boolean pending,
+            boolean enabled,
+            boolean telemetryReady,
+            int assumedPayload,
+            int blink,
+            int stalk,
+            boolean writeInFlight,
+            boolean manualCommandPending,
+            boolean confirmationPending,
+            boolean controlIdle) {
+        return isDirectionLatch(assumedPayload)
+                && canRunSpeedLimitCleanup(pending, enabled, telemetryReady, blink, stalk)
+                && !writeInFlight
+                && !manualCommandPending
+                && !confirmationPending
+                && controlIdle;
+    }
+
+    static final class TelemetryRecoveryCleanup {
+        static final int WAIT = 0;
+        static final int SKIPPED = 1;
+        static final int COMPLETED = 2;
+        static final int FAILED = 3;
+
+        private boolean pending;
+
+        boolean queue(String reason, int assumedPayload) {
+            boolean queued = shouldQueueTelemetryRecoveryCleanup(reason, assumedPayload);
+            if (queued) pending = true;
+            return queued;
+        }
+
+        int evaluate(
+                boolean enabled,
+                boolean telemetryReady,
+                int assumedPayload,
+                int blink,
+                int stalk,
+                boolean writeInFlight,
+                boolean manualCommandPending,
+                boolean confirmationPending,
+                boolean controlIdle,
+                BiPredicate<Integer, Integer> writer) {
+            if (!pending) return WAIT;
+            if (!isDirectionLatch(assumedPayload)) {
+                pending = false;
+                return SKIPPED;
+            }
+            if (!canRunTelemetryRecoveryCleanup(
+                    true, enabled, telemetryReady, assumedPayload, blink, stalk,
+                    writeInFlight, manualCommandPending, confirmationPending, controlIdle)) {
+                return WAIT;
+            }
+            pending = false;
+            return writer.test(TURN_SIGNAL_SET_FID, 0) ? COMPLETED : FAILED;
+        }
+
+        void clear() {
+            pending = false;
+        }
     }
 
     static boolean canResumeSpeedDeferredSession(
