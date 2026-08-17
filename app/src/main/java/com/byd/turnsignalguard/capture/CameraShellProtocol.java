@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 19;
+    static final int VERSION = 20;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -83,6 +83,7 @@ final class CameraShellProtocol {
         final int rotationDegrees;
         final int rotationMode;
         final int cornerRadiusDp;
+        final int bufferQuality;
         final CameraDewarpConfig dewarp;
         final DirectCameraCrop rawFallbackCrop;
 
@@ -146,6 +147,18 @@ final class CameraShellProtocol {
                 int cropAspectMode, int rotationDegrees, int rotationMode,
                 int cornerRadiusDp, CameraDewarpConfig dewarp,
                 DirectCameraCrop rawFallbackCrop) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
+                    rawFallbackCrop, CameraBufferQuality.DEFAULT);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int rotationMode,
+                int cornerRadiusDp, CameraDewarpConfig dewarp,
+                DirectCameraCrop rawFallbackCrop, int bufferQuality) {
             this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
@@ -161,6 +174,7 @@ final class CameraShellProtocol {
             this.rotationDegrees = rotationDegrees;
             this.rotationMode = rotationMode;
             this.cornerRadiusDp = cornerRadiusDp;
+            this.bufferQuality = bufferQuality;
             this.dewarp = dewarp == null
                     ? CameraDewarpConfig.disabled(
                             CameraDewarpConfig.lensFor(CameraProfile.of(cameraId)))
@@ -189,6 +203,7 @@ final class CameraShellProtocol {
             parcel.writeInt(cornerRadiusDp);
             writeDewarp(parcel, dewarp);
             writeCrop(parcel, rawFallbackCrop);
+            parcel.writeInt(bufferQuality);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
@@ -212,7 +227,7 @@ final class CameraShellProtocol {
                     cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
-                    readCrop(parcel));
+                    readCrop(parcel), parcel.readInt());
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -240,6 +255,9 @@ final class CameraShellProtocol {
             }
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid corner radius");
+            }
+            if (!CameraBufferQuality.isValid(bufferQuality)) {
+                throw new IllegalArgumentException("invalid camera buffer quality");
             }
             if (dewarp.lens != CameraDewarpConfig.lensFor(profile)) {
                 throw new IllegalArgumentException("dewarp lens does not match camera");
@@ -274,6 +292,7 @@ final class CameraShellProtocol {
         final ReverseCameraLayout layout;
         final ReverseCameraLayout rawFallbackLayout;
         final int cornerRadiusDp;
+        final int bufferQuality;
         final CameraDewarpConfig rearDewarp;
         final CameraDewarpConfig leftDewarp;
         final CameraDewarpConfig rightDewarp;
@@ -307,6 +326,18 @@ final class CameraShellProtocol {
                 CameraDewarpConfig rearDewarp,
                 CameraDewarpConfig leftDewarp,
                 CameraDewarpConfig rightDewarp) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp,
+                    CameraBufferQuality.DEFAULT);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp,
+                int bufferQuality) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
@@ -315,6 +346,7 @@ final class CameraShellProtocol {
             this.layout = layout;
             this.rawFallbackLayout = rawFallbackLayout;
             this.cornerRadiusDp = cornerRadiusDp;
+            this.bufferQuality = bufferQuality;
             this.rearDewarp = rearDewarp == null
                     ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR) : rearDewarp;
             this.leftDewarp = leftDewarp == null
@@ -341,6 +373,7 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.displayMode);
                 parcel.writeInt(pane.zOrder);
             }
+            parcel.writeInt(bufferQuality);
         }
 
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
@@ -416,7 +449,7 @@ final class CameraShellProtocol {
                         rawCrops[i], pane.rotationDegrees);
             }
             return new ReverseOverlaySpec(requestId, layout, rawFallbackLayout, cornerRadiusDp,
-                    rearDewarp, leftDewarp, rightDewarp);
+                    rearDewarp, leftDewarp, rightDewarp, parcel.readInt());
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -427,6 +460,9 @@ final class CameraShellProtocol {
             validateModelRect(layout.background, ReverseCameraLayout.MIN_DESTINATION_SIZE);
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid reverse corner radius");
+            }
+            if (!CameraBufferQuality.isValid(bufferQuality)) {
+                throw new IllegalArgumentException("invalid camera buffer quality");
             }
             if (rearDewarp.lens != CameraDewarpConfig.LENS_REAR
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT

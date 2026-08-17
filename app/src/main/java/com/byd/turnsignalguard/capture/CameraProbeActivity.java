@@ -1589,6 +1589,18 @@ public final class CameraProbeActivity extends Activity
         CameraHelperService.cameraSettingsChanged(this);
     }
 
+    void onCameraBufferQualityChanged(int value) {
+        record("camera_buffer_quality", "quality", CameraBufferQuality.label(value));
+        notifyCameraQualityControllers(
+                () -> CameraHelperService.cameraSettingsChanged(this),
+                () -> CameraHelperService.reverseCameraSettingsChanged(this));
+    }
+
+    static void notifyCameraQualityControllers(Runnable overlay, Runnable reverse) {
+        overlay.run();
+        reverse.run();
+    }
+
     void onMusicEnabledChanged(boolean checked) {
         record("music_toggle", "enabled", checked);
         CameraHelperService.musicSettingsChanged(this);

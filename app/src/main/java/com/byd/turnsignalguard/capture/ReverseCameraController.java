@@ -217,7 +217,8 @@ final class ReverseCameraController {
                 CameraDewarpConfig.loadForReverse(
                         settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
                 CameraDewarpConfig.loadForReverse(
-                        settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+                        settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+                CameraBufferQuality.load(settings));
     }
 
     private void overlayPrepared(int requestId) {

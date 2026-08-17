@@ -13,6 +13,7 @@ public final class CameraRuntimeDewarpScopeTest {
         settings.putBoolean("camera_dewarp_v2_left_enabled", false);
         settings.putBoolean("camera_dewarp_v2_right_enabled", true);
         settings.putBoolean("camera_dewarp_v2_rear_enabled", false);
+        settings.putInt(CameraBufferQuality.PREF_QUALITY, CameraBufferQuality.QUALITY);
 
         saveProfile(settings, CameraProfile.REAR_LEFT, true,
                 CameraDewarpConfig.LENS_LEFT, 133,
@@ -62,6 +63,11 @@ public final class CameraRuntimeDewarpScopeTest {
                 CameraDewarpConfig.PROJECTION_RECTILINEAR);
         assertDewarp(reverse.rearDewarp, true, CameraDewarpConfig.LENS_REAR, 158,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertEquals(CameraBufferQuality.QUALITY, rearLeft.bufferQuality);
+        assertEquals(CameraBufferQuality.QUALITY, frontLeft.bufferQuality);
+        assertEquals(CameraBufferQuality.QUALITY, rearRight.bufferQuality);
+        assertEquals(CameraBufferQuality.QUALITY, frontRight.bufferQuality);
+        assertEquals(CameraBufferQuality.QUALITY, reverse.bufferQuality);
 
         assertFalse(settings.getBoolean("camera_dewarp_v2_left_enabled", true));
         assertTrue(settings.getBoolean("camera_dewarp_v2_right_enabled", false));

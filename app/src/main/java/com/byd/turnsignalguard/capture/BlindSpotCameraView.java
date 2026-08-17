@@ -96,18 +96,18 @@ final class BlindSpotCameraView extends TextureView
         return cameraSurface != null && cameraSurface.isValid();
     }
 
-    void setPaneBoundedBuffer(int paneWidth, int paneHeight) {
+    void setPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
         if (cameraSurface != null) {
             throw new IllegalStateException("camera buffer must be sized before attach");
         }
-        int[] size = paneBoundedBufferSize(paneWidth, paneHeight);
+        int[] size = paneBoundedBufferSize(paneWidth, paneHeight, quality);
         bufferWidth = size[0];
         bufferHeight = size[1];
         configureBuffer();
     }
 
-    boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight) {
-        int[] size = paneBoundedBufferSize(paneWidth, paneHeight);
+    boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
+        int[] size = paneBoundedBufferSize(paneWidth, paneHeight, quality);
         return bufferWidth == size[0] && bufferHeight == size[1];
     }
 
@@ -120,11 +120,22 @@ final class BlindSpotCameraView extends TextureView
     }
 
     static int[] paneBoundedBufferSize(int paneWidth, int paneHeight) {
+        return paneBoundedBufferSize(
+                paneWidth, paneHeight, CameraBufferQuality.PERFORMANCE);
+    }
+
+    static int[] paneBoundedBufferSize(int paneWidth, int paneHeight, int quality) {
+        int scalePercent = CameraBufferQuality.scalePercent(quality);
+        if (quality == CameraBufferQuality.ORIGINAL) {
+            return new int[]{BUFFER_WIDTH, BUFFER_HEIGHT};
+        }
         if (paneWidth <= 1 || paneHeight <= 1) {
             return new int[]{BUFFER_WIDTH, BUFFER_HEIGHT};
         }
-        int width = Math.min(BUFFER_WIDTH, paneWidth);
-        int height = Math.min(BUFFER_HEIGHT, paneHeight);
+        int width = (int) Math.min(BUFFER_WIDTH,
+                Math.max(1L, Math.round(paneWidth * scalePercent / 100.0)));
+        int height = (int) Math.min(BUFFER_HEIGHT,
+                Math.max(1L, Math.round(paneHeight * scalePercent / 100.0)));
         if ((long) width * BUFFER_HEIGHT <= (long) height * BUFFER_WIDTH) {
             height = Math.min(height, Math.max(1,
                     Math.round(width * (float) BUFFER_HEIGHT / BUFFER_WIDTH)));

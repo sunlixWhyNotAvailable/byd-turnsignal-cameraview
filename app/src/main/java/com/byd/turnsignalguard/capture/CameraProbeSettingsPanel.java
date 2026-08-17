@@ -6,6 +6,8 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -91,6 +93,40 @@ final class CameraProbeSettingsPanel {
         root.addView(adbRetryButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(50)));
 
+        TextView qualityTitle = activity.label("Якість зображення камер");
+        qualityTitle.setPadding(0, activity.dp(18), 0, activity.dp(4));
+        root.addView(qualityTitle);
+        RadioGroup qualityGroup = new RadioGroup(activity);
+        qualityGroup.setOrientation(LinearLayout.HORIZONTAL);
+        String[] qualityLabels = {"Швидкодія", "Баланс", "Якість", "Оригінал"};
+        int[] qualityValues = {
+                CameraBufferQuality.PERFORMANCE,
+                CameraBufferQuality.BALANCED,
+                CameraBufferQuality.QUALITY,
+                CameraBufferQuality.ORIGINAL
+        };
+        int selectedQuality = CameraBufferQuality.load(preferences);
+        for (int i = 0; i < qualityValues.length; i++) {
+            RadioButton option = new RadioButton(activity);
+            option.setId(View.generateViewId());
+            option.setText(qualityLabels[i]);
+            option.setTextColor(Color.WHITE);
+            option.setTextSize(16);
+            option.setTag(qualityValues[i]);
+            qualityGroup.addView(option, new RadioGroup.LayoutParams(
+                    0, activity.dp(54), 1));
+            if (qualityValues[i] == selectedQuality) qualityGroup.check(option.getId());
+        }
+        root.addView(qualityGroup, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(54)));
+        qualityGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            View selected = group.findViewById(checkedId);
+            if (selected == null || !(selected.getTag() instanceof Integer)) return;
+            int value = (Integer) selected.getTag();
+            applyQualitySelection(preferences, value,
+                    () -> activity.onCameraBufferQualityChanged(value));
+        });
+
         TextView radiusTitle = activity.label("Заокруглення камер");
         radiusTitle.setPadding(0, activity.dp(18), 0, activity.dp(4));
         root.addView(radiusTitle);
@@ -163,6 +199,17 @@ final class CameraProbeSettingsPanel {
 
     View view() {
         return root;
+    }
+
+    static boolean applyQualitySelection(
+            SharedPreferences preferences, int value, Runnable changed) {
+        if (!CameraBufferQuality.isValid(value)) {
+            throw new IllegalArgumentException("invalid camera buffer quality");
+        }
+        if (CameraBufferQuality.load(preferences) == value) return false;
+        preferences.edit().putInt(CameraBufferQuality.PREF_QUALITY, value).apply();
+        changed.run();
+        return true;
     }
 
     void setServiceStatus(String text) {

@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -198,5 +199,17 @@ public final class ActivityCameraLifecycleTest {
         assertFalse(settings.getBoolean("camera_dewarp_v2_left_enabled", true));
         assertFalse(CameraDewarpConfig.loadForReverse(settings,
                 ReverseCameraLayout.REAR_CAMERA_INDEX).enabled);
+    }
+
+    @Test
+    public void qualitySelectionNotifiesOverlayAndReverseControllers() {
+        AtomicInteger overlay = new AtomicInteger();
+        AtomicInteger reverse = new AtomicInteger();
+
+        CameraProbeActivity.notifyCameraQualityControllers(
+                overlay::incrementAndGet, reverse::incrementAndGet);
+
+        assertEquals(1, overlay.get());
+        assertEquals(1, reverse.get());
     }
 }

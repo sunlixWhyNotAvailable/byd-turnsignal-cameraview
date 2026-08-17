@@ -17,7 +17,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 0.22f, 0.19f, 0.54f, 0.58f, DirectCameraCrop.ASPECT_FREE,
                 12, CameraRotation.MODE_ALIGNED, 9,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 117,
-                        CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw);
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw,
+                CameraBufferQuality.BALANCED);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -36,6 +37,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertCrop(source.crop(), restored.crop());
             assertCrop(raw, restored.rawFallbackCrop);
             assertDewarp(source.dewarp, restored.dewarp);
+            assertEquals(CameraBufferQuality.BALANCED, restored.bufferQuality);
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();
@@ -64,7 +66,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                         CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 103,
                                 CameraDewarpConfig.PROJECTION_RECTILINEAR),
                         CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 119,
-                                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+                                CameraDewarpConfig.PROJECTION_CYLINDRICAL),
+                        CameraBufferQuality.QUALITY);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -78,6 +81,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertDewarp(source.rearDewarp, restored.rearDewarp);
             assertDewarp(source.leftDewarp, restored.leftDewarp);
             assertDewarp(source.rightDewarp, restored.rightDewarp);
+            assertEquals(CameraBufferQuality.QUALITY, restored.bufferQuality);
             for (int index = 1; index <= 3; index++) {
                 assertRect(active.pane(index).sourceCrop,
                         restored.layout.pane(index).sourceCrop);
@@ -107,7 +111,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 0.21f, 0.22f, 0.53f, 0.54f, DirectCameraCrop.ASPECT_SIXTEEN_NINE,
                 19, CameraRotation.MODE_FILL, 13,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 123,
-                        CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw);
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw,
+                CameraBufferQuality.ORIGINAL);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -131,6 +136,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertDewarpWire(parcel, CameraDewarpConfig.LENS_RIGHT, true, 123,
                     CameraDewarpConfig.PROJECTION_CYLINDRICAL);
             assertCropWire(parcel, raw);
+            assertEquals(CameraBufferQuality.ORIGINAL, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();
@@ -159,7 +165,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                         CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 104,
                                 CameraDewarpConfig.PROJECTION_CYLINDRICAL),
                         CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 116,
-                                CameraDewarpConfig.PROJECTION_RECTILINEAR));
+                                CameraDewarpConfig.PROJECTION_RECTILINEAR),
+                        CameraBufferQuality.BALANCED);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -186,6 +193,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 assertEquals((index - 1) % 3, parcel.readInt());
                 assertEquals(pane.zOrder, parcel.readInt());
             }
+            assertEquals(CameraBufferQuality.BALANCED, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();

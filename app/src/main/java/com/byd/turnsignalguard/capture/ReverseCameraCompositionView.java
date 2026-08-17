@@ -162,10 +162,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyModel();
     }
 
-    void setPaneBoundedBuffers(int viewportWidth, int viewportHeight) {
+    void setPaneBoundedBuffers(int viewportWidth, int viewportHeight, int quality) {
         int[][] bounds = paneBounds(model, viewportWidth, viewportHeight);
         for (int i = 0; i < panes.length; i++) {
-            panes[i].texture.setPaneBoundedBuffer(bounds[i][0], bounds[i][1]);
+            panes[i].texture.setPaneBoundedBuffer(
+                    bounds[i][0], bounds[i][1], quality);
         }
         paneBufferViewportWidth = viewportWidth;
         paneBufferViewportHeight = viewportHeight;
@@ -179,11 +180,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     boolean usesPaneBoundedBuffers(
-            ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
+            ReverseCameraLayout layout, int viewportWidth, int viewportHeight, int quality) {
         int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight);
         for (int i = 0; i < panes.length; i++) {
             if (!panes[i].texture.usesPaneBoundedBuffer(
-                    bounds[i][0], bounds[i][1])) return false;
+                    bounds[i][0], bounds[i][1], quality)) return false;
         }
         return true;
     }
