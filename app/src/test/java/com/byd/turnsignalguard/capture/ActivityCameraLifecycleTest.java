@@ -212,4 +212,53 @@ public final class ActivityCameraLifecycleTest {
         assertEquals(1, overlay.get());
         assertEquals(1, reverse.get());
     }
+
+    @Test
+    public void restoredReverseVisibilityBindingCarriesExactMaskWithoutWrites() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, false);
+        ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        Map<String, ?> beforeRestore = new HashMap<>(settings.getAll());
+
+        CameraProbeActivity.ReversePaneUiBinding restored =
+                CameraProbeActivity.restoredReversePaneUiBinding(settings);
+
+        assertEquals(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, restored.cameraIndex);
+        assertFalse(restored.visible);
+        assertEquals(ReverseCameraLayout.VISIBILITY_ALL
+                        & ~ReverseCameraLayout.visibilityBitForPane(
+                                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                        & ~ReverseCameraLayout.visibilityBitForPane(
+                                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+                restored.visibilityMask);
+        assertEquals(beforeRestore, settings.getAll());
+    }
+
+    @Test
+    public void reverseSelectorStrikesOnlyHiddenLabels() {
+        int base = 0x2000;
+        assertEquals(base,
+                CameraProbeActivity.reversePaneButtonPaintFlags(base, true));
+        assertEquals(base | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG,
+                CameraProbeActivity.reversePaneButtonPaintFlags(base, false));
+        assertEquals("Rear left", CameraProbeActivity.reversePaneLabel(
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+    }
+
+    @Test
+    public void reverseVisibilityMapsToAlphaWithoutChangingSurfaceLifecycle() {
+        int mask = ReverseCameraLayout.VISIBILITY_ALL
+                & ~ReverseCameraLayout.visibilityBitForPane(
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        assertEquals(1.0f, ReverseCameraCompositionView.alphaForVisibility(
+                mask, ReverseCameraLayout.BACKGROUND_PANE_ID), 0.0f);
+        assertEquals(0.0f, ReverseCameraCompositionView.alphaForVisibility(
+                mask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX), 0.0f);
+        assertEquals(1.0f, ReverseCameraCompositionView.alphaForVisibility(
+                mask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX), 0.0f);
+    }
 }

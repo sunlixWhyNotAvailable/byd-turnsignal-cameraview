@@ -14,6 +14,14 @@ public final class CameraRuntimeDewarpScopeTest {
         settings.putBoolean("camera_dewarp_v2_right_enabled", true);
         settings.putBoolean("camera_dewarp_v2_rear_enabled", false);
         settings.putInt(CameraBufferQuality.PREF_QUALITY, CameraBufferQuality.QUALITY);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.BACKGROUND_PANE_ID, false);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_CAMERA_INDEX, false);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, true);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, false);
 
         saveProfile(settings, CameraProfile.REAR_LEFT, true,
                 CameraDewarpConfig.LENS_LEFT, 133,
@@ -68,6 +76,7 @@ public final class CameraRuntimeDewarpScopeTest {
         assertEquals(CameraBufferQuality.QUALITY, rearRight.bufferQuality);
         assertEquals(CameraBufferQuality.QUALITY, frontRight.bufferQuality);
         assertEquals(CameraBufferQuality.QUALITY, reverse.bufferQuality);
+        assertEquals(ReverseCameraLayout.VISIBILITY_REAR_LEFT, reverse.visibilityMask);
 
         assertFalse(settings.getBoolean("camera_dewarp_v2_left_enabled", true));
         assertTrue(settings.getBoolean("camera_dewarp_v2_right_enabled", false));

@@ -233,6 +233,7 @@ public final class CameraProbeActivity extends Activity
     private ReverseCameraLayout reverseCameraLayout;
     private ReverseCameraLayout reverseRawCalibrationLayout;
     private Switch reverseCameraSwitch;
+    private Switch reverseVisibilitySwitch;
     private Spinner reverseDisplayModeInput;
     private Button reverseCalibrationButton;
     private View reverseMainEditorPane;
@@ -266,6 +267,7 @@ public final class CameraProbeActivity extends Activity
     private Button reverseLowerButton;
     private Button reverseRaiseButton;
     private boolean reverseDisplayModeUiUpdating;
+    private boolean reverseVisibilityUiUpdating;
     private boolean reverseRotationUiUpdating;
     private int reverseInspectorMode = REVERSE_INSPECTOR_POSITION;
     private View activePreview;
@@ -1658,6 +1660,12 @@ public final class CameraProbeActivity extends Activity
         }
         editorPane.addView(selectors);
 
+        reverseVisibilitySwitch = new Switch(this);
+        reverseVisibilitySwitch.setTextColor(Color.WHITE);
+        reverseVisibilitySwitch.setTextSize(17);
+        editorPane.addView(reverseVisibilitySwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+
         LinearLayout nudgeRow = new LinearLayout(this);
         String[] nudgeNames = {"Вліво", "Вверх", "Вправо", "Вниз"};
         float[] nudgeX = {-0.01f, 0.0f, 0.01f, 0.0f};
@@ -1745,6 +1753,8 @@ public final class CameraProbeActivity extends Activity
         reverseCameraPreview.applyRawFallbackLayout(
                 ReverseCameraController.loadRawLayout(preferences));
         reverseCameraPreview.applyLayout(reverseCameraLayout);
+        reverseCameraPreview.applyVisibility(
+                ReverseCameraController.loadVisibilityMask(preferences));
         previewPane.addView(reverseCanvasHost(reverseCameraPreview),
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -1781,6 +1791,18 @@ public final class CameraProbeActivity extends Activity
             CameraHelperService.reverseCameraSettingsChanged(this);
             record("reverse_camera_toggle", "enabled", checked);
         });
+        reverseVisibilitySwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (reverseVisibilityUiUpdating || reverseCameraEditor == null) return;
+            int cameraIndex = reverseCameraEditor.selectedCamera();
+            ReverseCameraController.saveVisibility(preferences, cameraIndex, checked);
+            int mask = ReverseCameraController.loadVisibilityMask(preferences);
+            reverseCameraPreview.applyVisibility(mask);
+            updateReversePaneControls(cameraIndex);
+            CameraHelperService.reverseCameraSettingsChanged(this);
+            record("reverse_pane_visibility_changed",
+                    "camera_index", cameraIndex, "visible", checked,
+                    "visibility_mask", mask);
+        });
         reset.setOnClickListener(view -> {
             ReverseCameraController.resetLayout(preferences);
             reverseCameraLayout = ReverseCameraController.loadLayout(preferences);
@@ -1788,6 +1810,8 @@ public final class CameraProbeActivity extends Activity
             reverseCameraPreview.applyRawFallbackLayout(
                     ReverseCameraController.loadRawLayout(preferences));
             reverseCameraPreview.applyLayout(reverseCameraLayout);
+            reverseCameraPreview.applyVisibility(
+                    ReverseCameraController.loadVisibilityMask(preferences));
             reverseCameraEditor.selectCamera(ReverseCameraLayout.REAR_CAMERA_INDEX);
             CameraHelperService.reverseCameraSettingsChanged(this);
             record("reverse_layout_reset");
@@ -2040,6 +2064,8 @@ public final class CameraProbeActivity extends Activity
         reverseCameraLayout = ReverseCameraController.loadLayout(preferences);
         reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
         reverseCameraPreview.applyLayout(reverseCameraLayout);
+        reverseCameraPreview.applyVisibility(
+                ReverseCameraController.loadVisibilityMask(preferences));
         reverseMainEditorPane.setVisibility(View.GONE);
         reverseCalibrationPane.setVisibility(View.VISIBLE);
         attachReverseCalibrationMirrors();
@@ -2339,6 +2365,15 @@ public final class CameraProbeActivity extends Activity
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
         for (int i = 0; i < reversePaneButtons.length; i++) {
             reversePaneButtons[i].setBackgroundColor(tabColor(paneIds[i] == cameraIndex));
+            reversePaneButtons[i].setPaintFlags(reversePaneButtonPaintFlags(
+                    reversePaneButtons[i].getPaintFlags(),
+                    ReverseCameraLayout.isVisible(binding.visibilityMask, paneIds[i])));
+        }
+        if (reverseVisibilitySwitch != null) {
+            reverseVisibilityUiUpdating = true;
+            reverseVisibilitySwitch.setText("Відображати: " + reversePaneLabel(cameraIndex));
+            reverseVisibilitySwitch.setChecked(binding.visible);
+            reverseVisibilityUiUpdating = false;
         }
         boolean background = cameraIndex == ReverseCameraLayout.BACKGROUND_PANE_ID;
         if (reverseCalibrationButton != null) {
@@ -2377,16 +2412,45 @@ public final class CameraProbeActivity extends Activity
             SharedPreferences preferences, int cameraIndex) {
         return new ReversePaneUiBinding(cameraIndex,
                 cameraIndex == ReverseCameraLayout.BACKGROUND_PANE_ID
-                        ? null : CameraDewarpConfig.loadForReverse(preferences, cameraIndex));
+                        ? null : CameraDewarpConfig.loadForReverse(preferences, cameraIndex),
+                ReverseCameraController.loadVisibilityMask(preferences),
+                ReverseCameraController.loadVisibility(preferences, cameraIndex));
+    }
+
+    static int reversePaneButtonPaintFlags(int flags, boolean visible) {
+        return visible
+                ? flags & ~Paint.STRIKE_THRU_TEXT_FLAG
+                : flags | Paint.STRIKE_THRU_TEXT_FLAG;
+    }
+
+    static String reversePaneLabel(int cameraIndex) {
+        switch (cameraIndex) {
+            case ReverseCameraLayout.BACKGROUND_PANE_ID:
+                return "Тло";
+            case ReverseCameraLayout.REAR_CAMERA_INDEX:
+                return "Rear";
+            case ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX:
+                return "Rear left";
+            case ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX:
+                return "Rear right";
+            default:
+                return "Unknown";
+        }
     }
 
     static final class ReversePaneUiBinding {
         final int cameraIndex;
         final CameraDewarpConfig dewarp;
+        final int visibilityMask;
+        final boolean visible;
 
-        ReversePaneUiBinding(int cameraIndex, CameraDewarpConfig dewarp) {
+        ReversePaneUiBinding(
+                int cameraIndex, CameraDewarpConfig dewarp,
+                int visibilityMask, boolean visible) {
             this.cameraIndex = cameraIndex;
             this.dewarp = dewarp;
+            this.visibilityMask = visibilityMask;
+            this.visible = visible;
         }
     }
 
@@ -3742,6 +3806,8 @@ public final class CameraProbeActivity extends Activity
             reverseCameraPreview.applyRawFallbackLayout(
                     ReverseCameraController.loadRawLayout(preferences));
             reverseCameraPreview.applyLayout(reverseCameraLayout);
+            reverseCameraPreview.applyVisibility(
+                    ReverseCameraController.loadVisibilityMask(preferences));
             updateReversePaneControls(selected);
             if (reverseCalibrationCameraIndex > 0) {
                 reverseRawCalibrationLayout = ReverseCameraController.loadRawLayout(preferences);
@@ -4086,6 +4152,8 @@ public final class CameraProbeActivity extends Activity
             reverseCameraEditor.setLayoutModel(reverseCameraLayout);
             reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
             reverseCameraPreview.applyLayout(reverseCameraLayout);
+            reverseCameraPreview.applyVisibility(
+                    ReverseCameraController.loadVisibilityMask(preferences));
             updateReversePaneControls(selected);
             if (reverseCalibrationCameraIndex > 0) updateReverseCalibrationDisplay();
         }

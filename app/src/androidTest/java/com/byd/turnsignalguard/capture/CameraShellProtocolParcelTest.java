@@ -67,7 +67,9 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                                 CameraDewarpConfig.PROJECTION_RECTILINEAR),
                         CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 119,
                                 CameraDewarpConfig.PROJECTION_CYLINDRICAL),
-                        CameraBufferQuality.QUALITY);
+                        CameraBufferQuality.QUALITY,
+                        ReverseCameraLayout.VISIBILITY_REAR_LEFT
+                                | ReverseCameraLayout.VISIBILITY_REAR_RIGHT);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -82,6 +84,9 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertDewarp(source.leftDewarp, restored.leftDewarp);
             assertDewarp(source.rightDewarp, restored.rightDewarp);
             assertEquals(CameraBufferQuality.QUALITY, restored.bufferQuality);
+            assertEquals(ReverseCameraLayout.VISIBILITY_REAR_LEFT
+                            | ReverseCameraLayout.VISIBILITY_REAR_RIGHT,
+                    restored.visibilityMask);
             for (int index = 1; index <= 3; index++) {
                 assertRect(active.pane(index).sourceCrop,
                         restored.layout.pane(index).sourceCrop);
@@ -194,6 +199,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 assertEquals(pane.zOrder, parcel.readInt());
             }
             assertEquals(CameraBufferQuality.BALANCED, parcel.readInt());
+            assertEquals(ReverseCameraLayout.VISIBILITY_ALL, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();

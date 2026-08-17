@@ -37,6 +37,53 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
+    public void visibilityMaskUsesFourStableBitsAndDefaultsOn() {
+        assertEquals(ReverseCameraLayout.VISIBILITY_ALL,
+                ReverseCameraController.loadVisibilityMask(new TestSharedPreferences()));
+        assertEquals(ReverseCameraLayout.VISIBILITY_BACKGROUND,
+                ReverseCameraLayout.visibilityBitForPane(
+                        ReverseCameraLayout.BACKGROUND_PANE_ID));
+        assertEquals(ReverseCameraLayout.VISIBILITY_REAR,
+                ReverseCameraLayout.visibilityBitForPane(ReverseCameraLayout.REAR_CAMERA_INDEX));
+        assertEquals(ReverseCameraLayout.VISIBILITY_REAR_LEFT,
+                ReverseCameraLayout.visibilityBitForPane(
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertEquals(ReverseCameraLayout.VISIBILITY_REAR_RIGHT,
+                ReverseCameraLayout.visibilityBitForPane(
+                        ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        assertTrue(ReverseCameraLayout.isValidVisibilityMask(0));
+        assertTrue(ReverseCameraLayout.isVisible(
+                ReverseCameraLayout.VISIBILITY_ALL, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        assertFalse(ReverseCameraLayout.isVisible(0, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraLayout.requireVisibilityMask(16));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraLayout.visibilityBitForPane(0));
+    }
+
+    @Test
+    public void visibilityWritesOnePaneAndResetRestoresAllOn() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.BACKGROUND_PANE_ID, false);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+        assertFalse(ReverseCameraController.loadVisibility(
+                settings, ReverseCameraLayout.BACKGROUND_PANE_ID));
+        assertFalse(ReverseCameraController.loadVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertTrue(ReverseCameraController.loadVisibility(
+                settings, ReverseCameraLayout.REAR_CAMERA_INDEX));
+        assertEquals(ReverseCameraLayout.VISIBILITY_REAR
+                        | ReverseCameraLayout.VISIBILITY_REAR_RIGHT,
+                ReverseCameraController.loadVisibilityMask(settings));
+
+        ReverseCameraController.resetLayout(settings);
+        assertEquals(ReverseCameraLayout.VISIBILITY_ALL,
+                ReverseCameraController.loadVisibilityMask(settings));
+    }
+
+    @Test
     public void sourceCropUsesOnePercentFloorWithoutChangingDestinationMinimum() {
         assertThrows(IllegalArgumentException.class, () ->
                 ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 0.0099f, 0.01f));

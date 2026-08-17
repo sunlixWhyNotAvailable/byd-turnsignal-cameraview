@@ -15,7 +15,9 @@ import java.util.function.Predicate;
 final class ReverseCameraController {
     static final String PREF_ENABLED = "reverse_camera_enabled";
     static final String PREF_EDITOR_SELECTION = "reverse_camera_editor_selection";
+    static final String PREF_BACKGROUND_VISIBLE = "reverse_camera_background_visible";
     static final boolean DEFAULT_ENABLED = false;
+    static final boolean DEFAULT_VISIBLE = true;
     private static final String PREF_PREFIX = "reverse_camera_";
     private static final long SURFACE_TIMEOUT_MS = 8_000;
     private static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
@@ -218,7 +220,8 @@ final class ReverseCameraController {
                         settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
                 CameraDewarpConfig.loadForReverse(
                         settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
-                CameraBufferQuality.load(settings));
+                CameraBufferQuality.load(settings),
+                loadVisibilityMask(settings));
     }
 
     private void overlayPrepared(int requestId) {
@@ -629,7 +632,8 @@ final class ReverseCameraController {
                 .putFloat(PREF_PREFIX + "background_left", defaults.background.left)
                 .putFloat(PREF_PREFIX + "background_top", defaults.background.top)
                 .putFloat(PREF_PREFIX + "background_width", defaults.background.width)
-                .putFloat(PREF_PREFIX + "background_height", defaults.background.height);
+                .putFloat(PREF_PREFIX + "background_height", defaults.background.height)
+                .putBoolean(PREF_BACKGROUND_VISIBLE, DEFAULT_VISIBLE);
         for (ReverseCameraLayout.Pane pane : defaults.panes()) {
             String prefix = PREF_PREFIX + pane.cameraIndex + "_";
             editor.putFloat(prefix + "left", pane.destination.left)
@@ -639,7 +643,8 @@ final class ReverseCameraController {
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putInt(displayModeKey(pane.cameraIndex),
                             ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
-                    .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
+                    .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex)
+                    .putBoolean(visibilityKey(pane.cameraIndex), DEFAULT_VISIBLE);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
             writeSourceCrop(editor, pane.cameraIndex,
                     ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop), true);
@@ -733,6 +738,39 @@ final class ReverseCameraController {
                 throw new IllegalArgumentException("unsupported reverse camera index: "
                         + cameraIndex);
         }
+    }
+
+    static String visibilityKey(int paneId) {
+        ReverseCameraLayout.visibilityBitForPane(paneId);
+        return paneId == ReverseCameraLayout.BACKGROUND_PANE_ID
+                ? PREF_BACKGROUND_VISIBLE
+                : PREF_PREFIX + paneId + "_visible";
+    }
+
+    static boolean loadVisibility(SharedPreferences settings, int paneId) {
+        try {
+            return settings.getBoolean(visibilityKey(paneId), DEFAULT_VISIBLE);
+        } catch (RuntimeException invalidPreference) {
+            return DEFAULT_VISIBLE;
+        }
+    }
+
+    static void saveVisibility(SharedPreferences settings, int paneId, boolean visible) {
+        settings.edit().putBoolean(visibilityKey(paneId), visible).apply();
+    }
+
+    static int loadVisibilityMask(SharedPreferences settings) {
+        int visibilityMask = 0;
+        for (int paneId : new int[]{
+                ReverseCameraLayout.BACKGROUND_PANE_ID,
+                ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX}) {
+            if (loadVisibility(settings, paneId)) {
+                visibilityMask |= ReverseCameraLayout.visibilityBitForPane(paneId);
+            }
+        }
+        return ReverseCameraLayout.requireVisibilityMask(visibilityMask);
     }
 
     static String paneSettingKey(int cameraIndex, String field) {

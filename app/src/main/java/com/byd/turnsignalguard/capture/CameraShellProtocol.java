@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 20;
+    static final int VERSION = 21;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -293,6 +293,7 @@ final class CameraShellProtocol {
         final ReverseCameraLayout rawFallbackLayout;
         final int cornerRadiusDp;
         final int bufferQuality;
+        final int visibilityMask;
         final CameraDewarpConfig rearDewarp;
         final CameraDewarpConfig leftDewarp;
         final CameraDewarpConfig rightDewarp;
@@ -338,6 +339,18 @@ final class CameraShellProtocol {
                 CameraDewarpConfig leftDewarp,
                 CameraDewarpConfig rightDewarp,
                 int bufferQuality) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp,
+                    bufferQuality, ReverseCameraLayout.VISIBILITY_ALL);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp,
+                int bufferQuality, int visibilityMask) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
@@ -347,6 +360,7 @@ final class CameraShellProtocol {
             this.rawFallbackLayout = rawFallbackLayout;
             this.cornerRadiusDp = cornerRadiusDp;
             this.bufferQuality = bufferQuality;
+            this.visibilityMask = ReverseCameraLayout.requireVisibilityMask(visibilityMask);
             this.rearDewarp = rearDewarp == null
                     ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR) : rearDewarp;
             this.leftDewarp = leftDewarp == null
@@ -374,6 +388,7 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.zOrder);
             }
             parcel.writeInt(bufferQuality);
+            parcel.writeInt(visibilityMask);
         }
 
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
@@ -448,8 +463,10 @@ final class CameraShellProtocol {
                         rawFallbackLayout, pane.cameraIndex, pane.destination,
                         rawCrops[i], pane.rotationDegrees);
             }
+            int bufferQuality = parcel.readInt();
+            int visibilityMask = parcel.readInt();
             return new ReverseOverlaySpec(requestId, layout, rawFallbackLayout, cornerRadiusDp,
-                    rearDewarp, leftDewarp, rightDewarp, parcel.readInt());
+                    rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -464,6 +481,7 @@ final class CameraShellProtocol {
             if (!CameraBufferQuality.isValid(bufferQuality)) {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
+            ReverseCameraLayout.requireVisibilityMask(visibilityMask);
             if (rearDewarp.lens != CameraDewarpConfig.LENS_REAR
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT
                     || rightDewarp.lens != CameraDewarpConfig.LENS_RIGHT) {

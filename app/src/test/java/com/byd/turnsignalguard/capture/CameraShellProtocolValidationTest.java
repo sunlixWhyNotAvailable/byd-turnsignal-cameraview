@@ -2,6 +2,7 @@ package com.byd.turnsignalguard.capture;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
 public final class CameraShellProtocolValidationTest {
@@ -34,6 +35,28 @@ public final class CameraShellProtocolValidationTest {
                         CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT), 99);
         assertThrows(IllegalArgumentException.class,
                 () -> reverse.validate(1920, 990));
+    }
+
+    @Test
+    public void reverseVisibilityMaskAllowsAllOffAndRejectsUnknownBits() {
+        CameraShellProtocol.ReverseOverlaySpec allOff = reverse(
+                0, CameraBufferQuality.DEFAULT);
+        assertEquals(0, allOff.visibilityMask);
+        allOff.validate(1920, 990);
+
+        assertThrows(IllegalArgumentException.class, () -> reverse(
+                ReverseCameraLayout.VISIBILITY_ALL + 1, CameraBufferQuality.DEFAULT));
+    }
+
+    private static CameraShellProtocol.ReverseOverlaySpec reverse(
+            int visibilityMask, int bufferQuality) {
+        CameraDewarpConfig left = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        return new CameraShellProtocol.ReverseOverlaySpec(
+                2, ReverseCameraLayout.defaults(), ReverseCameraLayout.defaults(), 8,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR), left,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT),
+                bufferQuality, visibilityMask);
     }
 
     private static CameraShellProtocol.OverlaySpec overlay(

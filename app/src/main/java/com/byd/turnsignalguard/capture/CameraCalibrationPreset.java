@@ -90,6 +90,8 @@ final class CameraCalibrationPreset {
         int targetCameraIndex = reverseMirrorTarget(sourceCameraIndex);
         if (targetCameraIndex < 0) return false;
         ReverseValue value = activeReverse(preferences, sourceCameraIndex);
+        boolean targetVisible = ReverseCameraController.loadVisibility(
+                preferences, targetCameraIndex);
         applyReverse(preferences, targetCameraIndex, new ReverseValue(
                 mirror(value.destination, true), mirror(value.raw, false),
                 mirror(value.corrected, false), -value.rotationDegrees,
@@ -97,7 +99,8 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection)));
+                        value.dewarp.projection),
+                targetVisible));
         return true;
     }
 
@@ -129,7 +132,8 @@ final class CameraCalibrationPreset {
                         ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop));
         return new ReverseValue(pane.destination, pane.sourceCrop, corrected,
                 pane.rotationDegrees, pane.displayMode,
-                CameraDewarpConfig.loadForReverse(preferences, cameraIndex));
+                CameraDewarpConfig.loadForReverse(preferences, cameraIndex),
+                ReverseCameraController.loadVisibility(preferences, cameraIndex));
     }
 
     private static void applyReverse(
@@ -145,7 +149,8 @@ final class CameraCalibrationPreset {
                         value.destination.height)
                 .putInt(ReverseCameraController.paneSettingKey(
                         cameraIndex, "rotation_degrees"), value.rotationDegrees)
-                .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode);
+                .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode)
+                .putBoolean(ReverseCameraController.visibilityKey(cameraIndex), value.visible);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.raw, false);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
         CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
@@ -191,7 +196,8 @@ final class CameraCalibrationPreset {
         writeRect(editor, prefix + "corrected_", value.corrected.left,
                 value.corrected.top, value.corrected.width, value.corrected.height);
         editor.putInt(prefix + "rotation", value.rotationDegrees)
-                .putInt(prefix + "mode", value.displayMode);
+                .putInt(prefix + "mode", value.displayMode)
+                .putBoolean(prefix + "visible", value.visible);
         writeDewarp(editor, prefix, value.dewarp);
     }
 
@@ -208,8 +214,14 @@ final class CameraCalibrationPreset {
                 || !ReverseCameraLayout.isValidDisplayMode(mode)) {
             throw new IllegalArgumentException("invalid reverse output transform");
         }
+        boolean visible = true;
+        try {
+            visible = preferences.getBoolean(prefix + "visible", true);
+        } catch (RuntimeException ignored) {
+            // Visibility was added without changing the v1 preset prefix.
+        }
         return new ReverseValue(destination, raw, corrected, rotation, mode,
-                readDewarp(preferences, prefix, lens));
+                readDewarp(preferences, prefix, lens), visible);
     }
 
     private static void writeCrop(
@@ -316,17 +328,19 @@ final class CameraCalibrationPreset {
         final int rotationDegrees;
         final int displayMode;
         final CameraDewarpConfig dewarp;
+        final boolean visible;
 
         ReverseValue(
                 ReverseCameraLayout.Rect destination, ReverseCameraLayout.Rect raw,
                 ReverseCameraLayout.Rect corrected, int rotationDegrees,
-                int displayMode, CameraDewarpConfig dewarp) {
+                int displayMode, CameraDewarpConfig dewarp, boolean visible) {
             this.destination = destination;
             this.raw = raw;
             this.corrected = corrected;
             this.rotationDegrees = rotationDegrees;
             this.displayMode = displayMode;
             this.dewarp = dewarp;
+            this.visible = visible;
         }
     }
 }

@@ -2,6 +2,12 @@ package com.byd.turnsignalguard.capture;
 
 final class ReverseCameraLayout {
     static final int BACKGROUND_PANE_ID = -1;
+    static final int VISIBILITY_BACKGROUND = 1;
+    static final int VISIBILITY_REAR = 1 << 1;
+    static final int VISIBILITY_REAR_LEFT = 1 << 2;
+    static final int VISIBILITY_REAR_RIGHT = 1 << 3;
+    static final int VISIBILITY_ALL = VISIBILITY_BACKGROUND | VISIBILITY_REAR
+            | VISIBILITY_REAR_LEFT | VISIBILITY_REAR_RIGHT;
     static final String REAR = "rear";
     static final String REAR_LEFT = "rear-left";
     static final String REAR_RIGHT = "rear-right";
@@ -54,6 +60,36 @@ final class ReverseCameraLayout {
         return cameraIndex == REAR_CAMERA_INDEX
                 || cameraIndex == REAR_LEFT_CAMERA_INDEX
                 || cameraIndex == REAR_RIGHT_CAMERA_INDEX;
+    }
+
+    static boolean isValidVisibilityMask(int visibilityMask) {
+        return (visibilityMask & ~VISIBILITY_ALL) == 0;
+    }
+
+    static int requireVisibilityMask(int visibilityMask) {
+        if (!isValidVisibilityMask(visibilityMask)) {
+            throw new IllegalArgumentException("invalid reverse visibility mask");
+        }
+        return visibilityMask;
+    }
+
+    static int visibilityBitForPane(int paneId) {
+        switch (paneId) {
+            case BACKGROUND_PANE_ID:
+                return VISIBILITY_BACKGROUND;
+            case REAR_CAMERA_INDEX:
+                return VISIBILITY_REAR;
+            case REAR_LEFT_CAMERA_INDEX:
+                return VISIBILITY_REAR_LEFT;
+            case REAR_RIGHT_CAMERA_INDEX:
+                return VISIBILITY_REAR_RIGHT;
+            default:
+                throw new IllegalArgumentException("unsupported reverse pane id: " + paneId);
+        }
+    }
+
+    static boolean isVisible(int visibilityMask, int paneId) {
+        return (requireVisibilityMask(visibilityMask) & visibilityBitForPane(paneId)) != 0;
     }
 
     static Rect destination(float left, float top, float width, float height) {

@@ -60,6 +60,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
             root.applyRawFallbackLayout(spec.rawFallbackLayout);
             root.applyLayout(spec.layout);
+            root.applyVisibility(spec.visibilityMask);
             window.alpha = 0.0f;
             windows.updateViewLayout(root, window);
         }
@@ -72,7 +73,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "right_dewarp", spec.rightDewarp.enabled,
                 "rear_display_mode", spec.layout.rear.displayMode,
                 "left_display_mode", spec.layout.rearLeft.displayMode,
-                "right_display_mode", spec.layout.rearRight.displayMode);
+                "right_display_mode", spec.layout.rearRight.displayMode,
+                "visibility_mask", spec.visibilityMask);
     }
 
     SurfaceSnapshot acquireSurfaces(int expectedRequestId) {
@@ -248,6 +250,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
         nextRoot.applyRawFallbackLayout(spec.rawFallbackLayout);
         nextRoot.applyLayout(spec.layout);
+        nextRoot.applyVisibility(spec.visibilityMask);
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
         WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
                 size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,

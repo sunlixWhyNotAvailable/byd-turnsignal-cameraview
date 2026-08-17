@@ -240,6 +240,8 @@ public final class CameraCalibrationPresetTest {
                     preferences, sourceIndex, sourceCorrected, true);
             ReverseCameraController.saveSourceCrop(
                     preferences, targetIndex, targetCorrected, true);
+            ReverseCameraController.saveVisibility(preferences, sourceIndex, false);
+            ReverseCameraController.saveVisibility(preferences, targetIndex, true);
             CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                     CameraDewarpConfig.lensForReverseCamera(sourceIndex), true, 144,
                     CameraDewarpConfig.PROJECTION_CYLINDRICAL));
@@ -270,6 +272,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(144, targetDewarp.fovDegrees);
             assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
                     targetDewarp.projection);
+            assertTrue(ReverseCameraController.loadVisibility(preferences, targetIndex));
 
             assertTrue(CameraCalibrationPreset.loadReverse(preferences, targetIndex));
             ReverseCameraLayout.Pane restored = ReverseCameraController
@@ -281,6 +284,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(targetZ, restored.zOrder);
             assertRect(targetCorrected, ReverseCameraController
                     .loadCorrectedSourceCrop(preferences, targetIndex, targetRaw));
+            assertTrue(ReverseCameraController.loadVisibility(preferences, targetIndex));
         }
         assertFalse(CameraCalibrationPreset.mirrorReverse(
                 new TestSharedPreferences(), ReverseCameraLayout.REAR_CAMERA_INDEX));
@@ -340,6 +344,37 @@ public final class CameraCalibrationPresetTest {
         assertTrue(CameraDewarpConfig.loadForReverse(preferences, reverseRight).enabled);
         assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearRight).enabled);
         assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontRight).enabled);
+    }
+
+    @Test
+    public void legacyReversePresetWithoutVisibilityFieldLoadsVisibleByDefault() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+        CameraDewarpConfig.saveForReverse(preferences, cameraIndex,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT));
+        ReverseCameraController.saveVisibility(preferences, cameraIndex, false);
+        CameraCalibrationPreset.saveReverse(preferences, cameraIndex);
+        String prefix = "reverse_calibration_preset_v1_" + cameraIndex + "_";
+        preferences.remove(prefix + "visible");
+
+        assertTrue(CameraCalibrationPreset.hasReverse(preferences, cameraIndex));
+        assertTrue(CameraCalibrationPreset.loadReverse(preferences, cameraIndex));
+        assertTrue(ReverseCameraController.loadVisibility(preferences, cameraIndex));
+        assertEquals(1, preferences.getInt(prefix + "version", -1));
+    }
+
+    @Test
+    public void malformedReversePresetVisibilityFallsBackOnWithoutInvalidatingPreset() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int cameraIndex = ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+        CameraDewarpConfig.saveForReverse(preferences, cameraIndex,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT));
+        CameraCalibrationPreset.saveReverse(preferences, cameraIndex);
+        String key = "reverse_calibration_preset_v1_" + cameraIndex + "_visible";
+        preferences.putString(key, "invalid");
+
+        assertTrue(CameraCalibrationPreset.loadReverse(preferences, cameraIndex));
+        assertTrue(ReverseCameraController.loadVisibility(preferences, cameraIndex));
     }
 
     @Test

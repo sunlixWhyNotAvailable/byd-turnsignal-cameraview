@@ -50,6 +50,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private final FrameBarrier frameBarrier = new FrameBarrier();
     private int paneBufferViewportWidth;
     private int paneBufferViewportHeight;
+    private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
 
     ReverseCameraCompositionView(Context context) {
         super(context);
@@ -130,6 +131,19 @@ final class ReverseCameraCompositionView extends FrameLayout {
         panes[1].applyDewarpConfig(left);
         panes[2].applyDewarpConfig(right);
         applyModel();
+    }
+
+    void applyVisibility(int mask) {
+        visibilityMask = ReverseCameraLayout.requireVisibilityMask(mask);
+        backgroundPane.setAlpha(alphaForVisibility(
+                mask, ReverseCameraLayout.BACKGROUND_PANE_ID));
+        for (PaneView pane : panes) {
+            pane.setAlpha(alphaForVisibility(mask, pane.cameraIndex));
+        }
+    }
+
+    static float alphaForVisibility(int mask, int paneId) {
+        return ReverseCameraLayout.isVisible(mask, paneId) ? 1.0f : 0.0f;
     }
 
     void setDewarpStatsContext(int requestId, int[] generations) {
@@ -621,6 +635,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void applyModel() {
+        applyVisibility(visibilityMask);
         int width = getWidth();
         int height = getHeight();
         for (PaneView pane : panes) {
