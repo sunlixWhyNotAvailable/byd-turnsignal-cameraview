@@ -1,78 +1,121 @@
-# BYD Turn Signal and Camera View
+# BYD Turn Signal Guard
 
-> Personal open-source project for Chinese BYD vehicles running DiLink.
+> Experimental open-source companion app for selected Chinese BYD vehicles running DiLink.
 >
-> Adds a configurable turn-signal guard and rear side-camera overlays.
->
-> AI was used to analyze vehicle logs and assist with implementation.
+> This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
+> features while the vehicle is parked.
+
+Current source version: `0.49.2`. The application interface is currently Ukrainian.
 
 ## Features
 
-- configurable long-turn guard using raw stalk, blink, steering-angle, and speed telemetry
-- configurable steering thresholds, correction delay, and maximum guard speed
-- independently configured rear-left, rear-right, front-left, and front-right camera overlays
-- separate rear/front enable switches, speed thresholds, and an optional front-camera turn-signal requirement
-- optional enhanced reverse view combining rear, rear-left, and rear-right cameras over the stock reverse screen
-- touch-based reverse-layout editor with independent pane position, size, crop sliders, layer order, and a movable black background pane
-- four-camera crop calibration with aspect-ratio presets, free crop, Fit/Fill/aligned rotation modes, scale, placement, and optional GPU fisheye correction with independent per-view activation and shared physical-lens calibration
-- independent tablet or instrument-cluster destination for every side camera
-- configurable production-camera corner radius and a separate application settings tab
-- optional stock ambient-light synchronization for third-party Android music sources
-- AVM layout and direct-camera diagnostic tabs
-- persistent settings and lifetime turn/correction counters
+### Turn-signal guard
 
-## Safety Boundary
+- Helps restore a long turn signal when it is cancelled before the steering wheel returns to the
+  configured centre range.
+- Configurable steering thresholds, correction delay, and maximum operating speed.
+- Safety checks for vehicle state, signal state, telemetry availability, and manual cancellation.
+- Optional automatic background start after vehicle boot or an application update.
+- Lifetime activation and correction counters.
 
-The application does not expose arbitrary shell commands, CAN/OBD writes, caller-selected FIDs, or generic BYD framework transactions.
+### Side-camera views
 
-The only vehicle write path is the fixed turn-state FID `871366669` with payloads `0..3`. It remains behind the existing raw-stalk, blink confirmation, speed, hazard, fault, telemetry-health, and manual-cancel safety gates. Camera rendering does not add vehicle-control writes.
+- Independent rear-left, rear-right, front-left, and front-right camera profiles.
+- Separate trigger rules and speed ranges for the rear and front camera groups.
+- Optional sharp-turn rear view, blind-spot-based visibility, warning highlights, and a front-camera
+  turn-signal requirement.
+- Independent size, position, and tablet or instrument-cluster destination for every camera
+  profile.
+- Camera calibration with crop, scale, placement, rotation, mirroring, and Fit, Fill, or Stretch
+  display modes.
+- Optional fisheye correction configured independently for every displayed profile.
+- Four global image-quality choices in `Налаштування`: `Швидкодія` (default), `Баланс`, `Якість`,
+  and `Оригінал`.
+- Adjustable camera-window corner rounding.
+
+### Enhanced reverse view
+
+- Optional composition of the rear, rear-left, and rear-right cameras over the stock reverse view.
+- Touch editor for pane position, size, crop, rotation, display mode, and layer order.
+- Movable black background with independent size and position.
+- `Відображати` control for the background and each of the three camera panes. Every element is
+  visible by default and can be disabled without losing its layout or calibration.
+- Per-camera calibration presets and optional fisheye correction.
+
+The enhanced reverse view itself is disabled by default.
+
+### Music, updates, and diagnostics
+
+- Optional ambient-light synchronization for compatible third-party Android music players.
+- Forwards available title, artist, playback state, and timeline information to a compatible
+  instrument cluster.
+- Built-in update check and installation from this project's GitHub Releases.
+- Shareable application logs and a vehicle-compatibility information package.
+- Persistent settings across application restarts.
+
+## Safety
+
+- The turn-signal guard can only adjust the indicator state. It does not control steering,
+  acceleration, braking, or other vehicle-motion systems.
+- Camera and music features do not add vehicle-control actions.
+- Guard correction is suppressed when the required vehicle information is unavailable or unsafe.
+- Manual indicator controls are available only while the vehicle is in Park.
+- Recheck all guard and camera behaviour while parked after installation or a vehicle software
+  update.
+
+## Compatibility and requirements
+
+- Tested on the Chinese `BYD Sea Lion 07 EV 2025` with `DiLink 5.0`.
+- Other BYD models and firmware versions are not confirmed compatible.
+- Local ADB must be enabled on the tablet and its authorization prompt must be accepted.
+- Camera access permission is required.
+- Instrument-cluster camera and music output requires compatible BYD display services.
+- Camera availability, startup time, and image layout can vary between vehicle software versions.
 
 ## Installation
 
-Download and install the latest APK from GitHub Releases.
+1. Download the latest APK from
+   [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest).
+2. Install the APK and grant camera access when requested.
+3. Accept the local ADB authorization prompt shown by Android.
+4. Open `Налаштування` and use `Налаштувати фоновий запуск DiLink`. Exclude
+   `BYD Turn Signal Guard` from DiLink's disabled-background-app list.
+5. Enable `Авто-запуск` if the service should recover automatically after boot and application
+   updates.
+6. Configure and validate the guard and all camera views while parked before normal use.
 
-After first launch:
+## Quick setup
 
-1. Grant the requested camera permission.
-2. In DiLink `Disable background Apps`, deselect `BYD Turn Signal Guard` to allow boot recovery.
-3. Accept the Android local-ADB RSA prompt. The key is generated and stored privately by the application.
-4. Enable `Авто-запуск` if the service should recover after vehicle boot and application updates.
-5. Configure the turn guard and camera speed limits.
-6. Open `Калібрування камер` to select the visible crop for each rear/front side camera.
-7. For each camera, choose the tablet or instrument cluster, then set its size and position.
-8. Open `Задній хід` to configure the mirrored central rear pane, side panes, and black background. `Покращений задній вид` is off by default.
-9. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app switch. The same switch also forwards title, artist, playback state, and timeline from common third-party Android media players to the instrument cluster. The app switch is off by default.
+1. In the guard tab, set the steering thresholds, correction delay, and maximum speed before
+   enabling `Захист поворотника`.
+2. In `Калібрування камер`, configure the visible area and optional correction for each side-camera
+   profile.
+3. In `Камери`, choose where and when each side-camera profile appears, then set its size and
+   position.
+4. In `Задній хід`, arrange the rear composition, choose which elements are displayed, and enable
+   `Покращений задній вид` only after a parked check.
+5. In `Налаштування`, choose the preferred image quality, configure auto-start, check for updates,
+   or export logs.
+6. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app's music
+   option.
 
-## Known Limitations
+## Known limitations
 
-- The application targets undocumented BYD/DiLink framework APIs and has only been validated on the tested vehicle/software combination.
-- Direct-camera startup can take several seconds from a cold provider state.
-- Local ADB must be enabled on the tablet.
-- Instrument-cluster output depends on the tested BYD projection display and dashboard-layout service.
-- Turn correction remains experimental because BYD FID `871366669` is a retained state rather than a pulse command.
-- The enhanced reverse view uses undocumented direct AVM outputs and should first be validated while parked.
-- Fisheye correction is off by default and adds one GPU render pass per corrected displayed view. Calibrate and performance-test it while parked before regular use.
-- Production camera fan-out and correction buffers preserve the AVM source aspect while staying within each displayed pane; the vendor AVM source itself remains full-resolution.
-- Simultaneous rear/front crops from the same physical side depend on duplicate-index Surface support and must pass the bundled parked probe before public release.
-- Music synchronization supports normal Android PCM output. Hardware radio and direct, tunneled, or offload audio routes may bypass the system visualizer.
-- Third-party metadata forwarding does not include album artwork. BYD's protected cover provider is unavailable to the shell helper, while stock Bluetooth, Local Media, and supported OEM players keep their native metadata path.
-
-## Tested
-
-Tested on the Chinese version of `BYD Sea Lion 07 EV 2025` with `DiLink 5.0`.
+- The project relies on vehicle-specific DiLink integrations that may change after a firmware
+  update.
+- A cold camera start can take several seconds.
+- Higher image-quality modes can increase system load; choose the best balance for the vehicle.
+- Fisheye correction and the enhanced reverse view are experimental and disabled by default.
+- Music synchronization depends on how an audio application plays sound and publishes metadata;
+  some sources are not supported.
+- Third-party music metadata forwarding does not include album artwork.
 
 ## License
 
 Copyright (C) 2026 sunlixWhyNotAvailable.
 
 This project is free software licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE). Modified versions that
-are distributed or offered for remote network use must provide their
-corresponding source under the same license.
+[GNU Affero General Public License v3.0 only](LICENSE). Modified versions that are distributed or
+offered for remote network use must provide their corresponding source under the same license.
 
-## To Do
-
-- add red visual when car is in view;
-- rework reverse-moving camera control to add wheels view;
-- add compose UI;
-- add proper logging and storage.
+AI-assisted log analysis and implementation were used during development.
