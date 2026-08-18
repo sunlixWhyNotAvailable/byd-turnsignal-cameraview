@@ -60,10 +60,14 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.USER_PRESENT" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="com.byd.turnsignalguard.capture.action.WATCHDOG" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".GuardWatchdogReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <receiver
             android:name=".ShellRecoveryReceiver"

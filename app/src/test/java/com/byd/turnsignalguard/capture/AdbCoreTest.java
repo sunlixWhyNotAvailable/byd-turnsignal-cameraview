@@ -293,6 +293,9 @@ public final class AdbCoreTest {
         assertFalse(GuardRecovery.shouldRecover(false, false));
         assertFalse(GuardRecovery.shouldRecover(true, true));
         assertFalse(GuardRecovery.shouldRecover(false, true));
+        assertTrue(GuardRecovery.shouldAttemptWatchdogRecovery(true, true));
+        assertFalse(GuardRecovery.shouldAttemptWatchdogRecovery(true, false));
+        assertFalse(GuardRecovery.shouldAttemptWatchdogRecovery(false, true));
         assertTrue(GuardRecovery.stale(5_000, 0));
         assertTrue(GuardRecovery.stale(5_000, 100_000));
         assertFalse(GuardRecovery.stale(100_000, 50_000));

@@ -93,6 +93,11 @@ final class GuardRecovery {
         return autoStart && !userShutdown;
     }
 
+    static boolean shouldAttemptWatchdogRecovery(
+            boolean recoveryAllowed, boolean heartbeatStale) {
+        return recoveryAllowed && heartbeatStale;
+    }
+
     static void setAutoStartEnabled(Context context, boolean enabled) {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
                 .putBoolean(KEY_AUTO_START, enabled).commit();
@@ -106,7 +111,7 @@ final class GuardRecovery {
     }
 
     private static PendingIntent pending(Context context) {
-        Intent intent = new Intent(context, GuardRecoveryReceiver.class)
+        Intent intent = new Intent(context, GuardWatchdogReceiver.class)
                 .setAction(ACTION_WATCHDOG);
         return PendingIntent.getBroadcast(context, 8713, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
