@@ -96,6 +96,7 @@ final class TurnSignalGuardRuntime {
     private boolean confirmationPending;
     private long confirmationDeadline;
     private boolean manualCommandPending;
+    private int manualConfirmationGeneration;
     private boolean initialLatchApplied;
     private long lastTelemetryErrorAt;
     private String lastTelemetryErrorReason;
@@ -195,6 +196,7 @@ final class TurnSignalGuardRuntime {
         requestedEnabled = false;
         guardDisableResetPending = resetLatch;
         evaluateGuardDisableReset();
+        manualConfirmationGeneration++;
         manualCommandPending = false;
         hazardCleanupPending = false;
         guardDisableResetPending = false;
@@ -268,11 +270,15 @@ final class TurnSignalGuardRuntime {
         }
 
         manualCommandPending = true;
+        int generation = ++manualConfirmationGeneration;
         awaitManualTurnStateConfirmation(payload, blink.raw,
-                SystemClock.elapsedRealtime() + CORRECTION_CONFIRM_MS);
+                SystemClock.elapsedRealtime() + CORRECTION_CONFIRM_MS, generation);
     }
 
-    private void awaitManualTurnStateConfirmation(int payload, int blinkBefore, long deadline) {
+    private void awaitManualTurnStateConfirmation(
+            int payload, int blinkBefore, long deadline, int generation) {
+        if (!shouldContinueManualConfirmation(
+                started, manualCommandPending, generation, manualConfirmationGeneration)) return;
         ReadResult blink = read(BLINK);
         if (blink.status != 0 || blink.raw == null || !listenerHealthy) {
             manualCommandPending = false;
@@ -311,7 +317,7 @@ final class TurnSignalGuardRuntime {
             return;
         }
         handler.postDelayed(() -> awaitManualTurnStateConfirmation(
-                payload, blinkBefore, deadline), PERIOD_MS);
+                payload, blinkBefore, deadline, generation), PERIOD_MS);
     }
 
     private void configureOnHandler(
@@ -1518,6 +1524,11 @@ final class TurnSignalGuardRuntime {
         if (payload == 2) return "manual_left_activation";
         if (payload == 3) return "manual_right_activation";
         return "manual_invalid";
+    }
+
+    static boolean shouldContinueManualConfirmation(
+            boolean started, boolean pending, int generation, int currentGeneration) {
+        return started && pending && generation == currentGeneration;
     }
 
     static String confirmationTimeoutClassification(int payload, int blinkBefore) {

@@ -835,6 +835,14 @@ public final class AdbCoreTest {
         assertFalse(TurnSignalGuardRuntime.shouldCancelSpeedDeferredSession(4, true, 4));
         assertEquals("manual_reset",
                 TurnSignalGuardRuntime.manualConfirmationOperation(0));
+        assertTrue(TurnSignalGuardRuntime.shouldContinueManualConfirmation(
+                true, true, 7, 7));
+        assertFalse(TurnSignalGuardRuntime.shouldContinueManualConfirmation(
+                false, true, 7, 7));
+        assertFalse(TurnSignalGuardRuntime.shouldContinueManualConfirmation(
+                true, false, 7, 7));
+        assertFalse(TurnSignalGuardRuntime.shouldContinueManualConfirmation(
+                true, true, 6, 7));
         assertEquals("direction_activation_not_observed",
                 TurnSignalGuardRuntime.confirmationTimeoutClassification(2, 1));
         assertEquals("hazard_off_transition_not_observed",
