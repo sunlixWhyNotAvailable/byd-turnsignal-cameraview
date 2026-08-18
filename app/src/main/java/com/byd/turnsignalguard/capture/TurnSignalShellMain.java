@@ -160,13 +160,21 @@ public final class TurnSignalShellMain {
                     return true;
                 }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_GUARD) {
-                    guardEnabled = data.readInt() != 0;
-                    runtime.configure(guardEnabled, data.readFloat(), data.readFloat(),
-                            data.readInt(), data.readInt(), data.readInt());
-                    runtime.vehiclePowerStateChanged(
-                            awakeSession.interactive,
-                            awakeSession.generation,
-                            awakeSession.cleanupAttemptedGeneration);
+                    boolean enabled = data.readInt() != 0;
+                    float outward = data.readFloat();
+                    float center = data.readFloat();
+                    int correctionDelay = data.readInt();
+                    int maxSpeed = data.readInt();
+                    int initialLatchState = data.readInt();
+                    handler.post(() -> {
+                        guardEnabled = enabled;
+                        runtime.configure(enabled, outward, center,
+                                correctionDelay, maxSpeed, initialLatchState);
+                        runtime.vehiclePowerStateChanged(
+                                awakeSession.interactive,
+                                awakeSession.generation,
+                                awakeSession.cleanupAttemptedGeneration);
+                    });
                     reply.writeNoException();
                     return true;
                 }
@@ -362,6 +370,10 @@ public final class TurnSignalShellMain {
         }
 
         private void emitPowerState(String action, boolean newSession) {
+            if (Looper.myLooper() != handler.getLooper()) {
+                handler.post(() -> emitPowerState(action, newSession));
+                return;
+            }
             boolean waiting;
             synchronized (this) {
                 waiting = recoveryEnabled && controllerToken == null;
