@@ -1,5 +1,6 @@
 package com.byd.turnsignalguard.capture;
 
+import android.content.Intent;
 import android.media.AudioAttributes;
 import android.os.IBinder;
 
@@ -322,6 +323,21 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.TX_SHUTDOWN
                 > TurnSignalShellProtocol.TX_ATTACH_CONTROLLER);
         assertTrue(CameraShellProtocol.TX_SHUTDOWN > CameraShellProtocol.TX_CLOSE);
+    }
+
+    @Test
+    public void exportedRecoveryReceiverAcceptsOnlyDeclaredSystemActions() {
+        assertTrue(GuardRecoveryReceiver.isAllowedAction(Intent.ACTION_BOOT_COMPLETED));
+        assertTrue(GuardRecoveryReceiver.isAllowedAction(
+                "android.intent.action.QUICKBOOT_POWERON"));
+        assertTrue(GuardRecoveryReceiver.isAllowedAction(Intent.ACTION_USER_PRESENT));
+        assertTrue(GuardRecoveryReceiver.isAllowedAction(Intent.ACTION_MY_PACKAGE_REPLACED));
+
+        assertFalse(GuardRecoveryReceiver.isAllowedAction(null));
+        assertFalse(GuardRecoveryReceiver.isAllowedAction(""));
+        assertFalse(GuardRecoveryReceiver.isAllowedAction(GuardRecovery.ACTION_WATCHDOG));
+        assertFalse(GuardRecoveryReceiver.isAllowedAction(GuardRecovery.ACTION_SHELL_RECOVERY));
+        assertFalse(GuardRecoveryReceiver.isAllowedAction("example.invalid.ACTION"));
     }
 
     @Test
