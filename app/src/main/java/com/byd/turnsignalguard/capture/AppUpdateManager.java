@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Set;
 
 final class AppUpdateManager {
+    static final int MAX_RELEASE_RESPONSE_BYTES = 512 * 1024;
     private static final String PREFS_NAME = "app_updates";
     private static final String KEY_LAST_CHECK_MS = "last_check_ms";
     private static final String RELEASE_API_HOST = "api.github.com";
@@ -199,18 +200,23 @@ final class AppUpdateManager {
                 throw new IOException("GitHub API HTTP " + code);
             }
             try (java.io.InputStream input = connection.getInputStream()) {
-                return new String(readAllBytes(input), StandardCharsets.UTF_8);
+                return new String(readReleaseResponse(input), StandardCharsets.UTF_8);
             }
         } finally {
             connection.disconnect();
         }
     }
 
-    private static byte[] readAllBytes(java.io.InputStream input) throws IOException {
+    static byte[] readReleaseResponse(java.io.InputStream input) throws IOException {
         java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int read;
-        while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
+        while ((read = input.read(buffer)) >= 0) {
+            if (read > MAX_RELEASE_RESPONSE_BYTES - output.size()) {
+                throw new IOException("GitHub release response exceeds 512 KiB");
+            }
+            output.write(buffer, 0, read);
+        }
         return output.toByteArray();
     }
 

@@ -190,6 +190,22 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void updateReleaseResponseIsBoundedBeforeJsonParsing() throws Exception {
+        byte[] normal = "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        assertArrayEquals(normal, AppUpdateManager.readReleaseResponse(
+                new ByteArrayInputStream(normal)));
+
+        byte[] exactLimit = new byte[AppUpdateManager.MAX_RELEASE_RESPONSE_BYTES];
+        assertEquals(exactLimit.length, AppUpdateManager.readReleaseResponse(
+                new ByteArrayInputStream(exactLimit)).length);
+
+        IOException error = assertThrows(IOException.class,
+                () -> AppUpdateManager.readReleaseResponse(new ByteArrayInputStream(
+                        new byte[AppUpdateManager.MAX_RELEASE_RESPONSE_BYTES + 1])));
+        assertEquals("GitHub release response exceeds 512 KiB", error.getMessage());
+    }
+
+    @Test
     public void authorizationModesReplaceAutoAndCoalesceForce() {
         TurnSignalController.AuthorizationGate gate =
                 new TurnSignalController.AuthorizationGate();
