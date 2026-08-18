@@ -6,7 +6,6 @@ import android.media.AudioManager;
 import android.media.AudioPlaybackConfiguration;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Process;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -35,6 +34,7 @@ final class MusicVisualizerRuntime {
     private boolean stopPending;
     private boolean stopRetryPending;
     private boolean stopRetryMustComplete;
+    private boolean stopRetryExhausted;
     private int stopRetryAttempts;
     private String error = "";
 
@@ -106,6 +106,10 @@ final class MusicVisualizerRuntime {
 
     private void activate(String reason) {
         if (!enabled || !awake || callbackRegistered) return;
+        if (stopRetryExhausted) {
+            stopRetryExhausted = false;
+            stopRetryAttempts = 0;
+        }
         if (audioManager == null) {
             setRuntimeError("audio_manager_unavailable", reason);
             return;
@@ -201,7 +205,7 @@ final class MusicVisualizerRuntime {
     }
 
     private void stopOutput(String reason) {
-        if (!outputActive) return;
+        if (!shouldAttemptStop(outputActive, stopRetryExhausted)) return;
         try {
             Method stopAudioOutput = audioManager.getClass().getMethod(
                     "stopAudioOutput", String.class);
@@ -209,6 +213,7 @@ final class MusicVisualizerRuntime {
             outputActive = false;
             stopRetryPending = false;
             stopRetryMustComplete = false;
+            stopRetryExhausted = false;
             stopRetryAttempts = 0;
             handler.removeCallbacks(retryStop);
             clearError();
@@ -230,10 +235,11 @@ final class MusicVisualizerRuntime {
                 stopRetryPending = true;
                 handler.postDelayed(retryStop, STOP_RETRY_MS);
             } else if (!stopRetryPending && stopRetryAttempts >= MAX_STOP_RETRIES) {
+                stopRetryMustComplete = false;
+                stopRetryExhausted = true;
                 emit("music_runtime_error", "error", "stop_retry_exhausted",
                         "source_event", reason, "session_active", true,
                         "retry_attempts", stopRetryAttempts);
-                handler.postDelayed(() -> Process.killProcess(Process.myPid()), 100);
             }
         }
     }
@@ -344,6 +350,10 @@ final class MusicVisualizerRuntime {
 
     static boolean shouldScheduleStopRetry(boolean pending, int attempts) {
         return !pending && attempts < MAX_STOP_RETRIES;
+    }
+
+    static boolean shouldAttemptStop(boolean outputActive, boolean retryExhausted) {
+        return outputActive && !retryExhausted;
     }
 
     static boolean shouldCancelStopRetry(

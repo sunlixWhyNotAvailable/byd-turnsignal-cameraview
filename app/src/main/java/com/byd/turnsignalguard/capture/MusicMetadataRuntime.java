@@ -432,6 +432,7 @@ final class MusicMetadataRuntime {
     }
 
     private void setError(String value, String reason) {
+        if (error.equals(value)) return;
         error = value;
         emit("music_metadata_error", "error", value, "source_event", reason,
                 "focus_package", lastFocusPackage, "published", published);

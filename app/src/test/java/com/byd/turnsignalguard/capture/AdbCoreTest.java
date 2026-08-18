@@ -99,7 +99,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(82, BuildConfig.VERSION_CODE);
+        assertEquals(83, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -428,6 +428,9 @@ public final class AdbCoreTest {
         assertTrue(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 0));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 3));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(true, 0));
+        assertTrue(MusicVisualizerRuntime.shouldAttemptStop(true, false));
+        assertFalse(MusicVisualizerRuntime.shouldAttemptStop(true, true));
+        assertFalse(MusicVisualizerRuntime.shouldAttemptStop(false, false));
         assertTrue(MusicVisualizerRuntime.shouldCancelStopRetry(
                 true, true, true, false));
         assertFalse(MusicVisualizerRuntime.shouldCancelStopRetry(
