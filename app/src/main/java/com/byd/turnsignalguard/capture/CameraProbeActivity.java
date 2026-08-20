@@ -100,6 +100,7 @@ public final class CameraProbeActivity extends Activity
     private static final int TAB_REVERSE_CAMERAS = 5;
     private static final int TAB_MUSIC = 6;
     private static final int TAB_SETTINGS = 7;
+    private static final int TAB_PARKING_CAMERAS = 8;
     private static final int REVERSE_INSPECTOR_POSITION = 0;
     private static final int REVERSE_INSPECTOR_CROP = 1;
     private static final int REVERSE_INSPECTOR_ROTATION = 2;
@@ -136,6 +137,18 @@ public final class CameraProbeActivity extends Activity
     static String reverseTransferLabel(int cameraIndex) {
         return cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
                 ? "← Перенести" : "Перенести →";
+    }
+
+    static String parkingCalibrationTransferLabel(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        return profile.id == ParkingCameraProfile.FR
+                || profile.id == ParkingCameraProfile.RR
+                || profile.id == ParkingCameraProfile.REAR
+                ? "← Перенести" : "Перенести →";
+    }
+
+    static int migrateStoredTab(int tab) {
+        return tab == TAB_CAMERA_CALIBRATION ? TAB_CAMERAS : tab;
     }
 
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
@@ -294,6 +307,7 @@ public final class CameraProbeActivity extends Activity
     private Button guardTabButton;
     private Button calibrationTabButton;
     private Button cameraTabButton;
+    private Button parkingTabButton;
     private Button cameraDebugTabButton;
     private Button directCameraDebugTabButton;
     private Button cameraAvmDebugSubtabButton;
@@ -301,7 +315,8 @@ public final class CameraProbeActivity extends Activity
     private Button musicTabButton;
     private Button settingsTabButton;
     private Button directCameraCloseButton;
-    private final Button[] calibrationCameraButtons = new Button[CameraProfile.COUNT];
+    private final Button[] calibrationCameraButtons = new Button[ParkingCameraProfile.COUNT];
+    private final Button[] parkingCameraButtons = new Button[ParkingCameraProfile.COUNT];
     private Button calibrationResetButton;
     private Button calibrationStopButton;
     private SeekBar calibrationRotationSlider;
@@ -322,6 +337,7 @@ public final class CameraProbeActivity extends Activity
     private View guardPage;
     private View calibrationPage;
     private View cameraPage;
+    private View parkingPage;
     private View cameraDebugPage;
     private View directCameraDebugPage;
     private View debugPage;
@@ -359,6 +375,27 @@ public final class CameraProbeActivity extends Activity
     private boolean debugHorizontal = true;
     private int selectedCameraId = CameraProfile.REAR_LEFT;
     private int calibrationCameraId = CameraProfile.REAR_LEFT;
+    private int calibrationParkingCameraId = ParkingCameraProfile.FL;
+    private int calibrationOriginTab = TAB_CAMERAS;
+    private boolean calibrationParkingMode;
+    private int selectedParkingCameraId = ParkingCameraProfile.FL;
+    private boolean parkingUiUpdating;
+    private final float[] parkingCameraX = new float[ParkingCameraProfile.COUNT];
+    private final float[] parkingCameraY = new float[ParkingCameraProfile.COUNT];
+    private final int[] parkingCameraScale = new int[ParkingCameraProfile.COUNT];
+    private EditText parkingDistanceInput;
+    private EditText parkingMaxSpeedInput;
+    private Switch parkingCameraSwitch;
+    private Switch parkingAddCentralSwitch;
+    private Switch parkingScaleSyncSwitch;
+    private SeekBar parkingScaleInput;
+    private TextView parkingScaleValue;
+    private FrameLayout parkingPositionHost;
+    private FrameLayout parkingPositionFrame;
+    private TextView parkingPositionHandle;
+    private Button parkingCalibrationButton;
+    private Button cameraCalibrationButton;
+    private Button calibrationBackButton;
     private boolean calibrationCopyPending;
     private final float[] cameraX = new float[CameraProfile.COUNT];
     private final float[] cameraY = new float[CameraProfile.COUNT];
@@ -635,6 +672,8 @@ public final class CameraProbeActivity extends Activity
             if (rearSharpTurnAngleInput != null) saveRearTriggerPolicy();
             if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
                     && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
+            if (parkingDistanceInput != null) saveParkingRule();
+            if (parkingMaxSpeedInput != null) saveParkingMaxSpeed();
             if (shouldIssueActivityStoppedClose(cameraTransition.pending())) {
                 activityClosePending = activityClosePending
                         || closeCamera("activity_stopped");
@@ -964,6 +1003,10 @@ public final class CameraProbeActivity extends Activity
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
+        if (selectedTab == TAB_CAMERA_CALIBRATION) {
+            closeSharedCalibration();
+            return;
+        }
         moveTaskToBack(true);
     }
 
@@ -1210,9 +1253,7 @@ public final class CameraProbeActivity extends Activity
     @Override
     public void onDewarpFallbackChanged(BlindSpotCameraView view) {
         if (view != calibrationPreview) return;
-        CameraProfile profile = CameraProfile.of(calibrationCameraId);
-        updateCalibrationDisplay(
-                CameraDewarpConfig.loadForProfile(preferences, profile).enabled);
+        updateCalibrationDisplay(loadCalibrationDewarpStored().enabled);
     }
 
     @Override
@@ -1238,8 +1279,13 @@ public final class CameraProbeActivity extends Activity
                 || stats.requestId != activeActivityCameraRequestId
                 || stats.contextGeneration != calibrationPreview.cameraInputGeneration()
                 || stats.inputGeneration != calibrationPreview.cameraInputGeneration()) return;
-        record("camera_dewarp_stats", CameraDewarpStatsEvent.calibration(
-                stats.requestId, calibrationCameraId, stats));
+        Object[] event = calibrationParkingMode
+                ? CameraDewarpStatsEvent.parkingCalibration(
+                        stats.requestId,
+                        ParkingCameraProfile.of(calibrationParkingCameraId), stats)
+                : CameraDewarpStatsEvent.calibration(
+                        stats.requestId, calibrationCameraId, stats);
+        record("camera_dewarp_stats", event);
     }
 
     @Override
@@ -1305,7 +1351,8 @@ public final class CameraProbeActivity extends Activity
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         guardTabButton = button("Поворотники");
         calibrationTabButton = button("Калібрування камер");
-        cameraTabButton = button("Камери");
+        cameraTabButton = button("Камери сліпих зон");
+        parkingTabButton = button("Камери паркування");
         reverseCameraTabButton = button("Задній хід");
         cameraDebugTabButton = button("Відладка");
         musicTabButton = button("Музика");
@@ -1313,13 +1360,15 @@ public final class CameraProbeActivity extends Activity
         guardTabButton.setTextSize(14);
         calibrationTabButton.setTextSize(14);
         cameraTabButton.setTextSize(14);
+        parkingTabButton.setTextSize(14);
         reverseCameraTabButton.setTextSize(14);
         cameraDebugTabButton.setTextSize(14);
         musicTabButton.setTextSize(14);
         settingsTabButton.setTextSize(14);
         tabs.addView(guardTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(cameraTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-        tabs.addView(calibrationTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        calibrationTabButton.setVisibility(View.GONE);
+        tabs.addView(parkingTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(reverseCameraTabButton,
                 new LinearLayout.LayoutParams(0, dp(48), 1));
         tabs.addView(musicTabButton, new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -1335,6 +1384,7 @@ public final class CameraProbeActivity extends Activity
         guardPage = guardScroll;
         calibrationPage = buildCameraCalibrationPanel();
         cameraPage = buildCameraPanel();
+        parkingPage = buildParkingCameraPanel();
         reverseCameraPage = buildReverseCameraPanel();
         musicPanel = new CameraProbeMusicPanel(this, preferences);
         musicPage = musicPanel.view();
@@ -1355,6 +1405,8 @@ public final class CameraProbeActivity extends Activity
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(cameraPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        pages.addView(parkingPage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(reverseCameraPage, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         pages.addView(musicPage, new FrameLayout.LayoutParams(
@@ -1370,6 +1422,7 @@ public final class CameraProbeActivity extends Activity
         calibrationTabButton.setOnClickListener(
                 view -> selectTab(TAB_CAMERA_CALIBRATION));
         cameraTabButton.setOnClickListener(view -> selectTab(TAB_CAMERAS));
+        parkingTabButton.setOnClickListener(view -> selectTab(TAB_PARKING_CAMERAS));
         reverseCameraTabButton.setOnClickListener(view -> selectTab(TAB_REVERSE_CAMERAS));
         musicTabButton.setOnClickListener(view -> selectTab(TAB_MUSIC));
         cameraDebugTabButton.setOnClickListener(view -> selectTab(TAB_CAMERA_DEBUG));
@@ -1379,6 +1432,7 @@ public final class CameraProbeActivity extends Activity
                 ? preferences.getInt("selected_tab", TAB_GUARD)
                 : preferences.getBoolean("camera_tab_selected", false)
                         ? TAB_CAMERAS : TAB_GUARD;
+        initialTab = migrateStoredTab(initialTab);
         if (initialTab == TAB_DIRECT_CAMERA_DEBUG) {
             selectDebugMode(0);
             initialTab = TAB_CAMERA_DEBUG;
@@ -1389,9 +1443,21 @@ public final class CameraProbeActivity extends Activity
     private void selectTab(int tab) {
         cancelCalibrationCropInput();
         cancelReverseCropInput();
+        if (tab == TAB_CAMERA_CALIBRATION && calibrationOriginTab != TAB_CAMERAS
+                && calibrationOriginTab != TAB_PARKING_CAMERAS) {
+            calibrationOriginTab = TAB_CAMERAS;
+        }
         if (tab == TAB_DIRECT_CAMERA_DEBUG) tab = TAB_CAMERA_DEBUG;
+        if (tab == TAB_CAMERA_CALIBRATION && selectedTab != TAB_CAMERA_CALIBRATION
+                && calibrationOriginTab == TAB_CAMERAS) {
+            calibrationParkingMode = false;
+        }
         if (!isValidTab(tab)) tab = TAB_GUARD;
         int previousTab = selectedTab;
+        if (previousTab == TAB_PARKING_CAMERAS && tab != TAB_PARKING_CAMERAS) {
+            saveParkingRule();
+            saveParkingMaxSpeed();
+        }
         if (previousTab != tab) {
             invalidStockSurfaceRetryUsed = false;
             if (previousTab != -1 && !requestedOpen && !cameraHandoffPending) {
@@ -1425,6 +1491,7 @@ public final class CameraProbeActivity extends Activity
         calibrationPage.setVisibility(
                 tab == TAB_CAMERA_CALIBRATION ? View.VISIBLE : View.GONE);
         cameraPage.setVisibility(tab == TAB_CAMERAS ? View.VISIBLE : View.GONE);
+        parkingPage.setVisibility(tab == TAB_PARKING_CAMERAS ? View.VISIBLE : View.GONE);
         reverseCameraPage.setVisibility(
                 tab == TAB_REVERSE_CAMERAS ? View.VISIBLE : View.GONE);
         musicPage.setVisibility(tab == TAB_MUSIC ? View.VISIBLE : View.GONE);
@@ -1441,12 +1508,14 @@ public final class CameraProbeActivity extends Activity
         calibrationTabButton.setBackgroundColor(
                 tabColor(tab == TAB_CAMERA_CALIBRATION));
         cameraTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERAS));
+        parkingTabButton.setBackgroundColor(tabColor(tab == TAB_PARKING_CAMERAS));
         reverseCameraTabButton.setBackgroundColor(
                 tabColor(tab == TAB_REVERSE_CAMERAS));
         musicTabButton.setBackgroundColor(tabColor(tab == TAB_MUSIC));
         cameraDebugTabButton.setBackgroundColor(tabColor(tab == TAB_CAMERA_DEBUG));
         settingsTabButton.setBackgroundColor(tabColor(tab == TAB_SETTINGS));
-        preferences.edit().putInt("selected_tab", tab).apply();
+        int persistedTab = tab == TAB_CAMERA_CALIBRATION ? calibrationOriginTab : tab;
+        preferences.edit().putInt("selected_tab", persistedTab).apply();
         if (!transitionStarted && previousTab != tab && isAutoPreviewTab(tab)) {
             armResumeAutoPreview();
         }
@@ -1462,13 +1531,14 @@ public final class CameraProbeActivity extends Activity
             if (!transitionStarted) maybeOpenProductionPreview();
         }
         if (!transitionStarted && tab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
+        if (tab == TAB_PARKING_CAMERAS) selectParkingCamera(selectedParkingCameraId);
     }
 
     private static boolean isValidTab(int tab) {
         return tab == TAB_GUARD || tab == TAB_CAMERAS || tab == TAB_CAMERA_DEBUG
                 || tab == TAB_DIRECT_CAMERA_DEBUG || tab == TAB_CAMERA_CALIBRATION
                 || tab == TAB_REVERSE_CAMERAS || tab == TAB_MUSIC
-                || tab == TAB_SETTINGS;
+                || tab == TAB_SETTINGS || tab == TAB_PARKING_CAMERAS;
     }
 
     private static int tabColor(boolean selected) {
@@ -2593,6 +2663,9 @@ public final class CameraProbeActivity extends Activity
         groupRow.addView(cameraRearGroupButton, new LinearLayout.LayoutParams(0, dp(44), 1));
         groupRow.addView(cameraFrontGroupButton, new LinearLayout.LayoutParams(0, dp(44), 1));
         settingsPane.addView(groupRow);
+        cameraCalibrationButton = button("Калібрування");
+        settingsPane.addView(cameraCalibrationButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
         FrameLayout policyHost = new FrameLayout(this);
         LinearLayout rearPolicy = new LinearLayout(this);
@@ -2966,8 +3039,351 @@ public final class CameraProbeActivity extends Activity
                     return false;
             }
         });
+        cameraCalibrationButton.setOnClickListener(view -> openSharedCalibration(
+                TAB_CAMERAS, false, selectedCameraId));
         selectCameraProfile(selectedCameraId, false);
         return panel;
+    }
+
+    private View buildParkingCameraPanel() {
+        ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
+        loadParkingCameraProfiles();
+        int savedParkingCamera = preferences.getInt(
+                "parking_camera_selected_profile", ParkingCameraProfile.FL);
+        selectedParkingCameraId = ParkingCameraProfile.isValid(savedParkingCamera)
+                ? savedParkingCamera : ParkingCameraProfile.FL;
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.HORIZONTAL);
+        panel.setPadding(0, dp(8), 0, 0);
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(0, 0, dp(12), 0);
+        LinearLayout selectors = new LinearLayout(this);
+        selectors.setOrientation(LinearLayout.VERTICAL);
+        String[] labels = {"Перед-ліво", "Перед", "Перед-право",
+                "Зад-праворуч", "Зад", "Зад-ліворуч"};
+        for (int id = 0; id < ParkingCameraProfile.COUNT; id++) {
+            final int selectedId = id;
+            parkingCameraButtons[id] = button(labels[id]);
+            parkingCameraButtons[id].setOnClickListener(view -> {
+                if (selectedId != selectedParkingCameraId) {
+                    saveParkingRule();
+                    saveParkingMaxSpeed();
+                }
+                selectParkingCamera(selectedId);
+            });
+            selectors.addView(parkingCameraButtons[id], new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+        }
+        controls.addView(selectors, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+
+        parkingCameraSwitch = new Switch(this);
+        parkingCameraSwitch.setText("Камера увімкнена");
+        parkingCameraSwitch.setTextColor(Color.WHITE);
+        controls.addView(parkingCameraSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+
+        LinearLayout distanceRow = new LinearLayout(this);
+        distanceRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView distanceLabel = label("Поріг");
+        distanceRow.addView(distanceLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
+        parkingDistanceInput = numberInput(settings.rule(selectedParkingCameraId).distanceCm);
+        parkingDistanceInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        distanceRow.addView(parkingDistanceInput, new LinearLayout.LayoutParams(dp(80), dp(42)));
+        distanceRow.addView(label("см"), new LinearLayout.LayoutParams(dp(40), dp(42)));
+        controls.addView(distanceRow);
+
+        parkingAddCentralSwitch = new Switch(this);
+        parkingAddCentralSwitch.setText("Додати центральну камеру");
+        parkingAddCentralSwitch.setTextColor(Color.WHITE);
+        controls.addView(parkingAddCentralSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
+
+        LinearLayout maxSpeedRow = new LinearLayout(this);
+        maxSpeedRow.setGravity(Gravity.CENTER_VERTICAL);
+        maxSpeedRow.addView(label("Макс. швидкість"), new LinearLayout.LayoutParams(0, dp(44), 1));
+        parkingMaxSpeedInput = numberInput(settings.maxSpeedKph());
+        parkingMaxSpeedInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        maxSpeedRow.addView(parkingMaxSpeedInput, new LinearLayout.LayoutParams(dp(80), dp(42)));
+        maxSpeedRow.addView(label("км/год"), new LinearLayout.LayoutParams(dp(64), dp(42)));
+        controls.addView(maxSpeedRow);
+
+        LinearLayout scaleRow = new LinearLayout(this);
+        scaleRow.setGravity(Gravity.CENTER_VERTICAL);
+        scaleRow.addView(label("Масштаб"), new LinearLayout.LayoutParams(dp(72), dp(48)));
+        parkingScaleInput = new SeekBar(this);
+        parkingScaleInput.setMax(BlindSpotOverlayController.MAX_SCALE_PERCENT
+                - BlindSpotOverlayController.MIN_SCALE_PERCENT);
+        scaleRow.addView(parkingScaleInput, new LinearLayout.LayoutParams(0, dp(48), 1));
+        parkingScaleValue = label("25%");
+        parkingScaleValue.setGravity(Gravity.CENTER);
+        scaleRow.addView(parkingScaleValue, new LinearLayout.LayoutParams(dp(56), dp(48)));
+        controls.addView(scaleRow);
+
+        parkingScaleSyncSwitch = new Switch(this);
+        parkingScaleSyncSwitch.setText("Синхронізувати");
+        parkingScaleSyncSwitch.setTextColor(Color.WHITE);
+        controls.addView(parkingScaleSyncSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
+        parkingCalibrationButton = button("Калібрування");
+        controls.addView(parkingCalibrationButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        LinearLayout preview = new LinearLayout(this);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        preview.addView(label("Розміщення на планшеті"), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(32)));
+        parkingPositionHost = new FrameLayout(this);
+        parkingPositionHost.setBackgroundColor(Color.rgb(32, 32, 32));
+        parkingPositionFrame = new FrameLayout(this);
+        parkingPositionFrame.setBackgroundColor(Color.rgb(60, 60, 60));
+        parkingPositionHandle = label("Камера");
+        parkingPositionHandle.setTextColor(Color.WHITE);
+        parkingPositionHandle.setGravity(Gravity.CENTER);
+        parkingPositionHandle.setBackgroundColor(Color.rgb(70, 110, 150));
+        parkingPositionFrame.addView(parkingPositionHandle, new FrameLayout.LayoutParams(
+                dp(120), dp(80)));
+        parkingPositionHost.addView(parkingPositionFrame, new FrameLayout.LayoutParams(
+                dp(1), dp(1)));
+        parkingPositionHost.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> updateParkingPositionHandle());
+        preview.addView(parkingPositionHost, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        parkingPositionFrame.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    view.getParent().requestDisallowInterceptTouchEvent(true);
+                    dragStartRawX = event.getRawX();
+                    dragStartRawY = event.getRawY();
+                    dragStartX = view.getX();
+                    dragStartY = view.getY();
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    moveParkingPositionHandle(dragStartX + event.getRawX() - dragStartRawX,
+                            dragStartY + event.getRawY() - dragStartRawY);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    captureParkingPositionHandle();
+                    saveParkingPlacement();
+                    view.getParent().requestDisallowInterceptTouchEvent(false);
+                    return true;
+                default:
+                    return false;
+            }
+        });
+
+        panel.addView(controls, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 0.42f));
+        View divider = new View(this);
+        divider.setBackgroundColor(Color.rgb(70, 70, 70));
+        panel.addView(divider, new LinearLayout.LayoutParams(dp(1),
+                LinearLayout.LayoutParams.MATCH_PARENT));
+        panel.addView(preview, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 0.58f));
+
+        parkingCameraSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (parkingUiUpdating) return;
+            ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(
+                    preferences, ParkingCameraProfile.of(selectedParkingCameraId));
+            settings.setRule(ParkingCameraProfile.of(selectedParkingCameraId),
+                    rule.withEnabled(checked));
+            notifyParkingSettingsChanged();
+        });
+        parkingAddCentralSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (parkingUiUpdating) return;
+            ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(
+                    preferences, ParkingCameraProfile.of(selectedParkingCameraId));
+            settings.setRule(ParkingCameraProfile.of(selectedParkingCameraId),
+                    rule.withAddCentral(checked));
+            notifyParkingSettingsChanged();
+        });
+        parkingDistanceInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveParkingRule();
+        });
+        parkingMaxSpeedInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) saveParkingMaxSpeed();
+        });
+        parkingScaleInput.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (parkingUiUpdating) return;
+                int scale = BlindSpotOverlayController.MIN_SCALE_PERCENT + progress;
+                parkingCameraScale[selectedParkingCameraId] = scale;
+                if (parkingScaleSyncSwitch.isChecked()) {
+                    for (int i = 0; i < parkingCameraScale.length; i++) {
+                        parkingCameraScale[i] = scale;
+                    }
+                }
+                parkingScaleValue.setText(scale + "%");
+                updateParkingPositionHandle();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { saveParkingPlacement(); }
+        });
+        parkingScaleSyncSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (parkingUiUpdating) return;
+            if (checked) {
+                int scale = parkingCameraScale[selectedParkingCameraId];
+                for (int i = 0; i < parkingCameraScale.length; i++) parkingCameraScale[i] = scale;
+            }
+            saveParkingPlacement();
+        });
+        parkingCalibrationButton.setOnClickListener(view -> openSharedCalibration(
+                TAB_PARKING_CAMERAS, true, selectedParkingCameraId));
+        selectParkingCamera(selectedParkingCameraId);
+        return panel;
+    }
+
+    private void loadParkingCameraProfiles() {
+        int[] defaultScale = {25, 25, 25, 25, 25, 25};
+        float[] defaultX = {0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f};
+        float[] defaultY = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            String prefix = parkingPlacementPrefix(profile);
+            parkingCameraScale[profile.id] = clamp(preferences.getInt(
+                    prefix + "scale", defaultScale[profile.id]),
+                    BlindSpotOverlayController.MIN_SCALE_PERCENT,
+                    BlindSpotOverlayController.MAX_SCALE_PERCENT);
+            parkingCameraX[profile.id] = clamp(preferences.getFloat(
+                    prefix + "x", defaultX[profile.id]), 0.0f, 1.0f);
+            parkingCameraY[profile.id] = clamp(preferences.getFloat(
+                    prefix + "y", defaultY[profile.id]), 0.0f, 1.0f);
+        }
+    }
+
+    private void selectParkingCamera(int cameraId) {
+        if (!ParkingCameraProfile.isValid(cameraId)) return;
+        selectedParkingCameraId = cameraId;
+        preferences.edit().putInt("parking_camera_selected_profile", cameraId).apply();
+        ParkingCameraProfile profile = ParkingCameraProfile.of(cameraId);
+        parkingUiUpdating = true;
+        ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(preferences, profile);
+        parkingCameraSwitch.setChecked(rule.enabled);
+        parkingDistanceInput.setText(String.valueOf(rule.distanceCm));
+        parkingAddCentralSwitch.setVisibility(profile.corner() ? View.VISIBLE : View.GONE);
+        parkingAddCentralSwitch.setText(profile.rear()
+                ? "Додати задню камеру" : "Додати передню камеру");
+        parkingAddCentralSwitch.setChecked(rule.addCentral);
+        parkingMaxSpeedInput.setText(String.valueOf(
+                ParkingCameraSettings.readMaxSpeed(preferences)));
+        parkingScaleSyncSwitch.setChecked(preferences.getBoolean(
+                parkingScaleSyncKey(), false));
+        parkingScaleInput.setProgress(parkingCameraScale[cameraId]
+                - BlindSpotOverlayController.MIN_SCALE_PERCENT);
+        parkingScaleValue.setText(parkingCameraScale[cameraId] + "%");
+        for (int i = 0; i < parkingCameraButtons.length; i++) {
+            parkingCameraButtons[i].setBackgroundColor(tabColor(i == cameraId));
+        }
+        parkingPositionHandle.setText(parkingCameraButtons[cameraId].getText());
+        parkingUiUpdating = false;
+        updateParkingPositionHandle();
+    }
+
+    private void saveParkingRule() {
+        if (parkingDistanceInput == null) return;
+        try {
+            int distance = ParkingCameraSettings.clampDistanceCm(
+                    Integer.parseInt(parkingDistanceInput.getText().toString()));
+            ParkingCameraProfile profile = ParkingCameraProfile.of(selectedParkingCameraId);
+            ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
+            settings.setRule(profile, settings.rule(profile).withDistanceCm(distance));
+            parkingDistanceInput.setText(String.valueOf(distance));
+            notifyParkingSettingsChanged();
+        } catch (NumberFormatException error) {
+            parkingDistanceInput.setText(String.valueOf(ParkingCameraSettings.readRule(
+                    preferences, ParkingCameraProfile.of(selectedParkingCameraId)).distanceCm));
+        }
+    }
+
+    private void saveParkingMaxSpeed() {
+        if (parkingMaxSpeedInput == null) return;
+        try {
+            int speed = ParkingCameraSettings.clampSpeed(
+                    Integer.parseInt(parkingMaxSpeedInput.getText().toString()));
+            new ParkingCameraSettings(preferences).setMaxSpeedKph(speed);
+            parkingMaxSpeedInput.setText(String.valueOf(speed));
+            notifyParkingSettingsChanged();
+        } catch (NumberFormatException error) {
+            parkingMaxSpeedInput.setText(String.valueOf(
+                    ParkingCameraSettings.readMaxSpeed(preferences)));
+        }
+    }
+
+    private void updateParkingPositionHandle() {
+        if (parkingPositionHost == null || parkingPositionFrame == null) return;
+        int hostWidth = parkingPositionHost.getWidth();
+        int hostHeight = parkingPositionHost.getHeight();
+        if (hostWidth <= 0 || hostHeight <= 0) return;
+        int width = Math.max(dp(72), Math.round(hostWidth
+                * parkingCameraScale[selectedParkingCameraId] / 100.0f));
+        int height = Math.max(dp(48), Math.round(width * 0.75f));
+        FrameLayout.LayoutParams handleParams =
+                (FrameLayout.LayoutParams) parkingPositionHandle.getLayoutParams();
+        handleParams.width = FrameLayout.LayoutParams.MATCH_PARENT;
+        handleParams.height = FrameLayout.LayoutParams.MATCH_PARENT;
+        parkingPositionHandle.setLayoutParams(handleParams);
+        parkingPositionFrame.getLayoutParams().width = width;
+        parkingPositionFrame.getLayoutParams().height = height;
+        parkingPositionFrame.requestLayout();
+        float maxX = Math.max(0, hostWidth - width);
+        float maxY = Math.max(0, hostHeight - height);
+        parkingPositionFrame.setX(maxX * parkingCameraX[selectedParkingCameraId]);
+        parkingPositionFrame.setY(maxY * parkingCameraY[selectedParkingCameraId]);
+    }
+
+    private void moveParkingPositionHandle(float x, float y) {
+        if (parkingPositionHost == null || parkingPositionFrame == null) return;
+        float maxX = Math.max(0, parkingPositionHost.getWidth()
+                - parkingPositionFrame.getWidth());
+        float maxY = Math.max(0, parkingPositionHost.getHeight()
+                - parkingPositionFrame.getHeight());
+        parkingPositionFrame.setX(clamp(x, 0.0f, maxX));
+        parkingPositionFrame.setY(clamp(y, 0.0f, maxY));
+    }
+
+    private void captureParkingPositionHandle() {
+        if (parkingPositionHost == null || parkingPositionFrame == null) return;
+        float maxX = Math.max(0, parkingPositionHost.getWidth()
+                - parkingPositionFrame.getWidth());
+        float maxY = Math.max(0, parkingPositionHost.getHeight()
+                - parkingPositionFrame.getHeight());
+        parkingCameraX[selectedParkingCameraId] = maxX == 0 ? 0
+                : parkingPositionFrame.getX() / maxX;
+        parkingCameraY[selectedParkingCameraId] = maxY == 0 ? 0
+                : parkingPositionFrame.getY() / maxY;
+    }
+
+    private void saveParkingPlacement() {
+        if (parkingPositionHost != null) captureParkingPositionHandle();
+        SharedPreferences.Editor editor = preferences.edit()
+                .putBoolean(parkingScaleSyncKey(), parkingScaleSyncSwitch != null
+                        && parkingScaleSyncSwitch.isChecked());
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            String prefix = parkingPlacementPrefix(profile);
+            editor.putInt(prefix + "scale", parkingCameraScale[profile.id])
+                    .putFloat(prefix + "x", parkingCameraX[profile.id])
+                    .putFloat(prefix + "y", parkingCameraY[profile.id]);
+        }
+        editor.apply();
+        notifyParkingSettingsChanged();
+    }
+
+    private static String parkingPlacementPrefix(ParkingCameraProfile profile) {
+        return "parking_camera_" + profile.wireName.toLowerCase(Locale.US) + "_";
+    }
+
+    private static String parkingScaleSyncKey() {
+        return "parking_camera_scale_sync";
+    }
+
+    private void notifyParkingSettingsChanged() {
+        CameraHelperService.parkingCameraSettingsChanged(this);
+    }
+
+    private void notifyCalibrationSettingsChanged() {
+        if (calibrationParkingMode) CameraHelperService.parkingCameraSettingsChanged(this);
+        else CameraHelperService.cameraSettingsChanged(this);
     }
 
     private View buildCropHeader(String title, boolean reverse, int stage) {
@@ -3194,6 +3610,11 @@ public final class CameraProbeActivity extends Activity
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(0, dp(8), 0, 0);
 
+        calibrationBackButton = button("Назад");
+        calibrationBackButton.setOnClickListener(view -> closeSharedCalibration());
+        panel.addView(calibrationBackButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+
         calibrationStatus = statusText("Пошук direct camera...");
         panel.addView(calibrationStatus, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
@@ -3201,12 +3622,15 @@ public final class CameraProbeActivity extends Activity
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
         String[] cameraNames = {"Задня ліва", "Задня права",
-                "Передня ліва", "Передня права"};
+                "Передня ліва", "Передня права", "Перед", "Зад"};
         for (int cameraId = 0; cameraId < calibrationCameraButtons.length; cameraId++) {
             final int selectedId = cameraId;
             calibrationCameraButtons[cameraId] = button(cameraNames[cameraId]);
             calibrationCameraButtons[cameraId].setOnClickListener(
-                    view -> selectCalibrationCamera(selectedId, true));
+                    view -> selectCalibrationLogicalCamera(selectedId, true));
+            if (cameraId >= CameraProfile.COUNT) {
+                calibrationCameraButtons[cameraId].setVisibility(View.GONE);
+            }
             controls.addView(calibrationCameraButtons[cameraId],
                     new LinearLayout.LayoutParams(0, dp(44), 1));
         }
@@ -3767,7 +4191,7 @@ public final class CameraProbeActivity extends Activity
             updateCalibrationDisplay(value.enabled);
         }
         CameraProfile previewProfile = CameraProfile.of(selectedCameraId);
-        if (!reverse && cameraPreview != null
+        if (!reverse && !calibrationParkingMode && cameraPreview != null
                 && previewProfile.id == calibrationProfile.id) {
             cameraPreview.applyDewarpConfig(value);
         }
@@ -3777,7 +4201,7 @@ public final class CameraProbeActivity extends Activity
         }
         if (!persist) return;
         if (reverse) CameraHelperService.reverseCameraSettingsChanged(this);
-        else CameraHelperService.cameraSettingsChanged(this);
+        else notifyCalibrationSettingsChanged();
         record("camera_dewarp_changed", "scope", selectedDewarpScope(reverse),
                 "lens", lens, "enabled", value.enabled,
                 "fov_degrees", value.fovDegrees,
@@ -3792,6 +4216,10 @@ public final class CameraProbeActivity extends Activity
 
     private int selectedDewarpLens(boolean reverse) {
         if (!reverse) {
+            if (calibrationParkingMode) {
+                return CameraDewarpConfig.lensFor(
+                        ParkingCameraProfile.of(calibrationParkingCameraId));
+            }
             return CameraDewarpConfig.lensFor(CameraProfile.of(calibrationCameraId));
         }
         if (reverseCameraEditor == null || reverseCameraEditor.selectedCamera()
@@ -3802,6 +4230,10 @@ public final class CameraProbeActivity extends Activity
 
     private CameraDewarpConfig loadSelectedDewarpConfig(boolean reverse) {
         if (!reverse) {
+            if (calibrationParkingMode) {
+                return CameraDewarpConfig.loadForParking(preferences,
+                        ParkingCameraProfile.of(calibrationParkingCameraId));
+            }
             return CameraDewarpConfig.loadForProfile(
                     preferences, CameraProfile.of(calibrationCameraId));
         }
@@ -3812,8 +4244,7 @@ public final class CameraProbeActivity extends Activity
     private void saveSelectedDewarpConfig(
             boolean reverse, CameraDewarpConfig value) {
         if (!reverse) {
-            CameraDewarpConfig.saveForProfile(
-                    preferences, CameraProfile.of(calibrationCameraId), value);
+            saveCalibrationDewarpStored(value);
             return;
         }
         CameraDewarpConfig.saveForReverse(
@@ -3821,23 +4252,23 @@ public final class CameraProbeActivity extends Activity
     }
 
     private String selectedDewarpScope(boolean reverse) {
-        return reverse ? "reverse_" + reverseCameraEditor.selectedCamera()
+        if (reverse) return "reverse_" + reverseCameraEditor.selectedCamera();
+        return calibrationParkingMode
+                ? "parking_" + ParkingCameraProfile.of(calibrationParkingCameraId).wireName
                 : "overlay_" + CameraProfile.of(calibrationCameraId).wireName;
     }
 
     private void refreshDewarpCrops(boolean reverse) {
         CameraProfile calibrationProfile = CameraProfile.of(calibrationCameraId);
         if (!reverse && calibrationCropOverlay != null) {
-            CameraDewarpConfig dewarp = CameraDewarpConfig.loadForProfile(
-                    preferences, calibrationProfile);
-            calibrationRawCrop = DirectCameraCrop.load(preferences, calibrationProfile);
-            calibrationCorrectedCrop = DirectCameraCrop.loadCorrected(
-                    preferences, calibrationProfile, calibrationRawCrop);
+            CameraDewarpConfig dewarp = loadCalibrationDewarpStored();
+            calibrationRawCrop = loadCalibrationRawStored();
+            calibrationCorrectedCrop = loadCalibrationCorrectedStored(calibrationRawCrop);
             applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
             updateCalibrationDisplay(dewarp.enabled);
         }
         CameraProfile previewProfile = CameraProfile.of(selectedCameraId);
-        if (!reverse && cameraPreview != null
+        if (!reverse && !calibrationParkingMode && cameraPreview != null
                 && previewProfile.id == calibrationProfile.id) {
             DirectCameraCrop raw = DirectCameraCrop.load(preferences, previewProfile);
             cameraPreview.applyRawFallbackCrop(raw);
@@ -4075,9 +4506,81 @@ public final class CameraProbeActivity extends Activity
         return panel;
     }
 
+    private CameraProfile parkingPreviewProfile(ParkingCameraProfile profile) {
+        switch (profile.id) {
+            case ParkingCameraProfile.FL: return CameraProfile.of(CameraProfile.FRONT_LEFT);
+            case ParkingCameraProfile.FR: return CameraProfile.of(CameraProfile.FRONT_RIGHT);
+            case ParkingCameraProfile.RR: return CameraProfile.of(CameraProfile.REAR_RIGHT);
+            case ParkingCameraProfile.RL: return CameraProfile.of(CameraProfile.REAR_LEFT);
+            case ParkingCameraProfile.FRONT: return CameraProfile.of(CameraProfile.FRONT_LEFT);
+            case ParkingCameraProfile.REAR: return CameraProfile.of(CameraProfile.REAR_LEFT);
+            default: throw new IllegalArgumentException("invalid parking profile");
+        }
+    }
+
+    private DirectCameraCrop loadCalibrationRawStored() {
+        if (calibrationParkingMode) {
+            return DirectCameraCrop.load(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId));
+        }
+        return DirectCameraCrop.load(preferences, CameraProfile.of(calibrationCameraId));
+    }
+
+    private DirectCameraCrop loadCalibrationCorrectedStored(DirectCameraCrop raw) {
+        if (calibrationParkingMode) {
+            return DirectCameraCrop.loadCorrected(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId), raw);
+        }
+        return DirectCameraCrop.loadCorrected(preferences,
+                CameraProfile.of(calibrationCameraId), raw);
+    }
+
+    private CameraDewarpConfig loadCalibrationDewarpStored() {
+        if (calibrationParkingMode) {
+            return CameraDewarpConfig.loadForParking(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId));
+        }
+        return CameraDewarpConfig.loadForProfile(preferences, CameraProfile.of(calibrationCameraId));
+    }
+
+    private void saveCalibrationRawStored(DirectCameraCrop crop) {
+        if (calibrationParkingMode) {
+            DirectCameraCrop.save(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId), crop);
+        } else {
+            DirectCameraCrop.save(preferences, CameraProfile.of(calibrationCameraId), crop);
+        }
+    }
+
+    private void saveCalibrationCorrectedStored(DirectCameraCrop crop) {
+        if (calibrationParkingMode) {
+            DirectCameraCrop.saveCorrected(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId), crop);
+        } else {
+            DirectCameraCrop.saveCorrected(preferences, CameraProfile.of(calibrationCameraId), crop);
+        }
+    }
+
+    private void saveCalibrationDewarpStored(CameraDewarpConfig value) {
+        if (calibrationParkingMode) {
+            CameraDewarpConfig.saveForParking(preferences,
+                    ParkingCameraProfile.of(calibrationParkingCameraId), value);
+        } else {
+            CameraDewarpConfig.saveForProfile(preferences,
+                    CameraProfile.of(calibrationCameraId), value);
+        }
+    }
+
     private void selectCalibrationCamera(int cameraId, boolean open) {
         cancelCalibrationCropInput();
         if (!CameraProfile.isValid(cameraId)) return;
+        calibrationParkingMode = false;
+        String[] labels = {"Задня ліва", "Задня права", "Передня ліва", "Передня права"};
+        for (int i = 0; i < calibrationCameraButtons.length; i++) {
+            calibrationCameraButtons[i].setVisibility(i < CameraProfile.COUNT
+                    ? View.VISIBLE : View.GONE);
+            if (i < labels.length) calibrationCameraButtons[i].setText(labels[i]);
+        }
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
                 && calibrationCameraId == cameraId) return;
@@ -4098,14 +4601,107 @@ public final class CameraProbeActivity extends Activity
         updateCalibrationDisplay(dewarp.enabled);
         updateDewarpUi(false, dewarp);
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
-            calibrationCameraButtons[i].setBackgroundColor(tabColor(i == cameraId));
+            if (calibrationCameraButtons[i].getVisibility() == View.VISIBLE) {
+                calibrationCameraButtons[i].setBackgroundColor(tabColor(i == cameraId));
+            }
         }
         record("calibration_camera_selected", "camera_id", cameraId,
                 "camera", profile.wireName, "preview_index", profile.previewIndex);
         if (open && !switchingOpenCamera) openCalibrationCamera(profile.previewIndex);
     }
 
+    private void selectCalibrationLogicalCamera(int logicalId, boolean open) {
+        if (!calibrationParkingMode) {
+            if (logicalId < CameraProfile.COUNT) {
+                selectCalibrationCamera(logicalId, open);
+            }
+            return;
+        }
+        if (!ParkingCameraProfile.isValid(logicalId)) return;
+        cancelCalibrationCropInput();
+        if (open && requestedOpen && activePreview != calibrationPreview) return;
+        if (open && requestedOpen && activePreview == calibrationPreview
+                && calibrationParkingCameraId == logicalId) return;
+        boolean switchingOpenCamera = open && requestedOpen
+                && activePreview == calibrationPreview
+                && calibrationParkingCameraId != logicalId;
+        calibrationParkingCameraId = logicalId;
+        String[] labels = {"Перед-ліво", "Перед", "Перед-право",
+                "Зад-праворуч", "Зад", "Зад-ліворуч"};
+        for (int i = 0; i < calibrationCameraButtons.length; i++) {
+            calibrationCameraButtons[i].setVisibility(View.VISIBLE);
+            calibrationCameraButtons[i].setText(labels[i]);
+        }
+        CameraProfile previewProfile = parkingPreviewProfile(ParkingCameraProfile.of(logicalId));
+        calibrationCameraId = previewProfile.id;
+        if (switchingOpenCamera) closeCameraForTransition("parking_calibration_camera_changed");
+        calibrationRawCrop = loadCalibrationRawStored();
+        calibrationCorrectedCrop = loadCalibrationCorrectedStored(calibrationRawCrop);
+        CameraDewarpConfig dewarp = loadCalibrationDewarpStored();
+        calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
+        applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
+        calibrationPreview.applyDewarpConfig(dewarp);
+        updateCalibrationDisplay(dewarp.enabled);
+        updateDewarpUi(false, dewarp);
+        for (int i = 0; i < calibrationCameraButtons.length; i++) {
+            calibrationCameraButtons[i].setBackgroundColor(tabColor(i == logicalId));
+            calibrationCameraButtons[i].setVisibility(View.VISIBLE);
+        }
+        record("parking_calibration_camera_selected", "camera_id", logicalId,
+                "camera", ParkingCameraProfile.of(logicalId).wireName,
+                "preview_index", previewProfile.previewIndex);
+        if (open && !switchingOpenCamera) {
+            openCalibrationCamera(ParkingCameraProfile.of(logicalId).physicalCameraIndex);
+        }
+    }
+
+    private void openSharedCalibration(int originTab, boolean parking, int logicalId) {
+        calibrationOriginTab = originTab == TAB_PARKING_CAMERAS
+                ? TAB_PARKING_CAMERAS : TAB_CAMERAS;
+        calibrationParkingMode = parking;
+        if (parking) {
+            calibrationParkingCameraId = ParkingCameraProfile.isValid(logicalId)
+                    ? logicalId : ParkingCameraProfile.FL;
+        } else {
+            calibrationCameraId = CameraProfile.isValid(logicalId)
+                    ? logicalId : CameraProfile.REAR_LEFT;
+        }
+        selectTab(TAB_CAMERA_CALIBRATION);
+        if (parking) selectCalibrationLogicalCamera(calibrationParkingCameraId, true);
+        else selectCalibrationCamera(calibrationCameraId, true);
+    }
+
+    private void closeSharedCalibration() {
+        if (selectedTab != TAB_CAMERA_CALIBRATION) return;
+        cancelCalibrationCropInput();
+        stopCalibrationCopies(true);
+        closeCamera("calibration_back");
+        int origin = calibrationOriginTab == TAB_PARKING_CAMERAS
+                ? TAB_PARKING_CAMERAS : TAB_CAMERAS;
+        if (origin == TAB_PARKING_CAMERAS) {
+            selectedParkingCameraId = calibrationParkingCameraId;
+        } else {
+            selectedCameraId = calibrationCameraId;
+            preferences.edit().putInt("camera_selected_profile", selectedCameraId).apply();
+        }
+        selectTab(origin);
+        if (origin == TAB_PARKING_CAMERAS) {
+            selectParkingCamera(calibrationParkingCameraId);
+        } else {
+            selectCameraProfile(calibrationCameraId, true);
+        }
+    }
+
     private void saveCameraCalibrationPreset() {
+        if (calibrationParkingMode) {
+            ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
+            CameraCalibrationPreset.saveParking(preferences, profile);
+            updateCalibrationCropReadouts();
+            notifyCalibrationSettingsChanged();
+            Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+            record("parking_calibration_preset_saved", "camera", profile.wireName);
+            return;
+        }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.saveCamera(preferences, profile);
         updateCalibrationCropReadouts();
@@ -4115,6 +4711,17 @@ public final class CameraProbeActivity extends Activity
 
     private void loadCameraCalibrationPreset() {
         cancelCalibrationCropInput();
+        if (calibrationParkingMode) {
+            ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
+            if (!CameraCalibrationPreset.loadParking(preferences, profile)) {
+                Toast.makeText(this, "Пресет відсутній або некоректний",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            refreshCalibrationSettings("parking_preset_loaded");
+            Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+            return;
+        }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         if (!CameraCalibrationPreset.loadCamera(preferences, profile)) {
             Toast.makeText(this, "Пресет відсутній або некоректний",
@@ -4127,6 +4734,14 @@ public final class CameraProbeActivity extends Activity
 
     private void mirrorCameraCalibration() {
         cancelCalibrationCropInput();
+        if (calibrationParkingMode) {
+            ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
+            if (!CameraCalibrationPreset.mirrorParking(preferences, profile)) return;
+            refreshCalibrationSettings("parking_calibration_mirrored");
+            Toast.makeText(this, "Налаштування віддзеркалено",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.mirrorCamera(preferences, profile);
         refreshCalibrationSettings("camera_calibration_mirrored");
@@ -4136,22 +4751,24 @@ public final class CameraProbeActivity extends Activity
 
     private void toggleCalibrationOutputMirror() {
         cancelCalibrationCropInput();
-        CameraProfile profile = CameraProfile.of(calibrationCameraId);
         boolean mirror = !currentCalibrationCrop().mirrorHorizontally;
         calibrationRawCrop = calibrationRawCrop.withMirrorHorizontally(mirror);
         calibrationCorrectedCrop = calibrationCorrectedCrop.withMirrorHorizontally(mirror);
-        DirectCameraCrop.save(preferences, profile, calibrationRawCrop);
-        DirectCameraCrop.saveCorrected(preferences, profile, calibrationCorrectedCrop);
+        saveCalibrationRawStored(calibrationRawCrop);
+        saveCalibrationCorrectedStored(calibrationCorrectedCrop);
         updateCalibrationUi(currentCalibrationCrop());
         renderCalibrationCrop();
-        if (cameraPreview != null && selectedCameraId == profile.id) {
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        if (!calibrationParkingMode && cameraPreview != null && selectedCameraId == profile.id) {
             cameraPreview.applyRawFallbackCrop(calibrationRawCrop);
             cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
             updateProductionPreviewSize();
         }
-        CameraHelperService.cameraSettingsChanged(this);
+        notifyCalibrationSettingsChanged();
         record("direct_output_mirror_changed", "camera_id", profile.id,
-                "camera", profile.wireName, "mirror", mirror);
+                "camera", calibrationParkingMode
+                        ? ParkingCameraProfile.of(calibrationParkingCameraId).wireName
+                        : profile.wireName, "mirror", mirror);
     }
 
     private void saveReverseCalibrationPreset() {
@@ -4188,11 +4805,9 @@ public final class CameraProbeActivity extends Activity
 
     private void refreshCalibrationSettings(String reason) {
         CameraProfile calibrationProfile = CameraProfile.of(calibrationCameraId);
-        CameraDewarpConfig calibrationDewarp = CameraDewarpConfig.loadForProfile(
-                preferences, calibrationProfile);
-        calibrationRawCrop = DirectCameraCrop.load(preferences, calibrationProfile);
-        calibrationCorrectedCrop = DirectCameraCrop.loadCorrected(
-                preferences, calibrationProfile, calibrationRawCrop);
+        CameraDewarpConfig calibrationDewarp = loadCalibrationDewarpStored();
+        calibrationRawCrop = loadCalibrationRawStored();
+        calibrationCorrectedCrop = loadCalibrationCorrectedStored(calibrationRawCrop);
         if (calibrationPreview != null) {
             calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
             applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
@@ -4201,7 +4816,7 @@ public final class CameraProbeActivity extends Activity
         }
 
         CameraProfile previewProfile = CameraProfile.of(selectedCameraId);
-        if (cameraPreview != null) {
+        if (!calibrationParkingMode && cameraPreview != null) {
             DirectCameraCrop raw = DirectCameraCrop.load(preferences, previewProfile);
             cameraPreview.applyRawFallbackCrop(raw);
             applyDewarpSourceRoi(cameraPreview, raw);
@@ -4225,7 +4840,7 @@ public final class CameraProbeActivity extends Activity
             if (reverseCalibrationCameraIndex > 0) updateReverseCalibrationDisplay();
         }
         updateCalibrationCropReadouts();
-        CameraHelperService.cameraSettingsChanged(this);
+        notifyCalibrationSettingsChanged();
         CameraHelperService.reverseCameraSettingsChanged(this);
         record(reason, "camera_id", calibrationCameraId,
                 "reverse_camera_index", reverseCalibrationCameraIndex);
@@ -4292,27 +4907,25 @@ public final class CameraProbeActivity extends Activity
 
     private void saveCalibrationCrop(DirectCameraCrop crop) {
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
-        CameraDewarpConfig dewarp = CameraDewarpConfig.loadForProfile(
-                preferences, profile);
+        CameraDewarpConfig dewarp = loadCalibrationDewarpStored();
         if (!dewarp.enabled || calibrationPreview.usesRawFallback()) {
             saveCalibrationRawCrop(crop);
             return;
         }
         calibrationCorrectedCrop = calibrationRawCrop.withGeometry(crop);
-        DirectCameraCrop.save(preferences, profile, calibrationRawCrop);
-        DirectCameraCrop.saveCorrected(preferences, profile, calibrationCorrectedCrop);
+        saveCalibrationRawStored(calibrationRawCrop);
+        saveCalibrationCorrectedStored(calibrationCorrectedCrop);
         finishCalibrationCropSave("corrected", calibrationCorrectedCrop, dewarp);
     }
 
     private void saveCalibrationRawCrop(DirectCameraCrop crop) {
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
-        CameraDewarpConfig dewarp = CameraDewarpConfig.loadForProfile(
-                preferences, profile);
+        CameraDewarpConfig dewarp = loadCalibrationDewarpStored();
         calibrationRawCrop = calibrationRawCrop.withGeometry(crop);
         calibrationCorrectedCrop = DirectCameraCrop.preserveCenterAndAspect(
                 calibrationCorrectedCrop, calibrationRawCrop);
-        DirectCameraCrop.save(preferences, profile, calibrationRawCrop);
-        DirectCameraCrop.saveCorrected(preferences, profile, calibrationCorrectedCrop);
+        saveCalibrationRawStored(calibrationRawCrop);
+        saveCalibrationCorrectedStored(calibrationCorrectedCrop);
         applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
         updateCalibrationDisplay(dewarp.enabled);
         finishCalibrationCropSave("raw", calibrationRawCrop, dewarp);
@@ -4321,7 +4934,10 @@ public final class CameraProbeActivity extends Activity
     private void finishCalibrationCropSave(
             String stage, DirectCameraCrop crop, CameraDewarpConfig dewarp) {
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
-        record("direct_crop_saved", "camera_id", profile.id, "camera", profile.wireName,
+        record("direct_crop_saved", "camera_id", profile.id, "camera",
+                calibrationParkingMode
+                        ? ParkingCameraProfile.of(calibrationParkingCameraId).wireName
+                        : profile.wireName,
                 "stage", stage,
                 "dewarp_enabled", dewarp.enabled,
                 "dewarp_projection", CameraDewarpConfig.projectionLabel(dewarp.projection),
@@ -4331,22 +4947,25 @@ public final class CameraProbeActivity extends Activity
                 "rotation_degrees", crop.rotationDegrees,
                 "rotation_mode", CameraRotation.modeLabel(crop.rotationMode),
                 "output_aspect", crop.outputAspect());
-        updateCameraPositionHandle();
-        updateProductionPreviewSize();
-        CameraHelperService.cameraSettingsChanged(this);
+        if (!calibrationParkingMode) {
+            updateCameraPositionHandle();
+            updateProductionPreviewSize();
+        }
+        notifyCalibrationSettingsChanged();
     }
 
     private void resetCalibrationCrop() {
         cancelCalibrationCropInput();
-        DirectCameraCrop crop = DirectCameraCrop.defaultFor(
-                CameraProfile.of(calibrationCameraId).right(),
-                calibrationRawCrop.aspectMode);
+        DirectCameraCrop crop = calibrationParkingMode
+                ? DirectCameraCrop.defaultFor(
+                        ParkingCameraProfile.of(calibrationParkingCameraId))
+                : DirectCameraCrop.defaultFor(
+                        CameraProfile.of(calibrationCameraId).right(),
+                        calibrationRawCrop.aspectMode);
         calibrationRawCrop = crop;
         calibrationCorrectedCrop = crop.centered();
-        DirectCameraCrop.saveCorrected(preferences,
-                CameraProfile.of(calibrationCameraId), calibrationCorrectedCrop);
-        updateCalibrationDisplay(CameraDewarpConfig.loadForProfile(
-                preferences, CameraProfile.of(calibrationCameraId)).enabled);
+        saveCalibrationCorrectedStored(calibrationCorrectedCrop);
+        updateCalibrationDisplay(loadCalibrationDewarpStored().enabled);
         saveCalibrationRawCrop(crop);
     }
 
@@ -4360,7 +4979,10 @@ public final class CameraProbeActivity extends Activity
 
     private DirectCameraCrop currentCalibrationCrop() {
         if (calibrationCropOverlay == null) {
-            return DirectCameraCrop.defaultFor(CameraProfile.of(calibrationCameraId));
+            return calibrationParkingMode
+                    ? DirectCameraCrop.defaultFor(
+                            ParkingCameraProfile.of(calibrationParkingCameraId))
+                    : DirectCameraCrop.defaultFor(CameraProfile.of(calibrationCameraId));
         }
         boolean corrected = calibrationDewarpSwitch != null
                 && calibrationDewarpSwitch.isChecked()
@@ -4413,13 +5035,18 @@ public final class CameraProbeActivity extends Activity
         calibrationCropInputButtons[CROP_STAGE_RAW].setEnabled(true);
         calibrationCropInputButtons[CROP_STAGE_CORRECTED]
                 .setEnabled(ui.correctedEditable);
-        CameraProfile profile = CameraProfile.of(calibrationCameraId);
         if (calibrationPresetLoadButton != null) {
-            calibrationPresetLoadButton.setEnabled(
-                    CameraCalibrationPreset.hasCamera(preferences, profile));
+            calibrationPresetLoadButton.setEnabled(calibrationParkingMode
+                    ? CameraCalibrationPreset.hasParking(preferences,
+                            ParkingCameraProfile.of(calibrationParkingCameraId))
+                    : CameraCalibrationPreset.hasCamera(preferences,
+                            CameraProfile.of(calibrationCameraId)));
         }
         if (calibrationMirrorButton != null) {
-            calibrationMirrorButton.setText(calibrationTransferLabel(profile.right()));
+            calibrationMirrorButton.setText(calibrationParkingMode
+                    ? parkingCalibrationTransferLabel(
+                            ParkingCameraProfile.of(calibrationParkingCameraId))
+                    : calibrationTransferLabel(CameraProfile.of(calibrationCameraId).right()));
         }
         if (calibrationOutputMirrorButton != null) {
             calibrationOutputMirrorButton.setBackgroundColor(
@@ -4477,12 +5104,13 @@ public final class CameraProbeActivity extends Activity
         Surface surface = calibrationPreview.getCameraSurface();
         if (surface != null && surface.isValid()) {
             CameraProfile profile = CameraProfile.of(calibrationCameraId);
-            calibrationRawCrop = DirectCameraCrop.load(preferences, profile);
+            calibrationRawCrop = loadCalibrationRawStored();
             calibrationPreview.applyDirectCameraCrop(FULL_CALIBRATION_CROP);
             applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
-            calibrationPreview.applyDewarpConfig(
-                    CameraDewarpConfig.loadForProfile(preferences, profile));
-            openCalibrationCamera(CameraProfile.of(calibrationCameraId).previewIndex);
+            calibrationPreview.applyDewarpConfig(loadCalibrationDewarpStored());
+            openCalibrationCamera(calibrationParkingMode
+                    ? ParkingCameraProfile.of(calibrationParkingCameraId).physicalCameraIndex
+                    : profile.previewIndex);
         }
     }
 
@@ -7651,6 +8279,7 @@ public final class CameraProbeActivity extends Activity
 
     static boolean isOverlayCameraEvent(String kind, String owner) {
         return (CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(owner)
+                || CameraHelperMain.CAMERA_OWNER_PARKING.equals(owner)
                 || CameraHelperMain.CAMERA_OWNER_REVERSE.equals(owner))
                 && ("camera_opened".equals(kind)
                         || "camera_error".equals(kind)

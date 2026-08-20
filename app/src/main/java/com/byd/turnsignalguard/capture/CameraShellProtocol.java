@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 22;
+    static final int VERSION = 23;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -106,7 +106,7 @@ final class CameraShellProtocol {
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     CameraRotation.DEFAULT_DEGREES, CameraRotation.MODE_FIT, cornerRadiusDp,
                     CameraDewarpConfig.disabled(
-                            CameraDewarpConfig.lensFor(CameraProfile.of(cameraId))));
+                    lensForOverlayId(cameraId)));
         }
 
         OverlaySpec(
@@ -117,7 +117,7 @@ final class CameraShellProtocol {
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, CameraRotation.MODE_FIT, cornerRadiusDp,
                     CameraDewarpConfig.disabled(
-                            CameraDewarpConfig.lensFor(CameraProfile.of(cameraId))));
+                    lensForOverlayId(cameraId)));
         }
 
         OverlaySpec(
@@ -191,7 +191,7 @@ final class CameraShellProtocol {
             this.bufferQuality = bufferQuality;
             this.dewarp = dewarp == null
                     ? CameraDewarpConfig.disabled(
-                            CameraDewarpConfig.lensFor(CameraProfile.of(cameraId)))
+                    lensForOverlayId(cameraId))
                     : dewarp;
             if (rawFallbackCrop == null) {
                 throw new IllegalArgumentException("raw fallback crop is required");
@@ -250,10 +250,13 @@ final class CameraShellProtocol {
         }
 
         void validate(int displayWidth, int displayHeight) {
-            CameraProfile profile = CameraProfile.of(cameraId);
+            CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
             if (requestId <= 0) throw new IllegalArgumentException("invalid request id");
             if (!CameraDisplayTarget.isValid(target)) {
                 throw new IllegalArgumentException("invalid display target");
+            }
+            if (profile.parking() && target != CameraDisplayTarget.TABLET) {
+                throw new IllegalArgumentException("parking overlay must target tablet");
             }
             if (width <= 0 || height <= 0 || x < 0 || y < 0
                     || width > displayWidth || height > displayHeight
@@ -278,7 +281,7 @@ final class CameraShellProtocol {
             if (!CameraBufferQuality.isValid(bufferQuality)) {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
-            if (dewarp.lens != CameraDewarpConfig.lensFor(profile)) {
+            if (dewarp.lens != lensForOverlayId(profile.id)) {
                 throw new IllegalArgumentException("dewarp lens does not match camera");
             }
             validateCrop(rawFallbackCrop);
@@ -658,5 +661,10 @@ final class CameraShellProtocol {
             throw new IllegalArgumentException("invalid boolean wire value");
         }
         return value == 1;
+    }
+
+    static int lensForOverlayId(int cameraId) {
+        CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
+        return profile.lens;
     }
 }

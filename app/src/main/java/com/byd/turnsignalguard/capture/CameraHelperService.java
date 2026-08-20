@@ -46,6 +46,8 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
     private static final String ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.CAMERA_TRIGGER_SETTINGS_CHANGED";
+    private static final String ACTION_PARKING_CAMERA_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.PARKING_CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
@@ -85,6 +87,7 @@ public final class CameraHelperService extends Service {
     };
     private CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController overlay;
+    private ParkingCameraController parkingCameras;
     private ReverseCameraController reverseCameras;
     private ClusterFullscreenController clusterFullscreen;
     private File logFile;
@@ -96,8 +99,9 @@ public final class CameraHelperService extends Service {
     private boolean cameraPreviewActive;
 
     private void resumeOverlayIfIdle() {
-        if (shouldResumeOverlay(cameraPreviewActive, activityVisible) && overlay != null) {
-            overlay.setSuspended(false);
+        if (shouldResumeOverlay(cameraPreviewActive, activityVisible)) {
+            if (overlay != null) overlay.setSuspended(false);
+            if (parkingCameras != null) parkingCameras.setSuspended(false);
         }
     }
 
@@ -151,6 +155,12 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED));
     }
 
+    /** Notify the persistent helper that parking-camera rules or geometry changed. */
+    static void parkingCameraSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_PARKING_CAMERA_SETTINGS_CHANGED));
+    }
+
     static void reverseCameraSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
@@ -189,8 +199,12 @@ public final class CameraHelperService extends Service {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         overlay = new BlindSpotOverlayController(this, handler, this::lifecycle);
+        parkingCameras = new ParkingCameraController(this, handler, this::parkingEvent);
         reverseCameras = new ReverseCameraController(
-                this, handler, this::reverseEvent, overlay::setReversePriority);
+                this, handler, this::reverseEvent, value -> {
+                    overlay.setReversePriority(value);
+                    if (parkingCameras != null) parkingCameras.setReversePriority(value);
+                });
         clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
@@ -223,10 +237,12 @@ public final class CameraHelperService extends Service {
             GuardRecovery.setUserShutdownActive(this, false);
             activityVisible = true;
             overlay.setUiHidden(true);
+            parkingCameras.setUiHidden(true);
         } else if (ACTION_ACTIVITY_CLOSED.equals(action)) {
             activityVisible = false;
             cameraPreviewActive = false;
             overlay.setUiHidden(false);
+            parkingCameras.setUiHidden(false);
             handler.removeCallbacks(resumeOverlay);
             handler.postDelayed(resumeOverlay, 250);
             refreshMusicAfterClose = true;
@@ -234,10 +250,12 @@ public final class CameraHelperService extends Service {
             cameraPreviewActive = true;
             handler.removeCallbacks(resumeOverlay);
             overlay.setSuspended(true);
+            parkingCameras.setSuspended(true);
         } else if (ACTION_CAMERA_PREVIEW_STOPPED.equals(action)) {
             cameraPreviewActive = false;
             handler.removeCallbacks(resumeOverlay);
             if (!activityVisible) handler.postDelayed(resumeOverlay, 250);
+            parkingCameras.setSuspended(false);
         } else if (ACTION_AUTO_START_CHANGED.equals(action)) {
             GuardRecovery.setAutoStartEnabled(this,
                     intent.getBooleanExtra(EXTRA_ENABLED, true));
@@ -252,17 +270,21 @@ public final class CameraHelperService extends Service {
         startForegroundRuntime();
         ensureHelperStarted();
         helper.setRecoveryEnabled(true);
+        helper.configureParkingRadar(anyParkingEnabled());
         if (refreshMusicAfterClose) {
             helper.configureMusic(getSharedPreferences("settings", MODE_PRIVATE)
                     .getBoolean("music_visualizer_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
+            parkingCameras.settingsChanged();
             reverseCameras.settingsChanged();
             clusterFullscreen.settingsChanged();
         } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {
             overlay.applyWarningSettings();
         } else if (ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED.equals(action)) {
             overlay.applyTriggerSettings();
+        } else if (ACTION_PARKING_CAMERA_SETTINGS_CHANGED.equals(action)) {
+            if (parkingCameras != null) parkingCameras.settingsChanged();
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
@@ -304,6 +326,7 @@ public final class CameraHelperService extends Service {
         lifecycle("service_destroy", "recover", recover);
         if (reverseCameras != null) reverseCameras.shutdown();
         if (overlay != null) overlay.shutdown();
+        if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (helper != null) helper.shutdown(!recover);
         helper = null;
@@ -327,6 +350,10 @@ public final class CameraHelperService extends Service {
                 settings.getInt("correction_delay_ms", 100),
                 settings.getInt("max_speed_kph", 30));
         overlay.attachHelper(helper);
+        parkingCameras.attachHelper(helper);
+        parkingCameras.setUiHidden(activityVisible);
+        parkingCameras.setSuspended(cameraPreviewActive);
+        helper.configureParkingRadar(anyParkingEnabled());
         reverseCameras.attachHelper(helper);
         overlay.setUiHidden(activityVisible);
         overlay.setSuspended(cameraPreviewActive);
@@ -341,6 +368,7 @@ public final class CameraHelperService extends Service {
         handler.removeCallbacks(retryCameraDiscovery);
         if (reverseCameras != null) reverseCameras.shutdown();
         if (overlay != null) overlay.shutdown();
+        if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (helper != null) helper.shutdown(terminateShells);
         helper = null;
@@ -467,9 +495,25 @@ public final class CameraHelperService extends Service {
 
     private void acceptHelperLine(String line) {
         if (overlay != null) overlay.acceptEvent(line);
+        if (parkingCameras != null) parkingCameras.acceptEvent(line);
         if (reverseCameras != null) reverseCameras.acceptEvent(line);
         if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
         writeLine(line);
+    }
+
+    private void parkingEvent(String kind, Object... fields) {
+        lifecycle(kind, fields);
+    }
+
+    private boolean anyParkingEnabled() {
+        return anyParkingEnabled(getSharedPreferences("settings", MODE_PRIVATE));
+    }
+
+    static boolean anyParkingEnabled(SharedPreferences preferences) {
+        for (ParkingCameraSettings.Rule rule : ParkingCameraSettings.readRules(preferences)) {
+            if (rule != null && rule.enabled) return true;
+        }
+        return false;
     }
 
     private void reverseEvent(String kind, Object... fields) {

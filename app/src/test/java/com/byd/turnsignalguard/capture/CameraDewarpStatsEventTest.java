@@ -136,6 +136,18 @@ public final class CameraDewarpStatsEventTest {
     }
 
     @Test
+    public void parkingCalibrationUsesSixDistinctLogicalIdentities() {
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            Object[] fields = CameraDewarpStatsEvent.parkingCalibration(17, profile, STATS);
+
+            assertField(fields, "camera_scope", "parking");
+            assertField(fields, "camera_id",
+                    CameraOverlayProfile.PARKING_OFFSET + profile.id);
+            assertField(fields, "camera_profile", profile.wireName);
+        }
+    }
+
+    @Test
     public void shellSerializersKeepImmutableRequestAndGeneration() {
         Object[] overlay = CameraDewarpStatsEvent.overlay(
                 CameraProfile.REAR_LEFT, "rear_left", STATS);

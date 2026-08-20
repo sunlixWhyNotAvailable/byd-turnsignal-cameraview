@@ -21,6 +21,20 @@ final class CameraDewarpStatsEvent {
         }, stats);
     }
 
+    static Object[] parkingCalibration(
+            int requestId, ParkingCameraProfile profile,
+            CameraDewarpRenderer.Stats stats) {
+        return fields(new Object[]{
+                "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
+                "target", "camera_calibration",
+                "renderer", "direct_crop_calibration",
+                "request_id", requestId,
+                "camera_scope", "parking",
+                "camera_id", CameraOverlayProfile.overlayIdForParking(profile.id),
+                "camera_profile", profile.wireName
+        }, stats);
+    }
+
     static Object[] reverse(
             int requestId, int reverseCameraIndex, CameraDewarpRenderer.Stats stats) {
         return fields(new Object[]{
@@ -34,8 +48,14 @@ final class CameraDewarpStatsEvent {
 
     static Object[] overlay(
             int cameraId, String cameraProfile, CameraDewarpRenderer.Stats stats) {
+        return overlay(cameraId, cameraProfile, CameraHelperMain.CAMERA_OWNER_OVERLAY, stats);
+    }
+
+    static Object[] overlay(
+            int cameraId, String cameraProfile, String owner,
+            CameraDewarpRenderer.Stats stats) {
         return fields(new Object[]{
-                "camera_owner", CameraHelperMain.CAMERA_OWNER_OVERLAY,
+                "camera_owner", owner,
                 "camera_id", cameraId,
                 "camera_profile", cameraProfile,
                 "request_id", stats.requestId,

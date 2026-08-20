@@ -100,8 +100,8 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(86, BuildConfig.VERSION_CODE);
-        assertEquals(6, TurnSignalShellProtocol.VERSION);
+        assertEquals(87, BuildConfig.VERSION_CODE);
+        assertEquals(7, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
 
@@ -630,6 +630,8 @@ public final class AdbCoreTest {
                 "camera_opened", CameraHelperMain.CAMERA_OWNER_OVERLAY));
         assertTrue(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_closed", CameraHelperMain.CAMERA_OWNER_REVERSE));
+        assertTrue(CameraProbeActivity.isOverlayCameraEvent(
+                "camera_opened", CameraHelperMain.CAMERA_OWNER_PARKING));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
                 "camera_error", CameraHelperMain.CAMERA_OWNER_ACTIVITY));
         assertFalse(CameraProbeActivity.isOverlayCameraEvent(
@@ -1410,7 +1412,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(22, CameraShellProtocol.VERSION);
+        assertEquals(23, CameraShellProtocol.VERSION);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);

@@ -81,6 +81,7 @@ public final class TurnSignalShellMain {
         private final BlindSpotWarningRuntime warningRuntime;
         private final ReverseGearRuntime reverseGearRuntime;
         private final MusicVisualizerRuntime musicRuntime;
+        private final ParkingRadarRuntime parkingRadarRuntime;
         private final PowerManager powerManager;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
@@ -116,6 +117,7 @@ public final class TurnSignalShellMain {
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
+            parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
         }
 
         void start() {
@@ -124,6 +126,7 @@ public final class TurnSignalShellMain {
             warningRuntime.start();
             reverseGearRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
+            parkingRadarRuntime.start();
         }
 
         void stop() {
@@ -132,6 +135,7 @@ public final class TurnSignalShellMain {
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
             musicRuntime.stop();
+            parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
@@ -183,6 +187,12 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR) {
+                    boolean configured = data.readInt() != 0;
+                    parkingRadarRuntime.configure(configured);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_SET_MANUAL_STATE) {
                     int payload = data.readInt();
                     if (!TurnSignalShellProtocol.isPayloadAllowed(payload)) {
@@ -197,6 +207,7 @@ public final class TurnSignalShellMain {
                     warningRuntime.reportStatus();
                     reverseGearRuntime.reportStatus();
                     musicRuntime.reportStatus();
+                    parkingRadarRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
@@ -212,6 +223,7 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     handler.post(() -> {
                         musicRuntime.stop();
+                        parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();

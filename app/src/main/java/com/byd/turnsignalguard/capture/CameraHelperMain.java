@@ -48,6 +48,7 @@ final class CameraHelperMain {
     static final int ADB_AUTH_MODE_FORCE = 1;
     static final String CAMERA_OWNER_ACTIVITY = "activity";
     static final String CAMERA_OWNER_OVERLAY = "overlay";
+    static final String CAMERA_OWNER_PARKING = "parking";
     static final String CAMERA_OWNER_REVERSE = "reverse";
     static final String ACTIVITY_RESUME_COLD_RESET = "activity_resume_cold_reset";
     static final String COLD_RESET_DEFERRED_REVERSE = "camera_close_deferred_reverse";
@@ -88,6 +89,7 @@ final class CameraHelperMain {
         private final PersistentSession persistentSession = new PersistentSession();
         private final ConsumerGroup activityGroup = persistentSession.activityGroup;
         private final ConsumerGroup overlayGroup = persistentSession.overlayGroup;
+        private final ConsumerGroup parkingGroup = persistentSession.parkingGroup;
         private final ConsumerGroup reverseGroup = persistentSession.reverseGroup;
         private String viewName;
         private int activeCameraId = -1;
@@ -119,6 +121,10 @@ final class CameraHelperMain {
 
         void configureMusic(boolean enabled) {
             turnController.configureMusic(enabled);
+        }
+
+        void configureParkingRadar(boolean anyEnabled) {
+            turnController.configureParkingRadar(anyEnabled);
         }
 
         void setRecoveryEnabled(boolean enabled) {
@@ -837,6 +843,52 @@ final class CameraHelperMain {
             turnController.closeCameraOverlays(reason);
         }
 
+        void prepareParkingOverlayWindow(
+                CameraShellProtocol.OverlaySpec spec,
+                Consumer<TurnSignalController.OverlaySurface> surfaceSink,
+                Runnable preparedSink) {
+            turnController.prepareCameraOverlay(spec, surfaceSink, preparedSink);
+        }
+
+        void armParkingOverlayFirstFrame(OverlayFrameArm arm) {
+            turnController.armCameraOverlayFrame(arm);
+        }
+
+        void setParkingOverlayWindowVisible(
+                int cameraId, int requestId, int surfaceGeneration, boolean visible,
+                Consumer<Boolean> completion) {
+            turnController.setCameraOverlayVisible(
+                    cameraId, requestId, surfaceGeneration, visible, completion);
+        }
+
+        void closeParkingOverlayWindows(String reason) {
+            for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+                turnController.closeCameraOverlay(
+                        CameraOverlayProfile.overlayIdForParking(profile.id), reason);
+            }
+        }
+
+        synchronized void setParkingTargetActive(Surface target, boolean active) throws Exception {
+            persistentSession.setActive(parkingGroup, target, active);
+        }
+
+        synchronized String openParkingCameras(
+                Surface[] requestedSurfaces, int[] indexes, int requestId) {
+            if (requestedSurfaces == null || indexes == null
+                    || requestedSurfaces.length != indexes.length
+                    || requestedSurfaces.length == 0) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("parking Surface/index count mismatch");
+            }
+            return attachPersistentGroup(
+                    parkingGroup, requestedSurfaces, indexes, requestId,
+                    "parking_overlay", false, false, null, "parking_open");
+        }
+
+        synchronized String closeParkingCameras(String reason, int expectedRequestId) {
+            return closeCameraForOwner(CAMERA_OWNER_PARKING, reason, expectedRequestId);
+        }
+
         void prepareReverseOverlayWindow(
                 CameraShellProtocol.ReverseOverlaySpec spec,
                 Consumer<TurnSignalController.ReverseSurfaces> surfaceSink,
@@ -1006,7 +1058,8 @@ final class CameraHelperMain {
             }
             if (persistentPanoProducer) {
                 ConsumerGroup active = reverseGroup.has()
-                        ? reverseGroup : activityGroup.has() ? activityGroup : overlayGroup;
+                        ? reverseGroup : activityGroup.has() ? activityGroup
+                        : overlayGroup.has() ? overlayGroup : parkingGroup;
                 return active.has()
                         ? closePersistentGroup(active, reason, active.requestId)
                         : result("already_closed", null);
@@ -1209,11 +1262,13 @@ final class CameraHelperMain {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException(validation);
             }
-            if ((target == activityGroup || target == reverseGroup) && requestId <= 0) {
+            if ((target == activityGroup || target == reverseGroup || target == parkingGroup)
+                    && requestId <= 0) {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("camera request id required");
             }
-            if (target == overlayGroup && (reverseGroup.has()
+            if ((target == overlayGroup || target == parkingGroup)
+                    && (reverseGroup.has()
                     || activityGroup.has() && activityGroup.exclusive)) {
                 releaseSurfaces(requestedSurfaces);
                 return persistentBusy(target.owner, requestId, errorStage);
@@ -1652,7 +1707,8 @@ final class CameraHelperMain {
             activeCameraId = producerCameraId;
             activeCameraTag = "pano_h";
             ConsumerGroup active = reverseGroup.has()
-                    ? reverseGroup : activityGroup.has() ? activityGroup : overlayGroup;
+                    ? reverseGroup : activityGroup.has() ? activityGroup
+                    : overlayGroup.has() ? overlayGroup : parkingGroup;
             activeCameraOwner = active.has() ? active.owner : "none";
             activeCameraRequestId = active.has() ? active.requestId : 0;
             viewName = active.has() ? active.view : null;
@@ -1700,6 +1756,7 @@ final class CameraHelperMain {
         private ConsumerGroup groupForOwner(String owner) {
             if (CAMERA_OWNER_ACTIVITY.equals(owner)) return activityGroup;
             if (CAMERA_OWNER_OVERLAY.equals(owner)) return overlayGroup;
+            if (CAMERA_OWNER_PARKING.equals(owner)) return parkingGroup;
             if (CAMERA_OWNER_REVERSE.equals(owner)) return reverseGroup;
             return null;
         }
@@ -2038,6 +2095,7 @@ final class CameraHelperMain {
             private static final int[] STABLE_BOOTSTRAP_INDEXES = {2, 3};
             final ConsumerGroup activityGroup = new ConsumerGroup(CAMERA_OWNER_ACTIVITY);
             final ConsumerGroup overlayGroup = new ConsumerGroup(CAMERA_OWNER_OVERLAY);
+            final ConsumerGroup parkingGroup = new ConsumerGroup(CAMERA_OWNER_PARKING);
             final ConsumerGroup reverseGroup = new ConsumerGroup(CAMERA_OWNER_REVERSE);
             final Surface[] sourceSurfaces = new Surface[5];
             final boolean[] sourceAttached = new boolean[5];
@@ -2179,7 +2237,7 @@ final class CameraHelperMain {
                             "consumer_restore_failed", restoreError, false,
                             true, shellCloseQueued);
                 }
-                previous.release();
+                previous.releaseExcept(surfaces);
             }
 
             CloseOutcome close(
@@ -2245,6 +2303,7 @@ final class CameraHelperMain {
                 }
                 releaseAndClear(activityGroup);
                 releaseAndClear(overlayGroup);
+                releaseAndClear(parkingGroup);
                 releaseAndClear(reverseGroup);
                 fanout = null;
                 clearSources();
@@ -2266,6 +2325,7 @@ final class CameraHelperMain {
                 ArrayDeque<ConsumerGroup.Snapshot> result = new ArrayDeque<>();
                 if (activityGroup.has()) result.add(activityGroup.snapshot());
                 if (overlayGroup.has()) result.add(overlayGroup.snapshot());
+                if (parkingGroup.has()) result.add(parkingGroup.snapshot());
                 if (reverseGroup.has()) result.add(reverseGroup.snapshot());
                 return result.toArray(new ConsumerGroup.Snapshot[0]);
             }
@@ -2275,6 +2335,7 @@ final class CameraHelperMain {
                 if (target.attached) groups.add(target);
                 if (exclusive) {
                     if (overlayGroup != target && overlayGroup.attached) groups.add(overlayGroup);
+                    if (parkingGroup != target && parkingGroup.attached) groups.add(parkingGroup);
                     if (activityGroup != target && activityGroup.attached) groups.add(activityGroup);
                     if (reverseGroup != target && reverseGroup.attached) groups.add(reverseGroup);
                 }
@@ -2291,7 +2352,7 @@ final class CameraHelperMain {
                     return true;
                 }
                 return restoreGroups(
-                        port, new ConsumerGroup[]{overlayGroup, activityGroup},
+                        port, new ConsumerGroup[]{overlayGroup, parkingGroup, activityGroup},
                         events, shellClose, cameraId, epoch);
             }
 
@@ -2485,6 +2546,7 @@ final class CameraHelperMain {
             private ConsumerGroup groupContaining(Surface target) {
                 if (contains(activityGroup.surfaces, target)) return activityGroup;
                 if (contains(overlayGroup.surfaces, target)) return overlayGroup;
+                if (contains(parkingGroup.surfaces, target)) return parkingGroup;
                 if (contains(reverseGroup.surfaces, target)) return reverseGroup;
                 return null;
             }
@@ -2584,7 +2646,7 @@ final class CameraHelperMain {
             private Throwable detachDirectInputs(PersistentCameraPort port) {
                 Throwable first = null;
                 for (ConsumerGroup group : new ConsumerGroup[]{
-                        activityGroup, overlayGroup, reverseGroup}) {
+                        activityGroup, overlayGroup, parkingGroup, reverseGroup}) {
                     if (!group.directSurfaceAttached) continue;
                     try {
                         if (!port.remove(group.surfaces[0], group.indexes[0])) {
@@ -2864,6 +2926,18 @@ final class CameraHelperMain {
                 void release() {
                     releaseSurfaces(surfaces);
                 }
+
+                void releaseExcept(Surface[] keep) {
+                    for (Surface surface : surfaces) {
+                        if (surface != null && !containsIdentity(keep, surface)) surface.release();
+                    }
+                }
+
+                private static boolean containsIdentity(Surface[] values, Surface target) {
+                    if (values == null) return false;
+                    for (Surface value : values) if (value == target) return true;
+                    return false;
+                }
             }
         }
 
@@ -2995,9 +3069,13 @@ final class CameraHelperMain {
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
+            if (persistentPanoProducer && parkingGroup.has()) {
+                closePersistentGroup(
+                        parkingGroup, "camera_shell_died", parkingGroup.requestId);
+            }
             if (persistentPanoProducer
                     && shellDeathInvalidatesConsumer(
-                            activityGroup.owner, activityGroup.shellOwned)) {
+                        activityGroup.owner, activityGroup.shellOwned)) {
                 closePersistentGroup(
                         activityGroup, "camera_shell_died", activityGroup.requestId);
             } else if (!persistentPanoProducer) {

@@ -52,7 +52,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     ShellCameraOverlay(
             Context context, int cameraId, BiConsumer<String, Object[]> eventSink) {
         this.context = context;
-        this.cameraId = CameraProfile.of(cameraId).id;
+        this.cameraId = CameraOverlayProfile.of(cameraId).id;
         this.eventSink = eventSink;
     }
 
@@ -262,7 +262,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextLayout.y = spec.y;
         nextLayout.alpha = 0.0f;
         nextLayout.windowAnimations = 0;
-        nextLayout.setTitle(WINDOW_TITLE + " " + CameraProfile.of(cameraId).wireName);
+        nextLayout.setTitle(WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName);
         String trustedApi = setTrustedOverlay(nextLayout);
 
         root = nextRoot;
@@ -376,13 +376,19 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         if (stats.requestId != requestId
                 || stats.contextGeneration != surfaceGeneration) return;
         emit("camera_dewarp_stats", CameraDewarpStatsEvent.overlay(
-                cameraId, CameraProfile.of(cameraId).wireName, stats));
+            cameraId, CameraOverlayProfile.of(cameraId).wireName,
+            CameraOverlayProfile.isParking(cameraId)
+                    ? CameraHelperMain.CAMERA_OWNER_PARKING
+                    : CameraHelperMain.CAMERA_OWNER_OVERLAY,
+            stats));
     }
 
     private void emitDewarpEvent(CameraDewarpRenderer.Event event) {
         emit(event.kind,
-                "camera_owner", CameraHelperMain.CAMERA_OWNER_OVERLAY,
-                "camera_profile", CameraProfile.of(cameraId).wireName,
+                "camera_owner", CameraOverlayProfile.isParking(cameraId)
+                        ? CameraHelperMain.CAMERA_OWNER_PARKING
+                        : CameraHelperMain.CAMERA_OWNER_OVERLAY,
+            "camera_profile", CameraOverlayProfile.of(cameraId).wireName,
                 "request_id", requestId,
                 "surface_generation", surfaceGeneration,
                 "lens", event.lens,

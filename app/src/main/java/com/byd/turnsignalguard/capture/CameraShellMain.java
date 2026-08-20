@@ -74,7 +74,8 @@ public final class CameraShellMain {
         private final int appUid;
         private final int versionCode;
         private final StockAvmPreview preview;
-        private final ShellCameraOverlay[] overlays = new ShellCameraOverlay[CameraProfile.COUNT];
+        private final ShellCameraOverlay[] overlays =
+                new ShellCameraOverlay[CameraOverlayProfile.COUNT];
         private final ShellReverseCameraOverlay reverseOverlay;
         private final Runnable processTerminator;
         private IBinder callback;
@@ -102,7 +103,7 @@ public final class CameraShellMain {
                     emit("camera_config_applied", "detail", detail);
                 }
             });
-            for (CameraProfile profile : CameraProfile.values()) {
+            for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 overlays[profile.id] = new ShellCameraOverlay(context, profile.id, this::emit);
             }
             reverseOverlay = new ShellReverseCameraOverlay(context, this::emit);
@@ -418,7 +419,7 @@ public final class CameraShellMain {
         }
 
         private ShellCameraOverlay overlay(int cameraId) {
-            return overlays[CameraProfile.of(cameraId).id];
+            return overlays[CameraOverlayProfile.of(cameraId).id];
         }
 
         private void closeOverlays(String reason) {

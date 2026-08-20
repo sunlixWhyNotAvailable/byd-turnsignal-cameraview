@@ -35,6 +35,33 @@ final class CameraCalibrationPreset {
         }
     }
 
+    static boolean hasParking(SharedPreferences preferences, ParkingCameraProfile profile) {
+        try {
+            return preferences.getInt(parkingPrefix(profile) + "version", 0) == VERSION;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
+    static void saveParking(SharedPreferences preferences, ParkingCameraProfile profile) {
+        CameraValue value = activeParking(preferences, profile);
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCamera(editor, parkingPrefix(profile), value);
+        editor.putInt(parkingPrefix(profile) + "version", VERSION).apply();
+    }
+
+    static boolean loadParking(SharedPreferences preferences, ParkingCameraProfile profile) {
+        if (!hasParking(preferences, profile)) return false;
+        try {
+            applyParking(preferences, profile,
+                    readCamera(preferences, parkingPrefix(profile),
+                            CameraDewarpConfig.lensFor(profile)));
+            return true;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
     static int cameraMirrorTarget(CameraProfile profile) {
         return profile.right() ? profile.id - 1 : profile.id + 1;
     }
@@ -47,6 +74,32 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection)));
+    }
+
+    static int parkingMirrorTarget(ParkingCameraProfile source) {
+        if (source == null) throw new IllegalArgumentException("parking profile required");
+        switch (source.id) {
+            case ParkingCameraProfile.FL: return ParkingCameraProfile.FR;
+            case ParkingCameraProfile.FR: return ParkingCameraProfile.FL;
+            case ParkingCameraProfile.RR: return ParkingCameraProfile.RL;
+            case ParkingCameraProfile.RL: return ParkingCameraProfile.RR;
+            case ParkingCameraProfile.FRONT: return ParkingCameraProfile.REAR;
+            case ParkingCameraProfile.REAR: return ParkingCameraProfile.FRONT;
+            default: return -1;
+        }
+    }
+
+    static boolean mirrorParking(SharedPreferences preferences, ParkingCameraProfile source) {
+        int targetId = parkingMirrorTarget(source);
+        if (targetId < 0) return false;
+        ParkingCameraProfile target = ParkingCameraProfile.of(targetId);
+        CameraValue value = activeParking(preferences, source);
+        applyParking(preferences, target, new CameraValue(
+                value.raw.mirrored(), value.corrected.mirrored(),
+                CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
+                        value.dewarp.enabled, value.dewarp.fovDegrees,
+                        value.dewarp.projection)));
+        return true;
     }
 
     static boolean hasReverse(SharedPreferences preferences, int cameraIndex) {
@@ -112,6 +165,14 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.loadForProfile(preferences, profile));
     }
 
+    private static CameraValue activeParking(
+            SharedPreferences preferences, ParkingCameraProfile profile) {
+        DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        return new CameraValue(raw,
+                DirectCameraCrop.loadCorrected(preferences, profile, raw),
+                CameraDewarpConfig.loadForParking(preferences, profile));
+    }
+
     private static void applyCamera(
             SharedPreferences preferences, CameraProfile profile, CameraValue value) {
         SharedPreferences.Editor editor = preferences.edit();
@@ -119,6 +180,18 @@ final class CameraCalibrationPreset {
         DirectCameraCrop.writeCorrected(editor, profile,
                 value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
         CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
+                CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
+                value.dewarp.fovDegrees, value.dewarp.projection));
+        editor.apply();
+    }
+
+    private static void applyParking(
+            SharedPreferences preferences, ParkingCameraProfile profile, CameraValue value) {
+        SharedPreferences.Editor editor = preferences.edit();
+        DirectCameraCrop.write(editor, profile, value.raw);
+        DirectCameraCrop.writeCorrected(editor, profile,
+                value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
+        CameraDewarpConfig.writeForParking(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
         editor.apply();
@@ -321,6 +394,12 @@ final class CameraCalibrationPreset {
 
     private static String cameraPrefix(CameraProfile profile) {
         return "camera_calibration_preset_v1_" + profile.wireName + "_";
+    }
+
+    private static String parkingPrefix(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        return "parking_calibration_preset_v1_"
+                + profile.wireName.toLowerCase(java.util.Locale.US) + "_";
     }
 
     private static String reversePrefix(int cameraIndex) {

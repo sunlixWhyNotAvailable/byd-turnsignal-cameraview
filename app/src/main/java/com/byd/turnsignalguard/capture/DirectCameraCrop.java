@@ -92,6 +92,30 @@ final class DirectCameraCrop {
         return defaultFor(profile.right());
     }
 
+    /** Default geometry for a logical parking view.  Corner views inherit the
+     * corresponding side-camera default; central views use the direct default. */
+    static DirectCameraCrop defaultFor(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        switch (profile.id) {
+            case ParkingCameraProfile.FL:
+                return defaultFor(CameraProfile.of(CameraProfile.FRONT_LEFT));
+            case ParkingCameraProfile.FR:
+                return defaultFor(CameraProfile.of(CameraProfile.FRONT_RIGHT));
+            case ParkingCameraProfile.RR:
+                return defaultFor(CameraProfile.of(CameraProfile.REAR_RIGHT));
+            case ParkingCameraProfile.RL:
+                return defaultFor(CameraProfile.of(CameraProfile.REAR_LEFT));
+            case ParkingCameraProfile.FRONT:
+                return of(0.0f, 0.0f, 1.0f, 1.0f, ASPECT_FREE,
+                        CameraRotation.DEFAULT_DEGREES).withMirrorHorizontally(false);
+            case ParkingCameraProfile.REAR:
+                return of(0.0f, 0.0f, 1.0f, 1.0f, ASPECT_FREE,
+                        CameraRotation.DEFAULT_DEGREES).withMirrorHorizontally(true);
+            default:
+                throw new IllegalArgumentException("invalid parking profile");
+        }
+    }
+
     static String preferenceKey(CameraProfile profile, int field) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         if (profile.rear()) {
@@ -147,8 +171,40 @@ final class DirectCameraCrop {
         }
     }
 
+    static DirectCameraCrop load(SharedPreferences preferences, ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        DirectCameraCrop fallback = defaultFor(profile);
+        String prefix = parkingPrefix(profile);
+        try {
+            DirectCameraCrop stored = normalized(
+                    preferences.getFloat(prefix + "x", fallback.left),
+                    preferences.getFloat(prefix + "y", fallback.top),
+                    preferences.getFloat(prefix + "width", fallback.width),
+                    preferences.getFloat(prefix + "height", fallback.height),
+                    preferences.getInt(prefix + "aspect", fallback.aspectMode),
+                    preferences.getInt(prefix + "rotation", fallback.rotationDegrees),
+                    preferences.getInt(prefix + "rotation_mode", fallback.rotationMode),
+                    LEGACY_MIN_SIZE)
+                    .withMirrorHorizontally(preferences.getBoolean(
+                            prefix + "mirror", fallback.mirrorHorizontally));
+            DirectCameraCrop migrated = migrateActive(stored);
+            if (migrated != stored) save(preferences, profile, migrated);
+            return migrated;
+        } catch (RuntimeException invalidValue) {
+            save(preferences, profile, fallback);
+            return fallback;
+        }
+    }
+
     static void save(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit();
+        write(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void save(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
         SharedPreferences.Editor editor = preferences.edit();
         write(editor, profile, crop);
         editor.apply();
@@ -164,6 +220,20 @@ final class DirectCameraCrop {
                 .putInt(preferenceKey(profile, 5), crop.rotationDegrees)
                 .putInt(preferenceKey(profile, 6), crop.rotationMode)
                 .putBoolean(preferenceKey(profile, 7), crop.mirrorHorizontally);
+    }
+
+    static void write(
+            SharedPreferences.Editor editor, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        if (profile == null || crop == null) throw new IllegalArgumentException("crop required");
+        String prefix = parkingPrefix(profile);
+        editor.putFloat(prefix + "x", crop.left)
+                .putFloat(prefix + "y", crop.top)
+                .putFloat(prefix + "width", crop.width)
+                .putFloat(prefix + "height", crop.height)
+                .putInt(prefix + "aspect", crop.aspectMode)
+                .putInt(prefix + "rotation", crop.rotationDegrees)
+                .putInt(prefix + "rotation_mode", crop.rotationMode)
+                .putBoolean(prefix + "mirror", crop.mirrorHorizontally);
     }
 
     static DirectCameraCrop loadCorrected(
@@ -188,8 +258,37 @@ final class DirectCameraCrop {
         }
     }
 
+    static DirectCameraCrop loadCorrected(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop raw) {
+        if (profile == null || raw == null) throw new IllegalArgumentException("crop required");
+        String prefix = parkingPrefix(profile) + "corrected_";
+        if (!preferences.contains(prefix + "x")) return raw.centered();
+        try {
+            DirectCameraCrop stored = normalized(
+                    preferences.getFloat(prefix + "x", raw.left),
+                    preferences.getFloat(prefix + "y", raw.top),
+                    preferences.getFloat(prefix + "width", raw.width),
+                    preferences.getFloat(prefix + "height", raw.height),
+                    raw.aspectMode, raw.rotationDegrees, raw.rotationMode, LEGACY_MIN_SIZE);
+            DirectCameraCrop result = preserveCenterAndAspect(migrateActive(stored), raw);
+            if (result != stored) saveCorrected(preferences, profile, result);
+            return result;
+        } catch (RuntimeException invalidValue) {
+            DirectCameraCrop fallback = raw.centered();
+            saveCorrected(preferences, profile, fallback);
+            return fallback;
+        }
+    }
+
     static void saveCorrected(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCorrected(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void saveCorrected(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
         SharedPreferences.Editor editor = preferences.edit();
         writeCorrected(editor, profile, crop);
         editor.apply();
@@ -200,6 +299,16 @@ final class DirectCameraCrop {
         String prefix = correctedPrefix(profile);
         editor.putFloat(prefix + "left", crop.left)
                 .putFloat(prefix + "top", crop.top)
+                .putFloat(prefix + "width", crop.width)
+                .putFloat(prefix + "height", crop.height);
+    }
+
+    static void writeCorrected(
+            SharedPreferences.Editor editor, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        if (profile == null || crop == null) throw new IllegalArgumentException("crop required");
+        String prefix = parkingPrefix(profile) + "corrected_";
+        editor.putFloat(prefix + "x", crop.left)
+                .putFloat(prefix + "y", crop.top)
                 .putFloat(prefix + "width", crop.width)
                 .putFloat(prefix + "height", crop.height);
     }
@@ -241,6 +350,11 @@ final class DirectCameraCrop {
     private static String correctedPrefix(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         return "direct_crop_v3_corrected_" + profile.id + "_";
+    }
+
+    private static String parkingPrefix(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        return "parking_direct_crop_v1_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_";
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera, int aspectMode) {

@@ -156,6 +156,65 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void parkingAndBlindGroupsShareProducerWithRepeatedPhysicalSources()
+            throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+
+        session.startProducer(camera, fanout, session.overlayGroup,
+                surfaces(2), new int[]{2, 3}, 24, "blind", false, false);
+        session.attach(camera, session.parkingGroup,
+                surfaces(6), new int[]{2, 4, 3, 3, 1, 2}, 25,
+                "parking", false, false,
+                new FakeEventSink(trace, session), new FakeShellClose(trace), 7, 2);
+
+        assertTrue(session.overlayGroup.attached);
+        assertTrue(session.parkingGroup.attached);
+        assertEquals(8, fanout.activeTargets);
+        assertEquals(1, count(trace.values, "source:1"));
+        assertEquals(1, count(trace.values, "source:2"));
+        assertEquals(1, count(trace.values, "source:3"));
+        assertEquals(1, count(trace.values, "source:4"));
+        assertEquals(3, count(trace.values, "target-add:2"));
+        assertEquals(3, count(trace.values, "target-add:3"));
+    }
+
+    @Test
+    public void reversePreemptsThenRestoresBlindAndParkingGroups() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+
+        session.startProducer(camera, fanout, session.overlayGroup,
+                surfaces(1), new int[]{2}, 26, "blind", false, false);
+        session.attach(camera, session.parkingGroup,
+                surfaces(2), new int[]{2, 4}, 27, "parking", false, false,
+                events, shell, 7, 3);
+        session.parkingGroup.active[0] = false;
+        session.attach(camera, session.reverseGroup,
+                surfaces(3), new int[]{1, 2, 3}, 28, "reverse", true, false,
+                events, shell, 7, 3);
+
+        assertFalse(session.overlayGroup.attached);
+        assertFalse(session.parkingGroup.attached);
+        assertTrue(session.reverseGroup.attached);
+
+        session.close(camera, session.reverseGroup, "not_reverse", 28,
+                events, shell, 7, 3);
+
+        assertTrue(session.overlayGroup.attached);
+        assertTrue(session.parkingGroup.attached);
+        assertFalse(session.parkingGroup.active[0]);
+        assertEquals(3, fanout.activeTargets);
+        assertTrue(countPrefix(trace.values, "target-active:") >= 1);
+    }
+
+    @Test
     public void tabReverseAndManualTransitionsOnlyChangeDownstreamTargets() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);

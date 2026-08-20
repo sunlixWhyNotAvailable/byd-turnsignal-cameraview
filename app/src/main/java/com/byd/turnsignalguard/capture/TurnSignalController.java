@@ -72,7 +72,8 @@ final class TurnSignalController {
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private long cameraHelperEpoch;
     private boolean cameraRecoveryPending;
-    private final PendingOverlay[] pendingOverlays = new PendingOverlay[CameraProfile.COUNT];
+    private final PendingOverlay[] pendingOverlays =
+            new PendingOverlay[CameraOverlayProfile.COUNT];
     private volatile int pendingReverseRequestId;
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
@@ -109,7 +110,7 @@ final class TurnSignalController {
             shutdownCameraHelper();
         } else {
             closeStockAvmNow("controller_shutdown");
-            for (CameraProfile profile : CameraProfile.values()) {
+            for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 closeCameraOverlayNow(profile.id, "controller_shutdown");
             }
             if (!closeReverseOverlayNow("controller_shutdown")) {
@@ -157,6 +158,13 @@ final class TurnSignalController {
         settings.edit().putBoolean("music_visualizer_enabled", enabled).apply();
         worker.execute(() -> {
             if (!sendMusicConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+        });
+    }
+
+    void configureParkingRadar(boolean anyEnabled) {
+        settings.edit().putBoolean("parking_any_enabled", anyEnabled).apply();
+        worker.execute(() -> {
+            if (!sendParkingRadarConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
         });
     }
 
@@ -377,7 +385,7 @@ final class TurnSignalController {
     }
 
     void closeCameraOverlay(int cameraId, String reason) {
-        CameraProfile.of(cameraId);
+        CameraOverlayProfile.of(cameraId);
         worker.execute(() -> closeCameraOverlayNow(cameraId, reason));
     }
 
@@ -767,6 +775,7 @@ final class TurnSignalController {
             transactCallback(value);
             transactConfig(value);
             transactMusicConfig(value);
+            transactParkingRadarConfig(value);
             transactNoArgs(value, TurnSignalShellProtocol.TX_REPORT_STATUS);
             healthy = true;
             primaryError = "";
@@ -824,6 +833,21 @@ final class TurnSignalController {
             clearHelper(value);
             healthy = false;
             primaryError = "music_config_binder_error: " + summary(error);
+            emit("helper_ping_failed", "error", primaryError);
+            return false;
+        }
+    }
+
+    private boolean sendParkingRadarConfig() {
+        IBinder value = helper;
+        if (!healthy || value == null) return false;
+        try {
+            transactParkingRadarConfig(value);
+            return true;
+        } catch (Throwable error) {
+            clearHelper(value);
+            healthy = false;
+            primaryError = "parking_radar_config_binder_error: " + summary(error);
             emit("helper_ping_failed", "error", primaryError);
             return false;
         }
@@ -900,6 +924,20 @@ final class TurnSignalController {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
             data.writeInt(settings.getBoolean("music_visualizer_enabled", false) ? 1 : 0);
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_MUSIC, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private void transactParkingRadarConfig(IBinder value) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(settings.getBoolean("parking_any_enabled", false) ? 1 : 0);
+            requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR,
+                    data, reply);
         } finally {
             data.recycle();
             reply.recycle();
@@ -1302,7 +1340,7 @@ final class TurnSignalController {
 
     private void acquireCameraOverlaySurface(
             int cameraId, int requestId, int reportedGeneration) {
-        if (!CameraProfile.isValid(cameraId)) return;
+        if (!CameraOverlayProfile.isValid(cameraId)) return;
         PendingOverlay pending = pendingOverlays[cameraId];
         if (pending == null || pending.sink == null
                 || requestId != pending.requestId || reportedGeneration <= 0) {
@@ -1331,7 +1369,7 @@ final class TurnSignalController {
     }
 
     private void clearPendingOverlaySurface(int cameraId, int requestId) {
-        if (!CameraProfile.isValid(cameraId)) return;
+        if (!CameraOverlayProfile.isValid(cameraId)) return;
         PendingOverlay pending = pendingOverlays[cameraId];
         if (pending == null || requestId != pending.requestId) return;
         pendingOverlays[cameraId] = null;
@@ -1405,7 +1443,7 @@ final class TurnSignalController {
     }
 
     private void closeCameraOverlayNow(int cameraId, String reason) {
-        CameraProfile.of(cameraId);
+        CameraOverlayProfile.of(cameraId);
         pendingOverlays[cameraId] = null;
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
@@ -1897,7 +1935,7 @@ final class OverlayFrameArm {
 
     private OverlayFrameArm(
             int cameraId, int requestId, int surfaceGeneration, int frameArmEpoch) {
-        if (cameraId < 0 || cameraId >= CameraProfile.COUNT) {
+        if (!CameraOverlayProfile.isValid(cameraId)) {
             throw new IllegalArgumentException("camera id out of range");
         }
         if (requestId <= 0 || surfaceGeneration <= 0 || frameArmEpoch <= 0) {

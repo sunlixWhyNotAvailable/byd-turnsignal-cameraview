@@ -78,6 +78,22 @@ final class CameraDewarpConfig {
         return loadScoped(preferences, lensFor(profile), profilePrefix(profile));
     }
 
+    static CameraDewarpConfig loadForParking(
+            SharedPreferences preferences, ParkingCameraProfile profile) {
+        int lens = lensFor(profile);
+        String scopedPrefix = parkingPrefix(profile);
+        try {
+            int fov = preferences.getInt(scopedPrefix + "fov", DEFAULT_FOV_DEGREES);
+            int projection = preferences.getInt(scopedPrefix + "projection", DEFAULT_PROJECTION);
+            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
+                    || !isValidProjection(projection)) return disabled(lens);
+            return of(lens, preferences.getBoolean(scopedPrefix + "enabled", false),
+                    fov, projection);
+        } catch (RuntimeException invalidPreferences) {
+            return disabled(lens);
+        }
+    }
+
     static CameraDewarpConfig loadForReverse(
             SharedPreferences preferences, int cameraIndex) {
         return loadScoped(preferences, lensForReverseCamera(cameraIndex),
@@ -137,6 +153,14 @@ final class CameraDewarpConfig {
         editor.apply();
     }
 
+    static void saveForParking(
+            SharedPreferences preferences, ParkingCameraProfile profile,
+            CameraDewarpConfig value) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeForParking(editor, profile, value);
+        editor.apply();
+    }
+
     static void saveForReverse(
             SharedPreferences preferences, int cameraIndex, CameraDewarpConfig value) {
         SharedPreferences.Editor editor = preferences.edit();
@@ -157,6 +181,12 @@ final class CameraDewarpConfig {
         writeScoped(editor, lensFor(profile), profilePrefix(profile), value);
     }
 
+    static void writeForParking(
+            SharedPreferences.Editor editor, ParkingCameraProfile profile,
+            CameraDewarpConfig value) {
+        writeScoped(editor, lensFor(profile), parkingPrefix(profile), value);
+    }
+
     static void writeForReverse(
             SharedPreferences.Editor editor, int cameraIndex,
             CameraDewarpConfig value) {
@@ -166,6 +196,13 @@ final class CameraDewarpConfig {
 
     static int lensFor(CameraProfile profile) {
         return profile.right() ? LENS_RIGHT : LENS_LEFT;
+    }
+
+    static int lensFor(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        if (profile.id == ParkingCameraProfile.FRONT) return LENS_FRONT;
+        if (profile.id == ParkingCameraProfile.REAR) return LENS_REAR;
+        return "right".equals(profile.lens) ? LENS_RIGHT : LENS_LEFT;
     }
 
     static int lensForReverseCamera(int cameraIndex) {
@@ -241,6 +278,12 @@ final class CameraDewarpConfig {
 
     private static String profilePrefix(CameraProfile profile) {
         return "camera_dewarp_v3_overlay_" + profile.wireName + "_";
+    }
+
+    private static String parkingPrefix(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        return "camera_dewarp_v3_parking_"
+                + profile.wireName.toLowerCase(java.util.Locale.US) + "_";
     }
 
     private static String reversePrefix(int cameraIndex) {

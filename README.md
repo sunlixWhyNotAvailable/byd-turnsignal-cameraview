@@ -5,7 +5,7 @@
 > This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
 > features while the vehicle is parked.
 
-Current source version: `0.49.2`. The application interface is currently Ukrainian.
+Current source version: `0.50.0`. The application interface is currently Ukrainian.
 
 ## Features
 
@@ -18,7 +18,7 @@ Current source version: `0.49.2`. The application interface is currently Ukraini
 - Optional automatic background start after vehicle boot or an application update.
 - Lifetime activation and correction counters.
 
-### Side-camera views
+### Blind-zone camera views
 
 - Independent rear-left, rear-right, front-left, and front-right camera profiles.
 - Separate trigger rules and speed ranges for the rear and front camera groups.
@@ -32,6 +32,23 @@ Current source version: `0.49.2`. The application interface is currently Ukraini
 - Four global image-quality choices in `Налаштування`: `Швидкодія` (default), `Баланс`, `Якість`,
   and `Оригінал`.
 - Adjustable camera-window corner rounding.
+
+Calibration now opens from the `Камери сліпих зон` page instead of using a separate top-level
+tab.
+
+### Parking-camera views
+
+- Six independent tablet views: front-left corner, front, front-right corner, rear-right corner,
+  rear, and rear-left corner.
+- Each view has its own enable switch and editable parking-sensor distance threshold from 0 to
+  150 cm. A global maximum-speed setting limits the feature.
+- Each corner view can optionally add the corresponding front or rear view when that central view
+  was not already activated by its own distance rule.
+- Independent size and position for every view, with an optional synchronized scale.
+- Independent crop, rotation, mirroring, calibration preset, and optional fisheye correction for
+  every view. The rear view starts mirrored by default.
+
+Parking-camera rules are disabled by default and display only on the tablet.
 
 ### Enhanced reverse view
 
@@ -88,10 +105,10 @@ The enhanced reverse view itself is disabled by default.
 
 1. In the guard tab, set the steering thresholds, correction delay, and maximum speed before
    enabling `Захист поворотника`.
-2. In `Калібрування камер`, configure the visible area and optional correction for each side-camera
-   profile.
-3. In `Камери`, choose where and when each side-camera profile appears, then set its size and
-   position.
+2. In `Камери сліпих зон`, choose where and when each side-camera profile appears, set its size and
+   position, and open `Калібрування` to configure the image.
+3. In `Камери паркування`, enable only the required views, set their distance thresholds and the
+   global maximum speed, then configure placement and calibration while parked.
 4. In `Задній хід`, arrange the rear composition, choose which elements are displayed, and enable
    `Покращений задній вид` only after a parked check.
 5. In `Налаштування`, choose the preferred image quality, configure auto-start, check for updates,
@@ -106,6 +123,8 @@ The enhanced reverse view itself is disabled by default.
 - A cold camera start can take several seconds.
 - Higher image-quality modes can increase system load; choose the best balance for the vehicle.
 - Fisheye correction and the enhanced reverse view are experimental and disabled by default.
+- Automatic parking-camera views depend on compatible parking-sensor telemetry and remain
+  experimental; all six rules are disabled by default.
 - Music synchronization depends on how an audio application plays sound and publishes metadata;
   some sources are not supported.
 - Third-party music metadata forwarding does not include album artwork.
