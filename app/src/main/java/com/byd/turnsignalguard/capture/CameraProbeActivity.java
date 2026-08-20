@@ -6346,6 +6346,14 @@ public final class CameraProbeActivity extends Activity
                 && error != null && error.isEmpty();
     }
 
+    static boolean isMatchingPendingActivityShellClose(
+            boolean closePending, int expectedRequestId,
+            int eventRequestId, String renderer) {
+        return closePending && expectedRequestId > 0
+                && expectedRequestId == eventRequestId
+                && "stock_avm_shell".equals(renderer);
+    }
+
     static boolean isMatchingColdResetShellCallback(
             String token, String reason, String renderer, String kind, String error,
             int expectedRequestId, int eventRequestId) {
@@ -6813,16 +6821,15 @@ public final class CameraProbeActivity extends Activity
                         }
                         return;
                     }
-                    if ("activity_stopped".equals(reason)) {
-                        boolean requestMatches = closingActivityCameraRequestId > 0
-                                && closingActivityCameraRequestId == requestId;
-                        if (!activityClosePending || !requestMatches
-                                || !"stock_avm_shell".equals(renderer)) {
-                            recordIgnoredActivityCameraEvent(kind, json);
-                            return;
-                        }
+                    if (isMatchingPendingActivityShellClose(
+                            activityClosePending, closingActivityCameraRequestId,
+                            requestId, renderer)) {
                         finishActivityStoppedClose(
                                 requestId, error == null || error.isEmpty() ? null : error);
+                        return;
+                    }
+                    if ("activity_stopped".equals(reason)) {
+                        recordIgnoredActivityCameraEvent(kind, json);
                         return;
                     }
                     boolean accepted = isCurrentActivityCameraTerminalEvent(requestId);

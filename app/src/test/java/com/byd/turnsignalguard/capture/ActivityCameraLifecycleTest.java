@@ -111,6 +111,20 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
+    public void reversePriorityCloseCompletesMatchingPendingActivityStop() {
+        assertTrue(CameraProbeActivity.isMatchingPendingActivityShellClose(
+                true, 14, 14, "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityShellClose(
+                false, 14, 14, "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityShellClose(
+                true, 14, 13, "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityShellClose(
+                true, 0, 0, "stock_avm_shell"));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityShellClose(
+                true, 14, 14, "pano_h"));
+    }
+
+    @Test
     public void inputRetirementCreatesNewLogicalGeneration() {
         BlindSpotCameraView.InputGeneration generation =
                 new BlindSpotCameraView.InputGeneration();

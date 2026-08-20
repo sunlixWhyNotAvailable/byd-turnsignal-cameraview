@@ -14,8 +14,8 @@ android {
         applicationId = "com.byd.turnsignalguard.capture"
         minSdk = 26
         targetSdk = 29
-        versionCode = 84
-        versionName = "0.49.3"
+        versionCode = 85
+        versionName = "0.49.4"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         buildConfigField(
             "String",
