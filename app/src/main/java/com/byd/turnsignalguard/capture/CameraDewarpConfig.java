@@ -58,22 +58,6 @@ final class CameraDewarpConfig {
     }
 
     static CameraDewarpConfig load(SharedPreferences preferences, int lens) {
-        return load(preferences, lens, null);
-    }
-
-    static CameraDewarpConfig loadForProfile(
-            SharedPreferences preferences, CameraProfile profile) {
-        return load(preferences, lensFor(profile), profileEnabledKey(profile));
-    }
-
-    static CameraDewarpConfig loadForReverse(
-            SharedPreferences preferences, int cameraIndex) {
-        return load(preferences, lensForReverseCamera(cameraIndex),
-                reverseEnabledKey(cameraIndex));
-    }
-
-    private static CameraDewarpConfig load(
-            SharedPreferences preferences, int lens, String scopedEnabledKey) {
         String prefix = prefix(lens);
         try {
             int fov = preferences.getInt(prefix + "fov", DEFAULT_FOV_DEGREES);
@@ -82,10 +66,59 @@ final class CameraDewarpConfig {
                     || !isValidProjection(projection)) {
                 return disabled(lens);
             }
-            String enabledKey = scopedEnabledKey != null
-                    && preferences.contains(scopedEnabledKey)
-                    ? scopedEnabledKey : prefix + "enabled";
-            return of(lens, preferences.getBoolean(enabledKey, false), fov, projection);
+            return of(lens, preferences.getBoolean(prefix + "enabled", false),
+                    fov, projection);
+        } catch (RuntimeException invalidPreferences) {
+            return disabled(lens);
+        }
+    }
+
+    static CameraDewarpConfig loadForProfile(
+            SharedPreferences preferences, CameraProfile profile) {
+        return loadScoped(preferences, lensFor(profile), profilePrefix(profile));
+    }
+
+    static CameraDewarpConfig loadForReverse(
+            SharedPreferences preferences, int cameraIndex) {
+        return loadScoped(preferences, lensForReverseCamera(cameraIndex),
+                reversePrefix(cameraIndex));
+    }
+
+    private static CameraDewarpConfig loadScoped(
+            SharedPreferences preferences, int lens, String scopedPrefix) {
+        String legacyPrefix = prefix(lens);
+        String enabledKey = scopedPrefix + "enabled";
+        String fovKey = scopedPrefix + "fov";
+        String projectionKey = scopedPrefix + "projection";
+        boolean complete = preferences.contains(enabledKey)
+                && preferences.contains(fovKey)
+                && preferences.contains(projectionKey);
+        boolean hasStoredValue = preferences.contains(enabledKey)
+                || preferences.contains(fovKey)
+                || preferences.contains(projectionKey)
+                || preferences.contains(legacyPrefix + "enabled")
+                || preferences.contains(legacyPrefix + "fov")
+                || preferences.contains(legacyPrefix + "projection");
+        try {
+            boolean enabled = preferences.getBoolean(
+                    preferences.contains(enabledKey) ? enabledKey : legacyPrefix + "enabled",
+                    false);
+            int fov = preferences.getInt(
+                    preferences.contains(fovKey) ? fovKey : legacyPrefix + "fov",
+                    DEFAULT_FOV_DEGREES);
+            int projection = preferences.getInt(
+                    preferences.contains(projectionKey)
+                            ? projectionKey : legacyPrefix + "projection",
+                    DEFAULT_PROJECTION);
+            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
+                    || !isValidProjection(projection)) {
+                return disabled(lens);
+            }
+            CameraDewarpConfig value = of(lens, enabled, fov, projection);
+            if (!complete && hasStoredValue) {
+                writeScoped(preferences.edit(), lens, scopedPrefix, value).apply();
+            }
+            return value;
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -121,14 +154,14 @@ final class CameraDewarpConfig {
     static void writeForProfile(
             SharedPreferences.Editor editor, CameraProfile profile,
             CameraDewarpConfig value) {
-        writeScoped(editor, lensFor(profile), profileEnabledKey(profile), value);
+        writeScoped(editor, lensFor(profile), profilePrefix(profile), value);
     }
 
     static void writeForReverse(
             SharedPreferences.Editor editor, int cameraIndex,
             CameraDewarpConfig value) {
         writeScoped(editor, lensForReverseCamera(cameraIndex),
-                reverseEnabledKey(cameraIndex), value);
+                reversePrefix(cameraIndex), value);
     }
 
     static int lensFor(CameraProfile profile) {
@@ -197,23 +230,22 @@ final class CameraDewarpConfig {
         throw new IllegalArgumentException("invalid camera lens");
     }
 
-    private static void writeScoped(
-            SharedPreferences.Editor editor, int lens, String enabledKey,
+    private static SharedPreferences.Editor writeScoped(
+            SharedPreferences.Editor editor, int lens, String scopedPrefix,
             CameraDewarpConfig value) {
         if (value.lens != lens) throw new IllegalArgumentException("dewarp lens mismatch");
-        String prefix = prefix(lens);
-        editor.putBoolean(enabledKey, value.enabled)
-                .putInt(prefix + "fov", value.fovDegrees)
-                .putInt(prefix + "projection", value.projection);
+        return editor.putBoolean(scopedPrefix + "enabled", value.enabled)
+                .putInt(scopedPrefix + "fov", value.fovDegrees)
+                .putInt(scopedPrefix + "projection", value.projection);
     }
 
-    private static String profileEnabledKey(CameraProfile profile) {
-        return "camera_dewarp_v3_overlay_" + profile.wireName + "_enabled";
+    private static String profilePrefix(CameraProfile profile) {
+        return "camera_dewarp_v3_overlay_" + profile.wireName + "_";
     }
 
-    private static String reverseEnabledKey(int cameraIndex) {
+    private static String reversePrefix(int cameraIndex) {
         lensForReverseCamera(cameraIndex);
-        return "camera_dewarp_v3_reverse_" + cameraIndex + "_enabled";
+        return "camera_dewarp_v3_reverse_" + cameraIndex + "_";
     }
 
     private static int clamp(int value, int minimum, int maximum) {

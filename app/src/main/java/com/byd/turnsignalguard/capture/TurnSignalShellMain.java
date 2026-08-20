@@ -41,9 +41,9 @@ public final class TurnSignalShellMain {
         int versionCode = Integer.parseInt(args[2]);
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
-        prepareMainLooper();
+        Looper looper = prepareQuitAllowedLooper();
         Context context = systemContext();
-        Handler handler = new Handler(Looper.getMainLooper());
+        Handler handler = new Handler(looper);
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
         binder.attachInterface(null, TurnSignalShellProtocol.DESCRIPTOR);
         try {
@@ -734,9 +734,9 @@ public final class TurnSignalShellMain {
         return context;
     }
 
-    private static void prepareMainLooper() {
-        if (Looper.getMainLooper() != null) return;
-        Looper.prepareMainLooper();
+    private static Looper prepareQuitAllowedLooper() {
+        if (Looper.myLooper() == null) Looper.prepare();
+        return Looper.myLooper();
     }
 
     private static String summary(Throwable error) {

@@ -3755,16 +3755,6 @@ public final class CameraProbeActivity extends Activity
             if (previous.enabled != value.enabled) refreshDewarpCrops(reverse);
         }
         updateDewarpValueLabels(reverse, value);
-        if (reverse && CameraDewarpConfig.lensFor(
-                CameraProfile.of(calibrationCameraId)) == lens) {
-            updateDewarpUi(false, withSharedDewarpMapping(
-                    CameraDewarpConfig.loadForProfile(
-                            preferences, CameraProfile.of(calibrationCameraId)), value));
-        } else if (!reverse && selectedDewarpLens(true) == lens) {
-            updateDewarpUi(true, withSharedDewarpMapping(
-                    CameraDewarpConfig.loadForReverse(
-                            preferences, reverseCameraEditor.selectedCamera()), value));
-        }
         if (!reverse && calibrationCropOverlay != null) {
             calibrationCropOverlay.setGridVisible(value.enabled);
             if (calibrationRawCropOverlay != null) {
@@ -3772,27 +3762,22 @@ public final class CameraProbeActivity extends Activity
             }
         }
         CameraProfile calibrationProfile = CameraProfile.of(calibrationCameraId);
-        if (calibrationPreview != null
-                && CameraDewarpConfig.lensFor(calibrationProfile) == lens) {
-            CameraDewarpConfig calibrationValue = reverse
-                    ? withSharedDewarpMapping(CameraDewarpConfig.loadForProfile(
-                            preferences, calibrationProfile), value) : value;
-            calibrationPreview.applyDewarpConfig(calibrationValue);
-            updateCalibrationDisplay(calibrationValue.enabled);
+        if (!reverse && calibrationPreview != null) {
+            calibrationPreview.applyDewarpConfig(value);
+            updateCalibrationDisplay(value.enabled);
         }
         CameraProfile previewProfile = CameraProfile.of(selectedCameraId);
-        if (cameraPreview != null && CameraDewarpConfig.lensFor(previewProfile) == lens) {
-            CameraDewarpConfig previewValue = !reverse
-                    && previewProfile.id == calibrationProfile.id
-                    ? value : withSharedDewarpMapping(
-                            CameraDewarpConfig.loadForProfile(
-                                    preferences, previewProfile), value);
-            cameraPreview.applyDewarpConfig(previewValue);
+        if (!reverse && cameraPreview != null
+                && previewProfile.id == calibrationProfile.id) {
+            cameraPreview.applyDewarpConfig(value);
         }
-        applyReversePreviewDewarpConfigs(lens, value);
+        if (reverse) {
+            applyReversePreviewDewarpConfigs(
+                    reverseCameraEditor.selectedCamera(), value);
+        }
         if (!persist) return;
-        CameraHelperService.cameraSettingsChanged(this);
-        CameraHelperService.reverseCameraSettingsChanged(this);
+        if (reverse) CameraHelperService.reverseCameraSettingsChanged(this);
+        else CameraHelperService.cameraSettingsChanged(this);
         record("camera_dewarp_changed", "scope", selectedDewarpScope(reverse),
                 "lens", lens, "enabled", value.enabled,
                 "fov_degrees", value.fovDegrees,
@@ -3840,12 +3825,6 @@ public final class CameraProbeActivity extends Activity
                 : "overlay_" + CameraProfile.of(calibrationCameraId).wireName;
     }
 
-    private static CameraDewarpConfig withSharedDewarpMapping(
-            CameraDewarpConfig scoped, CameraDewarpConfig mapping) {
-        return CameraDewarpConfig.of(scoped.lens, scoped.enabled,
-                mapping.fovDegrees, mapping.projection);
-    }
-
     private void refreshDewarpCrops(boolean reverse) {
         CameraProfile calibrationProfile = CameraProfile.of(calibrationCameraId);
         if (!reverse && calibrationCropOverlay != null) {
@@ -3889,7 +3868,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void applyReversePreviewDewarpConfigs(
-            int overrideLens, CameraDewarpConfig mapping) {
+            int overrideCameraIndex, CameraDewarpConfig override) {
         if (reverseCameraPreview == null) return;
         CameraDewarpConfig rear = CameraDewarpConfig.loadForReverse(
                 preferences, ReverseCameraLayout.REAR_CAMERA_INDEX);
@@ -3897,10 +3876,10 @@ public final class CameraProbeActivity extends Activity
                 preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         CameraDewarpConfig right = CameraDewarpConfig.loadForReverse(
                 preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
-        if (mapping != null) {
-            if (overrideLens == rear.lens) rear = withSharedDewarpMapping(rear, mapping);
-            if (overrideLens == left.lens) left = withSharedDewarpMapping(left, mapping);
-            if (overrideLens == right.lens) right = withSharedDewarpMapping(right, mapping);
+        if (override != null) {
+            if (overrideCameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) rear = override;
+            if (overrideCameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) left = override;
+            if (overrideCameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) right = override;
         }
         reverseCameraPreview.applyDewarpConfigs(rear, left, right);
     }

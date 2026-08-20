@@ -82,7 +82,7 @@ public final class DiagnosticLogExporterTest {
         String[] expected = {
                 "tail -c 1048576 /data/local/tmp/bydturnguard_helper.log 2>/dev/null",
                 "tail -c 1048576 /data/local/tmp/bydturnguard_camera.log 2>/dev/null",
-                "logcat -b all -d 2>/dev/null | tail -c 4194304",
+                "logcat -b all -v threadtime -d 2>/dev/null",
                 "logcat -b crash -v threadtime -d 2>/dev/null | tail -c 2097152",
                 "for tag in system_server_crash system_app_crash data_app_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
                 "for tag in system_server_native_crash system_app_native_crash data_app_native_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
@@ -175,10 +175,36 @@ public final class DiagnosticLogExporterTest {
     }
 
     @Test
-    public void fixedCollectorsStayAllowlistedAndBounded() {
+    public void fullLogcatStreamsPastFormerFourMegabyteLimit() throws Exception {
+        List<String> streamed = new ArrayList<>();
+        byte[] block = new byte[64 * 1024];
+        File archive = DiagnosticLogExporter.export(
+                temporary.newFolder("cache-full-logcat"),
+                new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                identity(),
+                command -> missing(),
+                (command, output) -> {
+                    streamed.add(command);
+                    for (int i = 0; i < 65; i++) output.write(block);
+                    return DiagnosticLogExporter.CommandResult.success("");
+                },
+                5250L);
+
+        assertEquals(Collections.singletonList(
+                "logcat -b all -v threadtime -d 2>/dev/null"), streamed);
+        assertEquals(65L * block.length, entrySize(archive, "system/logcat-all.txt"));
+        String manifest = readEntry(archive, "manifest.json");
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/logcat-all.txt\",\"status\":\"included\""));
+        assertTrue(manifest.contains("\"archived_bytes\":" + 65L * block.length));
+    }
+
+    @Test
+    public void fixedCollectorsStayAllowlistedAndKeepOtherArtifactsBounded() {
         for (String command : DiagnosticLogExporter.fixedCommands()) {
             assertFalse(command.contains("bugreport"));
         }
+        assertFalse(DiagnosticLogExporter.fixedCommands()[2].contains("tail -c"));
         assertTrue(DiagnosticLogExporter.fixedCommands()[10].contains("head -n 3"));
         assertTrue(DiagnosticLogExporter.fixedCommands()[10].contains("tail -c 524288"));
         assertTrue(DiagnosticLogExporter.fixedCommands()[11].contains("ro.product.cpu.abilist"));
@@ -264,6 +290,14 @@ public final class DiagnosticLogExporterTest {
                 while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
                 return new String(output.toByteArray(), StandardCharsets.UTF_8);
             }
+        }
+    }
+
+    private static long entrySize(File archive, String name) throws IOException {
+        try (ZipFile zip = new ZipFile(archive)) {
+            ZipEntry entry = zip.getEntry(name);
+            assertNotNull("Missing ZIP entry " + name, entry);
+            return entry.getSize();
         }
     }
 }

@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -41,7 +42,7 @@ final class DiagnosticLogExporter {
                     "tail -c 1048576 /data/local/tmp/bydturnguard_camera.log 2>/dev/null"),
             new CollectorSpec(
                     "system/logcat-all.txt",
-                    "logcat -b all -d 2>/dev/null | tail -c 4194304"),
+                    "logcat -b all -v threadtime -d 2>/dev/null", true),
             new CollectorSpec(
                     "system/logcat-crash-threadtime.txt",
                     "logcat -b crash -v threadtime -d 2>/dev/null | tail -c 2097152"),
@@ -129,6 +130,10 @@ final class DiagnosticLogExporter {
                 identity,
                 command -> fromAdbResult(LocalAdbClient.executeAuthorized(
                         context, command, (kind, fields) -> {})),
+                (command, output) -> fromAdbResult(
+                        LocalAdbClient.executeAuthorizedStreaming(
+                                context, command, output, Long.MAX_VALUE,
+                                (kind, fields) -> {})),
                 System.currentTimeMillis());
     }
 
@@ -137,6 +142,23 @@ final class DiagnosticLogExporter {
             Snapshot snapshot,
             Identity identity,
             CommandRunner commandRunner,
+            long createdAtMillis) throws IOException {
+        return export(cacheDirectory, snapshot, identity, commandRunner,
+                (command, output) -> {
+                    CommandResult result = commandRunner.run(command);
+                    if (result != null && !result.output.isEmpty()) {
+                        output.write(result.output.getBytes(StandardCharsets.UTF_8));
+                    }
+                    return result;
+                }, createdAtMillis);
+    }
+
+    static File export(
+            File cacheDirectory,
+            Snapshot snapshot,
+            Identity identity,
+            CommandRunner commandRunner,
+            StreamCommandRunner streamCommandRunner,
             long createdAtMillis) throws IOException {
         File outputDirectory = new File(cacheDirectory, ARCHIVE_DIRECTORY);
         if (!outputDirectory.isDirectory() && !outputDirectory.mkdirs()) {
@@ -150,7 +172,8 @@ final class DiagnosticLogExporter {
 
         List<SourceRecord> records = new ArrayList<>();
         try {
-            writeArchive(partial, snapshot, identity, commandRunner, createdAtMillis, records);
+            writeArchive(partial, snapshot, identity, commandRunner,
+                    streamCommandRunner, createdAtMillis, records);
             if (!partial.renameTo(finished)) {
                 throw new IOException("Unable to finish diagnostic archive atomically");
             }
@@ -183,6 +206,7 @@ final class DiagnosticLogExporter {
             Snapshot snapshot,
             Identity identity,
             CommandRunner commandRunner,
+            StreamCommandRunner streamCommandRunner,
             long createdAtMillis,
             List<SourceRecord> records) throws IOException {
         Set<String> usedNames = new HashSet<>();
@@ -218,6 +242,24 @@ final class DiagnosticLogExporter {
                         "system", collector.entry, collector.entry, -1);
                 records.add(record);
                 CommandResult result;
+                if (collector.streaming) {
+                    CountingOutputStream output = new CountingOutputStream(zip);
+                    zip.putNextEntry(new ZipEntry(collector.entry));
+                    try {
+                        result = streamCommandRunner.run(collector.command, output);
+                        if (result == null) throw new IOException("collector_returned_null");
+                    } catch (Throwable error) {
+                        safelyCloseEntry(zip);
+                        record.archivedBytes = output.count;
+                        record.status = output.count > 0 ? "partial" : "error";
+                        record.error = summary(error);
+                        continue;
+                    }
+                    zip.closeEntry();
+                    record.archivedBytes = output.count;
+                    applyCollectorResult(record, result, output.count > 0);
+                    continue;
+                }
                 try {
                     result = commandRunner.run(collector.command);
                     if (result == null) throw new IOException("collector_returned_null");
@@ -226,20 +268,14 @@ final class DiagnosticLogExporter {
                     record.error = summary(error);
                     continue;
                 }
-                record.error = result.error;
-                record.exitCode = result.exitCode;
                 byte[] output = result.output.getBytes(StandardCharsets.UTF_8);
                 if (output.length > 0) {
                     zip.putNextEntry(new ZipEntry(collector.entry));
                     zip.write(output);
                     zip.closeEntry();
                     record.archivedBytes = output.length;
-                    record.status = isPermissionDenied(result.error)
-                            ? "permission_denied" : result.ok ? "included" : "partial";
-                } else {
-                    record.status = isPermissionDenied(result.error)
-                            ? "permission_denied" : result.ok ? "missing" : "error";
                 }
+                applyCollectorResult(record, result, output.length > 0);
             }
 
             byte[] manifest = manifest(identity, createdAtMillis, records)
@@ -362,6 +398,16 @@ final class DiagnosticLogExporter {
                 || normalized.contains("permission_denied")
                 || normalized.contains("permission denied")
                 || normalized.contains("shell_exit_13");
+    }
+
+    private static void applyCollectorResult(
+            SourceRecord record, CommandResult result, boolean hasOutput) {
+        record.error = result.error;
+        record.exitCode = result.exitCode;
+        record.status = isPermissionDenied(result.error)
+                ? "permission_denied"
+                : hasOutput ? result.ok ? "included" : "partial"
+                : result.ok ? "missing" : "error";
     }
 
     private static String joinAbis(String[] abis) {
@@ -515,6 +561,10 @@ final class DiagnosticLogExporter {
         CommandResult run(String command);
     }
 
+    interface StreamCommandRunner {
+        CommandResult run(String command, OutputStream output) throws IOException;
+    }
+
     static final class CommandResult {
         final boolean ok;
         final String output;
@@ -540,10 +590,35 @@ final class DiagnosticLogExporter {
     private static final class CollectorSpec {
         final String entry;
         final String command;
+        final boolean streaming;
 
         CollectorSpec(String entry, String command) {
+            this(entry, command, false);
+        }
+
+        CollectorSpec(String entry, String command, boolean streaming) {
             this.entry = entry;
             this.command = command;
+            this.streaming = streaming;
+        }
+    }
+
+    private static final class CountingOutputStream extends OutputStream {
+        private final OutputStream output;
+        long count;
+
+        CountingOutputStream(OutputStream output) {
+            this.output = output;
+        }
+
+        @Override public void write(int value) throws IOException {
+            output.write(value);
+            count++;
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+            output.write(bytes, offset, length);
+            count += length;
         }
     }
 

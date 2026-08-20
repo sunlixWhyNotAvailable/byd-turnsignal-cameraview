@@ -8,7 +8,7 @@ import static org.junit.Assert.assertTrue;
 
 public final class CameraRuntimeDewarpScopeTest {
     @Test
-    public void runtimeSpecsKeepAllSevenActivationScopesIndependent() {
+    public void runtimeSpecsKeepAllSevenCorrectionScopesIndependent() {
         TestSharedPreferences settings = new TestSharedPreferences();
         settings.putBoolean("camera_dewarp_v2_left_enabled", false);
         settings.putBoolean("camera_dewarp_v2_right_enabled", true);
@@ -24,26 +24,26 @@ public final class CameraRuntimeDewarpScopeTest {
                 settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, false);
 
         saveProfile(settings, CameraProfile.REAR_LEFT, true,
-                CameraDewarpConfig.LENS_LEFT, 133,
+                CameraDewarpConfig.LENS_LEFT, 111,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
         saveProfile(settings, CameraProfile.FRONT_LEFT, false,
-                CameraDewarpConfig.LENS_LEFT, 133,
-                CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+                CameraDewarpConfig.LENS_LEFT, 121,
+                CameraDewarpConfig.PROJECTION_RECTILINEAR);
         saveReverse(settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, true,
-                CameraDewarpConfig.LENS_LEFT, 133,
+                CameraDewarpConfig.LENS_LEFT, 131,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
 
         saveProfile(settings, CameraProfile.REAR_RIGHT, false,
-                CameraDewarpConfig.LENS_RIGHT, 147,
+                CameraDewarpConfig.LENS_RIGHT, 141,
                 CameraDewarpConfig.PROJECTION_RECTILINEAR);
         saveProfile(settings, CameraProfile.FRONT_RIGHT, true,
-                CameraDewarpConfig.LENS_RIGHT, 147,
-                CameraDewarpConfig.PROJECTION_RECTILINEAR);
+                CameraDewarpConfig.LENS_RIGHT, 151,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL);
         saveReverse(settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, false,
-                CameraDewarpConfig.LENS_RIGHT, 147,
+                CameraDewarpConfig.LENS_RIGHT, 161,
                 CameraDewarpConfig.PROJECTION_RECTILINEAR);
         saveReverse(settings, ReverseCameraLayout.REAR_CAMERA_INDEX, true,
-                CameraDewarpConfig.LENS_REAR, 158,
+                CameraDewarpConfig.LENS_REAR, 169,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
 
         CameraShellProtocol.OverlaySpec rearLeft = overlaySpec(
@@ -57,19 +57,19 @@ public final class CameraRuntimeDewarpScopeTest {
         CameraShellProtocol.ReverseOverlaySpec reverse =
                 ReverseCameraController.buildOverlaySpec(settings, 30);
 
-        assertDewarp(rearLeft.dewarp, true, CameraDewarpConfig.LENS_LEFT, 133,
+        assertDewarp(rearLeft.dewarp, true, CameraDewarpConfig.LENS_LEFT, 111,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
-        assertDewarp(frontLeft.dewarp, false, CameraDewarpConfig.LENS_LEFT, 133,
+        assertDewarp(frontLeft.dewarp, false, CameraDewarpConfig.LENS_LEFT, 121,
+                CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        assertDewarp(reverse.leftDewarp, true, CameraDewarpConfig.LENS_LEFT, 131,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
-        assertDewarp(reverse.leftDewarp, true, CameraDewarpConfig.LENS_LEFT, 133,
+        assertDewarp(rearRight.dewarp, false, CameraDewarpConfig.LENS_RIGHT, 141,
+                CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        assertDewarp(frontRight.dewarp, true, CameraDewarpConfig.LENS_RIGHT, 151,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
-        assertDewarp(rearRight.dewarp, false, CameraDewarpConfig.LENS_RIGHT, 147,
+        assertDewarp(reverse.rightDewarp, false, CameraDewarpConfig.LENS_RIGHT, 161,
                 CameraDewarpConfig.PROJECTION_RECTILINEAR);
-        assertDewarp(frontRight.dewarp, true, CameraDewarpConfig.LENS_RIGHT, 147,
-                CameraDewarpConfig.PROJECTION_RECTILINEAR);
-        assertDewarp(reverse.rightDewarp, false, CameraDewarpConfig.LENS_RIGHT, 147,
-                CameraDewarpConfig.PROJECTION_RECTILINEAR);
-        assertDewarp(reverse.rearDewarp, true, CameraDewarpConfig.LENS_REAR, 158,
+        assertDewarp(reverse.rearDewarp, true, CameraDewarpConfig.LENS_REAR, 169,
                 CameraDewarpConfig.PROJECTION_CYLINDRICAL);
         assertEquals(CameraBufferQuality.QUALITY, rearLeft.bufferQuality);
         assertEquals(CameraBufferQuality.QUALITY, frontLeft.bufferQuality);
@@ -84,7 +84,7 @@ public final class CameraRuntimeDewarpScopeTest {
     }
 
     @Test
-    public void malformedRuntimeScopeOrSharedOpticsFailsClosed() {
+    public void malformedRuntimeScopeFailsOnlyThatScopeClosed() {
         TestSharedPreferences settings = new TestSharedPreferences();
         saveProfile(settings, CameraProfile.REAR_LEFT, true,
                 CameraDewarpConfig.LENS_LEFT, 130,
@@ -104,14 +104,14 @@ public final class CameraRuntimeDewarpScopeTest {
 
         settings.putString("camera_dewarp_v3_overlay_rear_left_enabled", "invalid");
         settings.putString("camera_dewarp_v3_reverse_2_enabled", "invalid");
-        settings.putString("camera_dewarp_v2_right_fov", "invalid");
+        settings.putString("camera_dewarp_v3_overlay_front_right_fov", "invalid");
 
         assertFalse(overlaySpec(settings, CameraProfile.REAR_LEFT).dewarp.enabled);
         assertFalse(overlaySpec(settings, CameraProfile.FRONT_RIGHT).dewarp.enabled);
         CameraShellProtocol.ReverseOverlaySpec reverse =
                 ReverseCameraController.buildOverlaySpec(settings, 31);
         assertFalse(reverse.leftDewarp.enabled);
-        assertFalse(reverse.rightDewarp.enabled);
+        assertTrue(reverse.rightDewarp.enabled);
         assertTrue(reverse.rearDewarp.enabled);
     }
 

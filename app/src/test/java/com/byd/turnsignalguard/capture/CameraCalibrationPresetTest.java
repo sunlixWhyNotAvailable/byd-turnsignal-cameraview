@@ -213,8 +213,9 @@ public final class CameraCalibrationPresetTest {
             TestSharedPreferences preferences = new TestSharedPreferences();
             int targetIndex = CameraCalibrationPreset.reverseMirrorTarget(sourceIndex);
             for (int index = 1; index <= 3; index++) {
-                CameraDewarpConfig.save(preferences, CameraDewarpConfig.disabled(
-                        CameraDewarpConfig.lensForReverseCamera(index)));
+                CameraDewarpConfig.saveForReverse(preferences, index,
+                        CameraDewarpConfig.disabled(
+                                CameraDewarpConfig.lensForReverseCamera(index)));
             }
             ReverseCameraLayout.Rect sourceDestination = ReverseCameraLayout.destination(
                     0.08f, 0.14f, 0.36f, 0.40f);
@@ -247,11 +248,13 @@ public final class CameraCalibrationPresetTest {
                     preferences, targetIndex, targetCorrected, true);
             ReverseCameraController.saveVisibility(preferences, sourceIndex, false);
             ReverseCameraController.saveVisibility(preferences, targetIndex, true);
-            CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                    CameraDewarpConfig.lensForReverseCamera(sourceIndex), true, 144,
-                    CameraDewarpConfig.PROJECTION_CYLINDRICAL));
-            CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                    CameraDewarpConfig.lensForReverseCamera(targetIndex), false, 93));
+            CameraDewarpConfig.saveForReverse(preferences, sourceIndex,
+                    CameraDewarpConfig.of(
+                            CameraDewarpConfig.lensForReverseCamera(sourceIndex), true, 144,
+                            CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+            CameraDewarpConfig.saveForReverse(preferences, targetIndex,
+                    CameraDewarpConfig.of(
+                            CameraDewarpConfig.lensForReverseCamera(targetIndex), false, 93));
             CameraCalibrationPreset.saveReverse(preferences, targetIndex);
             int targetZ = ReverseCameraController.loadRawLayout(preferences)
                     .pane(targetIndex).zOrder;

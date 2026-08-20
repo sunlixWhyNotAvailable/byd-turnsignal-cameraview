@@ -83,20 +83,31 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
-    public void scopedActivationFallsBackToLegacyAndIsolatesEveryVisibleContext() {
+    public void legacyValuesMaterializeThenAllSevenContextsStayIndependent() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraProfile rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT);
         CameraProfile frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT);
         CameraProfile rearRight = CameraProfile.of(CameraProfile.REAR_RIGHT);
         CameraProfile frontRight = CameraProfile.of(CameraProfile.FRONT_RIGHT);
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                CameraDewarpConfig.LENS_LEFT, true, 121));
+                CameraDewarpConfig.LENS_LEFT, true, 121,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_RIGHT, false, 122));
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_REAR, true, 123));
+        preferences.putBoolean("camera_dewarp_v3_overlay_rear_left_enabled", false);
 
-        assertTrue(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
+        CameraDewarpConfig migratedRearLeft =
+                CameraDewarpConfig.loadForProfile(preferences, rearLeft);
+        assertFalse(migratedRearLeft.enabled);
+        assertEquals(121, migratedRearLeft.fovDegrees);
+        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
+                migratedRearLeft.projection);
+        assertEquals(121, preferences.getInt(
+                "camera_dewarp_v3_overlay_rear_left_fov", -1));
+        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, preferences.getInt(
+                "camera_dewarp_v3_overlay_rear_left_projection", -1));
         assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
         assertTrue(CameraDewarpConfig.loadForReverse(preferences,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
@@ -108,70 +119,73 @@ public final class CameraDewarpConfigTest {
                 ReverseCameraLayout.REAR_CAMERA_INDEX).enabled);
 
         CameraDewarpConfig.saveForProfile(preferences, rearLeft,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 131));
-        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
-        assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
-        assertTrue(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
-
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 131));
         CameraDewarpConfig.saveForProfile(preferences, frontLeft,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 141));
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 141,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
         CameraDewarpConfig.saveForReverse(preferences,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 151,
                         CameraDewarpConfig.PROJECTION_CYLINDRICAL));
-        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
-        assertFalse(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
-        assertFalse(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
-        assertEquals(151,
-                CameraDewarpConfig.loadForProfile(preferences, rearLeft).fovDegrees);
-        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
-                CameraDewarpConfig.loadForProfile(preferences, frontLeft).projection);
-        assertTrue(CameraDewarpConfig.load(
-                preferences, CameraDewarpConfig.LENS_LEFT).enabled);
-
         CameraDewarpConfig.saveForProfile(preferences, rearRight,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 132));
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 132,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
         CameraDewarpConfig.saveForProfile(preferences, frontRight,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 142));
-        assertTrue(CameraDewarpConfig.loadForProfile(preferences, rearRight).enabled);
-        assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontRight).enabled);
-        assertFalse(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX).enabled);
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, false, 142));
         CameraDewarpConfig.saveForReverse(preferences,
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 152));
-        assertTrue(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX).enabled);
-
         CameraDewarpConfig.saveForReverse(preferences,
                 ReverseCameraLayout.REAR_CAMERA_INDEX,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR, false, 133));
-        assertFalse(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_CAMERA_INDEX).enabled);
-        assertTrue(CameraDewarpConfig.loadForReverse(preferences,
-                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX).enabled);
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR, false, 162,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+
+        assertConfig(CameraDewarpConfig.loadForProfile(preferences, rearLeft),
+                true, 131, CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        assertConfig(CameraDewarpConfig.loadForProfile(preferences, frontLeft),
+                false, 141, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.loadForReverse(preferences,
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
+                false, 151, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.loadForProfile(preferences, rearRight),
+                true, 132, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.loadForProfile(preferences, frontRight),
+                false, 142, CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        assertConfig(CameraDewarpConfig.loadForReverse(preferences,
+                        ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+                true, 152, CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        assertConfig(CameraDewarpConfig.loadForReverse(preferences,
+                        ReverseCameraLayout.REAR_CAMERA_INDEX),
+                false, 162, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_LEFT),
+                true, 121, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
     }
 
     @Test
-    public void malformedScopedActivationOrSharedMappingFailsClosed() {
+    public void malformedScopedValueFailsOnlyItsOwnContextClosed() {
         TestSharedPreferences preferences = new TestSharedPreferences();
-        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
-        CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
-                CameraDewarpConfig.LENS_LEFT, true, 120));
-        CameraDewarpConfig.saveForProfile(preferences, profile,
+        CameraProfile rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT);
+        CameraProfile frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT);
+        CameraDewarpConfig.saveForProfile(preferences, rearLeft,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 130));
+        CameraDewarpConfig.saveForProfile(preferences, frontLeft,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 140));
 
         preferences.putString(
                 "camera_dewarp_v3_overlay_rear_left_enabled", "invalid");
-        assertFalse(CameraDewarpConfig.loadForProfile(preferences, profile).enabled);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
+        assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
 
         preferences.putBoolean(
                 "camera_dewarp_v3_overlay_rear_left_enabled", true);
-        preferences.putInt("camera_dewarp_v2_left_fov", 0);
-        assertFalse(CameraDewarpConfig.loadForProfile(preferences, profile).enabled);
-        assertFalse(CameraDewarpConfig.loadForReverse(preferences,
+        preferences.putInt("camera_dewarp_v3_overlay_rear_left_fov", 0);
+        assertFalse(CameraDewarpConfig.loadForProfile(preferences, rearLeft).enabled);
+        assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
+
+        TestSharedPreferences invalidLegacy = new TestSharedPreferences();
+        invalidLegacy.putBoolean("camera_dewarp_v2_left_enabled", true);
+        invalidLegacy.putInt("camera_dewarp_v2_left_fov", 0);
+        assertFalse(CameraDewarpConfig.loadForReverse(invalidLegacy,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
     }
 
@@ -427,5 +441,12 @@ public final class CameraDewarpConfigTest {
         assertEquals(expected.top, actual.top, EPSILON);
         assertEquals(expected.width, actual.width, EPSILON);
         assertEquals(expected.height, actual.height, EPSILON);
+    }
+
+    private static void assertConfig(
+            CameraDewarpConfig actual, boolean enabled, int fov, int projection) {
+        assertEquals(enabled, actual.enabled);
+        assertEquals(fov, actual.fovDegrees);
+        assertEquals(projection, actual.projection);
     }
 }

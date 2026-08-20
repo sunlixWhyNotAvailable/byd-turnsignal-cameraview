@@ -45,9 +45,9 @@ public final class CameraShellMain {
         int versionCode = Integer.parseInt(args[1]);
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
-        prepareMainLooper();
+        Looper looper = prepareQuitAllowedLooper();
         Context context = systemContext();
-        Handler handler = new Handler(Looper.getMainLooper());
+        Handler handler = new Handler(looper);
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
         binder.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
         try {
@@ -517,8 +517,9 @@ public final class CameraShellMain {
         return context;
     }
 
-    private static void prepareMainLooper() {
-        if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
+    private static Looper prepareQuitAllowedLooper() {
+        if (Looper.myLooper() == null) Looper.prepare();
+        return Looper.myLooper();
     }
 
     private static String summary(Throwable error) {
