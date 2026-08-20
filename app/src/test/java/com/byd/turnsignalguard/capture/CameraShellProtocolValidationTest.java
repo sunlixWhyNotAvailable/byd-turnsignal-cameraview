@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public final class CameraShellProtocolValidationTest {
     @Test
@@ -46,6 +47,35 @@ public final class CameraShellProtocolValidationTest {
 
         assertThrows(IllegalArgumentException.class, () -> reverse(
                 ReverseCameraLayout.VISIBILITY_ALL + 1, CameraBufferQuality.DEFAULT));
+    }
+
+    @Test
+    public void parcelRoundTripCarriesOutputMirrorState() {
+        DirectCameraCrop crop = DirectCameraCrop.defaultFor(false)
+                .withMirrorHorizontally(true);
+        CameraDewarpConfig left = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        CameraShellProtocol.OverlaySpec overlay = new CameraShellProtocol.OverlaySpec(
+                CameraProfile.REAR_LEFT, 1, CameraDisplayTarget.TABLET,
+                400, 300, 0, 0,
+                crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
+                crop.rotationDegrees, crop.rotationMode, 8, left, crop,
+                CameraBufferQuality.DEFAULT, true);
+        assertTrue(overlay.mirrorHorizontally);
+        assertTrue(overlay.rawFallbackCrop.mirrorHorizontally);
+        assertTrue(overlay.crop().mirrorHorizontally);
+
+        ReverseCameraLayout layout = ReverseCameraLayout.withMirrorHorizontally(
+                ReverseCameraLayout.defaults(), ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                false);
+        CameraShellProtocol.ReverseOverlaySpec reverse =
+                new CameraShellProtocol.ReverseOverlaySpec(
+                        1, layout, layout, 8,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR), left,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT));
+        assertEquals(false, reverse.layout.rearLeft.mirrorHorizontally);
+        assertEquals(false, reverse.rawFallbackLayout.rearLeft.mirrorHorizontally);
+        assertTrue(reverse.layout.rear.mirrorHorizontally);
     }
 
     private static CameraShellProtocol.ReverseOverlaySpec reverse(

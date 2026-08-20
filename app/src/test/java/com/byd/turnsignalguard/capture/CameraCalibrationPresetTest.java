@@ -169,8 +169,10 @@ public final class CameraCalibrationPresetTest {
                     CameraDewarpConfig.lensFor(target), false, 91));
             CameraCalibrationPreset.saveCamera(preferences, target);
 
-            DirectCameraCrop raw = crop(0.12f, 0.20f, 0.31f, 0.42f, 37);
-            DirectCameraCrop corrected = crop(0.27f, 0.11f, 0.25f, 0.33f, 37);
+            DirectCameraCrop raw = crop(0.12f, 0.20f, 0.31f, 0.42f, 37)
+                    .withMirrorHorizontally(true);
+            DirectCameraCrop corrected = crop(0.27f, 0.11f, 0.25f, 0.33f, 37)
+                    .withMirrorHorizontally(true);
             DirectCameraCrop.save(preferences, source, raw);
             DirectCameraCrop.saveCorrected(preferences, source, corrected);
             CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
@@ -186,6 +188,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(raw.height, mirrored.height, EPSILON);
             assertEquals(-raw.rotationDegrees, mirrored.rotationDegrees);
             assertEquals(raw.rotationMode, mirrored.rotationMode);
+            assertTrue(mirrored.mirrorHorizontally);
             DirectCameraCrop mirroredCorrected = DirectCameraCrop.loadCorrected(
                     preferences, target, mirrored);
             assertEquals(1.0f - corrected.left - corrected.width,
@@ -228,6 +231,8 @@ public final class CameraCalibrationPresetTest {
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
             layout = ReverseCameraLayout.withPane(layout, sourceIndex,
                     sourceDestination, sourceRaw, 42);
+            layout = ReverseCameraLayout.withMirrorHorizontally(
+                    layout, sourceIndex, false);
             layout = ReverseCameraLayout.withDisplayMode(layout, sourceIndex,
                     ReverseCameraLayout.DISPLAY_MODE_STRETCH);
             layout = ReverseCameraLayout.withPane(layout, targetIndex,
@@ -260,6 +265,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(-42, rawTarget.rotationDegrees);
             assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH,
                     rawTarget.displayMode);
+            assertFalse(rawTarget.mirrorHorizontally);
             assertEquals(targetZ, rawTarget.zOrder);
             ReverseCameraLayout.Pane correctedTarget = ReverseCameraController
                     .loadLayout(preferences).pane(targetIndex);
@@ -281,6 +287,7 @@ public final class CameraCalibrationPresetTest {
             assertRect(targetRaw, restored.sourceCrop);
             assertEquals(-16, restored.rotationDegrees);
             assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, restored.displayMode);
+            assertTrue(restored.mirrorHorizontally);
             assertEquals(targetZ, restored.zOrder);
             assertRect(targetCorrected, ReverseCameraController
                     .loadCorrectedSourceCrop(preferences, targetIndex, targetRaw));

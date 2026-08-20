@@ -672,7 +672,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             params.topMargin = baseRect.top;
             pane.setLayoutParams(params);
             pane.setZ(1.0f + value.zOrder);
-            pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode);
+            pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
+                    value.mirrorHorizontally);
         }
     }
 
@@ -699,6 +700,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(0, 0, 1, 1);
         int rotationDegrees;
         int displayMode = ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
+        boolean mirrorHorizontally = true;
 
         PaneView(Context context, int cameraIndex) {
             super(context);
@@ -727,7 +729,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
             addOnLayoutChangeListener((view, left, top, right, bottom,
                     oldLeft, oldTop, oldRight, oldBottom) ->
-                    applyTransform(crop, rotationDegrees, displayMode));
+                    applyTransform(crop, rotationDegrees, displayMode, mirrorHorizontally));
         }
 
         void applyDewarpConfig(CameraDewarpConfig value) {
@@ -737,10 +739,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
 
         void applyTransform(
-                ReverseCameraLayout.Rect value, int degrees, int nextDisplayMode) {
+                ReverseCameraLayout.Rect value, int degrees, int nextDisplayMode,
+                boolean mirror) {
             crop = value;
             rotationDegrees = CameraRotation.clamp(degrees);
             displayMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);
+            mirrorHorizontally = mirror;
             int width = getWidth();
             int height = getHeight();
             if (width <= 0 || height <= 0) return;
@@ -775,13 +779,13 @@ final class ReverseCameraCompositionView extends FrameLayout {
                         rotationDegrees,
                         CameraRotation.MODE_ALIGNED,
                         new RectF(0, 0, fitted.width, fitted.height),
-                        ReverseCameraLayout.mirrorHorizontally(cameraIndex));
+                        mirrorHorizontally);
             } else {
                 transform.setValues(ReverseCameraLayout.rotatedSourceCropTransform(
                         value, fitted.width, fitted.height, SOURCE_WIDTH, SOURCE_HEIGHT,
                         rotationDegrees,
                         displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL));
-                if (ReverseCameraLayout.mirrorHorizontally(cameraIndex)) {
+                if (mirrorHorizontally) {
                     transform.postScale(-1.0f, 1.0f,
                             fitted.width / 2.0f, fitted.height / 2.0f);
                 }

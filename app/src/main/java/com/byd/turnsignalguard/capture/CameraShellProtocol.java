@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 21;
+    static final int VERSION = 22;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -84,6 +84,7 @@ final class CameraShellProtocol {
         final int rotationMode;
         final int cornerRadiusDp;
         final int bufferQuality;
+        final boolean mirrorHorizontally;
         final CameraDewarpConfig dewarp;
         final DirectCameraCrop rawFallbackCrop;
 
@@ -159,6 +160,19 @@ final class CameraShellProtocol {
                 int cropAspectMode, int rotationDegrees, int rotationMode,
                 int cornerRadiusDp, CameraDewarpConfig dewarp,
                 DirectCameraCrop rawFallbackCrop, int bufferQuality) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
+                    rawFallbackCrop, bufferQuality, false);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int rotationMode,
+                int cornerRadiusDp, CameraDewarpConfig dewarp,
+                DirectCameraCrop rawFallbackCrop, int bufferQuality,
+                boolean mirrorHorizontally) {
             this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
@@ -182,7 +196,8 @@ final class CameraShellProtocol {
             if (rawFallbackCrop == null) {
                 throw new IllegalArgumentException("raw fallback crop is required");
             }
-            this.rawFallbackCrop = rawFallbackCrop;
+            this.mirrorHorizontally = mirrorHorizontally;
+            this.rawFallbackCrop = rawFallbackCrop.withMirrorHorizontally(mirrorHorizontally);
         }
 
         void writeToParcel(Parcel parcel) {
@@ -204,6 +219,7 @@ final class CameraShellProtocol {
             writeDewarp(parcel, dewarp);
             writeCrop(parcel, rawFallbackCrop);
             parcel.writeInt(bufferQuality);
+            parcel.writeInt(mirrorHorizontally ? 1 : 0);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
@@ -223,11 +239,14 @@ final class CameraShellProtocol {
             int rotationMode = parcel.readInt();
             int cornerRadiusDp = parcel.readInt();
             CameraDewarpConfig dewarp = readDewarp(parcel);
+            DirectCameraCrop rawFallbackCrop = readCrop(parcel);
+            int bufferQuality = parcel.readInt();
+            boolean mirrorHorizontally = readBoolean(parcel);
             return new OverlaySpec(
                     cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
-                    readCrop(parcel), parcel.readInt());
+                    rawFallbackCrop, bufferQuality, mirrorHorizontally);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -268,7 +287,8 @@ final class CameraShellProtocol {
         DirectCameraCrop crop() {
             return DirectCameraCrop.of(
                     cropLeft, cropTop, cropWidth, cropHeight,
-                    cropAspectMode, rotationDegrees, rotationMode);
+                    cropAspectMode, rotationDegrees, rotationMode)
+                    .withMirrorHorizontally(mirrorHorizontally);
         }
 
         private static boolean finite(float value) {
@@ -378,6 +398,7 @@ final class CameraShellProtocol {
             writeDewarp(parcel, rightDewarp);
             for (ReverseCameraLayout.Pane pane : rawFallbackLayout.panes()) {
                 writeRect(parcel, pane.sourceCrop);
+                parcel.writeInt(pane.mirrorHorizontally ? 1 : 0);
             }
             for (ReverseCameraLayout.Pane pane : layout.panes()) {
                 parcel.writeInt(pane.cameraIndex);
@@ -386,6 +407,7 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.rotationDegrees);
                 parcel.writeInt(pane.displayMode);
                 parcel.writeInt(pane.zOrder);
+                parcel.writeInt(pane.mirrorHorizontally ? 1 : 0);
             }
             parcel.writeInt(bufferQuality);
             parcel.writeInt(visibilityMask);
@@ -404,11 +426,13 @@ final class CameraShellProtocol {
             CameraDewarpConfig leftDewarp = readDewarp(parcel);
             CameraDewarpConfig rightDewarp = readDewarp(parcel);
             ReverseCameraLayout.Rect[] rawCrops = new ReverseCameraLayout.Rect[3];
+            boolean[] rawMirrors = new boolean[3];
             for (int i = 0; i < rawCrops.length; i++) {
                 float[] crop = readRect(parcel);
                 validateSourceRect(crop);
                 rawCrops[i] = ReverseCameraLayout.sourceCrop(
                         crop[0], crop[1], crop[2], crop[3]);
+                rawMirrors[i] = readBoolean(parcel);
             }
             int[] indexes = new int[3];
             int[] zOrders = new int[3];
@@ -423,6 +447,7 @@ final class CameraShellProtocol {
                 int rotationDegrees = parcel.readInt();
                 int displayMode = parcel.readInt();
                 int zOrder = parcel.readInt();
+                boolean mirrorHorizontally = readBoolean(parcel);
                 validateRect(destination, ReverseCameraLayout.MIN_DESTINATION_SIZE);
                 validateSourceRect(crop);
                 if (zOrder < 0 || zOrder > 2) {
@@ -441,6 +466,8 @@ final class CameraShellProtocol {
                                 crop[2], crop[3]), rotationDegrees);
                 layout = ReverseCameraLayout.withDisplayMode(
                         layout, cameraIndex, displayMode);
+                layout = ReverseCameraLayout.withMirrorHorizontally(
+                        layout, cameraIndex, mirrorHorizontally);
                 indexes[i] = cameraIndex;
                 zOrders[i] = zOrder;
             }
@@ -462,6 +489,8 @@ final class CameraShellProtocol {
                 rawFallbackLayout = ReverseCameraLayout.withPane(
                         rawFallbackLayout, pane.cameraIndex, pane.destination,
                         rawCrops[i], pane.rotationDegrees);
+                rawFallbackLayout = ReverseCameraLayout.withMirrorHorizontally(
+                        rawFallbackLayout, pane.cameraIndex, rawMirrors[i]);
             }
             int bufferQuality = parcel.readInt();
             int visibilityMask = parcel.readInt();
@@ -599,6 +628,7 @@ final class CameraShellProtocol {
         parcel.writeInt(crop.aspectMode);
         parcel.writeInt(crop.rotationDegrees);
         parcel.writeInt(crop.rotationMode);
+        parcel.writeInt(crop.mirrorHorizontally ? 1 : 0);
     }
 
     private static DirectCameraCrop readCrop(Parcel parcel) {
@@ -609,6 +639,7 @@ final class CameraShellProtocol {
         int aspectMode = parcel.readInt();
         int rotationDegrees = parcel.readInt();
         int rotationMode = parcel.readInt();
+        boolean mirrorHorizontally = readBoolean(parcel);
         SourceCropPolicy.requireValid(left, top, width, height);
         if (aspectMode < DirectCameraCrop.ASPECT_FOUR_THREE
                 || aspectMode > DirectCameraCrop.ASPECT_FREE
@@ -617,6 +648,15 @@ final class CameraShellProtocol {
             throw new IllegalArgumentException("invalid raw fallback crop");
         }
         return DirectCameraCrop.of(left, top, width, height,
-                aspectMode, rotationDegrees, rotationMode);
+                aspectMode, rotationDegrees, rotationMode)
+                .withMirrorHorizontally(mirrorHorizontally);
+    }
+
+    private static boolean readBoolean(Parcel parcel) {
+        int value = parcel.readInt();
+        if (value != 0 && value != 1) {
+            throw new IllegalArgumentException("invalid boolean wire value");
+        }
+        return value == 1;
     }
 }

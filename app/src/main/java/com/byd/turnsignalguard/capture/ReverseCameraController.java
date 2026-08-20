@@ -589,10 +589,14 @@ final class ReverseCameraController {
                         settings, pane.cameraIndex, pane.sourceCrop);
                 int rotationDegrees = CameraRotation.clamp(settings.getInt(
                         prefix + "rotation_degrees", pane.rotationDegrees));
+                boolean mirror = loadMirror(settings, mirrorKey(pane.cameraIndex),
+                        pane.mirrorHorizontally);
                 layout = ReverseCameraLayout.withPane(
                         layout, pane.cameraIndex, destination, crop, rotationDegrees);
                 layout = ReverseCameraLayout.withDisplayMode(
                         layout, pane.cameraIndex, readDisplayMode(settings, pane.cameraIndex));
+                layout = ReverseCameraLayout.withMirrorHorizontally(
+                        layout, pane.cameraIndex, mirror);
             }
             for (int z = 0; z < 3; z++) {
                 int cameraIndex = settings.getInt(PREF_PREFIX + "z_" + z, z + 1);
@@ -617,6 +621,7 @@ final class ReverseCameraController {
                     .putFloat(prefix + "width", pane.destination.width)
                     .putFloat(prefix + "height", pane.destination.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
+                    .putBoolean(mirrorKey(pane.cameraIndex), pane.mirrorHorizontally)
                     .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
             CameraDewarpConfig dewarp = CameraDewarpConfig.loadForReverse(
@@ -641,6 +646,7 @@ final class ReverseCameraController {
                     .putFloat(prefix + "width", pane.destination.width)
                     .putFloat(prefix + "height", pane.destination.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
+                    .putBoolean(mirrorKey(pane.cameraIndex), pane.mirrorHorizontally)
                     .putInt(displayModeKey(pane.cameraIndex),
                             ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex)
@@ -755,8 +761,22 @@ final class ReverseCameraController {
         }
     }
 
+    static String mirrorKey(int cameraIndex) {
+        CameraDewarpConfig.lensForReverseCamera(cameraIndex);
+        return PREF_PREFIX + cameraIndex + "_mirror";
+    }
+
     static void saveVisibility(SharedPreferences settings, int paneId, boolean visible) {
         settings.edit().putBoolean(visibilityKey(paneId), visible).apply();
+    }
+
+    private static boolean loadMirror(
+            SharedPreferences settings, String key, boolean fallback) {
+        try {
+            return settings.getBoolean(key, fallback);
+        } catch (RuntimeException invalidPreference) {
+            return fallback;
+        }
     }
 
     static int loadVisibilityMask(SharedPreferences settings) {

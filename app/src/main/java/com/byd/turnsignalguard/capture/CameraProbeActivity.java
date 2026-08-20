@@ -117,6 +117,8 @@ public final class CameraProbeActivity extends Activity
     private static final int DEFAULT_FRONT_CAMERA_MAX_SPEED_KPH = 10;
     private static final float DEFAULT_FRONT_CAMERA_MIN_ANGLE_DEG = 10.0f;
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
+    static final int OUTPUT_MIRROR_BUTTON_WIDTH_DP = 120;
+    static final int CALIBRATION_ROTATION_ROW_HEIGHT_DP = 42;
     private static final DirectCameraCrop FULL_CALIBRATION_CROP = DirectCameraCrop.of(
             0.0f, 0.0f, 1.0f, 1.0f,
             DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES);
@@ -126,6 +128,15 @@ public final class CameraProbeActivity extends Activity
             "com.byd.turnsignalguard.capture.extra.AVM_CLOSE";
     private static int activityCameraRequestSequence;
     private static long helperCallbackRegistrationSequence;
+
+    static String calibrationTransferLabel(boolean rightCamera) {
+        return rightCamera ? "← Перенести" : "Перенести →";
+    }
+
+    static String reverseTransferLabel(int cameraIndex) {
+        return cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
+                ? "← Перенести" : "Перенести →";
+    }
 
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
@@ -221,6 +232,7 @@ public final class CameraProbeActivity extends Activity
     private int calibrationCropInputStage = CROP_STAGE_NONE;
     private Button calibrationPresetLoadButton;
     private Button calibrationMirrorButton;
+    private Button calibrationOutputMirrorButton;
     private DirectCameraCrop calibrationRawCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop calibrationCorrectedCrop = DirectCameraCrop.defaultFor(false);
     private ImageView calibrationCropPreview;
@@ -253,6 +265,7 @@ public final class CameraProbeActivity extends Activity
     private int reverseCalibrationCropInputStage = CROP_STAGE_NONE;
     private Button reversePresetLoadButton;
     private Button reverseMirrorButton;
+    private Button reverseOutputMirrorButton;
     private ImageView reverseCalibrationLivePreview;
     private FrameLayout reverseCalibrationLiveFrame;
     private int reverseCalibrationCameraIndex = -1;
@@ -1709,6 +1722,12 @@ public final class CameraProbeActivity extends Activity
                 new LinearLayout.LayoutParams(0, dp(42), 1));
         rotationRow.addView(reverseRotationValue,
                 new LinearLayout.LayoutParams(dp(64), dp(42)));
+        reverseOutputMirrorButton = button("Віддзеркалити");
+        reverseOutputMirrorButton.setOnClickListener(
+                view -> toggleReverseOutputMirror());
+        rotationRow.addView(reverseOutputMirrorButton,
+                new LinearLayout.LayoutParams(dp(OUTPUT_MIRROR_BUTTON_WIDTH_DP),
+                        dp(CALIBRATION_ROTATION_ROW_HEIGHT_DP)));
         reverseDisplayModeInput = new Spinner(this);
         ArrayAdapter<String> displayModeAdapter = new ArrayAdapter<>(
                 this, android.R.layout.simple_spinner_item,
@@ -1734,6 +1753,7 @@ public final class CameraProbeActivity extends Activity
         reverseInspectorButtons[REVERSE_INSPECTOR_POSITION]
                 .setBackgroundColor(tabColor(true));
         reverseCalibrationButton = button("Калібрування");
+        reverseCalibrationButton.setBackgroundColor(tabColor(false));
         mainActions.addView(reverseInspectorButtons[REVERSE_INSPECTOR_POSITION],
                 new LinearLayout.LayoutParams(0, dp(38), 1));
         mainActions.addView(reverseCalibrationButton,
@@ -1940,7 +1960,7 @@ public final class CameraProbeActivity extends Activity
         Button correction = button("Корекція");
         Button savePreset = button("Зберегти");
         reversePresetLoadButton = button("Завантажити");
-        reverseMirrorButton = button("Дзеркало →");
+        reverseMirrorButton = button("Перенести →");
         reverseMirrorButton.setTextSize(10);
         Button back = button("Назад");
         rotation.setOnClickListener(view -> {
@@ -1963,6 +1983,11 @@ public final class CameraProbeActivity extends Activity
                 view -> loadReverseCalibrationPreset());
         reverseMirrorButton.setOnClickListener(view -> mirrorReverseCalibration());
         rotation.setBackgroundColor(tabColor(true));
+        correction.setBackgroundColor(tabColor(false));
+        savePreset.setBackgroundColor(tabColor(false));
+        reversePresetLoadButton.setBackgroundColor(tabColor(false));
+        reverseMirrorButton.setBackgroundColor(tabColor(false));
+        back.setBackgroundColor(tabColor(false));
         actions.addView(rotation, new LinearLayout.LayoutParams(0, dp(38), 1));
         actions.addView(correction, new LinearLayout.LayoutParams(0, dp(38), 1));
         actions.addView(savePreset, new LinearLayout.LayoutParams(0, dp(38), 1));
@@ -2157,9 +2182,17 @@ public final class CameraProbeActivity extends Activity
                 reverseCalibrationCameraIndex);
         if (reverseMirrorButton != null) {
             reverseMirrorButton.setVisibility(mirrorTarget < 0 ? View.GONE : View.VISIBLE);
-            reverseMirrorButton.setText(reverseCalibrationCameraIndex
-                    == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
-                    ? "← Дзеркало" : "Дзеркало →");
+            reverseMirrorButton.setText(reverseTransferLabel(reverseCalibrationCameraIndex));
+        }
+        if (reverseOutputMirrorButton != null) {
+            boolean background = reverseCalibrationCameraIndex
+                    == ReverseCameraLayout.BACKGROUND_PANE_ID;
+            reverseOutputMirrorButton.setVisibility(background ? View.GONE : View.VISIBLE);
+            if (!background && reverseCameraLayout != null) {
+                reverseOutputMirrorButton.setBackgroundColor(tabColor(
+                        reverseCameraLayout.pane(reverseCalibrationCameraIndex)
+                                .mirrorHorizontally));
+            }
         }
     }
 
@@ -2318,7 +2351,7 @@ public final class CameraProbeActivity extends Activity
                         crop.right() * sourceWidth, crop.bottom() * sourceHeight),
                 new RectF(0, 0, width, height), crop.rotationDegrees,
                 crop.rotationMode, new RectF(0, 0, sourceWidth, sourceHeight),
-                ReverseCameraLayout.mirrorHorizontally(reverseCalibrationCameraIndex));
+                pane.mirrorHorizontally);
         canvas.drawBitmap(
                 reverseCalibrationCaptureBitmap, transform, calibrationCropPaint);
         reverseCalibrationLivePreview.setImageBitmap(reverseCalibrationResultBitmap);
@@ -2394,6 +2427,13 @@ public final class CameraProbeActivity extends Activity
         reverseRotationSlider.setEnabled(!background);
         reverseRotationValue.setText(background ? "—" : rotationDegrees + "°");
         reverseRotationUiUpdating = false;
+        if (reverseOutputMirrorButton != null) {
+            reverseOutputMirrorButton.setVisibility(background ? View.GONE : View.VISIBLE);
+            if (!background) {
+                reverseOutputMirrorButton.setBackgroundColor(tabColor(
+                        pane.mirrorHorizontally));
+            }
+        }
         if (background) {
             setDewarpControlsEnabled(true, false);
         } else {
@@ -2472,6 +2512,28 @@ public final class CameraProbeActivity extends Activity
         reverseCameraEditor.setLayoutModel(reverseCameraLayout);
         reverseCameraPreview.applyLayout(reverseCameraLayout);
         renderReverseCalibrationCrop();
+    }
+
+    private void toggleReverseOutputMirror() {
+        if (reverseCameraEditor == null || reverseCameraLayout == null) return;
+        int cameraIndex = reverseCameraEditor.selectedCamera();
+        if (cameraIndex == ReverseCameraLayout.BACKGROUND_PANE_ID) return;
+        boolean mirror = !reverseCameraLayout.pane(cameraIndex).mirrorHorizontally;
+        reverseCameraLayout = ReverseCameraLayout.withMirrorHorizontally(
+                reverseCameraLayout, cameraIndex, mirror);
+        if (reverseRawCalibrationLayout != null) {
+            reverseRawCalibrationLayout = ReverseCameraLayout.withMirrorHorizontally(
+                    reverseRawCalibrationLayout, cameraIndex, mirror);
+            reverseCameraPreview.applyRawFallbackLayout(reverseRawCalibrationLayout);
+        }
+        reverseCameraEditor.setLayoutModel(reverseCameraLayout);
+        reverseCameraPreview.applyLayout(reverseCameraLayout);
+        updateReversePaneControls(cameraIndex);
+        renderReverseCalibrationCrop();
+        ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
+        CameraHelperService.reverseCameraSettingsChanged(this);
+        record("reverse_output_mirror_changed", "camera_index", cameraIndex,
+                "mirror", mirror);
     }
 
     private void persistReverseRotation() {
@@ -3166,7 +3228,7 @@ public final class CameraProbeActivity extends Activity
         calibrationStopButton = button("Stop");
         Button savePreset = button("Зберегти");
         calibrationPresetLoadButton = button("Завантажити");
-        calibrationMirrorButton = button("Віддзеркалити →");
+        calibrationMirrorButton = button("Перенести →");
         calibrationMirrorButton.setTextSize(10);
         aspectControls.addView(calibrationResetButton,
                 new LinearLayout.LayoutParams(0, dp(46), 1));
@@ -3247,6 +3309,12 @@ public final class CameraProbeActivity extends Activity
                 new LinearLayout.LayoutParams(0, dp(42), 1));
         rotationRow.addView(calibrationRotationValue,
                 new LinearLayout.LayoutParams(dp(64), dp(42)));
+        calibrationOutputMirrorButton = button("Віддзеркалити");
+        calibrationOutputMirrorButton.setOnClickListener(
+                view -> toggleCalibrationOutputMirror());
+        rotationRow.addView(calibrationOutputMirrorButton,
+                new LinearLayout.LayoutParams(dp(OUTPUT_MIRROR_BUTTON_WIDTH_DP),
+                        dp(CALIBRATION_ROTATION_ROW_HEIGHT_DP)));
         panel.addView(rotationRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
         panel.addView(buildDewarpControls(false), new LinearLayout.LayoutParams(
@@ -4087,6 +4155,26 @@ public final class CameraProbeActivity extends Activity
                 Toast.LENGTH_SHORT).show();
     }
 
+    private void toggleCalibrationOutputMirror() {
+        cancelCalibrationCropInput();
+        CameraProfile profile = CameraProfile.of(calibrationCameraId);
+        boolean mirror = !currentCalibrationCrop().mirrorHorizontally;
+        calibrationRawCrop = calibrationRawCrop.withMirrorHorizontally(mirror);
+        calibrationCorrectedCrop = calibrationCorrectedCrop.withMirrorHorizontally(mirror);
+        DirectCameraCrop.save(preferences, profile, calibrationRawCrop);
+        DirectCameraCrop.saveCorrected(preferences, profile, calibrationCorrectedCrop);
+        updateCalibrationUi(currentCalibrationCrop());
+        renderCalibrationCrop();
+        if (cameraPreview != null && selectedCameraId == profile.id) {
+            cameraPreview.applyRawFallbackCrop(calibrationRawCrop);
+            cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
+            updateProductionPreviewSize();
+        }
+        CameraHelperService.cameraSettingsChanged(this);
+        record("direct_output_mirror_changed", "camera_id", profile.id,
+                "camera", profile.wireName, "mirror", mirror);
+    }
+
     private void saveReverseCalibrationPreset() {
         if (reverseCalibrationCameraIndex <= 0) return;
         CameraCalibrationPreset.saveReverse(preferences, reverseCalibrationCameraIndex);
@@ -4352,8 +4440,11 @@ public final class CameraProbeActivity extends Activity
                     CameraCalibrationPreset.hasCamera(preferences, profile));
         }
         if (calibrationMirrorButton != null) {
-            calibrationMirrorButton.setText(profile.right()
-                    ? "← Віддзеркалити" : "Віддзеркалити →");
+            calibrationMirrorButton.setText(calibrationTransferLabel(profile.right()));
+        }
+        if (calibrationOutputMirrorButton != null) {
+            calibrationOutputMirrorButton.setBackgroundColor(
+                    tabColor(currentCalibrationCrop().mirrorHorizontally));
         }
     }
 
@@ -4497,7 +4588,7 @@ public final class CameraProbeActivity extends Activity
                 crop.rotationDegrees,
                 crop.rotationMode,
                 new RectF(0.0f, 0.0f, sourceWidth, sourceHeight),
-                false);
+                crop.mirrorHorizontally);
         canvas.drawBitmap(calibrationCaptureBitmap, transform, calibrationCropPaint);
         calibrationCropPreview.setImageBitmap(calibrationResultBitmap);
         calibrationCropPreview.invalidate();

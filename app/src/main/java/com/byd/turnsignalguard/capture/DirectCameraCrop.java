@@ -10,6 +10,7 @@ final class DirectCameraCrop {
     static final String PREF_LEFT_ASPECT = "direct_crop_left_aspect";
     static final String PREF_LEFT_ROTATION = "direct_crop_left_rotation";
     static final String PREF_LEFT_ROTATION_MODE = "direct_crop_left_rotation_mode";
+    static final String PREF_LEFT_MIRROR = "direct_crop_left_mirror";
     static final String PREF_RIGHT_X = "direct_crop_right_x";
     static final String PREF_RIGHT_Y = "direct_crop_right_y";
     static final String PREF_RIGHT_WIDTH = "direct_crop_right_width";
@@ -17,6 +18,7 @@ final class DirectCameraCrop {
     static final String PREF_RIGHT_ASPECT = "direct_crop_right_aspect";
     static final String PREF_RIGHT_ROTATION = "direct_crop_right_rotation";
     static final String PREF_RIGHT_ROTATION_MODE = "direct_crop_right_rotation_mode";
+    static final String PREF_RIGHT_MIRROR = "direct_crop_right_mirror";
     static final String PREF_FRONT_LEFT_X = "direct_crop_front_left_x";
     static final String PREF_FRONT_LEFT_Y = "direct_crop_front_left_y";
     static final String PREF_FRONT_LEFT_WIDTH = "direct_crop_front_left_width";
@@ -25,6 +27,7 @@ final class DirectCameraCrop {
     static final String PREF_FRONT_LEFT_ROTATION = "direct_crop_front_left_rotation";
     static final String PREF_FRONT_LEFT_ROTATION_MODE =
             "direct_crop_front_left_rotation_mode";
+    static final String PREF_FRONT_LEFT_MIRROR = "direct_crop_front_left_mirror";
     static final String PREF_FRONT_RIGHT_X = "direct_crop_front_right_x";
     static final String PREF_FRONT_RIGHT_Y = "direct_crop_front_right_y";
     static final String PREF_FRONT_RIGHT_WIDTH = "direct_crop_front_right_width";
@@ -33,6 +36,7 @@ final class DirectCameraCrop {
     static final String PREF_FRONT_RIGHT_ROTATION = "direct_crop_front_right_rotation";
     static final String PREF_FRONT_RIGHT_ROTATION_MODE =
             "direct_crop_front_right_rotation_mode";
+    static final String PREF_FRONT_RIGHT_MIRROR = "direct_crop_front_right_mirror";
 
     static final int ASPECT_FOUR_THREE = 0;
     static final int ASPECT_SIXTEEN_NINE = 1;
@@ -58,10 +62,17 @@ final class DirectCameraCrop {
     final int aspectMode;
     final int rotationDegrees;
     final int rotationMode;
+    final boolean mirrorHorizontally;
 
     private DirectCameraCrop(
             float left, float top, float width, float height, int aspectMode,
             int rotationDegrees, int rotationMode) {
+        this(left, top, width, height, aspectMode, rotationDegrees, rotationMode, false);
+    }
+
+    private DirectCameraCrop(
+            float left, float top, float width, float height, int aspectMode,
+            int rotationDegrees, int rotationMode, boolean mirrorHorizontally) {
         this.left = left;
         this.top = top;
         this.width = width;
@@ -69,6 +80,7 @@ final class DirectCameraCrop {
         this.aspectMode = aspectMode;
         this.rotationDegrees = rotationDegrees;
         this.rotationMode = rotationMode;
+        this.mirrorHorizontally = mirrorHorizontally;
     }
 
     static DirectCameraCrop defaultFor(boolean rightCamera) {
@@ -91,6 +103,7 @@ final class DirectCameraCrop {
             if (field == 5) return profile.right() ? PREF_RIGHT_ROTATION : PREF_LEFT_ROTATION;
             if (field == 6) return profile.right()
                     ? PREF_RIGHT_ROTATION_MODE : PREF_LEFT_ROTATION_MODE;
+            if (field == 7) return profile.right() ? PREF_RIGHT_MIRROR : PREF_LEFT_MIRROR;
         } else {
             if (field == 0) return profile.right() ? PREF_FRONT_RIGHT_X : PREF_FRONT_LEFT_X;
             if (field == 1) return profile.right() ? PREF_FRONT_RIGHT_Y : PREF_FRONT_LEFT_Y;
@@ -104,6 +117,8 @@ final class DirectCameraCrop {
                     ? PREF_FRONT_RIGHT_ROTATION : PREF_FRONT_LEFT_ROTATION;
             if (field == 6) return profile.right()
                     ? PREF_FRONT_RIGHT_ROTATION_MODE : PREF_FRONT_LEFT_ROTATION_MODE;
+            if (field == 7) return profile.right()
+                    ? PREF_FRONT_RIGHT_MIRROR : PREF_FRONT_LEFT_MIRROR;
         }
         throw new IllegalArgumentException("invalid crop field: " + field);
     }
@@ -120,7 +135,9 @@ final class DirectCameraCrop {
                     preferences.getInt(preferenceKey(profile, 5),
                             fallback.rotationDegrees),
                     preferences.getInt(preferenceKey(profile, 6),
-                            fallback.rotationMode), LEGACY_MIN_SIZE);
+                            fallback.rotationMode), LEGACY_MIN_SIZE)
+                    .withMirrorHorizontally(readMirror(preferences,
+                            preferenceKey(profile, 7), fallback.mirrorHorizontally));
             DirectCameraCrop migrated = migrateActive(stored);
             if (migrated != stored) save(preferences, profile, migrated);
             return migrated;
@@ -145,7 +162,8 @@ final class DirectCameraCrop {
                 .putFloat(preferenceKey(profile, 3), crop.height)
                 .putInt(preferenceKey(profile, 4), crop.aspectMode)
                 .putInt(preferenceKey(profile, 5), crop.rotationDegrees)
-                .putInt(preferenceKey(profile, 6), crop.rotationMode);
+                .putInt(preferenceKey(profile, 6), crop.rotationMode)
+                .putBoolean(preferenceKey(profile, 7), crop.mirrorHorizontally);
     }
 
     static DirectCameraCrop loadCorrected(
@@ -203,18 +221,21 @@ final class DirectCameraCrop {
     DirectCameraCrop withGeometry(DirectCameraCrop geometry) {
         return new DirectCameraCrop(
                 geometry.left, geometry.top, geometry.width, geometry.height,
-                geometry.aspectMode, rotationDegrees, rotationMode).constrainAligned();
+                geometry.aspectMode, rotationDegrees, rotationMode,
+                mirrorHorizontally).constrainAligned();
     }
 
     DirectCameraCrop withOutputTransform(int degrees, int mode) {
         return new DirectCameraCrop(left, top, width, height, aspectMode,
                 CameraRotation.clamp(degrees),
-                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT)
+                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT,
+                mirrorHorizontally)
                 .constrainAligned();
     }
 
     DirectCameraCrop geometryOnly() {
-        return of(left, top, width, height, aspectMode, 0, CameraRotation.MODE_FIT);
+        return new DirectCameraCrop(left, top, width, height, aspectMode,
+                0, CameraRotation.MODE_FIT, mirrorHorizontally);
     }
 
     private static String correctedPrefix(CameraProfile profile) {
@@ -328,45 +349,54 @@ final class DirectCameraCrop {
         float[] geometry = SourceCropPolicy.migrate(
                 stored.left, stored.top, stored.width, stored.height);
         return of(geometry[0], geometry[1], geometry[2], geometry[3],
-                stored.aspectMode, stored.rotationDegrees, stored.rotationMode);
+                stored.aspectMode, stored.rotationDegrees, stored.rotationMode)
+                .withMirrorHorizontally(stored.mirrorHorizontally);
     }
 
     DirectCameraCrop mirrored() {
         return new DirectCameraCrop(
                 1.0f - left - width, top, width, height, aspectMode,
-                -rotationDegrees, rotationMode);
+                -rotationDegrees, rotationMode, mirrorHorizontally);
+    }
+
+    DirectCameraCrop withMirrorHorizontally(boolean mirror) {
+        return mirror == mirrorHorizontally ? this
+                : new DirectCameraCrop(left, top, width, height, aspectMode,
+                        rotationDegrees, rotationMode, mirror);
     }
 
     DirectCameraCrop withAspectMode(int mode) {
         int safeMode = sanitizeAspectMode(mode);
         if (safeMode == aspectMode) return this;
-        return of(left, top, width, height, safeMode, rotationDegrees, rotationMode);
+        return of(left, top, width, height, safeMode, rotationDegrees, rotationMode)
+                .withMirrorHorizontally(mirrorHorizontally);
     }
 
     DirectCameraCrop withRotation(int degrees) {
         int safeDegrees = CameraRotation.clamp(degrees);
         return safeDegrees == rotationDegrees ? this
                 : new DirectCameraCrop(left, top, width, height, aspectMode,
-                        safeDegrees, rotationMode).constrainAligned();
+                        safeDegrees, rotationMode, mirrorHorizontally).constrainAligned();
     }
 
     DirectCameraCrop withRotationMode(int mode) {
         int safeMode = CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT;
         return safeMode == rotationMode ? this
                 : new DirectCameraCrop(left, top, width, height, aspectMode,
-                        rotationDegrees, safeMode).constrainAligned();
+                        rotationDegrees, safeMode, mirrorHorizontally).constrainAligned();
     }
 
     DirectCameraCrop centered() {
         return new DirectCameraCrop(
                 (1.0f - width) / 2.0f,
                 (1.0f - height) / 2.0f,
-                width, height, aspectMode, rotationDegrees, rotationMode);
+                width, height, aspectMode, rotationDegrees, rotationMode,
+                mirrorHorizontally);
     }
 
     DirectCameraCrop move(float dx, float dy) {
         return of(left + dx, top + dy, width, height, aspectMode,
-                rotationDegrees, rotationMode);
+                rotationDegrees, rotationMode).withMirrorHorizontally(mirrorHorizontally);
     }
 
     DirectCameraCrop resize(int edges, float dx, float dy) {
@@ -396,7 +426,7 @@ final class DirectCameraCrop {
                     dragLeft ? anchorX - safeWidth : anchorX,
                     dragTop ? anchorY - safeWidth * ratio : anchorY,
                     safeWidth, safeWidth * ratio, aspectMode,
-                    rotationDegrees, rotationMode).constrainAligned();
+                    rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
         }
 
         if (dragLeft || dragRight) {
@@ -410,7 +440,7 @@ final class DirectCameraCrop {
             return new DirectCameraCrop(dragLeft ? anchorX - safeWidth : anchorX,
                     centerY - safeWidth * ratio / 2.0f,
                     safeWidth, safeWidth * ratio, aspectMode,
-                    rotationDegrees, rotationMode).constrainAligned();
+                    rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
         }
 
         float anchorY = dragTop ? bottom() : top;
@@ -423,7 +453,7 @@ final class DirectCameraCrop {
         return new DirectCameraCrop(centerX - safeWidth / 2.0f,
                 dragTop ? anchorY - safeWidth * ratio : anchorY,
                 safeWidth, safeWidth * ratio, aspectMode,
-                rotationDegrees, rotationMode).constrainAligned();
+                rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
     }
 
     private DirectCameraCrop resizeFree(int edges, float dx, float dy) {
@@ -451,7 +481,7 @@ final class DirectCameraCrop {
         }
         return new DirectCameraCrop(nextLeft, nextTop,
                 nextRight - nextLeft, nextBottom - nextTop, ASPECT_FREE,
-                rotationDegrees, rotationMode).constrainAligned();
+                rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
     }
 
     private DirectCameraCrop constrainAligned() {
@@ -488,6 +518,7 @@ final class DirectCameraCrop {
                 (float) (pixelWidth / SOURCE_WIDTH),
                 (float) (pixelHeight / SOURCE_HEIGHT),
                 aspectMode, rotationDegrees, rotationMode)
+                .withMirrorHorizontally(mirrorHorizontally)
                 .requireFinalGeometry(minimumSize);
     }
 
@@ -553,6 +584,15 @@ final class DirectCameraCrop {
 
     private static boolean finite(float value) {
         return !Float.isNaN(value) && !Float.isInfinite(value);
+    }
+
+    private static boolean readMirror(
+            SharedPreferences preferences, String key, boolean fallback) {
+        try {
+            return preferences.getBoolean(key, fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private static float parsePercentValue(String value, String field) {

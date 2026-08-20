@@ -1084,7 +1084,8 @@ final class BlindSpotOverlayController {
                 geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, readCornerRadius(settings),
-                dewarp, rawCrop, CameraBufferQuality.load(settings));
+                dewarp, rawCrop, CameraBufferQuality.load(settings),
+                crop.mirrorHorizontally);
     }
 
     static int[] overlayGeometry(

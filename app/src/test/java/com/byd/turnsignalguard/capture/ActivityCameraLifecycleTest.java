@@ -261,4 +261,57 @@ public final class ActivityCameraLifecycleTest {
         assertEquals(1.0f, ReverseCameraCompositionView.alphaForVisibility(
                 mask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX), 0.0f);
     }
+
+    @Test
+    public void mirrorUiUsesTransferLabelsAndFixedRotationControlSize() {
+        assertEquals("Перенести →",
+                CameraProbeActivity.calibrationTransferLabel(false));
+        assertEquals("← Перенести",
+                CameraProbeActivity.calibrationTransferLabel(true));
+        assertEquals("Перенести →",
+                CameraProbeActivity.reverseTransferLabel(
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertEquals("← Перенести",
+                CameraProbeActivity.reverseTransferLabel(
+                        ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        assertEquals(42, CameraProbeActivity.CALIBRATION_ROTATION_ROW_HEIGHT_DP);
+        assertEquals(120, CameraProbeActivity.OUTPUT_MIRROR_BUTTON_WIDTH_DP);
+    }
+
+    @Test
+    public void directMirrorStatePersistsForRawAndCorrectedOutput() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        DirectCameraCrop raw = DirectCameraCrop.defaultFor(profile)
+                .withMirrorHorizontally(true);
+        DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(
+                settings, profile, raw).withMirrorHorizontally(true);
+
+        DirectCameraCrop.save(settings, profile, raw);
+        DirectCameraCrop.saveCorrected(settings, profile, corrected);
+
+        DirectCameraCrop loadedRaw = DirectCameraCrop.load(settings, profile);
+        DirectCameraCrop loadedCorrected = DirectCameraCrop.loadCorrected(
+                settings, profile, loadedRaw);
+        assertTrue(loadedRaw.mirrorHorizontally);
+        assertTrue(loadedCorrected.mirrorHorizontally);
+    }
+
+    @Test
+    public void reverseMirrorDefaultsOnAndSurvivesLayoutUpdates() {
+        ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+        assertTrue(layout.pane(ReverseCameraLayout.REAR_CAMERA_INDEX).mirrorHorizontally);
+        assertTrue(layout.pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).mirrorHorizontally);
+        assertTrue(layout.pane(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX).mirrorHorizontally);
+
+        layout = ReverseCameraLayout.withMirrorHorizontally(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+        layout = ReverseCameraLayout.withRotation(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 45);
+        layout = ReverseCameraLayout.withDisplayMode(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.DISPLAY_MODE_FILL);
+        assertFalse(layout.pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                .mirrorHorizontally);
+    }
 }

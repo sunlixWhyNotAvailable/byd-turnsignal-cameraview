@@ -278,7 +278,7 @@ final class BlindSpotCameraView extends TextureView
                 directCrop.rotationDegrees,
                 directCrop.rotationMode,
                 new RectF(0.0f, 0.0f, width, height),
-                false);
+                directCrop.mirrorHorizontally);
         setRotation(0.0f);
         setScaleX(1.0f);
         setScaleY(1.0f);

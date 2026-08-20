@@ -100,7 +100,7 @@ final class CameraCalibrationPreset {
                         CameraDewarpConfig.lensForReverseCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection),
-                targetVisible));
+                targetVisible, value.mirrorHorizontally));
         return true;
     }
 
@@ -116,7 +116,8 @@ final class CameraCalibrationPreset {
             SharedPreferences preferences, CameraProfile profile, CameraValue value) {
         SharedPreferences.Editor editor = preferences.edit();
         DirectCameraCrop.write(editor, profile, value.raw);
-        DirectCameraCrop.writeCorrected(editor, profile, value.corrected);
+        DirectCameraCrop.writeCorrected(editor, profile,
+                value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
         CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
@@ -133,7 +134,8 @@ final class CameraCalibrationPreset {
         return new ReverseValue(pane.destination, pane.sourceCrop, corrected,
                 pane.rotationDegrees, pane.displayMode,
                 CameraDewarpConfig.loadForReverse(preferences, cameraIndex),
-                ReverseCameraController.loadVisibility(preferences, cameraIndex));
+                ReverseCameraController.loadVisibility(preferences, cameraIndex),
+                pane.mirrorHorizontally);
     }
 
     private static void applyReverse(
@@ -150,6 +152,8 @@ final class CameraCalibrationPreset {
                 .putInt(ReverseCameraController.paneSettingKey(
                         cameraIndex, "rotation_degrees"), value.rotationDegrees)
                 .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode)
+                .putBoolean(ReverseCameraController.mirrorKey(cameraIndex),
+                        value.mirrorHorizontally)
                 .putBoolean(ReverseCameraController.visibilityKey(cameraIndex), value.visible);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.raw, false);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
@@ -164,6 +168,7 @@ final class CameraCalibrationPreset {
         writeCrop(editor, prefix + "raw_", value.raw);
         writeRect(editor, prefix + "corrected_", value.corrected.left,
                 value.corrected.top, value.corrected.width, value.corrected.height);
+        editor.putBoolean(prefix + "corrected_mirror", value.raw.mirrorHorizontally);
         writeDewarp(editor, prefix, value.dewarp);
     }
 
@@ -178,12 +183,16 @@ final class CameraCalibrationPreset {
                 readFloat(preferences, prefix + "raw_w"),
                 readFloat(preferences, prefix + "raw_h"),
                 aspect, rotation, mode);
+        raw = raw.withMirrorHorizontally(
+                readOptionalMirror(preferences, prefix + "raw_mirror", false));
         DirectCameraCrop corrected = DirectCameraCrop.requireNormalized(
                 readFloat(preferences, prefix + "corrected_x"),
                 readFloat(preferences, prefix + "corrected_y"),
                 readFloat(preferences, prefix + "corrected_w"),
                 readFloat(preferences, prefix + "corrected_h"),
                 aspect, rotation, mode);
+        corrected = corrected.withMirrorHorizontally(readOptionalMirror(
+                preferences, prefix + "corrected_mirror", raw.mirrorHorizontally));
         return new CameraValue(raw, corrected, readDewarp(preferences, prefix, lens));
     }
 
@@ -197,6 +206,7 @@ final class CameraCalibrationPreset {
                 value.corrected.top, value.corrected.width, value.corrected.height);
         editor.putInt(prefix + "rotation", value.rotationDegrees)
                 .putInt(prefix + "mode", value.displayMode)
+                .putBoolean(prefix + "mirror", value.mirrorHorizontally)
                 .putBoolean(prefix + "visible", value.visible);
         writeDewarp(editor, prefix, value.dewarp);
     }
@@ -220,8 +230,9 @@ final class CameraCalibrationPreset {
         } catch (RuntimeException ignored) {
             // Visibility was added without changing the v1 preset prefix.
         }
+        boolean mirror = readOptionalMirror(preferences, prefix + "mirror", true);
         return new ReverseValue(destination, raw, corrected, rotation, mode,
-                readDewarp(preferences, prefix, lens), visible);
+                readDewarp(preferences, prefix, lens), visible, mirror);
     }
 
     private static void writeCrop(
@@ -229,7 +240,8 @@ final class CameraCalibrationPreset {
         writeRect(editor, prefix, crop.left, crop.top, crop.width, crop.height);
         editor.putInt(prefix + "aspect", crop.aspectMode)
                 .putInt(prefix + "rotation", crop.rotationDegrees)
-                .putInt(prefix + "mode", crop.rotationMode);
+                .putInt(prefix + "mode", crop.rotationMode)
+                .putBoolean(prefix + "mirror", crop.mirrorHorizontally);
     }
 
     private static void writeRect(
@@ -298,6 +310,15 @@ final class CameraCalibrationPreset {
         return value;
     }
 
+    private static boolean readOptionalMirror(
+            SharedPreferences preferences, String key, boolean fallback) {
+        try {
+            return preferences.getBoolean(key, fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
     private static String cameraPrefix(CameraProfile profile) {
         return "camera_calibration_preset_v1_" + profile.wireName + "_";
     }
@@ -329,11 +350,13 @@ final class CameraCalibrationPreset {
         final int displayMode;
         final CameraDewarpConfig dewarp;
         final boolean visible;
+        final boolean mirrorHorizontally;
 
         ReverseValue(
                 ReverseCameraLayout.Rect destination, ReverseCameraLayout.Rect raw,
                 ReverseCameraLayout.Rect corrected, int rotationDegrees,
-                int displayMode, CameraDewarpConfig dewarp, boolean visible) {
+                int displayMode, CameraDewarpConfig dewarp, boolean visible,
+                boolean mirrorHorizontally) {
             this.destination = destination;
             this.raw = raw;
             this.corrected = corrected;
@@ -341,6 +364,7 @@ final class CameraCalibrationPreset {
             this.displayMode = displayMode;
             this.dewarp = dewarp;
             this.visible = visible;
+            this.mirrorHorizontally = mirrorHorizontally;
         }
     }
 }

@@ -10,15 +10,15 @@ public final class CameraShellProtocolParcelTest extends TestCase {
     public void testOverlayRoundTripPreservesRawFallbackAndDewarpOrder() {
         DirectCameraCrop raw = DirectCameraCrop.of(
                 0.05f, 0.07f, 0.62f, 0.68f, DirectCameraCrop.ASPECT_FREE,
-                -8, CameraRotation.MODE_FILL);
+                -8, CameraRotation.MODE_FILL).withMirrorHorizontally(true);
         CameraShellProtocol.OverlaySpec source = new CameraShellProtocol.OverlaySpec(
                 CameraProfile.REAR_RIGHT, 41, CameraDisplayTarget.TABLET,
                 640, 480, 18, 36,
                 0.22f, 0.19f, 0.54f, 0.58f, DirectCameraCrop.ASPECT_FREE,
                 12, CameraRotation.MODE_ALIGNED, 9,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 117,
+                        CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 117,
                         CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw,
-                CameraBufferQuality.BALANCED);
+                CameraBufferQuality.BALANCED, true);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -36,6 +36,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertEquals(source.y, restored.y);
             assertCrop(source.crop(), restored.crop());
             assertCrop(raw, restored.rawFallbackCrop);
+            assertTrue(restored.mirrorHorizontally);
             assertDewarp(source.dewarp, restored.dewarp);
             assertEquals(CameraBufferQuality.BALANCED, restored.bufferQuality);
             assertEquals(0, parcel.dataAvail());
@@ -54,9 +55,13 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                             0.04f * index, 0.05f * index, 0.70f, 0.66f), index * 3);
             active = ReverseCameraLayout.withDisplayMode(
                     active, index, (index - 1) % 3);
+            active = ReverseCameraLayout.withMirrorHorizontally(
+                    active, index, index != 2);
             raw = ReverseCameraLayout.withPane(raw, index, pane.destination,
                     ReverseCameraLayout.sourceCrop(
                             0.02f * index, 0.03f * index, 0.76f, 0.72f), index * 3);
+            raw = ReverseCameraLayout.withMirrorHorizontally(
+                    raw, index, index != 3);
         }
         CameraShellProtocol.ReverseOverlaySpec source =
                 new CameraShellProtocol.ReverseOverlaySpec(
@@ -99,6 +104,10 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 assertEquals(active.pane(index).displayMode,
                         restored.layout.pane(index).displayMode);
                 assertEquals(active.pane(index).zOrder, restored.layout.pane(index).zOrder);
+                assertEquals(active.pane(index).mirrorHorizontally,
+                        restored.layout.pane(index).mirrorHorizontally);
+                assertEquals(raw.pane(index).mirrorHorizontally,
+                        restored.rawFallbackLayout.pane(index).mirrorHorizontally);
             }
             assertEquals(0, parcel.dataAvail());
         } finally {
@@ -109,15 +118,15 @@ public final class CameraShellProtocolParcelTest extends TestCase {
     public void testOverlayWriterUsesFixedWireOrder() {
         DirectCameraCrop raw = DirectCameraCrop.of(
                 0.11f, 0.12f, 0.51f, 0.52f, DirectCameraCrop.ASPECT_FREE,
-                -17, CameraRotation.MODE_ALIGNED);
+                -17, CameraRotation.MODE_ALIGNED).withMirrorHorizontally(true);
         CameraShellProtocol.OverlaySpec source = new CameraShellProtocol.OverlaySpec(
                 CameraProfile.FRONT_RIGHT, 71, CameraDisplayTarget.CLUSTER,
                 611, 477, 23, 41,
                 0.21f, 0.22f, 0.53f, 0.54f, DirectCameraCrop.ASPECT_SIXTEEN_NINE,
                 19, CameraRotation.MODE_FILL, 13,
-                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 123,
+                        CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 123,
                         CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw,
-                CameraBufferQuality.ORIGINAL);
+                CameraBufferQuality.ORIGINAL, true);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -142,6 +151,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                     CameraDewarpConfig.PROJECTION_CYLINDRICAL);
             assertCropWire(parcel, raw);
             assertEquals(CameraBufferQuality.ORIGINAL, parcel.readInt());
+            assertEquals(1, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();
@@ -158,9 +168,13 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                             0.06f * index, 0.07f * index, 0.61f, 0.62f), index * 5);
             active = ReverseCameraLayout.withDisplayMode(
                     active, index, (index - 1) % 3);
+            active = ReverseCameraLayout.withMirrorHorizontally(
+                    active, index, index != 2);
             raw = ReverseCameraLayout.withPane(raw, index, pane.destination,
                     ReverseCameraLayout.sourceCrop(
                             0.03f * index, 0.04f * index, 0.71f, 0.72f), index * 5);
+            raw = ReverseCameraLayout.withMirrorHorizontally(
+                    raw, index, index != 3);
         }
         CameraShellProtocol.ReverseOverlaySpec source =
                 new CameraShellProtocol.ReverseOverlaySpec(
@@ -188,6 +202,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                     CameraDewarpConfig.PROJECTION_RECTILINEAR);
             for (int index = 1; index <= 3; index++) {
                 assertRectWire(parcel, raw.pane(index).sourceCrop);
+                assertEquals(raw.pane(index).mirrorHorizontally ? 1 : 0,
+                        parcel.readInt());
             }
             for (int index = 1; index <= 3; index++) {
                 ReverseCameraLayout.Pane pane = active.pane(index);
@@ -197,6 +213,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 assertEquals(index * 5, parcel.readInt());
                 assertEquals((index - 1) % 3, parcel.readInt());
                 assertEquals(pane.zOrder, parcel.readInt());
+                assertEquals(pane.mirrorHorizontally ? 1 : 0, parcel.readInt());
             }
             assertEquals(CameraBufferQuality.BALANCED, parcel.readInt());
             assertEquals(ReverseCameraLayout.VISIBILITY_ALL, parcel.readInt());
@@ -215,12 +232,16 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             source.writeToParcel(parcel);
             parcel.setDataPosition(0);
             parcel.readInt();
-            for (int i = 0; i < 4; i++) parcel.readFloat();
+            assertRectWire(parcel, source.layout.background);
             parcel.readInt();
             for (int i = 0; i < 12; i++) parcel.readInt();
-            for (int i = 0; i < 12; i++) parcel.readFloat();
+            for (int i = 1; i <= 3; i++) {
+                assertRectWire(parcel, source.rawFallbackLayout.pane(i).sourceCrop);
+                parcel.readInt();
+            }
             parcel.readInt();
-            for (int i = 0; i < 8; i++) parcel.readFloat();
+            assertRectWire(parcel, source.layout.rear.destination);
+            assertRectWire(parcel, source.layout.rear.sourceCrop);
             parcel.readInt();
             int displayModePosition = parcel.dataPosition();
             parcel.setDataPosition(displayModePosition);
@@ -245,6 +266,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
         assertEquals(expected.aspectMode, actual.aspectMode);
         assertEquals(expected.rotationDegrees, actual.rotationDegrees);
         assertEquals(expected.rotationMode, actual.rotationMode);
+        assertEquals(expected.mirrorHorizontally, actual.mirrorHorizontally);
     }
 
     private void assertRect(
@@ -278,6 +300,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
         assertEquals(crop.aspectMode, parcel.readInt());
         assertEquals(crop.rotationDegrees, parcel.readInt());
         assertEquals(crop.rotationMode, parcel.readInt());
+        assertEquals(crop.mirrorHorizontally ? 1 : 0, parcel.readInt());
     }
 
     private void assertRectWire(Parcel parcel, ReverseCameraLayout.Rect rect) {

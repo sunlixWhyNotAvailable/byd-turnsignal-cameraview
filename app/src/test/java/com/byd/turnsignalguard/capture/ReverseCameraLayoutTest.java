@@ -170,6 +170,40 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
+    public void paneMirrorDefaultsTruePersistsIndependentlyAndSurvivesTransforms() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+        assertTrue(layout.rear.mirrorHorizontally);
+        assertTrue(layout.rearLeft.mirrorHorizontally);
+        assertTrue(layout.rearRight.mirrorHorizontally);
+
+        layout = ReverseCameraLayout.withMirrorHorizontally(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+        layout = ReverseCameraLayout.withRotation(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 42);
+        layout = ReverseCameraLayout.withDisplayMode(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.DISPLAY_MODE_FILL);
+        layout = ReverseCameraLayout.move(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.01f, 0.0f);
+        assertFalse(layout.rearLeft.mirrorHorizontally);
+        assertTrue(layout.rear.mirrorHorizontally);
+
+        ReverseCameraController.saveLayout(settings, layout);
+        ReverseCameraLayout loaded = ReverseCameraController.loadRawLayout(settings);
+        assertFalse(loaded.rearLeft.mirrorHorizontally);
+        assertTrue(loaded.rear.mirrorHorizontally);
+        ReverseCameraController.resetLayout(settings);
+        assertTrue(ReverseCameraController.loadRawLayout(settings)
+                .pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).mirrorHorizontally);
+
+        settings.putString(ReverseCameraController.mirrorKey(
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX), "malformed");
+        assertTrue(ReverseCameraController.loadRawLayout(settings)
+                .pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).mirrorHorizontally);
+    }
+
+    @Test
     public void nudgeMovesSelectedPaneAndClampsToCanvas() {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
         ReverseCameraLayout moved = ReverseCameraLayout.move(layout,

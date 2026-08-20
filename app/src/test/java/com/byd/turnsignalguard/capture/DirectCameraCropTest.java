@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertThrows;
 
@@ -130,5 +131,27 @@ public final class DirectCameraCropTest {
         assertEquals(valid, result);
         assertTrue(result.width >= SourceCropPolicy.MIN_SIZE);
         assertTrue(result.height >= SourceCropPolicy.MIN_SIZE);
+    }
+
+    @Test
+    public void outputMirrorIsIndependentAndSurvivesCropTransformsAndPersistence() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        DirectCameraCrop crop = DirectCameraCrop.of(
+                0.12f, 0.2f, 0.31f, 0.42f, DirectCameraCrop.ASPECT_FREE,
+                37, CameraRotation.MODE_ALIGNED).withMirrorHorizontally(true);
+        DirectCameraCrop changed = crop.move(0.02f, -0.01f)
+                .withAspectMode(DirectCameraCrop.ASPECT_FOUR_THREE)
+                .withRotation(-16)
+                .withRotationMode(CameraRotation.MODE_FIT)
+                .centered();
+        assertTrue(changed.mirrorHorizontally);
+        assertTrue(changed.resize(DirectCameraCrop.EDGE_RIGHT, -0.01f, 0.0f)
+                .mirrorHorizontally);
+
+        DirectCameraCrop.save(preferences, profile, changed);
+        assertTrue(DirectCameraCrop.load(preferences, profile).mirrorHorizontally);
+        preferences.putString(DirectCameraCrop.preferenceKey(profile, 7), "malformed");
+        assertFalse(DirectCameraCrop.load(preferences, profile).mirrorHorizontally);
     }
 }
