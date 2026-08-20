@@ -100,7 +100,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(85, BuildConfig.VERSION_CODE);
+        assertEquals(86, BuildConfig.VERSION_CODE);
         assertEquals(6, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -124,6 +124,19 @@ public final class AdbCoreTest {
         assertTrue(TurnSignalShellProtocol.isPayloadAllowed(3));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(-1));
         assertFalse(TurnSignalShellProtocol.isPayloadAllowed(4));
+    }
+
+    @Test
+    public void cameraShellKeepsMainLooperAndHasNoQuitSafelyPath() throws Exception {
+        Path source = Path.of("app/src/main/java/com/byd/turnsignalguard/capture/CameraShellMain.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/turnsignalguard/capture/CameraShellMain.java");
+        }
+        assertTrue("CameraShellMain source unavailable", Files.exists(source));
+        String text = new String(Files.readAllBytes(source),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(text.contains("Looper.getMainLooper()"));
+        assertFalse(text.contains("quitSafely"));
     }
 
     @Test

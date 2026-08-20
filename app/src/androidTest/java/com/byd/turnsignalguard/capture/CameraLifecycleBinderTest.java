@@ -19,10 +19,81 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 public final class CameraLifecycleBinderTest extends TestCase {
+    public void testShellUsesAndroidMainLooper() {
+        Looper looper = CameraShellMain.prepareMainLooperForShell();
+        assertSame(Looper.getMainLooper(), looper);
+        assertSame(Looper.getMainLooper(), new Handler(looper).getLooper());
+    }
+
+    public void testShutdownCleansAndTerminatesOnceAfterReply() throws Exception {
+        Application context = currentApplication();
+        CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
+        AtomicInteger terminations = new AtomicInteger();
+        CameraShellMain.ShellBinder shell = new CameraShellMain.ShellBinder(
+                context, new Handler(Looper.getMainLooper()),
+                Process.myUid(), BuildConfig.VERSION_CODE,
+                () -> {
+                    order.add("terminate");
+                    terminations.incrementAndGet();
+                });
+        shell.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
+        EventCollector events = new EventCollector(
+                CameraShellProtocol.CALLBACK_DESCRIPTOR, () -> order.add("event"));
+        registerShellCallback(shell, events);
+        setField(shell, "activePreviewRequestId", 61);
+        order.clear();
+
+        shutdownShell(shell);
+        events.await("camera_shell_shutdown");
+        awaitValue(() -> terminations.get() == 1);
+        assertEquals(0, getField(shell, "activePreviewRequestId"));
+        assertEquals(1, terminations.get());
+        assertTrue(order.indexOf("event") < order.indexOf("terminate"));
+    }
+
+    public void testActiveCallbackDeathCleansAndTerminatesOnce() throws Exception {
+        Application context = currentApplication();
+        AtomicInteger terminations = new AtomicInteger();
+        CameraShellMain.ShellBinder shell = new CameraShellMain.ShellBinder(
+                context, new Handler(Looper.getMainLooper()),
+                Process.myUid(), BuildConfig.VERSION_CODE,
+                terminations::incrementAndGet);
+        shell.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
+        EventCollector callback = new EventCollector(CameraShellProtocol.CALLBACK_DESCRIPTOR);
+        registerShellCallback(shell, callback);
+        setField(shell, "activePreviewRequestId", 62);
+
+        invoke(shell, "callbackDied", new Class<?>[]{IBinder.class}, callback);
+        assertEquals(0, getField(shell, "activePreviewRequestId"));
+        assertEquals(1, terminations.get());
+        invoke(shell, "callbackDied", new Class<?>[]{IBinder.class}, callback);
+        assertEquals(1, terminations.get());
+    }
+
+    public void testStaleCallbackDeathDoesNotTerminateShell() throws Exception {
+        Application context = currentApplication();
+        AtomicInteger terminations = new AtomicInteger();
+        CameraShellMain.ShellBinder shell = new CameraShellMain.ShellBinder(
+                context, new Handler(Looper.getMainLooper()),
+                Process.myUid(), BuildConfig.VERSION_CODE,
+                terminations::incrementAndGet);
+        shell.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
+        EventCollector stale = new EventCollector(CameraShellProtocol.CALLBACK_DESCRIPTOR);
+        EventCollector active = new EventCollector(CameraShellProtocol.CALLBACK_DESCRIPTOR);
+        registerShellCallback(shell, stale);
+        registerShellCallback(shell, active);
+        setField(shell, "activePreviewRequestId", 63);
+
+        invoke(shell, "callbackDied", new Class<?>[]{IBinder.class}, stale);
+        assertEquals(63, getField(shell, "activePreviewRequestId"));
+        assertEquals(0, terminations.get());
+    }
+
     public void testColdResetDefersActiveReverseAndReplaysRetainedCallback() throws Exception {
         Application context = currentApplication();
         CameraHelperMain.HelperBinder helper =
@@ -287,6 +358,30 @@ public final class CameraLifecycleBinderTest extends TestCase {
         }
     }
 
+    private static void shutdownShell(IBinder shell) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            assertTrue(shell.transact(CameraShellProtocol.TX_SHUTDOWN, data, reply, 0));
+            reply.readException();
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
+    }
+
+    private static void awaitValue(java.util.function.BooleanSupplier condition)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for shell termination");
+            }
+            Thread.sleep(10);
+        }
+    }
+
     private static Application currentApplication() throws Exception {
         Object value = Class.forName("android.app.ActivityThread")
                 .getMethod("currentApplication")
@@ -341,10 +436,16 @@ public final class CameraLifecycleBinderTest extends TestCase {
 
     private static final class EventCollector extends Binder {
         private final String descriptor;
+        private final Runnable eventHook;
         private final LinkedBlockingQueue<String> events = new LinkedBlockingQueue<>();
 
         EventCollector(String descriptor) {
+            this(descriptor, null);
+        }
+
+        EventCollector(String descriptor, Runnable eventHook) {
             this.descriptor = descriptor;
+            this.eventHook = eventHook;
         }
 
         @Override
@@ -354,6 +455,7 @@ public final class CameraLifecycleBinderTest extends TestCase {
                 return super.onTransact(code, data, reply, flags);
             }
             data.enforceInterface(descriptor);
+            if (eventHook != null) eventHook.run();
             events.offer(data.readString());
             return true;
         }

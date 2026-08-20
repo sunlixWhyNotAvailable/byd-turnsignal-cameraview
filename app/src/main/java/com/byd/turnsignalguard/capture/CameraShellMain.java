@@ -45,9 +45,9 @@ public final class CameraShellMain {
         int versionCode = Integer.parseInt(args[1]);
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
-        Looper looper = prepareQuitAllowedLooper();
+        prepareMainLooperForShell();
         Context context = systemContext();
-        Handler handler = new Handler(looper);
+        Handler handler = new Handler(Looper.getMainLooper());
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
         binder.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
         try {
@@ -76,14 +76,26 @@ public final class CameraShellMain {
         private final StockAvmPreview preview;
         private final ShellCameraOverlay[] overlays = new ShellCameraOverlay[CameraProfile.COUNT];
         private final ShellReverseCameraOverlay reverseOverlay;
+        private final Runnable processTerminator;
         private IBinder callback;
         private int activePreviewRequestId;
         private boolean stdoutFlushScheduled;
+        private boolean processTerminationRequested;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
+            this(context, handler, appUid, versionCode, CameraShellMain::terminateProcess);
+        }
+
+        ShellBinder(
+                Context context, Handler handler, int appUid, int versionCode,
+                Runnable processTerminator) {
+            if (processTerminator == null) {
+                throw new IllegalArgumentException("process terminator is null");
+            }
             this.handler = handler;
             this.appUid = appUid;
             this.versionCode = versionCode;
+            this.processTerminator = processTerminator;
             preview = new StockAvmPreview(context, (stage, detail) -> {
                 emit("stock_avm_stage", "stage", stage, "detail", detail);
                 if ("apply_vehicle_config".equals(stage)) {
@@ -168,10 +180,10 @@ public final class CameraShellMain {
                             emit("camera_shell_shutdown", "reason", "controller_request");
                             return null;
                         });
+                        reply.writeNoException();
                     } finally {
-                        handler.post(() -> Looper.myLooper().quitSafely());
+                        queueProcessTermination();
                     }
-                    reply.writeNoException();
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
@@ -443,8 +455,25 @@ public final class CameraShellMain {
             try {
                 closeAll("controller_died");
             } finally {
-                handler.getLooper().quitSafely();
+                terminateProcessOnce();
             }
+        }
+
+        private void queueProcessTermination() {
+            boolean posted = false;
+            try {
+                posted = handler.post(this::terminateProcessOnce);
+            } finally {
+                if (!posted) terminateProcessOnce();
+            }
+        }
+
+        private void terminateProcessOnce() {
+            synchronized (this) {
+                if (processTerminationRequested) return;
+                processTerminationRequested = true;
+            }
+            processTerminator.run();
         }
 
         private void emit(String kind, Object... fields) {
@@ -517,9 +546,14 @@ public final class CameraShellMain {
         return context;
     }
 
-    private static Looper prepareQuitAllowedLooper() {
-        if (Looper.myLooper() == null) Looper.prepare();
-        return Looper.myLooper();
+    static Looper prepareMainLooperForShell() {
+        if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
+        return Looper.getMainLooper();
+    }
+
+    private static void terminateProcess() {
+        System.out.flush();
+        Process.killProcess(Process.myPid());
     }
 
     private static String summary(Throwable error) {
