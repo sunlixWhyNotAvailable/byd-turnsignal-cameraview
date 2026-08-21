@@ -121,4 +121,35 @@ public final class ParkingCameraRuntimeTest {
         assertTrue(ParkingCameraController.isHardBlocked(false, true, false));
         assertTrue(ParkingCameraController.isHardBlocked(false, false, true));
     }
+
+    @Test
+    public void closeRetryFailureSuccessAndStaleTokenStaySafe() {
+        ParkingCameraController.CloseRetryState state =
+                new ParkingCameraController.CloseRetryState();
+        int[] calls = {0};
+        state.schedule(7);
+        assertTrue(state.blocksEvaluation());
+        assertEquals(ParkingCameraController.CloseRetryState.Result.FAILED,
+                state.retry(7, requestId -> {
+                    assertEquals(7, requestId);
+                    calls[0]++;
+                    return false;
+                }));
+        assertTrue(state.blocksEvaluation());
+        assertEquals(ParkingCameraController.CloseRetryState.Result.SUCCEEDED,
+                state.retry(7, requestId -> {
+                    assertEquals(7, requestId);
+                    calls[0]++;
+                    return true;
+                }));
+        assertFalse(state.blocksEvaluation());
+        state.schedule(7);
+        assertEquals(ParkingCameraController.CloseRetryState.Result.STALE,
+                state.retry(14, requestId -> {
+                    calls[0]++;
+                    return true;
+                }));
+        assertFalse(state.blocksEvaluation());
+        assertEquals(2, calls[0]);
+    }
 }

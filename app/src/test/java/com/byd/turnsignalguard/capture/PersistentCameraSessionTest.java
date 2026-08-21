@@ -329,6 +329,53 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void zeroCloseIsStaleAndLeavesParkingGroupAttached() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.startProducer(camera, fanout, session.parkingGroup,
+                surfaces(2), new int[]{2, 4}, 57, "parking", false, false);
+
+        CameraHelperMain.HelperBinder.CloseOutcome outcome = session.close(
+                camera, session.parkingGroup, "parking_preempted", 0,
+                new FakeEventSink(trace, session), new FakeShellClose(trace), 7, 5);
+
+        assertEquals(CameraHelperMain.HelperBinder.PersistentCloseDecision.STALE,
+                outcome.decision);
+        assertTrue(session.parkingGroup.attached);
+        assertEquals(2, fanout.activeTargets);
+        assertEquals(0, countPrefix(trace.values, "remove:"));
+    }
+
+    @Test
+    public void confirmedParkingCloseDoesNotRestoreClosedParkingTargets() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        session.startProducer(camera, fanout, session.overlayGroup,
+                surfaces(1), new int[]{2}, 58, "blind", false, false);
+        session.attach(camera, session.parkingGroup,
+                surfaces(2), new int[]{2, 4}, 59, "parking", false, false,
+                events, shell, 7, 5);
+
+        CameraHelperMain.HelperBinder.CloseOutcome outcome = session.close(
+                camera, session.parkingGroup, "reverse_priority", 59,
+                events, shell, 7, 5);
+
+        assertEquals(CameraHelperMain.HelperBinder.PersistentCloseDecision.CLOSE,
+                outcome.decision);
+        assertFalse(session.parkingGroup.has());
+        assertTrue(session.overlayGroup.attached);
+        assertEquals(1, fanout.activeTargets);
+        assertEquals(2, count(trace.values, "target-add:2"));
+        assertEquals(1, count(trace.values, "target-add:4"));
+    }
+
+    @Test
     public void downstreamAttachFailureDoesNotTearDownIngress() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);

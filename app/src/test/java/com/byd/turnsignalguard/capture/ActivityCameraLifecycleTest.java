@@ -10,6 +10,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
@@ -261,6 +262,38 @@ public final class ActivityCameraLifecycleTest {
                 CameraProbeActivity.reversePaneButtonPaintFlags(base, false));
         assertEquals("Rear left", CameraProbeActivity.reversePaneLabel(
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+    }
+
+    @Test
+    public void parkingSelectorStaysHorizontalWithSixEqualButtons() {
+        assertEquals(android.widget.LinearLayout.HORIZONTAL,
+                CameraProbeActivity.PARKING_SELECTOR_ORIENTATION);
+        assertEquals(1.0f, CameraProbeActivity.PARKING_SELECTOR_BUTTON_WEIGHT, 0.0f);
+        assertArrayEquals(new String[]{
+                        "Перед-ліво", "Перед", "Перед-право",
+                        "Зад-праворуч", "Зад", "Зад-ліворуч"},
+                CameraProbeActivity.calibrationLabels(true));
+    }
+
+    @Test
+    public void calibrationEntryBindsParkingContextBeforeHiddenTabAndKeepsLabelsSeparate() {
+        CameraProbeActivity.CalibrationEntry parking = CameraProbeActivity.calibrationEntry(
+                8, true, ParkingCameraProfile.REAR);
+        assertEquals(8, parking.originTab);
+        assertTrue(parking.parking);
+        assertEquals(ParkingCameraProfile.REAR, parking.logicalId);
+
+        CameraProbeActivity.CalibrationEntry blind = CameraProbeActivity.calibrationEntry(
+                1, false, CameraProfile.FRONT_RIGHT);
+        assertEquals(1, blind.originTab);
+        assertFalse(blind.parking);
+        assertEquals(CameraProfile.FRONT_RIGHT, blind.logicalId);
+        assertEquals("Задня ліва", CameraProbeActivity.calibrationLabel(false, 0));
+        assertEquals("Перед-ліво", CameraProbeActivity.calibrationLabel(true, 0));
+        assertEquals("overlay_front_right", CameraProbeActivity.calibrationScopeLabel(
+                false, CameraProfile.FRONT_RIGHT));
+        assertEquals("parking_Rear", CameraProbeActivity.calibrationScopeLabel(
+                true, ParkingCameraProfile.REAR));
     }
 
     @Test

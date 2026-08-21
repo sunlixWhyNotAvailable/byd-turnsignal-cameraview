@@ -120,6 +120,13 @@ public final class CameraProbeActivity extends Activity
     private static final long CALIBRATION_COPY_INTERVAL_MS = 100;
     static final int OUTPUT_MIRROR_BUTTON_WIDTH_DP = 120;
     static final int CALIBRATION_ROTATION_ROW_HEIGHT_DP = 42;
+    static final int PARKING_SELECTOR_ORIENTATION = LinearLayout.HORIZONTAL;
+    static final float PARKING_SELECTOR_BUTTON_WEIGHT = 1.0f;
+    private static final String[] BLIND_CALIBRATION_LABELS = {
+            "Задня ліва", "Задня права", "Передня ліва", "Передня права"};
+    private static final String[] PARKING_CALIBRATION_LABELS = {
+            "Перед-ліво", "Перед", "Перед-право",
+            "Зад-праворуч", "Зад", "Зад-ліворуч"};
     private static final DirectCameraCrop FULL_CALIBRATION_CROP = DirectCameraCrop.of(
             0.0f, 0.0f, 1.0f, 1.0f,
             DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES);
@@ -145,6 +152,47 @@ public final class CameraProbeActivity extends Activity
                 || profile.id == ParkingCameraProfile.RR
                 || profile.id == ParkingCameraProfile.REAR
                 ? "← Перенести" : "Перенести →";
+    }
+
+    static String[] calibrationLabels(boolean parking) {
+        return (parking ? PARKING_CALIBRATION_LABELS : BLIND_CALIBRATION_LABELS).clone();
+    }
+
+    static String calibrationLabel(boolean parking, int logicalId) {
+        String[] labels = parking ? PARKING_CALIBRATION_LABELS : BLIND_CALIBRATION_LABELS;
+        if (logicalId < 0 || logicalId >= labels.length) {
+            throw new IllegalArgumentException("invalid calibration camera");
+        }
+        return labels[logicalId];
+    }
+
+    static String calibrationScopeLabel(boolean parking, int logicalId) {
+        return parking
+                ? "parking_" + ParkingCameraProfile.of(logicalId).wireName
+                : "overlay_" + CameraProfile.of(logicalId).wireName;
+    }
+
+    static final class CalibrationEntry {
+        final int originTab;
+        final boolean parking;
+        final int logicalId;
+
+        private CalibrationEntry(int originTab, boolean parking, int logicalId) {
+            this.originTab = originTab;
+            this.parking = parking;
+            this.logicalId = logicalId;
+        }
+    }
+
+    static CalibrationEntry calibrationEntry(int originTab, boolean parking, int logicalId) {
+        int normalizedOrigin = originTab == TAB_PARKING_CAMERAS
+                ? TAB_PARKING_CAMERAS : TAB_CAMERAS;
+        int normalizedId = parking
+                ? (ParkingCameraProfile.isValid(logicalId)
+                        ? logicalId : ParkingCameraProfile.FL)
+                : (CameraProfile.isValid(logicalId)
+                        ? logicalId : CameraProfile.REAR_LEFT);
+        return new CalibrationEntry(normalizedOrigin, parking, normalizedId);
     }
 
     static int migrateStoredTab(int tab) {
@@ -3060,12 +3108,11 @@ public final class CameraProbeActivity extends Activity
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setPadding(0, 0, dp(12), 0);
         LinearLayout selectors = new LinearLayout(this);
-        selectors.setOrientation(LinearLayout.VERTICAL);
-        String[] labels = {"Перед-ліво", "Перед", "Перед-право",
-                "Зад-праворуч", "Зад", "Зад-ліворуч"};
+        selectors.setOrientation(PARKING_SELECTOR_ORIENTATION);
         for (int id = 0; id < ParkingCameraProfile.COUNT; id++) {
             final int selectedId = id;
-            parkingCameraButtons[id] = button(labels[id]);
+            parkingCameraButtons[id] = button(calibrationLabel(true, id));
+            parkingCameraButtons[id].setTextSize(11);
             parkingCameraButtons[id].setOnClickListener(view -> {
                 if (selectedId != selectedParkingCameraId) {
                     saveParkingRule();
@@ -3074,10 +3121,10 @@ public final class CameraProbeActivity extends Activity
                 selectParkingCamera(selectedId);
             });
             selectors.addView(parkingCameraButtons[id], new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+                    0, dp(46), PARKING_SELECTOR_BUTTON_WEIGHT));
         }
         controls.addView(selectors, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
         parkingCameraSwitch = new Switch(this);
         parkingCameraSwitch.setText("Камера увімкнена");
@@ -3621,11 +3668,12 @@ public final class CameraProbeActivity extends Activity
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
-        String[] cameraNames = {"Задня ліва", "Задня права",
-                "Передня ліва", "Передня права", "Перед", "Зад"};
         for (int cameraId = 0; cameraId < calibrationCameraButtons.length; cameraId++) {
             final int selectedId = cameraId;
-            calibrationCameraButtons[cameraId] = button(cameraNames[cameraId]);
+            calibrationCameraButtons[cameraId] = button(
+                    cameraId < CameraProfile.COUNT
+                            ? calibrationLabel(false, cameraId)
+                            : calibrationLabel(true, cameraId - CameraProfile.COUNT));
             calibrationCameraButtons[cameraId].setOnClickListener(
                     view -> selectCalibrationLogicalCamera(selectedId, true));
             if (cameraId >= CameraProfile.COUNT) {
@@ -4253,9 +4301,8 @@ public final class CameraProbeActivity extends Activity
 
     private String selectedDewarpScope(boolean reverse) {
         if (reverse) return "reverse_" + reverseCameraEditor.selectedCamera();
-        return calibrationParkingMode
-                ? "parking_" + ParkingCameraProfile.of(calibrationParkingCameraId).wireName
-                : "overlay_" + CameraProfile.of(calibrationCameraId).wireName;
+        return calibrationScopeLabel(calibrationParkingMode,
+                calibrationParkingMode ? calibrationParkingCameraId : calibrationCameraId);
     }
 
     private void refreshDewarpCrops(boolean reverse) {
@@ -4575,11 +4622,12 @@ public final class CameraProbeActivity extends Activity
         cancelCalibrationCropInput();
         if (!CameraProfile.isValid(cameraId)) return;
         calibrationParkingMode = false;
-        String[] labels = {"Задня ліва", "Задня права", "Передня ліва", "Передня права"};
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setVisibility(i < CameraProfile.COUNT
                     ? View.VISIBLE : View.GONE);
-            if (i < labels.length) calibrationCameraButtons[i].setText(labels[i]);
+            if (i < CameraProfile.COUNT) {
+                calibrationCameraButtons[i].setText(calibrationLabel(false, i));
+            }
         }
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
@@ -4626,11 +4674,9 @@ public final class CameraProbeActivity extends Activity
                 && activePreview == calibrationPreview
                 && calibrationParkingCameraId != logicalId;
         calibrationParkingCameraId = logicalId;
-        String[] labels = {"Перед-ліво", "Перед", "Перед-право",
-                "Зад-праворуч", "Зад", "Зад-ліворуч"};
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setVisibility(View.VISIBLE);
-            calibrationCameraButtons[i].setText(labels[i]);
+            calibrationCameraButtons[i].setText(calibrationLabel(true, i));
         }
         CameraProfile previewProfile = parkingPreviewProfile(ParkingCameraProfile.of(logicalId));
         calibrationCameraId = previewProfile.id;
@@ -4656,19 +4702,17 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void openSharedCalibration(int originTab, boolean parking, int logicalId) {
-        calibrationOriginTab = originTab == TAB_PARKING_CAMERAS
-                ? TAB_PARKING_CAMERAS : TAB_CAMERAS;
-        calibrationParkingMode = parking;
-        if (parking) {
-            calibrationParkingCameraId = ParkingCameraProfile.isValid(logicalId)
-                    ? logicalId : ParkingCameraProfile.FL;
+        CalibrationEntry entry = calibrationEntry(originTab, parking, logicalId);
+        calibrationOriginTab = entry.originTab;
+        calibrationParkingMode = entry.parking;
+        if (entry.parking) {
+            calibrationParkingCameraId = entry.logicalId;
+            selectCalibrationLogicalCamera(calibrationParkingCameraId, false);
         } else {
-            calibrationCameraId = CameraProfile.isValid(logicalId)
-                    ? logicalId : CameraProfile.REAR_LEFT;
+            calibrationCameraId = entry.logicalId;
+            selectCalibrationCamera(calibrationCameraId, false);
         }
         selectTab(TAB_CAMERA_CALIBRATION);
-        if (parking) selectCalibrationLogicalCamera(calibrationParkingCameraId, true);
-        else selectCalibrationCamera(calibrationCameraId, true);
     }
 
     private void closeSharedCalibration() {

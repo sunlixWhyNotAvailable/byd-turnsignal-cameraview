@@ -12,6 +12,7 @@ import org.json.JSONObject;
 
 import java.util.Arrays;
 import java.util.function.BiConsumer;
+import java.util.function.IntPredicate;
 
 /** Runtime controller for the six parking radar camera panes. */
 final class ParkingCameraController {
@@ -30,6 +31,7 @@ final class ParkingCameraController {
     private final boolean[] radarValid = new boolean[radarRaw.length];
     private final long[] radarTimestamps = new long[radarRaw.length];
     private final Runnable retry = this::evaluate;
+    private final Runnable closeRetry = this::retryClose;
     private final Runnable closeTick = this::evaluate;
 
     private CameraHelperMain.HelperBinder helper;
@@ -43,6 +45,8 @@ final class ParkingCameraController {
     private int desiredMask;
     private int potentialMask;
     private int attachedGroupMask;
+    private int attachedGroupRequestId;
+    private final CloseRetryState closeRetryState = new CloseRetryState();
     private int lastPotentialMask = -1;
     private int membershipGeneration;
     private int requestSequence;
@@ -172,7 +176,9 @@ final class ParkingCameraController {
     void shutdown() {
         shutdown = true;
         handler.removeCallbacks(retry);
+        handler.removeCallbacks(closeRetry);
         handler.removeCallbacks(closeTick);
+        closeRetryState.cancel();
         desiredMask = 0;
         potentialMask = 0;
         closeAll("controller_shutdown");
@@ -180,34 +186,20 @@ final class ParkingCameraController {
     }
 
     private void onShellDeath() {
-        attachedGroupMask = 0;
-        membershipGeneration++;
-        for (Pane pane : panes) {
-            pane.preparing = false;
-            pane.prepared = false;
-            pane.attached = false;
-            pane.active = false;
-            pane.visible = false;
-            pane.wantVisible = false;
-            pane.firstFrameReady = false;
-            pane.surface = null;
-            pane.requestId = 0;
-            pane.surfaceGeneration = 0;
-            pane.visibilityPending = false;
-            pane.transition++;
-        }
+        boolean closed = closeParkingGroup("camera_shell_died");
         handler.removeCallbacks(retry);
-        if (!shutdown) handler.postDelayed(retry, RETRY_MS);
+        if (closed && !shutdown) handler.postDelayed(retry, RETRY_MS);
     }
 
     private void evaluate() {
-        if (shutdown) return;
+        if (shutdown || closeRetryState.blocksEvaluation()) return;
         long now = SystemClock.elapsedRealtime();
         potentialMask = potentialMask(rules);
         if (potentialMask != lastPotentialMask) {
             lastPotentialMask = potentialMask;
             membershipGeneration++;
-            if (attachedGroupMask != 0) closeParkingGroup("parking_membership_changed");
+            if (attachedGroupMask != 0
+                    && !closeParkingGroup("parking_membership_changed")) return;
         }
         desiredMask = policy.update(rules, maxSpeedKph,
                 radarRaw, radarValid, radarTimestamps,
@@ -215,7 +207,7 @@ final class ParkingCameraController {
                 RADAR_STALE_MS, SPEED_STALE_MS);
         if (isHardBlocked(suspended, activityVisible, reversePriority)) {
             desiredMask = 0;
-            closeParkingGroup("parking_preempted");
+            if (!closeParkingGroup("parking_preempted")) return;
             handler.removeCallbacks(closeTick);
             return;
         }
@@ -232,8 +224,11 @@ final class ParkingCameraController {
                 pane.wantVisible = false;
             }
         }
-        if (potentialMask == 0) closeParkingGroup("parking_disabled");
-        else attachParkingGroup();
+        if (potentialMask == 0) {
+            if (!closeParkingGroup("parking_disabled")) return;
+        } else {
+            attachParkingGroup();
+        }
         handler.removeCallbacks(closeTick);
         if (!shutdown) handler.postDelayed(closeTick, ParkingCameraTriggerPolicy.CLOSE_DELAY_MS);
     }
@@ -310,9 +305,11 @@ final class ParkingCameraController {
             indexes[offset++] = pane.profile.physicalCameraIndex;
         }
         try {
-            String result = activeHelper.openParkingCameras(surfaces, indexes, nextGroupRequest());
+            int groupRequestId = nextGroupRequest();
+            String result = activeHelper.openParkingCameras(surfaces, indexes, groupRequestId);
             boolean ok = result != null && result.contains("camera_opened");
             attachedGroupMask = ok ? potentialMask : 0;
+            attachedGroupRequestId = ok ? groupRequestId : 0;
             if (!ok) {
                 resetAfterAttachFailure();
                 return;
@@ -423,20 +420,75 @@ final class ParkingCameraController {
                 });
     }
 
-    private void closeParkingGroup(String reason) {
+    private boolean closeParkingGroup(String reason) {
         boolean hasPaneState = attachedGroupMask != 0;
         for (Pane pane : panes) {
             hasPaneState |= pane.preparing || pane.prepared || pane.surface != null;
         }
-        if (!hasPaneState) return;
-        membershipGeneration++;
-        if (helper != null) {
-            if (attachedGroupMask != 0) {
-                try { helper.closeParkingCameras(reason, 0); } catch (Throwable ignored) {}
-            }
-            helper.closeParkingOverlayWindows(reason);
+        if (!hasPaneState) {
+            attachedGroupRequestId = 0;
+            cancelCloseRetry();
+            return true;
         }
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper == null) {
+            emit("parking_camera_error", "stage", "close_group",
+                    "request_id", attachedGroupRequestId, "error", "helper unavailable");
+            scheduleCloseRetry();
+            return false;
+        }
+        if (attachedGroupMask != 0) {
+            int requestId = attachedGroupRequestId;
+            if (requestId <= 0) {
+                emit("parking_camera_error", "stage", "close_group",
+                        "request_id", requestId, "error", "missing group request id");
+                scheduleCloseRetry();
+                return false;
+            }
+            String result;
+            try {
+                result = activeHelper.closeParkingCameras(reason, requestId);
+            } catch (Throwable error) {
+                emit("parking_camera_error", "stage", "close_group",
+                        "request_id", requestId, "error", summary(error));
+                scheduleCloseRetry();
+                return false;
+            }
+            if (!CameraHelperMain.HelperBinder.isSuccessfulCameraCloseResult(result)) {
+                emit("parking_camera_error", "stage", "close_group",
+                        "request_id", requestId,
+                        "error", result == null ? "close rejected" : result);
+                scheduleCloseRetry();
+                return false;
+            }
+            attachedGroupMask = 0;
+            attachedGroupRequestId = 0;
+            membershipGeneration++;
+            clearPaneState();
+            cancelCloseRetry();
+            try {
+                activeHelper.closeParkingOverlayWindows(reason);
+            } catch (Throwable error) {
+                emit("parking_camera_error", "stage", "close_windows",
+                        "request_id", requestId, "error", summary(error));
+            }
+            return true;
+        }
+        try {
+            activeHelper.closeParkingOverlayWindows(reason);
+        } catch (Throwable error) {
+            emit("parking_camera_error", "stage", "close_windows",
+                    "request_id", 0, "error", summary(error));
+        }
+        membershipGeneration++;
         attachedGroupMask = 0;
+        attachedGroupRequestId = 0;
+        clearPaneState();
+        cancelCloseRetry();
+        return true;
+    }
+
+    private void clearPaneState() {
         for (Pane pane : panes) {
             pane.attached = false;
             pane.prepared = false;
@@ -451,53 +503,70 @@ final class ParkingCameraController {
             pane.visibilityPending = false;
             pane.transition++;
         }
+    }
+
+    private void scheduleCloseRetry() {
+        handler.removeCallbacks(retry);
+        handler.removeCallbacks(closeTick);
+        if (shutdown) return;
+        closeRetryState.schedule(attachedGroupRequestId);
+        handler.removeCallbacks(closeRetry);
+        handler.postDelayed(closeRetry, RETRY_MS);
     }
 
     private void resetAfterAttachFailure() {
-        membershipGeneration++;
-        if (helper != null) {
-            try { helper.closeParkingCameras("parking_attach_failed", 0); }
-            catch (Throwable ignored) {}
-            helper.closeParkingOverlayWindows("parking_attach_failed");
+        if (closeParkingGroup("parking_attach_failed")) {
+            handler.removeCallbacks(retry);
+            if (!shutdown) handler.postDelayed(retry, RETRY_MS);
         }
-        attachedGroupMask = 0;
-        for (Pane pane : panes) {
-            pane.prepared = false;
-            pane.preparing = false;
-            pane.attached = false;
-            pane.surface = null;
-            pane.requestId = 0;
-            pane.surfaceGeneration = 0;
-            pane.visible = false;
-            pane.active = false;
-            pane.wantVisible = false;
-            pane.firstFrameReady = false;
-            pane.visibilityPending = false;
-            pane.transition++;
-        }
-        handler.removeCallbacks(retry);
-        handler.postDelayed(retry, RETRY_MS);
+    }
+
+    private void retryClose() {
+        if (shutdown) return;
+        CloseRetryState.Result result = closeRetryState.retry(
+                attachedGroupRequestId,
+                ignored -> closeParkingGroup("parking_close_retry"));
+        if (result == CloseRetryState.Result.STALE
+                || result == CloseRetryState.Result.SUCCEEDED) evaluate();
+    }
+
+    private void cancelCloseRetry() {
+        closeRetryState.cancel();
+        handler.removeCallbacks(closeRetry);
     }
 
     private void closeAll(String reason) {
-        if (helper != null) {
-            try { helper.closeParkingCameras(reason, 0); } catch (Throwable ignored) {}
-            helper.closeParkingOverlayWindows(reason);
+        closeParkingGroup(reason);
+    }
+
+    static final class CloseRetryState {
+        enum Result { STALE, FAILED, SUCCEEDED }
+
+        private boolean pending;
+        private int requestId;
+
+        void schedule(int value) {
+            pending = true;
+            requestId = value;
         }
-        attachedGroupMask = 0;
-        for (Pane pane : panes) {
-            pane.prepared = false;
-            pane.preparing = false;
-            pane.attached = false;
-            pane.surface = null;
-            pane.requestId = 0;
-            pane.surfaceGeneration = 0;
-            pane.visible = false;
-            pane.active = false;
-            pane.wantVisible = false;
-            pane.firstFrameReady = false;
-            pane.visibilityPending = false;
-            pane.transition++;
+
+        boolean blocksEvaluation() {
+            return pending;
+        }
+
+        Result retry(int currentRequestId, IntPredicate close) {
+            if (!pending || requestId <= 0 || requestId != currentRequestId) {
+                cancel();
+                return Result.STALE;
+            }
+            if (!close.test(currentRequestId)) return Result.FAILED;
+            cancel();
+            return Result.SUCCEEDED;
+        }
+
+        void cancel() {
+            pending = false;
+            requestId = 0;
         }
     }
 
