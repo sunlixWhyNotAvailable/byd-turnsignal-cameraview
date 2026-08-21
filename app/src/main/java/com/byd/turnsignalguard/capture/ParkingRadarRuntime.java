@@ -203,7 +203,7 @@ public final class ParkingRadarRuntime {
         }
     }
 
-    private static int integerValue(Object value) throws Exception {
+    static int integerValue(Object value) throws Exception {
         if (value instanceof Number) return ((Number) value).intValue();
         if (value == null) throw new IllegalStateException("null radar value");
         try {

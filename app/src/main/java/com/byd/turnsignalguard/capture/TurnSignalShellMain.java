@@ -41,7 +41,7 @@ public final class TurnSignalShellMain {
         int versionCode = Integer.parseInt(args[2]);
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
-        Looper looper = prepareQuitAllowedLooper();
+        Looper looper = prepareMainLooperForShell();
         Context context = systemContext();
         Handler handler = new Handler(looper);
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
@@ -82,7 +82,9 @@ public final class TurnSignalShellMain {
         private final ReverseGearRuntime reverseGearRuntime;
         private final MusicVisualizerRuntime musicRuntime;
         private final ParkingRadarRuntime parkingRadarRuntime;
+        private final ParkingRadarDiagnosticRuntime parkingRadarDiagnosticRuntime;
         private final PowerManager powerManager;
+        private final Runnable processTerminator;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
@@ -97,12 +99,23 @@ public final class TurnSignalShellMain {
         private boolean powerReceiverRegistered;
         private IBinder.DeathRecipient controllerDeathRecipient;
         private boolean stdoutFlushScheduled;
+        private boolean processTerminationRequested;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
+            this(context, handler, appUid, versionCode, TurnSignalShellMain::terminateProcess);
+        }
+
+        ShellBinder(
+                Context context, Handler handler, int appUid, int versionCode,
+                Runnable processTerminator) {
+            if (processTerminator == null) {
+                throw new IllegalArgumentException("process terminator is null");
+            }
             this.context = context;
             this.handler = handler;
             this.appUid = appUid;
             this.versionCode = versionCode;
+            this.processTerminator = processTerminator;
             powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             awakeSession = loadAwakeSession();
             powerReceiver = new BroadcastReceiver() {
@@ -118,6 +131,8 @@ public final class TurnSignalShellMain {
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
             parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
+            parkingRadarDiagnosticRuntime =
+                    new ParkingRadarDiagnosticRuntime(context, handler, this::emit);
         }
 
         void start() {
@@ -127,6 +142,7 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
             parkingRadarRuntime.start();
+            parkingRadarDiagnosticRuntime.start();
         }
 
         void stop() {
@@ -135,6 +151,7 @@ public final class TurnSignalShellMain {
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
             musicRuntime.stop();
+            parkingRadarDiagnosticRuntime.stop();
             parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
             warningRuntime.stop();
@@ -208,6 +225,7 @@ public final class TurnSignalShellMain {
                     reverseGearRuntime.reportStatus();
                     musicRuntime.reportStatus();
                     parkingRadarRuntime.reportStatus();
+                    parkingRadarDiagnosticRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
@@ -223,12 +241,13 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     handler.post(() -> {
                         musicRuntime.stop();
+                        parkingRadarDiagnosticRuntime.stop();
                         parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_request");
-                        Looper.myLooper().quitSafely();
+                        terminateProcessOnce();
                     });
                     return true;
                 }
@@ -254,6 +273,14 @@ public final class TurnSignalShellMain {
 
         private synchronized void clearCallback(IBinder value) {
             if (callback == value) callback = null;
+        }
+
+        private void terminateProcessOnce() {
+            synchronized (this) {
+                if (processTerminationRequested) return;
+                processTerminationRequested = true;
+            }
+            processTerminator.run();
         }
 
         private synchronized void attachController(IBinder token, boolean requestedRecovery)
@@ -746,9 +773,14 @@ public final class TurnSignalShellMain {
         return context;
     }
 
-    private static Looper prepareQuitAllowedLooper() {
-        if (Looper.myLooper() == null) Looper.prepare();
-        return Looper.myLooper();
+    static Looper prepareMainLooperForShell() {
+        if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
+        return Looper.getMainLooper();
+    }
+
+    private static void terminateProcess() {
+        System.out.flush();
+        Process.killProcess(Process.myPid());
     }
 
     private static String summary(Throwable error) {

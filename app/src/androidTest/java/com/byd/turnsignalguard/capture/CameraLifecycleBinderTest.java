@@ -30,6 +30,40 @@ public final class CameraLifecycleBinderTest extends TestCase {
         assertSame(Looper.getMainLooper(), new Handler(looper).getLooper());
     }
 
+    public void testTurnShellUsesAndroidMainLooper() {
+        Looper looper = TurnSignalShellMain.prepareMainLooperForShell();
+        assertSame(Looper.getMainLooper(), looper);
+        assertSame(Looper.getMainLooper(), new Handler(looper).getLooper());
+    }
+
+    public void testTurnShellShutdownTerminatesOnceAfterCleanup() throws Exception {
+        Application context = currentApplication();
+        CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
+        AtomicInteger terminations = new AtomicInteger();
+        TurnSignalShellMain.ShellBinder shell = new TurnSignalShellMain.ShellBinder(
+                context, new Handler(Looper.getMainLooper()),
+                Process.myUid(), BuildConfig.VERSION_CODE,
+                () -> {
+                    order.add("terminate");
+                    terminations.incrementAndGet();
+                });
+        shell.attachInterface(null, TurnSignalShellProtocol.DESCRIPTOR);
+        EventCollector events = new EventCollector(
+                TurnSignalShellProtocol.CALLBACK_DESCRIPTOR, () -> order.add("event"));
+        registerTurnShellCallback(shell, events);
+        order.clear();
+
+        shutdownTurnShell(shell);
+        events.await("shell_shutdown");
+        awaitValue(() -> terminations.get() == 1);
+        assertEquals(1, terminations.get());
+        assertTrue(order.indexOf("event") < order.indexOf("terminate"));
+
+        shutdownTurnShell(shell);
+        Thread.sleep(100);
+        assertEquals(1, terminations.get());
+    }
+
     public void testShutdownCleansAndTerminatesOnceAfterReply() throws Exception {
         Application context = currentApplication();
         CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
@@ -364,6 +398,36 @@ public final class CameraLifecycleBinderTest extends TestCase {
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             assertTrue(shell.transact(CameraShellProtocol.TX_SHUTDOWN, data, reply, 0));
+            reply.readException();
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
+    }
+
+    private static void registerTurnShellCallback(IBinder shell, IBinder callback)
+            throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeStrongBinder(callback);
+            assertTrue(shell.transact(
+                    TurnSignalShellProtocol.TX_REGISTER_CALLBACK, data, reply, 0));
+            reply.readException();
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
+    }
+
+    private static void shutdownTurnShell(IBinder shell) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            assertTrue(shell.transact(
+                    TurnSignalShellProtocol.TX_SHUTDOWN, data, reply, 0));
             reply.readException();
         } finally {
             reply.recycle();
