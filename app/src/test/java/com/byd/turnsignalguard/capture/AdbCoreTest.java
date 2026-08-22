@@ -1336,7 +1336,7 @@ public final class AdbCoreTest {
 
         assertEquals(36, BlindSpotOverlayController.migratedScale(false, 50, 36));
         assertEquals(50, BlindSpotOverlayController.migratedScale(true, 50, 36));
-        assertEquals(20, BlindSpotOverlayController.migratedScale(false, 0, 2));
+        assertEquals(5, BlindSpotOverlayController.migratedScale(false, 0, 2));
         assertEquals(60, BlindSpotOverlayController.migratedScale(true, 90, 36));
         assertEquals(30, BlindSpotOverlayController.DEFAULT_SCALE_PERCENT);
         assertEquals(10, BlindSpotOverlayController.DEFAULT_CORNER_RADIUS_DP);
@@ -1361,6 +1361,10 @@ public final class AdbCoreTest {
                 BlindSpotOverlayController.overlayGeometry(
                         1920, 720, 36, 16.0f / 9.0f,
                         1.0f, 1.0f, 0, 0, 0));
+        assertArrayEquals(new int[]{0, 0, 96, 72},
+                BlindSpotOverlayController.overlayGeometry(
+                        1920, 1080, 5, 4.0f / 3.0f,
+                        0.0f, 0.0f, 0, 0, 0));
     }
 
     @Test

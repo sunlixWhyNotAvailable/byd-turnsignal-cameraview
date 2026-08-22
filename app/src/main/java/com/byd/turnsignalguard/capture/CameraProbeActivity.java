@@ -3171,7 +3171,7 @@ public final class CameraProbeActivity extends Activity
 
         LinearLayout scaleRow = new LinearLayout(this);
         scaleRow.setGravity(Gravity.CENTER_VERTICAL);
-        scaleRow.addView(label("Масштаб"), new LinearLayout.LayoutParams(dp(72), dp(48)));
+        scaleRow.addView(label("Розмір"), new LinearLayout.LayoutParams(dp(78), dp(48)));
         parkingScaleInput = new SeekBar(this);
         parkingScaleInput.setMax(BlindSpotOverlayController.MAX_SCALE_PERCENT
                 - BlindSpotOverlayController.MIN_SCALE_PERCENT);
@@ -4947,8 +4947,15 @@ public final class CameraProbeActivity extends Activity
             calibrationRawPane.setVisibility(View.VISIBLE);
         }
         if (calibrationCorrectedPane != null) {
-            calibrationCorrectedPane.setVisibility(
-                    ui.showCorrected ? View.VISIBLE : View.GONE);
+            LinearLayout.LayoutParams params =
+                    (LinearLayout.LayoutParams) calibrationCorrectedPane.getLayoutParams();
+            if (params.width != ui.correctedPaneWidth
+                    || params.weight != ui.correctedPaneWeight) {
+                params.width = ui.correctedPaneWidth;
+                params.weight = ui.correctedPaneWeight;
+                calibrationCorrectedPane.setLayoutParams(params);
+            }
+            calibrationCorrectedPane.setVisibility(View.VISIBLE);
         }
         if (calibrationRawCropOverlay != null) {
             calibrationRawCropOverlay.setCrop(calibrationRawCrop.geometryOnly());
@@ -5203,8 +5210,14 @@ public final class CameraProbeActivity extends Activity
 
     private void copyCalibrationFrame() {
         if (!shouldCopyCalibrationFrame() || calibrationCopyPending) return;
-        int width = calibrationPreview.getWidth();
-        int height = calibrationPreview.getHeight();
+        CalibrationUiState ui = calibrationUiState(
+                calibrationDewarpSwitch != null && calibrationDewarpSwitch.isChecked(),
+                calibrationPreview != null && calibrationPreview.usesRawFallback());
+        TextureView source = ui.copyRawMirror
+                ? calibrationRawMirror : calibrationPreview;
+        boolean sourceAvailable = source != null && source.isAvailable();
+        int width = sourceAvailable ? source.getWidth() : 0;
+        int height = sourceAvailable ? source.getHeight() : 0;
         if (width <= 0 || height <= 0) {
             if (shouldRetryCalibrationCopy(true, width, height)) {
                 mainHandler.postDelayed(copyCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
@@ -5219,7 +5232,7 @@ public final class CameraProbeActivity extends Activity
         }
         calibrationCopyPending = true;
         try {
-            calibrationPreview.getBitmap(calibrationCaptureBitmap);
+            source.getBitmap(calibrationCaptureBitmap);
             calibrationCopyPending = false;
             if (shouldCopyCalibrationFrame()) renderCalibrationCrop();
             if (shouldCopyCalibrationFrame()) {
@@ -7975,6 +7988,9 @@ public final class CameraProbeActivity extends Activity
         final boolean showCorrected;
         final boolean correctedEditable;
         final boolean liveUsesCorrected;
+        final int correctedPaneWidth;
+        final float correctedPaneWeight;
+        final boolean copyRawMirror;
 
         CalibrationUiState(
                 boolean showCorrected,
@@ -7983,6 +7999,9 @@ public final class CameraProbeActivity extends Activity
             this.showCorrected = showCorrected;
             this.correctedEditable = correctedEditable;
             this.liveUsesCorrected = liveUsesCorrected;
+            correctedPaneWidth = showCorrected ? 0 : 1;
+            correctedPaneWeight = showCorrected ? 1.0f : 0.0f;
+            copyRawMirror = !showCorrected;
         }
     }
 

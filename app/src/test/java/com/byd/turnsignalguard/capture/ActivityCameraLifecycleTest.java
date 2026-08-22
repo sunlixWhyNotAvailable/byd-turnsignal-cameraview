@@ -171,17 +171,28 @@ public final class ActivityCameraLifecycleTest {
                 CameraProbeActivity.calibrationUiState(false, false);
         assertFalse(off.showCorrected);
         assertFalse(off.correctedEditable);
+        assertFalse(off.liveUsesCorrected);
+        assertEquals(1, off.correctedPaneWidth);
+        assertEquals(0.0f, off.correctedPaneWeight, 0.0f);
+        assertTrue(off.copyRawMirror);
 
         CameraProbeActivity.CalibrationUiState corrected =
                 CameraProbeActivity.calibrationUiState(true, false);
         assertTrue(corrected.showCorrected);
         assertTrue(corrected.correctedEditable);
+        assertTrue(corrected.liveUsesCorrected);
+        assertEquals(0, corrected.correctedPaneWidth);
+        assertEquals(1.0f, corrected.correctedPaneWeight, 0.0f);
+        assertFalse(corrected.copyRawMirror);
 
         CameraProbeActivity.CalibrationUiState fallback =
                 CameraProbeActivity.calibrationUiState(true, true);
         assertTrue(fallback.showCorrected);
         assertFalse(fallback.correctedEditable);
         assertFalse(fallback.liveUsesCorrected);
+        assertEquals(0, fallback.correctedPaneWidth);
+        assertEquals(1.0f, fallback.correctedPaneWeight, 0.0f);
+        assertFalse(fallback.copyRawMirror);
     }
 
     @Test

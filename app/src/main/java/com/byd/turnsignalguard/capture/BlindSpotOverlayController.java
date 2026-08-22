@@ -59,7 +59,7 @@ final class BlindSpotOverlayController {
     static final float MIN_REAR_SHARP_TURN_ANGLE_DEG = 0.0f;
     static final float MAX_REAR_SHARP_TURN_ANGLE_DEG = 780.0f;
     static final int DEFAULT_SCALE_PERCENT = 30;
-    static final int MIN_SCALE_PERCENT = 20;
+    static final int MIN_SCALE_PERCENT = 5;
     static final int MAX_SCALE_PERCENT = 60;
     static final int DEFAULT_LEFT_POSITION = 0;
     static final int DEFAULT_RIGHT_POSITION = 2;

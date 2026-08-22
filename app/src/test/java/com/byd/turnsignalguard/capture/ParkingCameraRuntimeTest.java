@@ -52,6 +52,31 @@ public final class ParkingCameraRuntimeTest {
     }
 
     @Test
+    public void parkingOverlayScaleUsesSharedFivePercentMinimum() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.edit().putInt("parking_camera_fl_scale", 5).apply();
+        CameraShellProtocol.OverlaySpec minimum = ParkingCameraController.buildOverlaySpec(
+                ParkingCameraProfile.of(ParkingCameraProfile.FL), 1, CameraDisplayTarget.TABLET,
+                1920, 1080, preferences);
+        assertEquals(96, minimum.width);
+        assertEquals(72, minimum.height);
+
+        preferences.edit().putInt("parking_camera_fl_scale", 0).apply();
+        CameraShellProtocol.OverlaySpec clampedMinimum = ParkingCameraController.buildOverlaySpec(
+                ParkingCameraProfile.of(ParkingCameraProfile.FL), 1, CameraDisplayTarget.TABLET,
+                1920, 1080, preferences);
+        assertEquals(96, clampedMinimum.width);
+        assertEquals(72, clampedMinimum.height);
+
+        preferences.edit().putInt("parking_camera_fl_scale", 100).apply();
+        CameraShellProtocol.OverlaySpec clampedMaximum = ParkingCameraController.buildOverlaySpec(
+                ParkingCameraProfile.of(ParkingCameraProfile.FL), 1, CameraDisplayTarget.TABLET,
+                1920, 1080, preferences);
+        assertEquals(1152, clampedMaximum.width);
+        assertEquals(864, clampedMaximum.height);
+    }
+
+    @Test
     public void parkingProtocolAcceptsGenericIdsButWarningStaysBlindOnly() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
