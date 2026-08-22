@@ -98,14 +98,16 @@ final class DirectCameraCrop {
         if (profile == null) throw new IllegalArgumentException("parking profile required");
         switch (profile.id) {
             case ParkingCameraProfile.FL:
-                return defaultFor(CameraProfile.of(CameraProfile.FRONT_LEFT));
-            case ParkingCameraProfile.FR:
                 return defaultFor(CameraProfile.of(CameraProfile.FRONT_RIGHT));
+            case ParkingCameraProfile.FR:
+                return defaultFor(CameraProfile.of(CameraProfile.FRONT_LEFT));
             case ParkingCameraProfile.RR:
                 return defaultFor(CameraProfile.of(CameraProfile.REAR_RIGHT));
             case ParkingCameraProfile.RL:
                 return defaultFor(CameraProfile.of(CameraProfile.REAR_LEFT));
             case ParkingCameraProfile.FRONT:
+            case ParkingCameraProfile.LEFT:
+            case ParkingCameraProfile.RIGHT:
                 return of(0.0f, 0.0f, 1.0f, 1.0f, ASPECT_FREE,
                         CameraRotation.DEFAULT_DEGREES).withMirrorHorizontally(false);
             case ParkingCameraProfile.REAR:

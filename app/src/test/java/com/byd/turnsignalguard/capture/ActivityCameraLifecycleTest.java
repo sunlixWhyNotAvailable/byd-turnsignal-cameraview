@@ -265,14 +265,24 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
-    public void parkingSelectorStaysHorizontalWithSixEqualButtons() {
+    public void parkingSelectorStaysHorizontalWithEightEqualButtons() {
         assertEquals(android.widget.LinearLayout.HORIZONTAL,
                 CameraProbeActivity.PARKING_SELECTOR_ORIENTATION);
         assertEquals(1.0f, CameraProbeActivity.PARKING_SELECTOR_BUTTON_WEIGHT, 0.0f);
+        assertEquals(0.65f, CameraProbeActivity.PARKING_SETTINGS_WEIGHT, 0.0f);
+        assertEquals(0.35f, CameraProbeActivity.PARKING_PREVIEW_WEIGHT, 0.0f);
         assertArrayEquals(new String[]{
                         "Перед-ліво", "Перед", "Перед-право",
-                        "Зад-праворуч", "Зад", "Зад-ліворуч"},
+                        "Зад-праворуч", "Зад", "Зад-ліворуч", "Ліво", "Право"},
                 CameraProbeActivity.calibrationLabels(true));
+    }
+
+    @Test
+    public void calibrationRebindsOnlyWhenPhysicalSourceChanges() {
+        assertTrue(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, 2, 3));
+        assertFalse(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, 2, 2));
+        assertFalse(CameraProbeActivity.calibrationNeedsPhysicalRebind(false, 2, 3));
+        assertTrue(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, -1, 3));
     }
 
     @Test

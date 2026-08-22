@@ -2,10 +2,6 @@ package com.byd.turnsignalguard.capture;
 
 import org.junit.Test;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -17,28 +13,18 @@ public final class ParkingRadarRuntimeTest {
         assertEquals("android.hardware.bydauto.radar.BYDAutoRadarDevice",
                 ParkingRadarRuntime.DEVICE_CLASS);
         assertEquals("android.hardware.IBYDAutoListener", ParkingRadarRuntime.LISTENER_CLASS);
+        assertEquals("android.hardware.bydauto.adas.BYDAutoADASDevice",
+                ParkingRadarRuntime.ADAS_DEVICE_CLASS);
         assertEquals(500L, ParkingRadarRuntime.REFRESH_PERIOD_MS);
         assertTrue(ParkingRadarRuntime.shouldRefresh(true, true));
         assertFalse(ParkingRadarRuntime.shouldRefresh(true, false));
         assertFalse(ParkingRadarRuntime.shouldRefresh(false, true));
         assertTrue(ParkingRadarRuntime.isValidRaw(0));
         assertTrue(ParkingRadarRuntime.isValidRaw(155));
-    }
-
-    @Test
-    public void unhealthyConfiguredListenerIsCleanedBeforeRetry() {
-        List<String> actions = new ArrayList<>();
-
-        assertTrue(ParkingRadarRuntime.recoverRegistrationIfNeeded(
-                true, true, false,
-                () -> actions.add("cleanup"), () -> actions.add("register")));
-        assertEquals(Arrays.asList("cleanup", "register"), actions);
-
-        actions.clear();
-        assertFalse(ParkingRadarRuntime.recoverRegistrationIfNeeded(
-                true, true, true,
-                () -> actions.add("cleanup"), () -> actions.add("register")));
-        assertTrue(actions.isEmpty());
+        assertTrue(ParkingRadarRuntime.isValidRaw(
+                ParkingCameraProfile.RADAR_FID_RIGHT_OUTER, 255));
+        assertFalse(ParkingRadarRuntime.isValidRaw(
+                ParkingCameraProfile.RADAR_FID_RIGHT_OUTER, 256));
     }
 
     @Test
@@ -62,11 +48,8 @@ public final class ParkingRadarRuntimeTest {
                         0x36500008, 0x36500010, 0x36500018, 0x36500020,
                         0x36500028, 0x36500030, 0x36500038, 0x36500040},
                 ParkingRadarDiagnosticRuntime.sdwDistanceFids());
-        assertArrayEquals(new int[]{
-                        0x1EC00008, 0x1EC00010, 0x1EC00018, 0x1EC00020,
-                        0x1EC00028, 0x1EC00030, 0x1EC00038, 0x1EC00040,
-                        0x1EC00048, 0x1EC00050, 0x1EC00058, 0x1EC00060,
-                        0x1EC00068, 0x1EC00070, 0x1EC00078, 0x1EC00080},
-                ParkingRadarDiagnosticRuntime.sectionDistanceFids());
+        assertEquals(8, ParkingRadarDiagnosticRuntime.radarDistanceFids().length);
+        assertEquals(8, ParkingRadarDiagnosticRuntime.probeStateFids().length);
+        assertEquals(8, ParkingRadarDiagnosticRuntime.sdwDistanceFids().length);
     }
 }

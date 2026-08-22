@@ -30,7 +30,6 @@ public final class ParkingCameraTriggerPolicy {
 
     public static boolean isDistanceTriggered(boolean valid, int distanceCm, int thresholdCm) {
         return valid && distanceCm >= ParkingCameraProfile.RADAR_RAW_MIN
-                && distanceCm <= ParkingCameraProfile.RADAR_RAW_MAX
                 && thresholdCm >= ParkingCameraSettings.MIN_DISTANCE_CM
                 && thresholdCm <= ParkingCameraSettings.MAX_DISTANCE_CM
                 && distanceCm <= thresholdCm;
@@ -78,7 +77,7 @@ public final class ParkingCameraTriggerPolicy {
         for (int fid : fids) {
             int index = radarIndex(fid);
             if (index < 0 || index >= radarRaw.length || index >= radarValid.length
-                    || !radarValid[index] || !ParkingCameraProfile.isValidRadarRaw(radarRaw[index])) {
+                    || !radarValid[index] || !ParkingCameraProfile.isValidRadarRaw(fid, radarRaw[index])) {
                 continue;
             }
             if (timestamps != null
@@ -147,7 +146,7 @@ public final class ParkingCameraTriggerPolicy {
         public void reset() { active = false; closeAtMs = -1L; }
     }
 
-    /** Six independent debounce states for normal false transitions. */
+    /** Eight independent debounce states for normal false transitions. */
     public static final class State {
         private final DelayedCloseState[] corners = new DelayedCloseState[ParkingCameraProfile.COUNT];
 

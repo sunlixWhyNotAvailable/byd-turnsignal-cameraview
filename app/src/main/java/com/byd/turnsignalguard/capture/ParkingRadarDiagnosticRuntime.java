@@ -17,7 +17,7 @@ final class ParkingRadarDiagnosticRuntime {
             "android.hardware.bydauto.adas.BYDAutoADASDevice";
     private static final String LISTENER_CLASS = "android.hardware.IBYDAutoListener";
 
-    private static final int[] RADAR_DISTANCE_FIDS = ParkingCameraProfile.allRadarFids();
+    private static final int[] RADAR_DISTANCE_FIDS = ParkingCameraProfile.coreRadarFids();
     private static final int[] PROBE_STATE_FIDS = {
             0x99000071, 0x99000072, 0x99000073, 0x99000074,
             0x99000075, 0x99000076, 0x99000077, 0x99000078
@@ -25,12 +25,6 @@ final class ParkingRadarDiagnosticRuntime {
     private static final int[] SDW_DISTANCE_FIDS = {
             0x36500008, 0x36500010, 0x36500018, 0x36500020,
             0x36500028, 0x36500030, 0x36500038, 0x36500040
-    };
-    private static final int[] SECTION_DISTANCE_FIDS = {
-            0x1EC00008, 0x1EC00010, 0x1EC00018, 0x1EC00020,
-            0x1EC00028, 0x1EC00030, 0x1EC00038, 0x1EC00040,
-            0x1EC00048, 0x1EC00050, 0x1EC00058, 0x1EC00060,
-            0x1EC00068, 0x1EC00070, 0x1EC00078, 0x1EC00080
     };
 
     private final Handler handler;
@@ -48,9 +42,7 @@ final class ParkingRadarDiagnosticRuntime {
         sources = new Source[]{
                 new Source(context, "radar_distance", RADAR_DEVICE_CLASS, RADAR_DISTANCE_FIDS),
                 new Source(context, "probe_state", RADAR_DEVICE_CLASS, PROBE_STATE_FIDS),
-                new Source(context, "adas_sdw_distance", ADAS_DEVICE_CLASS, SDW_DISTANCE_FIDS),
-                new Source(context, "adas_section_distance",
-                        ADAS_DEVICE_CLASS, SECTION_DISTANCE_FIDS)
+                new Source(context, "adas_sdw_distance", ADAS_DEVICE_CLASS, SDW_DISTANCE_FIDS)
         };
     }
 
@@ -86,10 +78,6 @@ final class ParkingRadarDiagnosticRuntime {
 
     static int[] sdwDistanceFids() {
         return SDW_DISTANCE_FIDS.clone();
-    }
-
-    static int[] sectionDistanceFids() {
-        return SECTION_DISTANCE_FIDS.clone();
     }
 
     private void runOnHandler(Runnable action) {
@@ -176,6 +164,7 @@ final class ParkingRadarDiagnosticRuntime {
                 register.invoke(device, listener, fids);
                 healthy = true;
                 emitListener("registered", true, "", false);
+                readAll("initial_read");
             } catch (Throwable error) {
                 healthy = false;
                 emitListener("registration_error", false, summary(error), false);
@@ -203,7 +192,6 @@ final class ParkingRadarDiagnosticRuntime {
 
         void reportStatus() {
             emitListener("status", healthy, "", false);
-            if (device != null && readValue != null) readAll("status_read");
         }
 
         private void readAll(String source) {

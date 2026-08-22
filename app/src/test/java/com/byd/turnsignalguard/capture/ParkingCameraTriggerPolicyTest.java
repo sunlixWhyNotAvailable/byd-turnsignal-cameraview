@@ -70,6 +70,37 @@ public final class ParkingCameraTriggerPolicyTest {
     }
 
     @Test
+    public void sideViewsUseMinimumOfFourAndKeepHighSafeValuesOutOfTriggerRange() {
+        ParkingCameraSettings.Rule[] rules = rules();
+        rules[ParkingCameraProfile.LEFT] = ParkingCameraSettings.defaults(
+                ParkingCameraProfile.of(ParkingCameraProfile.LEFT)).withEnabled(true)
+                .withDistanceCm(150);
+        int[] raw = new int[ParkingCameraProfile.allRadarFids().length];
+        boolean[] valid = new boolean[raw.length];
+        long[] timestamps = new long[raw.length];
+        int[] side = {200, 151, 149, 220};
+        for (int i = 0; i < side.length; i++) {
+            raw[8 + i] = side[i];
+            valid[8 + i] = true;
+        }
+        assertEquals(ParkingCameraProfile.of(ParkingCameraProfile.LEFT).bit(),
+                ParkingCameraTriggerPolicy.desiredMask(
+                        rules, 10, raw, valid, timestamps, 0.0f, true, 0L, 0L));
+        raw[10] = 151;
+        assertEquals(0, ParkingCameraTriggerPolicy.desiredMask(
+                rules, 10, raw, valid, timestamps, 0.0f, true, 0L, 0L));
+    }
+
+    @Test
+    public void sideViewsNeverAddCentralFrontOrRear() {
+        ParkingCameraSettings.Rule[] rules = rules();
+        rules[ParkingCameraProfile.LEFT] = rules[ParkingCameraProfile.LEFT].withEnabled(true)
+                .withAddCentral(true);
+        int side = ParkingCameraProfile.of(ParkingCameraProfile.LEFT).bit();
+        assertEquals(side, ParkingCameraTriggerPolicy.applyAdditiveCentral(side, rules));
+    }
+
+    @Test
     public void normalFalseClosesAfterHalfSecondButInvalidIsImmediate() {
         ParkingCameraTriggerPolicy.DelayedCloseState state =
                 new ParkingCameraTriggerPolicy.DelayedCloseState();

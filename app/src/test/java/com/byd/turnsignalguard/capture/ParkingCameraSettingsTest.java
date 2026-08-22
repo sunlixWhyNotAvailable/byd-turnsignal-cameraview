@@ -24,7 +24,7 @@ public final class ParkingCameraSettingsTest {
     }
 
     @Test
-    public void sixRulesPersistIndependentlyWithGlobalSpeed() {
+    public void eightRulesPersistIndependentlyWithGlobalSpeed() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
         assertFalse(CameraHelperService.anyParkingEnabled(preferences));
@@ -44,6 +44,13 @@ public final class ParkingCameraSettingsTest {
         assertFalse(settings.rule(ParkingCameraProfile.FR).enabled);
         assertEquals(30, settings.rule(ParkingCameraProfile.FR).distanceCm);
         assertEquals(300, settings.maxSpeedKph());
+        ParkingCameraProfile left = ParkingCameraProfile.of(ParkingCameraProfile.LEFT);
+        settings.setRule(left, new ParkingCameraSettings.Rule(true, 150, false));
+        assertTrue(settings.rule(left).enabled);
+        assertEquals(150, settings.rule(left).distanceCm);
+        assertEquals("parking_camera_left_distance_cm",
+                ParkingCameraSettings.distanceKey(left));
+        settings.setRule(left, settings.rule(left).withEnabled(false));
         settings.setRule(fl, settings.rule(fl).withEnabled(false));
         assertFalse(CameraHelperService.anyParkingEnabled(preferences));
     }

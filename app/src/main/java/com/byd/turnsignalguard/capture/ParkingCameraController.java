@@ -14,7 +14,7 @@ import java.util.Arrays;
 import java.util.function.BiConsumer;
 import java.util.function.IntPredicate;
 
-/** Runtime controller for the six parking radar camera panes. */
+/** Runtime controller for the eight parking radar camera panes. */
 final class ParkingCameraController {
     private static final long RETRY_MS = 3_000L;
     private static final long RADAR_STALE_MS = ParkingCameraTriggerPolicy.DEFAULT_RADAR_STALE_MS;
@@ -109,7 +109,7 @@ final class ParkingCameraController {
                 if (index >= 0) {
                     int raw = event.optInt("raw", -1);
                     boolean valid = event.optBoolean("valid", false)
-                            && ParkingCameraProfile.isValidRadarRaw(raw)
+                            && ParkingCameraProfile.isValidRadarRaw(fid, raw)
                             && event.optBoolean("configured", false)
                             && event.optBoolean("listener_ok", false);
                     radarRaw[index] = raw;
@@ -655,10 +655,11 @@ final class ParkingCameraController {
     }
 
     private static float defaultAnchorX(int id) {
-        return new float[]{0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f}[id];
+        return new float[]{0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f, 0.0f, 1.0f}[id];
     }
 
     private static float defaultAnchorY(int id) {
+        if (id == ParkingCameraProfile.LEFT || id == ParkingCameraProfile.RIGHT) return 0.5f;
         return id < 3 ? 0.0f : 1.0f;
     }
 

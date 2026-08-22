@@ -405,12 +405,34 @@ public final class CameraCalibrationPresetTest {
         TestSharedPreferences preferences = new TestSharedPreferences();
         ParkingCameraProfile rear = ParkingCameraProfile.of(ParkingCameraProfile.REAR);
         ParkingCameraProfile front = ParkingCameraProfile.of(ParkingCameraProfile.FRONT);
+        ParkingCameraProfile frontLeft = ParkingCameraProfile.of(ParkingCameraProfile.FL);
+        ParkingCameraProfile frontRight = ParkingCameraProfile.of(ParkingCameraProfile.FR);
+        ParkingCameraProfile left = ParkingCameraProfile.of(ParkingCameraProfile.LEFT);
+        ParkingCameraProfile right = ParkingCameraProfile.of(ParkingCameraProfile.RIGHT);
         DirectCameraCrop rearDefault = DirectCameraCrop.load(preferences, rear);
         DirectCameraCrop frontDefault = DirectCameraCrop.load(preferences, front);
+        DirectCameraCrop frontLeftDefault = DirectCameraCrop.load(preferences, frontLeft);
+        DirectCameraCrop frontRightDefault = DirectCameraCrop.load(preferences, frontRight);
+        DirectCameraCrop leftDefault = DirectCameraCrop.load(preferences, left);
+        DirectCameraCrop rightDefault = DirectCameraCrop.load(preferences, right);
         assertTrue(rearDefault.mirrorHorizontally);
         assertFalse(frontDefault.mirrorHorizontally);
         assertEquals(1.0f, rearDefault.width, EPSILON);
         assertEquals(1.0f, frontDefault.width, EPSILON);
+        assertEquals(0.35f, frontLeftDefault.left, EPSILON);
+        assertEquals(0.0f, frontRightDefault.left, EPSILON);
+        assertEquals(0.0f, leftDefault.left, EPSILON);
+        assertEquals(0.0f, leftDefault.top, EPSILON);
+        assertEquals(1.0f, leftDefault.width, EPSILON);
+        assertEquals(1.0f, leftDefault.height, EPSILON);
+        assertEquals(0.0f, rightDefault.left, EPSILON);
+        assertEquals(0.0f, rightDefault.top, EPSILON);
+        assertEquals(1.0f, rightDefault.width, EPSILON);
+        assertEquals(1.0f, rightDefault.height, EPSILON);
+        assertEquals(DirectCameraCrop.ASPECT_FREE, leftDefault.aspectMode);
+        assertEquals(DirectCameraCrop.ASPECT_FREE, rightDefault.aspectMode);
+        assertFalse(leftDefault.mirrorHorizontally);
+        assertFalse(rightDefault.mirrorHorizontally);
 
         DirectCameraCrop source = crop(0.14f, 0.18f, 0.36f, 0.42f, 31)
                 .withMirrorHorizontally(false);
@@ -443,6 +465,40 @@ public final class CameraCalibrationPresetTest {
     }
 
     @Test
+    public void parkingLeftRightTransferCopiesCalibrationOnly() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        ParkingCameraProfile left = ParkingCameraProfile.of(ParkingCameraProfile.LEFT);
+        ParkingCameraProfile right = ParkingCameraProfile.of(ParkingCameraProfile.RIGHT);
+        DirectCameraCrop source = crop(0.17f, 0.14f, 0.33f, 0.41f, 27)
+                .withMirrorHorizontally(false);
+        DirectCameraCrop corrected = crop(0.21f, 0.18f, 0.25f, 0.29f, 27);
+        DirectCameraCrop.save(preferences, left, source);
+        DirectCameraCrop.saveCorrected(preferences, left, corrected);
+        CameraDewarpConfig.saveForParking(preferences, left,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 141,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
+        settings.setRule(left, new ParkingCameraSettings.Rule(true, 79, false));
+        settings.setRule(right, new ParkingCameraSettings.Rule(false, 23, false));
+        preferences.putInt("parking_camera_right_scale", 39);
+
+        assertEquals(ParkingCameraProfile.RIGHT,
+                CameraCalibrationPreset.parkingMirrorTarget(left));
+        assertEquals(ParkingCameraProfile.LEFT,
+                CameraCalibrationPreset.parkingMirrorTarget(right));
+        assertTrue(CameraCalibrationPreset.mirrorParking(preferences, left));
+
+        DirectCameraCrop transferred = DirectCameraCrop.load(preferences, right);
+        assertEquals(1.0f - source.left - source.width, transferred.left, EPSILON);
+        assertEquals(-source.rotationDegrees, transferred.rotationDegrees);
+        assertEquals(141, CameraDewarpConfig.loadForParking(preferences, right).fovDegrees);
+        assertTrue(CameraDewarpConfig.loadForParking(preferences, right).enabled);
+        assertFalse(ParkingCameraSettings.readRule(preferences, right).enabled);
+        assertEquals(23, ParkingCameraSettings.readRule(preferences, right).distanceCm);
+        assertEquals(39, preferences.getInt("parking_camera_right_scale", -1));
+    }
+
+    @Test
     public void parkingTabAndCalibrationMigrationKeepLogicalOrigins() {
         assertEquals(1, CameraProbeActivity.migrateStoredTab(4));
         assertEquals(1, CameraProbeActivity.migrateStoredTab(1));
@@ -452,6 +508,10 @@ public final class CameraCalibrationPresetTest {
                 ParkingCameraProfile.of(ParkingCameraProfile.FR)));
         assertEquals("← Перенести", CameraProbeActivity.parkingCalibrationTransferLabel(
                 ParkingCameraProfile.of(ParkingCameraProfile.REAR)));
+        assertEquals("Перенести →", CameraProbeActivity.parkingCalibrationTransferLabel(
+                ParkingCameraProfile.of(ParkingCameraProfile.LEFT)));
+        assertEquals("← Перенести", CameraProbeActivity.parkingCalibrationTransferLabel(
+                ParkingCameraProfile.of(ParkingCameraProfile.RIGHT)));
     }
 
     private static void assertInvalidReversePreset(String suffix, Object invalidValue) {

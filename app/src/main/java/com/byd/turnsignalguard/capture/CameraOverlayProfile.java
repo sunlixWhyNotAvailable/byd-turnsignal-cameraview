@@ -9,7 +9,7 @@ package com.byd.turnsignalguard.capture;
  */
 final class CameraOverlayProfile {
     static final int BLIND_COUNT = CameraProfile.COUNT;
-    static final int PARKING_COUNT = 6;
+    static final int PARKING_COUNT = ParkingCameraProfile.COUNT;
     static final int PARKING_OFFSET = BLIND_COUNT;
     static final int COUNT = BLIND_COUNT + PARKING_COUNT;
 
@@ -64,7 +64,7 @@ final class CameraOverlayProfile {
             values[profile.id] = new CameraOverlayProfile(
                     profile.id, profile.wireName, CameraDewarpConfig.lensFor(profile));
         }
-        // Parking order is part of the protocol: FL, Front, FR, RR, Rear, RL.
+        // Parking order is part of the protocol: FL, Front, FR, RR, Rear, RL, Left, Right.
         for (int i = 0; i < PARKING_COUNT; i++) {
             int id = PARKING_OFFSET + i;
             ParkingCameraProfile parking = ParkingCameraProfile.of(i);

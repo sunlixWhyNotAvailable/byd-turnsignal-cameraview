@@ -85,6 +85,8 @@ final class CameraCalibrationPreset {
             case ParkingCameraProfile.RL: return ParkingCameraProfile.RR;
             case ParkingCameraProfile.FRONT: return ParkingCameraProfile.REAR;
             case ParkingCameraProfile.REAR: return ParkingCameraProfile.FRONT;
+            case ParkingCameraProfile.LEFT: return ParkingCameraProfile.RIGHT;
+            case ParkingCameraProfile.RIGHT: return ParkingCameraProfile.LEFT;
             default: return -1;
         }
     }

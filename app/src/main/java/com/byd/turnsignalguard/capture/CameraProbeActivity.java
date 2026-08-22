@@ -122,11 +122,13 @@ public final class CameraProbeActivity extends Activity
     static final int CALIBRATION_ROTATION_ROW_HEIGHT_DP = 42;
     static final int PARKING_SELECTOR_ORIENTATION = LinearLayout.HORIZONTAL;
     static final float PARKING_SELECTOR_BUTTON_WEIGHT = 1.0f;
+    static final float PARKING_SETTINGS_WEIGHT = 0.65f;
+    static final float PARKING_PREVIEW_WEIGHT = 0.35f;
     private static final String[] BLIND_CALIBRATION_LABELS = {
             "Задня ліва", "Задня права", "Передня ліва", "Передня права"};
     private static final String[] PARKING_CALIBRATION_LABELS = {
             "Перед-ліво", "Перед", "Перед-право",
-            "Зад-праворуч", "Зад", "Зад-ліворуч"};
+            "Зад-праворуч", "Зад", "Зад-ліворуч", "Ліво", "Право"};
     private static final DirectCameraCrop FULL_CALIBRATION_CROP = DirectCameraCrop.of(
             0.0f, 0.0f, 1.0f, 1.0f,
             DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES);
@@ -151,6 +153,7 @@ public final class CameraProbeActivity extends Activity
         return profile.id == ParkingCameraProfile.FR
                 || profile.id == ParkingCameraProfile.RR
                 || profile.id == ParkingCameraProfile.REAR
+                || profile.id == ParkingCameraProfile.RIGHT
                 ? "← Перенести" : "Перенести →";
     }
 
@@ -193,6 +196,12 @@ public final class CameraProbeActivity extends Activity
                 : (CameraProfile.isValid(logicalId)
                         ? logicalId : CameraProfile.REAR_LEFT);
         return new CalibrationEntry(normalizedOrigin, parking, normalizedId);
+    }
+
+    static boolean calibrationNeedsPhysicalRebind(
+            boolean calibrationPreviewOpen, int activePhysicalIndex, int requestedPhysicalIndex) {
+        return calibrationPreviewOpen && requestedPhysicalIndex >= 0
+                && activePhysicalIndex != requestedPhysicalIndex;
     }
 
     static int migrateStoredTab(int tab) {
@@ -245,7 +254,6 @@ public final class CameraProbeActivity extends Activity
     private TextView cameraScaleValue;
     private FrameLayout cameraPositionWidget;
     private FrameLayout cameraPositionHost;
-    private TextView cameraPositionHandle;
     private Button cameraLeftPositionButton;
     private Button cameraRightPositionButton;
     private Button cameraRearGroupButton;
@@ -3222,13 +3230,13 @@ public final class CameraProbeActivity extends Activity
         });
 
         panel.addView(controls, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.MATCH_PARENT, 0.42f));
+                LinearLayout.LayoutParams.MATCH_PARENT, PARKING_SETTINGS_WEIGHT));
         View divider = new View(this);
         divider.setBackgroundColor(Color.rgb(70, 70, 70));
         panel.addView(divider, new LinearLayout.LayoutParams(dp(1),
                 LinearLayout.LayoutParams.MATCH_PARENT));
         panel.addView(preview, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.MATCH_PARENT, 0.58f));
+                LinearLayout.LayoutParams.MATCH_PARENT, PARKING_PREVIEW_WEIGHT));
 
         parkingCameraSwitch.setOnCheckedChangeListener((button, checked) -> {
             if (parkingUiUpdating) return;
@@ -3283,9 +3291,9 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void loadParkingCameraProfiles() {
-        int[] defaultScale = {25, 25, 25, 25, 25, 25};
-        float[] defaultX = {0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f};
-        float[] defaultY = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+        int[] defaultScale = {25, 25, 25, 25, 25, 25, 25, 25};
+        float[] defaultX = {0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f, 0.0f, 1.0f};
+        float[] defaultY = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.5f, 0.5f};
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             String prefix = parkingPlacementPrefix(profile);
             parkingCameraScale[profile.id] = clamp(preferences.getInt(
@@ -4561,6 +4569,8 @@ public final class CameraProbeActivity extends Activity
             case ParkingCameraProfile.RL: return CameraProfile.of(CameraProfile.REAR_LEFT);
             case ParkingCameraProfile.FRONT: return CameraProfile.of(CameraProfile.FRONT_LEFT);
             case ParkingCameraProfile.REAR: return CameraProfile.of(CameraProfile.REAR_LEFT);
+            case ParkingCameraProfile.LEFT: return CameraProfile.of(CameraProfile.FRONT_LEFT);
+            case ParkingCameraProfile.RIGHT: return CameraProfile.of(CameraProfile.FRONT_RIGHT);
             default: throw new IllegalArgumentException("invalid parking profile");
         }
     }
@@ -4621,6 +4631,11 @@ public final class CameraProbeActivity extends Activity
     private void selectCalibrationCamera(int cameraId, boolean open) {
         cancelCalibrationCropInput();
         if (!CameraProfile.isValid(cameraId)) return;
+        CameraProfile profile = CameraProfile.of(cameraId);
+        int requestedPhysicalIndex = profile.previewIndex;
+        boolean calibrationOpen = requestedOpen && activePreview == calibrationPreview;
+        boolean switchingOpenCamera = calibrationNeedsPhysicalRebind(
+                calibrationOpen, activeDirectCameraIndex, requestedPhysicalIndex);
         calibrationParkingMode = false;
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setVisibility(i < CameraProfile.COUNT
@@ -4631,13 +4646,9 @@ public final class CameraProbeActivity extends Activity
         }
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
-                && calibrationCameraId == cameraId) return;
-        boolean switchingOpenCamera = open && requestedOpen
-                && activePreview == calibrationPreview
-                && calibrationCameraId != cameraId;
+                && calibrationCameraId == cameraId && !switchingOpenCamera) return;
         calibrationCameraId = cameraId;
         if (switchingOpenCamera) closeCameraForTransition("calibration_camera_changed");
-        CameraProfile profile = CameraProfile.of(cameraId);
         CameraDewarpConfig dewarp = CameraDewarpConfig.loadForProfile(
                 preferences, profile);
         calibrationRawCrop = DirectCameraCrop.load(preferences, profile);
@@ -4655,7 +4666,7 @@ public final class CameraProbeActivity extends Activity
         }
         record("calibration_camera_selected", "camera_id", cameraId,
                 "camera", profile.wireName, "preview_index", profile.previewIndex);
-        if (open && !switchingOpenCamera) openCalibrationCamera(profile.previewIndex);
+        if (open && !switchingOpenCamera) openCalibrationCamera(requestedPhysicalIndex);
     }
 
     private void selectCalibrationLogicalCamera(int logicalId, boolean open) {
@@ -4667,18 +4678,20 @@ public final class CameraProbeActivity extends Activity
         }
         if (!ParkingCameraProfile.isValid(logicalId)) return;
         cancelCalibrationCropInput();
+        ParkingCameraProfile parkingProfile = ParkingCameraProfile.of(logicalId);
+        int requestedPhysicalIndex = parkingProfile.physicalCameraIndex;
+        boolean calibrationOpen = requestedOpen && activePreview == calibrationPreview;
+        boolean switchingOpenCamera = calibrationNeedsPhysicalRebind(
+                calibrationOpen, activeDirectCameraIndex, requestedPhysicalIndex);
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
-                && calibrationParkingCameraId == logicalId) return;
-        boolean switchingOpenCamera = open && requestedOpen
-                && activePreview == calibrationPreview
-                && calibrationParkingCameraId != logicalId;
+                && calibrationParkingCameraId == logicalId && !switchingOpenCamera) return;
         calibrationParkingCameraId = logicalId;
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setVisibility(View.VISIBLE);
             calibrationCameraButtons[i].setText(calibrationLabel(true, i));
         }
-        CameraProfile previewProfile = parkingPreviewProfile(ParkingCameraProfile.of(logicalId));
+        CameraProfile previewProfile = parkingPreviewProfile(parkingProfile);
         calibrationCameraId = previewProfile.id;
         if (switchingOpenCamera) closeCameraForTransition("parking_calibration_camera_changed");
         calibrationRawCrop = loadCalibrationRawStored();
@@ -4694,10 +4707,10 @@ public final class CameraProbeActivity extends Activity
             calibrationCameraButtons[i].setVisibility(View.VISIBLE);
         }
         record("parking_calibration_camera_selected", "camera_id", logicalId,
-                "camera", ParkingCameraProfile.of(logicalId).wireName,
+                "camera", parkingProfile.wireName,
                 "preview_index", previewProfile.previewIndex);
         if (open && !switchingOpenCamera) {
-            openCalibrationCamera(ParkingCameraProfile.of(logicalId).physicalCameraIndex);
+            openCalibrationCamera(requestedPhysicalIndex);
         }
     }
 
@@ -8230,19 +8243,16 @@ public final class CameraProbeActivity extends Activity
         }
         if (cameraScaleInput != null) cameraScaleInput.setEnabled(selectedCameraEnabled);
         if (cameraLeftPositionButton != null) {
-            cameraLeftPositionButton.setEnabled(selectedCameraEnabled);
+            cameraLeftPositionButton.setEnabled(true);
         }
         if (cameraRightPositionButton != null) {
-            cameraRightPositionButton.setEnabled(selectedCameraEnabled);
+            cameraRightPositionButton.setEnabled(true);
         }
         if (cameraTabletTargetButton != null) {
-            cameraTabletTargetButton.setEnabled(selectedCameraEnabled);
-            cameraClusterTargetButton.setEnabled(selectedCameraEnabled);
+            cameraTabletTargetButton.setEnabled(true);
+            cameraClusterTargetButton.setEnabled(true);
         }
-        if (cameraPositionHandle != null) {
-            cameraPositionHandle.setEnabled(selectedCameraEnabled);
-            cameraPositionHandle.setAlpha(selectedCameraEnabled ? 1.0f : 0.45f);
-        }
+        if (cameraPreviewFrame != null) cameraPreviewFrame.setEnabled(selectedCameraEnabled);
         boolean debugStockReady = helper != null && debugSurfaceReady
                 && permission && !cameraHandoffPending;
         boolean debugRawReady = debugStockReady && cameraDiscovered;

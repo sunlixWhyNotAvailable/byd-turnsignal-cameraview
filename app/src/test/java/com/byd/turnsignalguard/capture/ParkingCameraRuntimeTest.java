@@ -12,7 +12,7 @@ import org.junit.Test;
 public final class ParkingCameraRuntimeTest {
     @Test
     public void parkingOverlayIdsAreSeparateAndOrdered() {
-        assertEquals(10, CameraOverlayProfile.COUNT);
+        assertEquals(12, CameraOverlayProfile.COUNT);
         assertEquals(CameraOverlayProfile.PARKING_OFFSET,
                 CameraOverlayProfile.overlayIdForParking(ParkingCameraProfile.FL));
         assertEquals("FL", CameraOverlayProfile.of(4).wireName);
@@ -21,6 +21,10 @@ public final class ParkingCameraRuntimeTest {
         assertEquals("RR", CameraOverlayProfile.of(7).wireName);
         assertEquals("Rear", CameraOverlayProfile.of(8).wireName);
         assertEquals("RL", CameraOverlayProfile.of(9).wireName);
+        assertEquals(10, CameraOverlayProfile.overlayIdForParking(ParkingCameraProfile.LEFT));
+        assertEquals(11, CameraOverlayProfile.overlayIdForParking(ParkingCameraProfile.RIGHT));
+        assertEquals("Left", CameraOverlayProfile.of(10).wireName);
+        assertEquals("Right", CameraOverlayProfile.of(11).wireName);
     }
 
     @Test
@@ -28,8 +32,8 @@ public final class ParkingCameraRuntimeTest {
         TestSharedPreferences preferences = new TestSharedPreferences();
         preferences.edit().putInt(CameraBufferQuality.PREF_QUALITY,
                 CameraBufferQuality.ORIGINAL).apply();
-        int[] x = {0, 720, 1440, 1440, 720, 0};
-        int[] y = {0, 0, 0, 720, 720, 720};
+        int[] x = {0, 720, 1440, 1440, 720, 0, 0, 1440};
+        int[] y = {0, 0, 0, 720, 720, 720, 360, 360};
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             CameraShellProtocol.OverlaySpec spec = ParkingCameraController.buildOverlaySpec(
                     profile, profile.id + 1, CameraDisplayTarget.TABLET,
