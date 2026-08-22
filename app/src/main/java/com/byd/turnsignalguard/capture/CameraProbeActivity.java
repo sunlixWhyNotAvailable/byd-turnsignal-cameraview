@@ -198,10 +198,14 @@ public final class CameraProbeActivity extends Activity
         return new CalibrationEntry(normalizedOrigin, parking, normalizedId);
     }
 
-    static boolean calibrationNeedsPhysicalRebind(
-            boolean calibrationPreviewOpen, int activePhysicalIndex, int requestedPhysicalIndex) {
+    static boolean calibrationNeedsIdentityRebind(
+            boolean calibrationPreviewOpen,
+            boolean activeParking, int activeLogicalId, int activePhysicalIndex,
+            boolean requestedParking, int requestedLogicalId, int requestedPhysicalIndex) {
         return calibrationPreviewOpen && requestedPhysicalIndex >= 0
-                && activePhysicalIndex != requestedPhysicalIndex;
+                && (activeParking != requestedParking
+                || activeLogicalId != requestedLogicalId
+                || activePhysicalIndex != requestedPhysicalIndex);
     }
 
     static int migrateStoredTab(int tab) {
@@ -4634,8 +4638,12 @@ public final class CameraProbeActivity extends Activity
         CameraProfile profile = CameraProfile.of(cameraId);
         int requestedPhysicalIndex = profile.previewIndex;
         boolean calibrationOpen = requestedOpen && activePreview == calibrationPreview;
-        boolean switchingOpenCamera = calibrationNeedsPhysicalRebind(
-                calibrationOpen, activeDirectCameraIndex, requestedPhysicalIndex);
+        boolean switchingOpenCamera = calibrationNeedsIdentityRebind(
+                calibrationOpen,
+                calibrationParkingMode,
+                calibrationParkingMode ? calibrationParkingCameraId : calibrationCameraId,
+                activeDirectCameraIndex,
+                false, cameraId, requestedPhysicalIndex);
         calibrationParkingMode = false;
         for (int i = 0; i < calibrationCameraButtons.length; i++) {
             calibrationCameraButtons[i].setVisibility(i < CameraProfile.COUNT
@@ -4681,8 +4689,12 @@ public final class CameraProbeActivity extends Activity
         ParkingCameraProfile parkingProfile = ParkingCameraProfile.of(logicalId);
         int requestedPhysicalIndex = parkingProfile.physicalCameraIndex;
         boolean calibrationOpen = requestedOpen && activePreview == calibrationPreview;
-        boolean switchingOpenCamera = calibrationNeedsPhysicalRebind(
-                calibrationOpen, activeDirectCameraIndex, requestedPhysicalIndex);
+        boolean switchingOpenCamera = calibrationNeedsIdentityRebind(
+                calibrationOpen,
+                calibrationParkingMode,
+                calibrationParkingMode ? calibrationParkingCameraId : calibrationCameraId,
+                activeDirectCameraIndex,
+                true, logicalId, requestedPhysicalIndex);
         if (open && requestedOpen && activePreview != calibrationPreview) return;
         if (open && requestedOpen && activePreview == calibrationPreview
                 && calibrationParkingCameraId == logicalId && !switchingOpenCamera) return;

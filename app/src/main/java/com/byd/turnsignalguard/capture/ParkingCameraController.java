@@ -8,6 +8,7 @@ import android.util.DisplayMetrics;
 import android.view.Surface;
 import android.view.WindowManager;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.Arrays;
@@ -17,8 +18,6 @@ import java.util.function.IntPredicate;
 /** Runtime controller for the eight parking radar camera panes. */
 final class ParkingCameraController {
     private static final long RETRY_MS = 3_000L;
-    private static final long RADAR_STALE_MS = ParkingCameraTriggerPolicy.DEFAULT_RADAR_STALE_MS;
-    private static final long SPEED_STALE_MS = ParkingCameraTriggerPolicy.DEFAULT_SPEED_STALE_MS;
 
     private final Context context;
     private final Handler handler;
@@ -29,7 +28,8 @@ final class ParkingCameraController {
     private final Pane[] panes = new Pane[ParkingCameraProfile.COUNT];
     private final int[] radarRaw = new int[ParkingCameraProfile.allRadarFids().length];
     private final boolean[] radarValid = new boolean[radarRaw.length];
-    private final long[] radarTimestamps = new long[radarRaw.length];
+    private final long[] radarGenerations = new long[2];
+    private final boolean[] radarSnapshotReady = new boolean[2];
     private final Runnable retry = this::evaluate;
     private final Runnable closeRetry = this::retryClose;
     private final Runnable closeTick = this::evaluate;
@@ -39,6 +39,8 @@ final class ParkingCameraController {
     private boolean activityVisible;
     private boolean reversePriority;
     private boolean shutdown;
+    private boolean radarAwaitingHelper;
+    private long radarHelperEpochMs;
     private boolean speedValid;
     private float speedKph = Float.NaN;
     private long speedTimestamp;
@@ -103,10 +105,20 @@ final class ParkingCameraController {
             JSONObject event = new JSONObject(line);
             String kind = event.optString("kind");
             long now = event.optLong("t_ms", SystemClock.elapsedRealtime());
-            if ("parking_radar_state".equals(kind)) {
+            if ("parking_radar_snapshot".equals(kind)) {
+                applyRadarSnapshot(event, now);
+            } else if ("parking_radar_state".equals(kind)) {
                 int fid = event.optInt("fid", Integer.MIN_VALUE);
                 int index = radarIndex(fid);
-                if (index >= 0) {
+                String family = event.optString("source_family", "");
+                int familyIndex = radarFamilyIndex(family);
+                long generation = event.optLong("generation", 0L);
+                if (familyIndex >= 0
+                        && acceptsRadarCallback(family, fid, radarGenerations[familyIndex],
+                        generation, radarSnapshotReady[familyIndex])
+                        && acceptsRadarSnapshotEpoch(radarHelperEpochMs, now,
+                        radarAwaitingHelper)
+                        && index >= 0) {
                     int raw = event.optInt("raw", -1);
                     boolean valid = event.optBoolean("valid", false)
                             && ParkingCameraProfile.isValidRadarRaw(fid, raw)
@@ -114,7 +126,6 @@ final class ParkingCameraController {
                             && event.optBoolean("listener_ok", false);
                     radarRaw[index] = raw;
                     radarValid[index] = valid;
-                    radarTimestamps[index] = valid ? now : 0L;
                     evaluate();
                 }
             } else if ("vehicle_state".equals(kind)) {
@@ -161,16 +172,170 @@ final class ParkingCameraController {
                     && CameraHelperMain.CAMERA_OWNER_PARKING.equals(
                     event.optString("camera_owner"))) {
                 resetAfterAttachFailure();
-            } else if ("helper_connected".equals(kind)
-                    || "camera_shell_recovery_failed".equals(kind)) {
+            } else if (isRadarHelperLossEvent(kind)) {
+                resetRadarSession(true);
+                evaluate();
+            } else if (isRadarHelperReadyEvent(kind)) {
+                resetRadarSession(false);
+                radarHelperEpochMs = now;
+                evaluate();
+                handler.removeCallbacks(retry);
+                handler.postDelayed(retry, RETRY_MS);
+            } else if ("helper_connected".equals(kind)) {
+                handler.removeCallbacks(retry);
+                handler.postDelayed(retry, RETRY_MS);
+            } else if ("camera_shell_recovery_failed".equals(kind)) {
                 handler.removeCallbacks(retry);
                 handler.postDelayed(retry, RETRY_MS);
             }
         } catch (Throwable ignored) {
             // A malformed telemetry line is an invalid state; the next tick fails closed.
+            invalidateRadarFamily("");
             speedValid = false;
             evaluate();
         }
+    }
+
+    private void applyRadarSnapshot(JSONObject event, long now) {
+        if (!acceptsRadarSnapshotEpoch(radarHelperEpochMs, now, radarAwaitingHelper)) return;
+        String family = event.optString("family", "");
+        int familyIndex = radarFamilyIndex(family);
+        int[] expected = radarFamilyFids(family);
+        long generation = event.optLong("generation", 0L);
+        if (familyIndex < 0 || expected == null) {
+            invalidateRadarFamily("");
+            evaluate();
+            return;
+        }
+        long currentGeneration = radarGenerations[familyIndex];
+        if (generation <= 0L) {
+            if (currentGeneration > 0L) return;
+            rejectRadarSnapshot(familyIndex, generation);
+            evaluate();
+            return;
+        }
+        if (currentGeneration > generation) {
+            return;
+        }
+        JSONArray fids = event.optJSONArray("fids");
+        JSONArray raw = event.optJSONArray("raw");
+        JSONArray valid = event.optJSONArray("valid");
+        if (fids == null || raw == null || valid == null
+                || fids.length() != expected.length
+                || raw.length() != expected.length
+                || valid.length() != expected.length) {
+            rejectRadarSnapshot(familyIndex, generation);
+            evaluate();
+            return;
+        }
+        int[] nextRaw = new int[expected.length];
+        boolean[] nextValid = new boolean[expected.length];
+        try {
+            for (int i = 0; i < expected.length; i++) {
+                if (fids.optInt(i, Integer.MIN_VALUE) != expected[i]) {
+                    rejectRadarSnapshot(familyIndex, generation);
+                    evaluate();
+                    return;
+                }
+                nextRaw[i] = raw.optInt(i, -1);
+                nextValid[i] = valid.optBoolean(i, false)
+                        && event.optBoolean("configured", false)
+                        && event.optBoolean("listener_ok", false)
+                        && ParkingCameraProfile.isValidRadarRaw(expected[i], nextRaw[i]);
+            }
+        } catch (Throwable ignored) {
+            rejectRadarSnapshot(familyIndex, generation);
+            evaluate();
+            return;
+        }
+        boolean snapshotReady = event.optBoolean("snapshot_ready", false)
+                && event.optBoolean("configured", false)
+                && event.optBoolean("listener_ok", false);
+        radarGenerations[familyIndex] = generation;
+        radarSnapshotReady[familyIndex] = snapshotReady;
+        int offset = familyIndex == 0 ? 0 : ParkingCameraProfile.coreRadarFids().length;
+        for (int i = 0; i < expected.length; i++) {
+            int index = offset + i;
+            radarRaw[index] = nextRaw[i];
+            radarValid[index] = nextValid[i];
+        }
+        if (!snapshotReady) invalidateRadarFamily(family);
+        evaluate();
+    }
+
+    private void rejectRadarSnapshot(int familyIndex, long generation) {
+        if (generation > radarGenerations[familyIndex]) {
+            radarGenerations[familyIndex] = generation;
+        }
+        radarSnapshotReady[familyIndex] = false;
+        invalidateRadarFamily(familyIndex == 0 ? "radar_core" : "adas_side");
+    }
+
+    private void invalidateRadarFamily(String family) {
+        int[] fids = radarFamilyFids(family);
+        if (fids == null) {
+            Arrays.fill(radarValid, false);
+            Arrays.fill(radarSnapshotReady, false);
+            return;
+        }
+        int familyIndex = radarFamilyIndex(family);
+        if (familyIndex >= 0) radarSnapshotReady[familyIndex] = false;
+        for (int fid : fids) {
+            int index = radarIndex(fid);
+            if (index >= 0) {
+                radarValid[index] = false;
+            }
+        }
+    }
+
+    private void resetRadarSession(boolean awaitingHelper) {
+        Arrays.fill(radarRaw, -1);
+        Arrays.fill(radarValid, false);
+        Arrays.fill(radarGenerations, 0L);
+        Arrays.fill(radarSnapshotReady, false);
+        policy.reset();
+        radarAwaitingHelper = awaitingHelper;
+    }
+
+    static int radarFamilyIndex(String family) {
+        if ("radar_core".equals(family)) return 0;
+        if ("adas_side".equals(family)) return 1;
+        return -1;
+    }
+
+    static int[] radarFamilyFids(String family) {
+        if ("radar_core".equals(family)) return ParkingCameraProfile.coreRadarFids();
+        if ("adas_side".equals(family)) return ParkingCameraProfile.sideRadarFids();
+        return null;
+    }
+
+    static boolean matchesRadarFamilyFid(String family, int fid) {
+        int[] fids = radarFamilyFids(family);
+        if (fids == null) return false;
+        for (int value : fids) if (value == fid) return true;
+        return false;
+    }
+
+    static boolean acceptsRadarCallback(
+            String family, int fid, long currentGeneration,
+            long callbackGeneration, boolean snapshotReady) {
+        return snapshotReady && currentGeneration > 0L
+                && callbackGeneration == currentGeneration
+                && callbackGeneration > 0L
+                && matchesRadarFamilyFid(family, fid);
+    }
+
+    static boolean acceptsRadarSnapshotEpoch(
+            long helperEpochMs, long eventTimeMs, boolean awaitingHelper) {
+        return !awaitingHelper && (helperEpochMs <= 0L || eventTimeMs >= helperEpochMs);
+    }
+
+    static boolean isRadarHelperLossEvent(String kind) {
+        return "helper_death".equals(kind) || "helper_ping_failed".equals(kind);
+    }
+
+    static boolean isRadarHelperReadyEvent(String kind) {
+        return "shell_callback_registered".equals(kind);
     }
 
     void shutdown() {
@@ -202,9 +367,8 @@ final class ParkingCameraController {
                     && !closeParkingGroup("parking_membership_changed")) return;
         }
         desiredMask = policy.update(rules, maxSpeedKph,
-                radarRaw, radarValid, radarTimestamps,
-                speedKph, speedValid, speedTimestamp, now,
-                RADAR_STALE_MS, SPEED_STALE_MS);
+                radarRaw, radarValid,
+                speedKph, speedValid, speedTimestamp, now);
         if (isHardBlocked(suspended, activityVisible, reversePriority)) {
             desiredMask = 0;
             if (!closeParkingGroup("parking_preempted")) return;

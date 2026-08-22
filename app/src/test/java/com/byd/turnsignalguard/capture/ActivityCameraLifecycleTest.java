@@ -278,11 +278,35 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
-    public void calibrationRebindsOnlyWhenPhysicalSourceChanges() {
-        assertTrue(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, 2, 3));
-        assertFalse(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, 2, 2));
-        assertFalse(CameraProbeActivity.calibrationNeedsPhysicalRebind(false, 2, 3));
-        assertTrue(CameraProbeActivity.calibrationNeedsPhysicalRebind(true, -1, 3));
+    public void calibrationRebindsWhenPhysicalSourceChanges() {
+        assertTrue(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                true, false, 0, 2, false, 0, 3));
+        assertTrue(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                true, false, 0, -1, false, 0, 3));
+    }
+
+    @Test
+    public void calibrationRebindsWhenSamePhysicalLogicalProfileChanges() {
+        assertTrue(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                true, false, CameraProfile.REAR_LEFT, 2,
+                false, CameraProfile.FRONT_LEFT, 2));
+    }
+
+    @Test
+    public void calibrationRebindsWhenScopeChangesOnSamePhysicalSource() {
+        assertTrue(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                true, false, CameraProfile.REAR_LEFT, 2,
+                true, ParkingCameraProfile.FL, 2));
+    }
+
+    @Test
+    public void calibrationDoesNotRebindForExactIdentityOrClosedPreview() {
+        assertFalse(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                true, false, CameraProfile.REAR_LEFT, 2,
+                false, CameraProfile.REAR_LEFT, 2));
+        assertFalse(CameraProbeActivity.calibrationNeedsIdentityRebind(
+                false, false, CameraProfile.REAR_LEFT, 2,
+                false, CameraProfile.FRONT_LEFT, 2));
     }
 
     @Test

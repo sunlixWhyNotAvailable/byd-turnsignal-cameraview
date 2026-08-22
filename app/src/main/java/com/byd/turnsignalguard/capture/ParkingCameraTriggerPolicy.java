@@ -2,16 +2,15 @@ package com.byd.turnsignalguard.capture;
 
 /** Pure parking-trigger decisions.  This class performs no vehicle I/O. */
 public final class ParkingCameraTriggerPolicy {
-    public static final long DEFAULT_RADAR_STALE_MS = 1_000L;
     public static final long DEFAULT_SPEED_STALE_MS = 500L;
     public static final long CLOSE_DELAY_MS = 500L;
 
     private ParkingCameraTriggerPolicy() {}
 
-    /** Timestamp policy with the contract's separate radar (1 s) and speed (500 ms) limits. */
+    /** Radar values remain valid while their listener generation is healthy; speed is fresh. */
     public static int desiredMask(
             ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
-            int[] radarRaw, boolean[] radarValid, long[] radarTimestampMs,
+            int[] radarRaw, boolean[] radarValid,
             float speedKph, boolean speedValid, long speedTimestampMs,
             long nowMs) {
         if (!hasRules(rules) || !Float.isFinite(speedKph) || !speedValid
@@ -21,8 +20,7 @@ public final class ParkingCameraTriggerPolicy {
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             ParkingCameraSettings.Rule rule = rules[profile.id];
             if (rule == null || !rule.enabled) continue;
-            DistanceSample sample = distanceFor(profile, radarRaw, radarValid, radarTimestampMs,
-                    nowMs, DEFAULT_RADAR_STALE_MS);
+            DistanceSample sample = distanceFor(profile, radarRaw, radarValid);
             if (sample.valid && sample.distanceCm <= rule.distanceCm) mask |= profile.bit();
         }
         return applyAdditiveCentral(mask, rules);
@@ -68,8 +66,7 @@ public final class ParkingCameraTriggerPolicy {
     }
 
     private static DistanceSample distanceFor(
-            ParkingCameraProfile profile, int[] radarRaw, boolean[] radarValid,
-            long[] timestamps, long nowMs, long staleMs) {
+            ParkingCameraProfile profile, int[] radarRaw, boolean[] radarValid) {
         if (radarRaw == null || radarValid == null) return DistanceSample.INVALID;
         int[] fids = profile.radarFids();
         int best = Integer.MAX_VALUE;
@@ -78,10 +75,6 @@ public final class ParkingCameraTriggerPolicy {
             int index = radarIndex(fid);
             if (index < 0 || index >= radarRaw.length || index >= radarValid.length
                     || !radarValid[index] || !ParkingCameraProfile.isValidRadarRaw(fid, radarRaw[index])) {
-                continue;
-            }
-            if (timestamps != null
-                    && (index >= timestamps.length || !isFresh(nowMs, timestamps[index], staleMs))) {
                 continue;
             }
             found = true;
@@ -155,32 +148,13 @@ public final class ParkingCameraTriggerPolicy {
         }
 
         public int update(
-                ParkingCameraSettings.Rule[] rules,
-                int[] radarRaw, boolean[] radarValid, long[] radarTimestampMs,
-                float speedKph, boolean speedValid, long speedTimestampMs,
-                long nowMs, long staleMs) {
-            return update(rules, ParkingCameraSettings.DEFAULT_MAX_SPEED_KPH,
-                    radarRaw, radarValid, radarTimestampMs,
-                    speedKph, speedValid, speedTimestampMs, nowMs, staleMs, staleMs);
-        }
-
-        public int update(
                 ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
-                int[] radarRaw, boolean[] radarValid, long[] radarTimestampMs,
+                int[] radarRaw, boolean[] radarValid,
                 float speedKph, boolean speedValid, long speedTimestampMs,
-                long nowMs, long staleMs) {
-            return update(rules, maxSpeedKph, radarRaw, radarValid, radarTimestampMs,
-                    speedKph, speedValid, speedTimestampMs, nowMs, staleMs, staleMs);
-        }
-
-        public int update(
-                ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
-                int[] radarRaw, boolean[] radarValid, long[] radarTimestampMs,
-                float speedKph, boolean speedValid, long speedTimestampMs,
-                long nowMs, long radarStaleMs, long speedStaleMs) {
+                long nowMs) {
             if (!hasRules(rules)) return 0;
             boolean speedFresh = speedValid && Float.isFinite(speedKph)
-                    && isFresh(nowMs, speedTimestampMs, speedStaleMs);
+                    && isFresh(nowMs, speedTimestampMs, DEFAULT_SPEED_STALE_MS);
             boolean overspeed = !speedFresh || !isSpeedAllowed(speedValid, speedKph, maxSpeedKph);
             int nativeMask = 0;
             for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
@@ -189,8 +163,7 @@ public final class ParkingCameraTriggerPolicy {
                     corners[profile.id].reset();
                     continue;
                 }
-                DistanceSample sample = distanceFor(profile, radarRaw, radarValid,
-                        radarTimestampMs, nowMs, radarStaleMs);
+                DistanceSample sample = distanceFor(profile, radarRaw, radarValid);
                 boolean active = sample.valid && sample.distanceCm <= rule.distanceCm
                         && !overspeed;
                 boolean valid = sample.valid && speedFresh;
@@ -198,16 +171,6 @@ public final class ParkingCameraTriggerPolicy {
                         && !overspeed) nativeMask |= profile.bit();
             }
             return applyAdditiveCentral(nativeMask, rules);
-        }
-
-        public int update(
-                ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
-                int[] radarRaw, boolean[] radarValid, long[] radarTimestampMs,
-                float speedKph, boolean speedValid, long speedTimestampMs,
-                long nowMs) {
-            return update(rules, maxSpeedKph, radarRaw, radarValid, radarTimestampMs,
-                    speedKph, speedValid, speedTimestampMs, nowMs,
-                    DEFAULT_RADAR_STALE_MS, DEFAULT_SPEED_STALE_MS);
         }
 
         public void reset() {
