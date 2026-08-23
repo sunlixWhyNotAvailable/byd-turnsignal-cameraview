@@ -35,6 +35,29 @@ final class CameraCalibrationPreset {
         }
     }
 
+    static void resetCameraToDefault(
+            SharedPreferences preferences, CameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        DirectCameraCrop raw = DirectCameraCrop.defaultFor(profile);
+        SharedPreferences.Editor editor = preferences.edit();
+        DirectCameraCrop.write(editor, profile, raw);
+        DirectCameraCrop.writeCorrected(editor, profile,
+                DirectCameraCrop.defaultCorrectedFor(profile, raw));
+        CameraDewarpConfig.writeForProfile(
+                editor, profile, CameraDewarpConfig.defaultForProfile(profile));
+        editor.putFloat(BlindSpotOverlayController.positionKey(profile, false),
+                        BlindSpotOverlayController.defaultPosition(profile, false))
+                .putFloat(BlindSpotOverlayController.positionKey(profile, true),
+                        BlindSpotOverlayController.defaultPosition(profile, true))
+                .putInt(BlindSpotOverlayController.scaleKey(profile),
+                        BlindSpotOverlayController.defaultScale(profile))
+                .putInt(BlindSpotOverlayController.targetKey(profile),
+                        BlindSpotOverlayController.defaultTarget(profile))
+                .putFloat(BlindSpotOverlayController.frameAspectKey(profile),
+                        BlindSpotOverlayController.defaultFrameAspect(profile))
+                .apply();
+    }
+
     static boolean hasParking(SharedPreferences preferences, ParkingCameraProfile profile) {
         try {
             return preferences.getInt(parkingPrefix(profile) + "version", 0) == VERSION;
@@ -129,6 +152,33 @@ final class CameraCalibrationPreset {
         } catch (RuntimeException invalidPreset) {
             return false;
         }
+    }
+
+    static void resetReverseToDefault(SharedPreferences preferences, int cameraIndex) {
+        ReverseCameraLayout.Pane pane = ReverseCameraLayout.defaults().pane(cameraIndex);
+        SharedPreferences.Editor editor = preferences.edit()
+                .putFloat(ReverseCameraController.paneSettingKey(cameraIndex, "left"),
+                        pane.destination.left)
+                .putFloat(ReverseCameraController.paneSettingKey(cameraIndex, "top"),
+                        pane.destination.top)
+                .putFloat(ReverseCameraController.paneSettingKey(cameraIndex, "width"),
+                        pane.destination.width)
+                .putFloat(ReverseCameraController.paneSettingKey(cameraIndex, "height"),
+                        pane.destination.height)
+                .putInt(ReverseCameraController.paneSettingKey(
+                        cameraIndex, "rotation_degrees"), pane.rotationDegrees)
+                .putInt(ReverseCameraController.displayModeKey(
+                        cameraIndex), pane.displayMode)
+                .putBoolean(ReverseCameraController.mirrorKey(
+                        cameraIndex), pane.mirrorHorizontally)
+                .putBoolean(ReverseCameraController.visibilityKey(
+                        cameraIndex), ReverseCameraController.DEFAULT_VISIBLE);
+        ReverseCameraController.writeSourceCrop(editor, cameraIndex, pane.sourceCrop, false);
+        ReverseCameraController.writeSourceCrop(editor, cameraIndex,
+                ReverseCameraController.defaultCorrectedSourceCrop(cameraIndex), true);
+        CameraDewarpConfig.writeForReverse(
+                editor, cameraIndex, CameraDewarpConfig.defaultForReverse(cameraIndex));
+        editor.apply();
     }
 
     static int reverseMirrorTarget(int cameraIndex) {

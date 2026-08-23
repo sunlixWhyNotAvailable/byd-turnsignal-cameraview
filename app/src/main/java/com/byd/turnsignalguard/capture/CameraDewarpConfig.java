@@ -75,7 +75,8 @@ final class CameraDewarpConfig {
 
     static CameraDewarpConfig loadForProfile(
             SharedPreferences preferences, CameraProfile profile) {
-        return loadScoped(preferences, lensFor(profile), profilePrefix(profile));
+        return loadScoped(preferences, lensFor(profile), profilePrefix(profile),
+                defaultForProfile(profile));
     }
 
     static CameraDewarpConfig loadForParking(
@@ -97,11 +98,34 @@ final class CameraDewarpConfig {
     static CameraDewarpConfig loadForReverse(
             SharedPreferences preferences, int cameraIndex) {
         return loadScoped(preferences, lensForReverseCamera(cameraIndex),
-                reversePrefix(cameraIndex));
+                reversePrefix(cameraIndex), defaultForReverse(cameraIndex));
+    }
+
+    static CameraDewarpConfig defaultForProfile(CameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        switch (profile.id) {
+            case CameraProfile.REAR_LEFT:
+            case CameraProfile.REAR_RIGHT:
+                return of(lensFor(profile), true, 165, PROJECTION_CYLINDRICAL);
+            case CameraProfile.FRONT_LEFT:
+            case CameraProfile.FRONT_RIGHT:
+                return of(lensFor(profile), true, 130, PROJECTION_RECTILINEAR);
+            default:
+                throw new IllegalArgumentException("invalid camera profile");
+        }
+    }
+
+    static CameraDewarpConfig defaultForReverse(int cameraIndex) {
+        int lens = lensForReverseCamera(cameraIndex);
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return of(lens, false, 170, PROJECTION_CYLINDRICAL);
+        }
+        return of(lens, true, 163, PROJECTION_CYLINDRICAL);
     }
 
     private static CameraDewarpConfig loadScoped(
-            SharedPreferences preferences, int lens, String scopedPrefix) {
+            SharedPreferences preferences, int lens, String scopedPrefix,
+            CameraDewarpConfig fallback) {
         String legacyPrefix = prefix(lens);
         String enabledKey = scopedPrefix + "enabled";
         String fovKey = scopedPrefix + "fov";
@@ -116,16 +140,21 @@ final class CameraDewarpConfig {
                 || preferences.contains(legacyPrefix + "fov")
                 || preferences.contains(legacyPrefix + "projection");
         try {
-            boolean enabled = preferences.getBoolean(
-                    preferences.contains(enabledKey) ? enabledKey : legacyPrefix + "enabled",
-                    false);
-            int fov = preferences.getInt(
-                    preferences.contains(fovKey) ? fovKey : legacyPrefix + "fov",
-                    DEFAULT_FOV_DEGREES);
-            int projection = preferences.getInt(
-                    preferences.contains(projectionKey)
-                            ? projectionKey : legacyPrefix + "projection",
-                    DEFAULT_PROJECTION);
+            String enabledSource = preferences.contains(enabledKey) ? enabledKey
+                    : preferences.contains(legacyPrefix + "enabled")
+                            ? legacyPrefix + "enabled" : null;
+            String fovSource = preferences.contains(fovKey) ? fovKey
+                    : preferences.contains(legacyPrefix + "fov")
+                            ? legacyPrefix + "fov" : null;
+            String projectionSource = preferences.contains(projectionKey) ? projectionKey
+                    : preferences.contains(legacyPrefix + "projection")
+                            ? legacyPrefix + "projection" : null;
+            boolean enabled = enabledSource == null
+                    ? fallback.enabled : preferences.getBoolean(enabledSource, fallback.enabled);
+            int fov = fovSource == null
+                    ? fallback.fovDegrees : preferences.getInt(fovSource, fallback.fovDegrees);
+            int projection = projectionSource == null
+                    ? fallback.projection : preferences.getInt(projectionSource, fallback.projection);
             if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
                     || !isValidProjection(projection)) {
                 return disabled(lens);

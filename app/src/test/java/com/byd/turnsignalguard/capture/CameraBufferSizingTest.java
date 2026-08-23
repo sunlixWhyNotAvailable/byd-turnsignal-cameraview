@@ -151,7 +151,7 @@ public final class CameraBufferSizingTest {
         for (int mode : modes) {
             int[] overlay = BlindSpotCameraView.paneBoundedBufferSize(576, 357, mode);
             int[] reverse = BlindSpotCameraView.paneBoundedBufferSize(
-                    reverseBounds[0][0], reverseBounds[0][1], mode);
+                    reverseBounds[1][0], reverseBounds[1][1], mode);
             if (previousOverlay != null) {
                 assertFalse(java.util.Arrays.equals(previousOverlay, overlay));
                 assertFalse(java.util.Arrays.equals(previousReverse, reverse));
@@ -174,13 +174,15 @@ public final class CameraBufferSizingTest {
         int[][] bounds = ReverseCameraCompositionView.paneBounds(
                 ReverseCameraLayout.defaults(), 1920, 990);
 
-        assertArrayEquals(new int[]{1920, 495}, bounds[0]);
-        assertArrayEquals(new int[]{960, 495}, bounds[1]);
-        assertArrayEquals(new int[]{960, 495}, bounds[2]);
-        for (int[] bound : bounds) {
-            assertArrayEquals(new int[]{731, 495},
-                    BlindSpotCameraView.paneBoundedBufferSize(bound[0], bound[1]));
-        }
+        assertArrayEquals(new int[]{1084, 768}, bounds[0]);
+        assertArrayEquals(new int[]{486, 202}, bounds[1]);
+        assertArrayEquals(new int[]{487, 202}, bounds[2]);
+        assertArrayEquals(new int[]{1084, 734},
+                BlindSpotCameraView.paneBoundedBufferSize(bounds[0][0], bounds[0][1]));
+        assertArrayEquals(new int[]{527, 357},
+                BlindSpotCameraView.paneBoundedBufferSize(bounds[1][0], bounds[1][1]));
+        assertArrayEquals(new int[]{527, 357},
+                BlindSpotCameraView.paneBoundedBufferSize(bounds[2][0], bounds[2][1]));
     }
 
     @Test
@@ -215,7 +217,7 @@ public final class CameraBufferSizingTest {
                 current, 1920, 990, resized, 1920, 990));
 
         ReverseCameraLayout moved = ReverseCameraLayout.move(
-                current, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.02f, 0.0f);
+                current, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.001f, 0.0f);
         assertTrue(ReverseCameraCompositionView.samePaneGeometry(
                 current, 1920, 990, moved, 1920, 990));
 

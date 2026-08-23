@@ -19,12 +19,12 @@ public final class FrameAspectPersistenceTest {
         float[] aspects = {4.0f / 3.0f, 16.0f / 9.0f, 1.0f, 2.0f};
 
         for (int i = 0; i < profiles.length; i++) {
+            DirectCameraCrop.save(settings, profiles[i], DirectCameraCrop.defaultFor(profiles[i]));
             assertEquals(aspects[i], BlindSpotOverlayController.readFrameAspect(
                     settings, profiles[i], aspects[i]), EPSILON);
             assertEquals(aspects[i], settings.getFloat(
                     BlindSpotOverlayController.frameAspectKey(profiles[i]), -1.0f), EPSILON);
         }
-        assertEquals(profiles.length, settings.getAll().size());
     }
 
     @Test
@@ -32,6 +32,7 @@ public final class FrameAspectPersistenceTest {
         TestSharedPreferences settings = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
         float fallback = 16.0f / 9.0f;
+        DirectCameraCrop.save(settings, profile, DirectCameraCrop.defaultFor(profile));
 
         assertEquals(fallback, BlindSpotOverlayController.readFrameAspect(
                 settings, profile, fallback), EPSILON);
@@ -64,6 +65,7 @@ public final class FrameAspectPersistenceTest {
             TestSharedPreferences settings = new TestSharedPreferences();
             CameraProfile profile = CameraProfile.of(CameraProfile.FRONT_LEFT);
             String key = BlindSpotOverlayController.frameAspectKey(profile);
+            DirectCameraCrop.save(settings, profile, DirectCameraCrop.defaultFor(profile));
             settings.putFloat(key, value);
 
             float fallback = 1.6f;

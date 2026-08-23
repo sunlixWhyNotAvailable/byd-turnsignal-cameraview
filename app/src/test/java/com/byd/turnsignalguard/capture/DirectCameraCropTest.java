@@ -6,7 +6,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertThrows;
 
@@ -152,6 +151,6 @@ public final class DirectCameraCropTest {
         DirectCameraCrop.save(preferences, profile, changed);
         assertTrue(DirectCameraCrop.load(preferences, profile).mirrorHorizontally);
         preferences.putString(DirectCameraCrop.preferenceKey(profile, 7), "malformed");
-        assertFalse(DirectCameraCrop.load(preferences, profile).mirrorHorizontally);
+        assertTrue(DirectCameraCrop.load(preferences, profile).mirrorHorizontally);
     }
 }

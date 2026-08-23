@@ -1,6 +1,7 @@
 package com.byd.turnsignalguard.capture;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -74,6 +75,36 @@ public final class ParkingCameraRuntimeTest {
                 1920, 1080, preferences);
         assertEquals(1152, clampedMaximum.width);
         assertEquals(864, clampedMaximum.height);
+    }
+
+    @Test
+    public void parkingOverlayGeometryScalesProportionallyAndMapsAnchors() {
+        assertArrayEquals(new int[]{0, 0, 96, 72},
+                ParkingCameraController.overlayGeometry(1920, 1080, 5, 0.0f, 0.0f));
+        assertArrayEquals(new int[]{864, 468, 192, 144},
+                ParkingCameraController.overlayGeometry(1920, 1080, 10, 0.5f, 0.5f));
+        assertArrayEquals(new int[]{1632, 864, 288, 216},
+                ParkingCameraController.overlayGeometry(1920, 1080, 15, 1.0f, 1.0f));
+        assertArrayEquals(new int[]{384, 108, 1152, 864},
+                ParkingCameraController.overlayGeometry(1920, 1080, 60, 0.5f, 0.5f));
+        assertArrayEquals(new int[]{0, 1008, 96, 72},
+                ParkingCameraController.overlayGeometry(1920, 1080, 0, -1.0f, 2.0f));
+    }
+
+    @Test
+    public void parkingOverlaySpecMatchesSharedGeometry() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.edit()
+                .putInt("parking_camera_fl_scale", 15)
+                .putFloat("parking_camera_fl_x", 0.5f)
+                .putFloat("parking_camera_fl_y", 0.5f)
+                .apply();
+        CameraShellProtocol.OverlaySpec spec = ParkingCameraController.buildOverlaySpec(
+                ParkingCameraProfile.of(ParkingCameraProfile.FL), 1,
+                CameraDisplayTarget.TABLET, 1920, 1080, preferences);
+        assertArrayEquals(ParkingCameraController.overlayGeometry(
+                        1920, 1080, 15, 0.5f, 0.5f),
+                new int[]{spec.x, spec.y, spec.width, spec.height});
     }
 
     @Test

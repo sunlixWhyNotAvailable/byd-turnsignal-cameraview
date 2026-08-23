@@ -100,7 +100,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(91, BuildConfig.VERSION_CODE);
+        assertEquals(92, BuildConfig.VERSION_CODE);
         assertEquals(7, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -1340,7 +1340,7 @@ public final class AdbCoreTest {
         assertEquals(60, BlindSpotOverlayController.migratedScale(true, 90, 36));
         assertEquals(30, BlindSpotOverlayController.DEFAULT_SCALE_PERCENT);
         assertEquals(10, BlindSpotOverlayController.DEFAULT_CORNER_RADIUS_DP);
-        assertEquals(0.0f, BlindSpotOverlayController.defaultPosition(
+        assertEquals(0.08281444f, BlindSpotOverlayController.defaultPosition(
                 CameraProfile.of(CameraProfile.REAR_LEFT), true), 0.0f);
         assertEquals(1.0f, BlindSpotOverlayController.defaultPosition(
                 CameraProfile.of(CameraProfile.FRONT_LEFT), true), 0.0f);
@@ -1709,19 +1709,19 @@ public final class AdbCoreTest {
                 CameraHelperMain.CAMERA_OWNER_REVERSE));
 
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
-        assertEquals(0.0f, layout.rear.destination.left, 0.0001f);
-        assertEquals(0.5f, layout.rear.destination.height, 0.0001f);
-        assertEquals(0.5f, layout.rearLeft.destination.top, 0.0001f);
-        assertEquals(0.5f, layout.rearRight.destination.left, 0.0001f);
+        assertEquals(0.43216026f, layout.rear.destination.left, 0.0001f);
+        assertEquals(0.7758869f, layout.rear.destination.height, 0.0001f);
+        assertEquals(0.7960598f, layout.rearLeft.destination.top, 0.0001f);
+        assertEquals(0.74648684f, layout.rearRight.destination.left, 0.0001f);
         ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
                 layout.rear.sourceCrop, 1920, 540,
                 ReverseCameraCompositionView.SOURCE_WIDTH,
                 ReverseCameraCompositionView.SOURCE_HEIGHT, 0);
-        assertEquals(561, fitted.left);
+        assertEquals(472, fitted.left);
         assertEquals(0, fitted.top);
-        assertEquals(798, fitted.width);
+        assertEquals(976, fitted.width);
         assertEquals(540, fitted.height);
-        assertEquals(1920.0f / 1300.0f,
+        assertEquals(1920.0f / (1300.0f * 0.8169013f),
                 (float) fitted.width / fitted.height, 0.002f);
         ReverseCameraLayout.PixelRect partial = ReverseCameraLayout.fitSourceCrop(
                 ReverseCameraLayout.sourceCrop(0.2f, 0.1f, 0.4f, 0.7f),

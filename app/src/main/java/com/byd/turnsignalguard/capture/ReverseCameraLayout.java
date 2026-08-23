@@ -42,18 +42,23 @@ final class ReverseCameraLayout {
     }
 
     static ReverseCameraLayout defaults() {
-        Rect fullCrop = sourceCrop(0.0f, 0.0f, 1.0f, 1.0f);
         return new ReverseCameraLayout(
-                destination(0.0f, 0.0f, 1.0f, 1.0f),
+                destination(0.42398763f, 0.0f, 0.5745265f, 1.0f),
                 new Pane(REAR, REAR_CAMERA_INDEX,
-                        destination(0.0f, 0.0f, 1.0f, 0.5f), fullCrop, 0, 0,
-                        DEFAULT_DISPLAY_MODE),
+                        destination(0.43216026f, 0.0015433729f,
+                                0.564868f, 0.7758869f),
+                        sourceCrop(0.0f, 0.0f, 1.0f, 0.8169013f), 0, 0,
+                        DISPLAY_MODE_FILL),
                 new Pane(REAR_LEFT, REAR_LEFT_CAMERA_INDEX,
-                        destination(0.0f, 0.5f, 0.5f, 0.5f), fullCrop, 1, 0,
-                        DEFAULT_DISPLAY_MODE),
+                        destination(0.43366212f, 0.7960598f,
+                                0.25351316f, 0.20394021f),
+                        sourceCrop(0.0f, 0.25f, 0.384127f, 0.55f), 1, 42,
+                        DISPLAY_MODE_FILL),
                 new Pane(REAR_RIGHT, REAR_RIGHT_CAMERA_INDEX,
-                        destination(0.5f, 0.5f, 0.5f, 0.5f), fullCrop, 2, 0,
-                        DEFAULT_DISPLAY_MODE));
+                        destination(0.74648684f, 0.7960598f,
+                                0.25351316f, 0.20394021f),
+                        sourceCrop(0.615873f, 0.25f, 0.384127f, 0.55f), 2, -42,
+                        DISPLAY_MODE_FILL));
     }
 
     static boolean mirrorHorizontally(int cameraIndex) {

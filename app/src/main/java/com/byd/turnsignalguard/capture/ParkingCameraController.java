@@ -748,12 +748,12 @@ final class ParkingCameraController {
                 BlindSpotOverlayController.MAX_SCALE_PERCENT);
         float anchorX = safeFloat(settings, prefix + "_x", defaultAnchorX(profile.id));
         float anchorY = safeFloat(settings, prefix + "_y", defaultAnchorY(profile.id));
-        int width = Math.max(96, Math.min(displayWidth,
-                Math.round(displayWidth * scalePercent / 100.0f)));
-        int height = Math.max(72, Math.min(displayHeight,
-                Math.round(width * 0.75f)));
-        int x = Math.round(anchorX * Math.max(0, displayWidth - width));
-        int y = Math.round(anchorY * Math.max(0, displayHeight - height));
+        int[] geometry = overlayGeometry(
+                displayWidth, displayHeight, scalePercent, anchorX, anchorY);
+        int x = geometry[0];
+        int y = geometry[1];
+        int width = geometry[2];
+        int height = geometry[3];
         CameraDewarpConfig dewarp = CameraDewarpConfig.loadForParking(settings, profile);
         DirectCameraCrop raw = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(settings, profile, raw);
@@ -764,6 +764,32 @@ final class ParkingCameraController {
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, 8, dewarp,
                 raw, CameraBufferQuality.load(settings), crop.mirrorHorizontally);
+    }
+
+    static int[] overlayGeometry(
+            int displayWidth, int displayHeight, int scalePercent,
+            float normalizedX, float normalizedY) {
+        int targetWidth = Math.max(1, displayWidth);
+        int targetHeight = Math.max(1, displayHeight);
+        int scale = Math.max(BlindSpotOverlayController.MIN_SCALE_PERCENT,
+                Math.min(BlindSpotOverlayController.MAX_SCALE_PERCENT, scalePercent));
+        int width = Math.max(1, Math.min(targetWidth,
+                Math.round(targetWidth * scale / 100.0f)));
+        int height = Math.max(1, Math.round(width * 0.75f));
+        if (height > targetHeight) {
+            height = targetHeight;
+            width = Math.max(1, Math.min(targetWidth, Math.round(height * 4.0f / 3.0f)));
+        }
+        float x = Float.isFinite(normalizedX)
+                ? Math.max(0.0f, Math.min(1.0f, normalizedX)) : 0.0f;
+        float y = Float.isFinite(normalizedY)
+                ? Math.max(0.0f, Math.min(1.0f, normalizedY)) : 0.0f;
+        return new int[]{
+                Math.round(x * Math.max(0, targetWidth - width)),
+                Math.round(y * Math.max(0, targetHeight - height)),
+                width,
+                height
+        };
     }
 
     private int displayWidth() {

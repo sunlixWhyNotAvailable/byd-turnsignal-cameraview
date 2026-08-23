@@ -349,6 +349,9 @@ public final class CameraDewarpConfigTest {
             raw = ReverseCameraLayout.withPane(raw, index, pane.destination,
                     ReverseCameraLayout.sourceCrop(
                             0.03f * index, 0.04f * index, 0.70f, 0.68f), index * 4);
+            CameraDewarpConfig.saveForReverse(preferences, index,
+                    CameraDewarpConfig.disabled(
+                            CameraDewarpConfig.lensForReverseCamera(index)));
         }
         ReverseCameraController.saveLayout(preferences, raw);
         float[] legacyLeft = {0.71f, 0.72f, 0.73f};

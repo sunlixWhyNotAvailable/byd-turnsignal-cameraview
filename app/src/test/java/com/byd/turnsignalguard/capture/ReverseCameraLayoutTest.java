@@ -145,9 +145,9 @@ public final class ReverseCameraLayoutTest {
     @Test
     public void backgroundStaysBelowIndependentCameraOrdering() {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
-        assertEquals(0.0f, layout.background.left, 0.0f);
+        assertEquals(0.42398763f, layout.background.left, 0.0001f);
         assertEquals(0.0f, layout.background.top, 0.0f);
-        assertEquals(1.0f, layout.background.width, 0.0f);
+        assertEquals(0.5745265f, layout.background.width, 0.0001f);
         assertEquals(1.0f, layout.background.height, 0.0f);
 
         ReverseCameraLayout moved = ReverseCameraLayout.withBackground(layout,
@@ -208,13 +208,13 @@ public final class ReverseCameraLayoutTest {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
         ReverseCameraLayout moved = ReverseCameraLayout.move(layout,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.01f, -0.01f);
-        assertEquals(0.01f, moved.rearLeft.destination.left, 0.0001f);
-        assertEquals(0.49f, moved.rearLeft.destination.top, 0.0001f);
+        assertEquals(0.44366212f, moved.rearLeft.destination.left, 0.0001f);
+        assertEquals(0.7860598f, moved.rearLeft.destination.top, 0.0001f);
 
         ReverseCameraLayout clamped = ReverseCameraLayout.move(moved,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 2.0f, 2.0f);
-        assertEquals(0.5f, clamped.rearLeft.destination.left, 0.0001f);
-        assertEquals(0.5f, clamped.rearLeft.destination.top, 0.0001f);
+        assertEquals(0.74648684f, clamped.rearLeft.destination.left, 0.0001f);
+        assertEquals(0.7960598f, clamped.rearLeft.destination.top, 0.0001f);
     }
 
     @Test
@@ -234,9 +234,9 @@ public final class ReverseCameraLayoutTest {
     @Test
     public void displayModeDefaultsAndInvalidValuesFallBackToFit() {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, layout.rear.displayMode);
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, layout.rearLeft.displayMode);
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, layout.rearRight.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, layout.rear.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, layout.rearLeft.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, layout.rearRight.displayMode);
         assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT,
                 ReverseCameraLayout.normalizeDisplayMode(-1));
         assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT,
@@ -255,8 +255,8 @@ public final class ReverseCameraLayoutTest {
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX), "invalid");
         layout = ReverseCameraController.loadLayout(settings);
         assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH, layout.rear.displayMode);
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, layout.rearLeft.displayMode);
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, layout.rearRight.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, layout.rearLeft.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, layout.rearRight.displayMode);
     }
 
     @Test
@@ -308,13 +308,13 @@ public final class ReverseCameraLayoutTest {
         ReverseCameraLayout restored = ReverseCameraController.loadLayout(settings);
         assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, restored.rear.displayMode);
         assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH, restored.rearLeft.displayMode);
-        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, restored.rearRight.displayMode);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, restored.rearRight.displayMode);
 
         ReverseCameraController.resetLayout(settings);
         restored = ReverseCameraController.loadLayout(settings);
         for (ReverseCameraLayout.Pane pane : restored.panes()) {
-            assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT, pane.displayMode);
-            assertEquals(ReverseCameraLayout.DISPLAY_MODE_FIT,
+            assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL, pane.displayMode);
+            assertEquals(ReverseCameraLayout.DISPLAY_MODE_FILL,
                     settings.getInt(ReverseCameraController.displayModeKey(pane.cameraIndex), -1));
         }
     }

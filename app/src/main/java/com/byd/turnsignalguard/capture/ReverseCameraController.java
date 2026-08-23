@@ -647,15 +647,32 @@ final class ReverseCameraController {
                     .putFloat(prefix + "height", pane.destination.height)
                     .putInt(prefix + "rotation_degrees", pane.rotationDegrees)
                     .putBoolean(mirrorKey(pane.cameraIndex), pane.mirrorHorizontally)
-                    .putInt(displayModeKey(pane.cameraIndex),
-                            ReverseCameraLayout.DEFAULT_DISPLAY_MODE)
+                    .putInt(displayModeKey(pane.cameraIndex), pane.displayMode)
                     .putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex)
                     .putBoolean(visibilityKey(pane.cameraIndex), DEFAULT_VISIBLE);
             writeSourceCrop(editor, pane.cameraIndex, pane.sourceCrop);
             writeSourceCrop(editor, pane.cameraIndex,
-                    ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop), true);
+                    defaultCorrectedSourceCrop(pane.cameraIndex), true);
+            CameraDewarpConfig.writeForReverse(editor, pane.cameraIndex,
+                    CameraDewarpConfig.defaultForReverse(pane.cameraIndex));
         }
         editor.apply();
+    }
+
+    static ReverseCameraLayout.Rect defaultCorrectedSourceCrop(int cameraIndex) {
+        switch (cameraIndex) {
+            case ReverseCameraLayout.REAR_CAMERA_INDEX:
+                return ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 1.0f, 1.0f);
+            case ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX:
+                return ReverseCameraLayout.sourceCrop(
+                        0.32222223f, 0.19213617f, 0.4346469f, 0.5828638f);
+            case ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX:
+                return ReverseCameraLayout.sourceCrop(
+                        0.24313086f, 0.19213617f, 0.4346469f, 0.5828638f);
+            default:
+                throw new IllegalArgumentException("unsupported reverse camera index: "
+                        + cameraIndex);
+        }
     }
 
     private static ReverseCameraLayout.Rect loadSourceCrop(
@@ -678,6 +695,13 @@ final class ReverseCameraController {
             SharedPreferences settings, int cameraIndex,
             ReverseCameraLayout.Rect fallback) {
         String prefix = correctedSourceCropPrefix(cameraIndex);
+        if (!settings.contains(prefix + "left")) {
+            boolean hasRaw = settings.contains(sourceCropKey(cameraIndex, "left", false))
+                    || settings.contains(sourceCropKey(cameraIndex, "top", false))
+                    || settings.contains(sourceCropKey(cameraIndex, "width", false))
+                    || settings.contains(sourceCropKey(cameraIndex, "height", false));
+            return hasRaw ? fallback : defaultCorrectedSourceCrop(cameraIndex);
+        }
         return loadActiveSourceCrop(settings, cameraIndex, true,
                 settings.getFloat(prefix + "left", fallback.left),
                 settings.getFloat(prefix + "top", fallback.top),
@@ -804,12 +828,12 @@ final class ReverseCameraController {
     }
 
     private static int readDisplayMode(SharedPreferences settings, int cameraIndex) {
+        int fallback = ReverseCameraLayout.defaults().pane(cameraIndex).displayMode;
         try {
-            return ReverseCameraLayout.normalizeDisplayMode(
-                    settings.getInt(displayModeKey(cameraIndex),
-                            ReverseCameraLayout.DEFAULT_DISPLAY_MODE));
+            int stored = settings.getInt(displayModeKey(cameraIndex), fallback);
+            return ReverseCameraLayout.isValidDisplayMode(stored) ? stored : fallback;
         } catch (Throwable ignored) {
-            return ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
+            return fallback;
         }
     }
 

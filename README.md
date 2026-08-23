@@ -5,7 +5,7 @@
 > This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
 > features while the vehicle is parked.
 
-Current source version: `0.50.4`. The application interface is currently Ukrainian.
+Current source version: `0.50.5`. The application interface is currently Ukrainian.
 
 ## Features
 

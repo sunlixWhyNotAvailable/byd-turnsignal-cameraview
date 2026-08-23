@@ -374,11 +374,9 @@ public final class CameraProbeActivity extends Activity
     private Button reverseCameraTabButton;
     private Button musicTabButton;
     private Button settingsTabButton;
-    private Button directCameraCloseButton;
     private final Button[] calibrationCameraButtons = new Button[ParkingCameraProfile.COUNT];
     private final Button[] parkingCameraButtons = new Button[ParkingCameraProfile.COUNT];
     private Button calibrationResetButton;
-    private Button calibrationStopButton;
     private SeekBar calibrationRotationSlider;
     private TextView calibrationRotationValue;
     private Spinner calibrationRotationModeInput;
@@ -452,6 +450,7 @@ public final class CameraProbeActivity extends Activity
     private SeekBar parkingScaleInput;
     private TextView parkingScaleValue;
     private FrameLayout parkingPositionHost;
+    private FrameLayout parkingPositionWidget;
     private FrameLayout parkingPositionFrame;
     private TextView parkingPositionHandle;
     private Button parkingCalibrationButton;
@@ -1964,16 +1963,8 @@ public final class CameraProbeActivity extends Activity
         });
         reset.setOnClickListener(view -> {
             ReverseCameraController.resetLayout(preferences);
-            reverseCameraLayout = ReverseCameraController.loadLayout(preferences);
-            reverseCameraEditor.setLayoutModel(reverseCameraLayout);
-            reverseCameraPreview.applyRawFallbackLayout(
-                    ReverseCameraController.loadRawLayout(preferences));
-            reverseCameraPreview.applyLayout(reverseCameraLayout);
-            reverseCameraPreview.applyVisibility(
-                    ReverseCameraController.loadVisibilityMask(preferences));
             reverseCameraEditor.selectCamera(ReverseCameraLayout.REAR_CAMERA_INDEX);
-            CameraHelperService.reverseCameraSettingsChanged(this);
-            record("reverse_layout_reset");
+            refreshCalibrationSettings("reverse_layout_reset");
         });
         reverseLowerButton.setOnClickListener(view -> changeReverseZ(false));
         reverseRaiseButton.setOnClickListener(view -> changeReverseZ(true));
@@ -3203,7 +3194,10 @@ public final class CameraProbeActivity extends Activity
         preview.addView(label("Розміщення на планшеті"), new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(32)));
         parkingPositionHost = new FrameLayout(this);
-        parkingPositionHost.setBackgroundColor(Color.rgb(32, 32, 32));
+        parkingPositionHost.setBackgroundColor(Color.BLACK);
+        parkingPositionWidget = new FrameLayout(this);
+        parkingPositionWidget.setClipChildren(true);
+        parkingPositionWidget.setBackgroundColor(Color.rgb(32, 32, 32));
         parkingPositionFrame = new FrameLayout(this);
         parkingPositionFrame.setBackgroundColor(Color.rgb(60, 60, 60));
         parkingPositionHandle = label("Камера");
@@ -3212,9 +3206,13 @@ public final class CameraProbeActivity extends Activity
         parkingPositionHandle.setBackgroundColor(Color.rgb(70, 110, 150));
         parkingPositionFrame.addView(parkingPositionHandle, new FrameLayout.LayoutParams(
                 dp(120), dp(80)));
-        parkingPositionHost.addView(parkingPositionFrame, new FrameLayout.LayoutParams(
+        parkingPositionWidget.addView(parkingPositionFrame, new FrameLayout.LayoutParams(
                 dp(1), dp(1)));
+        parkingPositionHost.addView(parkingPositionWidget,
+                new FrameLayout.LayoutParams(dp(1), dp(1), Gravity.CENTER));
         parkingPositionHost.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> updateParkingPositionCanvasSize());
+        parkingPositionWidget.addOnLayoutChangeListener((view, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> updateParkingPositionHandle());
         preview.addView(parkingPositionHost, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
@@ -3379,42 +3377,65 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void updateParkingPositionHandle() {
-        if (parkingPositionHost == null || parkingPositionFrame == null) return;
-        int hostWidth = parkingPositionHost.getWidth();
-        int hostHeight = parkingPositionHost.getHeight();
-        if (hostWidth <= 0 || hostHeight <= 0) return;
-        int width = Math.max(dp(72), Math.round(hostWidth
-                * parkingCameraScale[selectedParkingCameraId] / 100.0f));
-        int height = Math.max(dp(48), Math.round(width * 0.75f));
+        if (parkingPositionWidget == null || parkingPositionFrame == null) return;
+        if (parkingPositionWidget.getWidth() <= 0
+                || parkingPositionWidget.getHeight() <= 0) return;
+        int[] geometry = ParkingCameraController.overlayGeometry(
+                parkingPositionWidget.getWidth(), parkingPositionWidget.getHeight(),
+                parkingCameraScale[selectedParkingCameraId],
+                parkingCameraX[selectedParkingCameraId],
+                parkingCameraY[selectedParkingCameraId]);
         FrameLayout.LayoutParams handleParams =
                 (FrameLayout.LayoutParams) parkingPositionHandle.getLayoutParams();
         handleParams.width = FrameLayout.LayoutParams.MATCH_PARENT;
         handleParams.height = FrameLayout.LayoutParams.MATCH_PARENT;
         parkingPositionHandle.setLayoutParams(handleParams);
-        parkingPositionFrame.getLayoutParams().width = width;
-        parkingPositionFrame.getLayoutParams().height = height;
+        parkingPositionFrame.getLayoutParams().width = geometry[2];
+        parkingPositionFrame.getLayoutParams().height = geometry[3];
         parkingPositionFrame.requestLayout();
-        float maxX = Math.max(0, hostWidth - width);
-        float maxY = Math.max(0, hostHeight - height);
-        parkingPositionFrame.setX(maxX * parkingCameraX[selectedParkingCameraId]);
-        parkingPositionFrame.setY(maxY * parkingCameraY[selectedParkingCameraId]);
+        parkingPositionFrame.setX(geometry[0]);
+        parkingPositionFrame.setY(geometry[1]);
+    }
+
+    private void updateParkingPositionCanvasSize() {
+        if (parkingPositionHost == null || parkingPositionWidget == null) return;
+        int availableWidth = parkingPositionHost.getWidth();
+        int availableHeight = parkingPositionHost.getHeight();
+        if (availableWidth <= 0 || availableHeight <= 0) return;
+        int[] displaySize = CameraDisplayTarget.displaySize(
+                this, CameraDisplayTarget.TABLET);
+        float displayAspect = displaySize[0] <= 1 || displaySize[1] <= 1
+                ? 16.0f / 9.0f : (float) displaySize[0] / displaySize[1];
+        int[] size = BlindSpotOverlayController.fitAspect(
+                availableWidth, availableWidth, availableHeight, displayAspect);
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams)
+                parkingPositionWidget.getLayoutParams();
+        if (params.width == size[0] && params.height == size[1]) {
+            updateParkingPositionHandle();
+            return;
+        }
+        params.width = size[0];
+        params.height = size[1];
+        params.gravity = Gravity.CENTER;
+        parkingPositionWidget.setLayoutParams(params);
+        parkingPositionWidget.post(this::updateParkingPositionHandle);
     }
 
     private void moveParkingPositionHandle(float x, float y) {
-        if (parkingPositionHost == null || parkingPositionFrame == null) return;
-        float maxX = Math.max(0, parkingPositionHost.getWidth()
+        if (parkingPositionWidget == null || parkingPositionFrame == null) return;
+        float maxX = Math.max(0, parkingPositionWidget.getWidth()
                 - parkingPositionFrame.getWidth());
-        float maxY = Math.max(0, parkingPositionHost.getHeight()
+        float maxY = Math.max(0, parkingPositionWidget.getHeight()
                 - parkingPositionFrame.getHeight());
         parkingPositionFrame.setX(clamp(x, 0.0f, maxX));
         parkingPositionFrame.setY(clamp(y, 0.0f, maxY));
     }
 
     private void captureParkingPositionHandle() {
-        if (parkingPositionHost == null || parkingPositionFrame == null) return;
-        float maxX = Math.max(0, parkingPositionHost.getWidth()
+        if (parkingPositionWidget == null || parkingPositionFrame == null) return;
+        float maxX = Math.max(0, parkingPositionWidget.getWidth()
                 - parkingPositionFrame.getWidth());
-        float maxY = Math.max(0, parkingPositionHost.getHeight()
+        float maxY = Math.max(0, parkingPositionWidget.getHeight()
                 - parkingPositionFrame.getHeight());
         parkingCameraX[selectedParkingCameraId] = maxX == 0 ? 0
                 : parkingPositionFrame.getX() / maxX;
@@ -3423,7 +3444,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveParkingPlacement() {
-        if (parkingPositionHost != null) captureParkingPositionHandle();
+        if (parkingPositionWidget != null) captureParkingPositionHandle();
         SharedPreferences.Editor editor = preferences.edit()
                 .putBoolean(parkingScaleSyncKey(), parkingScaleSyncSwitch != null
                         && parkingScaleSyncSwitch.isChecked());
@@ -3718,14 +3739,11 @@ public final class CameraProbeActivity extends Activity
                     new LinearLayout.LayoutParams(0, dp(46), 1));
         }
         calibrationResetButton = button("Скинути");
-        calibrationStopButton = button("Stop");
         Button savePreset = button("Зберегти");
         calibrationPresetLoadButton = button("Завантажити");
         calibrationMirrorButton = button("Перенести →");
         calibrationMirrorButton.setTextSize(10);
         aspectControls.addView(calibrationResetButton,
-                new LinearLayout.LayoutParams(0, dp(46), 1));
-        aspectControls.addView(calibrationStopButton,
                 new LinearLayout.LayoutParams(0, dp(46), 1));
         aspectControls.addView(savePreset,
                 new LinearLayout.LayoutParams(0, dp(46), 1));
@@ -3987,8 +4005,6 @@ public final class CameraProbeActivity extends Activity
                     @Override public void onNothingSelected(AdapterView<?> parent) {}
                 });
         calibrationResetButton.setOnClickListener(view -> resetCalibrationCrop());
-        calibrationStopButton.setOnClickListener(
-                view -> stopActivityCameraManually("calibration_user_stop"));
         selectCalibrationCamera(CameraProfile.REAR_LEFT, false);
         return panel;
     }
@@ -4099,10 +4115,17 @@ public final class CameraProbeActivity extends Activity
         if (reverse) reverseDewarpProjectionInput = projectionInput;
         else calibrationDewarpProjectionInput = projectionInput;
 
-        Button reset = button("Скинути корекцію");
+        Button reset = button(reverse ? "Скинути" : "Скинути корекцію");
         reset.setOnClickListener(view -> {
-            if (reverse) cancelReverseCropInput();
-            else cancelCalibrationCropInput();
+            if (reverse) {
+                cancelReverseCropInput();
+                if (reverseCalibrationCameraIndex <= 0) return;
+                CameraCalibrationPreset.resetReverseToDefault(
+                        preferences, reverseCalibrationCameraIndex);
+                refreshCalibrationSettings("reverse_calibration_reset");
+                return;
+            }
+            cancelCalibrationCropInput();
             int lens = selectedDewarpLens(reverse);
             if (lens == 0) return;
             CameraDewarpConfig value = CameraDewarpConfig.disabled(lens);
@@ -4518,11 +4541,6 @@ public final class CameraProbeActivity extends Activity
             directCameraIndexButtons[index] = button;
             indices.addView(button, new LinearLayout.LayoutParams(0, dp(52), 1));
         }
-        directCameraCloseButton = button("Stop");
-        directCameraCloseButton.setOnClickListener(
-                view -> stopActivityCameraManually("direct_user_stop"));
-        indices.addView(directCameraCloseButton,
-                new LinearLayout.LayoutParams(0, dp(52), 1));
         panel.addView(indices, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(54)));
 
@@ -5043,12 +5061,15 @@ public final class CameraProbeActivity extends Activity
 
     private void resetCalibrationCrop() {
         cancelCalibrationCropInput();
-        DirectCameraCrop crop = calibrationParkingMode
-                ? DirectCameraCrop.defaultFor(
-                        ParkingCameraProfile.of(calibrationParkingCameraId))
-                : DirectCameraCrop.defaultFor(
-                        CameraProfile.of(calibrationCameraId).right(),
-                        calibrationRawCrop.aspectMode);
+        if (!calibrationParkingMode) {
+            CameraCalibrationPreset.resetCameraToDefault(
+                    preferences, CameraProfile.of(calibrationCameraId));
+            loadCameraProfiles();
+            refreshCalibrationSettings("camera_calibration_reset");
+            return;
+        }
+        DirectCameraCrop crop = DirectCameraCrop.defaultFor(
+                ParkingCameraProfile.of(calibrationParkingCameraId));
         calibrationRawCrop = crop;
         calibrationCorrectedCrop = crop.centered();
         saveCalibrationCorrectedStored(calibrationCorrectedCrop);
@@ -8333,11 +8354,6 @@ public final class CameraProbeActivity extends Activity
         for (Button button : directCameraIndexButtons) {
             if (button != null) button.setEnabled(directReady && !requestedOpen);
         }
-        if (directCameraCloseButton != null) {
-            directCameraCloseButton.setEnabled(
-                    (requestedOpen || cameraHandoffPending)
-                            && activePreview == directCameraPreview);
-        }
         boolean calibrationReady = helper != null && calibrationSurfaceReady
                 && permission && cameraDiscovered && !cameraHandoffPending
                 && (!requestedOpen || activePreview == calibrationPreview);
@@ -8346,10 +8362,8 @@ public final class CameraProbeActivity extends Activity
         }
         if (calibrationResetButton != null) {
             calibrationResetButton.setEnabled(
-                    calibrationDewarpSwitch == null || !calibrationDewarpSwitch.isChecked());
-            calibrationStopButton.setEnabled(
-                    (requestedOpen || cameraHandoffPending)
-                            && activePreview == calibrationPreview);
+                    !calibrationParkingMode || calibrationDewarpSwitch == null
+                            || !calibrationDewarpSwitch.isChecked());
         }
         for (Button button : turnStateButtons) {
             if (button != null) button.setEnabled(

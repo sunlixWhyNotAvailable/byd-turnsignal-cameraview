@@ -89,7 +89,51 @@ final class DirectCameraCrop {
 
     static DirectCameraCrop defaultFor(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
-        return defaultFor(profile.right());
+        switch (profile.id) {
+            case CameraProfile.REAR_LEFT:
+                return of(0.07071858f, 0.1937456f, 0.6358514f, 0.61250883f,
+                        ASPECT_FREE, -30, CameraRotation.MODE_ALIGNED)
+                        .withMirrorHorizontally(true);
+            case CameraProfile.REAR_RIGHT:
+                return of(0.29343003f, 0.1937456f, 0.6358514f, 0.61250883f,
+                        ASPECT_FREE, 30, CameraRotation.MODE_ALIGNED)
+                        .withMirrorHorizontally(true);
+            case CameraProfile.FRONT_LEFT:
+                return of(0.4807051f, 0.32135904f, 0.46608025f, 0.5074271f,
+                        ASPECT_FREE, 45, CameraRotation.MODE_ALIGNED);
+            case CameraProfile.FRONT_RIGHT:
+                return of(0.053414617f, 0.32259566f, 0.46438393f, 0.5072246f,
+                        ASPECT_FREE, -45, CameraRotation.MODE_ALIGNED);
+            default:
+                throw new IllegalArgumentException("invalid camera profile");
+        }
+    }
+
+    static DirectCameraCrop defaultCorrectedFor(
+            CameraProfile profile, DirectCameraCrop raw) {
+        if (profile == null || raw == null) {
+            throw new IllegalArgumentException("camera crop required");
+        }
+        switch (profile.id) {
+            case CameraProfile.REAR_LEFT:
+                return raw.withGeometry(of(
+                        0.10472285f, 0.17163458f, 0.53600174f, 0.54995716f,
+                        ASPECT_FREE));
+            case CameraProfile.REAR_RIGHT:
+                return raw.withGeometry(of(
+                        0.35927543f, 0.17163458f, 0.53600174f, 0.54995716f,
+                        ASPECT_FREE));
+            case CameraProfile.FRONT_LEFT:
+                return raw.withGeometry(of(
+                        0.29754817f, 0.29489756f, 0.41666844f, 0.4414549f,
+                        ASPECT_FREE));
+            case CameraProfile.FRONT_RIGHT:
+                return raw.withGeometry(of(
+                        0.2795728f, 0.29326266f, 0.41497213f, 0.44125235f,
+                        ASPECT_FREE));
+            default:
+                throw new IllegalArgumentException("invalid camera profile");
+        }
     }
 
     /** Default geometry for a logical parking view.  Corner views inherit the
@@ -98,13 +142,13 @@ final class DirectCameraCrop {
         if (profile == null) throw new IllegalArgumentException("parking profile required");
         switch (profile.id) {
             case ParkingCameraProfile.FL:
-                return defaultFor(CameraProfile.of(CameraProfile.FRONT_RIGHT));
+                return defaultFor(true);
             case ParkingCameraProfile.FR:
-                return defaultFor(CameraProfile.of(CameraProfile.FRONT_LEFT));
+                return defaultFor(false);
             case ParkingCameraProfile.RR:
-                return defaultFor(CameraProfile.of(CameraProfile.REAR_RIGHT));
+                return defaultFor(true);
             case ParkingCameraProfile.RL:
-                return defaultFor(CameraProfile.of(CameraProfile.REAR_LEFT));
+                return defaultFor(false);
             case ParkingCameraProfile.FRONT:
             case ParkingCameraProfile.LEFT:
             case ParkingCameraProfile.RIGHT:
@@ -241,7 +285,10 @@ final class DirectCameraCrop {
     static DirectCameraCrop loadCorrected(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop raw) {
         String prefix = correctedPrefix(profile);
-        if (!preferences.contains(prefix + "left")) return raw.centered();
+        if (!preferences.contains(prefix + "left")) {
+            return hasRawPreferences(preferences, profile)
+                    ? raw.centered() : defaultCorrectedFor(profile, raw);
+        }
         try {
             DirectCameraCrop stored = normalized(
                     preferences.getFloat(prefix + "left", raw.left),
@@ -352,6 +399,14 @@ final class DirectCameraCrop {
     private static String correctedPrefix(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         return "direct_crop_v3_corrected_" + profile.id + "_";
+    }
+
+    private static boolean hasRawPreferences(
+            SharedPreferences preferences, CameraProfile profile) {
+        for (int field = 0; field < 8; field++) {
+            if (preferences.contains(preferenceKey(profile, field))) return true;
+        }
+        return false;
     }
 
     private static String parkingPrefix(ParkingCameraProfile profile) {

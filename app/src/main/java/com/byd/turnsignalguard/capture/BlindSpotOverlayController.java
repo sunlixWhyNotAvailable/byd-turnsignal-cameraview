@@ -206,17 +206,30 @@ final class BlindSpotOverlayController {
         String key = positionKey(profile, vertical);
         if (settings.contains(key)) return clamp(settings.getFloat(key, 0.0f), 0.0f, 1.0f);
         if (profile.rear()) {
-            int legacy = settings.getInt(profile.right()
-                            ? PREF_RIGHT_POSITION : PREF_LEFT_POSITION,
-                    profile.right() ? DEFAULT_RIGHT_POSITION : DEFAULT_LEFT_POSITION);
-            return legacyPosition(legacy, vertical);
+            String legacyKey = profile.right() ? PREF_RIGHT_POSITION : PREF_LEFT_POSITION;
+            if (settings.contains(legacyKey)) {
+                int legacy = settings.getInt(legacyKey,
+                        profile.right() ? DEFAULT_RIGHT_POSITION : DEFAULT_LEFT_POSITION);
+                return legacyPosition(legacy, vertical);
+            }
         }
         return defaultPosition(profile, vertical);
     }
 
     static float defaultPosition(CameraProfile profile, boolean vertical) {
-        return vertical ? (profile.front() ? 1.0f : 0.0f)
-                : profile.right() ? 1.0f : 0.0f;
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        switch (profile.id) {
+            case CameraProfile.REAR_LEFT:
+                return vertical ? 0.08281444f : 0.0f;
+            case CameraProfile.REAR_RIGHT:
+                return vertical ? 0.072115384f : 1.0f;
+            case CameraProfile.FRONT_LEFT:
+                return vertical ? 1.0f : 0.0f;
+            case CameraProfile.FRONT_RIGHT:
+                return 1.0f;
+            default:
+                throw new IllegalArgumentException("invalid camera profile");
+        }
     }
 
     static float legacyPosition(int position, boolean vertical) {
@@ -232,12 +245,13 @@ final class BlindSpotOverlayController {
         for (CameraProfile profile : CameraProfile.values()) {
             String scaleKey = scaleKey(profile);
             if (!settings.contains(scaleKey)) {
-                editor.putInt(scaleKey, profile.rear() ? sharedScale : DEFAULT_SCALE_PERCENT);
+                editor.putInt(scaleKey, profile.rear()
+                        ? sharedScale : defaultScale(profile));
                 changed = true;
             }
             String targetKey = targetKey(profile);
             if (!settings.contains(targetKey)) {
-                editor.putInt(targetKey, CameraDisplayTarget.TABLET);
+                editor.putInt(targetKey, defaultTarget(profile));
                 changed = true;
             }
         }
@@ -288,10 +302,35 @@ final class BlindSpotOverlayController {
 
     static int readScale(SharedPreferences settings, CameraProfile profile) {
         int fallback = profile.rear()
-                ? settings.getInt(PREF_SCALE, DEFAULT_SCALE_PERCENT)
-                : DEFAULT_SCALE_PERCENT;
+                ? settings.getInt(PREF_SCALE, defaultScale(profile))
+                : defaultScale(profile);
         return clamp(settings.getInt(scaleKey(profile), fallback),
                 MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    }
+
+    static int defaultScale(CameraProfile profile) {
+        if (profile == null || !CameraProfile.isValid(profile.id)) {
+            throw new IllegalArgumentException("camera profile required");
+        }
+        return DEFAULT_SCALE_PERCENT;
+    }
+
+    static int defaultTarget(CameraProfile profile) {
+        if (profile == null || !CameraProfile.isValid(profile.id)) {
+            throw new IllegalArgumentException("camera profile required");
+        }
+        return CameraDisplayTarget.TABLET;
+    }
+
+    static float defaultFrameAspect(CameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        switch (profile.id) {
+            case CameraProfile.REAR_LEFT: return 1.6173527f;
+            case CameraProfile.REAR_RIGHT: return 1.6154981f;
+            case CameraProfile.FRONT_LEFT: return 1.393998f;
+            case CameraProfile.FRONT_RIGHT: return 1.3889601f;
+            default: throw new IllegalArgumentException("invalid camera profile");
+        }
     }
 
     /**
@@ -314,8 +353,10 @@ final class BlindSpotOverlayController {
                 // Repair malformed preference values below.
             }
         }
-        settings.edit().putFloat(key, safeFallback).apply();
-        return safeFallback;
+        float defaultAspect = hasRawPreferences(settings, profile)
+                ? safeFallback : defaultFrameAspect(profile);
+        settings.edit().putFloat(key, defaultAspect).apply();
+        return defaultAspect;
     }
 
     static boolean isValidFrameAspect(float aspect) {
@@ -328,7 +369,7 @@ final class BlindSpotOverlayController {
     }
 
     static int readTarget(SharedPreferences settings, CameraProfile profile) {
-        int target = settings.getInt(targetKey(profile), CameraDisplayTarget.TABLET);
+        int target = settings.getInt(targetKey(profile), defaultTarget(profile));
         return CameraDisplayTarget.isValid(target) ? target : CameraDisplayTarget.TABLET;
     }
 
@@ -1110,7 +1151,7 @@ final class BlindSpotOverlayController {
         };
     }
 
-    private static String scaleKey(CameraProfile profile) {
+    static String scaleKey(CameraProfile profile) {
         if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_SCALE;
         if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_SCALE;
         if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_SCALE;
@@ -1124,14 +1165,22 @@ final class BlindSpotOverlayController {
         return PREF_FRONT_RIGHT_FRAME_ASPECT;
     }
 
-    private static String targetKey(CameraProfile profile) {
+    private static boolean hasRawPreferences(
+            SharedPreferences settings, CameraProfile profile) {
+        for (int field = 0; field < 8; field++) {
+            if (settings.contains(DirectCameraCrop.preferenceKey(profile, field))) return true;
+        }
+        return false;
+    }
+
+    static String targetKey(CameraProfile profile) {
         if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_TARGET;
         if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_TARGET;
         if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_TARGET;
         return PREF_FRONT_RIGHT_TARGET;
     }
 
-    private static String positionKey(CameraProfile profile, boolean vertical) {
+    static String positionKey(CameraProfile profile, boolean vertical) {
         if (profile.id == CameraProfile.REAR_LEFT) return vertical ? PREF_LEFT_Y : PREF_LEFT_X;
         if (profile.id == CameraProfile.REAR_RIGHT) return vertical ? PREF_RIGHT_Y : PREF_RIGHT_X;
         if (profile.id == CameraProfile.FRONT_LEFT) {
