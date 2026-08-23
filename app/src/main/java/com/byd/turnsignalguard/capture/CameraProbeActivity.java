@@ -413,6 +413,7 @@ public final class CameraProbeActivity extends Activity
     private volatile boolean directCameraSurfaceReady;
     private volatile boolean calibrationSurfaceReady;
     private volatile boolean reverseCameraSurfacesReady;
+    private boolean activityCameraBufferRefreshPending;
     private volatile boolean cameraDiscovered;
     private volatile boolean requestedOpen;
     private boolean telemetryReady;
@@ -1736,6 +1737,12 @@ public final class CameraProbeActivity extends Activity
 
     void onCameraBufferQualityChanged(int value) {
         record("camera_buffer_quality", "quality", CameraBufferQuality.label(value));
+        if (cameraPreview != null) cameraPreview.setAutomaticBufferQuality(value);
+        if (calibrationPreview != null) calibrationPreview.setAutomaticBufferQuality(value);
+        if (reverseCameraPreview != null) {
+            reverseCameraPreview.setAutomaticBufferQuality(value);
+        }
+        activityCameraBufferRefreshPending = true;
         notifyCameraQualityControllers(
                 () -> CameraHelperService.cameraSettingsChanged(this),
                 () -> CameraHelperService.reverseCameraSettingsChanged(this));
@@ -1896,6 +1903,8 @@ public final class CameraProbeActivity extends Activity
         reverseCameraStatus = statusText("Очікування AVM camera...");
         previewPane.addView(reverseCameraStatus);
         reverseCameraPreview = new ReverseCameraCompositionView(this);
+        reverseCameraPreview.setAutomaticBufferQuality(
+                CameraBufferQuality.load(preferences));
         reverseCameraPreview.setForceDewarpPipeline(true);
         applyReversePreviewDewarpConfigs();
         reverseCameraPreview.enablePreviewBase();
@@ -3877,6 +3886,8 @@ public final class CameraProbeActivity extends Activity
         calibrationSourceFrame = sourceFrame;
 
         calibrationPreview = new BlindSpotCameraView(this);
+        calibrationPreview.setAutomaticBufferQuality(
+                CameraBufferQuality.load(preferences));
         calibrationPreview.setAlpha(1.0f);
         calibrationPreview.setForceDewarpPipeline(true);
         calibrationPreview.setCallback(this);
@@ -5363,6 +5374,7 @@ public final class CameraProbeActivity extends Activity
             debugPreviewCover = cover;
         } else {
             BlindSpotCameraView surface = new BlindSpotCameraView(this);
+            surface.setAutomaticBufferQuality(CameraBufferQuality.load(preferences));
             surface.setForceDewarpPipeline(true);
             CameraProfile profile = CameraProfile.of(selectedCameraId);
             DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
@@ -6377,6 +6389,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void renewSelectedPreviewInputForTabSwitch() {
+        if (refreshAutomaticPreviewBuffersIfPending()) return;
         if (selectedTab == TAB_CAMERA_CALIBRATION && calibrationPreview != null) {
             calibrationPreview.retireCameraInput();
             calibrationPreview.ensureCameraInput();
@@ -6384,6 +6397,14 @@ public final class CameraProbeActivity extends Activity
             reverseCameraPreview.retirePreviewInputs();
             reverseCameraPreview.ensurePreviewInputs();
         }
+    }
+
+    private boolean refreshAutomaticPreviewBuffersIfPending() {
+        if (!activityCameraBufferRefreshPending) return false;
+        activityCameraBufferRefreshPending = false;
+        retireAutomaticPreviewInputs();
+        ensureAutomaticPreviewInputs();
+        return true;
     }
 
     private boolean selectedPreviewInputReady() {
@@ -6491,6 +6512,7 @@ public final class CameraProbeActivity extends Activity
 
     private void resumeSelectedCameraPreview() {
         if (cameraTransition.pending() || !canResumeSelectedPreview()) return;
+        refreshAutomaticPreviewBuffersIfPending();
         if (retryStockViewpoint >= 0) {
             int viewpoint = retryStockViewpoint;
             boolean debug = retryStockDebug;

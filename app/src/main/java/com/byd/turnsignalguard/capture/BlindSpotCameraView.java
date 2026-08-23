@@ -64,6 +64,7 @@ final class BlindSpotCameraView extends TextureView
     private int dewarpStatsGeneration;
     private int bufferWidth = BUFFER_WIDTH;
     private int bufferHeight = BUFFER_HEIGHT;
+    private int automaticBufferQuality = -1;
 
     BlindSpotCameraView(Context context) {
         super(context);
@@ -106,6 +107,11 @@ final class BlindSpotCameraView extends TextureView
         configureBuffer();
     }
 
+    void setAutomaticBufferQuality(int quality) {
+        CameraBufferQuality.scalePercent(quality);
+        automaticBufferQuality = quality;
+    }
+
     boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
         int[] size = paneBoundedBufferSize(paneWidth, paneHeight, quality);
         return bufferWidth == size[0] && bufferHeight == size[1];
@@ -125,25 +131,8 @@ final class BlindSpotCameraView extends TextureView
     }
 
     static int[] paneBoundedBufferSize(int paneWidth, int paneHeight, int quality) {
-        int scalePercent = CameraBufferQuality.scalePercent(quality);
-        if (quality == CameraBufferQuality.ORIGINAL) {
-            return new int[]{BUFFER_WIDTH, BUFFER_HEIGHT};
-        }
-        if (paneWidth <= 1 || paneHeight <= 1) {
-            return new int[]{BUFFER_WIDTH, BUFFER_HEIGHT};
-        }
-        int width = (int) Math.min(BUFFER_WIDTH,
-                Math.max(1L, Math.round(paneWidth * scalePercent / 100.0)));
-        int height = (int) Math.min(BUFFER_HEIGHT,
-                Math.max(1L, Math.round(paneHeight * scalePercent / 100.0)));
-        if ((long) width * BUFFER_HEIGHT <= (long) height * BUFFER_WIDTH) {
-            height = Math.min(height, Math.max(1,
-                    Math.round(width * (float) BUFFER_HEIGHT / BUFFER_WIDTH)));
-        } else {
-            width = Math.min(width, Math.max(1,
-                    Math.round(height * (float) BUFFER_WIDTH / BUFFER_HEIGHT)));
-        }
-        return new int[]{width, height};
+        return CameraBufferQuality.bufferSizeForPane(
+                paneWidth, paneHeight, BUFFER_WIDTH, BUFFER_HEIGHT, quality);
     }
 
     void retireCameraInput() {
@@ -298,6 +287,11 @@ final class BlindSpotCameraView extends TextureView
 
     private void createCameraInput(SurfaceTexture texture, int width, int height) {
         retireCameraInput();
+        if (automaticBufferQuality >= 0) {
+            int[] size = paneBoundedBufferSize(width, height, automaticBufferQuality);
+            bufferWidth = size[0];
+            bufferHeight = size[1];
+        }
         int cameraGeneration = inputGeneration.next();
         configureBuffer();
         if (usesDewarpPipeline()) {

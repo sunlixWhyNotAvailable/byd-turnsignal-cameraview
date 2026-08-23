@@ -11,6 +11,61 @@ import static org.junit.Assert.assertTrue;
 
 public final class CameraBufferSizingTest {
     @Test
+    public void sourceAspectFloorScalesEachQualityForTallSource() {
+        assertArrayEquals(new int[]{527, 357},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 1300, CameraBufferQuality.PERFORMANCE));
+        assertArrayEquals(new int[]{792, 536},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 1300, CameraBufferQuality.BALANCED));
+        assertArrayEquals(new int[]{1055, 714},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 1300, CameraBufferQuality.QUALITY));
+        assertArrayEquals(new int[]{1920, 1300},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 1300, CameraBufferQuality.ORIGINAL));
+    }
+
+    @Test
+    public void sourceAspectFloorScalesEachQualityForWideSource() {
+        assertArrayEquals(new int[]{692, 357},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 990, CameraBufferQuality.PERFORMANCE));
+        assertArrayEquals(new int[]{1040, 536},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 990, CameraBufferQuality.BALANCED));
+        assertArrayEquals(new int[]{1385, 714},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 990, CameraBufferQuality.QUALITY));
+        assertArrayEquals(new int[]{1920, 990},
+                CameraBufferQuality.bufferSizeForPane(
+                        576, 357, 1920, 990, CameraBufferQuality.ORIGINAL));
+    }
+
+    @Test
+    public void smallReverseSidesUseSharedFloorWhileLargerRearStaysLarger() {
+        int[] side = CameraBufferQuality.bufferSizeForPane(
+                448, 303, 1920, 1300, CameraBufferQuality.BALANCED);
+        int[] rear = CameraBufferQuality.bufferSizeForPane(
+                1084, 734, 1920, 1300, CameraBufferQuality.BALANCED);
+
+        assertArrayEquals(new int[]{792, 536}, side);
+        assertArrayEquals(new int[]{1626, 1101}, rear);
+        assertTrue(rear[0] > side[0]);
+        assertTrue(rear[1] > side[1]);
+    }
+
+    @Test
+    public void invalidOrUnmeasuredPaneDimensionsUseSafeFullFallback() {
+        assertArrayEquals(new int[]{1920, 1300},
+                CameraBufferQuality.bufferSizeForPane(
+                        1, 303, 1920, 1300, CameraBufferQuality.PERFORMANCE));
+        assertArrayEquals(new int[]{1920, 1300},
+                CameraBufferQuality.bufferSizeForPane(
+                        448, 1, 1920, 1300, CameraBufferQuality.PERFORMANCE));
+    }
+
+    @Test
     public void paneBuffersPreserveSourceAspectWithinDisplayBounds() {
         assertArrayEquals(new int[]{527, 357},
                 BlindSpotCameraView.paneBoundedBufferSize(576, 357));

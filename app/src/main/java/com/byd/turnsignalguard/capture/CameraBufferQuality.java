@@ -3,6 +3,8 @@ package com.byd.turnsignalguard.capture;
 import android.content.SharedPreferences;
 
 final class CameraBufferQuality {
+    private static final int REFERENCE_PANE_HEIGHT = 357;
+
     static final String PREF_QUALITY = "camera_buffer_quality";
 
     static final int PERFORMANCE = 0;
@@ -39,6 +41,35 @@ final class CameraBufferQuality {
             default:
                 throw new IllegalArgumentException("invalid camera buffer quality");
         }
+    }
+
+    static int[] bufferSizeForPane(
+            int paneWidth, int paneHeight,
+            int sourceWidth, int sourceHeight,
+            int quality) {
+        int scalePercent = scalePercent(quality);
+        if (quality == ORIGINAL || paneWidth <= 1 || paneHeight <= 1) {
+            return new int[]{sourceWidth, sourceHeight};
+        }
+
+        int width = (int) Math.min(sourceWidth,
+                Math.max(1L, Math.round(paneWidth * scalePercent / 100.0)));
+        int height = (int) Math.min(sourceHeight,
+                Math.max(1L, Math.round(paneHeight * scalePercent / 100.0)));
+        if ((long) width * sourceHeight <= (long) height * sourceWidth) {
+            height = Math.min(height, Math.max(1,
+                    Math.round(width * (float) sourceHeight / sourceWidth)));
+        } else {
+            width = Math.min(width, Math.max(1,
+                    Math.round(height * (float) sourceWidth / sourceHeight)));
+        }
+
+        int minimumHeight = Math.min(sourceHeight,
+                Math.max(1, Math.round(REFERENCE_PANE_HEIGHT * scalePercent / 100.0f)));
+        height = Math.max(height, minimumHeight);
+        width = Math.min(sourceWidth, Math.max(1,
+                Math.round(height * (float) sourceWidth / sourceHeight)));
+        return new int[]{width, height};
     }
 
     static String label(int value) {

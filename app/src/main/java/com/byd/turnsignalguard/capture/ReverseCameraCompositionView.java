@@ -20,6 +20,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private static final String TAG = "ReverseCameraView";
     static final int SOURCE_WIDTH = 1920;
     static final int SOURCE_HEIGHT = 1300;
+    private static final int PREVIEW_BASE_SOURCE_HEIGHT = 990;
     private static final int DEFAULT_CORNER_RADIUS_DP = 8;
 
     interface Callback {
@@ -50,6 +51,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private final FrameBarrier frameBarrier = new FrameBarrier();
     private int paneBufferViewportWidth;
     private int paneBufferViewportHeight;
+    private int automaticBufferQuality = CameraBufferQuality.ORIGINAL;
     private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
 
     ReverseCameraCompositionView(Context context) {
@@ -78,13 +80,15 @@ final class ReverseCameraCompositionView extends FrameLayout {
             @Override
             public void onSurfaceTextureAvailable(
                     SurfaceTexture texture, int width, int height) {
-                createPreviewBaseInput(texture);
+                createPreviewBaseInput(texture, width, height);
             }
 
             @Override
             public void onSurfaceTextureSizeChanged(
                     SurfaceTexture texture, int width, int height) {
-                texture.setDefaultBufferSize(1920, 990);
+                if (previewBaseSurface == null) {
+                    configurePreviewBaseBuffer(texture, width, height);
+                }
             }
 
             @Override
@@ -121,6 +125,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     void setForceDewarpPipeline(boolean value) {
         for (PaneView pane : panes) pane.texture.setForceDewarpPipeline(value);
+    }
+
+    void setAutomaticBufferQuality(int quality) {
+        CameraBufferQuality.scalePercent(quality);
+        automaticBufferQuality = quality;
+        for (PaneView pane : panes) pane.texture.setAutomaticBufferQuality(quality);
     }
 
     void applyDewarpConfigs(
@@ -276,7 +286,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     void ensurePreviewInputs() {
         if (previewBase != null && previewBaseSurface == null
                 && previewBase.isAvailable() && previewBase.getSurfaceTexture() != null) {
-            createPreviewBaseInput(previewBase.getSurfaceTexture());
+            createPreviewBaseInput(
+                    previewBase.getSurfaceTexture(), previewBase.getWidth(), previewBase.getHeight());
         }
         for (PaneView pane : panes) pane.texture.ensureCameraInput();
         notifySurfacesReady();
@@ -485,13 +496,21 @@ final class ReverseCameraCompositionView extends FrameLayout {
         return values;
     }
 
-    private void createPreviewBaseInput(SurfaceTexture texture) {
-        texture.setDefaultBufferSize(1920, 990);
+    private void createPreviewBaseInput(SurfaceTexture texture, int width, int height) {
+        configurePreviewBaseBuffer(texture, width, height);
         if (previewBaseSurface != null) previewBaseSurface.release();
         previewBaseSurface = new Surface(texture);
         previewBaseGeneration = previewBaseInputGeneration.next();
         clearFrames();
         notifySurfacesReady();
+    }
+
+    private void configurePreviewBaseBuffer(
+            SurfaceTexture texture, int width, int height) {
+        int[] size = CameraBufferQuality.bufferSizeForPane(
+                width, height, SOURCE_WIDTH, PREVIEW_BASE_SOURCE_HEIGHT,
+                automaticBufferQuality);
+        texture.setDefaultBufferSize(size[0], size[1]);
     }
 
     static final class FrameBarrier {

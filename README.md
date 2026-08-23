@@ -5,7 +5,7 @@
 > This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
 > features while the vehicle is parked.
 
-Current source version: `0.50.0`. The application interface is currently Ukrainian.
+Current source version: `0.50.4`. The application interface is currently Ukrainian.
 
 ## Features
 
@@ -30,7 +30,7 @@ Current source version: `0.50.0`. The application interface is currently Ukraini
   display modes.
 - Optional fisheye correction configured independently for every displayed profile.
 - Four global image-quality choices in `Налаштування`: `Швидкодія` (default), `Баланс`, `Якість`,
-  and `Оригінал`.
+  and `Оригінал`, applied consistently to camera views, previews, and calibration.
 - Adjustable camera-window corner rounding.
 
 Calibration now opens from the `Камери сліпих зон` page instead of using a separate top-level
@@ -38,8 +38,8 @@ tab.
 
 ### Parking-camera views
 
-- Six independent tablet views: front-left corner, front, front-right corner, rear-right corner,
-  rear, and rear-left corner.
+- Eight independent tablet views: front-left corner, front, front-right corner, right, rear-right
+  corner, rear, rear-left corner, and left.
 - Each view has its own enable switch and editable parking-sensor distance threshold from 0 to
   150 cm. A global maximum-speed setting limits the feature.
 - Each corner view can optionally add the corresponding front or rear view when that central view
@@ -124,7 +124,7 @@ The enhanced reverse view itself is disabled by default.
 - Higher image-quality modes can increase system load; choose the best balance for the vehicle.
 - Fisheye correction and the enhanced reverse view are experimental and disabled by default.
 - Automatic parking-camera views depend on compatible parking-sensor telemetry and remain
-  experimental; all six rules are disabled by default.
+  experimental; all eight rules are disabled by default.
 - Music synchronization depends on how an audio application plays sound and publishes metadata;
   some sources are not supported.
 - Third-party music metadata forwarding does not include album artwork.
