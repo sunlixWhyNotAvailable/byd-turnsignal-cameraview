@@ -82,7 +82,6 @@ public final class TurnSignalShellMain {
         private final ReverseGearRuntime reverseGearRuntime;
         private final MusicVisualizerRuntime musicRuntime;
         private final ParkingRadarRuntime parkingRadarRuntime;
-        private final ParkingRadarDiagnosticRuntime parkingRadarDiagnosticRuntime;
         private final PowerManager powerManager;
         private final Runnable processTerminator;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
@@ -131,8 +130,6 @@ public final class TurnSignalShellMain {
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
             parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
-            parkingRadarDiagnosticRuntime =
-                    new ParkingRadarDiagnosticRuntime(context, handler, this::emit);
         }
 
         void start() {
@@ -142,7 +139,6 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
             parkingRadarRuntime.start();
-            parkingRadarDiagnosticRuntime.start();
         }
 
         void stop() {
@@ -151,7 +147,6 @@ public final class TurnSignalShellMain {
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
             musicRuntime.stop();
-            parkingRadarDiagnosticRuntime.stop();
             parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
             warningRuntime.stop();
@@ -225,7 +220,6 @@ public final class TurnSignalShellMain {
                     reverseGearRuntime.reportStatus();
                     musicRuntime.reportStatus();
                     parkingRadarRuntime.reportStatus();
-                    parkingRadarDiagnosticRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
@@ -241,7 +235,6 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     handler.post(() -> {
                         musicRuntime.stop();
-                        parkingRadarDiagnosticRuntime.stop();
                         parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
                         warningRuntime.stop();

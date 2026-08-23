@@ -165,9 +165,6 @@ public final class ParkingRadarRuntime {
         valid[index] = ParkingCameraProfile.isValidRadarRaw(fid, value);
         source.cachedRaw[source.indexOf(fid)] = value;
         source.cachedValid[source.indexOf(fid)] = valid[index];
-        emit("parking_radar_read", "ok", valid[index], "fid", fid, "raw", value,
-                "valid", valid[index], "source", sourceEvent,
-                "source_family", source.family, "generation", source.generation);
         emitState(index, fid, sourceEvent);
     }
 
@@ -368,15 +365,8 @@ public final class ParkingRadarRuntime {
                     int rawValue = integerValue(value);
                     pendingRaw[i] = rawValue;
                     pendingValid[i] = ParkingCameraProfile.isValidRadarRaw(fid, rawValue);
-                    emit("parking_radar_read", "ok", pendingValid[i], "fid", fid,
-                            "raw", rawValue, "valid", pendingValid[i],
-                            "source", "initial_read", "source_family", family,
-                            "generation", listenerGeneration);
-                } catch (Throwable error) {
-                    emit("parking_radar_read", "ok", false, "fid", fid,
-                            "source", "initial_read", "source_family", family,
-                            "generation", listenerGeneration,
-                            "error", summary(error));
+                } catch (Throwable ignored) {
+                    // The generation snapshot publishes this FID as invalid and fails closed.
                 }
             }
             if (!canCommitInitialSnapshot(listenerGeneration, callbackErrorGeneration,
