@@ -52,6 +52,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         completedFrameRequestId = 0;
         blockedRevealReported = false;
         visible = false;
+        if (windowless != null) {
+            windowless.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
+        }
         if (root == null) createWindow(display, size, spec);
         else {
             root.setCornerRadiusDp(spec.cornerRadiusDp);
@@ -147,6 +150,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     public void onReverseSurfacesReady(int[] generations) {
         if (root == null) return;
         surfaceGenerations = generations.clone();
+        if (windowless != null) {
+            windowless.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
+        }
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         emit("reverse_overlay_surface", "state", "ready",
                 "request_id", requestId,
@@ -252,8 +258,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
         root = nextRoot;
         WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
-                windowContext, display, WindowlessOverlayHost.REVERSE_LAYER);
+                windowContext, display, WindowlessOverlayHost.REVERSE_LAYER,
+                "reverse", -1, eventSink);
         windowless = nextHost;
+        nextHost.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
         try {
             nextHost.attach(nextRoot, size.x, size.y, 0, 0, WINDOW_TITLE);
         } catch (Throwable error) {

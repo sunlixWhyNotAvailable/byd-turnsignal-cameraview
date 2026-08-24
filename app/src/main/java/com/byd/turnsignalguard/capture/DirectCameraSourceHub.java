@@ -20,9 +20,10 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.IdentityHashMap;
 import java.util.concurrent.Callable;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** Stable GPU fan-out boundary between full-size AVMCamera sources and logical consumers. */
 final class DirectCameraSourceHub
@@ -31,10 +32,20 @@ final class DirectCameraSourceHub
         void onConsumerFailure(Surface surface, int index, Throwable error);
         void onSourceFailure(int index, Throwable error);
         void onStats(int index, Stats stats);
+
+        /** Optional diagnostic callback; older listeners do not need to implement it. */
+        default void onTargetStall(Surface surface, int index, long swapWaitNs) {
+        }
+    }
+
+    interface WorkerFinalizer {
+        void dispatchClose() throws Exception;
+        void awaitClose() throws Exception;
     }
 
     private static final int CALL_TIMEOUT_MS = 1500;
     private static final long STATS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
+    private static final long STALL_REPORT_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final int MAX_INDEX = 4;
     private static final String LOG_TAG = "BydCameraProbe";
@@ -54,24 +65,16 @@ final class DirectCameraSourceHub
                     + "varying vec2 vTexCoord;\n"
                     + "void main(){ gl_FragColor=texture2D(uTexture,vTexCoord); }\n";
 
-    private final HandlerThread thread = new HandlerThread("direct-camera-source");
-    private final Source[] sources = new Source[MAX_INDEX + 1];
-    private final ArrayList<Target> targets = new ArrayList<>();
+    /** The coordinator owns the shared display/config and all identity routing. */
+    private final HandlerThread coordinatorThread =
+            new HandlerThread("direct-camera-source-coordinator");
+    private final SourceWorker[] workers = new SourceWorker[MAX_INDEX + 1];
+    private final IdentityHashMap<Surface, Target> targets = new IdentityHashMap<>();
     private final Listener listener;
-    private Handler handler;
+    private Handler coordinatorHandler;
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
-    private EGLContext context = EGL14.EGL_NO_CONTEXT;
-    private EGLSurface idleSurface = EGL14.EGL_NO_SURFACE;
     private EGLConfig config;
-    private int program;
-    private int positionLocation;
-    private int texCoordLocation;
-    private int matrixLocation;
-    private int textureLocation;
-    private FloatBuffer positions;
-    private FloatBuffer texCoords;
-    private boolean sourceFailureReported;
-    private boolean closed;
+    private volatile boolean closed;
 
     private DirectCameraSourceHub(Listener listener) {
         this.listener = listener;
@@ -79,11 +82,11 @@ final class DirectCameraSourceHub
 
     static DirectCameraSourceHub create(Listener listener) throws Exception {
         DirectCameraSourceHub result = new DirectCameraSourceHub(listener);
-        result.thread.start();
-        result.handler = new Handler(result.thread.getLooper());
+        result.coordinatorThread.start();
+        result.coordinatorHandler = new Handler(result.coordinatorThread.getLooper());
         try {
             result.call(() -> {
-                result.initializeGl();
+                result.initializeDisplay();
                 return null;
             });
             return result;
@@ -100,21 +103,46 @@ final class DirectCameraSourceHub
     @Override
     public Surface source(int index) throws Exception {
         requireIndex(index);
-        return call(() -> createSource(index).surface);
+        return call(() -> worker(index).sourceSurface());
     }
 
     @Override
     public void attach(Surface[] surfaces, int[] indexes) throws Exception {
+        if (surfaces == null || indexes == null || surfaces.length != indexes.length) {
+            throw new IllegalArgumentException("surface/index batch length mismatch");
+        }
         call(() -> {
-            int attached = 0;
+            ArrayList<Target> attached = new ArrayList<>(surfaces.length);
             try {
                 for (int i = 0; i < surfaces.length; i++) {
-                    attachTarget(surfaces[i], indexes[i]);
-                    attached++;
+                    requireIndex(indexes[i]);
+                    require(surfaces[i] != null, "downstream Surface is null");
+                    synchronized (targets) {
+                        if (targets.containsKey(surfaces[i])) {
+                            throw new IllegalStateException("downstream Surface is already attached");
+                        }
+                    }
+                    SourceWorker sourceWorker = worker(indexes[i]);
+                    Target target = sourceWorker.attachTarget(surfaces[i], indexes[i]);
+                    synchronized (targets) {
+                        targets.put(surfaces[i], target);
+                    }
+                    attached.add(target);
                 }
             } catch (Throwable error) {
-                for (int i = attached - 1; i >= 0; i--) detachTarget(surfaces[i]);
-                throw error;
+                for (int i = attached.size() - 1; i >= 0; i--) {
+                    Target target = attached.get(i);
+                    try {
+                        target.worker.detachTarget(target);
+                        synchronized (targets) {
+                            targets.remove(target.surface);
+                        }
+                    } catch (Throwable rollbackError) {
+                        error.addSuppressed(rollbackError);
+                    }
+                }
+                if (error instanceof Exception) throw (Exception) error;
+                throw new Exception(error);
             }
             return null;
         });
@@ -122,8 +150,26 @@ final class DirectCameraSourceHub
 
     @Override
     public void detach(Surface[] surfaces) throws Exception {
+        if (surfaces == null) return;
         call(() -> {
-            for (Surface surface : surfaces) detachTarget(surface);
+            Throwable first = null;
+            for (Surface surface : surfaces) {
+                Target target;
+                synchronized (targets) {
+                    target = targets.get(surface);
+                }
+                if (target == null) continue;
+                try {
+                    target.worker.detachTarget(target);
+                    synchronized (targets) {
+                        targets.remove(surface);
+                    }
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+            }
+            if (first instanceof Exception) throw (Exception) first;
+            if (first != null) throw new Exception(first);
             return null;
         });
     }
@@ -131,7 +177,12 @@ final class DirectCameraSourceHub
     @Override
     public void setActive(Surface surface, boolean active) throws Exception {
         call(() -> {
-            setTargetActive(surface, active);
+            Target target;
+            synchronized (targets) {
+                target = targets.get(surface);
+            }
+            if (target == null) throw new IllegalStateException("downstream Surface is not attached");
+            target.worker.setTargetActive(target, active);
             return null;
         });
     }
@@ -140,19 +191,42 @@ final class DirectCameraSourceHub
     public synchronized void close() {
         if (closed) return;
         closed = true;
+        Throwable first = null;
         try {
             callFinal(() -> {
-                releaseGl();
+                Throwable workerError = null;
+                try {
+                    closeWorkers(workers);
+                } catch (Throwable error) {
+                    workerError = error;
+                }
+                Arrays.fill(workers, null);
+                try {
+                    releaseDisplay();
+                } catch (Throwable error) {
+                    if (workerError == null) workerError = error;
+                    else workerError.addSuppressed(error);
+                }
+                synchronized (targets) {
+                    targets.clear();
+                }
+                if (workerError != null) {
+                    if (workerError instanceof Exception) throw (Exception) workerError;
+                    throw new Exception(workerError);
+                }
                 return null;
             });
         } catch (Throwable error) {
-            throw new IllegalStateException("camera source cleanup failed", error);
+            first = error;
         } finally {
-            thread.quitSafely();
+            coordinatorThread.quitSafely();
+        }
+        if (first != null) {
+            throw new IllegalStateException("camera source cleanup failed", first);
         }
     }
 
-    private void initializeGl() {
+    private void initializeDisplay() {
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         require(display != EGL14.EGL_NO_DISPLAY, "EGL display unavailable");
         require(EGL14.eglInitialize(display, null, 0, null, 0), "EGL init failed");
@@ -168,243 +242,486 @@ final class DirectCameraSourceHub
         require(EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0)
                 && count[0] > 0, "EGL config unavailable");
         config = configs[0];
-        context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
-                new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE}, 0);
-        require(context != EGL14.EGL_NO_CONTEXT, "EGL context failed");
-        idleSurface = EGL14.eglCreatePbufferSurface(display, config,
-                new int[]{EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE}, 0);
-        require(idleSurface != EGL14.EGL_NO_SURFACE, "EGL idle surface failed");
-        makeCurrent(idleSurface);
-
-        program = linkProgram(VERTEX_SHADER, FRAGMENT_SHADER);
-        positionLocation = GLES20.glGetAttribLocation(program, "aPosition");
-        texCoordLocation = GLES20.glGetAttribLocation(program, "aTexCoord");
-        matrixLocation = GLES20.glGetUniformLocation(program, "uTextureMatrix");
-        textureLocation = GLES20.glGetUniformLocation(program, "uTexture");
-        positions = buffer(new float[]{-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f});
-        texCoords = buffer(new float[]{0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f});
     }
 
-    private Source createSource(int index) {
-        Source existing = sources[index];
+    private void releaseDisplay() {
+        if (display == EGL14.EGL_NO_DISPLAY) return;
+        EGL14.eglTerminate(display);
+        display = EGL14.EGL_NO_DISPLAY;
+        config = null;
+    }
+
+    private SourceWorker worker(int index) throws Exception {
+        SourceWorker existing = workers[index];
         if (existing != null) return existing;
-        makeCurrent(idleSurface);
-        int[] names = new int[1];
-        GLES20.glGenTextures(1, names, 0);
-        require(names[0] != 0, "camera source texture unavailable");
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, names[0]);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        SurfaceTexture texture = new SurfaceTexture(names[0]);
-        texture.setDefaultBufferSize(1920, index == 0 ? 990 : 1300);
-        Source source = new Source(index, names[0], texture, new Surface(texture));
-        sources[index] = source;
-        texture.setOnFrameAvailableListener(ignored -> render(source), handler);
-        return source;
-    }
-
-    private void attachTarget(Surface surface, int index) {
-        requireIndex(index);
-        require(surface != null && surface.isValid(), "downstream Surface is invalid");
-        EGLSurface eglSurface = EGL14.eglCreateWindowSurface(display, config, surface,
-                new int[]{EGL14.EGL_NONE}, 0);
-        require(eglSurface != EGL14.EGL_NO_SURFACE, "downstream EGL surface failed");
-        targets.add(new Target(surface, index, eglSurface));
-    }
-
-    private void detachTarget(Surface surface) {
-        for (int i = targets.size() - 1; i >= 0; i--) {
-            Target target = targets.get(i);
-            if (target.surface != surface) continue;
-            EGL14.eglDestroySurface(display, target.eglSurface);
-            targets.remove(i);
+        SourceWorker created = new SourceWorker(index);
+        try {
+            created.start();
+            workers[index] = created;
+            return created;
+        } catch (Throwable error) {
+            try {
+                created.closeFinal();
+            } catch (Throwable closeError) {
+                error.addSuppressed(closeError);
+            }
+            throw error instanceof Exception ? (Exception) error : new Exception(error);
         }
     }
 
-    private void setTargetActive(Surface surface, boolean active) {
-        for (Target target : targets) {
-            if (target.surface != surface) continue;
-            target.active = active;
-            return;
+    private void forgetTargetFromWorker(Target target) {
+        synchronized (targets) {
+            if (targets.get(target.surface) == target) targets.remove(target.surface);
         }
-        throw new IllegalStateException("downstream Surface is not attached");
     }
 
     static boolean shouldRenderTarget(int sourceIndex, int targetIndex, boolean active) {
         return active && sourceIndex == targetIndex;
     }
 
-    private void render(Source source) {
-        if (closed || sourceFailureReported) return;
-        long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
-        long updatedNs;
-        long updateNs;
-        long producerTimestampNs;
-        try {
-            makeCurrent(idleSurface);
-            long updateStartedNs = SystemClock.elapsedRealtimeNanos();
-            source.texture.updateTexImage();
-            updatedNs = SystemClock.elapsedRealtimeNanos();
-            updateNs = updatedNs - updateStartedNs;
-            source.texture.getTransformMatrix(source.matrix);
-            producerTimestampNs = source.texture.getTimestamp();
-            if (!source.matrixReported) {
-                source.matrixReported = true;
-                Log.i(LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
-                        + "\"source\":\"direct_camera_source_hub\","
-                        + "\"stage\":\"avm_source\","
-                        + "\"preview_index\":" + source.index + ","
-                        + "\"surface_texture_id\":"
-                        + System.identityHashCode(source.texture) + ","
-                        + "\"matrix\":" + Arrays.toString(source.matrix) + "}");
-            }
-        } catch (Throwable error) {
-            sourceFailureReported = true;
-            listener.onSourceFailure(source.index, error);
-            return;
+    static String workerThreadName(int index) {
+        requireIndex(index);
+        return "direct-camera-source-" + index;
+    }
+
+    private final class SourceWorker implements WorkerFinalizer {
+        final int index;
+        final HandlerThread thread;
+        final ArrayList<Target> targets = new ArrayList<>();
+        final StatsWindow stats = new StatsWindow();
+        final Object frameState = new Object();
+        Handler handler;
+        EGLContext context = EGL14.EGL_NO_CONTEXT;
+        EGLSurface idleSurface = EGL14.EGL_NO_SURFACE;
+        int program;
+        int positionLocation;
+        int texCoordLocation;
+        int matrixLocation;
+        int textureLocation;
+        FloatBuffer positions;
+        FloatBuffer texCoords;
+        int textureName;
+        SurfaceTexture texture;
+        Surface surface;
+        final float[] matrix = new float[16];
+        final int[] targetWidths = new int[8];
+        final int[] targetHeights = new int[8];
+        boolean matrixReported;
+        boolean sourceFailureReported;
+        boolean renderQueued;
+        int pendingFrameSignals;
+        long firstPendingSignalNs = -1L;
+        SerializedCall<Void> closeCall;
+
+        SourceWorker(int index) {
+            this.index = index;
+            this.thread = new HandlerThread(workerThreadName(index));
         }
-        int targetCount = 0;
-        int swapCount = 0;
-        long preSwapTotalNs = 0L;
-        long preSwapMaxNs = 0L;
-        long swapWaitTotalNs = 0L;
-        long swapWaitMaxNs = 0L;
-        long drawMaxNs = 0L;
-        long targetPixelsCurrent = 0L;
-        int targetWidthMax = 0;
-        int targetHeightMax = 0;
-        int targetDimensionCount = 0;
-        for (int i = targets.size() - 1; i >= 0; i--) {
-            Target target = targets.get(i);
-            if (!shouldRenderTarget(source.index, target.index, target.active)) continue;
-            try {
-                draw(source, target, source.drawTiming);
-                targetCount++;
-                preSwapTotalNs += source.drawTiming.preSwapNs;
-                preSwapMaxNs = Math.max(preSwapMaxNs, source.drawTiming.preSwapNs);
-                swapWaitTotalNs += source.drawTiming.swapWaitNs;
-                swapWaitMaxNs = Math.max(swapWaitMaxNs, source.drawTiming.swapWaitNs);
-                drawMaxNs = Math.max(drawMaxNs,
-                        source.drawTiming.preSwapNs + source.drawTiming.swapWaitNs);
-                targetPixelsCurrent += (long) source.drawTiming.width
-                        * source.drawTiming.height;
-                targetWidthMax = Math.max(targetWidthMax, source.drawTiming.width);
-                targetHeightMax = Math.max(targetHeightMax, source.drawTiming.height);
-                if (targetDimensionCount < source.targetWidths.length) {
-                    source.targetWidths[targetDimensionCount] = source.drawTiming.width;
-                    source.targetHeights[targetDimensionCount] = source.drawTiming.height;
-                    targetDimensionCount++;
-                }
-                swapCount++;
-            } catch (Throwable error) {
+
+        void start() throws Exception {
+            thread.start();
+            handler = new Handler(thread.getLooper());
+            call(() -> {
+                initialize();
+                return null;
+            });
+        }
+
+        Surface sourceSurface() throws Exception {
+            return call(() -> {
+                if (surface == null) createSource();
+                return surface;
+            });
+        }
+
+        Target attachTarget(Surface value, int targetIndex) throws Exception {
+            return call(() -> {
+                require(value != null && value.isValid(), "downstream Surface is invalid");
+                EGLSurface eglSurface = EGL14.eglCreateWindowSurface(display, config, value,
+                        new int[]{EGL14.EGL_NONE}, 0);
+                require(eglSurface != EGL14.EGL_NO_SURFACE, "downstream EGL surface failed");
+                Target target = new Target(this, value, targetIndex, eglSurface);
+                targets.add(target);
+                return target;
+            });
+        }
+
+        void detachTarget(Target target) throws Exception {
+            call(() -> {
+                if (!targets.remove(target)) return null;
                 EGL14.eglDestroySurface(display, target.eglSurface);
-                targets.remove(i);
-                listener.onConsumerFailure(target.surface, target.index, error);
+                return null;
+            });
+        }
+
+        void setTargetActive(Target target, boolean active) throws Exception {
+            call(() -> {
+                if (!targets.contains(target)) {
+                    throw new IllegalStateException("downstream Surface is not attached");
+                }
+                target.active = active;
+                return null;
+            });
+        }
+
+        void closeFinal() throws Exception {
+            closeWorkers(new WorkerFinalizer[]{this});
+        }
+
+        @Override
+        public void dispatchClose() throws Exception {
+            if (closeCall != null) return;
+            SerializedCall<Void> call = new SerializedCall<>();
+            if (!handler.post(() -> {
+                try {
+                    call.run(() -> {
+                        releaseResources();
+                        return null;
+                    });
+                } finally {
+                    thread.quitSafely();
+                }
+            })) {
+                thread.quitSafely();
+                throw new IllegalStateException(
+                        "camera source worker stopped before cleanup");
+            }
+            closeCall = call;
+        }
+
+        @Override
+        public void awaitClose() throws Exception {
+            try {
+                if (closeCall != null) {
+                    callUninterruptibly(() -> awaitFinalizer(closeCall));
+                }
+            } finally {
+                thread.quitSafely();
+                callUninterruptibly(() -> {
+                    thread.join();
+                    return null;
+                });
             }
         }
-        makeCurrent(idleSurface);
-        Stats stats = source.stats.record(
-                callbackStartedNs,
-                producerTimestampNs,
-                updatedNs,
-                updateNs,
-                preSwapTotalNs,
-                preSwapMaxNs,
-                swapWaitTotalNs,
-                swapWaitMaxNs,
-                drawMaxNs,
-                swapCount,
-                SystemClock.elapsedRealtimeNanos() - callbackStartedNs,
-                targetCount,
-                targetPixelsCurrent,
-                targetWidthMax,
-                targetHeightMax,
-                source.targetWidths,
-                source.targetHeights,
-                targetDimensionCount,
-                1920,
-                source.index == 0 ? 990 : 1300);
-        if (stats != null) listener.onStats(source.index, stats);
-    }
 
-    private void draw(Source source, Target target, DrawTiming timing) {
-        long startedNs = SystemClock.elapsedRealtimeNanos();
-        makeCurrent(target.eglSurface);
-        int[] width = new int[1];
-        int[] height = new int[1];
-        require(EGL14.eglQuerySurface(display, target.eglSurface, EGL14.EGL_WIDTH, width, 0)
-                && EGL14.eglQuerySurface(display, target.eglSurface, EGL14.EGL_HEIGHT, height, 0),
-                "downstream size query failed");
-        GLES20.glViewport(0, 0, width[0], height[0]);
-        GLES20.glUseProgram(program);
-        positions.position(0);
-        texCoords.position(0);
-        GLES20.glEnableVertexAttribArray(positionLocation);
-        GLES20.glEnableVertexAttribArray(texCoordLocation);
-        GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT,
-                false, 0, positions);
-        GLES20.glVertexAttribPointer(texCoordLocation, 2, GLES20.GL_FLOAT,
-                false, 0, texCoords);
-        GLES20.glUniformMatrix4fv(matrixLocation, 1, false, source.matrix, 0);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, source.textureName);
-        GLES20.glUniform1i(textureLocation, 0);
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        require(GLES20.glGetError() == GLES20.GL_NO_ERROR, "GPU fanout draw failed");
-        long swapStartedNs = SystemClock.elapsedRealtimeNanos();
-        require(EGL14.eglSwapBuffers(display, target.eglSurface),
-                "downstream buffer swap failed");
-        timing.preSwapNs = swapStartedNs - startedNs;
-        timing.swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
-        timing.width = width[0];
-        timing.height = height[0];
-    }
+        private void initialize() {
+            context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
+                    new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE}, 0);
+            require(context != EGL14.EGL_NO_CONTEXT, "EGL context failed");
+            idleSurface = EGL14.eglCreatePbufferSurface(display, config,
+                    new int[]{EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE}, 0);
+            require(idleSurface != EGL14.EGL_NO_SURFACE, "EGL idle surface failed");
+            makeCurrent(idleSurface);
+            program = linkProgram(VERTEX_SHADER, FRAGMENT_SHADER);
+            positionLocation = GLES20.glGetAttribLocation(program, "aPosition");
+            texCoordLocation = GLES20.glGetAttribLocation(program, "aTexCoord");
+            matrixLocation = GLES20.glGetUniformLocation(program, "uTextureMatrix");
+            textureLocation = GLES20.glGetUniformLocation(program, "uTexture");
+            positions = buffer(new float[]{-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f});
+            texCoords = buffer(new float[]{0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f});
+            createSource();
+        }
 
-    private void releaseGl() {
-        if (display == EGL14.EGL_NO_DISPLAY) return;
-        makeCurrent(idleSurface);
-        for (Target target : targets) {
-            EGL14.eglDestroySurface(display, target.eglSurface);
+        private void createSource() {
+            int[] names = new int[1];
+            GLES20.glGenTextures(1, names, 0);
+            require(names[0] != 0, "camera source texture unavailable");
+            textureName = names[0];
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureName);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            texture = new SurfaceTexture(textureName);
+            texture.setDefaultBufferSize(1920, index == 0 ? 990 : 1300);
+            surface = new Surface(texture);
+            texture.setOnFrameAvailableListener(ignored -> signalFrame(), handler);
+            Log.i(LOG_TAG, "{\"kind\":\"camera_source_worker_started\","
+                    + "\"source_index\":" + index + ",\"worker\":\""
+                    + workerThreadName(index) + "\"}");
         }
-        targets.clear();
-        for (int i = 0; i < sources.length; i++) {
-            Source source = sources[i];
-            if (source == null) continue;
-            source.texture.setOnFrameAvailableListener(null);
-            source.surface.release();
-            source.texture.release();
-            GLES20.glDeleteTextures(1, new int[]{source.textureName}, 0);
-            sources[i] = null;
-        }
-        if (program != 0) GLES20.glDeleteProgram(program);
-        EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE,
-                EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-        if (idleSurface != EGL14.EGL_NO_SURFACE) {
-            EGL14.eglDestroySurface(display, idleSurface);
-        }
-        if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context);
-        EGL14.eglTerminate(display);
-        idleSurface = EGL14.EGL_NO_SURFACE;
-        context = EGL14.EGL_NO_CONTEXT;
-        display = EGL14.EGL_NO_DISPLAY;
-    }
 
-    private void makeCurrent(EGLSurface surface) {
-        require(EGL14.eglMakeCurrent(display, surface, surface, context),
-                "EGL makeCurrent failed");
+        private void signalFrame() {
+            long nowNs = SystemClock.elapsedRealtimeNanos();
+            boolean post;
+            synchronized (frameState) {
+                pendingFrameSignals++;
+                if (firstPendingSignalNs < 0L) firstPendingSignalNs = nowNs;
+                post = !renderQueued;
+                renderQueued = true;
+            }
+            if (post) handler.post(this::render);
+        }
+
+        private void render() {
+            long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
+            int frameSignals;
+            long queueDelayNs;
+            synchronized (frameState) {
+                frameSignals = pendingFrameSignals;
+                pendingFrameSignals = 0;
+                queueDelayNs = firstPendingSignalNs < 0L
+                        ? 0L : Math.max(0L, callbackStartedNs - firstPendingSignalNs);
+                firstPendingSignalNs = -1L;
+                renderQueued = false;
+            }
+            if (closed || sourceFailureReported || texture == null) return;
+            long updatedNs;
+            long updateNs;
+            long producerTimestampNs;
+            try {
+                makeCurrent(idleSurface);
+                long updateStartedNs = SystemClock.elapsedRealtimeNanos();
+                texture.updateTexImage();
+                updatedNs = SystemClock.elapsedRealtimeNanos();
+                updateNs = updatedNs - updateStartedNs;
+                texture.getTransformMatrix(matrix);
+                producerTimestampNs = texture.getTimestamp();
+                if (!matrixReported) {
+                    matrixReported = true;
+                    Log.i(LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
+                            + "\"source\":\"direct_camera_source_hub\","
+                            + "\"stage\":\"avm_source\",\"preview_index\":"
+                            + index + ",\"surface_texture_id\":"
+                            + System.identityHashCode(texture) + ",\"matrix\":"
+                            + Arrays.toString(matrix) + ",\"worker\":\""
+                            + workerThreadName(index) + "\"}");
+                }
+            } catch (Throwable error) {
+                reportSourceFailure(error);
+                return;
+            }
+            int targetCount = 0;
+            int swapCount = 0;
+            long preSwapTotalNs = 0L;
+            long preSwapMaxNs = 0L;
+            long swapWaitTotalNs = 0L;
+            long swapWaitMaxNs = 0L;
+            long drawMaxNs = 0L;
+            long targetPixelsCurrent = 0L;
+            int targetWidthMax = 0;
+            int targetHeightMax = 0;
+            int targetDimensionCount = 0;
+            for (int i = targets.size() - 1; i >= 0; i--) {
+                Target target = targets.get(i);
+                if (!shouldRenderTarget(index, target.index, target.active)) continue;
+                try {
+                    DrawTiming timing = draw(target);
+                    targetCount++;
+                    preSwapTotalNs += timing.preSwapNs;
+                    preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
+                    swapWaitTotalNs += timing.swapWaitNs;
+                    swapWaitMaxNs = Math.max(swapWaitMaxNs, timing.swapWaitNs);
+                    drawMaxNs = Math.max(drawMaxNs, timing.preSwapNs + timing.swapWaitNs);
+                    targetPixelsCurrent += (long) timing.width * timing.height;
+                    targetWidthMax = Math.max(targetWidthMax, timing.width);
+                    targetHeightMax = Math.max(targetHeightMax, timing.height);
+                    if (targetDimensionCount < targetWidths.length) {
+                        targetWidths[targetDimensionCount] = timing.width;
+                        targetHeights[targetDimensionCount] = timing.height;
+                        targetDimensionCount++;
+                    }
+                    swapCount++;
+                } catch (Throwable error) {
+                    EGL14.eglDestroySurface(display, target.eglSurface);
+                    targets.remove(i);
+                    forgetTargetFromWorker(target);
+                    Surface failedSurface = target.surface;
+                    int failedIndex = target.index;
+                    postCoordinator(() -> listener.onConsumerFailure(
+                            failedSurface, failedIndex, error));
+                }
+            }
+            try {
+                makeCurrent(idleSurface);
+            } catch (Throwable error) {
+                reportSourceFailure(error);
+                return;
+            }
+            Stats report = stats.record(
+                    callbackStartedNs,
+                    producerTimestampNs,
+                    updatedNs,
+                    updateNs,
+                    preSwapTotalNs,
+                    preSwapMaxNs,
+                    swapWaitTotalNs,
+                    swapWaitMaxNs,
+                    drawMaxNs,
+                    swapCount,
+                    SystemClock.elapsedRealtimeNanos() - callbackStartedNs,
+                    frameSignals,
+                    Math.max(0, frameSignals - 1),
+                    queueDelayNs,
+                    targetCount,
+                    targetPixelsCurrent,
+                    targetWidthMax,
+                    targetHeightMax,
+                    targetWidths,
+                    targetHeights,
+                    targetDimensionCount,
+                    1920,
+                    index == 0 ? 990 : 1300,
+                    workerThreadName(index));
+            if (report != null) listener.onStats(index, report);
+        }
+
+        private void postCoordinator(Runnable action) {
+            if (!coordinatorHandler.post(action)) {
+                Log.w(LOG_TAG, "camera source coordinator stopped before failure callback");
+            }
+        }
+
+        private void reportSourceFailure(Throwable error) {
+            if (sourceFailureReported) return;
+            sourceFailureReported = true;
+            postCoordinator(() -> listener.onSourceFailure(index, error));
+        }
+
+        private DrawTiming draw(Target target) {
+            long startedNs = SystemClock.elapsedRealtimeNanos();
+            makeCurrent(target.eglSurface);
+            int[] width = new int[1];
+            int[] height = new int[1];
+            require(EGL14.eglQuerySurface(display, target.eglSurface, EGL14.EGL_WIDTH, width, 0)
+                    && EGL14.eglQuerySurface(display, target.eglSurface,
+                    EGL14.EGL_HEIGHT, height, 0), "downstream size query failed");
+            GLES20.glViewport(0, 0, width[0], height[0]);
+            GLES20.glUseProgram(program);
+            positions.position(0);
+            texCoords.position(0);
+            GLES20.glEnableVertexAttribArray(positionLocation);
+            GLES20.glEnableVertexAttribArray(texCoordLocation);
+            GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT,
+                    false, 0, positions);
+            GLES20.glVertexAttribPointer(texCoordLocation, 2, GLES20.GL_FLOAT,
+                    false, 0, texCoords);
+            GLES20.glUniformMatrix4fv(matrixLocation, 1, false, matrix, 0);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureName);
+            GLES20.glUniform1i(textureLocation, 0);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            require(GLES20.glGetError() == GLES20.GL_NO_ERROR, "GPU fanout draw failed");
+            long swapStartedNs = SystemClock.elapsedRealtimeNanos();
+            require(EGL14.eglSwapBuffers(display, target.eglSurface),
+                    "downstream buffer swap failed");
+            long swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+            if (swapWaitNs >= TimeUnit.MILLISECONDS.toNanos(100)
+                    && swapStartedNs - target.lastStallReportNs >= STALL_REPORT_INTERVAL_NS) {
+                target.lastStallReportNs = swapStartedNs;
+                try {
+                    listener.onTargetStall(target.surface, target.index, swapWaitNs);
+                } catch (Throwable error) {
+                    Log.w(LOG_TAG, "target stall listener failed", error);
+                }
+            }
+            DrawTiming timing = new DrawTiming();
+            timing.preSwapNs = swapStartedNs - startedNs;
+            timing.swapWaitNs = swapWaitNs;
+            timing.width = width[0];
+            timing.height = height[0];
+            return timing;
+        }
+
+        private void releaseResources() {
+            Throwable first = null;
+            try {
+                if (display != EGL14.EGL_NO_DISPLAY
+                        && context != EGL14.EGL_NO_CONTEXT
+                        && idleSurface != EGL14.EGL_NO_SURFACE) {
+                    EGL14.eglMakeCurrent(display, idleSurface, idleSurface, context);
+                }
+            } catch (Throwable error) {
+                first = error;
+            }
+            for (Target target : new ArrayList<>(targets)) {
+                try {
+                    EGL14.eglDestroySurface(display, target.eglSurface);
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+            }
+            targets.clear();
+            if (surface != null) {
+                try {
+                    surface.release();
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+                surface = null;
+            }
+            if (texture != null) {
+                try {
+                    texture.setOnFrameAvailableListener(null);
+                    texture.release();
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+                texture = null;
+            }
+            if (textureName != 0) {
+                try {
+                    GLES20.glDeleteTextures(1, new int[]{textureName}, 0);
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+                textureName = 0;
+            }
+            if (program != 0) {
+                try {
+                    GLES20.glDeleteProgram(program);
+                } catch (Throwable error) {
+                    if (first == null) first = error;
+                }
+                program = 0;
+            }
+            try {
+                if (display != EGL14.EGL_NO_DISPLAY) {
+                    EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE,
+                            EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+                    if (idleSurface != EGL14.EGL_NO_SURFACE) {
+                        EGL14.eglDestroySurface(display, idleSurface);
+                    }
+                    if (context != EGL14.EGL_NO_CONTEXT) {
+                        EGL14.eglDestroyContext(display, context);
+                    }
+                }
+            } catch (Throwable error) {
+                if (first == null) first = error;
+            }
+            idleSurface = EGL14.EGL_NO_SURFACE;
+            context = EGL14.EGL_NO_CONTEXT;
+            if (first != null) throw new IllegalStateException("source worker cleanup failed", first);
+        }
+
+        private void makeCurrent(EGLSurface value) {
+            require(EGL14.eglMakeCurrent(display, value, value, context),
+                    "EGL makeCurrent failed");
+        }
+
+        private <T> T call(Callable<T> callable) throws Exception {
+            if (Looper.myLooper() == thread.getLooper()) return callable.call();
+            SerializedCall<T> call = new SerializedCall<>();
+            if (!handler.post(() -> call.run(callable))) {
+                throw new IllegalStateException("camera source worker stopped");
+            }
+            if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
+                throw new TimeoutException("camera source worker operation queue timed out");
+            }
+            return call.result();
+        }
+
     }
 
     private <T> T call(Callable<T> callable) throws Exception {
-        if (Looper.myLooper() == thread.getLooper()) return callable.call();
+        if (Looper.myLooper() == coordinatorThread.getLooper()) return callable.call();
         SerializedCall<T> call = new SerializedCall<>();
-        if (!handler.post(() -> call.run(callable))) {
-            throw new IllegalStateException("camera source thread stopped");
+        if (!coordinatorHandler.post(() -> call.run(callable))) {
+            throw new IllegalStateException("camera source coordinator stopped");
         }
         if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
             throw new TimeoutException("camera source operation queue timed out");
@@ -413,16 +730,56 @@ final class DirectCameraSourceHub
     }
 
     private <T> T callFinal(Callable<T> callable) throws Exception {
-        if (Looper.myLooper() == thread.getLooper()) return callable.call();
+        if (Looper.myLooper() == coordinatorThread.getLooper()) return callable.call();
         SerializedCall<T> call = new SerializedCall<>();
-        if (!handler.post(() -> call.run(callable))) {
-            throw new IllegalStateException("camera source thread stopped before cleanup");
+        if (!coordinatorHandler.post(() -> call.run(callable))) {
+            throw new IllegalStateException("camera source coordinator stopped before cleanup");
         }
         return awaitFinalizer(call);
     }
 
     static <T> T awaitFinalizer(SerializedCall<T> call) throws Exception {
         return call.result();
+    }
+
+    static <T> T callUninterruptibly(Callable<T> callable) throws Exception {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    return callable.call();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    static void closeWorkers(WorkerFinalizer[] finalizers) throws Exception {
+        if (finalizers == null) return;
+        Throwable first = null;
+        for (WorkerFinalizer finalizer : finalizers) {
+            if (finalizer == null) continue;
+            try {
+                finalizer.dispatchClose();
+            } catch (Throwable error) {
+                if (first == null) first = error;
+                else first.addSuppressed(error);
+            }
+        }
+        for (WorkerFinalizer finalizer : finalizers) {
+            if (finalizer == null) continue;
+            try {
+                finalizer.awaitClose();
+            } catch (Throwable error) {
+                if (first == null) first = error;
+                else first.addSuppressed(error);
+            }
+        }
+        if (first instanceof Exception) throw (Exception) first;
+        if (first != null) throw new Exception(first);
     }
 
     static final class SerializedCall<T> {
@@ -509,29 +866,16 @@ final class DirectCameraSourceHub
         if (!value) throw new IllegalStateException(message);
     }
 
-    private static final class Source {
-        final int index;
-        final int textureName;
-        final SurfaceTexture texture;
-        final Surface surface;
-        final float[] matrix = new float[16];
-        final StatsWindow stats = new StatsWindow();
-        final DrawTiming drawTiming = new DrawTiming();
-        final int[] targetWidths = new int[8];
-        final int[] targetHeights = new int[8];
-        boolean matrixReported;
-
-        Source(int index, int textureName, SurfaceTexture texture, Surface surface) {
-            this.index = index;
-            this.textureName = textureName;
-            this.texture = texture;
-            this.surface = surface;
-        }
-    }
-
     static final class Stats {
         final long intervalNs;
         final int callbacks;
+        final int frameSignals;
+        final int renderedFrames;
+        final int coalescedFrames;
+        final long queueDelayTotalNs;
+        final long queueDelayAvgNs;
+        final long queueDelayMaxNs;
+        final String workerName;
         final int callbackGaps;
         final long callbackGapTotalNs;
         final long callbackGapMaxNs;
@@ -570,6 +914,12 @@ final class DirectCameraSourceHub
         Stats(
                 long intervalNs,
                 int callbacks,
+                int frameSignals,
+                int renderedFrames,
+                int coalescedFrames,
+                long queueDelayTotalNs,
+                long queueDelayMaxNs,
+                String workerName,
                 int callbackGaps,
                 long callbackGapTotalNs,
                 long callbackGapMaxNs,
@@ -606,6 +956,14 @@ final class DirectCameraSourceHub
                 int sourceHeight) {
             this.intervalNs = intervalNs;
             this.callbacks = callbacks;
+            this.frameSignals = frameSignals;
+            this.renderedFrames = renderedFrames;
+            this.coalescedFrames = coalescedFrames;
+            this.queueDelayTotalNs = queueDelayTotalNs;
+            this.queueDelayAvgNs = renderedFrames <= 0
+                    ? 0L : queueDelayTotalNs / renderedFrames;
+            this.queueDelayMaxNs = queueDelayMaxNs;
+            this.workerName = workerName;
             this.callbackGaps = callbackGaps;
             this.callbackGapTotalNs = callbackGapTotalNs;
             this.callbackGapMaxNs = callbackGapMaxNs;
@@ -647,6 +1005,11 @@ final class DirectCameraSourceHub
         private long startedNs = -1L;
         private long previousCallbackNs = -1L;
         private int callbacks;
+        private int frameSignals;
+        private int renderedFrames;
+        private int coalescedFrames;
+        private long queueDelayTotalNs;
+        private long queueDelayMaxNs;
         private int callbackGaps;
         private long callbackGapTotalNs;
         private long callbackGapMaxNs;
@@ -700,6 +1063,39 @@ final class DirectCameraSourceHub
                 int frameTargetCount,
                 int sourceWidth,
                 int sourceHeight) {
+            return record(callbackNs, producerTimestampNs, updatedNs, updateNs,
+                    framePreSwapTotalNs, framePreSwapMaxNs, frameSwapWaitTotalNs,
+                    frameSwapWaitMaxNs, frameDrawMaxNs, frameSwaps, renderNs,
+                    1, 0, 0L, targetsCurrent, targetPixelsCurrent,
+                    frameTargetWidthMax, frameTargetHeightMax, frameTargetWidths,
+                    frameTargetHeights, frameTargetCount, sourceWidth, sourceHeight, "");
+        }
+
+        Stats record(
+                long callbackNs,
+                long producerTimestampNs,
+                long updatedNs,
+                long updateNs,
+                long framePreSwapTotalNs,
+                long framePreSwapMaxNs,
+                long frameSwapWaitTotalNs,
+                long frameSwapWaitMaxNs,
+                long frameDrawMaxNs,
+                int frameSwaps,
+                long renderNs,
+                int frameSignalCount,
+                int frameCoalescedCount,
+                long frameQueueDelayNs,
+                int targetsCurrent,
+                long targetPixelsCurrent,
+                int frameTargetWidthMax,
+                int frameTargetHeightMax,
+                int[] frameTargetWidths,
+                int[] frameTargetHeights,
+                int frameTargetCount,
+                int sourceWidth,
+                int sourceHeight,
+                String workerName) {
             if (startedNs < 0L) startedNs = callbackNs;
             if (previousCallbackNs >= 0L) {
                 long gap = Math.max(0L, callbackNs - previousCallbackNs);
@@ -709,6 +1105,11 @@ final class DirectCameraSourceHub
             }
             previousCallbackNs = callbackNs;
             callbacks++;
+            frameSignals += Math.max(0, frameSignalCount);
+            renderedFrames++;
+            coalescedFrames += Math.max(0, frameCoalescedCount);
+            queueDelayTotalNs += Math.max(0L, frameQueueDelayNs);
+            queueDelayMaxNs = Math.max(queueDelayMaxNs, frameQueueDelayNs);
             recordProducerTimestamp(producerTimestampNs, updatedNs);
             updateTotalNs += Math.max(0L, updateNs);
             updateMaxNs = Math.max(updateMaxNs, updateNs);
@@ -725,26 +1126,24 @@ final class DirectCameraSourceHub
             targetWidthMax = Math.max(targetWidthMax, frameTargetWidthMax);
             targetHeightMax = Math.max(targetHeightMax, frameTargetHeightMax);
             if (callbackNs - startedNs < STATS_INTERVAL_NS) return null;
-
             targetDimensions = formatDimensions(
                     frameTargetWidths, frameTargetHeights, frameTargetCount);
-
             Stats result = new Stats(
                     callbackNs - startedNs,
-                    callbacks, callbackGaps, callbackGapTotalNs, callbackGapMaxNs,
+                    callbacks, frameSignals, renderedFrames, coalescedFrames,
+                    queueDelayTotalNs, queueDelayMaxNs, workerName,
+                    callbackGaps, callbackGapTotalNs, callbackGapMaxNs,
                     updateTotalNs, updateMaxNs,
                     producerTimestampDeltas, producerTimestampDeltaTotalNs,
                     producerTimestampDeltaMinNs == Long.MAX_VALUE
                             ? 0L : producerTimestampDeltaMinNs,
                     producerTimestampDeltaMaxNs, producerTimestampRepeated,
                     producerTimestampInvalid, frameAgeSamples, frameAgeNonPositive,
-                    frameAgeFuture,
-                    frameAgeStale, frameAgeTotalNs,
-                    frameAgeMaxNs, swaps, preSwapTotalNs, preSwapMaxNs,
-                    swapWaitTotalNs, swapWaitMaxNs, drawMaxNs,
-                    renderTotalNs, renderMaxNs, targetsCurrent, targetsMax,
-                    targetPixelsCurrent, targetPixelsMax, targetWidthMax, targetHeightMax,
-                    targetDimensions,
+                    frameAgeFuture, frameAgeStale, frameAgeTotalNs, frameAgeMaxNs,
+                    swaps, preSwapTotalNs, preSwapMaxNs, swapWaitTotalNs,
+                    swapWaitMaxNs, drawMaxNs, renderTotalNs, renderMaxNs,
+                    targetsCurrent, targetsMax, targetPixelsCurrent, targetPixelsMax,
+                    targetWidthMax, targetHeightMax, targetDimensions,
                     sourceWidth, sourceHeight);
             reset(callbackNs);
             return result;
@@ -800,7 +1199,13 @@ final class DirectCameraSourceHub
 
         private void reset(long callbackNs) {
             startedNs = callbackNs;
+            previousCallbackNs = -1L;
             callbacks = 0;
+            frameSignals = 0;
+            renderedFrames = 0;
+            coalescedFrames = 0;
+            queueDelayTotalNs = 0L;
+            queueDelayMaxNs = 0L;
             callbackGaps = 0;
             callbackGapTotalNs = 0L;
             callbackGapMaxNs = 0L;
@@ -841,13 +1246,16 @@ final class DirectCameraSourceHub
         int height;
     }
 
-    private static final class Target {
+    private final class Target {
+        final SourceWorker worker;
         final Surface surface;
         final int index;
         final EGLSurface eglSurface;
+        long lastStallReportNs;
         boolean active = true;
 
-        Target(Surface surface, int index, EGLSurface eglSurface) {
+        Target(SourceWorker worker, Surface surface, int index, EGLSurface eglSurface) {
+            this.worker = worker;
             this.surface = surface;
             this.index = index;
             this.eglSurface = eglSurface;

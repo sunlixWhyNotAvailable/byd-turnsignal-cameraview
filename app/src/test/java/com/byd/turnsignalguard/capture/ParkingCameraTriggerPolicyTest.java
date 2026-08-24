@@ -9,10 +9,22 @@ import static org.junit.Assert.assertTrue;
 public final class ParkingCameraTriggerPolicyTest {
     @Test
     public void distanceAndSpeedBoundariesAreInclusive() {
-        assertTrue(ParkingCameraTriggerPolicy.isDistanceTriggered(true, 30, 30));
-        assertFalse(ParkingCameraTriggerPolicy.isDistanceTriggered(true, 31, 30));
-        assertTrue(ParkingCameraTriggerPolicy.isSpeedAllowed(true, 10.0f, 10));
-        assertFalse(ParkingCameraTriggerPolicy.isSpeedAllowed(true, 10.1f, 10));
+        ParkingCameraSettings.Rule[] rules = rules();
+        rules[ParkingCameraProfile.FL] = rules[ParkingCameraProfile.FL].withEnabled(true);
+        int[] raw = new int[ParkingCameraProfile.allRadarFids().length];
+        boolean[] valid = new boolean[raw.length];
+        raw[0] = 30;
+        valid[0] = true;
+        int frontLeft = ParkingCameraProfile.of(ParkingCameraProfile.FL).bit();
+
+        assertEquals(frontLeft, evaluateOnce(rules, 10, raw, valid,
+                10.0f, true, 0L, 0L));
+        raw[0] = 31;
+        assertEquals(0, evaluateOnce(rules, 10, raw, valid,
+                10.0f, true, 0L, 0L));
+        raw[0] = 30;
+        assertEquals(0, evaluateOnce(rules, 10, raw, valid,
+                10.1f, true, 0L, 0L));
     }
 
     @Test
@@ -36,13 +48,13 @@ public final class ParkingCameraTriggerPolicyTest {
         boolean[] valid = new boolean[8];
         raw[0] = 30;
         valid[0] = true;
-        assertEquals(1, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(1, evaluateOnce(
                 rules, 10, raw, valid, 10.0f, true, 0L, 0L));
-        assertEquals(1, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(1, evaluateOnce(
                 rules, 10, raw, valid, 10.0f, true, 1_000L, 1_000L));
-        assertEquals(0, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(0, evaluateOnce(
                 rules, 10, raw, valid, 10.0f, true, 1_000L, 1_501L));
-        assertEquals(0, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(0, evaluateOnce(
                 rules, 10, raw, valid, 11.0f, true, 1_000L, 1_000L));
     }
 
@@ -58,11 +70,11 @@ public final class ParkingCameraTriggerPolicyTest {
         int expected = ParkingCameraProfile.of(ParkingCameraProfile.FRONT).bit()
                 | ParkingCameraProfile.of(ParkingCameraProfile.REAR).bit();
 
-        assertEquals(expected, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(expected, evaluateOnce(
                 rules, 10, raw, valid, 0.0f, true, 0L, 0L));
         valid[2] = false;
         valid[5] = false;
-        assertEquals(0, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(0, evaluateOnce(
                 rules, 10, raw, valid, 0.0f, true, 0L, 0L));
     }
 
@@ -80,10 +92,10 @@ public final class ParkingCameraTriggerPolicyTest {
             valid[8 + i] = true;
         }
         assertEquals(ParkingCameraProfile.of(ParkingCameraProfile.LEFT).bit(),
-                ParkingCameraTriggerPolicy.desiredMask(
+                evaluateOnce(
                         rules, 10, raw, valid, 0.0f, true, 0L, 0L));
         raw[10] = 151;
-        assertEquals(0, ParkingCameraTriggerPolicy.desiredMask(
+        assertEquals(0, evaluateOnce(
                 rules, 10, raw, valid, 0.0f, true, 0L, 0L));
     }
 
@@ -114,5 +126,15 @@ public final class ParkingCameraTriggerPolicyTest {
             rules[profile.id] = ParkingCameraSettings.defaults(profile);
         }
         return rules;
+    }
+
+    private static int evaluateOnce(
+            ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
+            int[] radarRaw, boolean[] radarValid,
+            float speedKph, boolean speedValid, long speedTimestampMs,
+            long nowMs) {
+        return new ParkingCameraTriggerPolicy.State().update(
+                rules, maxSpeedKph, radarRaw, radarValid,
+                speedKph, speedValid, speedTimestampMs, nowMs);
     }
 }

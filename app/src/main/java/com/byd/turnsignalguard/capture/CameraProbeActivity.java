@@ -3157,6 +3157,15 @@ public final class CameraProbeActivity extends Activity
         controls.addView(bulkActions, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
+        parkingAllowDuringReverseSwitch = new Switch(this);
+        parkingAllowDuringReverseSwitch.setText("Вмикати разом із камерами заднього ходу");
+        parkingAllowDuringReverseSwitch.setTextColor(Color.WHITE);
+        parkingAllowDuringReverseSwitch.setTextSize(16);
+        LinearLayout.LayoutParams allowDuringReverseParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
+        allowDuringReverseParams.bottomMargin = dp(8);
+        controls.addView(parkingAllowDuringReverseSwitch, allowDuringReverseParams);
+
         parkingCameraSwitch = new Switch(this);
         parkingCameraSwitch.setText("Камера увімкнена");
         parkingCameraSwitch.setTextColor(Color.WHITE);
@@ -3187,12 +3196,6 @@ public final class CameraProbeActivity extends Activity
         maxSpeedRow.addView(parkingMaxSpeedInput, new LinearLayout.LayoutParams(dp(80), dp(42)));
         maxSpeedRow.addView(label("км/год"), new LinearLayout.LayoutParams(dp(64), dp(42)));
         controls.addView(maxSpeedRow);
-
-        parkingAllowDuringReverseSwitch = new Switch(this);
-        parkingAllowDuringReverseSwitch.setText("Вмикати разом із камерами заднього ходу");
-        parkingAllowDuringReverseSwitch.setTextColor(Color.WHITE);
-        controls.addView(parkingAllowDuringReverseSwitch, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
         LinearLayout scaleRow = new LinearLayout(this);
         scaleRow.setGravity(Gravity.CENTER_VERTICAL);

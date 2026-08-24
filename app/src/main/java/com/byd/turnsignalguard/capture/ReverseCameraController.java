@@ -28,6 +28,7 @@ final class ReverseCameraController {
     private final SharedPreferences settings;
     private final BiConsumer<String, Object[]> eventSink;
     private final Consumer<Boolean> prioritySink;
+    private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
     private final Runnable surfaceTimeout = () -> fail("surface_timeout");
     private final Runnable firstFrameTimeout = () -> fail("first_frame_timeout");
     private final Runnable gearFreshnessTimeout = () -> {
@@ -149,17 +150,25 @@ final class ReverseCameraController {
                 }
             } else if ("camera_shell_attached".equals(kind)) {
                 long epoch = event.optLong("camera_shell_epoch", 0);
-                if (epoch > cameraShellEpoch) cameraShellEpoch = epoch;
+                cameraShellAttached(epoch);
             } else if ("camera_shell_died".equals(kind)) {
                 long epoch = event.optLong("camera_shell_epoch", 0);
                 if (!TurnSignalController.isCurrentCameraShellEpoch(
-                        cameraShellEpoch, epoch)) return;
+                        cameraShellEpoch, epoch) || !shellRecovery.isNewDeath(epoch)) return;
                 emit("reverse_camera_output_invalidated",
                         "request_id", activeRequestId,
                         "generations", Arrays.toString(generations),
                         "reason", "camera_shell_died");
-                visible = false;
-                fail("camera_shell_died");
+                boolean pending = shellRecovery.onDeath(epoch, recoveryWanted());
+                resetAfterShellDeath();
+                emit("reverse_camera_epoch_recovery",
+                        "camera_shell_epoch", epoch,
+                        "state", pending ? "pending" : "cancelled");
+            } else if ("camera_shell_recovery_failed".equals(kind)) {
+                if (shellRecovery.pending()) {
+                    shellRecovery.clear();
+                    emit("reverse_camera_epoch_recovery", "state", "failed");
+                }
             }
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "event_parse",
@@ -172,6 +181,7 @@ final class ReverseCameraController {
         cancelTimers();
         handler.removeCallbacks(gearFreshnessTimeout);
         clearCleanupRetry();
+        shellRecovery.clear();
         gearValid = false;
         reverse = false;
         activeRequestId = 0;
@@ -207,6 +217,34 @@ final class ReverseCameraController {
         CameraShellProtocol.ReverseOverlaySpec spec = buildOverlaySpec(settings, requestId);
         activeHelper.prepareReverseOverlayWindow(
                 spec, this::surfacesAvailable, () -> overlayPrepared(requestId));
+    }
+
+    private void cameraShellAttached(long epoch) {
+        if (epoch <= cameraShellEpoch) return;
+        cameraShellEpoch = epoch;
+        boolean pending = shellRecovery.pending();
+        boolean recover = shellRecovery.claim(epoch, recoveryWanted());
+        if (!pending) return;
+        emit("reverse_camera_epoch_recovery",
+                "camera_shell_epoch", epoch,
+                "state", recover ? "attempt" : "cancelled");
+        if (recover) evaluate();
+    }
+
+    private boolean recoveryWanted() {
+        return !shutdown && enabled() && gearValid && reverse && helper != null;
+    }
+
+    private void resetAfterShellDeath() {
+        cancelTimers();
+        clearCleanupRetry();
+        activeRequestId = 0;
+        generations = new int[0];
+        visible = false;
+        stopping = false;
+        activeCleanup = null;
+        prioritySink.accept(false);
+        emit("reverse_camera_runtime_reset", "reason", "camera_shell_died");
     }
 
     static CameraShellProtocol.ReverseOverlaySpec buildOverlaySpec(

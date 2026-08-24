@@ -87,4 +87,29 @@ public final class ParkingCameraSettingsTest {
         assertTrue(settings.rule(fl).addCentral);
         assertTrue(settings.allowDuringReverse());
     }
+
+    @Test
+    public void migrationRepairsStoredNumericValuesOutsideTheContract() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        ParkingCameraProfile frontLeft =
+                ParkingCameraProfile.of(ParkingCameraProfile.FL);
+        ParkingCameraProfile frontRight =
+                ParkingCameraProfile.of(ParkingCameraProfile.FR);
+        preferences.putInt(ParkingCameraSettings.distanceKey(frontLeft), 999);
+        preferences.putInt(ParkingCameraSettings.distanceKey(frontRight), -10);
+        preferences.putInt(ParkingCameraSettings.PREF_MAX_SPEED_KPH, 999);
+        preferences.putBoolean(ParkingCameraSettings.enabledKey(frontLeft), true);
+        preferences.putBoolean(ParkingCameraSettings.addCentralKey(frontLeft), true);
+
+        ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
+
+        assertEquals(150, preferences.getInt(
+                ParkingCameraSettings.distanceKey(frontLeft), -1));
+        assertEquals(0, preferences.getInt(
+                ParkingCameraSettings.distanceKey(frontRight), -1));
+        assertEquals(300, preferences.getInt(
+                ParkingCameraSettings.PREF_MAX_SPEED_KPH, -1));
+        assertTrue(settings.rule(frontLeft).enabled);
+        assertTrue(settings.rule(frontLeft).addCentral);
+    }
 }

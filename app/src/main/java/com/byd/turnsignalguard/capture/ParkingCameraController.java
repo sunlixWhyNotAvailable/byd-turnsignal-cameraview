@@ -25,6 +25,7 @@ final class ParkingCameraController {
     private final BiConsumer<String, Object[]> eventSink;
     private final ParkingCameraTriggerPolicy.State policy =
             new ParkingCameraTriggerPolicy.State();
+    private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
     private final Pane[] panes = new Pane[ParkingCameraProfile.COUNT];
     private final int[] radarRaw = new int[ParkingCameraProfile.allRadarFids().length];
     private final boolean[] radarValid = new boolean[radarRaw.length];
@@ -55,6 +56,7 @@ final class ParkingCameraController {
     private ParkingCameraSettings.Rule[] rules;
     private int maxSpeedKph;
     private boolean allowDuringReverse;
+    private long cameraShellEpoch;
 
     ParkingCameraController(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -151,8 +153,10 @@ final class ParkingCameraController {
                         showPane(pane);
                     }
                 }
+            } else if ("camera_shell_attached".equals(kind)) {
+                onShellAttached(event.optLong("camera_shell_epoch", 0L));
             } else if ("camera_shell_died".equals(kind)) {
-                onShellDeath();
+                onShellDeath(event.optLong("camera_shell_epoch", 0L));
             } else if ("camera_overlay_error".equals(kind)) {
                 int cameraId = event.optInt("camera_id", -1);
                 if (CameraOverlayProfile.isParking(cameraId)
@@ -187,7 +191,9 @@ final class ParkingCameraController {
                 handler.postDelayed(retry, RETRY_MS);
             } else if ("camera_shell_recovery_failed".equals(kind)) {
                 handler.removeCallbacks(retry);
-                handler.postDelayed(retry, RETRY_MS);
+                boolean pending = shellRecovery.pending();
+                shellRecovery.clear();
+                if (pending) emit("parking_camera_epoch_recovery", "state", "failed");
             }
         } catch (Throwable ignored) {
             // A malformed telemetry line is an invalid state; the next tick fails closed.
@@ -345,16 +351,41 @@ final class ParkingCameraController {
         handler.removeCallbacks(closeRetry);
         handler.removeCallbacks(closeTick);
         closeRetryState.cancel();
+        shellRecovery.clear();
         desiredMask = 0;
         potentialMask = 0;
         closeAll("controller_shutdown");
         helper = null;
     }
 
-    private void onShellDeath() {
-        boolean closed = closeParkingGroup("camera_shell_died");
+    private void onShellAttached(long epoch) {
+        if (epoch <= cameraShellEpoch) return;
+        cameraShellEpoch = epoch;
+        boolean pending = shellRecovery.pending();
+        boolean recover = shellRecovery.claim(
+                epoch, !shutdown && helper != null && potentialMask(rules) != 0);
+        if (!pending) return;
+        emit("parking_camera_epoch_recovery",
+                "camera_shell_epoch", epoch,
+                "state", recover ? "attempt" : "cancelled");
+        if (recover) evaluate();
+    }
+
+    private void onShellDeath(long epoch) {
+        if (!TurnSignalController.isCurrentCameraShellEpoch(cameraShellEpoch, epoch)
+                || !shellRecovery.isNewDeath(epoch)) return;
+        boolean pending = shellRecovery.onDeath(
+                epoch, !shutdown && helper != null && potentialMask(rules) != 0);
         handler.removeCallbacks(retry);
-        if (closed && !shutdown) handler.postDelayed(retry, RETRY_MS);
+        handler.removeCallbacks(closeTick);
+        cancelCloseRetry();
+        membershipGeneration++;
+        attachedGroupMask = 0;
+        attachedGroupRequestId = 0;
+        clearPaneState();
+        emit("parking_camera_epoch_recovery",
+                "camera_shell_epoch", epoch,
+                "state", pending ? "pending" : "cancelled");
     }
 
     private void evaluate() {

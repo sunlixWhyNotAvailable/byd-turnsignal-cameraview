@@ -91,6 +91,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
+        if (windowless != null) {
+            windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
+        }
         if (root == null) createWindow(spec, display);
         else updateWindow(spec);
         preview.setDewarpStatsContext(requestId, surfaceGeneration);
@@ -258,8 +261,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         warningGlow = nextWarningGlow;
         WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
                 windowContext, display,
-                WindowlessOverlayHost.cameraLayer(cameraId));
+                WindowlessOverlayHost.cameraLayer(cameraId),
+                CameraOverlayProfile.isParking(cameraId) ? "parking" : "blind",
+                cameraId, eventSink);
         windowless = nextHost;
+        nextHost.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
         try {
             nextHost.attach(nextRoot, spec.width, spec.height, spec.x, spec.y,
                     WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName);
@@ -321,6 +327,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != preview) return;
         surfaceGeneration++;
+        if (windowless != null) {
+            windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
+        }
         preview.setDewarpStatsContext(requestId, surfaceGeneration);
         armedFrameRequestId = 0;
         armedFrameEpoch = 0;

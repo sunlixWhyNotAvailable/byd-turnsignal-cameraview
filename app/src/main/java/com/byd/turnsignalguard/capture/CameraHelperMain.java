@@ -1386,12 +1386,13 @@ final class CameraHelperMain {
                     public void onConsumerFailure(
                             Surface failedSurface, int index, Throwable error) {
                         mainHandler.post(() -> acceptRawConsumerFailure(
-                                failedSurface, index, error));
+                                openedHubGeneration, failedSurface, index, error));
                     }
 
                     @Override
                     public void onSourceFailure(int index, Throwable error) {
-                        mainHandler.post(() -> acceptRawSourceFailure(index, error));
+                        mainHandler.post(() -> acceptRawSourceFailure(
+                                openedHubGeneration, index, error));
                     }
 
                     @Override
@@ -1405,7 +1406,15 @@ final class CameraHelperMain {
                                 "source_width", stats.sourceWidth,
                                 "source_height", stats.sourceHeight,
                                 "interval_ms", milliseconds(stats.intervalNs),
+                                "worker", stats.workerName,
                                 "callbacks", stats.callbacks,
+                                "frame_signals", stats.frameSignals,
+                                "rendered_frames", stats.renderedFrames,
+                                "coalesced_frames", stats.coalescedFrames,
+                                "queue_delay_avg_ms", averageMs(
+                                        stats.queueDelayTotalNs, stats.renderedFrames),
+                                "queue_delay_max_ms", milliseconds(
+                                        stats.queueDelayMaxNs),
                                 "processed_fps", ratePerSecond(
                                         stats.callbacks, stats.intervalNs),
                                 "callback_gap_avg_ms", averageMs(
@@ -1462,6 +1471,21 @@ final class CameraHelperMain {
                                 "target_dimensions", stats.targetDimensions);
                         });
                     }
+
+                    @Override
+                    public void onTargetStall(
+                            Surface surface, int index, long swapWaitNs) {
+                        mainHandler.post(() -> {
+                            if (sourceHubGeneration != openedHubGeneration
+                                    || !persistentPanoProducer) return;
+                            emit("camera_source_target_stall",
+                                    "producer_epoch", producerEpoch,
+                                    "preview_index", index,
+                                    "worker", DirectCameraSourceHub.workerThreadName(index),
+                                    "target_surface_id", System.identityHashCode(surface),
+                                    "swap_wait_ms", milliseconds(swapWaitNs));
+                        });
+                    }
                 });
                 rawSourceHub = openedHub;
                 persistentSession.startProducer(
@@ -1515,8 +1539,9 @@ final class CameraHelperMain {
         }
 
         private synchronized void acceptRawConsumerFailure(
-                Surface failedSurface, int index, Throwable error) {
-            if (rawSourceHub == null || !persistentPanoProducer) return;
+                int hubGeneration, Surface failedSurface, int index, Throwable error) {
+            if (!matchesSourceHubGeneration(sourceHubGeneration, hubGeneration)
+                    || rawSourceHub == null || !persistentPanoProducer) return;
             boolean handled;
             try {
                 handled = persistentSession.failConsumer(
@@ -1536,8 +1561,10 @@ final class CameraHelperMain {
             refreshPersistentLegacyState();
         }
 
-        private synchronized void acceptRawSourceFailure(int index, Throwable error) {
-            if (rawSourceHub == null || !persistentPanoProducer) return;
+        private synchronized void acceptRawSourceFailure(
+                int hubGeneration, int index, Throwable error) {
+            if (!matchesSourceHubGeneration(sourceHubGeneration, hubGeneration)
+                    || rawSourceHub == null || !persistentPanoProducer) return;
             tearDownPersistentProducer("raw_source_failed", error);
         }
 
@@ -2045,6 +2072,10 @@ final class CameraHelperMain {
                     || activeRequestId == 0 && expectedRequestId == 0;
         }
 
+        static boolean matchesSourceHubGeneration(int current, int callback) {
+            return callback > 0 && callback == current;
+        }
+
         static int cameraRequestIdForClose(
                 boolean stockRequested, int pendingStockRequestId,
                 int activeRequestId) {
@@ -2057,11 +2088,6 @@ final class CameraHelperMain {
             if (!hasConsumer) return PersistentCloseDecision.ALREADY_CLOSED;
             return matchesConsumerClose(activeRequestId, expectedRequestId)
                     ? PersistentCloseDecision.CLOSE : PersistentCloseDecision.STALE;
-        }
-
-        static boolean shellDeathInvalidatesConsumer(
-                String owner, boolean shellOwned) {
-            return CAMERA_OWNER_ACTIVITY.equals(owner) && shellOwned;
         }
 
         static boolean shouldStartPersistentProducer(boolean producerOpen) {
@@ -2274,6 +2300,28 @@ final class CameraHelperMain {
                 emitConsumerClosed(events, closed.owner, closed.requestId,
                         closed.view, closed.indexes, reason, cameraId, epoch);
                 return new CloseOutcome(decision, shellCloseQueued);
+            }
+
+            void invalidateCameraShellGroups(
+                    PersistentCameraPort port, String reason,
+                    PersistentEventSink events, int cameraId, int epoch)
+                    throws PersistentSessionFailure {
+                for (ConsumerGroup group : new ConsumerGroup[]{
+                        activityGroup, overlayGroup, parkingGroup, reverseGroup}) {
+                    if (!group.has() || group == activityGroup && !group.shellOwned) continue;
+                    ConsumerGroup.Snapshot invalid = group.snapshot();
+                    try {
+                        detachGroup(port, group);
+                    } catch (Throwable error) {
+                        throw new PersistentSessionFailure(
+                                "consumer_detach_failed", root(error), true,
+                                false, false);
+                    }
+                    group.clear();
+                    invalid.release();
+                    emitConsumerClosed(events, invalid.owner, invalid.requestId,
+                            invalid.view, invalid.indexes, reason, cameraId, epoch);
+                }
             }
 
             TeardownOutcome tearDown(
@@ -3082,16 +3130,18 @@ final class CameraHelperMain {
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
-            if (persistentPanoProducer && parkingGroup.has()) {
-                closePersistentGroup(
-                        parkingGroup, "camera_shell_died", parkingGroup.requestId);
-            }
-            if (persistentPanoProducer
-                    && shellDeathInvalidatesConsumer(
-                        activityGroup.owner, activityGroup.shellOwned)) {
-                closePersistentGroup(
-                        activityGroup, "camera_shell_died", activityGroup.requestId);
-            } else if (!persistentPanoProducer) {
+            if (persistentPanoProducer) {
+                try {
+                    persistentSession.invalidateCameraShellGroups(
+                            new ReflectivePersistentCameraPort(camera),
+                            "camera_shell_died", this::emit,
+                            producerCameraId, producerEpoch);
+                    refreshPersistentLegacyState();
+                } catch (PersistentSessionFailure failure) {
+                    tearDownPersistentProducer(
+                            failure.reason, failure.getCause(), true);
+                }
+            } else {
                 closeCamera("camera_shell_died");
             }
         }

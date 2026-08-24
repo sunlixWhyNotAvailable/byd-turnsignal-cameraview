@@ -1,6 +1,9 @@
 package com.byd.turnsignalguard.capture;
 
 import android.app.Application;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -8,7 +11,6 @@ import android.os.Looper;
 import android.os.Parcel;
 import android.os.Process;
 import android.os.RemoteException;
-import android.content.SharedPreferences;
 
 import junit.framework.TestCase;
 
@@ -326,6 +328,68 @@ public final class CameraLifecycleBinderTest extends TestCase {
                 token, 91, null, new RemoteException("binder failed"));
         assertTrue(transition.matches(token));
         assertEquals(91, getField(activity, "closingActivityCameraRequestId"));
+    }
+
+    public void testParkingRecoveryRunsOnceThroughRealShellEventPath() throws Exception {
+        Application application = currentApplication();
+        SharedPreferences preferences = application.getSharedPreferences(
+                "parking-controller-recovery-test", Context.MODE_PRIVATE);
+        preferences.edit().clear().commit();
+        ContextWrapper isolatedContext = new ContextWrapper(application) {
+            @Override
+            public Context getApplicationContext() {
+                return this;
+            }
+
+            @Override
+            public SharedPreferences getSharedPreferences(String name, int mode) {
+                return preferences;
+            }
+        };
+        ParkingCameraProfile frontLeft =
+                ParkingCameraProfile.of(ParkingCameraProfile.FL);
+        preferences.edit().putBoolean(
+                ParkingCameraSettings.enabledKey(frontLeft), true).commit();
+        CopyOnWriteArrayList<String> states = new CopyOnWriteArrayList<>();
+        ParkingCameraController controller = new ParkingCameraController(
+                isolatedContext, new Handler(Looper.getMainLooper()), (kind, fields) -> {
+                    if (!"parking_camera_epoch_recovery".equals(kind)) return;
+                    for (int i = 0; i + 1 < fields.length; i += 2) {
+                        if ("state".equals(fields[i])) {
+                            states.add(String.valueOf(fields[i + 1]));
+                        }
+                    }
+                });
+        try {
+            controller.setSuspended(true);
+            controller.attachHelper(new CameraHelperMain.HelperBinder(
+                    isolatedContext, ignored -> {}));
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_died")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_died")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 11L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 12L).toString());
+
+            assertEquals(2, states.size());
+            assertEquals("pending", states.get(0));
+            assertEquals("attempt", states.get(1));
+        } finally {
+            controller.shutdown();
+            preferences.edit().clear().commit();
+        }
     }
 
     private static String registerHelperCallback(

@@ -94,6 +94,7 @@ final class BlindSpotOverlayController {
     private final BiConsumer<String, Object[]> eventSink;
     private final PaneState[] panes = new PaneState[CameraProfile.COUNT];
     private final CameraRetryState cameraRetry = new CameraRetryState();
+    private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
     private final Runnable staleState = () -> {
         stateValid = false;
         evaluate();
@@ -556,6 +557,12 @@ final class BlindSpotOverlayController {
             } else if ("camera_shell_died".equals(kind)) {
                 long epoch = event.optLong("camera_shell_epoch", 0);
                 handler.post(() -> cameraShellDied(epoch));
+            } else if ("camera_shell_recovery_failed".equals(kind)) {
+                handler.post(() -> {
+                    if (!shellRecovery.pending()) return;
+                    shellRecovery.clear();
+                    emit("overlay_camera_epoch_recovery", "state", "failed");
+                });
             }
         } catch (Throwable error) {
             emit("overlay_event_parse_error", "error", summary(error));
@@ -566,6 +573,7 @@ final class BlindSpotOverlayController {
         shutdown = true;
         handler.removeCallbacks(staleState);
         cancelCameraRetry("overlay_shutdown");
+        shellRecovery.clear();
         destroyAll("overlay_shutdown");
         helper = null;
     }
@@ -796,11 +804,22 @@ final class BlindSpotOverlayController {
     }
 
     private void cameraShellAttached(long epoch) {
-        if (epoch > cameraShellEpoch) cameraShellEpoch = epoch;
+        if (epoch <= cameraShellEpoch) return;
+        cameraShellEpoch = epoch;
+        boolean pending = shellRecovery.pending();
+        boolean recover = shellRecovery.claim(epoch, cameraRetryBlockReason() == null);
+        if (!pending) return;
+        emit("overlay_camera_epoch_recovery",
+                "camera_shell_epoch", epoch,
+                "state", recover ? "attempt" : "cancelled");
+        if (recover) rebuild("camera_shell_epoch_recovery");
     }
 
     private void cameraShellDied(long epoch) {
-        if (!TurnSignalController.isCurrentCameraShellEpoch(cameraShellEpoch, epoch)) return;
+        if (!TurnSignalController.isCurrentCameraShellEpoch(cameraShellEpoch, epoch)
+                || !shellRecovery.isNewDeath(epoch)) return;
+        cancelCameraRetry("camera_shell_died");
+        boolean pending = shellRecovery.onDeath(epoch, cameraRetryBlockReason() == null);
         for (PaneState pane : panes) {
             if (!pane.expected && pane.requestId <= 0 && pane.generation <= 0) continue;
             emit("overlay_camera_output_invalidated",
@@ -814,7 +833,9 @@ final class BlindSpotOverlayController {
         cameraSessionOpen = false;
         cameraOpenRequestId = 0;
         for (PaneState pane : panes) pane.reset();
-        scheduleCameraRetry("camera_shell_died");
+        emit("overlay_camera_epoch_recovery",
+                "camera_shell_epoch", epoch,
+                "state", pending ? "pending" : "cancelled");
     }
 
     private void acceptVehicleState(

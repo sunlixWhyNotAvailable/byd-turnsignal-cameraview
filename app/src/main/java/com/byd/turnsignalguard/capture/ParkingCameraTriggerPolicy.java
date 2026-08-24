@@ -7,32 +7,6 @@ public final class ParkingCameraTriggerPolicy {
 
     private ParkingCameraTriggerPolicy() {}
 
-    /** Radar values remain valid while their listener generation is healthy; speed is fresh. */
-    public static int desiredMask(
-            ParkingCameraSettings.Rule[] rules, int maxSpeedKph,
-            int[] radarRaw, boolean[] radarValid,
-            float speedKph, boolean speedValid, long speedTimestampMs,
-            long nowMs) {
-        if (!hasRules(rules) || !Float.isFinite(speedKph) || !speedValid
-                || !isFresh(nowMs, speedTimestampMs, DEFAULT_SPEED_STALE_MS)
-                || !isSpeedAllowed(speedValid, speedKph, maxSpeedKph)) return 0;
-        int mask = 0;
-        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
-            ParkingCameraSettings.Rule rule = rules[profile.id];
-            if (rule == null || !rule.enabled) continue;
-            DistanceSample sample = distanceFor(profile, radarRaw, radarValid);
-            if (sample.valid && sample.distanceCm <= rule.distanceCm) mask |= profile.bit();
-        }
-        return applyAdditiveCentral(mask, rules);
-    }
-
-    public static boolean isDistanceTriggered(boolean valid, int distanceCm, int thresholdCm) {
-        return valid && distanceCm >= ParkingCameraProfile.RADAR_RAW_MIN
-                && thresholdCm >= ParkingCameraSettings.MIN_DISTANCE_CM
-                && thresholdCm <= ParkingCameraSettings.MAX_DISTANCE_CM
-                && distanceCm <= thresholdCm;
-    }
-
     public static boolean isSpeedAllowed(boolean valid, float speedKph, int maxSpeedKph) {
         return valid && Float.isFinite(speedKph)
                 && maxSpeedKph >= ParkingCameraSettings.MIN_MAX_SPEED_KPH

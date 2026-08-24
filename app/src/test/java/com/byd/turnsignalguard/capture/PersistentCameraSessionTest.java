@@ -529,6 +529,79 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void shellDeathDropsShellGroupsWithoutClosingProducer() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, fanout, session.activityGroup,
+                surfaces(1), new int[]{0}, 82, "activity", false, false);
+        session.attach(camera, session.overlayGroup,
+                surfaces(1), new int[]{1}, 83, "left", false, false,
+                events, new FakeShellClose(trace), 7, 8);
+        session.attach(camera, session.parkingGroup,
+                surfaces(1), new int[]{2}, 84, "front", false, false,
+                events, new FakeShellClose(trace), 7, 8);
+
+        session.invalidateCameraShellGroups(
+                camera, "camera_shell_died", events, 7, 8);
+
+        assertTrue(session.producerOpen);
+        assertTrue(session.activityGroup.has());
+        assertTrue(session.activityGroup.attached);
+        assertFalse(session.overlayGroup.has());
+        assertFalse(session.parkingGroup.has());
+        assertEquals(1, fanout.activeTargets);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+        assertEquals(0, countPrefix(trace.values, "shell:"));
+        assertEquals("camera_shell_died",
+                events.byKindAndRequest("camera_closed", 83).field("reason"));
+        assertEquals("camera_shell_died",
+                events.byKindAndRequest("camera_closed", 84).field("reason"));
+    }
+
+    @Test
+    public void shellDeathDropsReverseGroupWithoutClosingProducer() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, new FakeFanout(trace), session.reverseGroup,
+                surfaces(3), new int[]{1, 2, 3}, 85, "reverse", true, false);
+
+        session.invalidateCameraShellGroups(
+                camera, "camera_shell_died", events, 7, 8);
+
+        assertTrue(session.producerOpen);
+        assertFalse(session.reverseGroup.has());
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+        assertEquals("camera_shell_died",
+                events.byKindAndRequest("camera_closed", 85).field("reason"));
+    }
+
+    @Test
+    public void shellDeathDropsStockActivityWithoutCallingDeadShell() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, new FakeFanout(trace), session.activityGroup,
+                surfaces(1), new int[]{0}, 86, "stock", false, true);
+
+        session.invalidateCameraShellGroups(
+                camera, "camera_shell_died", events, 7, 8);
+
+        assertTrue(session.producerOpen);
+        assertFalse(session.activityGroup.has());
+        assertEquals(0, countPrefix(trace.values, "shell:"));
+        assertEquals("camera_shell_died",
+                events.byKindAndRequest("camera_closed", 86).field("reason"));
+    }
+
+    @Test
     public void finalTeardownRemovesEachIngressExactlyOnce() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
@@ -951,6 +1024,13 @@ public final class PersistentCameraSessionTest {
         assertEquals(CameraHelperMain.CAMERA_OWNER_ACTIVITY, error.field("camera_owner"));
         assertEquals(111, error.field("request_id"));
         assertEquals(11, error.field("producer_epoch"));
+    }
+
+    @Test
+    public void staleSourceHubGenerationCannotMatchReplacement() {
+        assertTrue(CameraHelperMain.HelperBinder.matchesSourceHubGeneration(4, 4));
+        assertFalse(CameraHelperMain.HelperBinder.matchesSourceHubGeneration(4, 3));
+        assertFalse(CameraHelperMain.HelperBinder.matchesSourceHubGeneration(4, 0));
     }
 
     private static CameraHelperMain.HelperBinder.PersistentSession session() {

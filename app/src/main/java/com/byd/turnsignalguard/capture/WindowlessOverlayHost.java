@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.PixelFormat;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.view.Display;
 import android.view.SurfaceControl;
 import android.view.SurfaceControlViewHost;
@@ -12,6 +13,8 @@ import android.view.WindowManager;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 
 /** The shell's trusted, non-touchable display surface. */
 @SuppressLint({
@@ -21,24 +24,46 @@ import java.lang.reflect.Method;
 final class WindowlessOverlayHost {
     static final int REVERSE_LAYER = Integer.MAX_VALUE - 32;
     private static final int CAMERA_LAYER_BASE = Integer.MAX_VALUE - 16;
+    private static final AtomicLong NEXT_HOST_ID = new AtomicLong(1L);
 
     private final Context context;
     private final int layer;
     private final Display display;
+    private final long hostId;
+    private final String overlayType;
+    private final int cameraId;
+    private final BiConsumer<String, Object[]> eventSink;
     private SurfaceControlViewHost host;
     private SurfaceControlViewHost.SurfacePackage surfacePackage;
     private SurfaceControl root;
+    private View attachedView;
     private int width;
     private int height;
     private String trustedApi;
+    private int diagnosticRequestId;
+    private String diagnosticSurfaceGeneration = "";
 
-    WindowlessOverlayHost(Context context, Display display, int layer) {
+    WindowlessOverlayHost(
+            Context context, Display display, int layer,
+            String overlayType, int cameraId, BiConsumer<String, Object[]> eventSink) {
         if (context == null || display == null) {
             throw new IllegalArgumentException("context and display are required");
+        }
+        if (overlayType == null || overlayType.isEmpty()) {
+            throw new IllegalArgumentException("overlay type is required");
         }
         this.context = context;
         this.display = display;
         this.layer = layer;
+        this.hostId = NEXT_HOST_ID.getAndIncrement();
+        this.overlayType = overlayType;
+        this.cameraId = cameraId;
+        this.eventSink = eventSink;
+    }
+
+    void setDiagnosticState(int requestId, String surfaceGeneration) {
+        diagnosticRequestId = requestId;
+        diagnosticSurfaceGeneration = surfaceGeneration == null ? "" : surfaceGeneration;
     }
 
     static int cameraLayer(int overlayId) {
@@ -61,12 +86,14 @@ final class WindowlessOverlayHost {
             throw new IllegalArgumentException("valid view and size are required");
         }
         if (host != null) throw new IllegalStateException("overlay host already attached");
-        exemptHiddenApis();
-        SurfaceControlViewHost nextHost = new SurfaceControlViewHost(
-                context, display, (IBinder) null);
+        long attachStart = SystemClock.elapsedRealtimeNanos();
+        emitLifecycle("attach_start", attachStart, view, null, null, null);
+        SurfaceControlViewHost nextHost = null;
         SurfaceControlViewHost.SurfacePackage nextPackage = null;
         SurfaceControl nextRoot = null;
         try {
+            exemptHiddenApis();
+            nextHost = new SurfaceControlViewHost(context, display, (IBinder) null);
             WindowManager.LayoutParams layout = new WindowManager.LayoutParams(
                     nextWidth,
                     nextHeight,
@@ -81,10 +108,12 @@ final class WindowlessOverlayHost {
             layout.setTitle(title == null ? "BYD trusted camera" : title);
             trustedApi = setTrustedOverlay(layout);
             setView(nextHost, view, layout);
+            emitLifecycle("view_set", attachStart, view, null, null, nextHost);
             nextPackage = nextHost.getSurfacePackage();
             if (nextPackage == null) {
                 throw new IllegalStateException("surface package unavailable");
             }
+            emitLifecycle("package_acquired", attachStart, view, null, nextPackage, nextHost);
             nextRoot = getSurfaceControl(nextPackage);
             if (nextRoot == null || !nextRoot.isValid()) {
                 throw new IllegalStateException("root surface unavailable");
@@ -100,12 +129,17 @@ final class WindowlessOverlayHost {
             host = nextHost;
             surfacePackage = nextPackage;
             root = nextRoot;
+            attachedView = view;
             width = nextWidth;
             height = nextHeight;
+            emitLifecycle("root_attached", attachStart, view, nextRoot, nextPackage, nextHost);
         } catch (Throwable error) {
-            try {
-                nextHost.release();
-            } catch (Throwable ignored) {}
+            emitLifecycle("attach_error", attachStart, view, nextRoot, nextPackage, nextHost, error);
+            if (nextHost != null) {
+                try {
+                    nextHost.release();
+                } catch (Throwable ignored) {}
+            }
             if (nextRoot != null) {
                 try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
                     remove(transaction, nextRoot);
@@ -134,20 +168,28 @@ final class WindowlessOverlayHost {
         if (!Float.isFinite(visibleAlpha) || visibleAlpha < 0.0f || visibleAlpha > 1.0f) {
             throw new IllegalArgumentException("visible alpha must be 0..1");
         }
+        long visibilityStart = SystemClock.elapsedRealtimeNanos();
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
             transaction.setVisibility(root, true);
             transaction.setAlpha(root, visible ? visibleAlpha : 0.0f);
             transaction.apply();
         }
+        emitLifecycle("visibility", visibilityStart, attachedView, root, surfacePackage, host,
+                null, "visible", visible);
     }
 
     void release() throws Exception {
         SurfaceControlViewHost activeHost = host;
         SurfaceControl activeRoot = root;
         SurfaceControlViewHost.SurfacePackage activePackage = surfacePackage;
+        View activeView = attachedView;
+        long releaseStart = SystemClock.elapsedRealtimeNanos();
+        emitLifecycle("release_start", releaseStart, activeView, activeRoot,
+                activePackage, activeHost);
         host = null;
         root = null;
         surfacePackage = null;
+        attachedView = null;
         width = 0;
         height = 0;
         trustedApi = null;
@@ -155,26 +197,44 @@ final class WindowlessOverlayHost {
         if (activeHost != null) {
             try {
                 activeHost.release();
+                emitLifecycle("host_released", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost);
             } catch (Throwable error) {
                 failure = rootCause(error);
+                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost, error, "host_release");
             }
         }
         if (activeRoot != null) {
             try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
                 remove(transaction, activeRoot);
                 transaction.apply();
+                emitLifecycle("root_removed", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost);
             } catch (Throwable error) {
                 if (failure == null) failure = rootCause(error);
+                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost, error, "root_remove");
             }
         }
         if (activePackage != null) {
             try {
                 activePackage.release();
+                emitLifecycle("package_released", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost);
             } catch (Throwable error) {
                 if (failure == null) failure = rootCause(error);
+                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
+                        activePackage, activeHost, error, "package_release");
             }
         }
-        if (failure != null) throw asException(failure);
+        if (failure != null) {
+            emitLifecycle("release_error", releaseStart, activeView, activeRoot,
+                    activePackage, activeHost, failure, "release_complete");
+            throw asException(failure);
+        }
+        emitLifecycle("release_complete", releaseStart, activeView, activeRoot,
+                activePackage, activeHost);
     }
 
     int width() {
@@ -199,6 +259,62 @@ final class WindowlessOverlayHost {
 
     private void requireAttached() {
         if (root == null) throw new IllegalStateException("overlay host unavailable");
+    }
+
+    private void emitLifecycle(
+            String stage, long startNanos, View view, SurfaceControl surface,
+            SurfaceControlViewHost.SurfacePackage packageValue,
+            SurfaceControlViewHost hostValue, Throwable error, Object... extraFields) {
+        if (eventSink == null) return;
+        long durationMs = startNanos <= 0L ? 0L
+                : Math.max(0L, (SystemClock.elapsedRealtimeNanos() - startNanos) / 1_000_000L);
+        Object[] fields = new Object[]{
+                "stage", stage,
+                "host_id", hostId,
+                "overlay_type", overlayType,
+                "camera_id", cameraId,
+                "request_id", diagnosticRequestId,
+                "surface_generation", diagnosticSurfaceGeneration,
+                "root_id", identity(surface),
+                "surface_id", identity(surface),
+                "surface_package_id", identity(packageValue),
+                "root_valid", surface != null && surface.isValid(),
+                "view_attached", view != null && view.isAttachedToWindow(),
+                "display_id", display.getDisplayId(),
+                "display_name", display.getName(),
+                "layer", layer,
+                "thread", Thread.currentThread().getName(),
+                "stage_duration_ms", durationMs,
+                "error", error == null ? "" : summary(error)
+        };
+        if (extraFields.length == 0) {
+            try {
+                eventSink.accept("windowless_host_lifecycle", fields);
+            } catch (Throwable ignored) {}
+            return;
+        }
+        Object[] expanded = new Object[fields.length + extraFields.length];
+        System.arraycopy(fields, 0, expanded, 0, fields.length);
+        System.arraycopy(extraFields, 0, expanded, fields.length, extraFields.length);
+        try {
+            eventSink.accept("windowless_host_lifecycle", expanded);
+        } catch (Throwable ignored) {}
+    }
+
+    private void emitLifecycle(
+            String stage, long startNanos, View view, SurfaceControl surface,
+            SurfaceControlViewHost.SurfacePackage packageValue,
+            SurfaceControlViewHost hostValue) {
+        emitLifecycle(stage, startNanos, view, surface, packageValue, hostValue, null);
+    }
+
+    private static int identity(Object value) {
+        return value == null ? 0 : System.identityHashCode(value);
+    }
+
+    private static String summary(Throwable error) {
+        String message = error.getMessage();
+        return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
     }
 
     private static String setTrustedOverlay(WindowManager.LayoutParams layout) throws Exception {
