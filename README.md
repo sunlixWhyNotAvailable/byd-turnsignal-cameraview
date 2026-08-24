@@ -5,7 +5,7 @@
 > This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
 > features while the vehicle is parked.
 
-Current source version: `0.51.0`. The application interface is currently Ukrainian.
+Current source version: `0.52.0`. The application interface is currently Ukrainian.
 
 ## Features
 
@@ -65,11 +65,15 @@ Parking-camera rules are disabled by default and display only on the tablet.
 
 The enhanced reverse view itself is disabled by default.
 
-### Music, updates, and diagnostics
+### Music, weather, updates, and diagnostics
 
 - Optional ambient-light synchronization for compatible third-party Android music players.
 - Forwards available title, artist, playback state, and timeline information to a compatible
   instrument cluster.
+- Optional local weather for the stock BYD weather card using the vehicle's Android location and
+  attributed Open-Meteo data.
+- Configurable automatic weather updates from 5 to 180 minutes, plus manual refresh from the app or
+  the stock BYD weather screen.
 - Built-in update check and installation from this project's GitHub Releases.
 - Shareable application logs and a vehicle-compatibility information package.
 - Persistent settings across application restarts.
@@ -90,6 +94,9 @@ The enhanced reverse view itself is disabled by default.
 - Other BYD models and firmware versions are not confirmed compatible.
 - Local ADB must be enabled on the tablet and its authorization prompt must be accepted.
 - Camera access permission is required.
+- Weather requires location permission and an internet connection. Automatic updates and the
+  in-app refresh button do not require Accessibility; local ADB enables the stock BYD refresh
+  button to trigger the same update.
 - Instrument-cluster camera and music output requires compatible BYD display services.
 - Camera availability, startup time, and image layout can vary between vehicle software versions.
 
@@ -117,8 +124,8 @@ The enhanced reverse view itself is disabled by default.
    `Покращений задній вид` only after a parked check.
 5. In `Налаштування`, choose the preferred image quality, configure auto-start, check for updates,
    or export logs.
-6. To use `Музика`, first enable BYD's stock music-rhythm lighting mode, then enable the app's music
-   option.
+6. In `Фічі`, enable music after activating BYD's stock music-rhythm lighting mode, or enable
+   weather and grant location access. Weather is disabled by default.
 
 ## Known limitations
 
@@ -132,6 +139,9 @@ The enhanced reverse view itself is disabled by default.
 - Music synchronization depends on how an audio application plays sound and publishes metadata;
   some sources are not supported.
 - Third-party music metadata forwarding does not include album artwork.
+- Weather depends on location, network access, Open-Meteo availability, and the stock BYD weather
+  components present on the vehicle. The last complete weather data remains in place if an update
+  fails.
 
 ## License
 

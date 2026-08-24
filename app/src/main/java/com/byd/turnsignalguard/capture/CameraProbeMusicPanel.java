@@ -29,6 +29,11 @@ final class CameraProbeMusicPanel {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(0, activity.dp(12), 0, 0);
 
+        TextView title = activity.label("Музика");
+        title.setTextSize(20);
+        root.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(42)));
+
         musicSwitch = new Switch(activity);
         musicSwitch.setText("Підсвітка та метадані музики");
         musicSwitch.setTextColor(Color.WHITE);

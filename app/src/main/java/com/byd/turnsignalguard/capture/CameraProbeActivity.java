@@ -75,6 +75,7 @@ public final class CameraProbeActivity extends Activity
         ReverseCameraCompositionView.Callback {
     private static final String TAG = "BydTurnSignalGuard";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
+    private static final int LOCATION_PERMISSION_REQUEST = 11;
     private static final float DEFAULT_OUTWARD_DEG = 90.0f;
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
@@ -404,6 +405,7 @@ public final class CameraProbeActivity extends Activity
     private View settingsPage;
     private CameraProbeSettingsPanel settingsPanel;
     private CameraProbeMusicPanel musicPanel;
+    private CameraProbeWeatherPanel weatherPanel;
     private File logFile;
     private volatile IBinder helper;
     private volatile boolean cameraSurfaceReady;
@@ -421,6 +423,8 @@ public final class CameraProbeActivity extends Activity
     private boolean adbAuthorizationRequested;
     private boolean adbAuthorizationStartScheduled;
     private boolean cameraPermissionPending;
+    private boolean weatherRefreshAfterPermission;
+    private long weatherRefreshUiGeneration;
     private boolean backgroundStartSettingsRequired;
     private boolean backgroundStartSettingsActive;
     private boolean backgroundStartSettingsStartScheduled;
@@ -712,6 +716,25 @@ public final class CameraProbeActivity extends Activity
             maybeOpenProductionPreview();
             maybeOpenCalibrationCamera();
             maybeOpenReversePreview();
+        } else if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            boolean granted = false;
+            for (int result : results) {
+                if (result == PackageManager.PERMISSION_GRANTED) {
+                    granted = true;
+                    break;
+                }
+            }
+            record("weather_location_permission", "granted", granted);
+            weatherPanel.setEnabledState(granted);
+            CameraHelperService.weatherSettingsChanged(this);
+            if (!granted) {
+                weatherRefreshAfterPermission = false;
+                Toast.makeText(this, "Погода залишилась вимкненою без геолокації",
+                        Toast.LENGTH_SHORT).show();
+            } else if (weatherRefreshAfterPermission) {
+                weatherRefreshAfterPermission = false;
+                requestWeatherRefresh();
+            }
         }
     }
 
@@ -1418,7 +1441,7 @@ public final class CameraProbeActivity extends Activity
         parkingTabButton = button("Камери паркування");
         reverseCameraTabButton = button("Задній хід");
         cameraDebugTabButton = button("Відладка");
-        musicTabButton = button("Музика");
+        musicTabButton = button("Фічі");
         settingsTabButton = button("Налаштування");
         guardTabButton.setTextSize(14);
         calibrationTabButton.setTextSize(14);
@@ -1449,8 +1472,40 @@ public final class CameraProbeActivity extends Activity
         cameraPage = buildCameraPanel();
         parkingPage = buildParkingCameraPanel();
         reverseCameraPage = buildReverseCameraPanel();
+        if (preferences.getBoolean(CameraProbeWeatherPanel.PREF_ENABLED, false)
+                && !hasLocationPermission()) {
+            preferences.edit().putBoolean(CameraProbeWeatherPanel.PREF_ENABLED, false).apply();
+        }
         musicPanel = new CameraProbeMusicPanel(this, preferences);
-        musicPage = musicPanel.view();
+        weatherPanel = new CameraProbeWeatherPanel(
+                this, preferences, new CameraProbeWeatherPanel.Listener() {
+                    @Override
+                    public void onEnableRequested(boolean enabled) {
+                        onWeatherEnableRequested(enabled);
+                    }
+
+                    @Override
+                    public void onIntervalChanged(int intervalMinutes) {
+                        record("weather_interval", "minutes", intervalMinutes);
+                        CameraHelperService.weatherSettingsChanged(CameraProbeActivity.this);
+                    }
+
+                    @Override
+                    public void onManualRefresh() {
+                        requestWeatherRefresh();
+                    }
+                });
+        LinearLayout features = new LinearLayout(this);
+        features.setOrientation(LinearLayout.HORIZONTAL);
+        features.addView(musicPanel.view(), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        View featuresDivider = new View(this);
+        featuresDivider.setBackgroundColor(Color.DKGRAY);
+        features.addView(featuresDivider, new LinearLayout.LayoutParams(dp(1),
+                LinearLayout.LayoutParams.MATCH_PARENT));
+        features.addView(weatherPanel.view(), new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        musicPage = features;
         cameraDebugPage = buildCameraDebugPanel();
         directCameraDebugPage = buildDirectCameraDebugPanel();
         debugPage = buildCombinedDebugPanel();
@@ -1764,6 +1819,57 @@ public final class CameraProbeActivity extends Activity
         record("music_toggle", "enabled", checked);
         CameraHelperService.musicSettingsChanged(this);
         updateControls();
+    }
+
+    private void onWeatherEnableRequested(boolean enabled) {
+        weatherRefreshUiGeneration++;
+        if (!enabled) {
+            weatherRefreshAfterPermission = false;
+            weatherPanel.setEnabledState(false);
+            record("weather_toggle", "enabled", false);
+            CameraHelperService.weatherSettingsChanged(this);
+            return;
+        }
+        if (hasLocationPermission()) {
+            weatherPanel.setEnabledState(true);
+            record("weather_toggle", "enabled", true);
+            CameraHelperService.weatherSettingsChanged(this);
+            return;
+        }
+        requestPermissions(new String[]{
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST);
+    }
+
+    private void requestWeatherRefresh() {
+        if (!hasLocationPermission()) {
+            weatherRefreshAfterPermission = true;
+            requestPermissions(new String[]{
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST);
+            return;
+        }
+        long requestGeneration = ++weatherRefreshUiGeneration;
+        weatherPanel.setBusy(true);
+        CameraHelperService.weatherRefreshRequested(this, "app_button",
+                new ResultReceiver(mainHandler) {
+                    @Override
+                    protected void onReceiveResult(int resultCode, Bundle resultData) {
+                        if (activityDestroyed || weatherPanel == null
+                                || requestGeneration != weatherRefreshUiGeneration) return;
+                        String message = resultData == null ? ""
+                                : resultData.getString(CameraHelperService.WEATHER_RESULT_MESSAGE, "");
+                        weatherPanel.reportResult(
+                                resultCode == CameraHelperService.WEATHER_RESULT_OK, message);
+                    }
+                });
+    }
+
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private View buildReverseCameraPanel() {
@@ -8323,6 +8429,7 @@ public final class CameraProbeActivity extends Activity
 
     private void updateControls() {
         if (musicPanel != null) musicPanel.setControlEnabled(!shutdownRequested);
+        if (weatherPanel != null) weatherPanel.setControlsEnabled(!shutdownRequested);
         if (settingsPanel != null) {
             settingsPanel.setControlsEnabled(
                     shutdownRequested,

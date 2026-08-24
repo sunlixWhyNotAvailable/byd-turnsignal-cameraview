@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class CameraHelperService extends Service {
     private static final String CHANNEL_ID = "guard_service";
@@ -52,6 +54,10 @@ public final class CameraHelperService extends Service {
             "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
             "com.byd.turnsignalguard.capture.action.MUSIC_SETTINGS_CHANGED";
+    private static final String ACTION_WEATHER_SETTINGS_CHANGED =
+            "com.byd.turnsignalguard.capture.action.WEATHER_SETTINGS_CHANGED";
+    private static final String ACTION_WEATHER_REFRESH =
+            "com.byd.turnsignalguard.capture.action.WEATHER_REFRESH";
     private static final String ACTION_AUTO_START_CHANGED =
             "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
     private static final String ACTION_FLUSH_LOGS =
@@ -61,11 +67,19 @@ public final class CameraHelperService extends Service {
     private static final String EXTRA_ENABLED = "enabled";
     private static final String EXTRA_REASON = "reason";
     private static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
+    private static final String EXTRA_WEATHER_RECEIVER = "weather_receiver";
+    private static final String EXTRA_WEATHER_REASON = "weather_reason";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
+    static final int WEATHER_RESULT_OK = 0;
+    static final int WEATHER_RESULT_FAILED = 1;
+    static final int WEATHER_RESULT_BUSY = 2;
+    static final String WEATHER_RESULT_MESSAGE = "weather_result_message";
 
     private final Object logLock = new Object();
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService weatherAccessibilityExecutor =
+            Executors.newSingleThreadExecutor(r -> new Thread(r, "weather-accessibility"));
     private final Runnable flushLog = this::flushLogWriter;
     private final Runnable heartbeat = new Runnable() {
         @Override
@@ -90,6 +104,7 @@ public final class CameraHelperService extends Service {
     private ParkingCameraController parkingCameras;
     private ReverseCameraController reverseCameras;
     private ClusterFullscreenController clusterFullscreen;
+    private WeatherRuntime weatherRuntime;
     private File logFile;
     private BufferedWriter logWriter;
     private boolean logFlushScheduled;
@@ -97,6 +112,7 @@ public final class CameraHelperService extends Service {
     private boolean foreground;
     private boolean activityVisible;
     private boolean cameraPreviewActive;
+    private volatile Boolean weatherAccessibilityTarget;
 
     private void resumeOverlayIfIdle() {
         if (shouldResumeOverlay(cameraPreviewActive, activityVisible)) {
@@ -171,6 +187,40 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_MUSIC_SETTINGS_CHANGED));
     }
 
+    static void weatherSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_WEATHER_SETTINGS_CHANGED));
+    }
+
+    static void weatherRefreshRequested(
+            Context context, String reason, ResultReceiver receiver) {
+        SharedPreferences settings = context.getSharedPreferences("settings", MODE_PRIVATE);
+        if (!settings.getBoolean(WeatherRuntime.PREF_ENABLED, false)
+                || !GuardRecovery.shouldRecover(context)) {
+            sendWeatherResult(receiver, WEATHER_RESULT_FAILED,
+                    "Погода вимкнена");
+            return;
+        }
+        Intent intent = new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_WEATHER_REFRESH)
+                .putExtra(EXTRA_WEATHER_REASON, reason == null ? "manual" : reason)
+                .putExtra(EXTRA_WEATHER_RECEIVER, receiver);
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
+        else context.startService(intent);
+    }
+
+    private static void sendWeatherResult(
+            ResultReceiver receiver, int resultCode, String message) {
+        if (receiver == null) return;
+        Bundle data = new Bundle();
+        data.putString(WEATHER_RESULT_MESSAGE, message);
+        try {
+            receiver.send(resultCode, data);
+        } catch (RuntimeException ignored) {
+            // The requesting UI may already be gone.
+        }
+    }
+
     static void updateAutoStart(Context context, boolean enabled) {
         GuardRecovery.setAutoStartEnabled(context, enabled);
         Intent intent = new Intent(context, CameraHelperService.class)
@@ -198,6 +248,7 @@ public final class CameraHelperService extends Service {
         createLogFile();
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
+        weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
         overlay = new BlindSpotOverlayController(this, handler, this::lifecycle);
         parkingCameras = new ParkingCameraController(this, handler, this::parkingEvent);
         reverseCameras = new ReverseCameraController(
@@ -211,6 +262,7 @@ public final class CameraHelperService extends Service {
         if (GuardRecovery.shouldRecover(this)) {
             startForegroundRuntime();
             ensureHelperStarted();
+            weatherRuntime.start();
             startHeartbeat();
         }
     }
@@ -260,7 +312,11 @@ public final class CameraHelperService extends Service {
             GuardRecovery.setAutoStartEnabled(this,
                     intent.getBooleanExtra(EXTRA_ENABLED, true));
         }
-        if (!GuardRecovery.shouldRecover(this)) {
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        boolean shouldRecover = GuardRecovery.shouldRecover(this);
+        syncWeatherAccessibility(
+                shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
+        if (!shouldRecover) {
             if (helper != null) helper.setRecoveryEnabled(false);
             handler.removeCallbacks(heartbeat);
             stopForegroundRuntime();
@@ -269,10 +325,11 @@ public final class CameraHelperService extends Service {
         }
         startForegroundRuntime();
         ensureHelperStarted();
+        weatherRuntime.start();
         helper.setRecoveryEnabled(true);
         helper.configureParkingRadar(anyParkingEnabled());
         if (refreshMusicAfterClose) {
-            helper.configureMusic(getSharedPreferences("settings", MODE_PRIVATE)
+            helper.configureMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             overlay.applySettings();
@@ -288,11 +345,109 @@ public final class CameraHelperService extends Service {
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
-            helper.configureMusic(getSharedPreferences("settings", MODE_PRIVATE)
+            helper.configureMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
+        } else if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
+            weatherRuntime.settingsChanged();
+        } else if (ACTION_WEATHER_REFRESH.equals(action)) {
+            ResultReceiver receiver = intent == null
+                    ? null : intent.getParcelableExtra(EXTRA_WEATHER_RECEIVER);
+            String weatherReason = intent == null
+                    ? "manual" : intent.getStringExtra(EXTRA_WEATHER_REASON);
+            boolean accepted = weatherRuntime.requestNow(weatherReason, (success, error) ->
+                    sendWeatherResult(receiver,
+                            success ? WEATHER_RESULT_OK : WEATHER_RESULT_FAILED,
+                            success ? "Погоду оновлено" : "Не вдалося оновити погоду"));
+            if (!accepted) {
+                sendWeatherResult(receiver,
+                        weatherRuntime.isRequestInFlight()
+                                ? WEATHER_RESULT_BUSY : WEATHER_RESULT_FAILED,
+                        weatherRuntime.isRequestInFlight()
+                                ? "Оновлення вже виконується" : "Погода вимкнена");
+            }
         }
         startHeartbeat();
         return START_STICKY;
+    }
+
+    private void syncWeatherAccessibility(boolean enabled) {
+        if (weatherAccessibilityTarget != null
+                && weatherAccessibilityTarget.booleanValue() == enabled) return;
+        weatherAccessibilityTarget = enabled;
+        weatherAccessibilityExecutor.execute(() -> applyWeatherAccessibility(enabled));
+    }
+
+    private void applyWeatherAccessibility(boolean enabled) {
+        LocalAdbClient.Result currentResult = LocalAdbClient.executeAuthorizedText(
+                this, "settings get secure enabled_accessibility_services", 8_192,
+                this::lifecycle);
+        if (!currentResult.ok) {
+            lifecycle("weather_accessibility_failed", "enabled", enabled,
+                    "error", currentResult.error);
+            clearWeatherAccessibilityTarget(enabled);
+            return;
+        }
+        String current = currentResult.output == null ? "" : currentResult.output.trim();
+        if ("null".equalsIgnoreCase(current)) current = "";
+        boolean installed = WeatherAccessibilitySettings.hasOwnService(current);
+        String value = WeatherAccessibilitySettings.transformEnabledAccessibilityServices(
+                current, enabled);
+        if (!enabled && !installed) {
+            lifecycle("weather_accessibility_applied", "enabled", false,
+                    "other_services", value.isEmpty() ? 0 : 1);
+            return;
+        }
+        boolean ok = true;
+        if (installed != enabled) {
+            if (enabled) {
+                String withoutOwn = WeatherAccessibilitySettings
+                        .transformEnabledAccessibilityServices(current, false);
+                ok = runWeatherAccessibilityCommand(
+                        "settings put secure enabled_accessibility_services ':" + withoutOwn + "'")
+                        && pauseWeatherAccessibility()
+                        && runWeatherAccessibilityCommand(
+                        "settings put secure enabled_accessibility_services ':" + value + "'")
+                        && pauseWeatherAccessibility();
+            } else {
+                ok = runWeatherAccessibilityCommand(
+                        "settings put secure enabled_accessibility_services ':" + value + "'")
+                        && pauseWeatherAccessibility();
+            }
+        }
+        if (ok) {
+            ok = runWeatherAccessibilityCommand(
+                    "settings put secure accessibility_enabled "
+                            + (enabled || !value.isEmpty() ? "1" : "0"));
+        }
+        lifecycle(ok ? "weather_accessibility_applied" : "weather_accessibility_failed",
+                "enabled", enabled, "other_services", value.isEmpty() ? 0 : 1);
+        if (!ok) clearWeatherAccessibilityTarget(enabled);
+    }
+
+    private void clearWeatherAccessibilityTarget(boolean attemptedValue) {
+        Boolean target = weatherAccessibilityTarget;
+        if (target != null && target.booleanValue() == attemptedValue) {
+            weatherAccessibilityTarget = null;
+        }
+    }
+
+    private boolean runWeatherAccessibilityCommand(String command) {
+        LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
+                this, command, this::lifecycle);
+        if (!result.ok) {
+            lifecycle("weather_accessibility_command_failed", "error", result.error);
+        }
+        return result.ok;
+    }
+
+    private static boolean pauseWeatherAccessibility() {
+        try {
+            Thread.sleep(300);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     @Override
@@ -328,8 +483,10 @@ public final class CameraHelperService extends Service {
         if (overlay != null) overlay.shutdown();
         if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
+        if (weatherRuntime != null) weatherRuntime.shutdown();
         if (helper != null) helper.shutdown(!recover);
         helper = null;
+        weatherAccessibilityExecutor.shutdownNow();
         stopForegroundRuntime();
         if (recover) GuardRecovery.scheduleSoon(this);
         closeLogWriter();
@@ -370,6 +527,7 @@ public final class CameraHelperService extends Service {
         if (overlay != null) overlay.shutdown();
         if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
+        if (weatherRuntime != null) weatherRuntime.shutdown();
         if (helper != null) helper.shutdown(terminateShells);
         helper = null;
         stopForegroundRuntime();

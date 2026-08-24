@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="weather_title">Погода</string>
+    <string name="weather_enable">Увімкнути погоду</string>
+    <string name="weather_interval_minutes">Інтервал оновлення, хв</string>
+    <string name="weather_update_now">Оновити зараз</string>
+    <string name="weather_updating">Оновлення…</string>
+    <string name="weather_attribution">Дані погоди: Open‑Meteo (адаптовано)</string>
+    <string name="weather_accessibility_service_label">Оновлення погоди</string>
+    <string name="weather_accessibility_service_description">Оновлює дані погоди після натискання кнопки оновлення BYD Weather.</string>
+</resources>
