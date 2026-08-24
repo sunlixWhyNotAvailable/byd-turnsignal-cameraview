@@ -21,6 +21,8 @@ public final class ParkingCameraSettingsTest {
         assertEquals("parking_camera_fl_distance_cm",
                 ParkingCameraSettings.distanceKey(ParkingCameraProfile.of(ParkingCameraProfile.FL)));
         assertEquals("parking_camera_max_speed_kph", ParkingCameraSettings.PREF_MAX_SPEED_KPH);
+        assertEquals("parking_camera_allow_during_reverse",
+                ParkingCameraSettings.PREF_ALLOW_DURING_REVERSE);
     }
 
     @Test
@@ -28,6 +30,7 @@ public final class ParkingCameraSettingsTest {
         TestSharedPreferences preferences = new TestSharedPreferences();
         ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
         assertFalse(CameraHelperService.anyParkingEnabled(preferences));
+        assertFalse(settings.allowDuringReverse());
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             ParkingCameraSettings.Rule rule = settings.rule(profile);
             assertFalse(rule.enabled);
@@ -53,5 +56,35 @@ public final class ParkingCameraSettingsTest {
         settings.setRule(left, settings.rule(left).withEnabled(false));
         settings.setRule(fl, settings.rule(fl).withEnabled(false));
         assertFalse(CameraHelperService.anyParkingEnabled(preferences));
+    }
+
+    @Test
+    public void bulkEnablePreservesPerCameraRuleValuesAndReversePermissionIsIndependent() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        ParkingCameraSettings settings = new ParkingCameraSettings(preferences);
+        ParkingCameraProfile fl = ParkingCameraProfile.of(ParkingCameraProfile.FL);
+        ParkingCameraProfile rr = ParkingCameraProfile.of(ParkingCameraProfile.RR);
+        settings.setRule(fl, new ParkingCameraSettings.Rule(false, 7, true));
+        settings.setRule(rr, new ParkingCameraSettings.Rule(true, 123, false));
+        settings.setMaxSpeedKph(42);
+        settings.setAllowDuringReverse(true);
+
+        settings.setAllEnabled(true);
+        assertTrue(settings.rule(fl).enabled);
+        assertEquals(7, settings.rule(fl).distanceCm);
+        assertTrue(settings.rule(fl).addCentral);
+        assertTrue(settings.rule(rr).enabled);
+        assertEquals(123, settings.rule(rr).distanceCm);
+        assertFalse(settings.rule(rr).addCentral);
+        assertEquals(42, settings.maxSpeedKph());
+        assertTrue(settings.allowDuringReverse());
+
+        settings.setAllEnabled(false);
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            assertFalse(settings.rule(profile).enabled);
+        }
+        assertEquals(7, settings.rule(fl).distanceCm);
+        assertTrue(settings.rule(fl).addCentral);
+        assertTrue(settings.allowDuringReverse());
     }
 }

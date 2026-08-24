@@ -54,6 +54,7 @@ final class ParkingCameraController {
     private int requestSequence;
     private ParkingCameraSettings.Rule[] rules;
     private int maxSpeedKph;
+    private boolean allowDuringReverse;
 
     ParkingCameraController(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -88,7 +89,7 @@ final class ParkingCameraController {
 
     void setReversePriority(boolean value) {
         reversePriority = value;
-        if (value) closeParkingGroup("reverse_priority");
+        if (value && !allowDuringReverse) closeParkingGroup("reverse_priority");
         evaluate();
     }
 
@@ -369,7 +370,8 @@ final class ParkingCameraController {
         desiredMask = policy.update(rules, maxSpeedKph,
                 radarRaw, radarValid,
                 speedKph, speedValid, speedTimestamp, now);
-        if (isHardBlocked(suspended, activityVisible, reversePriority)) {
+        if (isHardBlocked(suspended, activityVisible, reversePriority,
+                allowDuringReverse)) {
             desiredMask = 0;
             if (!closeParkingGroup("parking_preempted")) return;
             handler.removeCallbacks(closeTick);
@@ -414,6 +416,7 @@ final class ParkingCameraController {
     private void reloadSettings() {
         rules = ParkingCameraSettings.readRules(settings);
         maxSpeedKph = ParkingCameraSettings.readMaxSpeed(settings);
+        allowDuringReverse = ParkingCameraSettings.readAllowDuringReverse(settings);
     }
 
     private void preparePane(Pane pane) {
@@ -763,7 +766,8 @@ final class ParkingCameraController {
                 width, height, Math.max(0, x), Math.max(0, y),
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, 8, dewarp,
-                raw, CameraBufferQuality.load(settings), crop.mirrorHorizontally);
+                raw, CameraBufferQuality.load(settings), crop.mirrorHorizontally,
+                BlindSpotOverlayController.readTransparencyPercent(settings));
     }
 
     static int[] overlayGeometry(
@@ -828,7 +832,13 @@ final class ParkingCameraController {
 
     static boolean isHardBlocked(
             boolean suspended, boolean activityVisible, boolean reversePriority) {
-        return suspended || activityVisible || reversePriority;
+        return isHardBlocked(suspended, activityVisible, reversePriority, false);
+    }
+
+    static boolean isHardBlocked(
+            boolean suspended, boolean activityVisible, boolean reversePriority,
+            boolean allowDuringReverse) {
+        return suspended || activityVisible || reversePriority && !allowDuringReverse;
     }
 
     private static int safeInt(

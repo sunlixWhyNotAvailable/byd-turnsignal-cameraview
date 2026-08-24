@@ -16,9 +16,9 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                 640, 480, 18, 36,
                 0.22f, 0.19f, 0.54f, 0.58f, DirectCameraCrop.ASPECT_FREE,
                 12, CameraRotation.MODE_ALIGNED, 9,
-                        CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 117,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_RIGHT, true, 117,
                         CameraDewarpConfig.PROJECTION_CYLINDRICAL), raw,
-                CameraBufferQuality.BALANCED, true);
+                CameraBufferQuality.BALANCED, true, 37);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -39,6 +39,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertTrue(restored.mirrorHorizontally);
             assertDewarp(source.dewarp, restored.dewarp);
             assertEquals(CameraBufferQuality.BALANCED, restored.bufferQuality);
+            assertEquals(37, restored.transparencyPercent);
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();
@@ -74,7 +75,8 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                                 CameraDewarpConfig.PROJECTION_CYLINDRICAL),
                         CameraBufferQuality.QUALITY,
                         ReverseCameraLayout.VISIBILITY_REAR_LEFT
-                                | ReverseCameraLayout.VISIBILITY_REAR_RIGHT);
+                                | ReverseCameraLayout.VISIBILITY_REAR_RIGHT,
+                        42);
 
         Parcel parcel = Parcel.obtain();
         try {
@@ -85,6 +87,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             restored.validate(1920, 1080);
             assertEquals(source.requestId, restored.requestId);
             assertEquals(source.cornerRadiusDp, restored.cornerRadiusDp);
+            assertEquals(42, restored.transparencyPercent);
             assertDewarp(source.rearDewarp, restored.rearDewarp);
             assertDewarp(source.leftDewarp, restored.leftDewarp);
             assertDewarp(source.rightDewarp, restored.rightDewarp);
@@ -152,6 +155,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertCropWire(parcel, raw);
             assertEquals(CameraBufferQuality.ORIGINAL, parcel.readInt());
             assertEquals(1, parcel.readInt());
+            assertEquals(0, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();
@@ -217,6 +221,7 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             }
             assertEquals(CameraBufferQuality.BALANCED, parcel.readInt());
             assertEquals(ReverseCameraLayout.VISIBILITY_ALL, parcel.readInt());
+            assertEquals(0, parcel.readInt());
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();

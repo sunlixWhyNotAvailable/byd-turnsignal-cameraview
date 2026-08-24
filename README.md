@@ -5,7 +5,7 @@
 > This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
 > features while the vehicle is parked.
 
-Current source version: `0.50.5`. The application interface is currently Ukrainian.
+Current source version: `0.51.0`. The application interface is currently Ukrainian.
 
 ## Features
 
@@ -32,6 +32,7 @@ Current source version: `0.50.5`. The application interface is currently Ukraini
 - Four global image-quality choices in `Налаштування`: `Швидкодія` (default), `Баланс`, `Якість`,
   and `Оригінал`, applied consistently to camera views, previews, and calibration.
 - Adjustable camera-window corner rounding.
+- Adjustable transparency for external camera images from 0% (opaque) to 100%.
 
 Calibration now opens from the `Камери сліпих зон` page instead of using a separate top-level
 tab.
@@ -44,6 +45,9 @@ tab.
   150 cm. A global maximum-speed setting limits the feature.
 - Each corner view can optionally add the corresponding front or rear view when that central view
   was not already activated by its own distance rule.
+- Global actions enable or disable all eight parking-camera rules at once.
+- An optional setting allows distance-qualified parking views to remain visible together with the
+  enhanced reverse view; it is disabled by default.
 - Independent size and position for every view, with an optional synchronized scale.
 - Independent crop, rotation, mirroring, calibration preset, and optional fisheye correction for
   every view. The rear view starts mirrored by default.

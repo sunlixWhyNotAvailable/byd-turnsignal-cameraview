@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 public final class ParkingCameraSettings {
     public static final String PREF_PREFIX = "parking_camera_";
     public static final String PREF_MAX_SPEED_KPH = PREF_PREFIX + "max_speed_kph";
+    public static final String PREF_ALLOW_DURING_REVERSE =
+            PREF_PREFIX + "allow_during_reverse";
     public static final int DEFAULT_DISTANCE_CM = 30;
     public static final int MIN_DISTANCE_CM = 0;
     public static final int MAX_DISTANCE_CM = 150;
@@ -34,6 +36,10 @@ public final class ParkingCameraSettings {
         return readMaxSpeed(preferences);
     }
 
+    public boolean allowDuringReverse() {
+        return readAllowDuringReverse(preferences);
+    }
+
     public void setRule(ParkingCameraProfile profile, Rule rule) {
         if (profile == null || rule == null) throw new IllegalArgumentException("rule is null");
         Rule safe = normalize(rule);
@@ -46,6 +52,19 @@ public final class ParkingCameraSettings {
 
     public void setMaxSpeedKph(int value) {
         preferences.edit().putInt(PREF_MAX_SPEED_KPH, clampSpeed(value)).apply();
+    }
+
+    public void setAllowDuringReverse(boolean value) {
+        preferences.edit().putBoolean(PREF_ALLOW_DURING_REVERSE, value).apply();
+    }
+
+    /** Enables or disables every parking view while preserving each rule's other values. */
+    public void setAllEnabled(boolean enabled) {
+        SharedPreferences.Editor editor = preferences.edit();
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            editor.putBoolean(enabledKey(profile), enabled);
+        }
+        editor.apply();
     }
 
     public static Rule defaults(ParkingCameraProfile profile) {
@@ -76,6 +95,11 @@ public final class ParkingCameraSettings {
         return clampSpeed(readInt(preferences, PREF_MAX_SPEED_KPH, DEFAULT_MAX_SPEED_KPH));
     }
 
+    public static boolean readAllowDuringReverse(SharedPreferences preferences) {
+        if (preferences == null) throw new IllegalArgumentException("preferences is null");
+        return readBoolean(preferences, PREF_ALLOW_DURING_REVERSE, false);
+    }
+
     /** Writes missing keys and repairs values outside the shared contract. */
     public static void migrate(SharedPreferences preferences) {
         if (preferences == null) throw new IllegalArgumentException("preferences is null");
@@ -104,6 +128,10 @@ public final class ParkingCameraSettings {
         if (!preferences.contains(PREF_MAX_SPEED_KPH)
                 || readInt(preferences, PREF_MAX_SPEED_KPH, speed) != speed) {
             editor.putInt(PREF_MAX_SPEED_KPH, speed);
+            changed = true;
+        }
+        if (!preferences.contains(PREF_ALLOW_DURING_REVERSE)) {
+            editor.putBoolean(PREF_ALLOW_DURING_REVERSE, false);
             changed = true;
         }
         if (changed) editor.apply();

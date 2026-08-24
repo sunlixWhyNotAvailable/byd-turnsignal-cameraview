@@ -24,6 +24,25 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class PersistentCameraSessionTest {
     @Test
+    public void reverseShellAllowsOnlyParkingOverlayCoexistence() {
+        for (int cameraId = 0; cameraId < CameraOverlayProfile.BLIND_COUNT; cameraId++) {
+            assertFalse(CameraShellMain.ShellBinder.overlayAllowedWhileReverseActive(cameraId));
+        }
+        for (int cameraId = CameraOverlayProfile.PARKING_OFFSET;
+                cameraId < CameraOverlayProfile.COUNT; cameraId++) {
+            assertTrue(CameraShellMain.ShellBinder.overlayAllowedWhileReverseActive(cameraId));
+        }
+    }
+
+    @Test
+    public void reverseClearsOnlyBlindPendingOverlaySlots() {
+        assertEquals(CameraOverlayProfile.PARKING_OFFSET,
+                TurnSignalController.reversePendingOverlayClearCount());
+        assertTrue(TurnSignalController.reversePendingOverlayClearCount()
+                < CameraOverlayProfile.COUNT);
+    }
+
+    @Test
     public void overlayActiveStateSurvivesConsumerGroupRestore() {
         CameraHelperMain.HelperBinder.ConsumerGroup group =
                 new CameraHelperMain.HelperBinder.ConsumerGroup(
@@ -182,7 +201,7 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
-    public void reversePreemptsThenRestoresBlindAndParkingGroups() throws Exception {
+    public void reversePreemptsBlindAndKeepsParkingGroup() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
         FakeFanout fanout = new FakeFanout(trace);
@@ -201,8 +220,9 @@ public final class PersistentCameraSessionTest {
                 events, shell, 7, 3);
 
         assertFalse(session.overlayGroup.attached);
-        assertFalse(session.parkingGroup.attached);
+        assertTrue(session.parkingGroup.attached);
         assertTrue(session.reverseGroup.attached);
+        assertEquals(5, fanout.activeTargets);
 
         session.close(camera, session.reverseGroup, "not_reverse", 28,
                 events, shell, 7, 3);
@@ -211,7 +231,26 @@ public final class PersistentCameraSessionTest {
         assertTrue(session.parkingGroup.attached);
         assertFalse(session.parkingGroup.active[0]);
         assertEquals(3, fanout.activeTargets);
-        assertTrue(countPrefix(trace.values, "target-active:") >= 1);
+    }
+
+    @Test
+    public void parkingCanAttachWhileReverseIsActive() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+
+        session.startProducer(camera, fanout, session.reverseGroup,
+                surfaces(3), new int[]{1, 2, 3}, 281, "reverse", true, false);
+        session.attach(camera, session.parkingGroup,
+                surfaces(2), new int[]{2, 4}, 282, "parking", false, false,
+                events, shell, 7, 3);
+
+        assertTrue(session.reverseGroup.attached);
+        assertTrue(session.parkingGroup.attached);
+        assertEquals(5, fanout.activeTargets);
     }
 
     @Test

@@ -446,6 +446,7 @@ public final class CameraProbeActivity extends Activity
     private EditText parkingMaxSpeedInput;
     private Switch parkingCameraSwitch;
     private Switch parkingAddCentralSwitch;
+    private Switch parkingAllowDuringReverseSwitch;
     private Switch parkingScaleSyncSwitch;
     private SeekBar parkingScaleInput;
     private TextView parkingScaleValue;
@@ -454,6 +455,8 @@ public final class CameraProbeActivity extends Activity
     private FrameLayout parkingPositionFrame;
     private TextView parkingPositionHandle;
     private Button parkingCalibrationButton;
+    private Button parkingEnableAllButton;
+    private Button parkingDisableAllButton;
     private Button cameraCalibrationButton;
     private Button calibrationBackButton;
     private boolean calibrationCopyPending;
@@ -1731,6 +1734,11 @@ public final class CameraProbeActivity extends Activity
 
     void onCameraCornerRadiusChanged(int value) {
         record("camera_corner_radius", "radius_dp", value);
+        CameraHelperService.cameraSettingsChanged(this);
+    }
+
+    void onCameraTransparencyChanged(int value) {
+        record("camera_transparency", "percent", value);
         CameraHelperService.cameraSettingsChanged(this);
     }
 
@@ -3138,6 +3146,17 @@ public final class CameraProbeActivity extends Activity
         controls.addView(selectors, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
+        LinearLayout bulkActions = new LinearLayout(this);
+        bulkActions.setOrientation(LinearLayout.HORIZONTAL);
+        parkingEnableAllButton = button("Увімкнути все");
+        parkingDisableAllButton = button("Вимкнути все");
+        bulkActions.addView(parkingEnableAllButton, new LinearLayout.LayoutParams(
+                0, dp(46), 1));
+        bulkActions.addView(parkingDisableAllButton, new LinearLayout.LayoutParams(
+                0, dp(46), 1));
+        controls.addView(bulkActions, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
+
         parkingCameraSwitch = new Switch(this);
         parkingCameraSwitch.setText("Камера увімкнена");
         parkingCameraSwitch.setTextColor(Color.WHITE);
@@ -3168,6 +3187,12 @@ public final class CameraProbeActivity extends Activity
         maxSpeedRow.addView(parkingMaxSpeedInput, new LinearLayout.LayoutParams(dp(80), dp(42)));
         maxSpeedRow.addView(label("км/год"), new LinearLayout.LayoutParams(dp(64), dp(42)));
         controls.addView(maxSpeedRow);
+
+        parkingAllowDuringReverseSwitch = new Switch(this);
+        parkingAllowDuringReverseSwitch.setText("Вмикати разом із камерами заднього ходу");
+        parkingAllowDuringReverseSwitch.setTextColor(Color.WHITE);
+        controls.addView(parkingAllowDuringReverseSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
         LinearLayout scaleRow = new LinearLayout(this);
         scaleRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -3257,6 +3282,14 @@ public final class CameraProbeActivity extends Activity
                     rule.withEnabled(checked));
             notifyParkingSettingsChanged();
         });
+        parkingEnableAllButton.setOnClickListener(view -> setAllParkingCamerasEnabled(settings, true));
+        parkingDisableAllButton.setOnClickListener(view -> setAllParkingCamerasEnabled(settings, false));
+        parkingAllowDuringReverseSwitch.setChecked(settings.allowDuringReverse());
+        parkingAllowDuringReverseSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (parkingUiUpdating) return;
+            settings.setAllowDuringReverse(checked);
+            notifyParkingSettingsChanged();
+        });
         parkingAddCentralSwitch.setOnCheckedChangeListener((button, checked) -> {
             if (parkingUiUpdating) return;
             ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(
@@ -3333,6 +3366,8 @@ public final class CameraProbeActivity extends Activity
         parkingAddCentralSwitch.setChecked(rule.addCentral);
         parkingMaxSpeedInput.setText(String.valueOf(
                 ParkingCameraSettings.readMaxSpeed(preferences)));
+        parkingAllowDuringReverseSwitch.setChecked(
+                ParkingCameraSettings.readAllowDuringReverse(preferences));
         parkingScaleSyncSwitch.setChecked(preferences.getBoolean(
                 parkingScaleSyncKey(), false));
         parkingScaleInput.setProgress(parkingCameraScale[cameraId]
@@ -3344,6 +3379,15 @@ public final class CameraProbeActivity extends Activity
         parkingPositionHandle.setText(parkingCameraButtons[cameraId].getText());
         parkingUiUpdating = false;
         updateParkingPositionHandle();
+    }
+
+    private void setAllParkingCamerasEnabled(
+            ParkingCameraSettings settings, boolean enabled) {
+        settings.setAllEnabled(enabled);
+        parkingUiUpdating = true;
+        parkingCameraSwitch.setChecked(enabled);
+        parkingUiUpdating = false;
+        notifyParkingSettingsChanged();
     }
 
     private void saveParkingRule() {

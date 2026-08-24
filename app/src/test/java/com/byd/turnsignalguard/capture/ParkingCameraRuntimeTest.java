@@ -183,6 +183,26 @@ public final class ParkingCameraRuntimeTest {
     }
 
     @Test
+    public void reversePriorityCanBeAllowedWithoutBypassingParkingRules() {
+        assertTrue(ParkingCameraController.isHardBlocked(false, false, true, false));
+        assertFalse(ParkingCameraController.isHardBlocked(false, false, true, true));
+        assertTrue(ParkingCameraController.isHardBlocked(true, false, true, true));
+        assertTrue(ParkingCameraController.isHardBlocked(false, true, true, true));
+    }
+
+    @Test
+    public void activityExclusiveBlocksBothParkingAndBlindButReverseOnlyBlocksBlind() {
+        assertTrue(CameraHelperMain.HelperBinder.persistentAttachBlocked(
+                false, true, false, true));
+        assertTrue(CameraHelperMain.HelperBinder.persistentAttachBlocked(
+                true, false, false, true));
+        assertTrue(CameraHelperMain.HelperBinder.persistentAttachBlocked(
+                true, false, true, false));
+        assertFalse(CameraHelperMain.HelperBinder.persistentAttachBlocked(
+                false, true, true, false));
+    }
+
+    @Test
     public void closeRetryFailureSuccessAndStaleTokenStaySafe() {
         ParkingCameraController.CloseRetryState state =
                 new ParkingCameraController.CloseRetryState();

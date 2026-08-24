@@ -25,6 +25,7 @@ final class BlindSpotOverlayController {
     static final String PREF_REAR_SHARP_TURN_ANGLE = "camera_rear_sharp_turn_angle_deg";
     static final String PREF_REAR_BSD_ONLY = "camera_rear_bsd_only";
     static final String PREF_CORNER_RADIUS = "camera_corner_radius_dp";
+    static final String PREF_TRANSPARENCY_PERCENT = "camera_transparency_percent";
     static final String PREF_SCALE = "camera_overlay_scale_percent";
     static final String PREF_LEFT_SCALE = "camera_left_scale_percent";
     static final String PREF_RIGHT_SCALE = "camera_right_scale_percent";
@@ -66,6 +67,9 @@ final class BlindSpotOverlayController {
     static final int DEFAULT_WARNING_MODE = CameraShellProtocol.WARNING_MODE_PULSE;
     static final int DEFAULT_CORNER_RADIUS_DP = 10;
     static final int MAX_CORNER_RADIUS_DP = 48;
+    static final int DEFAULT_TRANSPARENCY_PERCENT = 0;
+    static final int MIN_TRANSPARENCY_PERCENT = 0;
+    static final int MAX_TRANSPARENCY_PERCENT = 100;
 
     private static final int BLINK_OFF = 1;
     private static final int BLINK_LEFT = 2;
@@ -287,6 +291,10 @@ final class BlindSpotOverlayController {
             editor.putInt(PREF_CORNER_RADIUS, DEFAULT_CORNER_RADIUS_DP);
             changed = true;
         }
+        if (!settings.contains(PREF_TRANSPARENCY_PERCENT)) {
+            editor.putInt(PREF_TRANSPARENCY_PERCENT, DEFAULT_TRANSPARENCY_PERCENT);
+            changed = true;
+        }
         if (changed) editor.apply();
     }
 
@@ -376,6 +384,16 @@ final class BlindSpotOverlayController {
     static int readCornerRadius(SharedPreferences settings) {
         return clamp(settings.getInt(PREF_CORNER_RADIUS, DEFAULT_CORNER_RADIUS_DP),
                 0, MAX_CORNER_RADIUS_DP);
+    }
+
+    static int readTransparencyPercent(SharedPreferences settings) {
+        try {
+            return clamp(settings.getInt(PREF_TRANSPARENCY_PERCENT,
+                            DEFAULT_TRANSPARENCY_PERCENT),
+                    MIN_TRANSPARENCY_PERCENT, MAX_TRANSPARENCY_PERCENT);
+        } catch (ClassCastException ignored) {
+            return DEFAULT_TRANSPARENCY_PERCENT;
+        }
     }
 
     static int[] fitAspect(
@@ -1126,7 +1144,7 @@ final class BlindSpotOverlayController {
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, readCornerRadius(settings),
                 dewarp, rawCrop, CameraBufferQuality.load(settings),
-                crop.mirrorHorizontally);
+                crop.mirrorHorizontally, readTransparencyPercent(settings));
     }
 
     static int[] overlayGeometry(

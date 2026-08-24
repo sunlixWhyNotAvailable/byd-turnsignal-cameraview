@@ -1,11 +1,9 @@
 package com.byd.turnsignalguard.capture;
 
-import android.annotation.SuppressLint;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.util.DisplayMetrics;
 import android.view.Display;
@@ -13,12 +11,9 @@ import android.view.Gravity;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewOutlineProvider;
-import android.view.WindowManager;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.FrameLayout;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.function.BiConsumer;
 
 final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
@@ -31,12 +26,12 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private final BiConsumer<String, Object[]> eventSink;
 
     private Context windowContext;
-    private WindowManager windows;
+    private WindowlessOverlayHost windowless;
     private FrameLayout root;
+    private FrameLayout previewLayer;
     private BlindSpotCameraView preview;
     private View warningGlow;
     private ObjectAnimator warningAnimator;
-    private WindowManager.LayoutParams layout;
     private int requestId;
     private int surfaceGeneration;
     private int armedFrameRequestId;
@@ -77,7 +72,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             } else if (preview.usesDewarpPipeline() != spec.dewarp.usesGpu()) {
                 close("dewarp_pipeline_changed");
             } else if (!samePaneSize(
-                    layout.width, layout.height, spec.width, spec.height)) {
+                    windowless.width(), windowless.height(), spec.width, spec.height)) {
                 close("camera_geometry_changed");
             } else if (!preview.usesPaneBoundedBuffer(
                     spec.width, spec.height, spec.bufferQuality)) {
@@ -86,8 +81,6 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         }
         if (root == null) {
             windowContext = context.createDisplayContext(display);
-            windows = (WindowManager) windowContext.getSystemService(Context.WINDOW_SERVICE);
-            if (windows == null) throw new IllegalStateException("window manager unavailable");
             activeTarget = spec.target;
             activeDisplayId = display.getDisplayId();
         }
@@ -98,7 +91,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         armedFrameUpdates = 0;
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
-        if (root == null) createWindow(spec);
+        if (root == null) createWindow(spec, display);
         else updateWindow(spec);
         preview.setDewarpStatsContext(requestId, surfaceGeneration);
         if (preview.isCameraSurfaceReady()) emitSurfaceReady(true);
@@ -138,8 +131,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 throw new IllegalStateException("first frame not confirmed");
             }
         }
-        layout.alpha = nextVisible ? 1.0f : 0.0f;
-        windows.updateViewLayout(root, layout);
+        try {
+            windowless.setVisible(nextVisible, 1.0f);
+        } catch (Exception error) {
+            throw new IllegalStateException("overlay visibility update failed", error);
+        }
         visible = nextVisible;
         emit("camera_overlay_visibility", "visible", nextVisible,
                 "request_id", requestId, "surface_generation", surfaceGeneration);
@@ -182,11 +178,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         if (activeRoot == null) return;
         clearWarning("overlay_close");
         root = null;
+        previewLayer = null;
         preview = null;
         warningGlow = null;
-        layout = null;
-        WindowManager activeWindows = windows;
-        windows = null;
+        WindowlessOverlayHost activeHost = windowless;
+        windowless = null;
         windowContext = null;
         int closedTarget = activeTarget;
         int closedDisplayId = activeDisplayId;
@@ -200,7 +196,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
         try {
-            if (activeWindows != null) activeWindows.removeViewImmediate(activeRoot);
+            if (activeHost != null) activeHost.release();
             emit("camera_overlay_window", "state", "removed",
                     "reason", safeReason(reason),
                     "target", CameraDisplayTarget.name(closedTarget),
@@ -215,19 +211,19 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         return root != null;
     }
 
-    private void createWindow(CameraShellProtocol.OverlaySpec spec) throws Exception {
+    private void createWindow(CameraShellProtocol.OverlaySpec spec, Display display)
+            throws Exception {
         FrameLayout nextRoot = new FrameLayout(windowContext);
         nextRoot.setVisibility(View.VISIBLE);
         nextRoot.setClipChildren(true);
         nextRoot.setClipToOutline(true);
         nextRoot.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.BLACK);
+        background.setColor(Color.TRANSPARENT);
         background.setCornerRadius(dp(spec.cornerRadiusDp));
         nextRoot.setBackground(background);
 
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
-        nextPreview.setAlpha(1.0f);
         nextPreview.setPaneBoundedBuffer(spec.width, spec.height, spec.bufferQuality);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
@@ -238,7 +234,14 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 spec.rawFallbackCrop.width, spec.rawFallbackCrop.height);
         nextPreview.applyDewarpConfig(spec.dewarp);
         nextPreview.applyDirectCameraCrop(spec.crop());
-        nextRoot.addView(nextPreview, new FrameLayout.LayoutParams(
+        FrameLayout nextPreviewLayer = new FrameLayout(windowContext);
+        nextPreviewLayer.setBackgroundColor(Color.TRANSPARENT);
+        nextPreviewLayer.setAlpha(WindowlessOverlayHost.alphaForTransparency(
+                spec.transparencyPercent));
+        nextPreviewLayer.addView(nextPreview, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        nextRoot.addView(nextPreviewLayer, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -249,43 +252,34 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 Gravity.TOP | Gravity.START));
 
-        WindowManager.LayoutParams nextLayout = new WindowManager.LayoutParams(
-                spec.width, spec.height, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-                PixelFormat.RGBA_8888);
-        nextLayout.gravity = Gravity.TOP | Gravity.START;
-        nextLayout.x = spec.x;
-        nextLayout.y = spec.y;
-        nextLayout.alpha = 0.0f;
-        nextLayout.windowAnimations = 0;
-        nextLayout.setTitle(WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName);
-        String trustedApi = setTrustedOverlay(nextLayout);
-
         root = nextRoot;
+        previewLayer = nextPreviewLayer;
         preview = nextPreview;
         warningGlow = nextWarningGlow;
-        layout = nextLayout;
+        WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
+                windowContext, display,
+                WindowlessOverlayHost.cameraLayer(cameraId));
+        windowless = nextHost;
         try {
-            windows.addView(nextRoot, nextLayout);
+            nextHost.attach(nextRoot, spec.width, spec.height, spec.x, spec.y,
+                    WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName);
         } catch (Throwable error) {
+            windowless = null;
             root = null;
+            previewLayer = null;
             preview = null;
             warningGlow = null;
-            layout = null;
             throw error;
         }
         emit("camera_overlay_window", "state", "added",
                 "request_id", requestId, "width", spec.width, "height", spec.height,
-                "x", spec.x, "y", spec.y, "type", nextLayout.type,
-                "format", nextLayout.format, "alpha", nextLayout.alpha,
-                "trusted_api", trustedApi, "corner_radius_dp", spec.cornerRadiusDp,
+                "x", spec.x, "y", spec.y, "layer", nextHost.layer(),
+                "alpha", 0.0f, "trusted_api", nextHost.trustedApi(),
+                "corner_radius_dp", spec.cornerRadiusDp,
+                "transparency_percent", spec.transparencyPercent,
                 "target", CameraDisplayTarget.name(spec.target),
                 "display_id", activeDisplayId,
-                "display_name", windows.getDefaultDisplay().getName(),
+                "display_name", nextHost.displayName(),
                 "dewarp_enabled", spec.dewarp.enabled,
                 "dewarp_lens", spec.dewarp.lens,
                 "dewarp_fov_degrees", spec.dewarp.fovDegrees,
@@ -295,6 +289,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
     private void updateWindow(CameraShellProtocol.OverlaySpec spec) {
         visible = false;
+        previewLayer.setAlpha(WindowlessOverlayHost.alphaForTransparency(
+                spec.transparencyPercent));
         preview.applyRawFallbackCrop(spec.rawFallbackCrop);
         preview.applyDewarpSourceRoi(
                 spec.rawFallbackCrop.left, spec.rawFallbackCrop.top,
@@ -303,12 +299,12 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();
         background.setCornerRadius(dp(spec.cornerRadiusDp));
-        layout.width = spec.width;
-        layout.height = spec.height;
-        layout.x = spec.x;
-        layout.y = spec.y;
-        layout.alpha = 0.0f;
-        windows.updateViewLayout(root, layout);
+        try {
+            windowless.setPosition(spec.x, spec.y);
+            windowless.setVisible(false, 1.0f);
+        } catch (Exception error) {
+            throw new IllegalStateException("windowless geometry update failed", error);
+        }
         FrameLayout.LayoutParams warningParams =
                 (FrameLayout.LayoutParams) warningGlow.getLayoutParams();
         warningParams.width = Math.max(1, spec.width * WARNING_WIDTH_PERCENT / 100);
@@ -414,10 +410,9 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
         clearWarning("dewarp_failed");
-        if (root == null || layout == null || windows == null) return;
+        if (root == null || windowless == null) return;
         try {
-            layout.alpha = 0.0f;
-            windows.updateViewLayout(root, layout);
+            windowless.setVisible(false, 1.0f);
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "hide_failed_renderer",
                     "request_id", requestId, "error", summary(error));
@@ -506,21 +501,6 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int dp(int value) {
         Context valueContext = windowContext == null ? context : windowContext;
         return Math.round(value * valueContext.getResources().getDisplayMetrics().density);
-    }
-
-    @SuppressLint("BlockedPrivateApi")
-    static String setTrustedOverlay(WindowManager.LayoutParams value) throws Exception {
-        try {
-            Method method = WindowManager.LayoutParams.class
-                    .getDeclaredMethod("setTrustedOverlay");
-            method.setAccessible(true);
-            method.invoke(value);
-            return "method";
-        } catch (Throwable methodError) {
-            Field field = WindowManager.LayoutParams.class.getField("privateFlags");
-            field.setInt(value, field.getInt(value) | 0x20000000);
-            return "field";
-        }
     }
 
     private static String safeReason(String reason) {

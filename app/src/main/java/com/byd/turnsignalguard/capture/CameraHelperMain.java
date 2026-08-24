@@ -1267,9 +1267,9 @@ final class CameraHelperMain {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("camera request id required");
             }
-            if ((target == overlayGroup || target == parkingGroup)
-                    && (reverseGroup.has()
-                    || activityGroup.has() && activityGroup.exclusive)) {
+            if (persistentAttachBlocked(
+                    target == overlayGroup, target == parkingGroup,
+                    reverseGroup.has(), activityGroup.has() && activityGroup.exclusive)) {
                 releaseSurfaces(requestedSurfaces);
                 return persistentBusy(target.owner, requestId, errorStage);
             }
@@ -1770,6 +1770,13 @@ final class CameraHelperMain {
                 discoveryError = summary(error);
                 return -1;
             }
+        }
+
+        static boolean persistentAttachBlocked(
+                boolean targetOverlay, boolean targetParking,
+                boolean reverseActive, boolean activityExclusive) {
+            return (targetOverlay && reverseActive)
+                    || ((targetOverlay || targetParking) && activityExclusive);
         }
 
         private String persistentBusy(
@@ -2335,7 +2342,8 @@ final class CameraHelperMain {
                 if (target.attached) groups.add(target);
                 if (exclusive) {
                     if (overlayGroup != target && overlayGroup.attached) groups.add(overlayGroup);
-                    if (parkingGroup != target && parkingGroup.attached) groups.add(parkingGroup);
+                    if (parkingGroup != target && parkingGroup.attached
+                            && target != reverseGroup) groups.add(parkingGroup);
                     if (activityGroup != target && activityGroup.attached) groups.add(activityGroup);
                     if (reverseGroup != target && reverseGroup.attached) groups.add(reverseGroup);
                 }
@@ -2348,8 +2356,13 @@ final class CameraHelperMain {
                     int cameraId, int epoch) {
                 restoreFailure = null;
                 restoreFailureFatal = false;
-                if (reverseGroup.has() || activityGroup.has() && activityGroup.exclusive) {
+                if (activityGroup.has() && activityGroup.exclusive) {
                     return true;
+                }
+                if (reverseGroup.has()) {
+                    return restoreGroups(
+                            port, new ConsumerGroup[]{parkingGroup},
+                            events, shellClose, cameraId, epoch);
                 }
                 return restoreGroups(
                         port, new ConsumerGroup[]{overlayGroup, parkingGroup, activityGroup},
@@ -3331,7 +3344,9 @@ final class CameraHelperMain {
             Method getRuntime = runtime.getDeclaredMethod("getRuntime");
             Method exemptions = runtime.getDeclaredMethod("setHiddenApiExemptions", String[].class);
             Object instance = getRuntime.invoke(null);
-            exemptions.invoke(instance, (Object) new String[]{"Landroid/hardware/", "Landroid/os/SystemProperties;"});
+            exemptions.invoke(instance, (Object) new String[]{
+                    "Landroid/hardware/", "Landroid/os/SystemProperties;", "Landroid/view/",
+                    "Landroid/app/"});
         } catch (Throwable error) {
             Log.w(TAG, "Hidden API exemption unavailable", root(error));
         }

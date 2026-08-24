@@ -405,7 +405,7 @@ final class TurnSignalController {
             throw new IllegalArgumentException("reverse spec/sinks required");
         }
         worker.execute(() -> {
-            clearPendingOverlays();
+            clearPendingBlindOverlays();
             pendingReverseRequestId = spec.requestId;
             pendingReverseSurfaceSink = surfaceSink;
             IBinder value = null;
@@ -1377,6 +1377,16 @@ final class TurnSignalController {
 
     private void clearPendingOverlays() {
         for (int i = 0; i < pendingOverlays.length; i++) pendingOverlays[i] = null;
+    }
+
+    private void clearPendingBlindOverlays() {
+        for (int i = 0; i < reversePendingOverlayClearCount(); i++) {
+            pendingOverlays[i] = null;
+        }
+    }
+
+    static int reversePendingOverlayClearCount() {
+        return CameraOverlayProfile.BLIND_COUNT;
     }
 
     private void acquireReverseSurfaces(int requestId) {

@@ -1,12 +1,9 @@
 package com.byd.turnsignalguard.capture;
 
 import android.content.Context;
-import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.view.Display;
-import android.view.Gravity;
 import android.view.Surface;
-import android.view.WindowManager;
 
 import java.util.Arrays;
 import java.util.function.BiConsumer;
@@ -17,9 +14,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private final Context context;
     private final BiConsumer<String, Object[]> eventSink;
 
-    private WindowManager windows;
+    private WindowlessOverlayHost windowless;
     private ReverseCameraCompositionView root;
-    private WindowManager.LayoutParams window;
+    private float imageAlpha = 1.0f;
     private int requestId;
     private int[] surfaceGenerations = new int[3];
     private int completedFrameRequestId;
@@ -51,6 +48,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             }
         }
         requestId = spec.requestId;
+        imageAlpha = WindowlessOverlayHost.alphaForTransparency(spec.transparencyPercent);
         completedFrameRequestId = 0;
         blockedRevealReported = false;
         visible = false;
@@ -61,8 +59,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             root.applyRawFallbackLayout(spec.rawFallbackLayout);
             root.applyLayout(spec.layout);
             root.applyVisibility(spec.visibilityMask);
-            window.alpha = 0.0f;
-            windows.updateViewLayout(root, window);
+            windowless.setVisible(false, imageAlpha);
         }
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
@@ -107,8 +104,11 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 throw new IllegalStateException("reverse first frames not confirmed");
             }
         }
-        window.alpha = nextVisible ? 1.0f : 0.0f;
-        windows.updateViewLayout(root, window);
+        try {
+            windowless.setVisible(nextVisible, imageAlpha);
+        } catch (Exception error) {
+            throw new IllegalStateException("reverse visibility update failed", error);
+        }
         visible = nextVisible;
         emit("reverse_overlay_visibility", "visible", nextVisible,
                 "request_id", requestId,
@@ -116,30 +116,27 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     void close(String reason) {
-        ReverseCameraCompositionView activeRoot = root;
-        if (activeRoot == null) return;
-        WindowManager activeWindows = windows;
+        if (root == null) return;
+        WindowlessOverlayHost activeHost = windowless;
+        root = null;
+        windowless = null;
         closing = true;
         try {
-            if (activeWindows != null) activeWindows.removeViewImmediate(activeRoot);
+            if (activeHost != null) activeHost.release();
             emit("reverse_overlay_window", "state", "removed", "reason", safe(reason));
         } catch (Throwable error) {
             emit("reverse_overlay_error", "stage", "remove_window",
                     "error", summary(error));
             closing = false;
-            if (activeRoot.isAttachedToWindow()) {
-                throw new IllegalStateException("reverse window removal failed", error);
-            }
+            throw new IllegalStateException("reverse window removal failed", error);
+        } finally {
+            visible = false;
+            requestId = 0;
+            completedFrameRequestId = 0;
+            surfaceGenerations = new int[3];
+            closing = false;
+            blockedRevealReported = false;
         }
-        root = null;
-        windows = null;
-        window = null;
-        visible = false;
-        requestId = 0;
-        completedFrameRequestId = 0;
-        surfaceGenerations = new int[3];
-        closing = false;
-        blockedRevealReported = false;
     }
 
     boolean isOpen() {
@@ -178,9 +175,13 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     public void onReverseSurfaceLost(int cameraIndex, int generation) {
         visible = false;
         completedFrameRequestId = 0;
-        if (!closing && window != null && windows != null && root != null) {
-            window.alpha = 0.0f;
-            windows.updateViewLayout(root, window);
+        if (!closing && windowless != null && root != null) {
+            try {
+                windowless.setVisible(false, imageAlpha);
+            } catch (Exception error) {
+                emit("reverse_overlay_error", "stage", "hide_surface_lost",
+                        "request_id", requestId, "error", summary(error));
+            }
         }
         emit("reverse_overlay_surface", "state", "destroyed",
                 "request_id", requestId, "camera_index", cameraIndex,
@@ -227,10 +228,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private void hideFailedRenderer() {
         visible = false;
         completedFrameRequestId = 0;
-        if (root == null || window == null || windows == null) return;
+        if (root == null || windowless == null) return;
         try {
-            window.alpha = 0.0f;
-            windows.updateViewLayout(root, window);
+            windowless.setVisible(false, imageAlpha);
         } catch (Throwable error) {
             emit("reverse_overlay_error", "stage", "hide_failed_renderer",
                     "request_id", requestId, "error", summary(error));
@@ -241,8 +241,6 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             Display display, Point size, CameraShellProtocol.ReverseOverlaySpec spec)
             throws Exception {
         Context windowContext = context.createDisplayContext(display);
-        windows = (WindowManager) windowContext.getSystemService(Context.WINDOW_SERVICE);
-        if (windows == null) throw new IllegalStateException("window manager unavailable");
 
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
         nextRoot.setCallback(this);
@@ -252,36 +250,22 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.applyLayout(spec.layout);
         nextRoot.applyVisibility(spec.visibilityMask);
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
-        WindowManager.LayoutParams nextWindow = new WindowManager.LayoutParams(
-                size.x, size.y, WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-                PixelFormat.RGBA_8888);
-        nextWindow.gravity = Gravity.TOP | Gravity.START;
-        nextWindow.x = 0;
-        nextWindow.y = 0;
-        nextWindow.alpha = 0.0f;
-        nextWindow.windowAnimations = 0;
-        nextWindow.setTitle(WINDOW_TITLE);
-        String trustedApi = ShellCameraOverlay.setTrustedOverlay(nextWindow);
-
         root = nextRoot;
-        window = nextWindow;
+        WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
+                windowContext, display, WindowlessOverlayHost.REVERSE_LAYER);
+        windowless = nextHost;
         try {
-            windows.addView(nextRoot, nextWindow);
+            nextHost.attach(nextRoot, size.x, size.y, 0, 0, WINDOW_TITLE);
         } catch (Throwable error) {
+            windowless = null;
             root = null;
-            window = null;
-            windows = null;
             throw error;
         }
         emit("reverse_overlay_window", "state", "added",
                 "request_id", requestId, "width", size.x, "height", size.y,
-                "type", nextWindow.type, "format", nextWindow.format,
-                "alpha", nextWindow.alpha, "trusted_api", trustedApi);
+                "layer", nextHost.layer(), "alpha", 0.0f,
+                "trusted_api", nextHost.trustedApi(),
+                "transparency_percent", spec.transparencyPercent);
     }
 
     private void requireRequest(int expectedRequestId) {

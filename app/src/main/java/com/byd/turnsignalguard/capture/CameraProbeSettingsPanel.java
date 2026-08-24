@@ -15,9 +15,12 @@ import android.widget.TextView;
 final class CameraProbeSettingsPanel {
     private static final String PREF_CAMERA_CORNER_RADIUS =
             BlindSpotOverlayController.PREF_CORNER_RADIUS;
+    private static final String PREF_CAMERA_TRANSPARENCY =
+            BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT;
 
     private static final int DEFAULT_CAMERA_CORNER_RADIUS_DP = 10;
     private static final int MAX_CAMERA_CORNER_RADIUS_DP = 48;
+    private static final int MAX_CAMERA_TRANSPARENCY_PERCENT = 100;
 
     private final CameraProbeActivity activity;
     private final SharedPreferences preferences;
@@ -156,6 +159,38 @@ final class CameraProbeSettingsPanel {
                 int value = seekBar.getProgress();
                 preferences.edit().putInt(PREF_CAMERA_CORNER_RADIUS, value).apply();
                 activity.onCameraCornerRadiusChanged(value);
+            }
+        });
+
+        TextView transparencyTitle = activity.label("Прозорість камер");
+        transparencyTitle.setPadding(0, activity.dp(18), 0, activity.dp(4));
+        root.addView(transparencyTitle);
+        LinearLayout transparencyRow = new LinearLayout(activity);
+        transparencyRow.setGravity(Gravity.CENTER_VERTICAL);
+        SeekBar transparency = new SeekBar(activity);
+        transparency.setMax(MAX_CAMERA_TRANSPARENCY_PERCENT);
+        int initialTransparency = BlindSpotOverlayController.readTransparencyPercent(preferences);
+        transparency.setProgress(initialTransparency);
+        TextView transparencyValue = activity.label(initialTransparency + "%");
+        transparencyValue.setGravity(Gravity.CENTER);
+        transparencyRow.addView(transparency,
+                new LinearLayout.LayoutParams(0, activity.dp(54), 1));
+        transparencyRow.addView(transparencyValue,
+                new LinearLayout.LayoutParams(activity.dp(90), activity.dp(54)));
+        root.addView(transparencyRow);
+        transparency.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                transparencyValue.setText(progress + "%");
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                int value = seekBar.getProgress();
+                preferences.edit().putInt(PREF_CAMERA_TRANSPARENCY, value).apply();
+                activity.onCameraTransparencyChanged(value);
             }
         });
 

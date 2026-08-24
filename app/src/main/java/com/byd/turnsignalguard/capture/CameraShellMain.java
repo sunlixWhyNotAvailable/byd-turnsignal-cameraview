@@ -188,11 +188,12 @@ public final class CameraShellMain {
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
-                    if (reverseOverlay.isOpen()) {
-                        throw new IllegalStateException("reverse overlay has camera priority");
-                    }
                     CameraShellProtocol.OverlaySpec spec =
                             CameraShellProtocol.OverlaySpec.readFromParcel(data);
+                    if (reverseOverlay.isOpen()
+                            && !overlayAllowedWhileReverseActive(spec.cameraId)) {
+                        throw new IllegalStateException("reverse overlay has camera priority");
+                    }
                     runOnMain(() -> {
                         overlay(spec.cameraId).prepare(spec);
                         return null;
@@ -264,7 +265,7 @@ public final class CameraShellMain {
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
                     runOnMain(() -> {
                         closePreview("reverse_priority");
-                        closeOverlays("reverse_priority");
+                        closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
                         reverseOverlay.prepare(spec);
                         return null;
                     });
@@ -423,15 +424,24 @@ public final class CameraShellMain {
         }
 
         private void closeOverlays(String reason) {
+            closeOverlays(reason, overlays.length);
+        }
+
+        private void closeOverlays(String reason, int count) {
             Throwable failure = null;
-            for (ShellCameraOverlay value : overlays) {
+            for (int i = 0; i < count; i++) {
                 try {
-                    value.close(reason);
+                    overlays[i].close(reason);
                 } catch (Throwable error) {
                     if (failure == null) failure = error;
                 }
             }
             if (failure != null) throw new IllegalStateException(summary(failure), failure);
+        }
+
+        static boolean overlayAllowedWhileReverseActive(int cameraId) {
+            CameraOverlayProfile.of(cameraId);
+            return CameraOverlayProfile.isParking(cameraId);
         }
 
         private <T> T runOnMain(java.util.concurrent.Callable<T> callable) throws Exception {

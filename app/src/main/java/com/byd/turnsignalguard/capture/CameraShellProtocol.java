@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 23;
+    static final int VERSION = 24;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -85,6 +85,7 @@ final class CameraShellProtocol {
         final int cornerRadiusDp;
         final int bufferQuality;
         final boolean mirrorHorizontally;
+        final int transparencyPercent;
         final CameraDewarpConfig dewarp;
         final DirectCameraCrop rawFallbackCrop;
 
@@ -163,7 +164,7 @@ final class CameraShellProtocol {
             this(cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
-                    rawFallbackCrop, bufferQuality, false);
+                    rawFallbackCrop, bufferQuality, false, 0);
         }
 
         OverlaySpec(
@@ -173,6 +174,19 @@ final class CameraShellProtocol {
                 int cornerRadiusDp, CameraDewarpConfig dewarp,
                 DirectCameraCrop rawFallbackCrop, int bufferQuality,
                 boolean mirrorHorizontally) {
+            this(cameraId, requestId, target, width, height, x, y,
+                    cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
+                    rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
+                    rawFallbackCrop, bufferQuality, mirrorHorizontally, 0);
+        }
+
+        OverlaySpec(
+                int cameraId, int requestId, int target, int width, int height, int x, int y,
+                float cropLeft, float cropTop, float cropWidth, float cropHeight,
+                int cropAspectMode, int rotationDegrees, int rotationMode,
+                int cornerRadiusDp, CameraDewarpConfig dewarp,
+                DirectCameraCrop rawFallbackCrop, int bufferQuality,
+                boolean mirrorHorizontally, int transparencyPercent) {
             this.cameraId = cameraId;
             this.requestId = requestId;
             this.target = target;
@@ -197,6 +211,7 @@ final class CameraShellProtocol {
                 throw new IllegalArgumentException("raw fallback crop is required");
             }
             this.mirrorHorizontally = mirrorHorizontally;
+            this.transparencyPercent = requireTransparencyPercent(transparencyPercent);
             this.rawFallbackCrop = rawFallbackCrop.withMirrorHorizontally(mirrorHorizontally);
         }
 
@@ -220,6 +235,7 @@ final class CameraShellProtocol {
             writeCrop(parcel, rawFallbackCrop);
             parcel.writeInt(bufferQuality);
             parcel.writeInt(mirrorHorizontally ? 1 : 0);
+            parcel.writeInt(transparencyPercent);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
@@ -242,11 +258,12 @@ final class CameraShellProtocol {
             DirectCameraCrop rawFallbackCrop = readCrop(parcel);
             int bufferQuality = parcel.readInt();
             boolean mirrorHorizontally = readBoolean(parcel);
+            int transparencyPercent = parcel.readInt();
             return new OverlaySpec(
                     cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
-                    rawFallbackCrop, bufferQuality, mirrorHorizontally);
+                    rawFallbackCrop, bufferQuality, mirrorHorizontally, transparencyPercent);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -281,6 +298,7 @@ final class CameraShellProtocol {
             if (!CameraBufferQuality.isValid(bufferQuality)) {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
+            requireTransparencyPercent(transparencyPercent);
             if (dewarp.lens != lensForOverlayId(profile.id)) {
                 throw new IllegalArgumentException("dewarp lens does not match camera");
             }
@@ -317,6 +335,7 @@ final class CameraShellProtocol {
         final int cornerRadiusDp;
         final int bufferQuality;
         final int visibilityMask;
+        final int transparencyPercent;
         final CameraDewarpConfig rearDewarp;
         final CameraDewarpConfig leftDewarp;
         final CameraDewarpConfig rightDewarp;
@@ -374,6 +393,18 @@ final class CameraShellProtocol {
                 CameraDewarpConfig leftDewarp,
                 CameraDewarpConfig rightDewarp,
                 int bufferQuality, int visibilityMask) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp,
+                    bufferQuality, visibilityMask, 0);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp,
+                int bufferQuality, int visibilityMask, int transparencyPercent) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
@@ -384,6 +415,7 @@ final class CameraShellProtocol {
             this.cornerRadiusDp = cornerRadiusDp;
             this.bufferQuality = bufferQuality;
             this.visibilityMask = ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+            this.transparencyPercent = requireTransparencyPercent(transparencyPercent);
             this.rearDewarp = rearDewarp == null
                     ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR) : rearDewarp;
             this.leftDewarp = leftDewarp == null
@@ -414,6 +446,7 @@ final class CameraShellProtocol {
             }
             parcel.writeInt(bufferQuality);
             parcel.writeInt(visibilityMask);
+            parcel.writeInt(transparencyPercent);
         }
 
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
@@ -497,8 +530,10 @@ final class CameraShellProtocol {
             }
             int bufferQuality = parcel.readInt();
             int visibilityMask = parcel.readInt();
+            int transparencyPercent = parcel.readInt();
             return new ReverseOverlaySpec(requestId, layout, rawFallbackLayout, cornerRadiusDp,
-                    rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask);
+                    rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
+                    transparencyPercent);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -513,6 +548,7 @@ final class CameraShellProtocol {
             if (!CameraBufferQuality.isValid(bufferQuality)) {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
+            requireTransparencyPercent(transparencyPercent);
             ReverseCameraLayout.requireVisibilityMask(visibilityMask);
             if (rearDewarp.lens != CameraDewarpConfig.LENS_REAR
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT
@@ -666,5 +702,12 @@ final class CameraShellProtocol {
     static int lensForOverlayId(int cameraId) {
         CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
         return profile.lens;
+    }
+
+    private static int requireTransparencyPercent(int value) {
+        if (value < 0 || value > 100) {
+            throw new IllegalArgumentException("invalid camera transparency percent");
+        }
+        return value;
     }
 }

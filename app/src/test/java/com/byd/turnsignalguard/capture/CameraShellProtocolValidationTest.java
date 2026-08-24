@@ -39,6 +39,24 @@ public final class CameraShellProtocolValidationTest {
     }
 
     @Test
+    public void binderSpecsRejectTransparencyOutsidePercentRange() {
+        DirectCameraCrop crop = DirectCameraCrop.defaultFor(false);
+        CameraDewarpConfig left = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.OverlaySpec(
+                CameraProfile.REAR_LEFT, 1, CameraDisplayTarget.TABLET,
+                400, 300, 0, 0,
+                crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
+                crop.rotationDegrees, crop.rotationMode, 8, left, crop,
+                CameraBufferQuality.DEFAULT, false, 101));
+        assertThrows(IllegalArgumentException.class, () -> new CameraShellProtocol.ReverseOverlaySpec(
+                1, ReverseCameraLayout.defaults(), ReverseCameraLayout.defaults(), 8,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR), left,
+                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT),
+                CameraBufferQuality.DEFAULT, ReverseCameraLayout.VISIBILITY_ALL, -1));
+    }
+
+    @Test
     public void reverseVisibilityMaskAllowsAllOffAndRejectsUnknownBits() {
         CameraShellProtocol.ReverseOverlaySpec allOff = reverse(
                 0, CameraBufferQuality.DEFAULT);

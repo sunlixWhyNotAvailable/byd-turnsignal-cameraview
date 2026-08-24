@@ -221,7 +221,8 @@ final class ReverseCameraController {
                 CameraDewarpConfig.loadForReverse(
                         settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
                 CameraBufferQuality.load(settings),
-                loadVisibilityMask(settings));
+                loadVisibilityMask(settings),
+                BlindSpotOverlayController.readTransparencyPercent(settings));
     }
 
     private void overlayPrepared(int requestId) {
