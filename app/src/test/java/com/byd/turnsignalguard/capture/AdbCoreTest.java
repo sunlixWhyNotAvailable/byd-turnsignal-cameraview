@@ -136,6 +136,10 @@ public final class AdbCoreTest {
         String text = new String(Files.readAllBytes(source),
                 java.nio.charset.StandardCharsets.UTF_8);
         assertTrue(text.contains("Looper.getMainLooper()"));
+        int fonts = text.indexOf("initializeSystemFontsForShell();");
+        int binder = text.indexOf("new ShellBinder(");
+        assertTrue(fonts >= 0);
+        assertTrue(binder > fonts);
         assertFalse(text.contains("quitSafely"));
     }
 

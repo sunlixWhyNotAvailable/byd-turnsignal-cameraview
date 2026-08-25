@@ -56,6 +56,7 @@ final class ReverseCameraController {
     private boolean shutdown;
     private int requestSequence;
     private int activeRequestId;
+    private int pendingShellRecoveryRequestId;
     private int[] generations = new int[0];
     private long cameraShellEpoch;
     private CleanupCloseCoordinator activeCleanup;
@@ -159,18 +160,30 @@ final class ReverseCameraController {
                 long epoch = event.optLong("camera_shell_epoch", 0);
                 if (!TurnSignalController.isCurrentCameraShellEpoch(
                         cameraShellEpoch, epoch) || !shellRecovery.isNewDeath(epoch)) return;
+                int invalidatedRequestId = activeRequestId;
+                if (invalidatedRequestId == 0 && activeCleanup != null) {
+                    invalidatedRequestId = activeCleanup.requestId;
+                }
+                if (invalidatedRequestId == 0) {
+                    invalidatedRequestId = pendingShellRecoveryRequestId;
+                }
                 emit("reverse_camera_output_invalidated",
-                        "request_id", activeRequestId,
+                        "request_id", invalidatedRequestId,
                         "generations", Arrays.toString(generations),
                         "reason", "camera_shell_died");
                 boolean pending = shellRecovery.onDeath(epoch, recoveryWanted());
                 resetAfterShellDeath();
+                if (pending) pendingShellRecoveryRequestId = invalidatedRequestId;
+                else finishShellRecovery(invalidatedRequestId,
+                        "camera_shell_recovery_cancelled");
                 emit("reverse_camera_epoch_recovery",
                         "camera_shell_epoch", epoch,
                         "state", pending ? "pending" : "cancelled");
             } else if ("camera_shell_recovery_failed".equals(kind)) {
                 if (shellRecovery.pending()) {
                     shellRecovery.clear();
+                    finishShellRecovery(pendingShellRecoveryRequestId,
+                            "camera_shell_recovery_failed");
                     emit("reverse_camera_epoch_recovery", "state", "failed");
                 }
             }
@@ -186,6 +199,7 @@ final class ReverseCameraController {
         handler.removeCallbacks(gearFreshnessTimeout);
         clearCleanupRetry();
         shellRecovery.clear();
+        pendingShellRecoveryRequestId = 0;
         gearValid = false;
         reverse = false;
         activeRequestId = 0;
@@ -213,6 +227,7 @@ final class ReverseCameraController {
         CameraHelperMain.HelperBinder activeHelper = helper;
         if (activeHelper == null) return;
         int requestId = nextRequestId();
+        pendingShellRecoveryRequestId = 0;
         activeRequestId = requestId;
         generations = new int[0];
         visible = false;
@@ -232,7 +247,13 @@ final class ReverseCameraController {
         emit("reverse_camera_epoch_recovery",
                 "camera_shell_epoch", epoch,
                 "state", recover ? "attempt" : "cancelled");
-        if (recover) evaluate();
+        if (recover) {
+            pendingShellRecoveryRequestId = 0;
+            evaluate();
+        } else {
+            finishShellRecovery(pendingShellRecoveryRequestId,
+                    "camera_shell_recovery_cancelled");
+        }
     }
 
     private boolean recoveryWanted() {
@@ -249,6 +270,13 @@ final class ReverseCameraController {
         activeCleanup = null;
         prioritySink.accept(false);
         emit("reverse_camera_runtime_reset", "reason", "camera_shell_died");
+    }
+
+    private void finishShellRecovery(int requestId, String reason) {
+        pendingShellRecoveryRequestId = 0;
+        if (requestId > 0) {
+            emit("reverse_camera_stopped", "request_id", requestId, "reason", reason);
+        }
     }
 
     static CameraShellProtocol.ReverseOverlaySpec buildOverlaySpec(
@@ -436,6 +464,7 @@ final class ReverseCameraController {
         handler.removeCallbacks(gearFreshnessTimeout);
         clearCleanupRetry();
         activeRequestId = 0;
+        pendingShellRecoveryRequestId = 0;
         generations = new int[0];
         visible = false;
         stopping = false;

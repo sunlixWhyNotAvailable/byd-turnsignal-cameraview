@@ -250,7 +250,7 @@ final class TurnSignalController {
                         "dewarp", stockDewarp,
                         "input_surface_valid", inputSurfaceValid);
             } catch (Throwable error) {
-                if (!transactionComplete && value != null) {
+                if (!transactionComplete && value != null && !cameraPing(value)) {
                     cameraHelperLost(value, epoch, summary(error));
                 }
                 emit("camera_error", "renderer", "stock_avm_shell",
@@ -317,7 +317,7 @@ final class TurnSignalController {
                 }
             } catch (Throwable error) {
                 clearPendingOverlaySurface(spec.cameraId, spec.requestId);
-                if (!transactionComplete && value != null) {
+                if (!transactionComplete && value != null && !cameraPing(value)) {
                     cameraHelperLost(value, epoch, summary(error));
                 }
                 emit("camera_overlay_error", "stage", "prepare",
@@ -431,7 +431,7 @@ final class TurnSignalController {
                 }
             } catch (Throwable error) {
                 clearPendingReverseSurfaces(spec.requestId);
-                if (!transactionComplete && value != null) {
+                if (!transactionComplete && value != null && !cameraPing(value)) {
                     cameraHelperLost(value, epoch, summary(error));
                 }
                 emit("reverse_overlay_error", "stage", "prepare",

@@ -47,6 +47,7 @@ public final class CameraShellMain {
         if (owner == null) return;
         prepareMainLooperForShell();
         Context context = systemContext();
+        initializeSystemFontsForShell();
         Handler handler = new Handler(Looper.getMainLooper());
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
         binder.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
@@ -560,6 +561,13 @@ public final class CameraShellMain {
     static Looper prepareMainLooperForShell() {
         if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
         return Looper.getMainLooper();
+    }
+
+    static void initializeSystemFontsForShell() throws Exception {
+        Class<?> typeface = Class.forName("android.graphics.Typeface");
+        Object current = typeface.getMethod("getSystemFontMap").invoke(null);
+        if (current instanceof Map && !((Map<?, ?>) current).isEmpty()) return;
+        typeface.getMethod("loadPreinstalledSystemFontMap").invoke(null);
     }
 
     private static void terminateProcess() {

@@ -31,6 +31,7 @@ import java.lang.reflect.Method;
 
 public final class CameraLifecycleBinderTest extends TestCase {
     public void testReverseSideSelectorUsesExplicitTypefaceAndDraws() throws Exception {
+        CameraShellMain.initializeSystemFontsForShell();
         ReverseSideSelectorView view = new ReverseSideSelectorView(currentApplication());
         Paint text = (Paint) getField(view, "text");
         assertNotNull(text.getTypeface());
@@ -240,6 +241,66 @@ public final class CameraLifecycleBinderTest extends TestCase {
             assertTrue(order.indexOf("reverse_camera_start")
                     < order.indexOf("priority_true"));
             assertTrue(order.indexOf("priority_true") < order.indexOf("prepare"));
+        } finally {
+            controller.shutdown();
+            SharedPreferences.Editor edit = settings.edit();
+            if (hadSetting) edit.putBoolean(
+                    ReverseCameraController.PREF_ENABLED, oldSetting);
+            else edit.remove(ReverseCameraController.PREF_ENABLED);
+            edit.commit();
+        }
+    }
+
+    public void testCancelledReverseShellRecoveryClearsHelperOwnership() throws Exception {
+        Application context = currentApplication();
+        CopyOnWriteArrayList<String> order = new CopyOnWriteArrayList<>();
+        CountDownLatch prepared = new CountDownLatch(1);
+        CountDownLatch stopped = new CountDownLatch(1);
+        TestHelper helper = new TestHelper(context, order, prepared);
+        helper.attachInterface(null, CameraHelperMain.DESCRIPTOR);
+        SharedPreferences settings = context.getSharedPreferences("settings", 0);
+        boolean hadSetting = settings.contains(ReverseCameraController.PREF_ENABLED);
+        boolean oldSetting = settings.getBoolean(
+                ReverseCameraController.PREF_ENABLED,
+                ReverseCameraController.DEFAULT_ENABLED);
+        settings.edit().putBoolean(ReverseCameraController.PREF_ENABLED, true).commit();
+
+        ReverseCameraController controller = new ReverseCameraController(
+                context, new Handler(Looper.getMainLooper()), (kind, fields) -> {
+                    helper.emitControllerEvent(kind, fields);
+                    if ("reverse_camera_stopped".equals(kind)) stopped.countDown();
+                }, ignored -> {});
+        try {
+            controller.attachHelper(helper);
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "reverse_gear_state")
+                    .put("valid", true)
+                    .put("listener_ok", true)
+                    .put("reverse", true)
+                    .put("raw", 2).toString());
+            assertTrue(prepared.await(5, TimeUnit.SECONDS));
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_died")
+                    .put("camera_shell_epoch", 10L).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "reverse_gear_state")
+                    .put("valid", true)
+                    .put("listener_ok", true)
+                    .put("reverse", false)
+                    .put("raw", 1).toString());
+            controller.acceptEvent(new JSONObject()
+                    .put("kind", "camera_shell_attached")
+                    .put("camera_shell_epoch", 11L).toString());
+            assertTrue(stopped.await(5, TimeUnit.SECONDS));
+
+            EventCollector events = new EventCollector(CameraHelperMain.CALLBACK_DESCRIPTOR);
+            assertEquals("callback_registered", registerHelperCallback(helper, events, 1));
+            JSONObject state = events.await("reverse_camera_state");
+            assertFalse(state.optBoolean("active"));
+            assertEquals(0, state.optInt("request_id"));
         } finally {
             controller.shutdown();
             SharedPreferences.Editor edit = settings.edit();
