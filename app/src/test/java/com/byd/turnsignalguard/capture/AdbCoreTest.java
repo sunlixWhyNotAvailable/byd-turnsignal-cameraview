@@ -1152,6 +1152,22 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void cameraSurfaceAcquireRequiresCurrentPreparedBinderEpochAndRequest() {
+        IBinder current = new android.os.Binder();
+        IBinder replacement = new android.os.Binder();
+        assertTrue(TurnSignalController.matchesPreparedCameraSurfaceRequest(
+                7, 7, current, 2, current, 2));
+        assertFalse(TurnSignalController.matchesPreparedCameraSurfaceRequest(
+                7, 7, replacement, 2, current, 2));
+        assertFalse(TurnSignalController.matchesPreparedCameraSurfaceRequest(
+                7, 7, current, 3, current, 2));
+        assertFalse(TurnSignalController.matchesPreparedCameraSurfaceRequest(
+                6, 7, current, 2, current, 2));
+        assertFalse(TurnSignalController.matchesPreparedCameraSurfaceRequest(
+                7, 7, proxyBinder(), 2, proxyBinder(), 2));
+    }
+
+    @Test
     public void cameraOpenCallbacksMustMatchCurrentSession() {
         assertTrue(BlindSpotOverlayController.matchesCameraOpenEvent(true, 7, 7));
         assertFalse(BlindSpotOverlayController.matchesCameraOpenEvent(false, 7, 7));

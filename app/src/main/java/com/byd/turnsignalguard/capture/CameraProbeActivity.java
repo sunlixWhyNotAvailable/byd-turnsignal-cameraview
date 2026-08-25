@@ -1934,17 +1934,20 @@ public final class CameraProbeActivity extends Activity
         }
         editorPane.addView(selectors);
 
+        LinearLayout reverseVisibilityRow = new LinearLayout(this);
+        reverseVisibilityRow.setOrientation(LinearLayout.HORIZONTAL);
+        reverseFrontIntegrationSwitch = new Switch(this);
         reverseVisibilitySwitch = new Switch(this);
         reverseVisibilitySwitch.setTextColor(Color.WHITE);
         reverseVisibilitySwitch.setTextSize(17);
-        editorPane.addView(reverseVisibilitySwitch, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-
-        reverseFrontIntegrationSwitch = new Switch(this);
-        reverseFrontIntegrationSwitch.setText("Інтегрувати передню камеру");
+        reverseFrontIntegrationSwitch.setText("Інтеграція передніх камер");
         reverseFrontIntegrationSwitch.setTextColor(Color.WHITE);
         reverseFrontIntegrationSwitch.setTextSize(17);
-        editorPane.addView(reverseFrontIntegrationSwitch, new LinearLayout.LayoutParams(
+        reverseVisibilityRow.addView(reverseVisibilitySwitch,
+                new LinearLayout.LayoutParams(0, dp(48), 1));
+        reverseVisibilityRow.addView(reverseFrontIntegrationSwitch,
+                new LinearLayout.LayoutParams(0, dp(48), 1));
+        editorPane.addView(reverseVisibilityRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
         LinearLayout nudgeRow = new LinearLayout(this);
@@ -2810,7 +2813,7 @@ public final class CameraProbeActivity extends Activity
         if (reverseFrontIntegrationSwitch != null) {
             reverseVisibilityUiUpdating = true;
             reverseFrontIntegrationSwitch.setVisibility(
-                    isReverseSideCamera(cameraIndex) ? View.VISIBLE : View.GONE);
+                    reverseFrontIntegrationVisibility(cameraIndex));
             reverseFrontIntegrationSwitch.setChecked(binding.frontIntegrated);
             reverseVisibilityUiUpdating = false;
         }
@@ -2874,6 +2877,10 @@ public final class CameraProbeActivity extends Activity
     static boolean isReverseSideCamera(int cameraIndex) {
         return cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX
                 || cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+    }
+
+    static int reverseFrontIntegrationVisibility(int cameraIndex) {
+        return isReverseSideCamera(cameraIndex) ? View.VISIBLE : View.INVISIBLE;
     }
 
     static boolean isReverseFixedPane(int cameraIndex) {

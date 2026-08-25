@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -53,6 +54,7 @@ final class ReverseSideSelectorView extends View {
         setBackgroundColor(Color.TRANSPARENT);
         stroke.setStyle(Paint.Style.STROKE);
         text.setColor(Color.WHITE);
+        text.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         text.setFakeBoldText(true);
         text.setTextAlign(Paint.Align.CENTER);
     }

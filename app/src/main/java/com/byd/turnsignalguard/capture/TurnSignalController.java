@@ -76,6 +76,8 @@ final class TurnSignalController {
             new PendingOverlay[CameraOverlayProfile.COUNT];
     private volatile int pendingReverseRequestId;
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
+    private volatile IBinder pendingReverseHelper;
+    private volatile long pendingReverseHelperEpoch;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
     private long lastLaunchFailureAt;
     private volatile String automaticAuthorizationBlockedFor = "";
@@ -293,7 +295,8 @@ final class TurnSignalController {
             throw new IllegalArgumentException("overlay spec/sinks required");
         }
         worker.execute(() -> {
-            pendingOverlays[spec.cameraId] = new PendingOverlay(spec.requestId, surfaceSink);
+            PendingOverlay pending = new PendingOverlay(spec.requestId, surfaceSink);
+            pendingOverlays[spec.cameraId] = pending;
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
@@ -301,6 +304,8 @@ final class TurnSignalController {
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
                 transactOverlayPrepare(value, spec);
+                pending.preparedHelper = value;
+                pending.preparedEpoch = epoch;
                 transactionComplete = true;
                 emit("camera_overlay_prepare", "camera_id", spec.cameraId,
                         "request_id", spec.requestId,
@@ -408,6 +413,8 @@ final class TurnSignalController {
             clearPendingBlindOverlays();
             pendingReverseRequestId = spec.requestId;
             pendingReverseSurfaceSink = surfaceSink;
+            pendingReverseHelper = null;
+            pendingReverseHelperEpoch = 0;
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
@@ -415,6 +422,8 @@ final class TurnSignalController {
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
                 transactReversePrepare(value, spec);
+                pendingReverseHelper = value;
+                pendingReverseHelperEpoch = epoch;
                 transactionComplete = true;
                 emit("reverse_overlay_prepare", "request_id", spec.requestId);
                 if (!handler.post(preparedSink)) {
@@ -1348,7 +1357,17 @@ final class TurnSignalController {
         }
         try {
             IBinder value = cameraHelper;
-            if (!cameraPing(value)) value = ensureCameraHelper();
+            long currentEpoch = cameraHelperEpoch(value);
+            if (!matchesPreparedCameraSurfaceRequest(
+                    requestId, pending.requestId, value, currentEpoch,
+                    pending.preparedHelper, pending.preparedEpoch)) {
+                throw new IllegalStateException(
+                        "camera shell changed before overlay Surface acquisition");
+            }
+            if (!cameraPing(value)) {
+                throw new IllegalStateException(
+                        "camera shell unavailable before overlay Surface acquisition");
+            }
             OverlaySurface result = transactOverlayAcquire(value, cameraId, requestId);
             if (result.surfaceGeneration != reportedGeneration) {
                 result.surface.release();
@@ -1394,7 +1413,17 @@ final class TurnSignalController {
         if (sink == null || requestId != pendingReverseRequestId) return;
         try {
             IBinder value = cameraHelper;
-            if (!cameraPing(value)) value = ensureCameraHelper();
+            long currentEpoch = cameraHelperEpoch(value);
+            if (!matchesPreparedCameraSurfaceRequest(
+                    requestId, pendingReverseRequestId, value, currentEpoch,
+                    pendingReverseHelper, pendingReverseHelperEpoch)) {
+                throw new IllegalStateException(
+                        "camera shell changed before reverse Surface acquisition");
+            }
+            if (!cameraPing(value)) {
+                throw new IllegalStateException(
+                        "camera shell unavailable before reverse Surface acquisition");
+            }
             ReverseSurfaces result = transactReverseAcquire(value, requestId);
             clearPendingReverseSurfaces(requestId);
             if (!handler.post(() -> sink.accept(result))) {
@@ -1412,6 +1441,8 @@ final class TurnSignalController {
         if (requestId != pendingReverseRequestId) return;
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
+        pendingReverseHelper = null;
+        pendingReverseHelperEpoch = 0;
     }
 
     private static void releaseSurfaces(Surface[] surfaces) {
@@ -1469,6 +1500,8 @@ final class TurnSignalController {
     private boolean closeReverseOverlayNow(String reason) {
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
+        pendingReverseHelper = null;
+        pendingReverseHelperEpoch = 0;
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
         if (!cameraPing(value)) return true;
@@ -1673,6 +1706,8 @@ final class TurnSignalController {
         clearPendingOverlays();
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
+        pendingReverseHelper = null;
+        pendingReverseHelperEpoch = 0;
         emit("camera_shell_died",
                 "camera_shell_epoch", epoch,
                 "pending_overlay_request_ids", Arrays.toString(overlayRequestIds),
@@ -1720,6 +1755,18 @@ final class TurnSignalController {
             IBinder current, long currentEpoch, IBinder expected, long expectedEpoch) {
         return matchesExpectedCameraHelper(current, expected)
                 && (expectedEpoch <= 0 || currentEpoch == expectedEpoch);
+    }
+
+    static boolean matchesPreparedCameraSurfaceRequest(
+            int eventRequestId, int pendingRequestId,
+            IBinder current, long currentEpoch,
+            IBinder prepared, long preparedEpoch) {
+        return eventRequestId > 0
+                && eventRequestId == pendingRequestId
+                && prepared != null
+                && current == prepared
+                && currentEpoch > 0
+                && currentEpoch == preparedEpoch;
     }
 
     private synchronized long cameraHelperEpoch(IBinder expected) {
@@ -1855,6 +1902,8 @@ final class TurnSignalController {
     private static final class PendingOverlay {
         final int requestId;
         final Consumer<OverlaySurface> sink;
+        IBinder preparedHelper;
+        long preparedEpoch;
 
         PendingOverlay(int requestId, Consumer<OverlaySurface> sink) {
             this.requestId = requestId;

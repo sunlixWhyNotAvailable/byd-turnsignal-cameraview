@@ -282,6 +282,22 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
+    public void reverseFrontIntegrationSlotStaysMeasuredWhenHidden() {
+        assertEquals(android.view.View.VISIBLE,
+                CameraProbeActivity.reverseFrontIntegrationVisibility(
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertEquals(android.view.View.VISIBLE,
+                CameraProbeActivity.reverseFrontIntegrationVisibility(
+                        ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        assertEquals(android.view.View.INVISIBLE,
+                CameraProbeActivity.reverseFrontIntegrationVisibility(
+                        ReverseCameraLayout.REAR_CAMERA_INDEX));
+        assertEquals(android.view.View.INVISIBLE,
+                CameraProbeActivity.reverseFrontIntegrationVisibility(
+                        ReverseCameraLayout.WIDGET_PANE_ID));
+    }
+
+    @Test
     public void reverseWidgetBindingDefaultsOffAndDoesNotUseCameraMask() {
         TestSharedPreferences settings = new TestSharedPreferences();
         ReverseCameraController.saveEditorSelection(

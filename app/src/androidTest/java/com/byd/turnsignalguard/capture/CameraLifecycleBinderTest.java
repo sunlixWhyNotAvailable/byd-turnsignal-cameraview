@@ -3,6 +3,10 @@ package com.byd.turnsignalguard.capture;
 import android.app.Application;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Handler;
@@ -26,6 +30,18 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 public final class CameraLifecycleBinderTest extends TestCase {
+    public void testReverseSideSelectorUsesExplicitTypefaceAndDraws() throws Exception {
+        ReverseSideSelectorView view = new ReverseSideSelectorView(currentApplication());
+        Paint text = (Paint) getField(view, "text");
+        assertNotNull(text.getTypeface());
+        assertEquals(Typeface.create("sans-serif", Typeface.BOLD), text.getTypeface());
+
+        view.layout(0, 0, 320, 480);
+        Bitmap bitmap = Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(bitmap));
+        assertTrue((bitmap.getPixel(160, 50) >>> 24) != 0);
+    }
+
     public void testShellUsesAndroidMainLooper() {
         Looper looper = CameraShellMain.prepareMainLooperForShell();
         assertSame(Looper.getMainLooper(), looper);
