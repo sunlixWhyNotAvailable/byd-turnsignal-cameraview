@@ -37,6 +37,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private final View backgroundPane;
+    private final ReverseSideSelectorView sideSelector;
     private final PaneView[] panes = new PaneView[3];
     private TextureView previewBase;
     private View previewBaseCover;
@@ -47,6 +48,23 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private Callback callback;
     private ReverseCameraLayout model = ReverseCameraLayout.defaults();
     private ReverseCameraLayout rawFallbackModel = ReverseCameraLayout.defaults();
+    private ReverseCameraLayout frontModel = ReverseCameraLayout.defaults();
+    private ReverseCameraLayout frontRawFallbackModel = ReverseCameraLayout.defaults();
+    private CameraDewarpConfig rearDewarp = CameraDewarpConfig.disabled(
+            CameraDewarpConfig.LENS_REAR);
+    private CameraDewarpConfig leftDewarp = CameraDewarpConfig.disabled(
+            CameraDewarpConfig.LENS_LEFT);
+    private CameraDewarpConfig rightDewarp = CameraDewarpConfig.disabled(
+            CameraDewarpConfig.LENS_RIGHT);
+    private CameraDewarpConfig frontLeftDewarp = CameraDewarpConfig.disabled(
+            CameraDewarpConfig.LENS_LEFT);
+    private CameraDewarpConfig frontRightDewarp = CameraDewarpConfig.disabled(
+            CameraDewarpConfig.LENS_RIGHT);
+    private boolean frontLeftIntegrated;
+    private boolean frontRightIntegrated;
+    private boolean widgetVisible;
+    private boolean widgetAvailable = true;
+    private int sideMode = ReverseSideSelectorView.MODE_REAR;
     private int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
     private final FrameBarrier frameBarrier = new FrameBarrier();
     private int paneBufferViewportWidth;
@@ -64,6 +82,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
         panes[0] = addPane(ReverseCameraLayout.REAR_CAMERA_INDEX);
         panes[1] = addPane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         panes[2] = addPane(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+        sideSelector = new ReverseSideSelectorView(context);
+        sideSelector.setListener(this::setSideMode);
+        addView(sideSelector, new FrameLayout.LayoutParams(1, 1));
+        sideSelector.setZ(5.0f);
         addOnLayoutChangeListener((view, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> applyModel());
     }
@@ -127,6 +149,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
         for (PaneView pane : panes) pane.texture.setForceDewarpPipeline(value);
     }
 
+    void setDewarpPipelineRequirements(
+            CameraDewarpConfig rear, CameraDewarpConfig left, CameraDewarpConfig right,
+            CameraDewarpConfig frontLeft, CameraDewarpConfig frontRight,
+            boolean integrateFrontLeft, boolean integrateFrontRight) {
+        panes[0].texture.setForceDewarpPipeline(rear.usesGpu());
+        panes[1].texture.setForceDewarpPipeline(
+                left.usesGpu() || (integrateFrontLeft && frontLeft.usesGpu()));
+        panes[2].texture.setForceDewarpPipeline(
+                right.usesGpu() || (integrateFrontRight && frontRight.usesGpu()));
+    }
+
     void setAutomaticBufferQuality(int quality) {
         CameraBufferQuality.scalePercent(quality);
         automaticBufferQuality = quality;
@@ -137,19 +170,81 @@ final class ReverseCameraCompositionView extends FrameLayout {
             CameraDewarpConfig rear,
             CameraDewarpConfig left,
             CameraDewarpConfig right) {
-        panes[0].applyDewarpConfig(rear);
-        panes[1].applyDewarpConfig(left);
-        panes[2].applyDewarpConfig(right);
+        rearDewarp = rear;
+        leftDewarp = left;
+        rightDewarp = right;
+        applyActiveDewarpConfigs();
         applyModel();
+    }
+
+    void configureIntegratedFront(
+            ReverseCameraLayout nextFrontModel,
+            ReverseCameraLayout nextFrontRawFallbackModel,
+            CameraDewarpConfig nextFrontLeftDewarp,
+            CameraDewarpConfig nextFrontRightDewarp,
+            boolean nextFrontLeftIntegrated,
+            boolean nextFrontRightIntegrated,
+            boolean nextWidgetVisible) {
+        if (nextFrontModel == null || nextFrontRawFallbackModel == null
+                || nextFrontLeftDewarp == null || nextFrontRightDewarp == null) {
+            throw new IllegalArgumentException("reverse front configuration is required");
+        }
+        frontModel = ReverseCameraLayout.withSideCalibration(model, nextFrontModel);
+        frontRawFallbackModel = ReverseCameraLayout.withSideCalibration(
+                rawFallbackModel, nextFrontRawFallbackModel);
+        frontLeftDewarp = nextFrontLeftDewarp;
+        frontRightDewarp = nextFrontRightDewarp;
+        frontLeftIntegrated = nextFrontLeftIntegrated;
+        frontRightIntegrated = nextFrontRightIntegrated;
+        widgetVisible = nextWidgetVisible;
+        widgetAvailable = true;
+        sideMode = ReverseSideSelectorView.MODE_REAR;
+        sideSelector.setMode(sideMode);
+        applyActiveDewarpConfigs();
+        applyModel();
+    }
+
+    void setWidgetAvailable(boolean available) {
+        widgetAvailable = available;
+        if (!available) {
+            sideMode = ReverseSideSelectorView.MODE_REAR;
+            sideSelector.setMode(sideMode);
+            applyActiveDewarpConfigs();
+        }
+        applyModel();
+    }
+
+    void setSideMode(int mode) {
+        if (mode != ReverseSideSelectorView.MODE_REAR
+                && mode != ReverseSideSelectorView.MODE_FRONT) {
+            throw new IllegalArgumentException("invalid reverse side mode");
+        }
+        sideMode = mode;
+        if (sideSelector.mode() != mode) sideSelector.setMode(mode);
+        applyActiveDewarpConfigs();
+        applyModel();
+    }
+
+    int sideMode() {
+        return sideMode;
+    }
+
+    ReverseCameraLayout.PixelRect selectorButtonBounds(
+            int mode, int viewportWidth, int viewportHeight) {
+        ReverseCameraLayout.PixelRect widget = ReverseCameraLayout.project(
+                model.widget, viewportWidth, viewportHeight);
+        float[] button = ReverseSideSelectorView.normalizedButtonRect(mode);
+        int left = widget.left + Math.round(button[0] * widget.width);
+        int top = widget.top + Math.round(button[1] * widget.height);
+        int right = widget.left + Math.round(button[2] * widget.width);
+        int bottom = widget.top + Math.round(button[3] * widget.height);
+        return new ReverseCameraLayout.PixelRect(
+                left, top, Math.max(1, right - left), Math.max(1, bottom - top));
     }
 
     void applyVisibility(int mask) {
         visibilityMask = ReverseCameraLayout.requireVisibilityMask(mask);
-        backgroundPane.setAlpha(alphaForVisibility(
-                mask, ReverseCameraLayout.BACKGROUND_PANE_ID));
-        for (PaneView pane : panes) {
-            pane.setAlpha(alphaForVisibility(mask, pane.cameraIndex));
-        }
+        applyEffectiveVisibility();
     }
 
     static float alphaForVisibility(int mask, int paneId) {
@@ -166,10 +261,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
     boolean dewarpPipelineCompatible(
             CameraDewarpConfig rear,
             CameraDewarpConfig left,
-            CameraDewarpConfig right) {
-        CameraDewarpConfig[] values = {rear, left, right};
+            CameraDewarpConfig right,
+            CameraDewarpConfig frontLeft,
+            CameraDewarpConfig frontRight,
+            boolean integrateFrontLeft,
+            boolean integrateFrontRight) {
         for (int i = 0; i < panes.length; i++) {
-            if (panes[i].texture.usesDewarpPipeline() != values[i].usesGpu()) return false;
+            boolean needsGpu = i == 0 ? rear.usesGpu()
+                    : i == 1 ? left.usesGpu() || (integrateFrontLeft && frontLeft.usesGpu())
+                    : right.usesGpu() || (integrateFrontRight && frontRight.usesGpu());
+            if (panes[i].texture.usesDewarpPipeline() != needsGpu) return false;
         }
         return true;
     }
@@ -177,12 +278,15 @@ final class ReverseCameraCompositionView extends FrameLayout {
     void applyLayout(ReverseCameraLayout value) {
         if (value == null) throw new IllegalArgumentException("reverse layout is required");
         model = value;
+        frontModel = ReverseCameraLayout.withSideCalibration(model, frontModel);
         applyModel();
     }
 
     void applyRawFallbackLayout(ReverseCameraLayout value) {
         if (value == null) throw new IllegalArgumentException("raw fallback layout is required");
         rawFallbackModel = value;
+        frontRawFallbackModel = ReverseCameraLayout.withSideCalibration(
+                rawFallbackModel, frontRawFallbackModel);
         applyModel();
     }
 
@@ -654,12 +758,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void applyModel() {
-        applyVisibility(visibilityMask);
+        applyEffectiveVisibility();
+        ReverseCameraLayout activeModel = sideMode == ReverseSideSelectorView.MODE_FRONT
+                ? frontModel : model;
+        ReverseCameraLayout activeRawFallback = sideMode == ReverseSideSelectorView.MODE_FRONT
+                ? frontRawFallbackModel : rawFallbackModel;
         int width = getWidth();
         int height = getHeight();
         for (PaneView pane : panes) {
             ReverseCameraLayout.Rect rawCrop =
-                    rawFallbackModel.pane(pane.cameraIndex).sourceCrop;
+                    activeRawFallback.pane(pane.cameraIndex).sourceCrop;
             pane.texture.applyDewarpSourceRoi(
                     rawCrop.left, rawCrop.top, rawCrop.width, rawCrop.height);
         }
@@ -674,10 +782,20 @@ final class ReverseCameraCompositionView extends FrameLayout {
         backgroundParams.topMargin = backgroundRect.top;
         backgroundPane.setLayoutParams(backgroundParams);
         backgroundPane.setZ(0.0f);
+        ReverseCameraLayout.PixelRect widgetRect =
+                ReverseCameraLayout.project(model.widget, width, height);
+        FrameLayout.LayoutParams widgetParams =
+                (FrameLayout.LayoutParams) sideSelector.getLayoutParams();
+        widgetParams.width = Math.max(1, widgetRect.width);
+        widgetParams.height = Math.max(1, widgetRect.height);
+        widgetParams.leftMargin = widgetRect.left;
+        widgetParams.topMargin = widgetRect.top;
+        sideSelector.setLayoutParams(widgetParams);
+        sideSelector.setZ(5.0f);
         for (PaneView pane : panes) {
-            ReverseCameraLayout.Pane value = model.pane(pane.cameraIndex);
+            ReverseCameraLayout.Pane value = activeModel.pane(pane.cameraIndex);
             ReverseCameraLayout.Rect rawCrop =
-                    rawFallbackModel.pane(pane.cameraIndex).sourceCrop;
+                    activeRawFallback.pane(pane.cameraIndex).sourceCrop;
             ReverseCameraLayout.Rect sourceCrop = pane.dewarpConfig.enabled
                     && !pane.texture.usesRawFallback()
                     ? value.sourceCrop
@@ -694,6 +812,33 @@ final class ReverseCameraCompositionView extends FrameLayout {
             pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
                     value.mirrorHorizontally);
         }
+    }
+
+    private void applyActiveDewarpConfigs() {
+        panes[0].applyDewarpConfig(rearDewarp);
+        panes[1].applyDewarpConfig(sideMode == ReverseSideSelectorView.MODE_FRONT
+                ? frontLeftDewarp : leftDewarp);
+        panes[2].applyDewarpConfig(sideMode == ReverseSideSelectorView.MODE_FRONT
+                ? frontRightDewarp : rightDewarp);
+    }
+
+    private void applyEffectiveVisibility() {
+        backgroundPane.setAlpha(alphaForVisibility(
+                visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID));
+        panes[0].setAlpha(alphaForVisibility(
+                visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX));
+        boolean front = sideMode == ReverseSideSelectorView.MODE_FRONT;
+        boolean leftVisible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                && (!front || frontLeftIntegrated);
+        boolean rightVisible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)
+                && (!front || frontRightIntegrated);
+        panes[1].setAlpha(leftVisible ? 1.0f : 0.0f);
+        panes[2].setAlpha(rightVisible ? 1.0f : 0.0f);
+        sideSelector.setEffectiveVisibility(leftVisible, rightVisible);
+        sideSelector.setVisibility(widgetVisible && widgetAvailable
+                ? View.VISIBLE : View.GONE);
     }
 
     static final class SurfaceBundle {

@@ -22,6 +22,10 @@ public final class ReverseCameraLayoutTest {
         assertEquals(ReverseCameraLayout.BACKGROUND_PANE_ID,
                 ReverseCameraController.loadEditorSelection(settings));
         ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.WIDGET_PANE_ID);
+        assertEquals(ReverseCameraLayout.WIDGET_PANE_ID,
+                ReverseCameraController.loadEditorSelection(settings));
+        ReverseCameraController.saveEditorSelection(
                 settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         assertEquals(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
                 ReverseCameraController.loadEditorSelection(settings));
@@ -34,6 +38,83 @@ public final class ReverseCameraLayoutTest {
                 ReverseCameraController.loadEditorSelection(settings));
         assertThrows(IllegalArgumentException.class,
                 () -> ReverseCameraController.saveEditorSelection(settings, 99));
+    }
+
+    @Test
+    public void selectorWidgetDefaultsOffAndPersistsIndependentGeometry() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
+        assertEquals(0.6871753f, defaults.widget.left, 0.0001f);
+        assertEquals(0.7960598f, defaults.widget.top, 0.0001f);
+        assertEquals(0.05931156f, defaults.widget.width, 0.0001f);
+        assertEquals(0.20394021f, defaults.widget.height, 0.0001f);
+        assertFalse(ReverseCameraController.loadWidgetVisible(settings));
+
+        ReverseCameraLayout moved = ReverseCameraLayout.move(
+                defaults, ReverseCameraLayout.WIDGET_PANE_ID, -0.2f, -0.3f);
+        ReverseCameraController.saveLayout(settings, moved);
+        ReverseCameraController.saveWidgetVisible(settings, true);
+        ReverseCameraLayout restored = ReverseCameraController.loadLayout(settings);
+        assertEquals(moved.widget.left, restored.widget.left, 0.0f);
+        assertEquals(moved.widget.top, restored.widget.top, 0.0f);
+        assertTrue(ReverseCameraController.loadWidgetVisible(settings));
+
+        ReverseCameraLayout.Rect minimum = ReverseCameraLayout.widgetDestination(
+                1.0f, 1.0f, 0.001f, 0.001f);
+        assertEquals(ReverseCameraLayout.MIN_WIDGET_WIDTH, minimum.width, 0.0f);
+        assertEquals(ReverseCameraLayout.MIN_WIDGET_HEIGHT, minimum.height, 0.0f);
+        assertEquals(1.0f - minimum.width, minimum.left, 0.0f);
+        assertEquals(1.0f - minimum.height, minimum.top, 0.0f);
+    }
+
+    @Test
+    public void selectorHitTestRecognizesButtonsOnly() {
+        assertEquals(ReverseSideSelectorView.MODE_FRONT,
+                ReverseSideSelectorView.modeAtNormalized(0.5f, 0.1f));
+        assertEquals(ReverseSideSelectorView.MODE_REAR,
+                ReverseSideSelectorView.modeAtNormalized(0.5f, 0.9f));
+        assertEquals(-1, ReverseSideSelectorView.modeAtNormalized(0.5f, 0.5f));
+        assertEquals(-1, ReverseSideSelectorView.modeAtNormalized(0.05f, 0.1f));
+    }
+
+    @Test
+    public void frontCalibrationKeepsItsTransformWhileFollowingSharedLayout() {
+        ReverseCameraLayout shared = ReverseCameraLayout.defaults();
+        shared = ReverseCameraLayout.move(
+                shared, ReverseCameraLayout.WIDGET_PANE_ID, -0.2f, -0.3f);
+        shared = ReverseCameraLayout.move(
+                shared, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.08f, -0.1f);
+        shared = ReverseCameraLayout.bringToFront(
+                shared, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        shared = ReverseCameraLayout.withPane(
+                shared, ReverseCameraLayout.REAR_CAMERA_INDEX,
+                shared.rear.destination,
+                ReverseCameraLayout.sourceCrop(0.1f, 0.1f, 0.8f, 0.8f));
+
+        ReverseCameraLayout front = ReverseCameraLayout.defaults();
+        ReverseCameraLayout.Rect frontCrop = ReverseCameraLayout.sourceCrop(
+                0.2f, 0.3f, 0.4f, 0.5f);
+        front = ReverseCameraLayout.withPane(
+                front, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                front.rearLeft.destination, frontCrop, 45);
+        front = ReverseCameraLayout.withDisplayMode(
+                front, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.DISPLAY_MODE_STRETCH);
+        front = ReverseCameraLayout.withMirrorHorizontally(
+                front, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+
+        ReverseCameraLayout merged = ReverseCameraLayout.withSideCalibration(shared, front);
+        assertEquals(shared.widget.left, merged.widget.left, 0.0f);
+        assertEquals(shared.widget.top, merged.widget.top, 0.0f);
+        assertEquals(shared.rearLeft.destination.left,
+                merged.rearLeft.destination.left, 0.0f);
+        assertEquals(shared.rearLeft.zOrder, merged.rearLeft.zOrder);
+        assertEquals(shared.rear.sourceCrop.left, merged.rear.sourceCrop.left, 0.0f);
+        assertEquals(frontCrop.left, merged.rearLeft.sourceCrop.left, 0.0f);
+        assertEquals(45, merged.rearLeft.rotationDegrees);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH,
+                merged.rearLeft.displayMode);
+        assertFalse(merged.rearLeft.mirrorHorizontally);
     }
 
     @Test

@@ -190,6 +190,34 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
+    public void reverseFrontScopeUsesItsOwnDefaultsAndNeverLegacyLensValues() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_LEFT, false, 91,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+
+        CameraDewarpConfig fallback = CameraDewarpConfig.loadForReverseFront(
+                preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        assertConfig(fallback, true, 130,
+                CameraDewarpConfig.PROJECTION_RECTILINEAR);
+
+        CameraDewarpConfig.saveForReverseFront(preferences,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, false, 144,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        assertConfig(CameraDewarpConfig.loadForReverseFront(preferences,
+                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
+                false, 144, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.load(preferences, CameraDewarpConfig.LENS_LEFT),
+                false, 91, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+
+        preferences.putString(
+                "camera_dewarp_v3_reverse_front_2_enabled", "invalid");
+        assertFalse(CameraDewarpConfig.loadForReverseFront(preferences,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
+    }
+
+    @Test
     public void runtimeRoiIsValidatedAndPreservedByMappingChanges() {
         CameraDewarpConfig centered = CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_LEFT, true, 100);

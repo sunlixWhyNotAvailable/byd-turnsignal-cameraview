@@ -23,6 +23,7 @@ import java.util.function.BiConsumer;
 })
 final class WindowlessOverlayHost {
     static final int REVERSE_LAYER = Integer.MAX_VALUE - 32;
+    static final int REVERSE_CONTROL_LAYER = Integer.MAX_VALUE - 4;
     private static final int CAMERA_LAYER_BASE = Integer.MAX_VALUE - 16;
     private static final AtomicLong NEXT_HOST_ID = new AtomicLong(1L);
 
@@ -82,6 +83,12 @@ final class WindowlessOverlayHost {
 
     void attach(View view, int nextWidth, int nextHeight, int x, int y, String title)
             throws Exception {
+        attach(view, nextWidth, nextHeight, x, y, title, false, false);
+    }
+
+    void attach(
+            View view, int nextWidth, int nextHeight, int x, int y, String title,
+            boolean touchable, boolean initiallyHidden) throws Exception {
         if (view == null || nextWidth <= 0 || nextHeight <= 0) {
             throw new IllegalArgumentException("valid view and size are required");
         }
@@ -98,10 +105,7 @@ final class WindowlessOverlayHost {
                     nextWidth,
                     nextHeight,
                     WindowManager.LayoutParams.TYPE_APPLICATION,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                    windowFlags(touchable),
                     PixelFormat.RGBA_8888);
             layout.alpha = 1.0f;
             layout.windowAnimations = 0;
@@ -123,7 +127,7 @@ final class WindowlessOverlayHost {
                 transaction.setLayer(nextRoot, layer);
                 setPosition(transaction, nextRoot, x, y);
                 transaction.setAlpha(nextRoot, 0.0f);
-                transaction.setVisibility(nextRoot, true);
+                transaction.setVisibility(nextRoot, !initiallyHidden);
                 transaction.apply();
             }
             host = nextHost;
@@ -176,6 +180,28 @@ final class WindowlessOverlayHost {
         }
         emitLifecycle("visibility", visibilityStart, attachedView, root, surfacePackage, host,
                 null, "visible", visible);
+    }
+
+    void setStrictVisible(boolean visible, float visibleAlpha) throws Exception {
+        requireAttached();
+        if (!Float.isFinite(visibleAlpha) || visibleAlpha < 0.0f || visibleAlpha > 1.0f) {
+            throw new IllegalArgumentException("visible alpha must be 0..1");
+        }
+        long visibilityStart = SystemClock.elapsedRealtimeNanos();
+        try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
+            transaction.setVisibility(root, visible);
+            transaction.setAlpha(root, visible ? visibleAlpha : 0.0f);
+            transaction.apply();
+        }
+        emitLifecycle("strict_visibility", visibilityStart, attachedView, root,
+                surfacePackage, host, null, "visible", visible);
+    }
+
+    static int windowFlags(boolean touchable) {
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        return touchable ? flags : flags | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
     }
 
     void release() throws Exception {

@@ -66,6 +66,10 @@ Parking-camera rules are disabled by default and display only on the tablet.
   visible by default and can be disabled without losing its layout or calibration.
 - Independent calibration, final-image mirroring, reset presets, and optional fisheye correction for
   each camera pane.
+- Optional movable and resizable `Перед` / `Зад` selector with a vehicle-and-wheel status view; the
+  selector is disabled by default.
+- The selector can replace either side pane with its corresponding front camera. Front-side
+  integration and calibration are independent for the left and right panes.
 
 The enhanced reverse view itself is disabled by default.
 

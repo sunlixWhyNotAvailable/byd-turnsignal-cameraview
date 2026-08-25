@@ -209,6 +209,54 @@ final class CameraCalibrationPreset {
         return true;
     }
 
+    static boolean hasReverseFront(SharedPreferences preferences, int cameraIndex) {
+        try {
+            return preferences.getInt(
+                    reverseFrontPrefix(cameraIndex) + "version", 0) == VERSION;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
+    static void saveReverseFront(SharedPreferences preferences, int cameraIndex) {
+        ReverseFrontValue value = activeReverseFront(preferences, cameraIndex);
+        SharedPreferences.Editor editor = preferences.edit();
+        writeReverseFront(editor, reverseFrontPrefix(cameraIndex), value);
+        editor.putInt(reverseFrontPrefix(cameraIndex) + "version", VERSION).apply();
+    }
+
+    static boolean loadReverseFront(SharedPreferences preferences, int cameraIndex) {
+        if (!hasReverseFront(preferences, cameraIndex)) return false;
+        try {
+            applyReverseFront(preferences, cameraIndex,
+                    readReverseFront(preferences, reverseFrontPrefix(cameraIndex),
+                            CameraDewarpConfig.lensForReverseSideCamera(cameraIndex)));
+            return true;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
+    static void resetReverseFrontToDefault(
+            SharedPreferences preferences, int cameraIndex) {
+        ReverseCameraController.resetFrontCalibrationToDefault(preferences, cameraIndex);
+    }
+
+    static boolean mirrorReverseFront(
+            SharedPreferences preferences, int sourceCameraIndex) {
+        int targetCameraIndex = reverseMirrorTarget(sourceCameraIndex);
+        if (targetCameraIndex < 0) return false;
+        ReverseFrontValue value = activeReverseFront(preferences, sourceCameraIndex);
+        applyReverseFront(preferences, targetCameraIndex, new ReverseFrontValue(
+                mirror(value.raw, false), mirror(value.corrected, false),
+                -value.rotationDegrees, value.displayMode,
+                CameraDewarpConfig.of(
+                        CameraDewarpConfig.lensForReverseSideCamera(targetCameraIndex),
+                        value.dewarp.enabled, value.dewarp.fovDegrees,
+                        value.dewarp.projection), value.mirrorHorizontally));
+        return true;
+    }
+
     private static CameraValue activeCamera(
             SharedPreferences preferences, CameraProfile profile) {
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
@@ -263,6 +311,19 @@ final class CameraCalibrationPreset {
                 pane.mirrorHorizontally);
     }
 
+    private static ReverseFrontValue activeReverseFront(
+            SharedPreferences preferences, int cameraIndex) {
+        ReverseCameraLayout.Pane pane = ReverseCameraController
+                .loadFrontRawLayout(preferences).pane(cameraIndex);
+        return new ReverseFrontValue(
+                pane.sourceCrop,
+                ReverseCameraController.loadFrontCorrectedSourceCrop(
+                        preferences, cameraIndex),
+                pane.rotationDegrees, pane.displayMode,
+                CameraDewarpConfig.loadForReverseFront(preferences, cameraIndex),
+                pane.mirrorHorizontally);
+    }
+
     private static void applyReverse(
             SharedPreferences preferences, int cameraIndex, ReverseValue value) {
         SharedPreferences.Editor editor = preferences.edit()
@@ -285,6 +346,27 @@ final class CameraCalibrationPreset {
         CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensForReverseCamera(cameraIndex),
                 value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection));
+        editor.apply();
+    }
+
+    private static void applyReverseFront(
+            SharedPreferences preferences, int cameraIndex, ReverseFrontValue value) {
+        SharedPreferences.Editor editor = preferences.edit()
+                .putInt(ReverseCameraController.frontPaneSettingKey(
+                        cameraIndex, "rotation_degrees"), value.rotationDegrees)
+                .putInt(ReverseCameraController.frontPaneSettingKey(
+                        cameraIndex, "display_mode"), value.displayMode)
+                .putBoolean(ReverseCameraController.frontPaneSettingKey(
+                        cameraIndex, "mirror"), value.mirrorHorizontally);
+        ReverseCameraController.writeFrontSourceCrop(
+                editor, cameraIndex, value.raw, false);
+        ReverseCameraController.writeFrontSourceCrop(
+                editor, cameraIndex, value.corrected, true);
+        CameraDewarpConfig.writeForReverseFront(editor, cameraIndex,
+                CameraDewarpConfig.of(
+                        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex),
+                        value.dewarp.enabled, value.dewarp.fovDegrees,
+                        value.dewarp.projection));
         editor.apply();
     }
 
@@ -358,6 +440,34 @@ final class CameraCalibrationPreset {
         boolean mirror = readOptionalMirror(preferences, prefix + "mirror", true);
         return new ReverseValue(destination, raw, corrected, rotation, mode,
                 readDewarp(preferences, prefix, lens), visible, mirror);
+    }
+
+    private static void writeReverseFront(
+            SharedPreferences.Editor editor, String prefix, ReverseFrontValue value) {
+        writeRect(editor, prefix + "raw_", value.raw.left, value.raw.top,
+                value.raw.width, value.raw.height);
+        writeRect(editor, prefix + "corrected_", value.corrected.left,
+                value.corrected.top, value.corrected.width, value.corrected.height);
+        editor.putInt(prefix + "rotation", value.rotationDegrees)
+                .putInt(prefix + "mode", value.displayMode)
+                .putBoolean(prefix + "mirror", value.mirrorHorizontally);
+        writeDewarp(editor, prefix, value.dewarp);
+    }
+
+    private static ReverseFrontValue readReverseFront(
+            SharedPreferences preferences, String prefix, int lens) {
+        ReverseCameraLayout.Rect raw = readRect(preferences, prefix + "raw_", false);
+        ReverseCameraLayout.Rect corrected = readRect(
+                preferences, prefix + "corrected_", false);
+        int rotation = preferences.getInt(prefix + "rotation", Integer.MIN_VALUE);
+        int mode = preferences.getInt(prefix + "mode", -1);
+        if (!CameraRotation.isValid(rotation)
+                || !ReverseCameraLayout.isValidDisplayMode(mode)) {
+            throw new IllegalArgumentException("invalid reverse front output transform");
+        }
+        return new ReverseFrontValue(raw, corrected, rotation, mode,
+                readDewarp(preferences, prefix, lens),
+                readOptionalMirror(preferences, prefix + "mirror", false));
     }
 
     private static void writeCrop(
@@ -459,6 +569,11 @@ final class CameraCalibrationPreset {
         return "reverse_calibration_preset_v1_" + cameraIndex + "_";
     }
 
+    private static String reverseFrontPrefix(int cameraIndex) {
+        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex);
+        return "reverse_front_calibration_preset_v1_" + cameraIndex + "_";
+    }
+
     private static final class CameraValue {
         final DirectCameraCrop raw;
         final DirectCameraCrop corrected;
@@ -495,6 +610,27 @@ final class CameraCalibrationPreset {
             this.displayMode = displayMode;
             this.dewarp = dewarp;
             this.visible = visible;
+            this.mirrorHorizontally = mirrorHorizontally;
+        }
+    }
+
+    private static final class ReverseFrontValue {
+        final ReverseCameraLayout.Rect raw;
+        final ReverseCameraLayout.Rect corrected;
+        final int rotationDegrees;
+        final int displayMode;
+        final CameraDewarpConfig dewarp;
+        final boolean mirrorHorizontally;
+
+        ReverseFrontValue(
+                ReverseCameraLayout.Rect raw, ReverseCameraLayout.Rect corrected,
+                int rotationDegrees, int displayMode, CameraDewarpConfig dewarp,
+                boolean mirrorHorizontally) {
+            this.raw = raw;
+            this.corrected = corrected;
+            this.rotationDegrees = rotationDegrees;
+            this.displayMode = displayMode;
+            this.dewarp = dewarp;
             this.mirrorHorizontally = mirrorHorizontally;
         }
     }

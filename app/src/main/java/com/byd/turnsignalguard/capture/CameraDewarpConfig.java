@@ -101,6 +101,23 @@ final class CameraDewarpConfig {
                 reversePrefix(cameraIndex), defaultForReverse(cameraIndex));
     }
 
+    static CameraDewarpConfig loadForReverseFront(
+            SharedPreferences preferences, int cameraIndex) {
+        int lens = lensForReverseSideCamera(cameraIndex);
+        CameraDewarpConfig fallback = defaultForReverseFront(cameraIndex);
+        String prefix = reverseFrontPrefix(cameraIndex);
+        try {
+            int fov = preferences.getInt(prefix + "fov", fallback.fovDegrees);
+            int projection = preferences.getInt(prefix + "projection", fallback.projection);
+            if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
+                    || !isValidProjection(projection)) return disabled(lens);
+            return of(lens, preferences.getBoolean(prefix + "enabled", fallback.enabled),
+                    fov, projection);
+        } catch (RuntimeException invalidPreferences) {
+            return disabled(lens);
+        }
+    }
+
     static CameraDewarpConfig defaultForProfile(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         switch (profile.id) {
@@ -121,6 +138,10 @@ final class CameraDewarpConfig {
             return of(lens, false, 170, PROJECTION_CYLINDRICAL);
         }
         return of(lens, true, 163, PROJECTION_CYLINDRICAL);
+    }
+
+    static CameraDewarpConfig defaultForReverseFront(int cameraIndex) {
+        return defaultForProfile(frontProfileForReverseSide(cameraIndex));
     }
 
     private static CameraDewarpConfig loadScoped(
@@ -197,6 +218,13 @@ final class CameraDewarpConfig {
         editor.apply();
     }
 
+    static void saveForReverseFront(
+            SharedPreferences preferences, int cameraIndex, CameraDewarpConfig value) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeForReverseFront(editor, cameraIndex, value);
+        editor.apply();
+    }
+
     static void write(SharedPreferences.Editor editor, CameraDewarpConfig value) {
         String prefix = prefix(value.lens);
         editor.putBoolean(prefix + "enabled", value.enabled)
@@ -223,6 +251,13 @@ final class CameraDewarpConfig {
                 reversePrefix(cameraIndex), value);
     }
 
+    static void writeForReverseFront(
+            SharedPreferences.Editor editor, int cameraIndex,
+            CameraDewarpConfig value) {
+        writeScoped(editor, lensForReverseSideCamera(cameraIndex),
+                reverseFrontPrefix(cameraIndex), value);
+    }
+
     static int lensFor(CameraProfile profile) {
         return profile.right() ? LENS_RIGHT : LENS_LEFT;
     }
@@ -239,6 +274,22 @@ final class CameraDewarpConfig {
         if (cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) return LENS_LEFT;
         if (cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) return LENS_RIGHT;
         throw new IllegalArgumentException("invalid reverse camera index");
+    }
+
+    static int lensForReverseSideCamera(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) return LENS_LEFT;
+        if (cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) return LENS_RIGHT;
+        throw new IllegalArgumentException("invalid reverse side camera index");
+    }
+
+    static CameraProfile frontProfileForReverseSide(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) {
+            return CameraProfile.of(CameraProfile.FRONT_LEFT);
+        }
+        if (cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
+            return CameraProfile.of(CameraProfile.FRONT_RIGHT);
+        }
+        throw new IllegalArgumentException("invalid reverse side camera index");
     }
 
     static boolean isValidLens(int lens) {
@@ -318,6 +369,11 @@ final class CameraDewarpConfig {
     private static String reversePrefix(int cameraIndex) {
         lensForReverseCamera(cameraIndex);
         return "camera_dewarp_v3_reverse_" + cameraIndex + "_";
+    }
+
+    private static String reverseFrontPrefix(int cameraIndex) {
+        lensForReverseSideCamera(cameraIndex);
+        return "camera_dewarp_v3_reverse_front_" + cameraIndex + "_";
     }
 
     private static int clamp(int value, int minimum, int maximum) {

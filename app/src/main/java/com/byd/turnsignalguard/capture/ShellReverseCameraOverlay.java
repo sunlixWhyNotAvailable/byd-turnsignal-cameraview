@@ -1,9 +1,11 @@
 package com.byd.turnsignalguard.capture;
 
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.Point;
 import android.view.Display;
 import android.view.Surface;
+import android.view.View;
 
 import java.util.Arrays;
 import java.util.function.BiConsumer;
@@ -15,6 +17,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private final BiConsumer<String, Object[]> eventSink;
 
     private WindowlessOverlayHost windowless;
+    private WindowlessOverlayHost frontControl;
+    private WindowlessOverlayHost rearControl;
     private ReverseCameraCompositionView root;
     private float imageAlpha = 1.0f;
     private int requestId;
@@ -38,7 +42,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
         if (root != null) {
             if (!root.dewarpPipelineCompatible(
-                    spec.rearDewarp, spec.leftDewarp, spec.rightDewarp)) {
+                    spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
+                    spec.frontLeftDewarp, spec.frontRightDewarp,
+                    spec.frontLeftIntegrated && spec.widgetVisible,
+                    spec.frontRightIntegrated && spec.widgetVisible)) {
                 close("dewarp_pipeline_changed");
             } else if (!root.usesPaneGeometry(spec.layout, size.x, size.y)) {
                 close("camera_geometry_changed");
@@ -61,7 +68,13 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
             root.applyRawFallbackLayout(spec.rawFallbackLayout);
             root.applyLayout(spec.layout);
+            root.configureIntegratedFront(
+                    spec.frontLayout, spec.frontRawFallbackLayout,
+                    spec.frontLeftDewarp, spec.frontRightDewarp,
+                    spec.frontLeftIntegrated, spec.frontRightIntegrated,
+                    spec.widgetVisible);
             root.applyVisibility(spec.visibilityMask);
+            configureControls(display, size, spec.widgetVisible);
             windowless.setVisible(false, imageAlpha);
         }
         root.setDewarpStatsContext(requestId, surfaceGenerations);
@@ -74,7 +87,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "rear_display_mode", spec.layout.rear.displayMode,
                 "left_display_mode", spec.layout.rearLeft.displayMode,
                 "right_display_mode", spec.layout.rearRight.displayMode,
-                "visibility_mask", spec.visibilityMask);
+                "visibility_mask", spec.visibilityMask,
+                "widget_visible", spec.widgetVisible,
+                "front_left_integrated", spec.frontLeftIntegrated,
+                "front_right_integrated", spec.frontRightIntegrated);
     }
 
     SurfaceSnapshot acquireSurfaces(int expectedRequestId) {
@@ -108,7 +124,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             }
         }
         try {
+            if (!nextVisible) setControlsVisible(false);
             windowless.setVisible(nextVisible, imageAlpha);
+            if (nextVisible) {
+                try {
+                    setControlsVisible(true);
+                } catch (Throwable controlError) {
+                    disableControls("show", controlError);
+                }
+            }
         } catch (Exception error) {
             throw new IllegalStateException("reverse visibility update failed", error);
         }
@@ -125,6 +149,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         windowless = null;
         closing = true;
         try {
+            releaseControls();
             if (activeHost != null) activeHost.release();
             emit("reverse_overlay_window", "state", "removed", "reason", safe(reason));
         } catch (Throwable error) {
@@ -183,6 +208,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         completedFrameRequestId = 0;
         if (!closing && windowless != null && root != null) {
             try {
+                setControlsVisible(false);
                 windowless.setVisible(false, imageAlpha);
             } catch (Exception error) {
                 emit("reverse_overlay_error", "stage", "hide_surface_lost",
@@ -236,6 +262,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         completedFrameRequestId = 0;
         if (root == null || windowless == null) return;
         try {
+            setControlsVisible(false);
             windowless.setVisible(false, imageAlpha);
         } catch (Throwable error) {
             emit("reverse_overlay_error", "stage", "hide_failed_renderer",
@@ -251,9 +278,19 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
         nextRoot.setCallback(this);
         nextRoot.setCornerRadiusDp(spec.cornerRadiusDp);
+        nextRoot.setDewarpPipelineRequirements(
+                spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
+                spec.frontLeftDewarp, spec.frontRightDewarp,
+                spec.frontLeftIntegrated && spec.widgetVisible,
+                spec.frontRightIntegrated && spec.widgetVisible);
         nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
         nextRoot.applyRawFallbackLayout(spec.rawFallbackLayout);
         nextRoot.applyLayout(spec.layout);
+        nextRoot.configureIntegratedFront(
+                spec.frontLayout, spec.frontRawFallbackLayout,
+                spec.frontLeftDewarp, spec.frontRightDewarp,
+                spec.frontLeftIntegrated, spec.frontRightIntegrated,
+                spec.widgetVisible);
         nextRoot.applyVisibility(spec.visibilityMask);
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
         root = nextRoot;
@@ -264,9 +301,14 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextHost.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
         try {
             nextHost.attach(nextRoot, size.x, size.y, 0, 0, WINDOW_TITLE);
+            configureControls(display, size, spec.widgetVisible);
         } catch (Throwable error) {
+            releaseControlsQuietly();
             windowless = null;
             root = null;
+            try {
+                nextHost.release();
+            } catch (Throwable ignored) {}
             throw error;
         }
         emit("reverse_overlay_window", "state", "added",
@@ -274,6 +316,100 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "layer", nextHost.layer(), "alpha", 0.0f,
                 "trusted_api", nextHost.trustedApi(),
                 "transparency_percent", spec.transparencyPercent);
+    }
+
+    private void configureControls(Display display, Point size, boolean enabled) {
+        releaseControlsQuietly();
+        if (root == null) return;
+        root.setWidgetAvailable(enabled);
+        if (!enabled) return;
+        Context windowContext = context.createDisplayContext(display);
+        WindowlessOverlayHost nextFront = null;
+        WindowlessOverlayHost nextRear = null;
+        try {
+            ReverseCameraLayout.PixelRect frontBounds = root.selectorButtonBounds(
+                    ReverseSideSelectorView.MODE_FRONT, size.x, size.y);
+            ReverseCameraLayout.PixelRect rearBounds = root.selectorButtonBounds(
+                    ReverseSideSelectorView.MODE_REAR, size.x, size.y);
+            nextFront = createControlHost(
+                    windowContext, display, frontBounds,
+                    ReverseSideSelectorView.MODE_FRONT, "BYD reverse front selector");
+            nextRear = createControlHost(
+                    windowContext, display, rearBounds,
+                    ReverseSideSelectorView.MODE_REAR, "BYD reverse rear selector");
+            frontControl = nextFront;
+            rearControl = nextRear;
+        } catch (Throwable error) {
+            releaseHostQuietly(nextFront);
+            releaseHostQuietly(nextRear);
+            disableControls("attach", error);
+        }
+    }
+
+    private WindowlessOverlayHost createControlHost(
+            Context windowContext, Display display, ReverseCameraLayout.PixelRect bounds,
+            int mode, String title) throws Exception {
+        View button = new View(windowContext);
+        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setClickable(true);
+        button.setContentDescription(mode == ReverseSideSelectorView.MODE_FRONT
+                ? "Перед" : "Зад");
+        button.setOnClickListener(view -> {
+            if (root == null) return;
+            root.setSideMode(mode);
+            emit("reverse_overlay_selector", "request_id", requestId,
+                    "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
+        });
+        WindowlessOverlayHost host = new WindowlessOverlayHost(
+                windowContext, display, WindowlessOverlayHost.REVERSE_CONTROL_LAYER,
+                "reverse_selector", mode, eventSink);
+        host.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
+        host.attach(button, bounds.width, bounds.height, bounds.left, bounds.top,
+                title, true, true);
+        return host;
+    }
+
+    private void setControlsVisible(boolean nextVisible) {
+        if (frontControl == null || rearControl == null) return;
+        try {
+            frontControl.setStrictVisible(nextVisible, 1.0f);
+            rearControl.setStrictVisible(nextVisible, 1.0f);
+        } catch (Throwable error) {
+            disableControls(nextVisible ? "show" : "hide", error);
+        }
+    }
+
+    private void disableControls(String stage, Throwable error) {
+        if (root != null) root.setWidgetAvailable(false);
+        releaseControlsQuietly();
+        emit("reverse_overlay_error", "stage", "selector_" + stage,
+                "request_id", requestId, "error", summary(error));
+    }
+
+    private void releaseControls() {
+        WindowlessOverlayHost activeFront = frontControl;
+        WindowlessOverlayHost activeRear = rearControl;
+        frontControl = null;
+        rearControl = null;
+        releaseHostQuietly(activeFront);
+        releaseHostQuietly(activeRear);
+    }
+
+    private void releaseControlsQuietly() {
+        releaseControls();
+    }
+
+    private void releaseHostQuietly(WindowlessOverlayHost host) {
+        if (host == null) return;
+        try {
+            host.setStrictVisible(false, 1.0f);
+        } catch (Throwable ignored) {}
+        try {
+            host.release();
+        } catch (Throwable error) {
+            emit("reverse_overlay_error", "stage", "selector_release",
+                    "request_id", requestId, "error", summary(error));
+        }
     }
 
     private void requireRequest(int expectedRequestId) {

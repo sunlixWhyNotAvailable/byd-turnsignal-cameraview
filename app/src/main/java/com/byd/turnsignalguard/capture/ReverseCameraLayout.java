@@ -1,6 +1,7 @@
 package com.byd.turnsignalguard.capture;
 
 final class ReverseCameraLayout {
+    static final int WIDGET_PANE_ID = -2;
     static final int BACKGROUND_PANE_ID = -1;
     static final int VISIBILITY_BACKGROUND = 1;
     static final int VISIBILITY_REAR = 1 << 1;
@@ -16,6 +17,8 @@ final class ReverseCameraLayout {
     static final int REAR_LEFT_CAMERA_INDEX = 2;
     static final int REAR_RIGHT_CAMERA_INDEX = 3;
     static final float MIN_DESTINATION_SIZE = 0.08f;
+    static final float MIN_WIDGET_WIDTH = 0.05f;
+    static final float MIN_WIDGET_HEIGHT = 0.16f;
     static final int DISPLAY_MODE_FIT = 0;
     static final int DISPLAY_MODE_FILL = 1;
     static final int DISPLAY_MODE_STRETCH = 2;
@@ -25,17 +28,22 @@ final class ReverseCameraLayout {
     private static final int FRONT_Z = 2;
 
     final Rect background;
+    final Rect widget;
     final Pane rear;
     final Pane rearLeft;
     final Pane rearRight;
 
-    private ReverseCameraLayout(Rect background, Pane rear, Pane rearLeft, Pane rearRight) {
-        if (background == null) throw new IllegalArgumentException("background is required");
+    private ReverseCameraLayout(
+            Rect background, Rect widget, Pane rear, Pane rearLeft, Pane rearRight) {
+        if (background == null || widget == null) {
+            throw new IllegalArgumentException("reverse overlay geometry is required");
+        }
         if (rear.zOrder == rearLeft.zOrder || rear.zOrder == rearRight.zOrder
                 || rearLeft.zOrder == rearRight.zOrder) {
             throw new IllegalArgumentException("pane z-orders must be unique");
         }
         this.background = background;
+        this.widget = widget;
         this.rear = rear;
         this.rearLeft = rearLeft;
         this.rearRight = rearRight;
@@ -44,6 +52,8 @@ final class ReverseCameraLayout {
     static ReverseCameraLayout defaults() {
         return new ReverseCameraLayout(
                 destination(0.42398763f, 0.0f, 0.5745265f, 1.0f),
+                widgetDestination(0.6871753f, 0.7960598f,
+                        0.05931156f, 0.20394021f),
                 new Pane(REAR, REAR_CAMERA_INDEX,
                         destination(0.43216026f, 0.0015433729f,
                                 0.564868f, 0.7758869f),
@@ -98,9 +108,21 @@ final class ReverseCameraLayout {
     }
 
     static Rect destination(float left, float top, float width, float height) {
+        return boundedDestination(left, top, width, height,
+                MIN_DESTINATION_SIZE, MIN_DESTINATION_SIZE);
+    }
+
+    static Rect widgetDestination(float left, float top, float width, float height) {
+        return boundedDestination(left, top, width, height,
+                MIN_WIDGET_WIDTH, MIN_WIDGET_HEIGHT);
+    }
+
+    private static Rect boundedDestination(
+            float left, float top, float width, float height,
+            float minimumWidth, float minimumHeight) {
         requireFinite(left, top, width, height);
-        float safeWidth = clamp(width, MIN_DESTINATION_SIZE, 1.0f);
-        float safeHeight = clamp(height, MIN_DESTINATION_SIZE, 1.0f);
+        float safeWidth = clamp(width, minimumWidth, 1.0f);
+        float safeHeight = clamp(height, minimumHeight, 1.0f);
         return new Rect(
                 clamp(left, 0.0f, 1.0f - safeWidth),
                 clamp(top, 0.0f, 1.0f - safeHeight),
@@ -192,17 +214,53 @@ final class ReverseCameraLayout {
         }
         Rect safe = destination(
                 destination.left, destination.top, destination.width, destination.height);
-        return new ReverseCameraLayout(safe, layout.rear, layout.rearLeft, layout.rearRight);
+        return new ReverseCameraLayout(
+                safe, layout.widget, layout.rear, layout.rearLeft, layout.rearRight);
+    }
+
+    static ReverseCameraLayout withWidget(
+            ReverseCameraLayout layout, Rect destination) {
+        if (layout == null || destination == null) {
+            throw new IllegalArgumentException("widget geometry is required");
+        }
+        Rect safe = widgetDestination(
+                destination.left, destination.top, destination.width, destination.height);
+        return new ReverseCameraLayout(
+                layout.background, safe, layout.rear, layout.rearLeft, layout.rearRight);
+    }
+
+    static ReverseCameraLayout withSideCalibration(
+            ReverseCameraLayout shared, ReverseCameraLayout sideCalibration) {
+        if (shared == null || sideCalibration == null) {
+            throw new IllegalArgumentException("reverse layouts are required");
+        }
+        ReverseCameraLayout result = shared;
+        for (int cameraIndex = REAR_LEFT_CAMERA_INDEX;
+                cameraIndex <= REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+            Pane calibrated = sideCalibration.pane(cameraIndex);
+            Pane target = result.pane(cameraIndex);
+            result = withPane(result, cameraIndex, target.destination,
+                    calibrated.sourceCrop, calibrated.rotationDegrees);
+            result = withDisplayMode(result, cameraIndex, calibrated.displayMode);
+            result = withMirrorHorizontally(
+                    result, cameraIndex, calibrated.mirrorHorizontally);
+        }
+        return result;
     }
 
     static ReverseCameraLayout move(
             ReverseCameraLayout layout, int cameraIndex, float deltaX, float deltaY) {
         if (layout == null) throw new IllegalArgumentException("layout is required");
         Rect current = cameraIndex == BACKGROUND_PANE_ID
-                ? layout.background : layout.pane(cameraIndex).destination;
-        Rect moved = destination(current.left + deltaX, current.top + deltaY,
-                current.width, current.height);
+                ? layout.background : cameraIndex == WIDGET_PANE_ID
+                        ? layout.widget : layout.pane(cameraIndex).destination;
+        Rect moved = cameraIndex == WIDGET_PANE_ID
+                ? widgetDestination(current.left + deltaX, current.top + deltaY,
+                        current.width, current.height)
+                : destination(current.left + deltaX, current.top + deltaY,
+                        current.width, current.height);
         if (cameraIndex == BACKGROUND_PANE_ID) return withBackground(layout, moved);
+        if (cameraIndex == WIDGET_PANE_ID) return withWidget(layout, moved);
         Pane pane = layout.pane(cameraIndex);
         return withPane(layout, cameraIndex, moved, pane.sourceCrop);
     }
@@ -333,11 +391,14 @@ final class ReverseCameraLayout {
     private ReverseCameraLayout replace(int cameraIndex, Pane replacement) {
         switch (cameraIndex) {
             case REAR_CAMERA_INDEX:
-                return new ReverseCameraLayout(background, replacement, rearLeft, rearRight);
+                return new ReverseCameraLayout(
+                        background, widget, replacement, rearLeft, rearRight);
             case REAR_LEFT_CAMERA_INDEX:
-                return new ReverseCameraLayout(background, rear, replacement, rearRight);
+                return new ReverseCameraLayout(
+                        background, widget, rear, replacement, rearRight);
             case REAR_RIGHT_CAMERA_INDEX:
-                return new ReverseCameraLayout(background, rear, rearLeft, replacement);
+                return new ReverseCameraLayout(
+                        background, widget, rear, rearLeft, replacement);
             default:
                 throw new IllegalArgumentException("unsupported reverse camera index: "
                         + cameraIndex);
@@ -350,7 +411,7 @@ final class ReverseCameraLayout {
         int targetZ = layout.pane(cameraIndex).zOrder;
         int edgeZ = toFront ? FRONT_Z : BACK_Z;
         if (targetZ == edgeZ) return layout;
-        return new ReverseCameraLayout(layout.background,
+        return new ReverseCameraLayout(layout.background, layout.widget,
                 reordered(layout.rear, cameraIndex, targetZ, edgeZ),
                 reordered(layout.rearLeft, cameraIndex, targetZ, edgeZ),
                 reordered(layout.rearRight, cameraIndex, targetZ, edgeZ));
@@ -362,7 +423,7 @@ final class ReverseCameraLayout {
         int from = layout.pane(cameraIndex).zOrder;
         int to = Math.max(BACK_Z, Math.min(FRONT_Z, from + delta));
         if (from == to) return layout;
-        return new ReverseCameraLayout(layout.background,
+        return new ReverseCameraLayout(layout.background, layout.widget,
                 swapped(layout.rear, cameraIndex, from, to),
                 swapped(layout.rearLeft, cameraIndex, from, to),
                 swapped(layout.rearRight, cameraIndex, from, to));

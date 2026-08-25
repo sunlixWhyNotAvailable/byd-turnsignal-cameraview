@@ -209,6 +209,8 @@ public final class ActivityCameraLifecycleTest {
                         false, 120, CameraDewarpConfig.PROJECTION_RECTILINEAR));
         ReverseCameraController.saveEditorSelection(
                 settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        ReverseCameraController.saveFrontIntegrated(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, true);
         Map<String, ?> beforeRestore = new HashMap<>(settings.getAll());
 
         CameraProbeActivity.ReversePaneUiBinding restored =
@@ -221,6 +223,8 @@ public final class ActivityCameraLifecycleTest {
         assertEquals(137, restored.dewarp.fovDegrees);
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
                 restored.dewarp.projection);
+        assertTrue(restored.frontIntegrated);
+        assertFalse(restored.widgetVisible);
         assertEquals(beforeRestore, settings.getAll());
         assertFalse(settings.getBoolean("camera_dewarp_v2_left_enabled", true));
         assertFalse(CameraDewarpConfig.loadForReverse(settings,
@@ -273,6 +277,25 @@ public final class ActivityCameraLifecycleTest {
                 CameraProbeActivity.reversePaneButtonPaintFlags(base, false));
         assertEquals("Rear left", CameraProbeActivity.reversePaneLabel(
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertEquals("Віджет", CameraProbeActivity.reversePaneLabel(
+                ReverseCameraLayout.WIDGET_PANE_ID));
+    }
+
+    @Test
+    public void reverseWidgetBindingDefaultsOffAndDoesNotUseCameraMask() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraController.saveEditorSelection(
+                settings, ReverseCameraLayout.WIDGET_PANE_ID);
+        Map<String, ?> beforeRestore = new HashMap<>(settings.getAll());
+
+        CameraProbeActivity.ReversePaneUiBinding restored =
+                CameraProbeActivity.restoredReversePaneUiBinding(settings);
+
+        assertEquals(ReverseCameraLayout.WIDGET_PANE_ID, restored.cameraIndex);
+        assertFalse(restored.visible);
+        assertFalse(restored.widgetVisible);
+        assertEquals(ReverseCameraLayout.VISIBILITY_ALL, restored.visibilityMask);
+        assertEquals(beforeRestore, settings.getAll());
     }
 
     @Test

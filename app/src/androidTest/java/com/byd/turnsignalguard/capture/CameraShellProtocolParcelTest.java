@@ -95,6 +95,10 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertEquals(ReverseCameraLayout.VISIBILITY_REAR_LEFT
                             | ReverseCameraLayout.VISIBILITY_REAR_RIGHT,
                     restored.visibilityMask);
+            assertFalse(restored.widgetVisible);
+            assertFalse(restored.frontLeftIntegrated);
+            assertFalse(restored.frontRightIntegrated);
+            assertRect(active.widget, restored.layout.widget);
             for (int index = 1; index <= 3; index++) {
                 assertRect(active.pane(index).sourceCrop,
                         restored.layout.pane(index).sourceCrop);
@@ -111,6 +115,12 @@ public final class CameraShellProtocolParcelTest extends TestCase {
                         restored.layout.pane(index).mirrorHorizontally);
                 assertEquals(raw.pane(index).mirrorHorizontally,
                         restored.rawFallbackLayout.pane(index).mirrorHorizontally);
+                if (index >= ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) {
+                    assertRect(active.pane(index).sourceCrop,
+                            restored.frontLayout.pane(index).sourceCrop);
+                    assertRect(raw.pane(index).sourceCrop,
+                            restored.frontRawFallbackLayout.pane(index).sourceCrop);
+                }
             }
             assertEquals(0, parcel.dataAvail());
         } finally {
@@ -222,6 +232,27 @@ public final class CameraShellProtocolParcelTest extends TestCase {
             assertEquals(CameraBufferQuality.BALANCED, parcel.readInt());
             assertEquals(ReverseCameraLayout.VISIBILITY_ALL, parcel.readInt());
             assertEquals(0, parcel.readInt());
+            assertRectWire(parcel, active.widget);
+            assertEquals(0, parcel.readInt());
+            assertEquals(0, parcel.readInt());
+            assertEquals(0, parcel.readInt());
+            assertDewarpWire(parcel, CameraDewarpConfig.LENS_LEFT, false,
+                    CameraDewarpConfig.DEFAULT_FOV_DEGREES,
+                    CameraDewarpConfig.PROJECTION_RECTILINEAR);
+            assertDewarpWire(parcel, CameraDewarpConfig.LENS_RIGHT, false,
+                    CameraDewarpConfig.DEFAULT_FOV_DEGREES,
+                    CameraDewarpConfig.PROJECTION_RECTILINEAR);
+            for (int index = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+                    index <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; index++) {
+                assertRectWire(parcel, raw.pane(index).sourceCrop);
+                assertEquals(raw.pane(index).mirrorHorizontally ? 1 : 0,
+                        parcel.readInt());
+                ReverseCameraLayout.Pane pane = active.pane(index);
+                assertRectWire(parcel, pane.sourceCrop);
+                assertEquals(pane.rotationDegrees, parcel.readInt());
+                assertEquals(pane.displayMode, parcel.readInt());
+                assertEquals(pane.mirrorHorizontally ? 1 : 0, parcel.readInt());
+            }
             assertEquals(0, parcel.dataAvail());
         } finally {
             parcel.recycle();

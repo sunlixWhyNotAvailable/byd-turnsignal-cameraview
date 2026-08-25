@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.turnsignalguard.capture.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydturnguard_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydturnguard_camera.log";
-    static final int VERSION = 24;
+    static final int VERSION = 25;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -339,6 +339,13 @@ final class CameraShellProtocol {
         final CameraDewarpConfig rearDewarp;
         final CameraDewarpConfig leftDewarp;
         final CameraDewarpConfig rightDewarp;
+        final ReverseCameraLayout frontLayout;
+        final ReverseCameraLayout frontRawFallbackLayout;
+        final CameraDewarpConfig frontLeftDewarp;
+        final CameraDewarpConfig frontRightDewarp;
+        final boolean frontLeftIntegrated;
+        final boolean frontRightIntegrated;
+        final boolean widgetVisible;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
             this(requestId, layout, 8,
@@ -405,9 +412,34 @@ final class CameraShellProtocol {
                 CameraDewarpConfig leftDewarp,
                 CameraDewarpConfig rightDewarp,
                 int bufferQuality, int visibilityMask, int transparencyPercent) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp,
+                    bufferQuality, visibilityMask, transparencyPercent,
+                    layout, rawFallbackLayout,
+                    CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT),
+                    CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT),
+                    false, false, false);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp,
+                int bufferQuality, int visibilityMask, int transparencyPercent,
+                ReverseCameraLayout frontLayout,
+                ReverseCameraLayout frontRawFallbackLayout,
+                CameraDewarpConfig frontLeftDewarp,
+                CameraDewarpConfig frontRightDewarp,
+                boolean frontLeftIntegrated, boolean frontRightIntegrated,
+                boolean widgetVisible) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
+            }
+            if (frontLayout == null || frontRawFallbackLayout == null) {
+                throw new IllegalArgumentException("reverse front layout required");
             }
             this.requestId = requestId;
             this.layout = layout;
@@ -422,6 +454,17 @@ final class CameraShellProtocol {
                     ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT) : leftDewarp;
             this.rightDewarp = rightDewarp == null
                     ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT) : rightDewarp;
+            this.frontLayout = frontLayout;
+            this.frontRawFallbackLayout = frontRawFallbackLayout;
+            this.frontLeftDewarp = frontLeftDewarp == null
+                    ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT)
+                    : frontLeftDewarp;
+            this.frontRightDewarp = frontRightDewarp == null
+                    ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT)
+                    : frontRightDewarp;
+            this.frontLeftIntegrated = frontLeftIntegrated;
+            this.frontRightIntegrated = frontRightIntegrated;
+            this.widgetVisible = widgetVisible;
         }
 
         void writeToParcel(Parcel parcel) {
@@ -447,6 +490,24 @@ final class CameraShellProtocol {
             parcel.writeInt(bufferQuality);
             parcel.writeInt(visibilityMask);
             parcel.writeInt(transparencyPercent);
+            writeRect(parcel, layout.widget);
+            parcel.writeInt(widgetVisible ? 1 : 0);
+            parcel.writeInt(frontLeftIntegrated ? 1 : 0);
+            parcel.writeInt(frontRightIntegrated ? 1 : 0);
+            writeDewarp(parcel, frontLeftDewarp);
+            writeDewarp(parcel, frontRightDewarp);
+            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                ReverseCameraLayout.Pane raw = frontRawFallbackLayout.pane(cameraIndex);
+                ReverseCameraLayout.Pane pane = frontLayout.pane(cameraIndex);
+                writeRect(parcel, raw.sourceCrop);
+                parcel.writeInt(raw.mirrorHorizontally ? 1 : 0);
+                writeRect(parcel, pane.sourceCrop);
+                parcel.writeInt(pane.rotationDegrees);
+                parcel.writeInt(pane.displayMode);
+                parcel.writeInt(pane.mirrorHorizontally ? 1 : 0);
+            }
         }
 
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
@@ -531,9 +592,58 @@ final class CameraShellProtocol {
             int bufferQuality = parcel.readInt();
             int visibilityMask = parcel.readInt();
             int transparencyPercent = parcel.readInt();
+            float[] widget = readRect(parcel);
+            validateWidgetRect(widget);
+            layout = ReverseCameraLayout.withWidget(layout,
+                    ReverseCameraLayout.widgetDestination(
+                            widget[0], widget[1], widget[2], widget[3]));
+            rawFallbackLayout = ReverseCameraLayout.withWidget(
+                    rawFallbackLayout, layout.widget);
+            boolean widgetVisible = readBoolean(parcel);
+            boolean frontLeftIntegrated = readBoolean(parcel);
+            boolean frontRightIntegrated = readBoolean(parcel);
+            CameraDewarpConfig frontLeftDewarp = readDewarp(parcel);
+            CameraDewarpConfig frontRightDewarp = readDewarp(parcel);
+            ReverseCameraLayout frontLayout = layout;
+            ReverseCameraLayout frontRawFallbackLayout = rawFallbackLayout;
+            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                float[] frontRawCrop = readRect(parcel);
+                validateSourceRect(frontRawCrop);
+                boolean frontRawMirror = readBoolean(parcel);
+                float[] frontCrop = readRect(parcel);
+                validateSourceRect(frontCrop);
+                int frontRotation = parcel.readInt();
+                int frontDisplayMode = parcel.readInt();
+                boolean frontMirror = readBoolean(parcel);
+                if (!CameraRotation.isValid(frontRotation)
+                        || !ReverseCameraLayout.isValidDisplayMode(frontDisplayMode)) {
+                    throw new IllegalArgumentException("invalid reverse front transform");
+                }
+                ReverseCameraLayout.Pane shared = layout.pane(cameraIndex);
+                frontRawFallbackLayout = ReverseCameraLayout.withPane(
+                        frontRawFallbackLayout, cameraIndex, shared.destination,
+                        ReverseCameraLayout.sourceCrop(frontRawCrop[0], frontRawCrop[1],
+                                frontRawCrop[2], frontRawCrop[3]), frontRotation);
+                frontRawFallbackLayout = ReverseCameraLayout.withDisplayMode(
+                        frontRawFallbackLayout, cameraIndex, frontDisplayMode);
+                frontRawFallbackLayout = ReverseCameraLayout.withMirrorHorizontally(
+                        frontRawFallbackLayout, cameraIndex, frontRawMirror);
+                frontLayout = ReverseCameraLayout.withPane(
+                        frontLayout, cameraIndex, shared.destination,
+                        ReverseCameraLayout.sourceCrop(frontCrop[0], frontCrop[1],
+                                frontCrop[2], frontCrop[3]), frontRotation);
+                frontLayout = ReverseCameraLayout.withDisplayMode(
+                        frontLayout, cameraIndex, frontDisplayMode);
+                frontLayout = ReverseCameraLayout.withMirrorHorizontally(
+                        frontLayout, cameraIndex, frontMirror);
+            }
             return new ReverseOverlaySpec(requestId, layout, rawFallbackLayout, cornerRadiusDp,
                     rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
-                    transparencyPercent);
+                    transparencyPercent, frontLayout, frontRawFallbackLayout,
+                    frontLeftDewarp, frontRightDewarp,
+                    frontLeftIntegrated, frontRightIntegrated, widgetVisible);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -542,6 +652,8 @@ final class CameraShellProtocol {
                 throw new IllegalArgumentException("invalid reverse display bounds");
             }
             validateModelRect(layout.background, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+            validateWidgetRect(new float[]{layout.widget.left, layout.widget.top,
+                    layout.widget.width, layout.widget.height});
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid reverse corner radius");
             }
@@ -552,7 +664,9 @@ final class CameraShellProtocol {
             ReverseCameraLayout.requireVisibilityMask(visibilityMask);
             if (rearDewarp.lens != CameraDewarpConfig.LENS_REAR
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT
-                    || rightDewarp.lens != CameraDewarpConfig.LENS_RIGHT) {
+                    || rightDewarp.lens != CameraDewarpConfig.LENS_RIGHT
+                    || frontLeftDewarp.lens != CameraDewarpConfig.LENS_LEFT
+                    || frontRightDewarp.lens != CameraDewarpConfig.LENS_RIGHT) {
                 throw new IllegalArgumentException("invalid reverse dewarp lens mapping");
             }
             boolean[] zSeen = new boolean[3];
@@ -580,6 +694,21 @@ final class CameraShellProtocol {
                     throw new IllegalArgumentException("invalid reverse raw camera mapping");
                 }
                 validateSourceRect(pane.sourceCrop);
+            }
+            validateFrontLayout(frontLayout);
+            validateFrontLayout(frontRawFallbackLayout);
+        }
+
+        private static void validateFrontLayout(ReverseCameraLayout value) {
+            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                ReverseCameraLayout.Pane pane = value.pane(cameraIndex);
+                validateSourceRect(pane.sourceCrop);
+                if (!CameraRotation.isValid(pane.rotationDegrees)
+                        || !ReverseCameraLayout.isValidDisplayMode(pane.displayMode)) {
+                    throw new IllegalArgumentException("invalid reverse front layout");
+                }
             }
         }
 
@@ -621,6 +750,14 @@ final class CameraShellProtocol {
                     || rect[0] + rect[2] > 1.0001f
                     || rect[1] + rect[3] > 1.0001f) {
                 throw new IllegalArgumentException("reverse geometry outside canvas");
+            }
+        }
+
+        private static void validateWidgetRect(float[] rect) {
+            validateRect(rect, 0.0f);
+            if (rect[2] < ReverseCameraLayout.MIN_WIDGET_WIDTH - 0.0001f
+                    || rect[3] < ReverseCameraLayout.MIN_WIDGET_HEIGHT - 0.0001f) {
+                throw new IllegalArgumentException("reverse widget geometry outside canvas");
             }
         }
     }
