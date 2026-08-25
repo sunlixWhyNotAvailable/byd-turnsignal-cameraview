@@ -2224,8 +2224,8 @@ public final class CameraProbeActivity extends Activity
         liveHost.addView(reverseCalibrationLiveFrame,
                 new FrameLayout.LayoutParams(1, 1, Gravity.CENTER));
         liveHost.addOnLayoutChangeListener((view, left, top, right, bottom,
-                oldLeft, oldTop, oldRight, oldBottom) -> fitAspectFrame(
-                liveHost, reverseCalibrationLiveFrame, 4.0f / 3.0f));
+                oldLeft, oldTop, oldRight, oldBottom) ->
+                fitReverseCalibrationLiveFrame());
         liveStage.addView(liveHost, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         stages.addView(liveStage, new LinearLayout.LayoutParams(
@@ -2381,6 +2381,7 @@ public final class CameraProbeActivity extends Activity
         if (reverseCameraEditor == null) return;
         int cameraIndex = reverseCameraEditor.selectedCamera();
         if (isReverseFixedPane(cameraIndex)) return;
+        stopReverseCalibrationCopies(true);
         reverseCalibrationCameraIndex = cameraIndex;
         reverseCalibrationFront = false;
         reverseRawCalibrationLayout = ReverseCameraController.loadRawLayout(preferences);
@@ -2427,6 +2428,7 @@ public final class CameraProbeActivity extends Activity
         if (reverseCalibrationCameraIndex <= 0
                 || (front && !isReverseSideCamera(reverseCalibrationCameraIndex))) return;
         cancelReverseCropInput();
+        stopReverseCalibrationCopies(true);
         reverseCalibrationFront = front;
         applyReversePreviewDewarpConfigs();
         updateReverseCalibrationSourceButtons();
@@ -2495,6 +2497,7 @@ public final class CameraProbeActivity extends Activity
                 activePane.rotationDegrees - CameraRotation.MIN_DEGREES);
         reverseRotationValue.setText(activePane.rotationDegrees + "°");
         reverseRotationUiUpdating = false;
+        fitReverseCalibrationLiveFrame();
         renderReverseCalibrationCrop();
         startReverseCalibrationCopies();
     }
@@ -2671,8 +2674,12 @@ public final class CameraProbeActivity extends Activity
     private void stopReverseCalibrationCopies(boolean clearPreview) {
         mainHandler.removeCallbacks(copyReverseCalibrationFrame);
         reverseCalibrationCopyPending = false;
-        if (clearPreview && reverseCalibrationLivePreview != null) {
-            reverseCalibrationLivePreview.setImageDrawable(null);
+        if (clearPreview) {
+            reverseCalibrationCaptureBitmap = null;
+            reverseCalibrationResultBitmap = null;
+            if (reverseCalibrationLivePreview != null) {
+                reverseCalibrationLivePreview.setImageDrawable(null);
+            }
         }
     }
 
@@ -2694,7 +2701,14 @@ public final class CameraProbeActivity extends Activity
         }
         reverseCalibrationCopyPending = true;
         try {
-            source.getBitmap(reverseCalibrationCaptureBitmap);
+            if (source.getBitmap(reverseCalibrationCaptureBitmap) == null) {
+                reverseCalibrationCopyPending = false;
+                if (shouldCopyReverseCalibrationFrame()) {
+                    mainHandler.postDelayed(
+                            copyReverseCalibrationFrame, CALIBRATION_COPY_INTERVAL_MS);
+                }
+                return;
+            }
             reverseCalibrationCopyPending = false;
             renderReverseCalibrationCrop();
         } catch (Throwable error) {
@@ -2738,16 +2752,34 @@ public final class CameraProbeActivity extends Activity
         Canvas canvas = new Canvas(reverseCalibrationResultBitmap);
         canvas.drawColor(Color.BLACK);
         Matrix transform = new Matrix();
-        CameraRotation.setSourceCropTransform(transform,
-                new RectF(crop.left * sourceWidth, crop.top * sourceHeight,
-                        crop.right() * sourceWidth, crop.bottom() * sourceHeight),
-                new RectF(0, 0, width, height), crop.rotationDegrees,
-                crop.rotationMode, new RectF(0, 0, sourceWidth, sourceHeight),
+        CameraRotation.setSourceCropTransformForInput(
+                transform, pane.sourceCrop.left, pane.sourceCrop.top,
+                pane.sourceCrop.width, pane.sourceCrop.height,
+                new RectF(0, 0, width, height), pane.rotationDegrees,
+                crop.rotationMode, ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT, sourceWidth, sourceHeight,
                 pane.mirrorHorizontally);
         canvas.drawBitmap(
                 reverseCalibrationCaptureBitmap, transform, calibrationCropPaint);
         reverseCalibrationLivePreview.setImageBitmap(reverseCalibrationResultBitmap);
         reverseCalibrationLivePreview.invalidate();
+    }
+
+    private float reverseCalibrationLiveAspect() {
+        ReverseCameraLayout active = activeReverseCalibrationLayout();
+        if (active == null || reverseCalibrationCameraIndex <= 0) return 4.0f / 3.0f;
+        ReverseCameraLayout.Rect destination = active
+                .pane(reverseCalibrationCameraIndex).destination;
+        float aspect = destination.width * 1920.0f
+                / (destination.height * 990.0f);
+        return Float.isFinite(aspect) && aspect > 0.0f ? aspect : 4.0f / 3.0f;
+    }
+
+    private void fitReverseCalibrationLiveFrame() {
+        if (reverseCalibrationLiveFrame == null
+                || !(reverseCalibrationLiveFrame.getParent() instanceof FrameLayout)) return;
+        fitAspectFrame((FrameLayout) reverseCalibrationLiveFrame.getParent(),
+                reverseCalibrationLiveFrame, reverseCalibrationLiveAspect());
     }
 
     private FrameLayout reverseCanvasHost(View child) {
@@ -6800,7 +6832,7 @@ public final class CameraProbeActivity extends Activity
                 "selected_tab", selectedTab);
         if (shouldRenewTransitionInputAfterClose(
                         targetTab == selectedTab, targetInputReady,
-                        activityDestroyed, shutdownRequested)
+                        activityDestroyed, shutdownRequested, activityResumed)
                 && CameraTransition.reasonEquals(token, "camera_tab_changed")) {
             renewSelectedPreviewInputForTabSwitch();
         }
@@ -6883,15 +6915,16 @@ public final class CameraProbeActivity extends Activity
     }
 
     static boolean shouldRenewSelectedInputAfterClose(
-            boolean activityDestroyed, boolean shutdownRequested) {
-        return !activityDestroyed && !shutdownRequested;
+            boolean activityDestroyed, boolean shutdownRequested, boolean activityResumed) {
+        return activityResumed && !activityDestroyed && !shutdownRequested;
     }
 
     static boolean shouldRenewTransitionInputAfterClose(
             boolean targetStillSelected, boolean targetInputReady,
-            boolean activityDestroyed, boolean shutdownRequested) {
+            boolean activityDestroyed, boolean shutdownRequested, boolean activityResumed) {
         return targetStillSelected && targetInputReady
-                && shouldRenewSelectedInputAfterClose(activityDestroyed, shutdownRequested);
+                && shouldRenewSelectedInputAfterClose(
+                        activityDestroyed, shutdownRequested, activityResumed);
     }
 
     static boolean shouldRepeatTabTransitionAfterResume(
@@ -7447,7 +7480,8 @@ public final class CameraProbeActivity extends Activity
             return;
         }
         closingActivityCameraRequestId = 0;
-        if (!shouldRenewSelectedInputAfterClose(activityDestroyed, shutdownRequested)) return;
+        if (!shouldRenewSelectedInputAfterClose(
+                activityDestroyed, shutdownRequested, activityResumed)) return;
         renewSelectedPreviewInputForTabSwitch();
         if (activityResumed && hasAutoPreviewIntent()) resumeSelectedCameraPreview();
     }

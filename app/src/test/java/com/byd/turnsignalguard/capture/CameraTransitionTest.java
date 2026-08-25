@@ -120,23 +120,26 @@ public final class CameraTransitionTest {
 
     @Test
     public void lateCloseCannotRecreateInputAfterDestroyOrShutdown() {
-        assertTrue(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, false));
-        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(true, false));
-        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, true));
+        assertTrue(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, false, true));
+        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(true, false, true));
+        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, true, true));
+        assertFalse(CameraProbeActivity.shouldRenewSelectedInputAfterClose(false, false, false));
     }
 
     @Test
     public void tabTransitionDoesNotRecreateInputCreatedByFirstVisibility() {
         assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
-                true, false, false, false));
+                true, false, false, false, true));
         assertTrue(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
-                true, true, false, false));
+                true, true, false, false, true));
         assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
-                false, true, false, false));
+                false, true, false, false, true));
         assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
-                true, true, true, false));
+                true, true, true, false, true));
         assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
-                true, true, false, true));
+                true, true, false, true, true));
+        assertFalse(CameraProbeActivity.shouldRenewTransitionInputAfterClose(
+                true, true, false, false, false));
     }
 
     @Test

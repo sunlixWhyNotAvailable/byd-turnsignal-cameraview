@@ -933,26 +933,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
             Matrix transform = new Matrix();
             if (displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
                 cropMask.setCrop(null);
-                CameraRotation.setSourceCropTransform(
-                        transform,
-                        new RectF(value.left * fitted.width,
-                                value.top * fitted.height,
-                                value.right() * fitted.width,
-                                value.bottom() * fitted.height),
-                        new RectF(0, 0, fitted.width, fitted.height),
-                        rotationDegrees,
-                        CameraRotation.MODE_ALIGNED,
-                        new RectF(0, 0, fitted.width, fitted.height),
-                        mirrorHorizontally);
-            } else {
-                transform.setValues(ReverseCameraLayout.rotatedSourceCropTransform(
-                        value, fitted.width, fitted.height, SOURCE_WIDTH, SOURCE_HEIGHT,
-                        rotationDegrees,
-                        displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL));
-                if (mirrorHorizontally) {
-                    transform.postScale(-1.0f, 1.0f,
-                            fitted.width / 2.0f, fitted.height / 2.0f);
-                }
+            }
+            CameraRotation.setSourceCropTransformForInput(
+                    transform, value.left, value.top, value.width, value.height,
+                    new RectF(0, 0, fitted.width, fitted.height), rotationDegrees,
+                    displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL
+                            ? CameraRotation.MODE_FILL
+                            : displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH
+                                    ? CameraRotation.MODE_ALIGNED : CameraRotation.MODE_FIT,
+                    SOURCE_WIDTH, SOURCE_HEIGHT, fitted.width, fitted.height,
+                    mirrorHorizontally);
+            if (displayMode != ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
                 float[] visibleCrop = new float[]{
                         value.left * fitted.width, value.top * fitted.height,
                         value.right() * fitted.width, value.top * fitted.height,

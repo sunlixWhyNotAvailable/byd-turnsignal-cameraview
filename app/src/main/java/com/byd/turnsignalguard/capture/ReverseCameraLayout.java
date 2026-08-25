@@ -319,39 +319,11 @@ final class ReverseCameraLayout {
                 || sourceWidth <= 0 || sourceHeight <= 0) {
             throw new IllegalArgumentException("positive crop and bounds are required");
         }
-        double radians = Math.toRadians(CameraRotation.clamp(rotationDegrees));
-        double cosine = Math.cos(radians);
-        double sine = Math.sin(radians);
-        double absoluteCosine = Math.abs(cosine);
-        double absoluteSine = Math.abs(sine);
-        double cropWidth = crop.width * sourceWidth;
-        double cropHeight = crop.height * sourceHeight;
-        double scale = fill
-                ? Math.max(
-                        (absoluteCosine * destinationWidth
-                                + absoluteSine * destinationHeight) / cropWidth,
-                        (absoluteSine * destinationWidth
-                                + absoluteCosine * destinationHeight) / cropHeight)
-                : Math.min(
-                        destinationWidth
-                                / (absoluteCosine * cropWidth
-                                + absoluteSine * cropHeight),
-                        destinationHeight
-                                / (absoluteSine * cropWidth
-                                + absoluteCosine * cropHeight));
-        double centerX = (crop.left + crop.width / 2.0d) * sourceWidth;
-        double centerY = (crop.top + crop.height / 2.0d) * sourceHeight;
-        return new float[]{
-                (float) (scale * cosine * sourceWidth / destinationWidth),
-                (float) (-scale * sine * sourceHeight / destinationHeight),
-                (float) (destinationWidth / 2.0d
-                        - scale * cosine * centerX + scale * sine * centerY),
-                (float) (scale * sine * sourceWidth / destinationWidth),
-                (float) (scale * cosine * sourceHeight / destinationHeight),
-                (float) (destinationHeight / 2.0d
-                        - scale * sine * centerX - scale * cosine * centerY),
-                0.0f, 0.0f, 1.0f
-        };
+        return CameraRotation.sourceAwareProportionalTransformValues(
+                crop.left, crop.top, crop.width, crop.height,
+                0.0f, 0.0f, destinationWidth, destinationHeight,
+                rotationDegrees, fill ? CameraRotation.MODE_FILL : CameraRotation.MODE_FIT,
+                sourceWidth, sourceHeight, destinationWidth, destinationHeight, false);
     }
 
     private static float rotatedAspect(float width, float height, int rotationDegrees) {

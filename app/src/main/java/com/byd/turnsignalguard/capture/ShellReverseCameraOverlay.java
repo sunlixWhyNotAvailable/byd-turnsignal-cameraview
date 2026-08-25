@@ -352,6 +352,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         View button = new View(windowContext);
         button.setBackgroundColor(Color.TRANSPARENT);
         button.setClickable(true);
+        button.setSoundEffectsEnabled(false);
         button.setContentDescription(mode == ReverseSideSelectorView.MODE_FRONT
                 ? "Перед" : "Зад");
         button.setOnClickListener(view -> {

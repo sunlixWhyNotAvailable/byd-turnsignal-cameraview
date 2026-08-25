@@ -61,6 +61,137 @@ final class CameraRotation {
         }
     }
 
+    /**
+     * Maps a normalized crop from the physical camera source into an input view or bitmap.
+     * The input may use a pane-sized buffer, but rotation and display mode are always calculated
+     * from the physical 1920x1300-style source instead of already-distorted view coordinates.
+     */
+    static void setSourceCropTransformForInput(
+            Matrix transform,
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            RectF destination, int degrees, int mode,
+            int sourceWidth, int sourceHeight, int inputWidth, int inputHeight,
+            boolean mirrorHorizontally) {
+        if (transform == null || destination == null
+                || sourceWidth <= 0 || sourceHeight <= 0
+                || inputWidth <= 0 || inputHeight <= 0
+                || !(cropWidth > 0.0f) || !(cropHeight > 0.0f)) {
+            throw new IllegalArgumentException("positive source and crop bounds are required");
+        }
+        int safeDegrees = clamp(degrees);
+        if (mode == MODE_ALIGNED) {
+            float[] source = alignedSourceCorners(
+                    cropLeft, cropTop, cropWidth, cropHeight, safeDegrees,
+                    sourceWidth, sourceHeight, inputWidth, inputHeight);
+            float[] target = new float[]{
+                    destination.left, destination.top,
+                    destination.right, destination.top,
+                    destination.right, destination.bottom,
+                    destination.left, destination.bottom
+            };
+            transform.setPolyToPoly(source, 0, target, 0, 4);
+        } else {
+            float[] values = sourceAwareProportionalTransformValues(
+                    cropLeft, cropTop, cropWidth, cropHeight,
+                    destination.left, destination.top, destination.right, destination.bottom,
+                    safeDegrees, mode, sourceWidth, sourceHeight,
+                    inputWidth, inputHeight, mirrorHorizontally);
+            transform.setValues(values);
+        }
+        if (mode == MODE_ALIGNED && mirrorHorizontally) {
+            transform.postScale(-1.0f, 1.0f,
+                    destination.centerX(), destination.centerY());
+        }
+    }
+
+    static float[] alignedSourceCorners(
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            int degrees, int sourceWidth, int sourceHeight,
+            int inputWidth, int inputHeight) {
+        float left = cropLeft * sourceWidth;
+        float top = cropTop * sourceHeight;
+        float right = (cropLeft + cropWidth) * sourceWidth;
+        float bottom = (cropTop + cropHeight) * sourceHeight;
+        double radians = Math.toRadians(clamp(degrees));
+        float cosine = (float) Math.cos(radians);
+        float sine = (float) Math.sin(radians);
+        float centerX = (left + right) / 2.0f;
+        float centerY = (top + bottom) / 2.0f;
+        float[] corners = new float[]{
+                left, top, right, top, right, bottom, left, bottom
+        };
+        for (int i = 0; i < corners.length; i += 2) {
+            float x = corners[i] - centerX;
+            float y = corners[i + 1] - centerY;
+            corners[i] = centerX + x * cosine - y * sine;
+            corners[i + 1] = centerY + x * sine + y * cosine;
+        }
+        float scaleX = (float) inputWidth / sourceWidth;
+        float scaleY = (float) inputHeight / sourceHeight;
+        for (int i = 0; i < corners.length; i += 2) {
+            corners[i] *= scaleX;
+            corners[i + 1] *= scaleY;
+        }
+        return corners;
+    }
+
+    static float[] sourceAwareProportionalTransformValues(
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            float destinationLeft, float destinationTop,
+            float destinationRight, float destinationBottom,
+            int degrees, int mode, int sourceWidth, int sourceHeight,
+            int inputWidth, int inputHeight, boolean mirrorHorizontally) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || inputWidth <= 0 || inputHeight <= 0) {
+            throw new IllegalArgumentException("positive source and input bounds are required");
+        }
+        double physicalCropWidth = cropWidth * sourceWidth;
+        double physicalCropHeight = cropHeight * sourceHeight;
+        double destinationWidth = destinationRight - destinationLeft;
+        double destinationHeight = destinationBottom - destinationTop;
+        if (!(physicalCropWidth > 0.0d) || !(physicalCropHeight > 0.0d)
+                || !(destinationWidth > 0.0d) || !(destinationHeight > 0.0d)) {
+            throw new IllegalArgumentException("positive crop and destination are required");
+        }
+        double radians = Math.toRadians(clamp(degrees));
+        double cosine = Math.cos(radians);
+        double sine = Math.sin(radians);
+        double absoluteCosine = Math.abs(cosine);
+        double absoluteSine = Math.abs(sine);
+        double scale = mode == MODE_FILL
+                ? Math.max(
+                        (absoluteCosine * destinationWidth
+                                + absoluteSine * destinationHeight) / physicalCropWidth,
+                        (absoluteSine * destinationWidth
+                                + absoluteCosine * destinationHeight) / physicalCropHeight)
+                : Math.min(
+                        destinationWidth
+                                / (absoluteCosine * physicalCropWidth
+                                + absoluteSine * physicalCropHeight),
+                        destinationHeight
+                                / (absoluteSine * physicalCropWidth
+                                + absoluteCosine * physicalCropHeight));
+        double sourceCenterX = (cropLeft + cropWidth / 2.0d) * sourceWidth;
+        double sourceCenterY = (cropTop + cropHeight / 2.0d) * sourceHeight;
+        double destinationCenterX = (destinationLeft + destinationRight) / 2.0d;
+        double destinationCenterY = (destinationTop + destinationBottom) / 2.0d;
+        double horizontal = mirrorHorizontally ? -1.0d : 1.0d;
+        double physicalM00 = horizontal * scale * cosine;
+        double physicalM01 = horizontal * -scale * sine;
+        double physicalM10 = scale * sine;
+        double physicalM11 = scale * cosine;
+        return new float[]{
+                (float) (physicalM00 * sourceWidth / inputWidth),
+                (float) (physicalM01 * sourceHeight / inputHeight),
+                (float) (destinationCenterX
+                        - physicalM00 * sourceCenterX - physicalM01 * sourceCenterY),
+                (float) (physicalM10 * sourceWidth / inputWidth),
+                (float) (physicalM11 * sourceHeight / inputHeight),
+                (float) (destinationCenterY
+                        - physicalM10 * sourceCenterX - physicalM11 * sourceCenterY),
+                0.0f, 0.0f, 1.0f
+        };
+    }
+
     static float[] rotatedCorners(RectF rect, int degrees) {
         float cx = rect.centerX();
         float cy = rect.centerY();
