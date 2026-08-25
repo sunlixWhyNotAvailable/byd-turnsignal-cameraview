@@ -36,7 +36,7 @@ public final class WeatherRuntimeTest {
     }
 
     @Test
-    public void providerMutationsRemainScopedToRowIdentity() throws Exception {
+    public void providerAndWidgetRefreshMutationsRemainScoped() throws Exception {
         Path source = Path.of(
                 "app/src/main/java/com/byd/turnsignalguard/capture/WeatherRuntime.java");
         if (!Files.exists(source)) {
@@ -48,5 +48,7 @@ public final class WeatherRuntimeTest {
         assertFalse(text.contains("resolver.delete(uri, \"name=?\""));
         assertTrue(text.contains("\"_id=? AND name=?\""));
         assertTrue(text.contains("\"_id=? AND name IS NULL\""));
+        assertTrue(text.contains("notifyChange(Settings.System.getUriFor(\"time_12_24\"), null)"));
+        assertFalse(text.contains("Settings.System.put"));
     }
 }

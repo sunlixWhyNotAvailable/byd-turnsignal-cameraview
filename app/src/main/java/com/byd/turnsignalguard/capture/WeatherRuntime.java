@@ -13,6 +13,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Looper;
+import android.provider.Settings;
 
 import org.json.JSONObject;
 
@@ -277,6 +278,11 @@ public final class WeatherRuntime {
                     return false;
                 }
                 context.sendBroadcast(new android.content.Intent(THIRD_REFRESH_ACTION));
+                try {
+                    resolver.notifyChange(Settings.System.getUriFor("time_12_24"), null);
+                } catch (Throwable failure) {
+                    emit("weather_widget_refresh_failure", "error", summary(failure));
+                }
             }
             return true;
         } catch (Throwable failure) {
