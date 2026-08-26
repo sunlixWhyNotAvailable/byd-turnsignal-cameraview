@@ -74,18 +74,27 @@ public final class CameraTransitionTest {
     }
 
     @Test
-    public void firstCameraAfterAnyResumeRepeatsExactTabTransitionOnce() {
+    public void firstAutomaticOpenAfterResumeRenewsInputExactlyOnce() {
         CameraProbeActivity.ResumeTabWarmup warmup =
                 new CameraProbeActivity.ResumeTabWarmup();
 
         warmup.stopped();
         assertTrue(warmup.required());
-        warmup.requested(41);
-        assertFalse(warmup.opened(42, 41));
-        assertFalse(warmup.opened(41, 42));
-        assertTrue(warmup.opened(41, 41));
+        assertTrue(warmup.consume());
         assertFalse(warmup.required());
-        assertFalse(warmup.opened(41, 41));
+        assertFalse(warmup.consume());
+    }
+
+    @Test
+    public void stoppedCloseCompletionRejectsStaleAndDuplicateCallbacks() {
+        assertTrue(CameraProbeActivity.shouldFinishActivityStoppedClose(
+                true, 41, 41));
+        assertFalse(CameraProbeActivity.shouldFinishActivityStoppedClose(
+                false, 41, 41));
+        assertFalse(CameraProbeActivity.shouldFinishActivityStoppedClose(
+                true, 0, 0));
+        assertFalse(CameraProbeActivity.shouldFinishActivityStoppedClose(
+                true, 41, 42));
     }
 
     @Test

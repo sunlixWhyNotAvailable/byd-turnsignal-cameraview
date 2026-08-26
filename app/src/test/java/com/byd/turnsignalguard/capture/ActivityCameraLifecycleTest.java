@@ -445,4 +445,46 @@ public final class ActivityCameraLifecycleTest {
         assertFalse(layout.pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
                 .mirrorHorizontally);
     }
+
+    @Test
+    public void reverseCalibrationWaitsForCurrentRequestAndSelectedMirrorFrame() {
+        CameraProbeActivity.ReverseCalibrationFreshnessGate gate =
+                new CameraProbeActivity.ReverseCalibrationFreshnessGate();
+        gate.arm(41, 2, false, true, false);
+
+        assertFalse(gate.markMirrorFresh(41, 2, false, true));
+        assertFalse(gate.markRequestFresh(40, 2, false, true));
+        assertTrue(gate.markRequestFresh(41, 2, false, true));
+        assertFalse(gate.markMirrorFresh(41, 3, false, true));
+        assertFalse(gate.markMirrorFresh(41, 2, true, true));
+        assertFalse(gate.markMirrorFresh(41, 2, false, false));
+        assertTrue(gate.markMirrorFresh(41, 2, false, true));
+        assertTrue(gate.allows(41, 2, false, true));
+
+        gate.arm(42, 2, false, true, false);
+        assertFalse(gate.allows(41, 2, false, true));
+        assertFalse(gate.allows(42, 2, false, true));
+        gate.clear();
+        assertFalse(gate.allows(42, 2, false, true));
+
+        gate.arm(42, 2, false, true, true);
+        assertFalse(gate.allows(42, 2, false, true));
+        assertTrue(gate.markMirrorFresh(42, 2, false, true));
+        assertTrue(gate.allows(42, 2, false, true));
+    }
+
+    @Test
+    public void reverseCalibrationCopyRequiresEveryLiveLifecycleCondition() {
+        boolean[] conditions = {true, true, true, true, true, true, true, true, true};
+        assertTrue(CameraProbeActivity.shouldCopyReverseCalibrationFrame(
+                conditions[0], conditions[1], conditions[2], conditions[3], conditions[4],
+                conditions[5], conditions[6], conditions[7], conditions[8]));
+        for (int i = 0; i < conditions.length; i++) {
+            conditions[i] = false;
+            assertFalse(CameraProbeActivity.shouldCopyReverseCalibrationFrame(
+                    conditions[0], conditions[1], conditions[2], conditions[3], conditions[4],
+                    conditions[5], conditions[6], conditions[7], conditions[8]));
+            conditions[i] = true;
+        }
+    }
 }

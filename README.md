@@ -7,7 +7,7 @@
 
 ## Project status
 
-Current source version: `0.52.0`. The application interface is currently Ukrainian.
+Current source version: `0.52.1`. The application interface is currently Ukrainian.
 
 This README describes the current `main` source tree. The
 [latest published APK](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest)

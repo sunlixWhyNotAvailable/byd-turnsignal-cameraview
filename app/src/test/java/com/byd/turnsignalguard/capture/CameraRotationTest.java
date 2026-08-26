@@ -109,6 +109,21 @@ public final class CameraRotationTest {
         }
     }
 
+    @Test
+    public void capturedBlindRearLeftAlignedRotationMatchesLiveBitmapGeometry() {
+        float[] production = CameraRotation.alignedSourceCorners(
+                0.10472298f, 0.18013895f, 0.53600174f, 0.54995716f,
+                -32, 1920, 1300, 576, 356);
+        float[] live = CameraRotation.alignedSourceCorners(
+                0.10472298f, 0.18013895f, 0.53600174f, 0.54995716f,
+                -32, 1920, 1300, 1920, 1300);
+
+        for (int i = 0; i < production.length; i += 2) {
+            assertEquals(live[i] / 1920.0f, production[i] / 576.0f, 0.0001f);
+            assertEquals(live[i + 1] / 1300.0f, production[i + 1] / 356.0f, 0.0001f);
+        }
+    }
+
     private static void assertCorrespondingPointMapsEqually(
             float[] first, int firstWidth, int firstHeight,
             float[] second, int secondWidth, int secondHeight,

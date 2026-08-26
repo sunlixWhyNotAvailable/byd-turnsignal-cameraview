@@ -102,4 +102,22 @@ public final class FrameAspectPersistenceTest {
         assertEquals(persistedFrameAspect, settings.getFloat(
                 BlindSpotOverlayController.frameAspectKey(profile), -1.0f), EPSILON);
     }
+
+    @Test
+    public void calibrationLiveUsesProductionAspectForEveryBlindAndParkingProfile() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        float[] blindAspects = {1.6173527f, 1.61f, 1.47f, 1.46f};
+        CameraProfile[] blindProfiles = CameraProfile.values();
+        for (int i = 0; i < blindProfiles.length; i++) {
+            settings.putFloat(
+                    BlindSpotOverlayController.frameAspectKey(blindProfiles[i]),
+                    blindAspects[i]);
+            assertEquals(blindAspects[i], CameraProbeActivity.calibrationLiveAspect(
+                    settings, false, blindProfiles[i].id, 1.1f), EPSILON);
+        }
+        for (ParkingCameraProfile parking : ParkingCameraProfile.values()) {
+            assertEquals(4.0f / 3.0f, CameraProbeActivity.calibrationLiveAspect(
+                    settings, true, parking.id, 1.9f), EPSILON);
+        }
+    }
 }

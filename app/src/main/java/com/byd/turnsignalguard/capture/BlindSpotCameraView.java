@@ -256,17 +256,15 @@ final class BlindSpotCameraView extends TextureView
         if (width <= 0 || height <= 0) return;
         DirectCameraCrop directCrop = rawFallbackActive ? rawFallbackCrop : requestedCrop;
         Matrix transform = new Matrix();
-        CameraRotation.setSourceCropTransform(
+        CameraRotation.setSourceCropTransformForInput(
                 transform,
-                new RectF(
-                        directCrop.left * width,
-                        directCrop.top * height,
-                        directCrop.right() * width,
-                        directCrop.bottom() * height),
+                directCrop.left, directCrop.top,
+                directCrop.width, directCrop.height,
                 new RectF(0.0f, 0.0f, width, height),
                 directCrop.rotationDegrees,
                 directCrop.rotationMode,
-                new RectF(0.0f, 0.0f, width, height),
+                BUFFER_WIDTH, BUFFER_HEIGHT,
+                width, height,
                 directCrop.mirrorHorizontally);
         setRotation(0.0f);
         setScaleX(1.0f);
