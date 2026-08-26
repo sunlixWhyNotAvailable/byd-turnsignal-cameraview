@@ -30,7 +30,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 public final class CameraLifecycleBinderTest extends TestCase {
-    public void testReverseSideSelectorUsesExplicitTypefaceAndDraws() throws Exception {
+    public void testReverseSideSelectorExplicitTypefaceRenderSmokeInInstrumentation()
+            throws Exception {
+        // Instrumentation does not reproduce the standalone camera-shell empty font-map condition.
         CameraShellMain.initializeSystemFontsForShell();
         ReverseSideSelectorView view = new ReverseSideSelectorView(currentApplication());
         Paint text = (Paint) getField(view, "text");

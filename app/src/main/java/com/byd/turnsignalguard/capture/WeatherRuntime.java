@@ -17,9 +17,8 @@ import android.provider.Settings;
 
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -50,6 +49,7 @@ public final class WeatherRuntime {
     private static final long MAX_LAST_LOCATION_AGE_MS = 30 * 60 * 1000L;
     private static final long CONNECT_TIMEOUT_MS = 8_000L;
     private static final long READ_TIMEOUT_MS = 12_000L;
+    private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
     public interface ResultCallback {
         void onResult(boolean success, String error);
@@ -420,17 +420,25 @@ public final class WeatherRuntime {
         try {
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) throw new IllegalStateException("HTTP " + status);
-            try (InputStream stream = connection.getInputStream();
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
-                StringBuilder body = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) body.append(line);
-                if (body.length() > 2 * 1024 * 1024) throw new IllegalStateException("response too large");
-                return new JSONObject(body.toString());
+            try (InputStream stream = connection.getInputStream()) {
+                return readJson(stream);
             }
         } finally {
             connection.disconnect();
         }
+    }
+
+    static JSONObject readJson(InputStream stream) throws Exception {
+        byte[] buffer = new byte[8192];
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        int size = 0;
+        int count;
+        while ((count = stream.read(buffer)) != -1) {
+            if (count > MAX_RESPONSE_BYTES - size) throw new IllegalStateException("response too large");
+            body.write(buffer, 0, count);
+            size += count;
+        }
+        return new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8));
     }
 
     private String coordinateQuery(Location location) throws Exception {

@@ -15,6 +15,11 @@ public final class CameraRotationTest {
     }
 
     @Test
+    public void alignedModeUsesStretchLabel() {
+        assertEquals("Stretch", CameraRotation.modeLabel(CameraRotation.MODE_ALIGNED));
+    }
+
+    @Test
     public void fitLetterboxesDifferingAspectWithoutStretching() {
         float[] transform = transform(CameraRotation.MODE_FIT, 0, false);
 

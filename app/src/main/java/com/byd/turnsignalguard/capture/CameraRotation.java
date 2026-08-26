@@ -27,7 +27,7 @@ final class CameraRotation {
 
     static String modeLabel(int mode) {
         if (mode == MODE_FILL) return "Fill";
-        if (mode == MODE_ALIGNED) return "Вирівняний";
+        if (mode == MODE_ALIGNED) return "Stretch";
         return "Fit";
     }
 

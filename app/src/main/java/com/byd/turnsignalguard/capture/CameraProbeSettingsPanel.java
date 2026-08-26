@@ -212,18 +212,35 @@ final class CameraProbeSettingsPanel {
         if (shareLogsAction != null) {
             shareLogsButton.setOnClickListener(view -> shareLogsAction.run());
         }
-        root.addView(shareLogsButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
 
-        compatibilityBundleButton = activity.button("Створити пакет сумісності авто");
+        compatibilityBundleButton = activity.button("Поділитися пакетом сумісності");
         compatibilityBundleAvailable = compatibilityBundleAction != null;
         compatibilityBundleAllowed = compatibilityBundleAvailable;
         compatibilityBundleButton.setEnabled(compatibilityBundleAvailable);
         if (compatibilityBundleAction != null) {
             compatibilityBundleButton.setOnClickListener(view -> compatibilityBundleAction.run());
         }
-        root.addView(compatibilityBundleButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+
+        LinearLayout exportRow = new LinearLayout(activity);
+        exportRow.setOrientation(LinearLayout.HORIZONTAL);
+        exportRow.addView(shareLogsButton, new LinearLayout.LayoutParams(0, activity.dp(52), 1));
+        exportRow.addView(compatibilityBundleButton,
+                new LinearLayout.LayoutParams(0, activity.dp(52), 1));
+        root.addView(exportRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(56)));
+
+        LinearLayout presetRow = new LinearLayout(activity);
+        presetRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button exportPresetButton = activity.button("Вивантажити пресет");
+        exportPresetButton.setEnabled(false);
+        Button importPresetButton = activity.button("Завантажити пресет");
+        importPresetButton.setEnabled(false);
+        presetRow.addView(exportPresetButton,
+                new LinearLayout.LayoutParams(0, activity.dp(52), 1));
+        presetRow.addView(importPresetButton,
+                new LinearLayout.LayoutParams(0, activity.dp(52), 1));
+        root.addView(presetRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(56)));
 
         autoStartSwitch.setOnCheckedChangeListener((button, checked) ->
                 activity.onSettingsAutoStartChanged(checked));

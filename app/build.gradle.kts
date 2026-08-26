@@ -40,6 +40,7 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     androidTestImplementation("junit:junit:4.13.2")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 val copyDebugApkToBuildOutput by tasks.registering(Copy::class) {
