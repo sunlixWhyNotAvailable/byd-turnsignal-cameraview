@@ -15,7 +15,8 @@ import java.util.Locale;
 /** Pure Open-Meteo to the stock BYD WeatherData JSON mapping. */
 public final class WeatherMapping {
     static final int REQUIRED_HOURLY_COUNT = 8;
-    static final int REQUIRED_DAILY_COUNT = 7;
+    static final int REQUIRED_DAILY_COUNT = 16;
+    static final int CURRENT_DAY_INDEX = 1;
 
     private WeatherMapping() {
     }
@@ -90,10 +91,10 @@ public final class WeatherMapping {
         }
         hourlyData.put("hourlyweathers", hourlyItems);
 
-        long firstDayTime = parseRequiredTimeAt(days, 0, "daily time");
+        long currentDayTime = parseRequiredTimeAt(days, CURRENT_DAY_INDEX, "daily time");
         JSONObject dailyData = new JSONObject()
-                .put("publictime", firstDayTime)
-                .put("publictimeFmt", formatDate(firstDayTime))
+                .put("publictime", currentDayTime)
+                .put("publictimeFmt", formatDate(currentDayTime))
                 .put("expiretime", nowMs + 24 * 60 * 60 * 1000L);
         JSONArray dailyItems = new JSONArray();
         for (int i = 0; i < REQUIRED_DAILY_COUNT; i++) {
@@ -111,7 +112,7 @@ public final class WeatherMapping {
                     .put("windspeed", requireNumberAt(daily, "wind_speed_10m_max", i))
                     .put("winddir", windDirection(requireNumberAt(daily, "wind_direction_10m_dominant", i)));
             int dailyUv = requireNumberAt(daily, "uv_index_max", i);
-            int dailyAqi = i == 0 ? airQualityValue(airQuality) : -1;
+            int dailyAqi = i == CURRENT_DAY_INDEX ? airQualityValue(airQuality) : -1;
             dailyItems.put(new JSONObject()
                     .put("publictime", publicTime)
                     .put("publictimeFmt", formatDate(publicTime))

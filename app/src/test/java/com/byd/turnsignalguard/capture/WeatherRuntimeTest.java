@@ -49,6 +49,8 @@ public final class WeatherRuntimeTest {
         assertTrue(text.contains("\"_id=? AND name=?\""));
         assertTrue(text.contains("\"_id=? AND name IS NULL\""));
         assertTrue(text.contains("notifyChange(Settings.System.getUriFor(\"time_12_24\"), null)"));
+        assertTrue(text.contains("&timezone=auto&past_days=1&forecast_days=15&forecast_hours=8"));
+        assertFalse(text.contains("forecast_days=7"));
         assertFalse(text.contains("Settings.System.put"));
     }
 }

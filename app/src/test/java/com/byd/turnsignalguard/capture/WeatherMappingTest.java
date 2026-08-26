@@ -36,12 +36,14 @@ public final class WeatherMappingTest {
     }
 
     @Test
-    public void completeForecastRequiresEightHoursAndSevenDays() {
+    public void completeForecastRequiresEightHoursAndSixteenDays() {
+        assertEquals(16, WeatherMapping.REQUIRED_DAILY_COUNT);
+        assertEquals(1, WeatherMapping.CURRENT_DAY_INDEX);
         for (int hours = 0; hours < 8; hours++) {
-            assertFalse(WeatherMapping.hasRequiredForecastCounts(hours, 7));
+            assertFalse(WeatherMapping.hasRequiredForecastCounts(hours, 16));
         }
-        assertFalse(WeatherMapping.hasRequiredForecastCounts(8, 6));
-        assertTrue(WeatherMapping.hasRequiredForecastCounts(8, 7));
+        assertFalse(WeatherMapping.hasRequiredForecastCounts(8, 15));
+        assertTrue(WeatherMapping.hasRequiredForecastCounts(8, 16));
     }
 
     @Test
