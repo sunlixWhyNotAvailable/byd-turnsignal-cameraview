@@ -8,6 +8,15 @@ import static org.junit.Assert.assertTrue;
 
 public final class WeatherAccessibilitySettingsTest {
     @Test
+    public void componentUsesExtendPackageAndLegacyJavaNamespace() {
+        assertEquals(
+                "com.byd.extend/com.byd.turnsignalguard.capture.WeatherRefreshAccessibilityService",
+                WeatherAccessibilitySettings.SERVICE_COMPONENT);
+        assertEquals(WeatherAccessibilitySettings.SERVICE_COMPONENT,
+                WeatherAccessibilitySettings.SHORT_SERVICE_COMPONENT);
+    }
+
+    @Test
     public void enablesCanonicalComponentWithoutLeadingEmptyEntry() {
         assertEquals(
                 "com.example.first/.One:com.example.second/.Two:"

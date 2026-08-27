@@ -62,11 +62,13 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -76,6 +78,7 @@ public final class CameraProbeActivity extends Activity
     private static final String TAG = "BydTurnSignalGuard";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
+    private static final int CAMERA_PRESET_REQUEST = 12;
     private static final float DEFAULT_OUTWARD_DEG = 90.0f;
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
@@ -134,9 +137,9 @@ public final class CameraProbeActivity extends Activity
             0.0f, 0.0f, 1.0f, 1.0f,
             DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES);
     private static final String EXTRA_DIAGNOSTIC_AVM_MODE_INDEX =
-            "com.byd.turnsignalguard.capture.extra.AVM_MODE_INDEX";
+            "com.byd.extend.extra.AVM_MODE_INDEX";
     private static final String EXTRA_DIAGNOSTIC_AVM_CLOSE =
-            "com.byd.turnsignalguard.capture.extra.AVM_CLOSE";
+            "com.byd.extend.extra.AVM_CLOSE";
     private static int activityCameraRequestSequence;
     private static long helperCallbackRegistrationSequence;
 
@@ -444,6 +447,10 @@ public final class CameraProbeActivity extends Activity
     private boolean updateCheckInFlight;
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
+    private boolean settingsTransferInProgress;
+    private boolean settingsReloadPending;
+    private boolean legacyRuntimeBlocked;
+    private AlertDialog settingsTransferDialog;
     private boolean debugHorizontal = true;
     private int selectedCameraId = CameraProfile.REAR_LEFT;
     private int calibrationCameraId = CameraProfile.REAR_LEFT;
@@ -539,7 +546,8 @@ public final class CameraProbeActivity extends Activity
     private final Runnable startForegroundAdbAuthorization = () -> {
         adbAuthorizationStartScheduled = false;
         if (shouldStartForegroundAdbAuthorization(cameraPermissionPending,
-                backgroundStartSettingsPending(), hasWindowFocus(), helper != null, adbAuthPending,
+                backgroundStartSettingsPending(), hasWindowFocus(),
+                helper != null || legacyRuntimeBlocked, adbAuthPending,
                 adbAuthorizationRequested)) {
             requestAdbAuthorization(
                     "adb_authorization_foreground_start",
@@ -565,6 +573,17 @@ public final class CameraProbeActivity extends Activity
         public void onServiceConnected(ComponentName name, IBinder service) {
             helperBound = true;
             attachHelper(service);
+        }
+
+        @Override
+        public void onNullBinding(ComponentName name) {
+            if (helperBound) {
+                unbindService(this);
+                helperBound = false;
+            }
+            record("helper_service_blocked", "reason", "legacy_handover");
+            updateControls();
+            advanceStartupAuthorizationFlow();
         }
 
         @Override
@@ -623,6 +642,7 @@ public final class CameraProbeActivity extends Activity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
         migrateCameraFrameAspects();
         backgroundStartSettingsRequired = GuardRecovery.isAutoStartEnabled(this)
                 && !preferences.getBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, false);
@@ -671,6 +691,8 @@ public final class CameraProbeActivity extends Activity
     @Override
     protected void onResume() {
         super.onResume();
+        legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
+        if (!helperBound) startAndBindHelperService();
         activityResumed = true;
         ensureAutomaticPreviewInputs();
         if (!resumeTabWarmup.required()
@@ -770,14 +792,10 @@ public final class CameraProbeActivity extends Activity
         retryStockDebug = false;
         cameraShellRecoveryPending = false;
         if (!shutdownRequested) {
-            if (cameraMinSpeedInput != null && cameraMaxSpeedInput != null) {
-                saveRearCameraSpeedRange();
+            if (shouldPersistEditableSettings(shutdownRequested,
+                    settingsTransferInProgress, settingsReloadPending)) {
+                saveEditableTriggerSettings();
             }
-            if (rearSharpTurnAngleInput != null) saveRearTriggerPolicy();
-            if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
-                    && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
-            if (parkingDistanceInput != null) saveParkingRule();
-            if (parkingMaxSpeedInput != null) saveParkingMaxSpeed();
             if (shouldIssueActivityStoppedClose(cameraTransition.pending())) {
                 activityClosePending = activityClosePending
                         || closeCamera("activity_stopped");
@@ -808,6 +826,7 @@ public final class CameraProbeActivity extends Activity
         logExportExecutor.shutdownNow();
         if (updateDialog != null) updateDialog.dismiss();
         if (updateProgressDialog != null) updateProgressDialog.dismiss();
+        dismissSettingsTransferDialog();
         super.onDestroy();
     }
 
@@ -851,6 +870,214 @@ public final class CameraProbeActivity extends Activity
 
     void runManualUpdateCheck() {
         runUpdateCheck(true);
+    }
+
+    private boolean beginSettingsTransfer() {
+        if (settingsTransferInProgress || settingsReloadPending || logExportInProgress
+                || compatibilityExportInProgress || shutdownRequested || activityDestroyed
+                || isFinishing()) return false;
+        settingsTransferInProgress = true;
+        settingsPanel.setSettingsTransferInProgress(true);
+        cancelPendingForegroundAdbAuthorization();
+        cancelPendingBackgroundStartSettings();
+        updateControls();
+        return true;
+    }
+
+    private void showSettingsTransferProgress(String message) {
+        dismissSettingsTransferDialog();
+        settingsPanel.setTransferStatus(message);
+        settingsTransferDialog = new AlertDialog.Builder(this)
+                .setTitle("Перенесення налаштувань")
+                .setMessage(message)
+                .setCancelable(false)
+                .create();
+        settingsTransferDialog.show();
+    }
+
+    private void dismissSettingsTransferDialog() {
+        if (settingsTransferDialog != null) settingsTransferDialog.dismiss();
+        settingsTransferDialog = null;
+    }
+
+    private void finishSettingsTransfer() {
+        settingsTransferInProgress = false;
+        dismissSettingsTransferDialog();
+        if (!activityDestroyed) {
+            settingsPanel.setSettingsTransferInProgress(false);
+            updateControls();
+        }
+    }
+
+    private void reportSettingsTransferFailure(Throwable error) {
+        record("settings_transfer_failed", "error", error.toString());
+        finishSettingsTransfer();
+        if (activityDestroyed || isFinishing()) return;
+        String detail = error.getMessage() == null
+                ? error.getClass().getSimpleName() : error.getMessage();
+        settingsPanel.setTransferStatus("Не завершено: " + detail);
+        settingsTransferDialog = new AlertDialog.Builder(this)
+                .setTitle("Перенесення не завершено")
+                .setMessage(detail)
+                .setCancelable(!settingsReloadPending)
+                .setPositiveButton("OK", (dialog, which) -> {
+                    if (settingsReloadPending) recreate();
+                })
+                .create();
+        settingsTransferDialog.show();
+    }
+
+    private void exportCameraPreset() {
+        if (!beginSettingsTransfer()) return;
+        showSettingsTransferProgress("Формування пресету камер...");
+        logExportExecutor.execute(() -> {
+            try {
+                File file = CameraPresetFiles.write(getCacheDir(),
+                        CameraSettingsTransfer.exportCameraPreset(preferences));
+                mainHandler.post(() -> {
+                    finishSettingsTransfer();
+                    if (activityDestroyed || isFinishing()) return;
+                    settingsPanel.setTransferStatus("Пресет камер готовий до поширення.");
+                    if (!activityResumed) return;
+                    try {
+                        Uri uri = FileProvider.getUriForFile(
+                                this, getPackageName() + ".fileprovider", file);
+                        Intent share = new Intent(Intent.ACTION_SEND)
+                                .setType("application/json")
+                                .putExtra(Intent.EXTRA_STREAM, uri)
+                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        share.setClipData(ClipData.newUri(
+                                getContentResolver(), "BYD Extend camera preset", uri));
+                        startActivity(Intent.createChooser(share, "Вивантажити пресети камер"));
+                        record("camera_preset_export", "bytes", file.length());
+                    } catch (Exception error) {
+                        reportSettingsTransferFailure(error);
+                    }
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> reportSettingsTransferFailure(error));
+            }
+        });
+    }
+
+    @SuppressWarnings("deprecation")
+    private void chooseCameraPreset() {
+        if (!beginSettingsTransfer()) return;
+        settingsPanel.setTransferStatus("Виберіть JSON-файл пресету камер.");
+        try {
+            Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/json");
+            startActivityForResult(open, CAMERA_PRESET_REQUEST);
+        } catch (Exception error) {
+            reportSettingsTransferFailure(error);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != CAMERA_PRESET_REQUEST) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            finishSettingsTransfer();
+            settingsPanel.setTransferStatus("Завантаження пресету скасовано; налаштування не змінено.");
+            return;
+        }
+        settingsTransferInProgress = true;
+        settingsPanel.setSettingsTransferInProgress(true);
+        readSettingsTransfer(false, data.getData());
+    }
+
+    private void readLegacySettings() {
+        if (!beginSettingsTransfer()) return;
+        readSettingsTransfer(true, null);
+    }
+
+    private void readSettingsTransfer(boolean legacy, Uri uri) {
+        showSettingsTransferProgress(legacy
+                ? "Читання налаштувань 0.52.1... Підтвердьте ADB, якщо з'явиться запит."
+                : "Перевірка пресету камер...");
+        logExportExecutor.execute(() -> {
+            try {
+                Map<String, Object> values;
+                if (legacy) {
+                    values = LegacySettingsImporter.readSettings(
+                            getApplicationContext(), this::record);
+                } else {
+                    try (InputStream input = getContentResolver().openInputStream(uri)) {
+                        values = CameraSettingsTransfer.parseCameraPreset(CameraPresetFiles.read(input));
+                    }
+                }
+                mainHandler.post(() -> confirmSettingsTransfer(legacy, values));
+            } catch (Exception error) {
+                mainHandler.post(() -> reportSettingsTransferFailure(error));
+            }
+        });
+    }
+
+    private void confirmSettingsTransfer(boolean legacy, Map<String, Object> values) {
+        dismissSettingsTransferDialog();
+        if (activityDestroyed || isFinishing()) return;
+        if (legacy) settingsPanel.setAdbStatus("ADB/RSA авторизовано");
+        settingsTransferDialog = new AlertDialog.Builder(this)
+                .setTitle(legacy ? "Імпортувати всі налаштування?" : "Завантажити пресети камер?")
+                .setMessage(legacy
+                        ? "Усі користувацькі налаштування BYD Extend буде замінено даними з 0.52.1. "
+                                + "Старий застосунок і його хелпери буде вимкнено, але його APK та дані "
+                                + "залишаться. Дозволи Android потрібно надати новому застосунку окремо."
+                        : "Поточні налаштування вигляду всіх камер, якість, прозорість і заокруглення "
+                                + "буде замінено. Ваші числові пороги швидкості, кута й дистанції, "
+                                + "інші функції та збережені калібрування залишаться без змін.")
+                .setNegativeButton("Скасувати", (dialog, which) -> finishSettingsTransfer())
+                .setOnCancelListener(dialog -> finishSettingsTransfer())
+                .setPositiveButton("Імпортувати", (dialog, which) ->
+                        applySettingsTransfer(legacy, values))
+                .create();
+        settingsTransferDialog.show();
+    }
+
+    private void applySettingsTransfer(boolean legacy, Map<String, Object> values) {
+        settingsReloadPending = true;
+        showSettingsTransferProgress(legacy
+                ? "Збереження налаштувань і вимкнення старого застосунку..."
+                : "Застосування пресету камер...");
+        logExportExecutor.execute(() -> {
+            try {
+                if (legacy) {
+                    LegacySettingsImporter.applyAndHandover(
+                            getApplicationContext(), values, this::record);
+                } else {
+                    CameraSettingsTransfer.applyCameraPreset(preferences, values);
+                }
+                CameraHelperService.settingsReloaded(getApplicationContext(), legacy);
+                mainHandler.post(() -> {
+                    record("settings_transfer_applied", "legacy", legacy, "count", values.size());
+                    finishSettingsTransfer();
+                    if (activityDestroyed || isFinishing()) return;
+                    Toast.makeText(this, legacy
+                            ? "Налаштування імпортовано. Старий застосунок вимкнено; його дані збережено."
+                            : "Пресет камер завантажено.", Toast.LENGTH_LONG).show();
+                    recreate();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> reportSettingsTransferFailure(error));
+            }
+        });
+    }
+
+    static boolean shouldPersistEditableSettings(
+            boolean shutdown, boolean transferring, boolean reloading) {
+        return !shutdown && !transferring && !reloading;
+    }
+
+    private void saveEditableTriggerSettings() {
+        if (cameraMinSpeedInput != null && cameraMaxSpeedInput != null) saveRearCameraSpeedRange();
+        if (rearSharpTurnAngleInput != null) saveRearTriggerPolicy();
+        if (frontCameraMinSpeedInput != null && frontCameraMaxSpeedInput != null
+                && frontCameraMinAngleInput != null) saveFrontCameraPolicy();
+        if (parkingDistanceInput != null) saveParkingRule();
+        if (parkingMaxSpeedInput != null) saveParkingMaxSpeed();
     }
 
     private void confirmDiagnosticLogShare() {
@@ -943,7 +1170,7 @@ public final class CameraProbeActivity extends Activity
                     .setType("application/zip")
                     .putExtra(Intent.EXTRA_STREAM, uri);
             share.setClipData(ClipData.newUri(
-                    getContentResolver(), "BYD Turn Signal Guard logs", uri));
+                    getContentResolver(), "BYD Extend logs", uri));
             share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             record("diagnostic_log_export", "state", "chooser_opened",
                     "archive", archive.getName(), "bytes", archive.length());
@@ -1498,10 +1725,8 @@ public final class CameraProbeActivity extends Activity
         cameraPage = buildCameraPanel();
         parkingPage = buildParkingCameraPanel();
         reverseCameraPage = buildReverseCameraPanel();
-        if (preferences.getBoolean(CameraProbeWeatherPanel.PREF_ENABLED, false)
-                && !hasLocationPermission()) {
-            preferences.edit().putBoolean(CameraProbeWeatherPanel.PREF_ENABLED, false).apply();
-        }
+        // Permissions are package-local, not imported settings. Keep the user's weather
+        // choice; the existing refresh/enable actions request location permission as needed.
         musicPanel = new CameraProbeMusicPanel(this, preferences);
         weatherPanel = new CameraProbeWeatherPanel(
                 this, preferences, new CameraProbeWeatherPanel.Listener() {
@@ -1539,7 +1764,8 @@ public final class CameraProbeActivity extends Activity
         settingsScroll.setFillViewport(true);
         settingsPanel = new CameraProbeSettingsPanel(
                 this, preferences, this::confirmDiagnosticLogShare,
-                this::confirmCompatibilityBundleShare);
+                this::confirmCompatibilityBundleShare, this::exportCameraPreset,
+                this::chooseCameraPreset, this::readLegacySettings);
         settingsScroll.addView(settingsPanel.view(), new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         settingsPage = settingsScroll;
@@ -1577,6 +1803,7 @@ public final class CameraProbeActivity extends Activity
                 : preferences.getBoolean("camera_tab_selected", false)
                         ? TAB_CAMERAS : TAB_GUARD;
         initialTab = migrateStoredTab(initialTab);
+        if (legacyRuntimeBlocked) initialTab = TAB_SETTINGS;
         if (initialTab == TAB_DIRECT_CAMERA_DEBUG) {
             selectDebugMode(0);
             initialTab = TAB_CAMERA_DEBUG;
@@ -1585,6 +1812,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void selectTab(int tab) {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         cancelCalibrationCropInput();
         cancelReverseCropInput();
         if (tab == TAB_CAMERA_CALIBRATION && calibrationOriginTab != TAB_CAMERAS
@@ -3799,6 +4027,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveParkingRule() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         if (parkingDistanceInput == null) return;
         try {
             int distance = ParkingCameraSettings.clampDistanceCm(
@@ -3815,6 +4044,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveParkingMaxSpeed() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         if (parkingMaxSpeedInput == null) return;
         try {
             int speed = ParkingCameraSettings.clampSpeed(
@@ -6045,6 +6275,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveThresholdsAndPush() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         Thresholds thresholds = readThresholds();
         Integer correctionDelay = readCorrectionDelay();
         Integer maxSpeed = readMaxSpeed();
@@ -6068,6 +6299,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveRearCameraSpeedRange() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         try {
             int minimum = Integer.parseInt(cameraMinSpeedInput.getText().toString());
             int maximum = Integer.parseInt(cameraMaxSpeedInput.getText().toString());
@@ -6101,6 +6333,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveRearTriggerPolicy() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         try {
             int angle = Integer.parseInt(rearSharpTurnAngleInput.getText().toString());
             if (angle < 0 || angle > 780) throw new NumberFormatException();
@@ -6121,6 +6354,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void saveFrontCameraPolicy() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         try {
             int minimum = Integer.parseInt(frontCameraMinSpeedInput.getText().toString());
             int maximum = Integer.parseInt(frontCameraMaxSpeedInput.getText().toString());
@@ -6418,6 +6652,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void pushGuardConfig() {
+        if (settingsTransferInProgress || settingsReloadPending || legacyRuntimeBlocked) return;
         Thresholds thresholds = readThresholds();
         Integer correctionDelay = readCorrectionDelay();
         Integer maxSpeed = readMaxSpeed();
@@ -7760,7 +7995,8 @@ public final class CameraProbeActivity extends Activity
 
     private void maybeStartForegroundAdbAuthorization() {
         if (!shouldStartForegroundAdbAuthorization(cameraPermissionPending,
-                backgroundStartSettingsPending(), hasWindowFocus(), helper != null,
+                backgroundStartSettingsPending(), hasWindowFocus(),
+                helper != null || legacyRuntimeBlocked,
                 adbAuthPending, adbAuthorizationRequested)) {
             cancelPendingForegroundAdbAuthorization();
             return;
@@ -7778,6 +8014,7 @@ public final class CameraProbeActivity extends Activity
     }
 
     private void advanceStartupAuthorizationFlow() {
+        if (settingsTransferInProgress || settingsReloadPending) return;
         if (shouldOpenBackgroundStartSettings(
                 GuardRecovery.isAutoStartEnabled(this), cameraPermissionPending,
                 hasWindowFocus(), backgroundStartSettingsRequired,
@@ -7811,7 +8048,7 @@ public final class CameraProbeActivity extends Activity
             preferences.edit().putBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, true).apply();
             record("background_start_settings_opened", "reason", reason);
             Toast.makeText(this,
-                    "Вимкніть BYD Turn Signal Guard у списку Disable background Apps",
+                    "Вимкніть BYD Extend у списку Disable background Apps",
                     Toast.LENGTH_LONG).show();
         } catch (Throwable error) {
             backgroundStartSettingsActive = false;
@@ -7836,10 +8073,12 @@ public final class CameraProbeActivity extends Activity
     boolean requestAdbAuthorization(
             String event, String operation, boolean automatic) {
         IBinder current = helper;
+        boolean authorizeOnly = LegacySettingsImporter.blocksRuntime(this);
         LocalAdbClient.PromptMode mode = automatic
                 ? LocalAdbClient.PromptMode.AUTO_ONCE
                 : LocalAdbClient.PromptMode.FORCE;
-        if (current == null || automatic && adbAuthPending
+        if (settingsTransferInProgress || settingsReloadPending
+                || current == null && !authorizeOnly || automatic && adbAuthPending
                 || !automatic && adbAuthPending
                 && adbAuthMode == LocalAdbClient.PromptMode.FORCE) {
             return false;
@@ -7850,8 +8089,23 @@ public final class CameraProbeActivity extends Activity
         settingsPanel.setAdbStatus(ADB_WAITING_STATUS);
         updateControls();
         record(event, "automatic", automatic, "mode", mode.name());
-        ipcExecutor.execute(() -> transactAdbAuthorization(
-                current, operation, automatic, mode));
+        ipcExecutor.execute(() -> {
+            if (!authorizeOnly) {
+                transactAdbAuthorization(current, operation, automatic, mode);
+                return;
+            }
+            LocalAdbClient.Result result = LocalAdbClient.authorize(
+                    getApplicationContext(), mode, this::record);
+            mainHandler.post(() -> {
+                if (activityDestroyed) return;
+                adbAuthPending = false;
+                adbAuthMode = null;
+                adbAuthorizationRequested = result.ok;
+                settingsPanel.setAdbStatus(result.ok
+                        ? "ADB/RSA авторизовано" : "ADB/RSA: " + result.error);
+                updateControls();
+            });
+        });
         return true;
     }
 
@@ -8897,10 +9151,15 @@ public final class CameraProbeActivity extends Activity
                     !shutdownRequested && !cameraPermissionPending
                             && !backgroundStartSettingsActive
                             && !backgroundStartSettingsStartScheduled && !adbAuthPending,
-                    !backgroundStartSettingsPending()
+                    !settingsTransferInProgress && !settingsReloadPending
+                            && !backgroundStartSettingsPending()
                             && shouldEnableManualAdbAuthorization(
-                                    helper != null, adbAuthPending, adbAuthMode),
+                                    helper != null || legacyRuntimeBlocked,
+                                    adbAuthPending, adbAuthMode),
                     !requestedOpen && !cameraHandoffPending);
+            if (legacyRuntimeBlocked) {
+                settingsPanel.setServiceStatus("Керування очікує завершення переходу з 0.52.1");
+            }
         }
         if (guardSwitch != null) {
             boolean enabled = guardSwitch.isChecked();

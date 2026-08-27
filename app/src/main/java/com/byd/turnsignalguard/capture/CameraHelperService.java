@@ -28,47 +28,53 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public final class CameraHelperService extends Service {
+    private static volatile CameraHelperService activeInstance;
     private static final String CHANNEL_ID = "guard_service";
     private static final int NOTIFICATION_ID = 8713;
     private static final String ACTION_START =
-            "com.byd.turnsignalguard.capture.action.START_PERSISTENT";
+            "com.byd.extend.action.START_PERSISTENT";
     private static final String ACTION_ACTIVITY_OPEN =
-            "com.byd.turnsignalguard.capture.action.ACTIVITY_OPEN";
+            "com.byd.extend.action.ACTIVITY_OPEN";
     private static final String ACTION_ACTIVITY_CLOSED =
-            "com.byd.turnsignalguard.capture.action.ACTIVITY_CLOSED";
+            "com.byd.extend.action.ACTIVITY_CLOSED";
     private static final String ACTION_CAMERA_PREVIEW_STARTED =
-            "com.byd.turnsignalguard.capture.action.CAMERA_PREVIEW_STARTED";
+            "com.byd.extend.action.CAMERA_PREVIEW_STARTED";
     private static final String ACTION_CAMERA_PREVIEW_STOPPED =
-            "com.byd.turnsignalguard.capture.action.CAMERA_PREVIEW_STOPPED";
+            "com.byd.extend.action.CAMERA_PREVIEW_STOPPED";
     private static final String ACTION_CAMERA_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.CAMERA_SETTINGS_CHANGED";
+            "com.byd.extend.action.CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_CAMERA_WARNING_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.CAMERA_WARNING_SETTINGS_CHANGED";
+            "com.byd.extend.action.CAMERA_WARNING_SETTINGS_CHANGED";
     private static final String ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.CAMERA_TRIGGER_SETTINGS_CHANGED";
+            "com.byd.extend.action.CAMERA_TRIGGER_SETTINGS_CHANGED";
     private static final String ACTION_PARKING_CAMERA_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.PARKING_CAMERA_SETTINGS_CHANGED";
+            "com.byd.extend.action.PARKING_CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.REVERSE_SETTINGS_CHANGED";
+            "com.byd.extend.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.MUSIC_SETTINGS_CHANGED";
+            "com.byd.extend.action.MUSIC_SETTINGS_CHANGED";
     private static final String ACTION_WEATHER_SETTINGS_CHANGED =
-            "com.byd.turnsignalguard.capture.action.WEATHER_SETTINGS_CHANGED";
+            "com.byd.extend.action.WEATHER_SETTINGS_CHANGED";
     private static final String ACTION_WEATHER_REFRESH =
-            "com.byd.turnsignalguard.capture.action.WEATHER_REFRESH";
+            "com.byd.extend.action.WEATHER_REFRESH";
     private static final String ACTION_AUTO_START_CHANGED =
-            "com.byd.turnsignalguard.capture.action.AUTO_START_CHANGED";
+            "com.byd.extend.action.AUTO_START_CHANGED";
     private static final String ACTION_FLUSH_LOGS =
-            "com.byd.turnsignalguard.capture.action.FLUSH_LOGS";
+            "com.byd.extend.action.FLUSH_LOGS";
     private static final String ACTION_SHUTDOWN =
-            "com.byd.turnsignalguard.capture.action.SHUTDOWN";
+            "com.byd.extend.action.SHUTDOWN";
+    private static final String ACTION_SETTINGS_RELOADED =
+            "com.byd.extend.action.SETTINGS_RELOADED";
     private static final String EXTRA_ENABLED = "enabled";
     private static final String EXTRA_REASON = "reason";
     private static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
     private static final String EXTRA_WEATHER_RECEIVER = "weather_receiver";
     private static final String EXTRA_WEATHER_REASON = "weather_reason";
+    private static final String EXTRA_FULL_IMPORT = "full_import";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
     static final int WEATHER_RESULT_OK = 0;
@@ -113,6 +119,7 @@ public final class CameraHelperService extends Service {
     private boolean activityVisible;
     private boolean cameraPreviewActive;
     private volatile Boolean weatherAccessibilityTarget;
+    private volatile boolean runtimeNeedsReinit;
 
     private void resumeOverlayIfIdle() {
         if (shouldResumeOverlay(cameraPreviewActive, activityVisible)) {
@@ -159,6 +166,42 @@ public final class CameraHelperService extends Service {
     static void cameraSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_CAMERA_SETTINGS_CHANGED));
+    }
+
+    /** Pause an already-running instance synchronously before preferences are replaced. */
+    static boolean pauseActiveRuntime() {
+        CameraHelperService service = activeInstance;
+        if (service == null) return true;
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            service.stopRuntime(true);
+            service.runtimeNeedsReinit = true;
+            return true;
+        }
+        CountDownLatch done = new CountDownLatch(1);
+        if (!service.handler.post(() -> {
+            try {
+                service.stopRuntime(true);
+                service.runtimeNeedsReinit = true;
+            } finally {
+                done.countDown();
+            }
+        })) return false;
+        try {
+            return done.await(3, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /** Reload all consumers after a camera-only or full settings import. */
+    static void settingsReloaded(Context context, boolean fullImport) {
+        if (LegacySettingsImporter.blocksRuntime(context)) return;
+        Intent intent = new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_SETTINGS_RELOADED)
+                .putExtra(EXTRA_FULL_IMPORT, fullImport);
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
+        else context.startService(intent);
     }
 
     static void cameraWarningSettingsChanged(Context context) {
@@ -242,10 +285,7 @@ public final class CameraHelperService extends Service {
                 .putExtra(EXTRA_FLUSH_RECEIVER, receiver));
     }
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        createLogFile();
+    private void initializeControllers() {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
@@ -257,13 +297,29 @@ public final class CameraHelperService extends Service {
                     if (parkingCameras != null) parkingCameras.setReversePriority(value);
                 });
         clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        activeInstance = this;
+        createLogFile();
+        initializeControllers();
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
-        if (GuardRecovery.shouldRecover(this)) {
+        if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
             startForegroundRuntime();
             ensureHelperStarted();
             weatherRuntime.start();
             startHeartbeat();
+        } else if (GuardRecovery.shouldRecover(this)
+                && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false)) {
+            startForegroundRuntime();
+            syncWeatherAccessibility(true);
+            weatherRuntime.start();
+        } else if (GuardRecovery.shouldRecover(this)) {
+            lifecycle("runtime_blocked", "reason", "legacy_handover");
         }
     }
 
@@ -314,6 +370,23 @@ public final class CameraHelperService extends Service {
         }
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         boolean shouldRecover = GuardRecovery.shouldRecover(this);
+        if (LegacySettingsImporter.blocksRuntime(this)) {
+            if (handleBlockedWeatherAction(action, intent, settings)) {
+                return START_STICKY;
+            }
+            lifecycle("runtime_blocked", "reason", "legacy_handover");
+            if (shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false)) {
+                if (runtimeNeedsReinit) {
+                    initializeControllers();
+                    runtimeNeedsReinit = false;
+                }
+                startForegroundRuntime();
+                weatherRuntime.start();
+                return START_STICKY;
+            }
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         syncWeatherAccessibility(
                 shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
         if (!shouldRecover) {
@@ -322,6 +395,10 @@ public final class CameraHelperService extends Service {
             stopForegroundRuntime();
             stopSelf(startId);
             return START_NOT_STICKY;
+        }
+        if (runtimeNeedsReinit) {
+            initializeControllers();
+            runtimeNeedsReinit = false;
         }
         startForegroundRuntime();
         ensureHelperStarted();
@@ -365,9 +442,52 @@ public final class CameraHelperService extends Service {
                         weatherRuntime.isRequestInFlight()
                                 ? "Оновлення вже виконується" : "Погода вимкнена");
             }
+        } else if (ACTION_SETTINGS_RELOADED.equals(action)) {
+            reloadSettings(intent != null && intent.getBooleanExtra(EXTRA_FULL_IMPORT, false));
         }
         startHeartbeat();
         return START_STICKY;
+    }
+
+    private boolean handleBlockedWeatherAction(
+            String action, Intent intent, SharedPreferences settings) {
+        if (!ACTION_WEATHER_SETTINGS_CHANGED.equals(action)
+                && !ACTION_WEATHER_REFRESH.equals(action)) return false;
+        boolean enabled = settings.getBoolean(WeatherRuntime.PREF_ENABLED, false);
+        syncWeatherAccessibility(enabled && GuardRecovery.shouldRecover(this));
+        if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
+            weatherRuntime.settingsChanged();
+            if (!enabled || !GuardRecovery.shouldRecover(this)) return true;
+        } else if (!enabled || !GuardRecovery.shouldRecover(this)) {
+            ResultReceiver receiver = intent == null
+                    ? null : intent.getParcelableExtra(EXTRA_WEATHER_RECEIVER);
+            sendWeatherResult(receiver, WEATHER_RESULT_FAILED, "Погода вимкнена");
+            return true;
+        }
+        if (runtimeNeedsReinit) {
+            initializeControllers();
+            runtimeNeedsReinit = false;
+        }
+        startForegroundRuntime();
+        weatherRuntime.start();
+        if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
+            return true;
+        }
+        ResultReceiver receiver = intent == null
+                ? null : intent.getParcelableExtra(EXTRA_WEATHER_RECEIVER);
+        String reason = intent == null ? "manual" : intent.getStringExtra(EXTRA_WEATHER_REASON);
+        boolean accepted = weatherRuntime.requestNow(reason, (success, error) ->
+                sendWeatherResult(receiver,
+                        success ? WEATHER_RESULT_OK : WEATHER_RESULT_FAILED,
+                        success ? "Погоду оновлено" : "Не вдалося оновити погоду"));
+        if (!accepted) {
+            sendWeatherResult(receiver,
+                    weatherRuntime.isRequestInFlight()
+                            ? WEATHER_RESULT_BUSY : WEATHER_RESULT_FAILED,
+                    weatherRuntime.isRequestInFlight()
+                            ? "Оновлення вже виконується" : "Погода вимкнена");
+        }
+        return true;
     }
 
     private void syncWeatherAccessibility(boolean enabled) {
@@ -452,6 +572,7 @@ public final class CameraHelperService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
+        if (LegacySettingsImporter.blocksRuntime(this)) return null;
         ensureHelperStarted();
         helper.setRecoveryEnabled(GuardRecovery.shouldRecover(this));
         return helper;
@@ -466,7 +587,7 @@ public final class CameraHelperService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         lifecycle("service_task_removed", "recover", GuardRecovery.shouldRecover(this));
-        if (GuardRecovery.shouldRecover(this)) {
+        if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
             GuardRecovery.scheduleSoon(this);
             startPersistent(this, "task_removed");
         }
@@ -490,10 +611,12 @@ public final class CameraHelperService extends Service {
         stopForegroundRuntime();
         if (recover) GuardRecovery.scheduleSoon(this);
         closeLogWriter();
+        if (activeInstance == this) activeInstance = null;
         super.onDestroy();
     }
 
     private void ensureHelperStarted() {
+        if (LegacySettingsImporter.blocksRuntime(this)) return;
         if (helper != null) return;
         helper = new CameraHelperMain.HelperBinder(getApplicationContext(), this::acceptHelperLine);
         boolean cameraReady = helper.discoverCamera();
@@ -534,6 +657,34 @@ public final class CameraHelperService extends Service {
         GuardRecovery.schedule(this);
     }
 
+    private void reloadSettings(boolean fullImport) {
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        if (helper != null) {
+            helper.configureGuard(
+                    settings.getBoolean("guard_enabled", false),
+                    settings.getFloat("outward_deg", 90.0f),
+                    settings.getFloat("center_deg", 10.0f),
+                    settings.getInt("correction_delay_ms", 100),
+                    settings.getInt("max_speed_kph", 30));
+            helper.configureMusic(settings.getBoolean("music_visualizer_enabled", false));
+            helper.configureParkingRadar(anyParkingEnabled());
+        }
+        overlay.applySettings();
+        overlay.applyWarningSettings();
+        overlay.applyTriggerSettings();
+        parkingCameras.settingsChanged();
+        reverseCameras.settingsChanged();
+        clusterFullscreen.settingsChanged();
+        if (fullImport) {
+            GuardRecovery.setAutoStartEnabled(this,
+                    settings.getBoolean("auto_start_enabled", true));
+            weatherRuntime.settingsChanged();
+            syncWeatherAccessibility(
+                    settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
+        }
+        lifecycle("settings_reloaded", "full_import", fullImport);
+    }
+
     private void startHeartbeat() {
         handler.removeCallbacks(heartbeat);
         heartbeat.run();
@@ -564,14 +715,14 @@ public final class CameraHelperService extends Service {
     private Notification notification() {
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel(
-                CHANNEL_ID, "BYD Turn Signal Guard", NotificationManager.IMPORTANCE_LOW));
+                CHANNEL_ID, "BYD Extend", NotificationManager.IMPORTANCE_LOW));
         Intent open = new Intent(this, CameraProbeActivity.class);
         PendingIntent pending = PendingIntent.getActivity(
                 this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle("BYD Turn Signal Guard")
-                .setContentText("Guard service active")
+                .setContentTitle("BYD Extend")
+                .setContentText("BYD Extend service active")
                 .setContentIntent(pending)
                 .setOngoing(true)
                 .build();

@@ -4,6 +4,8 @@ import android.content.Intent;
 import android.media.AudioAttributes;
 import android.os.IBinder;
 
+import org.json.JSONArray;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -100,7 +102,9 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(96, BuildConfig.VERSION_CODE);
+        assertEquals(97, BuildConfig.VERSION_CODE);
+        assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
+        assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
         assertEquals(7, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
@@ -159,7 +163,7 @@ public final class AdbCoreTest {
                         "am", "broadcast", "--user", "0", "--include-stopped-packages",
                         "--receiver-foreground", "--async",
                         "-a", GuardRecovery.ACTION_SHELL_RECOVERY,
-                        "-n", CameraHelperMain.PACKAGE_NAME + "/.ShellRecoveryReceiver"
+                        "-n", "com.byd.extend/com.byd.turnsignalguard.capture.ShellRecoveryReceiver"
                 },
                 TurnSignalShellMain.ShellBinder.recoveryCommandForTest());
     }
@@ -192,7 +196,7 @@ public final class AdbCoreTest {
                 + "byd-turnsignal-cameraview/releases/latest";
         String apk = "https://github.com/sunlixWhyNotAvailable/"
                 + "byd-turnsignal-cameraview/releases/download/v0.35.0/"
-                + "byd-turnsignal-camera-v0.35.0.apk";
+                + "byd-extend-v0.35.0.apk";
         assertEquals(api, AppUpdateManager.requireTrustedReleaseApiUrl(api));
         assertEquals(apk, AppUpdateManager.requireTrustedApkDownloadUrl(apk));
         assertThrows(IllegalArgumentException.class,
@@ -205,6 +209,28 @@ public final class AdbCoreTest {
                 () -> AppUpdateManager.requireTrustedApkDownloadUrl(
                         "http://github.com/sunlixWhyNotAvailable/"
                                 + "byd-turnsignal-cameraview/releases/download/v1/app.apk"));
+    }
+
+    @Test
+    public void updaterSelectsOnlyTheExtendCanonicalAsset() throws Exception {
+        String trusted = "https://github.com/sunlixWhyNotAvailable/"
+                + "byd-turnsignal-cameraview/releases/download/v0.53.1/"
+                + "byd-extend-v0.53.1.apk";
+        JSONArray assets = new JSONArray()
+                .put(new org.json.JSONObject()
+                        .put("name", "byd-turnsignal-camera-v0.53.1.apk")
+                        .put("browser_download_url", trusted))
+                .put(new org.json.JSONObject()
+                        .put("name", "byd-extend-v0.53.1-debug.apk")
+                        .put("browser_download_url", trusted))
+                .put(new org.json.JSONObject()
+                        .put("name", "byd-extend-v0.53.1.apk")
+                        .put("browser_download_url", trusted));
+        assertEquals(trusted, AppUpdateManager.findApkAssetUrl(assets, "v0.53.1"));
+        assertThrows(IllegalStateException.class, () -> AppUpdateManager.findApkAssetUrl(
+                new JSONArray().put(new org.json.JSONObject()
+                        .put("name", "byd-turnsignal-camera-v0.53.1.apk")
+                        .put("browser_download_url", trusted)), "0.53.1"));
     }
 
     @Test

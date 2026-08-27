@@ -99,6 +99,10 @@ final class TurnSignalController {
     }
 
     void start() {
+        if (LegacySettingsImporter.blocksRuntime(context)) {
+            emit("runtime_blocked", "reason", "legacy_handover");
+            return;
+        }
         worker.execute(() -> ensureRunning(LocalAdbClient.PromptMode.NEVER, false));
         handler.postDelayed(pingRunnable, PING_MS);
     }
@@ -126,6 +130,10 @@ final class TurnSignalController {
     }
 
     void setRecoveryEnabled(boolean enabled) {
+        if (enabled && LegacySettingsImporter.blocksRuntime(context)) {
+            emit("runtime_blocked", "reason", "legacy_handover");
+            enabled = false;
+        }
         IBinder value = helper;
         if (value != null && value.isBinderAlive()) {
             try {
@@ -574,7 +582,10 @@ final class TurnSignalController {
 
     private void ensureRunning(
             LocalAdbClient.PromptMode mode, boolean ignoreBackoff, long cancellationToken) {
-        if (stopped) return;
+        if (stopped || LegacySettingsImporter.blocksRuntime(context)) {
+            if (!stopped) emit("runtime_blocked", "reason", "legacy_handover");
+            return;
+        }
         String authorizationIdentity = authorizationIdentity();
         if (shouldBlockAutomaticAuthorization(
                 mode, automaticAuthorizationBlockedFor, authorizationIdentity)) {
@@ -1659,6 +1670,22 @@ final class TurnSignalController {
                 + " </dev/null >" + CameraShellProtocol.LOG_PATH + " 2>&1 & "
                 + "for i in 1 2 3; do service list 2>/dev/null | grep -q "
                 + CameraShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
+    }
+
+    /** Fixed cleanup used after the legacy package is disabled; only our two singleton helpers. */
+    static String stopKnownHelpersCommand() {
+        return "for pid in $(pidof " + TurnSignalShellProtocol.PROCESS_NAME
+                + " 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; "
+                + "for pid in $(pidof " + CameraShellProtocol.PROCESS_NAME
+                + " 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; "
+                + "wait_count=0; while [ -n \"$(pidof "
+                + TurnSignalShellProtocol.PROCESS_NAME + " 2>/dev/null)\" ]"
+                + " || [ -n \"$(pidof " + CameraShellProtocol.PROCESS_NAME
+                + " 2>/dev/null)\" ] && [ \"$wait_count\" -lt 30 ]; do "
+                + "sleep 0.1; wait_count=$((wait_count + 1)); done; "
+                + "if [ -n \"$(pidof " + TurnSignalShellProtocol.PROCESS_NAME
+                + " 2>/dev/null)\" ] || [ -n \"$(pidof " + CameraShellProtocol.PROCESS_NAME
+                + " 2>/dev/null)\" ]; then echo helper_stop_timeout; false; fi";
     }
 
     private synchronized void installHelper(IBinder value, int pid) throws Exception {

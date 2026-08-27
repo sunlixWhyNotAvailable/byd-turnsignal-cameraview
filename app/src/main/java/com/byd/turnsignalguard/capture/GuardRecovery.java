@@ -10,9 +10,9 @@ import android.util.Log;
 final class GuardRecovery {
     private static final String TAG = "BydTurnGuardRecovery";
     static final String ACTION_WATCHDOG =
-            "com.byd.turnsignalguard.capture.action.WATCHDOG";
+            "com.byd.extend.action.WATCHDOG";
     static final String ACTION_SHELL_RECOVERY =
-            "com.byd.turnsignalguard.capture.action.SHELL_RECOVERY";
+            "com.byd.extend.action.SHELL_RECOVERY";
     static final String KEY_AUTO_START = "auto_start_enabled";
     static final String KEY_USER_SHUTDOWN = "user_shutdown_active";
     private static final long WATCHDOG_MS = 60_000;
@@ -51,7 +51,7 @@ final class GuardRecovery {
         AlarmManager alarms = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
         if (alarms == null) return;
         PendingIntent pending = pending(app);
-        if (!shouldRecover(app)) {
+        if (!shouldRecover(app) || LegacySettingsImporter.blocksRuntime(app)) {
             alarms.cancel(pending);
             return;
         }
@@ -60,7 +60,7 @@ final class GuardRecovery {
     }
 
     static boolean startService(Context context, String reason) {
-        if (!shouldRecover(context)) {
+        if (!shouldRecover(context) || LegacySettingsImporter.blocksRuntime(context)) {
             Log.i(TAG, "recovery_gate_blocked reason=" + reason);
             return false;
         }

@@ -15,18 +15,19 @@
 
     <queries>
         <package android:name="com.byd.appstartmanagement" />
+        <package android:name="com.byd.turnsignalguard.capture" />
     </queries>
 
     <application
         android:allowBackup="false"
         android:hasCode="true"
         android:icon="@android:drawable/ic_menu_camera"
-        android:label="BYD Turn Signal Guard"
-        android:name=".TurnSignalGuardApplication"
+        android:label="BYD Extend"
+        android:name="com.byd.turnsignalguard.capture.TurnSignalGuardApplication"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
-            android:name=".CameraProbeActivity"
+            android:name="com.byd.turnsignalguard.capture.CameraProbeActivity"
             android:autoRemoveFromRecents="true"
             android:excludeFromRecents="true"
             android:exported="true"
@@ -39,13 +40,13 @@
         </activity>
 
         <service
-            android:name=".CameraHelperService"
+            android:name="com.byd.turnsignalguard.capture.CameraHelperService"
             android:exported="false"
             android:foregroundServiceType="location"
             android:stopWithTask="false" />
 
         <service
-            android:name=".WeatherRefreshAccessibilityService"
+            android:name="com.byd.turnsignalguard.capture.WeatherRefreshAccessibilityService"
             android:exported="true"
             android:label="@string/weather_accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
@@ -68,7 +69,7 @@
         </provider>
 
         <receiver
-            android:name=".GuardRecoveryReceiver"
+            android:name="com.byd.turnsignalguard.capture.GuardRecoveryReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter android:priority="9900">
@@ -81,17 +82,17 @@
         </receiver>
 
         <receiver
-            android:name=".GuardWatchdogReceiver"
+            android:name="com.byd.turnsignalguard.capture.GuardWatchdogReceiver"
             android:enabled="true"
             android:exported="false" />
 
         <receiver
-            android:name=".ShellRecoveryReceiver"
+            android:name="com.byd.turnsignalguard.capture.ShellRecoveryReceiver"
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.DUMP">
             <intent-filter>
-                <action android:name="com.byd.turnsignalguard.capture.action.SHELL_RECOVERY" />
+                <action android:name="com.byd.extend.action.SHELL_RECOVERY" />
             </intent-filter>
         </receiver>
     </application>

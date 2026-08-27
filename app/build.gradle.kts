@@ -11,18 +11,18 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.byd.turnsignalguard.capture"
+        applicationId = "com.byd.extend"
         minSdk = 26
         targetSdk = 29
-        versionCode = 96
-        versionName = "0.52.1"
+        versionCode = 97
+        versionName = "0.53.0"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         buildConfigField(
             "String",
             "UPDATE_RELEASE_API_URL",
             "\"https://api.github.com/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest\""
         )
-        buildConfigField("String", "UPDATE_USER_AGENT", "\"BYD-TurnSignal-Camera-UpdateCheck\"")
+        buildConfigField("String", "UPDATE_USER_AGENT", "\"BYD-Extend-UpdateCheck\"")
     }
 
     compileOptions {
@@ -47,7 +47,7 @@ val copyDebugApkToBuildOutput by tasks.registering(Copy::class) {
     dependsOn("packageDebug")
     from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
     into(rootProject.layout.projectDirectory.dir("build_output"))
-    rename { "byd-turnsignal-camera-v${android.defaultConfig.versionName}.apk" }
+    rename { "byd-extend-v${android.defaultConfig.versionName}.apk" }
 }
 
 tasks.matching { it.name == "assembleDebug" }.configureEach {

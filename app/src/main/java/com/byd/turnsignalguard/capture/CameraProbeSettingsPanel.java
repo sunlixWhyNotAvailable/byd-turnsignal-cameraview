@@ -34,6 +34,14 @@ final class CameraProbeSettingsPanel {
     private final Button clearLogsButton;
     private final Button shareLogsButton;
     private final Button compatibilityBundleButton;
+    private final Button exportPresetButton;
+    private final Button importPresetButton;
+    private final Button importLegacyButton;
+    private final TextView transferStatus;
+    private final boolean cameraPresetsAvailable;
+    private final boolean legacyImportAvailable;
+    private boolean settingsTransferInProgress;
+    private boolean transferAllowed = true;
     private final Button shutdownButton;
     private final boolean shareLogsAvailable;
     private final boolean compatibilityBundleAvailable;
@@ -59,6 +67,18 @@ final class CameraProbeSettingsPanel {
             SharedPreferences preferences,
             Runnable shareLogsAction,
             Runnable compatibilityBundleAction) {
+        this(activity, preferences, shareLogsAction, compatibilityBundleAction,
+                null, null, null);
+    }
+
+    CameraProbeSettingsPanel(
+            CameraProbeActivity activity,
+            SharedPreferences preferences,
+            Runnable shareLogsAction,
+            Runnable compatibilityBundleAction,
+            Runnable exportPresetAction,
+            Runnable importPresetAction,
+            Runnable importLegacyAction) {
         this.activity = activity;
         this.preferences = preferences;
 
@@ -231,16 +251,34 @@ final class CameraProbeSettingsPanel {
 
         LinearLayout presetRow = new LinearLayout(activity);
         presetRow.setOrientation(LinearLayout.HORIZONTAL);
-        Button exportPresetButton = activity.button("Вивантажити пресет");
-        exportPresetButton.setEnabled(false);
-        Button importPresetButton = activity.button("Завантажити пресет");
-        importPresetButton.setEnabled(false);
+        cameraPresetsAvailable = exportPresetAction != null && importPresetAction != null;
+        legacyImportAvailable = importLegacyAction != null;
+        exportPresetButton = activity.button("Вивантажити пресети камер");
+        importPresetButton = activity.button("Завантажити пресети камер");
+        if (cameraPresetsAvailable) {
+            exportPresetButton.setOnClickListener(view -> exportPresetAction.run());
+            importPresetButton.setOnClickListener(view -> importPresetAction.run());
+        }
         presetRow.addView(exportPresetButton,
                 new LinearLayout.LayoutParams(0, activity.dp(52), 1));
         presetRow.addView(importPresetButton,
                 new LinearLayout.LayoutParams(0, activity.dp(52), 1));
         root.addView(presetRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(56)));
+
+        importLegacyButton = activity.button("Імпортувати всі налаштування");
+        if (importLegacyAction != null) {
+            importLegacyButton.setOnClickListener(view -> importLegacyAction.run());
+        }
+        root.addView(importLegacyButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+        transferStatus = activity.label("Файл пресету містить вигляд камер без числових порогів. "
+                + "Повний імпорт із 0.52.1 потребує ADB і вимикає старий застосунок без видалення даних.");
+        transferStatus.setTextSize(14);
+        transferStatus.setPadding(0, activity.dp(6), 0, activity.dp(8));
+        root.addView(transferStatus, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        updateExportButtons();
 
         autoStartSwitch.setOnCheckedChangeListener((button, checked) ->
                 activity.onSettingsAutoStartChanged(checked));
@@ -286,6 +324,7 @@ final class CameraProbeSettingsPanel {
         clearLogsAllowed = clearLogsEnabled;
         shareLogsAllowed = shareLogsAvailable && !shutdownRequested;
         compatibilityBundleAllowed = compatibilityBundleAvailable && !shutdownRequested;
+        transferAllowed = !shutdownRequested;
         updateExportButtons();
     }
 
@@ -300,10 +339,23 @@ final class CameraProbeSettingsPanel {
     }
 
     private void updateExportButtons() {
-        boolean anyExport = logExportInProgress || compatibilityExportInProgress;
+        boolean anyExport = logExportInProgress || compatibilityExportInProgress
+                || settingsTransferInProgress;
         clearLogsButton.setEnabled(clearLogsAllowed && !anyExport);
         shareLogsButton.setEnabled(shareLogsAllowed && !anyExport);
         compatibilityBundleButton.setEnabled(compatibilityBundleAllowed && !anyExport);
+        exportPresetButton.setEnabled(cameraPresetsAvailable && transferAllowed && !anyExport);
+        importPresetButton.setEnabled(cameraPresetsAvailable && transferAllowed && !anyExport);
+        importLegacyButton.setEnabled(legacyImportAvailable && transferAllowed && !anyExport);
+    }
+
+    void setSettingsTransferInProgress(boolean inProgress) {
+        settingsTransferInProgress = inProgress;
+        updateExportButtons();
+    }
+
+    void setTransferStatus(String text) {
+        transferStatus.setText(text);
     }
 
     void setUpdateButton(String text, boolean enabled) {

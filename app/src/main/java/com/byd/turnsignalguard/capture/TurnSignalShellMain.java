@@ -32,6 +32,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public final class TurnSignalShellMain {
+    private static final String RECOVERY_COMPONENT =
+            "com.byd.extend/com.byd.turnsignalguard.capture.ShellRecoveryReceiver";
+
     private TurnSignalShellMain() {}
 
     public static void main(String[] args) throws Exception {
@@ -570,7 +573,7 @@ public final class TurnSignalShellMain {
                     "am", "broadcast", "--user", "0", "--include-stopped-packages",
                     "--receiver-foreground", "--async",
                     "-a", GuardRecovery.ACTION_SHELL_RECOVERY,
-                    "-n", CameraHelperMain.PACKAGE_NAME + "/.ShellRecoveryReceiver"
+                    "-n", RECOVERY_COMPONENT
             };
         }
 

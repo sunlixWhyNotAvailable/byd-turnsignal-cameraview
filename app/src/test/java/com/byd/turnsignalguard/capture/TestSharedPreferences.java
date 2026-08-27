@@ -11,7 +11,7 @@ import java.util.Set;
 final class TestSharedPreferences implements SharedPreferences, SharedPreferences.Editor {
     private final Map<String, Object> values = new HashMap<>();
 
-    @Override public Map<String, ?> getAll() { return Collections.unmodifiableMap(values); }
+    @Override public Map<String, ?> getAll() { return Collections.unmodifiableMap(new HashMap<>(values)); }
     @Override public String getString(String key, String fallback) {
         return value(key, fallback, String.class);
     }

@@ -5,10 +5,11 @@ import java.util.LinkedHashSet;
 /** Pure helpers for the secure Accessibility service-list setting. */
 public final class WeatherAccessibilitySettings {
     public static final String SERVICE_COMPONENT =
-            "com.byd.turnsignalguard.capture/"
+            "com.byd.extend/"
                     + "com.byd.turnsignalguard.capture.WeatherRefreshAccessibilityService";
+    // The service remains in the legacy Java namespace, so its class name must stay explicit.
     public static final String SHORT_SERVICE_COMPONENT =
-            "com.byd.turnsignalguard.capture/.WeatherRefreshAccessibilityService";
+            SERVICE_COMPONENT;
 
     private WeatherAccessibilitySettings() {}
 

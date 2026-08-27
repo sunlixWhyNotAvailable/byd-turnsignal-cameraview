@@ -40,7 +40,7 @@ final class AppUpdateManager {
     private static final String APK_DOWNLOAD_HOST = "github.com";
     private static final String APK_PATH_MARKER =
             "/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/download/";
-    private static final String APK_NAME_PREFIX = "byd-turnsignal-camera-v";
+    private static final String APK_NAME_PREFIX = "byd-extend-v";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final long CHECK_THROTTLE_MS = 10 * 60 * 1000L;
     private static final long DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000L;
@@ -85,7 +85,7 @@ final class AppUpdateManager {
 
         UpdateInfo available = new UpdateInfo(
                 version,
-                findApkAssetUrl(release.optJSONArray("assets")),
+                findApkAssetUrl(release.optJSONArray("assets"), version),
                 release.optString("body", ""));
         cachedAvailable = available;
         return available;
@@ -111,7 +111,7 @@ final class AppUpdateManager {
                 Context.DOWNLOAD_SERVICE);
         if (manager == null) throw new IllegalStateException("DownloadManager is unavailable");
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(info.downloadUrl))
-                .setTitle("BYD Turn Signal Camera " + info.version)
+                .setTitle("BYD Extend " + info.version)
                 .setDescription("Downloading update")
                 .setMimeType(APK_MIME)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
@@ -220,14 +220,15 @@ final class AppUpdateManager {
         return output.toByteArray();
     }
 
-    private static String findApkAssetUrl(JSONArray assets) {
+    static String findApkAssetUrl(JSONArray assets, String version) {
         if (assets == null) throw new IllegalStateException("GitHub release has no assets");
+        String expectedName = APK_NAME_PREFIX + normalizeVersion(version) + ".apk";
         for (int index = 0; index < assets.length(); index++) {
             JSONObject asset = assets.optJSONObject(index);
             if (asset == null) continue;
             String name = asset.optString("name", "");
             String url = asset.optString("browser_download_url", "");
-            if (name.startsWith(APK_NAME_PREFIX) && name.endsWith(".apk") && !url.isEmpty()) {
+            if (expectedName.equals(name) && !url.isEmpty()) {
                 return requireTrustedApkDownloadUrl(url);
             }
         }

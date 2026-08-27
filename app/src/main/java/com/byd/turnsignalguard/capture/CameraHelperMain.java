@@ -29,7 +29,7 @@ import java.util.Locale;
 import java.util.function.Consumer;
 
 final class CameraHelperMain {
-    static final String PACKAGE_NAME = "com.byd.turnsignalguard.capture";
+    static final String PACKAGE_NAME = "com.byd.extend";
     static final String DESCRIPTOR = PACKAGE_NAME + ".ICameraProbeHelper";
     static final String CALLBACK_DESCRIPTOR = PACKAGE_NAME + ".ICameraProbeCallback";
 
