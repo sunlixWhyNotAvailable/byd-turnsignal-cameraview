@@ -23,30 +23,36 @@
         android:hasCode="true"
         android:icon="@android:drawable/ic_menu_camera"
         android:label="BYD Extend"
-        android:name="com.byd.turnsignalguard.capture.TurnSignalGuardApplication"
+        android:name="com.byd.extend.TurnSignalGuardApplication"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
-            android:name="com.byd.turnsignalguard.capture.CameraProbeActivity"
+            android:name="com.byd.extend.CameraProbeActivity"
             android:autoRemoveFromRecents="true"
             android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="sensorLandscape">
+            android:screenOrientation="sensorLandscape" />
+
+        <!-- Preserve the launcher component already pinned by Extend 0.53.0 users. -->
+        <activity-alias
+            android:name="com.byd.turnsignalguard.capture.CameraProbeActivity"
+            android:targetActivity="com.byd.extend.CameraProbeActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <service
-            android:name="com.byd.turnsignalguard.capture.CameraHelperService"
+            android:name="com.byd.extend.CameraHelperService"
             android:exported="false"
             android:foregroundServiceType="location"
             android:stopWithTask="false" />
 
         <service
-            android:name="com.byd.turnsignalguard.capture.WeatherRefreshAccessibilityService"
+            android:name="com.byd.extend.WeatherRefreshAccessibilityService"
             android:exported="true"
             android:label="@string/weather_accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
@@ -69,7 +75,7 @@
         </provider>
 
         <receiver
-            android:name="com.byd.turnsignalguard.capture.GuardRecoveryReceiver"
+            android:name="com.byd.extend.GuardRecoveryReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter android:priority="9900">
@@ -82,12 +88,12 @@
         </receiver>
 
         <receiver
-            android:name="com.byd.turnsignalguard.capture.GuardWatchdogReceiver"
+            android:name="com.byd.extend.GuardWatchdogReceiver"
             android:enabled="true"
             android:exported="false" />
 
         <receiver
-            android:name="com.byd.turnsignalguard.capture.ShellRecoveryReceiver"
+            android:name="com.byd.extend.ShellRecoveryReceiver"
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.DUMP">

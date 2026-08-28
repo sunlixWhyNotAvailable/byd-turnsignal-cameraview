@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BydTurnSignalCapture"
+rootProject.name = "BydExtend"
 include(":app")

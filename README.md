@@ -7,8 +7,8 @@
 
 ## Project status
 
-Current source version: `0.53.0` (version code `97`). The application interface is Ukrainian.
-The canonical debug APK name is `byd-extend-v0.53.0.apk`; published builds are listed in the
+Current source version: `0.53.1` (version code `98`). The application interface is Ukrainian.
+The canonical debug APK name is `byd-extend-v0.53.1.apk`; published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
 ## Features
@@ -39,14 +39,29 @@ steering-angle, and distance triggers, non-camera settings, and saved local cali
 
 Full migration includes those numeric rules, guard, music, weather, auto-start, and saved
 calibration slots. It does not copy transient runtime data, logs, ADB credentials, or Android-granted
-permissions. Validation, read, or cancellation failure leaves the destination unchanged. If the
-settings have already been saved but disabling the old app or stopping its helpers fails, the
-imported settings remain and BYD Extend keeps hardware runtime blocked until the handover is retried.
+permissions. When imported weather is enabled, BYD Extend requests its own location permission
+without requiring the weather switch to be toggled again. Denying the request leaves weather off.
+Existing local ADB authorization is retained when updating BYD Extend.
+
+Validation, read, or cancellation failure leaves the destination unchanged. If the
+settings have already been saved but shutting down the old app or stopping its helpers fails, the
+imported settings remain and BYD Extend keeps its runtime blocked until the handover is retried.
 The legacy source data is never deleted.
 
-After a validated migration, the old application is disabled automatically and its known helpers
-are stopped before BYD Extend starts. The old APK and data remain recoverable. A first
-legacy-to-Extend installation is a manual APK install because the package identity changes.
+After a validated migration, the old application is shut down before BYD Extend starts. Its APK,
+data, and launcher icon remain available, so it can still be opened or uninstalled normally.
+For an earlier migration that disabled the old application, Settings offers a confirmed action
+to restore its launcher access while keeping its runtime stopped; current BYD Extend settings
+are not imported again or overwritten. Shut down BYD Extend before deliberately reopening the
+old application. A first legacy-to-Extend installation is a manual APK install because the
+package identity changes.
+
+## Sharing diagnostics
+
+Settings can share logs or create a compatibility package. Compatibility export displays the
+current phase, file, file count, and transferred bytes, and can be cancelled without sharing a
+partial archive. It supports individual files up to 512 MiB and a total payload up to 1 GiB;
+missing or inaccessible optional files are reported in the package instead of stopping the export.
 
 ## Compatibility and requirements
 
@@ -63,7 +78,7 @@ legacy-to-Extend installation is a manual APK install because the package identi
 
 ## Installation
 
-1. Download `byd-extend-v0.53.0.apk` from
+1. Download `byd-extend-v0.53.1.apk` from
    [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 2. Install it manually, grant camera/location access as requested, and accept the BYD Extend local
    ADB authorization prompt.

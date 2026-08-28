@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "com.byd.turnsignalguard.capture"
+    namespace = "com.byd.extend"
     compileSdk = 35
 
     buildFeatures {
@@ -14,8 +14,8 @@ android {
         applicationId = "com.byd.extend"
         minSdk = 26
         targetSdk = 29
-        versionCode = 97
-        versionName = "0.53.0"
+        versionCode = 98
+        versionName = "0.53.1"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         buildConfigField(
             "String",
