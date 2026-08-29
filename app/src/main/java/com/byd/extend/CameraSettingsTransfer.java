@@ -64,9 +64,18 @@ public final class CameraSettingsTransfer {
             JSONObject settingsObject = root.getJSONObject(SETTINGS);
             Set<String> expected = cameraPresetKeys();
             Set<String> actual = names(settingsObject);
-            if (!actual.equals(expected)) throw new IllegalArgumentException("incomplete camera preset");
+            for (String key : actual) {
+                if (!expected.contains(key)) {
+                    throw new IllegalArgumentException("unexpected camera preset field");
+                }
+            }
+            for (String key : expected) {
+                if (!actual.contains(key) && !isOptionalCameraPresetKey(key)) {
+                    throw new IllegalArgumentException("incomplete camera preset");
+                }
+            }
             Map<String, Object> settings = new LinkedHashMap<>();
-            for (String key : expected) settings.put(key, settingsObject.get(key));
+            for (String key : actual) settings.put(key, settingsObject.get(key));
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("schema", SCHEMA);
             result.put("version", VERSION);
@@ -169,6 +178,8 @@ public final class CameraSettingsTransfer {
                 ReverseCameraController.loadVisibility(p, ReverseCameraLayout.BACKGROUND_PANE_ID));
         out.put(ReverseCameraController.PREF_WIDGET_VISIBLE,
                 ReverseCameraController.loadWidgetVisible(p));
+        out.put(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED,
+                ReverseCameraController.loadCentralFrontIntegrated(p));
 
         for (CameraProfile profile : CameraProfile.values()) {
             DirectCameraCrop raw = DirectCameraCrop.load(p, profile);
@@ -206,7 +217,8 @@ public final class CameraSettingsTransfer {
                     CameraDewarpConfig.loadForReverse(p, pane.cameraIndex));
         }
         ReverseCameraLayout front = ReverseCameraController.loadFrontRawLayout(p);
-        for (int index : new int[]{ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+        for (int index : new int[]{ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX}) {
             ReverseCameraLayout.Pane pane = front.pane(index);
             String prefix = "reverse_camera_front_" + index + "_";
@@ -321,12 +333,30 @@ public final class CameraSettingsTransfer {
             if (!(entry.getKey() instanceof String)) throw new IllegalArgumentException("invalid camera key");
             result.put((String) entry.getKey(), entry.getValue());
         }
-        if (!result.keySet().equals(cameraPresetKeys())) throw new IllegalArgumentException("incomplete camera preset");
+        for (String key : result.keySet()) {
+            if (!cameraPresetKeys().contains(key)) {
+                throw new IllegalArgumentException("unexpected camera preset field");
+            }
+        }
+        for (String key : cameraPresetKeys()) {
+            if (!result.containsKey(key) && !isOptionalCameraPresetKey(key)) {
+                throw new IllegalArgumentException("incomplete camera preset");
+            }
+        }
         return result;
     }
 
     private static void validateCameraSettings(Map<String, Object> values) {
-        if (!values.keySet().equals(cameraPresetKeys())) throw new IllegalArgumentException("incomplete camera preset");
+        for (String key : values.keySet()) {
+            if (!cameraPresetKeys().contains(key)) {
+                throw new IllegalArgumentException("unexpected camera preset field");
+            }
+        }
+        for (String key : cameraPresetKeys()) {
+            if (!values.containsKey(key) && !isOptionalCameraPresetKey(key)) {
+                throw new IllegalArgumentException("incomplete camera preset");
+            }
+        }
         for (Map.Entry<String, Object> entry : values.entrySet()) validateCameraValue(entry.getKey(), entry.getValue());
         for (CameraProfile profile : CameraProfile.values()) {
             String key = DirectCameraCrop.preferenceKey(profile, 0);
@@ -349,7 +379,11 @@ public final class CameraSettingsTransfer {
             requireRect(values, "reverse_camera_" + index + "_corrected_v3_crop_", false);
             requireDewarp(values, "camera_dewarp_v3_reverse_" + index + "_");
         }
-        for (int index : new int[]{2, 3}) {
+        for (int index : new int[]{1, 2, 3}) {
+            if (index == ReverseCameraLayout.REAR_CAMERA_INDEX
+                    && !values.containsKey("reverse_camera_front_1_crop_left")) {
+                continue;
+            }
             requireRect(values, "reverse_camera_front_" + index + "_crop_", false);
             requireRect(values, "reverse_camera_front_" + index + "_corrected_crop_", false);
             requireDewarp(values, "camera_dewarp_v3_reverse_front_" + index + "_");
@@ -472,6 +506,7 @@ public final class CameraSettingsTransfer {
         keys.add(CameraBufferQuality.PREF_QUALITY); keys.add(ParkingCameraSettings.PREF_ALLOW_DURING_REVERSE);
         keys.add("parking_camera_scale_sync"); keys.add(ReverseCameraController.PREF_ENABLED);
         keys.add(ReverseCameraController.PREF_BACKGROUND_VISIBLE); keys.add(ReverseCameraController.PREF_WIDGET_VISIBLE);
+        keys.add(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED);
         for (CameraProfile profile : CameraProfile.values()) {
             for (int field = 0; field < 8; field++) keys.add(DirectCameraCrop.preferenceKey(profile, field));
             String corrected = "direct_crop_v3_corrected_" + profile.id + "_";
@@ -503,7 +538,7 @@ public final class CameraSettingsTransfer {
         for (String prefix : new String[]{"reverse_camera_background_", "reverse_camera_widget_"}) {
             keys.add(prefix + "left"); keys.add(prefix + "top"); keys.add(prefix + "width"); keys.add(prefix + "height");
         }
-        for (int index : new int[]{2, 3}) {
+        for (int index : new int[]{1, 2, 3}) {
             String p = "reverse_camera_front_" + index + "_";
             for (String field : new String[]{"left", "top", "width", "height"}) {
                 keys.add(p + "crop_" + field); keys.add(p + "corrected_crop_" + field);
@@ -512,6 +547,11 @@ public final class CameraSettingsTransfer {
             addDewarpKeys(keys, "camera_dewarp_v3_reverse_front_" + index + "_");
         }
         return Collections.unmodifiableSet(keys);
+    }
+
+    private static boolean isOptionalCameraPresetKey(String key) {
+        return key != null && (key.startsWith("reverse_camera_front_1_")
+                || key.startsWith("camera_dewarp_v3_reverse_front_1_"));
     }
 
     private static void addDewarpKeys(Set<String> keys, String prefix) {

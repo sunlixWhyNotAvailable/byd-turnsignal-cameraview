@@ -103,7 +103,7 @@ final class CameraDewarpConfig {
 
     static CameraDewarpConfig loadForReverseFront(
             SharedPreferences preferences, int cameraIndex) {
-        int lens = lensForReverseSideCamera(cameraIndex);
+        int lens = lensForReverseFrontCamera(cameraIndex);
         CameraDewarpConfig fallback = defaultForReverseFront(cameraIndex);
         String prefix = reverseFrontPrefix(cameraIndex);
         try {
@@ -141,6 +141,9 @@ final class CameraDewarpConfig {
     }
 
     static CameraDewarpConfig defaultForReverseFront(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return of(LENS_FRONT, false, DEFAULT_FOV_DEGREES, DEFAULT_PROJECTION);
+        }
         return defaultForProfile(frontProfileForReverseSide(cameraIndex));
     }
 
@@ -254,7 +257,7 @@ final class CameraDewarpConfig {
     static void writeForReverseFront(
             SharedPreferences.Editor editor, int cameraIndex,
             CameraDewarpConfig value) {
-        writeScoped(editor, lensForReverseSideCamera(cameraIndex),
+        writeScoped(editor, lensForReverseFrontCamera(cameraIndex),
                 reverseFrontPrefix(cameraIndex), value);
     }
 
@@ -280,6 +283,11 @@ final class CameraDewarpConfig {
         if (cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) return LENS_LEFT;
         if (cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) return LENS_RIGHT;
         throw new IllegalArgumentException("invalid reverse side camera index");
+    }
+
+    static int lensForReverseFrontCamera(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) return LENS_FRONT;
+        return lensForReverseSideCamera(cameraIndex);
     }
 
     static CameraProfile frontProfileForReverseSide(int cameraIndex) {
@@ -372,7 +380,7 @@ final class CameraDewarpConfig {
     }
 
     private static String reverseFrontPrefix(int cameraIndex) {
-        lensForReverseSideCamera(cameraIndex);
+        lensForReverseFrontCamera(cameraIndex);
         return "camera_dewarp_v3_reverse_front_" + cameraIndex + "_";
     }
 

@@ -78,6 +78,70 @@ public final class ReverseFrameBarrierTest {
         assertFalse(barrier.reveal(REQUEST, BASE, DIRECT));
     }
 
+    @Test
+    public void optionalCentralFrontSourceUsesFourDirectGenerations() {
+        int[] direct = {21, 22, 23, 24};
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, BASE, direct);
+
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        for (int source = 1; source <= direct.length; source++) {
+            assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                    barrier.frame(REQUEST, source, direct[source - 1]));
+        }
+        for (int source = 1; source <= direct.length; source++) {
+            if (source < direct.length) {
+                assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                        barrier.frame(REQUEST, source, direct[source - 1]));
+            } else {
+                assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.READY,
+                        barrier.frame(REQUEST, source, direct[source - 1]));
+            }
+        }
+        assertTrue(barrier.recordReadyEvent(REQUEST, BASE, direct));
+        assertTrue(barrier.reveal(REQUEST, BASE, direct));
+        assertFalse(barrier.reveal(REQUEST, BASE, direct));
+    }
+
+    @Test
+    public void optionalCentralFrontMayArriveAfterRequiredThreeSources() {
+        int[] direct = {31, 32, 33, 34};
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        // Keep the four-source identity, but require only the base plus the
+        // original three panes before revealing the composition.
+        barrier.arm(REQUEST, BASE, direct, 3);
+
+        for (int source = 0; source <= 3; source++) {
+            assertEquals(source == 0
+                            ? ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD
+                            : ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                    barrier.frame(REQUEST, source, generation(source, direct)));
+        }
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, 0, generation(0, direct)));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, 1, generation(1, direct)));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, 2, generation(2, direct)));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.READY,
+                barrier.frame(REQUEST, 3, generation(3, direct)));
+        assertTrue(barrier.readyPending(REQUEST, BASE, direct));
+
+        // The optional source can signal after readiness; it is ignored by
+        // the one-shot gate and does not invalidate the four-source identity.
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                barrier.frame(REQUEST, 4, generation(4, direct)));
+        assertTrue(barrier.recordReadyEvent(REQUEST, BASE, direct));
+        assertTrue(barrier.reveal(REQUEST, BASE, direct));
+    }
+
     private static ReverseCameraCompositionView.FrameBarrier armed() {
         ReverseCameraCompositionView.FrameBarrier barrier =
                 new ReverseCameraCompositionView.FrameBarrier();
@@ -96,5 +160,9 @@ public final class ReverseFrameBarrierTest {
 
     private static int generation(int source) {
         return source == 0 ? BASE : DIRECT[source - 1];
+    }
+
+    private static int generation(int source, int[] direct) {
+        return source == 0 ? BASE : direct[source - 1];
     }
 }

@@ -22,8 +22,9 @@ public final class CameraSettingsTransferTest {
 
         Map<?, ?> settings = (Map<?, ?>) parsed.get("settings");
         // 4 Blind profiles (20 values each), 8 Parking profiles (20 each),
-        // three Reverse panes plus shared/background/front values.
-        assertEquals(352, settings.size());
+        // Three Reverse panes plus the optional central-front calibration
+        // fields, and shared/background/front values.
+        assertEquals(367, settings.size());
         for (CameraProfile profile : CameraProfile.values()) {
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, false)));
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, true)));

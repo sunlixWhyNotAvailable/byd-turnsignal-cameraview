@@ -44,6 +44,7 @@ final class ReverseSideSelectorView extends View {
     private int mode = MODE_REAR;
     private boolean leftVisible;
     private boolean rightVisible;
+    private boolean centerVisible;
     private int pressedMode = -1;
 
     ReverseSideSelectorView(Context context) {
@@ -79,10 +80,11 @@ final class ReverseSideSelectorView extends View {
         return mode;
     }
 
-    void setEffectiveVisibility(boolean left, boolean right) {
-        if (leftVisible == left && rightVisible == right) return;
+    void setEffectiveVisibility(boolean left, boolean right, boolean center) {
+        if (leftVisible == left && rightVisible == right && centerVisible == center) return;
         leftVisible = left;
         rightVisible = right;
+        centerVisible = center;
         invalidate();
     }
 
@@ -171,7 +173,7 @@ final class ReverseSideSelectorView extends View {
                 normalized[0] * width, normalized[1] * height,
                 normalized[2] * width, normalized[3] * height);
         boolean selected = mode == buttonMode;
-        boolean active = selected && (leftVisible || rightVisible);
+        boolean active = selected && (leftVisible || rightVisible || centerVisible);
         boolean pressed = pressedMode == buttonMode;
         fill.setColor(pressed ? PRESSED_BUTTON_COLOR
                 : active ? ACTIVE_BUTTON_COLOR : 0x99314257);

@@ -79,6 +79,7 @@ final class TurnSignalController {
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private volatile IBinder pendingReverseHelper;
     private volatile long pendingReverseHelperEpoch;
+    private volatile int pendingReverseSurfaceCount = 3;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
     private long lastLaunchFailureAt;
     private volatile String automaticAuthorizationBlockedFor = "";
@@ -424,6 +425,7 @@ final class TurnSignalController {
             pendingReverseSurfaceSink = surfaceSink;
             pendingReverseHelper = null;
             pendingReverseHelperEpoch = 0;
+            pendingReverseSurfaceCount = spec.requiresCentralFrontSource() ? 4 : 3;
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
@@ -1292,10 +1294,13 @@ final class TurnSignalController {
     }
 
     private static ReverseSurfaces transactReverseAcquire(
-            IBinder value, int requestId) throws Exception {
+            IBinder value, int requestId, int expectedCount) throws Exception {
+        if (expectedCount != 3 && expectedCount != 4) {
+            throw new IllegalArgumentException("invalid reverse Surface count");
+        }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
-        Surface[] surfaces = new Surface[3];
+        Surface[] surfaces = new Surface[expectedCount];
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeInt(requestId);
@@ -1343,7 +1348,8 @@ final class TurnSignalController {
     private static void transactReverseIdentity(
             IBinder value, int transaction, int requestId, int[] generations,
             boolean visible) throws Exception {
-        if (requestId <= 0 || generations == null || generations.length != 3) {
+        if (requestId <= 0 || generations == null
+                || (generations.length != 3 && generations.length != 4)) {
             throw new IllegalArgumentException("invalid reverse request identity");
         }
         Parcel data = Parcel.obtain();
@@ -1453,7 +1459,8 @@ final class TurnSignalController {
                 throw new IllegalStateException(
                         "camera shell unavailable before reverse Surface acquisition");
             }
-            ReverseSurfaces result = transactReverseAcquire(value, requestId);
+            ReverseSurfaces result = transactReverseAcquire(
+                    value, requestId, pendingReverseSurfaceCount);
             clearPendingReverseSurfaces(requestId);
             if (!handler.post(() -> sink.accept(result))) {
                 releaseSurfaces(result.surfaces);
@@ -1472,6 +1479,7 @@ final class TurnSignalController {
         pendingReverseSurfaceSink = null;
         pendingReverseHelper = null;
         pendingReverseHelperEpoch = 0;
+        pendingReverseSurfaceCount = 3;
     }
 
     private static void releaseSurfaces(Surface[] surfaces) {

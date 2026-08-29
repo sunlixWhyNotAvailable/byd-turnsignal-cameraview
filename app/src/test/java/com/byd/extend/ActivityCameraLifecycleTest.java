@@ -27,6 +27,18 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
+    public void directCameraSelectionAllowsHotSwitchOnlyAfterOpen() {
+        assertTrue(CameraProbeActivity.directCameraSelectionAllowed(
+                false, false, false));
+        assertTrue(CameraProbeActivity.directCameraSelectionAllowed(
+                true, true, true));
+        assertFalse(CameraProbeActivity.directCameraSelectionAllowed(
+                true, true, false));
+        assertFalse(CameraProbeActivity.directCameraSelectionAllowed(
+                true, false, true));
+    }
+
+    @Test
     public void coldResetReasonIsBoundToTransitionToken() {
         CameraTransition transition = new CameraTransition();
         String token = transition.begin(CameraHelperMain.ACTIVITY_RESUME_COLD_RESET);
@@ -282,16 +294,19 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
-    public void reverseFrontIntegrationSlotStaysMeasuredWhenHidden() {
+    public void reverseFrontIntegrationSlotsVisibleOnlyForCameraPanes() {
         assertEquals(android.view.View.VISIBLE,
                 CameraProbeActivity.reverseFrontIntegrationVisibility(
                         ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
         assertEquals(android.view.View.VISIBLE,
                 CameraProbeActivity.reverseFrontIntegrationVisibility(
                         ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
-        assertEquals(android.view.View.INVISIBLE,
+        assertEquals(android.view.View.VISIBLE,
                 CameraProbeActivity.reverseFrontIntegrationVisibility(
                         ReverseCameraLayout.REAR_CAMERA_INDEX));
+        assertEquals(android.view.View.INVISIBLE,
+                CameraProbeActivity.reverseFrontIntegrationVisibility(
+                        ReverseCameraLayout.BACKGROUND_PANE_ID));
         assertEquals(android.view.View.INVISIBLE,
                 CameraProbeActivity.reverseFrontIntegrationVisibility(
                         ReverseCameraLayout.WIDGET_PANE_ID));

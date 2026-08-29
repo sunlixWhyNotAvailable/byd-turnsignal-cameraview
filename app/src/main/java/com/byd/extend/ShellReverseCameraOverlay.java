@@ -22,7 +22,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private ReverseCameraCompositionView root;
     private float imageAlpha = 1.0f;
     private int requestId;
-    private int[] surfaceGenerations = new int[3];
+    private int[] surfaceGenerations = new int[0];
+    private boolean centralFrontSourceEnabled;
     private int completedFrameRequestId;
     private boolean visible;
     private boolean closing;
@@ -39,13 +40,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         Point size = new Point();
         display.getSize(size);
         spec.validate(size.x, size.y);
+        centralFrontSourceEnabled = spec.requiresCentralFrontSource();
 
         if (root != null) {
             if (!root.dewarpPipelineCompatible(
                     spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                     spec.frontLeftDewarp, spec.frontRightDewarp,
+                    spec.centralFrontDewarp,
                     spec.frontLeftIntegrated && spec.widgetVisible,
-                    spec.frontRightIntegrated && spec.widgetVisible)) {
+                    spec.frontRightIntegrated && spec.widgetVisible,
+                    centralFrontSourceEnabled)) {
                 close("dewarp_pipeline_changed");
             } else if (!root.usesPaneGeometry(spec.layout, size.x, size.y)) {
                 close("camera_geometry_changed");
@@ -65,14 +69,19 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         if (root == null) createWindow(display, size, spec);
         else {
             root.setCornerRadiusDp(spec.cornerRadiusDp);
-            root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
+            root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
+                    spec.centralFrontDewarp);
             root.applyRawFallbackLayout(spec.rawFallbackLayout);
             root.applyLayout(spec.layout);
             root.configureIntegratedFront(
                     spec.frontLayout, spec.frontRawFallbackLayout,
                     spec.frontLeftDewarp, spec.frontRightDewarp,
+                    spec.centralFrontDewarp,
                     spec.frontLeftIntegrated, spec.frontRightIntegrated,
+                    spec.centralFrontIntegrated,
+                    centralFrontSourceEnabled,
                     spec.widgetVisible);
+            root.setCentralFrontSourceEnabled(centralFrontSourceEnabled);
             root.applyVisibility(spec.visibilityMask);
             configureControls(display, size, spec.widgetVisible);
             windowless.setVisible(false, imageAlpha);
@@ -90,12 +99,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "visibility_mask", spec.visibilityMask,
                 "widget_visible", spec.widgetVisible,
                 "front_left_integrated", spec.frontLeftIntegrated,
-                "front_right_integrated", spec.frontRightIntegrated);
+                "front_right_integrated", spec.frontRightIntegrated,
+                "central_front_integrated", spec.centralFrontIntegrated,
+                "central_front_source", centralFrontSourceEnabled);
     }
 
     SurfaceSnapshot acquireSurfaces(int expectedRequestId) {
         requireRequest(expectedRequestId);
         ReverseCameraCompositionView.SurfaceBundle bundle = root.acquireSurfaces(requestId);
+        onReverseSurfacesReady(bundle.generations);
         return new SurfaceSnapshot(bundle.requestId, bundle.generations, bundle.surfaces);
     }
 
@@ -161,7 +173,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             visible = false;
             requestId = 0;
             completedFrameRequestId = 0;
-            surfaceGenerations = new int[3];
+            surfaceGenerations = new int[0];
+            centralFrontSourceEnabled = false;
             closing = false;
             blockedRevealReported = false;
         }
@@ -204,6 +217,12 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     @Override
     public void onReverseSurfaceLost(int cameraIndex, int generation) {
+        if (cameraIndex == 4 && centralFrontSourceEnabled) {
+            emit("reverse_overlay_surface", "state", "optional_destroyed",
+                    "request_id", requestId, "camera_index", cameraIndex,
+                    "surface_generation", generation);
+            return;
+        }
         visible = false;
         completedFrameRequestId = 0;
         if (!closing && windowless != null && root != null) {
@@ -281,16 +300,23 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.setDewarpPipelineRequirements(
                 spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                 spec.frontLeftDewarp, spec.frontRightDewarp,
+                spec.centralFrontDewarp,
                 spec.frontLeftIntegrated && spec.widgetVisible,
-                spec.frontRightIntegrated && spec.widgetVisible);
-        nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp);
+                spec.frontRightIntegrated && spec.widgetVisible,
+                centralFrontSourceEnabled);
+        nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
+                spec.centralFrontDewarp);
         nextRoot.applyRawFallbackLayout(spec.rawFallbackLayout);
         nextRoot.applyLayout(spec.layout);
         nextRoot.configureIntegratedFront(
                 spec.frontLayout, spec.frontRawFallbackLayout,
                 spec.frontLeftDewarp, spec.frontRightDewarp,
+                spec.centralFrontDewarp,
                 spec.frontLeftIntegrated, spec.frontRightIntegrated,
+                spec.centralFrontIntegrated,
+                centralFrontSourceEnabled,
                 spec.widgetVisible);
+        nextRoot.setCentralFrontSourceEnabled(centralFrontSourceEnabled);
         nextRoot.applyVisibility(spec.visibilityMask);
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
         root = nextRoot;

@@ -84,7 +84,7 @@ final class StockAvmPreview {
     private static final String STOCK_PACKAGE = "com.byd.avc";
     private static final String STOCK_SDK_API = "com.byd.avc.panosdk.TSAPI";
     private static final String RESOURCE_CACHE = "/data/local/tmp/bydextend_avm";
-    private static final long DISPLAY_READY_TIMEOUT_MS = 500;
+    private static final long DISPLAY_READY_TIMEOUT_MS = 3_000;
     private static final long DISPLAY_STATUS_POLL_MS = 20;
     private static final long INPUT_SURFACE_READY_TIMEOUT_MS = 500;
 

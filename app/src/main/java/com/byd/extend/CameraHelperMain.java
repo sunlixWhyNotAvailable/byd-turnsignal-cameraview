@@ -533,12 +533,16 @@ final class CameraHelperMain {
         }
 
         private String openReversePreview(Surface[] requestedSurfaces, int requestId) {
-            if (requestedSurfaces == null || requestedSurfaces.length != 4) {
+            if (requestedSurfaces == null
+                    || (requestedSurfaces.length != 4 && requestedSurfaces.length != 5)) {
                 releaseSurfaces(requestedSurfaces);
-                throw new IllegalArgumentException("Pano base plus three reverse Surfaces required");
+                throw new IllegalArgumentException(
+                        "Pano base plus three or four reverse Surfaces required");
             }
             Surface panoOutput = requestedSurfaces[0];
-            Surface[] directSurfaces = Arrays.copyOfRange(requestedSurfaces, 1, 4);
+            int directCount = requestedSurfaces.length - 1;
+            Surface[] directSurfaces = Arrays.copyOfRange(
+                    requestedSurfaces, 1, requestedSurfaces.length);
             if (reverseGroup.has()) {
                 panoOutput.release();
                 releaseSurfaces(directSurfaces);
@@ -560,7 +564,7 @@ final class CameraHelperMain {
                     inputSurface -> attachReversePreviewInputSurface(inputSurface, requestId));
             emit("camera_shell_request", "action", "open_reverse_preview_base",
                     "view", "VIEW_2D_REAR", "request_id", requestId,
-                    "preview_indexes", "[0, 1, 2, 3]");
+                    "preview_indexes", previewIndexes(directCount));
             return result("reverse_preview_shell_open_queued", null);
         }
 
@@ -581,16 +585,20 @@ final class CameraHelperMain {
             int requestId = callbackRequestId;
             pendingReversePreviewRequestId = 0;
             pendingStockCameraRequestId = 0;
-            if (!stockCameraRequested || direct.length != 3) {
+            if (!stockCameraRequested || (direct.length != 3 && direct.length != 4)) {
                 inputSurface.release();
                 releaseSurfaces(direct);
                 return;
             }
-            Surface[] combined = {inputSurface, direct[0], direct[1], direct[2]};
+            Surface[] combined = new Surface[direct.length + 1];
+            combined[0] = inputSurface;
+            System.arraycopy(direct, 0, combined, 1, direct.length);
+            int[] indexes = new int[combined.length];
+            for (int i = 0; i < indexes.length; i++) indexes[i] = i;
             String openResult;
             try {
                 openResult = attachPersistentGroup(
-                        activityGroup, combined, new int[]{0, 1, 2, 3}, requestId,
+                        activityGroup, combined, indexes, requestId,
                         "reverse_preview_with_stock_base", false, true,
                         null, "reverse_preview_open", true);
             } catch (Throwable error) {
@@ -605,7 +613,7 @@ final class CameraHelperMain {
                 return;
             }
             emit("camera_input_surface_attached", "view", viewName,
-                    "result", openResult, "preview_indexes", "[0, 1, 2, 3]");
+                    "result", openResult, "preview_indexes", previewIndexes(direct.length));
             if (openResult.contains("camera_error") || openResult.contains("camera_busy")) {
                 stockCameraRequested = false;
                 turnController.closeStockAvm("reverse_preview_direct_open_failed", requestId);
@@ -614,8 +622,16 @@ final class CameraHelperMain {
 
         private synchronized String openReverseCamera(
                 Surface[] requestedSurfaces, String requestedOwner, int requestId) {
+            if (requestedSurfaces == null
+                    || (requestedSurfaces.length != 3 && requestedSurfaces.length != 4)) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException(
+                        "three or four reverse Surfaces required");
+            }
+            int[] indexes = new int[requestedSurfaces.length];
+            for (int i = 0; i < indexes.length; i++) indexes[i] = i + 1;
             return attachPersistentGroup(
-                    reverseGroup, requestedSurfaces, new int[]{1, 2, 3}, requestId,
+                    reverseGroup, requestedSurfaces, indexes, requestId,
                     CAMERA_OWNER_REVERSE.equals(requestedOwner)
                             ? "reverse_overlay" : "reverse_preview",
                     true, false, null, "reverse_open");
@@ -1339,6 +1355,33 @@ final class CameraHelperMain {
                 }
                 String message = error.getCause() == null
                         ? error.reason : summary(error.getCause());
+                String restoredCleanup = null;
+                if (target == activityGroup
+                        && "consumer_attach_failed".equals(error.reason)
+                        && activityGroup.has() && activityGroup.requestId != requestId) {
+                    int restoredRequestId = activityGroup.requestId;
+                    restoredCleanup = closePersistentGroup(
+                            activityGroup, "failed_activity_switch_cleanup",
+                            restoredRequestId);
+                    String cleanupKind;
+                    try {
+                        cleanupKind = new JSONObject(restoredCleanup).optString("kind");
+                    } catch (Throwable invalidCleanupResult) {
+                        cleanupKind = restoredCleanup;
+                    }
+                    if (!"camera_closed".equals(cleanupKind)
+                            && !"stock_avm_shell_close_queued".equals(cleanupKind)
+                            && !"already_closed".equals(cleanupKind)) {
+                        String forcedCleanup = tearDownPersistentProducer(
+                                "failed_activity_switch_cleanup", error.getCause());
+                        restoredCleanup = restoredCleanup + "; forced=" + forcedCleanup;
+                    }
+                    emit("camera_switch_cleanup",
+                            "camera_owner", target.owner,
+                            "failed_request_id", requestId,
+                            "restored_request_id", restoredRequestId,
+                            "result", restoredCleanup);
+                }
                 emit("camera_error", "stage", errorStage,
                         "camera_id", requestedCameraId,
                         "camera_tag", "pano_h",
@@ -1346,6 +1389,7 @@ final class CameraHelperMain {
                         "request_id", requestId,
                         "preview_indexes", Arrays.toString(requestedIndexes),
                         "producer_epoch", producerEpoch,
+                        "restored_cleanup", restoredCleanup == null ? "" : restoredCleanup,
                         "error", message);
                 return result("camera_error", message, requestedCameraId, "pano_h");
             }
@@ -3062,8 +3106,9 @@ final class CameraHelperMain {
 
         private static Surface[] readReverseSurfaces(Parcel data) {
             int count = data.readInt();
-            if (count != 4) {
-                throw new IllegalArgumentException("four reverse preview Surfaces required");
+            if (count != 4 && count != 5) {
+                throw new IllegalArgumentException(
+                        "four or five reverse preview Surfaces required");
             }
             Surface[] values = new Surface[count];
             try {
@@ -3075,6 +3120,10 @@ final class CameraHelperMain {
                 releaseSurfaces(values);
                 throw error;
             }
+        }
+
+        private static String previewIndexes(int directCount) {
+            return directCount == 4 ? "[0, 1, 2, 3, 4]" : "[0, 1, 2, 3]";
         }
 
         private static void releaseSurfaces(Surface[] values) {

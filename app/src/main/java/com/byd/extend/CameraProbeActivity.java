@@ -2695,7 +2695,7 @@ public final class CameraProbeActivity extends Activity
         reverseFrontIntegrationSwitch.setOnCheckedChangeListener((button, checked) -> {
             if (reverseVisibilityUiUpdating || reverseCameraEditor == null) return;
             int cameraIndex = reverseCameraEditor.selectedCamera();
-            if (!isReverseSideCamera(cameraIndex)) return;
+            if (!isReverseCameraPane(cameraIndex)) return;
             ReverseCameraController.saveFrontIntegrated(
                     preferences, cameraIndex, checked);
             configureReversePreviewIntegratedFront();
@@ -2997,7 +2997,7 @@ public final class CameraProbeActivity extends Activity
                 ReverseCameraController.loadVisibilityMask(preferences));
         if (reverseCalibrationSourceSelector != null) {
             reverseCalibrationSourceSelector.setVisibility(
-                    isReverseSideCamera(cameraIndex) ? View.VISIBLE : View.GONE);
+                    isReverseCameraPane(cameraIndex) ? View.VISIBLE : View.GONE);
         }
         updateReverseCalibrationSourceButtons();
         reverseMainEditorPane.setVisibility(View.GONE);
@@ -3018,6 +3018,9 @@ public final class CameraProbeActivity extends Activity
         reverseCalibrationFront = false;
         if (reverseCameraPreview != null) {
             reverseCameraPreview.setSideMode(ReverseSideSelectorView.MODE_REAR);
+            // Drop any temporary central-front visibility used while calibrating
+            // that source; the persisted integration toggle remains authoritative.
+            configureReversePreviewIntegratedFront();
         }
         if (reverseCalibrationPane != null) reverseCalibrationPane.setVisibility(View.GONE);
         if (reverseMainEditorPane != null) reverseMainEditorPane.setVisibility(View.VISIBLE);
@@ -3025,11 +3028,26 @@ public final class CameraProbeActivity extends Activity
 
     private void selectReverseCalibrationSource(boolean front) {
         if (reverseCalibrationCameraIndex <= 0
-                || (front && !isReverseSideCamera(reverseCalibrationCameraIndex))) return;
+                || (front && !isReverseCameraPane(reverseCalibrationCameraIndex))) return;
         cancelReverseCropInput();
         stopReverseCalibrationCopies(true);
+        // Detach mirrors from the currently active source before changing side.
+        // The same logical center index maps to Rear or physical pano_h index 4
+        // in Front mode; leaving the old binding attached keeps a stale producer
+        // alive and can make LIVE preview follow the previous source.
+        if (reverseCalibrationRawMirror.isAvailable()) {
+            reverseCameraPreview.setEditorRawMirror(
+                    reverseCalibrationCameraIndex, null);
+        }
+        if (reverseCalibrationCorrectedMirror.isAvailable()) {
+            reverseCameraPreview.setEditorCorrectedMirror(
+                    reverseCalibrationCameraIndex, null);
+        }
         reverseCalibrationFront = front;
         applyReversePreviewDewarpConfigs();
+        // Rebind the live mirror to the selected source pane.  Central Front
+        // uses physical index 4 while Rear remains on index 1.
+        attachReverseCalibrationMirrors();
         updateReverseCalibrationSourceButtons();
         updateReverseCalibrationDisplay();
     }
@@ -3043,7 +3061,7 @@ public final class CameraProbeActivity extends Activity
             reverseFrontCalibrationSourceButton.setBackgroundColor(
                     tabColor(reverseCalibrationFront));
             reverseFrontCalibrationSourceButton.setEnabled(
-                    isReverseSideCamera(reverseCalibrationCameraIndex));
+                    isReverseCameraPane(reverseCalibrationCameraIndex));
         }
     }
 
@@ -3487,6 +3505,10 @@ public final class CameraProbeActivity extends Activity
         }
         if (reverseFrontIntegrationSwitch != null) {
             reverseVisibilityUiUpdating = true;
+            reverseFrontIntegrationSwitch.setText(
+                    cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX
+                            ? "Інтеграція передньої камери"
+                            : "Інтеграція передніх камер");
             reverseFrontIntegrationSwitch.setVisibility(
                     reverseFrontIntegrationVisibility(cameraIndex));
             reverseFrontIntegrationSwitch.setChecked(binding.frontIntegrated);
@@ -3538,7 +3560,7 @@ public final class CameraProbeActivity extends Activity
                         ? ReverseCameraController.loadWidgetVisible(preferences)
                         : ReverseCameraController.loadVisibility(preferences, cameraIndex),
                 ReverseCameraController.loadWidgetVisible(preferences),
-                isReverseSideCamera(cameraIndex)
+                isReverseCameraPane(cameraIndex)
                         && ReverseCameraController.loadFrontIntegrated(
                                 preferences, cameraIndex));
     }
@@ -3554,8 +3576,13 @@ public final class CameraProbeActivity extends Activity
                 || cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
     }
 
+    static boolean isReverseCameraPane(int cameraIndex) {
+        return cameraIndex >= ReverseCameraLayout.REAR_CAMERA_INDEX
+                && cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+    }
+
     static int reverseFrontIntegrationVisibility(int cameraIndex) {
-        return isReverseSideCamera(cameraIndex) ? View.VISIBLE : View.INVISIBLE;
+        return isReverseCameraPane(cameraIndex) ? View.VISIBLE : View.INVISIBLE;
     }
 
     static boolean isReverseFixedPane(int cameraIndex) {
@@ -5352,7 +5379,7 @@ public final class CameraProbeActivity extends Activity
                 || isReverseFixedPane(reverseCameraEditor.selectedCamera())) return 0;
         int cameraIndex = reverseCameraEditor.selectedCamera();
         return reverseCalibrationFront
-                ? CameraDewarpConfig.lensForReverseSideCamera(cameraIndex)
+                ? CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex)
                 : CameraDewarpConfig.lensForReverseCamera(cameraIndex);
     }
 
@@ -5479,7 +5506,12 @@ public final class CameraProbeActivity extends Activity
                 preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         CameraDewarpConfig right = CameraDewarpConfig.loadForReverseFront(
                 preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+        CameraDewarpConfig central = CameraDewarpConfig.loadForReverseFront(
+                preferences, ReverseCameraLayout.REAR_CAMERA_INDEX);
         if (override != null) {
+            if (overrideCameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+                central = override;
+            }
             if (overrideCameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) {
                 left = override;
             }
@@ -5487,15 +5519,25 @@ public final class CameraProbeActivity extends Activity
                 right = override;
             }
         }
+        boolean centralIntegrated = ReverseCameraController.loadCentralFrontIntegrated(
+                preferences);
+        if (reverseCalibrationFront
+                && reverseCalibrationCameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            // Keep the central front source visible while calibrating it even when
+            // the persisted integration toggle is still off.
+            centralIntegrated = true;
+        }
         reverseCameraPreview.configureIntegratedFront(
                 reverseFrontCameraLayout, reverseFrontRawCalibrationLayout,
-                left, right,
+                left, right, central,
                 ReverseCameraController.loadFrontIntegrated(
                         preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
                 ReverseCameraController.loadFrontIntegrated(
                         preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+                centralIntegrated,
+                true,
                 ReverseCameraController.loadWidgetVisible(preferences));
-        if (reverseCalibrationFront && isReverseSideCamera(reverseCalibrationCameraIndex)) {
+        if (reverseCalibrationFront && isReverseCameraPane(reverseCalibrationCameraIndex)) {
             reverseCameraPreview.setSideMode(ReverseSideSelectorView.MODE_FRONT);
         }
     }
@@ -7052,10 +7094,31 @@ public final class CameraProbeActivity extends Activity
         IBinder current = helper;
         Surface surface = directCameraPreview.getHolder().getSurface();
         if (current == null || !directCameraSurfaceReady || !surface.isValid()
-                || requestedOpen || cameraHandoffPending) {
+                || cameraHandoffPending) {
             record("open_rejected", "renderer", "direct_avm",
                     "camera_tag", "pano_h", "preview_index", index,
                     "reason", "camera_not_ready");
+            return;
+        }
+        if (!directCameraSelectionAllowed(
+                requestedOpen, activePreview == directCameraPreview,
+                activeActivityCameraOpened)) {
+            record("open_rejected", "renderer", "direct_avm",
+                    "camera_tag", "pano_h", "preview_index", index,
+                    "reason", "camera_busy");
+            return;
+        }
+        if (requestedOpen) {
+            if (activePreview != directCameraPreview || !activeActivityCameraOpened
+                    || activeDirectCameraIndex == index) {
+                record("open_rejected", "renderer", "direct_avm",
+                        "camera_tag", "pano_h", "preview_index", index,
+                        "reason", activePreview == directCameraPreview
+                                && activeActivityCameraOpened
+                                ? "camera_already_selected" : "camera_busy");
+                return;
+            }
+            switchDirectCamera(index, current, surface);
             return;
         }
         activePreview = directCameraPreview;
@@ -7068,6 +7131,22 @@ public final class CameraProbeActivity extends Activity
                 "preview_index", index, "exclusive", true);
         CameraHelperService.cameraPreviewStarted(this);
         openDirectCameraNow("pano_h", index, false);
+    }
+
+    private void switchDirectCamera(int index, IBinder current, Surface surface) {
+        int previousIndex = activeDirectCameraIndex;
+        int requestId = beginActivityCameraRequest(false);
+        activePreview = directCameraPreview;
+        activePreviewCover = directCameraPreviewCover;
+        activeCameraViewpoint = -1;
+        activeDirectCameraIndex = index;
+        directCameraStatus.setText("Switching pano_h / index " + index + "...");
+        record("camera_preview_switch", "renderer", "direct_avm",
+                "camera_tag", "pano_h", "from_preview_index", previousIndex,
+                "preview_index", index, "request_id", requestId,
+                "exclusive", true);
+        ipcExecutor.execute(() -> transactOpenDirect(
+                current, surface, "pano_h", index, requestId, true));
     }
 
     private void maybeOpenReversePreview() {
@@ -7107,7 +7186,7 @@ public final class CameraProbeActivity extends Activity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         requestedOpen = true;
-        reverseCameraStatus.setText("Opening stock base + pano_h indexes 1/2/3...");
+        reverseCameraStatus.setText("Opening stock base + pano_h indexes 1/2/3/4...");
         CameraHelperService.cameraPreviewStarted(this);
         record("reverse_preview_open",
                 "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
@@ -7184,6 +7263,16 @@ public final class CameraProbeActivity extends Activity
 
     static boolean activityPreviewUsesExclusiveConsumer(boolean manualOrDebug) {
         return manualOrDebug;
+    }
+
+    /**
+     * Direct AVM buttons may start an initial request or switch an already-open
+     * direct preview.  A request in flight for another preview must not race
+     * with a direct-camera selection.
+     */
+    static boolean directCameraSelectionAllowed(
+            boolean requestedOpen, boolean directPreviewActive, boolean cameraOpened) {
+        return !requestedOpen || (directPreviewActive && cameraOpened);
     }
 
     private static int previewIndex(String viewName) {
@@ -8711,7 +8800,7 @@ public final class CameraProbeActivity extends Activity
                             ? "Direct camera ready: index 2=left, 3=right"
                             : status);
                     reverseCameraStatus.setText(cameraDiscovered
-                            ? "AVM ready: indexes 1/2/3" : status);
+                            ? "AVM ready: indexes 1/2/3/4" : status);
                     maybeOpenCalibrationCamera();
                     maybeOpenProductionPreview();
                     maybeOpenReversePreview();
@@ -9593,7 +9682,10 @@ public final class CameraProbeActivity extends Activity
         boolean directReady = helper != null && directCameraSurfaceReady
                 && permission && cameraDiscovered && !cameraHandoffPending;
         for (Button button : directCameraIndexButtons) {
-            if (button != null) button.setEnabled(directReady && !requestedOpen);
+            if (button != null) button.setEnabled(directReady
+                    && directCameraSelectionAllowed(
+                    requestedOpen, activePreview == directCameraPreview,
+                    activeActivityCameraOpened));
         }
         boolean calibrationReady = helper != null && calibrationSurfaceReady
                 && permission && cameraDiscovered && !cameraHandoffPending

@@ -409,7 +409,10 @@ public final class CameraShellMain {
 
         private static int[] readReverseGenerations(Parcel data) {
             int count = data.readInt();
-            if (count != 3) throw new IllegalArgumentException("three reverse generations required");
+            if (count != 3 && count != 4) {
+                throw new IllegalArgumentException(
+                        "three or four reverse generations required");
+            }
             int[] values = new int[count];
             for (int i = 0; i < count; i++) {
                 values[i] = data.readInt();

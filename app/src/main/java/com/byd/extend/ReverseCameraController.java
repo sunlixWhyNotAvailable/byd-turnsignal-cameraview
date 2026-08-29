@@ -17,6 +17,8 @@ final class ReverseCameraController {
     static final String PREF_EDITOR_SELECTION = "reverse_camera_editor_selection";
     static final String PREF_BACKGROUND_VISIBLE = "reverse_camera_background_visible";
     static final String PREF_WIDGET_VISIBLE = "reverse_camera_widget_visible";
+    static final String PREF_CENTRAL_FRONT_INTEGRATED =
+            "reverse_camera_front_1_integrated";
     static final boolean DEFAULT_ENABLED = false;
     static final boolean DEFAULT_VISIBLE = true;
     static final boolean DEFAULT_WIDGET_VISIBLE = false;
@@ -304,6 +306,9 @@ final class ReverseCameraController {
                         settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
                 loadFrontIntegrated(
                         settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+                CameraDewarpConfig.loadForReverseFront(
+                        settings, ReverseCameraLayout.REAR_CAMERA_INDEX),
+                loadCentralFrontIntegrated(settings),
                 loadWidgetVisible(settings));
     }
 
@@ -340,7 +345,7 @@ final class ReverseCameraController {
 
     private void cameraOpened(int requestId) {
         if (!matchesCameraOpenEvent(activeRequestId, requestId)
-                || generations.length != 3 || stopping || helper == null) return;
+                || !isValidGenerationSet(generations) || stopping || helper == null) return;
         handler.removeCallbacks(firstFrameTimeout);
         handler.postDelayed(firstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
         helper.armReverseOverlayFrames(activeRequestId, generations);
@@ -349,7 +354,7 @@ final class ReverseCameraController {
     }
 
     private void framesReady(int requestId) {
-        if (requestId != activeRequestId || generations.length != 3
+        if (requestId != activeRequestId || !isValidGenerationSet(generations)
                 || stopping || helper == null) return;
         handler.removeCallbacks(firstFrameTimeout);
         helper.setReverseOverlayVisible(requestId, generations, true, null);
@@ -402,7 +407,7 @@ final class ReverseCameraController {
                 state -> finishStop(reason, retryAfter, state));
         activeCleanup = cleanup;
         Runnable closeCamera = cleanup::startCameraThenWindow;
-        if (activeHelper != null && wasVisible && closingGenerations.length == 3) {
+        if (activeHelper != null && wasVisible && isValidGenerationSet(closingGenerations)) {
             try {
                 activeHelper.setReverseOverlayVisible(
                         closingRequestId, closingGenerations, false,
@@ -651,7 +656,7 @@ final class ReverseCameraController {
 
     static ReverseCameraLayout loadFrontLayout(SharedPreferences settings) {
         ReverseCameraLayout layout = loadFrontRawLayout(settings);
-        for (int cameraIndex : sideCameraIndexes()) {
+        for (int cameraIndex : frontCameraIndexes()) {
             CameraDewarpConfig dewarp = CameraDewarpConfig.loadForReverseFront(
                     settings, cameraIndex);
             if (!dewarp.enabled) continue;
@@ -666,7 +671,7 @@ final class ReverseCameraController {
     static ReverseCameraLayout loadFrontRawLayout(SharedPreferences settings) {
         ReverseCameraLayout layout = readLayout(settings);
         try {
-            for (int cameraIndex : sideCameraIndexes()) {
+            for (int cameraIndex : frontCameraIndexes()) {
                 ReverseCameraLayout.Pane shared = layout.pane(cameraIndex);
                 DirectCameraCrop fallback = defaultFrontCrop(cameraIndex);
                 String prefix = frontPanePrefix(cameraIndex);
@@ -701,6 +706,9 @@ final class ReverseCameraController {
     static ReverseCameraLayout.Rect loadFrontCorrectedSourceCrop(
             SharedPreferences settings, int cameraIndex) {
         DirectCameraCrop raw = defaultFrontCrop(cameraIndex);
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return loadFrontSourceCrop(settings, cameraIndex, true, rect(raw));
+        }
         return loadFrontSourceCrop(settings, cameraIndex, true,
                 rect(DirectCameraCrop.defaultCorrectedFor(
                         CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw)));
@@ -830,7 +838,7 @@ final class ReverseCameraController {
             CameraDewarpConfig.writeForReverse(editor, pane.cameraIndex,
                     CameraDewarpConfig.defaultForReverse(pane.cameraIndex));
         }
-        for (int cameraIndex : sideCameraIndexes()) {
+        for (int cameraIndex : frontCameraIndexes()) {
             writeFrontDefaults(editor, cameraIndex);
             editor.putBoolean(frontIntegratedKey(cameraIndex), DEFAULT_FRONT_INTEGRATED);
         }
@@ -999,8 +1007,17 @@ final class ReverseCameraController {
     }
 
     static String frontIntegratedKey(int cameraIndex) {
-        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex);
+        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex);
         return frontPanePrefix(cameraIndex) + "integrated";
+    }
+
+    static boolean loadCentralFrontIntegrated(SharedPreferences settings) {
+        return loadFrontIntegrated(settings, ReverseCameraLayout.REAR_CAMERA_INDEX);
+    }
+
+    static void saveCentralFrontIntegrated(
+            SharedPreferences settings, boolean integrated) {
+        saveFrontIntegrated(settings, ReverseCameraLayout.REAR_CAMERA_INDEX, integrated);
     }
 
     private static boolean loadMirror(
@@ -1088,7 +1105,7 @@ final class ReverseCameraController {
 
     private static ReverseCameraLayout defaultFrontLayout(ReverseCameraLayout shared) {
         ReverseCameraLayout layout = shared;
-        for (int cameraIndex : sideCameraIndexes()) {
+        for (int cameraIndex : frontCameraIndexes()) {
             DirectCameraCrop crop = defaultFrontCrop(cameraIndex);
             ReverseCameraLayout.Pane pane = layout.pane(cameraIndex);
             layout = ReverseCameraLayout.withPane(layout, cameraIndex,
@@ -1111,8 +1128,9 @@ final class ReverseCameraController {
     private static void writeFrontDefaults(
             SharedPreferences.Editor editor, int cameraIndex) {
         DirectCameraCrop raw = defaultFrontCrop(cameraIndex);
-        DirectCameraCrop corrected = DirectCameraCrop.defaultCorrectedFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw);
+        DirectCameraCrop corrected = cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX
+                ? raw : DirectCameraCrop.defaultCorrectedFor(
+                        CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw);
         String prefix = frontPanePrefix(cameraIndex);
         writeFrontSourceCrop(editor, cameraIndex, rect(raw), false);
         writeFrontSourceCrop(editor, cameraIndex, rect(corrected), true);
@@ -1125,7 +1143,7 @@ final class ReverseCameraController {
     }
 
     static String frontPaneSettingKey(int cameraIndex, String field) {
-        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex);
+        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex);
         if (!"rotation_degrees".equals(field) && !"display_mode".equals(field)
                 && !"mirror".equals(field)) {
             throw new IllegalArgumentException("invalid reverse front pane field");
@@ -1134,7 +1152,7 @@ final class ReverseCameraController {
     }
 
     private static String frontPanePrefix(int cameraIndex) {
-        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex);
+        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex);
         return FRONT_PREFIX + cameraIndex + "_";
     }
 
@@ -1143,6 +1161,11 @@ final class ReverseCameraController {
     }
 
     private static DirectCameraCrop defaultFrontCrop(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return DirectCameraCrop.of(0.0f, 0.0f, 1.0f, 1.0f,
+                    DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT)
+                    .withMirrorHorizontally(false);
+        }
         return DirectCameraCrop.defaultFor(
                 CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
     }
@@ -1155,6 +1178,17 @@ final class ReverseCameraController {
         return new int[]{
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
+    }
+
+    private static int[] frontCameraIndexes() {
+        return new int[]{
+                ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
+    }
+
+    private static boolean isValidGenerationSet(int[] value) {
+        return value != null && (value.length == 3 || value.length == 4);
     }
 
     private static void release(Surface[] surfaces) {

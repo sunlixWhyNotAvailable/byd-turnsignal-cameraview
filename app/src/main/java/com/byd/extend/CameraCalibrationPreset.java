@@ -230,7 +230,7 @@ final class CameraCalibrationPreset {
         try {
             applyReverseFront(preferences, cameraIndex,
                     readReverseFront(preferences, reverseFrontPrefix(cameraIndex),
-                            CameraDewarpConfig.lensForReverseSideCamera(cameraIndex)));
+                            CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex)));
             return true;
         } catch (RuntimeException invalidPreset) {
             return false;
@@ -364,7 +364,7 @@ final class CameraCalibrationPreset {
                 editor, cameraIndex, value.corrected, true);
         CameraDewarpConfig.writeForReverseFront(editor, cameraIndex,
                 CameraDewarpConfig.of(
-                        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex),
+                        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection));
         editor.apply();
@@ -570,7 +570,7 @@ final class CameraCalibrationPreset {
     }
 
     private static String reverseFrontPrefix(int cameraIndex) {
-        CameraDewarpConfig.lensForReverseSideCamera(cameraIndex);
+        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex);
         return "reverse_front_calibration_preset_v1_" + cameraIndex + "_";
     }
 

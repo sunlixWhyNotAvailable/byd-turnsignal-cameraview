@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 25;
+    static final int VERSION = 26;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -345,6 +345,8 @@ final class CameraShellProtocol {
         final CameraDewarpConfig frontRightDewarp;
         final boolean frontLeftIntegrated;
         final boolean frontRightIntegrated;
+        final CameraDewarpConfig centralFrontDewarp;
+        final boolean centralFrontIntegrated;
         final boolean widgetVisible;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
@@ -418,7 +420,9 @@ final class CameraShellProtocol {
                     layout, rawFallbackLayout,
                     CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT),
                     CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_RIGHT),
-                    false, false, false);
+                    false, false,
+                    CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_FRONT),
+                    false, false);
         }
 
         ReverseOverlaySpec(
@@ -433,6 +437,8 @@ final class CameraShellProtocol {
                 CameraDewarpConfig frontLeftDewarp,
                 CameraDewarpConfig frontRightDewarp,
                 boolean frontLeftIntegrated, boolean frontRightIntegrated,
+                CameraDewarpConfig centralFrontDewarp,
+                boolean centralFrontIntegrated,
                 boolean widgetVisible) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
@@ -464,6 +470,10 @@ final class CameraShellProtocol {
                     : frontRightDewarp;
             this.frontLeftIntegrated = frontLeftIntegrated;
             this.frontRightIntegrated = frontRightIntegrated;
+            this.centralFrontDewarp = centralFrontDewarp == null
+                    ? CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_FRONT)
+                    : centralFrontDewarp;
+            this.centralFrontIntegrated = centralFrontIntegrated;
             this.widgetVisible = widgetVisible;
         }
 
@@ -494,9 +504,11 @@ final class CameraShellProtocol {
             parcel.writeInt(widgetVisible ? 1 : 0);
             parcel.writeInt(frontLeftIntegrated ? 1 : 0);
             parcel.writeInt(frontRightIntegrated ? 1 : 0);
+            parcel.writeInt(centralFrontIntegrated ? 1 : 0);
             writeDewarp(parcel, frontLeftDewarp);
             writeDewarp(parcel, frontRightDewarp);
-            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+            writeDewarp(parcel, centralFrontDewarp);
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
                     cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
                     cameraIndex++) {
                 ReverseCameraLayout.Pane raw = frontRawFallbackLayout.pane(cameraIndex);
@@ -602,11 +614,13 @@ final class CameraShellProtocol {
             boolean widgetVisible = readBoolean(parcel);
             boolean frontLeftIntegrated = readBoolean(parcel);
             boolean frontRightIntegrated = readBoolean(parcel);
+            boolean centralFrontIntegrated = readBoolean(parcel);
             CameraDewarpConfig frontLeftDewarp = readDewarp(parcel);
             CameraDewarpConfig frontRightDewarp = readDewarp(parcel);
+            CameraDewarpConfig centralFrontDewarp = readDewarp(parcel);
             ReverseCameraLayout frontLayout = layout;
             ReverseCameraLayout frontRawFallbackLayout = rawFallbackLayout;
-            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
                     cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
                     cameraIndex++) {
                 float[] frontRawCrop = readRect(parcel);
@@ -643,7 +657,8 @@ final class CameraShellProtocol {
                     rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
                     transparencyPercent, frontLayout, frontRawFallbackLayout,
                     frontLeftDewarp, frontRightDewarp,
-                    frontLeftIntegrated, frontRightIntegrated, widgetVisible);
+                    frontLeftIntegrated, frontRightIntegrated,
+                    centralFrontDewarp, centralFrontIntegrated, widgetVisible);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -666,7 +681,8 @@ final class CameraShellProtocol {
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT
                     || rightDewarp.lens != CameraDewarpConfig.LENS_RIGHT
                     || frontLeftDewarp.lens != CameraDewarpConfig.LENS_LEFT
-                    || frontRightDewarp.lens != CameraDewarpConfig.LENS_RIGHT) {
+                    || frontRightDewarp.lens != CameraDewarpConfig.LENS_RIGHT
+                    || centralFrontDewarp.lens != CameraDewarpConfig.LENS_FRONT) {
                 throw new IllegalArgumentException("invalid reverse dewarp lens mapping");
             }
             boolean[] zSeen = new boolean[3];
@@ -699,8 +715,12 @@ final class CameraShellProtocol {
             validateFrontLayout(frontRawFallbackLayout);
         }
 
+        boolean requiresCentralFrontSource() {
+            return centralFrontIntegrated && widgetVisible;
+        }
+
         private static void validateFrontLayout(ReverseCameraLayout value) {
-            for (int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
                     cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
                     cameraIndex++) {
                 ReverseCameraLayout.Pane pane = value.pane(cameraIndex);

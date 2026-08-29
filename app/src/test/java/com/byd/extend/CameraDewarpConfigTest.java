@@ -218,6 +218,39 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
+    public void centralReverseFrontScopeUsesFrontLensAndStaysSeparateFromRear() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int central = ReverseCameraLayout.REAR_CAMERA_INDEX;
+
+        assertEquals(CameraDewarpConfig.LENS_FRONT,
+                CameraDewarpConfig.lensForReverseFrontCamera(central));
+        assertConfig(CameraDewarpConfig.loadForReverseFront(preferences, central),
+                false, CameraDewarpConfig.DEFAULT_FOV_DEGREES,
+                CameraDewarpConfig.DEFAULT_PROJECTION);
+
+        CameraDewarpConfig.save(preferences,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_FRONT, true, 166,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        assertConfig(CameraDewarpConfig.loadForReverseFront(preferences, central),
+                false, CameraDewarpConfig.DEFAULT_FOV_DEGREES,
+                CameraDewarpConfig.DEFAULT_PROJECTION);
+
+        CameraDewarpConfig.saveForReverse(preferences, central,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR, true, 165,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        CameraDewarpConfig.saveForReverseFront(preferences, central,
+                CameraDewarpConfig.of(CameraDewarpConfig.LENS_FRONT, true, 147,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+
+        assertConfig(CameraDewarpConfig.loadForReverse(preferences, central),
+                true, 165, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertConfig(CameraDewarpConfig.loadForReverseFront(preferences, central),
+                true, 147, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertEquals(CameraDewarpConfig.LENS_FRONT,
+                CameraDewarpConfig.loadForReverseFront(preferences, central).lens);
+    }
+
+    @Test
     public void runtimeRoiIsValidatedAndPreservedByMappingChanges() {
         CameraDewarpConfig centered = CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_LEFT, true, 100);
