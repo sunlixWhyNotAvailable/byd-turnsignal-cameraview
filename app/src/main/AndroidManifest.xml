@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.BYDAUTO_LIGHT_SET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature
@@ -21,10 +22,10 @@
     <application
         android:allowBackup="false"
         android:hasCode="true"
-        android:icon="@android:drawable/ic_menu_camera"
+        android:icon="@drawable/byd_extend_mark"
         android:label="BYD Extend"
         android:name="com.byd.extend.TurnSignalGuardApplication"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.BydExtend">
 
         <activity
             android:name="com.byd.extend.CameraProbeActivity"

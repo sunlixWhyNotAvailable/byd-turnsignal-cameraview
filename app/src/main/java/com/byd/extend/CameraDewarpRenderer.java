@@ -19,7 +19,6 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
 import java.util.Arrays;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
@@ -28,7 +27,6 @@ import java.util.function.Consumer;
 final class CameraDewarpRenderer {
     private static final String TAG = "CameraDewarpRenderer";
     private static final String MATRIX_LOG_TAG = "BydCameraProbe";
-    private static final int START_TIMEOUT_MS = 1500;
     private static final long METRICS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final AtomicInteger RENDERS_IN_FLIGHT = new AtomicInteger();
@@ -60,6 +58,11 @@ final class CameraDewarpRenderer {
                     + " gl_FragColor=texture2D(uTexture,vTexCoord);\n"
                     + "}\n";
 
+    interface LifecycleCallback {
+        void onReady(CameraDewarpRenderer renderer, Surface surface);
+        void onStopped(CameraDewarpRenderer renderer, Throwable startupError);
+    }
+
     private final HandlerThread thread = new HandlerThread("camera-dewarp");
     private final SurfaceTexture outputTexture;
     private final int width;
@@ -67,14 +70,16 @@ final class CameraDewarpRenderer {
     private final int inputGeneration;
     private final Consumer<Stats> statsSink;
     private final Consumer<Event> eventSink;
+    private final LifecycleCallback lifecycleCallback;
     private final Runnable metricsTick = this::emitStatsTick;
     private final AtomicBoolean mappingUpdatePosted = new AtomicBoolean();
     private final AtomicBoolean startupFailureReported = new AtomicBoolean();
     private final AtomicBoolean runtimeFailureReported = new AtomicBoolean();
     private final AtomicBoolean released = new AtomicBoolean();
     private final AtomicBoolean cleanupStarted = new AtomicBoolean();
+    private final AtomicBoolean stoppedReported = new AtomicBoolean();
     private volatile MappingRequest request;
-    private Handler handler;
+    private volatile Handler handler;
     private volatile Surface cameraSurface;
     private SurfaceTexture cameraTexture;
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
@@ -103,7 +108,6 @@ final class CameraDewarpRenderer {
     private long pendingMeshGenerationNs = -1;
     private final float[] textureMatrix = new float[16];
     private boolean inputMatrixReported;
-    private Throwable startupError;
     private long metricsStartedNs;
     private long lastCallbackNs;
     private long callbackCount;
@@ -325,7 +329,8 @@ final class CameraDewarpRenderer {
             SurfaceTexture outputTexture, int width, int height,
             CameraDewarpConfig config, long requestToken, int inputGeneration,
             int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
-            Consumer<Stats> statsSink, Consumer<Event> eventSink) {
+            Consumer<Stats> statsSink, Consumer<Event> eventSink,
+            LifecycleCallback lifecycleCallback) {
         this.outputTexture = outputTexture;
         this.width = width;
         this.height = height;
@@ -335,21 +340,24 @@ final class CameraDewarpRenderer {
         request = new MappingRequest(config, requestToken);
         this.statsSink = statsSink;
         this.eventSink = eventSink;
+        if (lifecycleCallback == null) {
+            throw new IllegalArgumentException("lifecycle callback is required");
+        }
+        this.lifecycleCallback = lifecycleCallback;
     }
 
-    static CameraDewarpRenderer start(
+    static CameraDewarpRenderer startAsync(
             SurfaceTexture outputTexture, int width, int height,
             CameraDewarpConfig config, long requestToken, int inputGeneration,
             int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
-            Consumer<Stats> statsSink, Consumer<Event> eventSink) {
+            Consumer<Stats> statsSink, Consumer<Event> eventSink,
+            LifecycleCallback lifecycleCallback) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
                 outputTexture, width, height, config, requestToken, inputGeneration,
-                statsRequestId, statsGeneration, viewWidth, viewHeight, statsSink, eventSink);
-        return renderer.startInternal() ? renderer : null;
-    }
-
-    Surface cameraSurface() {
-        return cameraSurface;
+                statsRequestId, statsGeneration, viewWidth, viewHeight,
+                statsSink, eventSink, lifecycleCallback);
+        renderer.startInternal();
+        return renderer;
     }
 
     void setRawMirror(SurfaceTexture texture) {
@@ -396,57 +404,77 @@ final class CameraDewarpRenderer {
         });
     }
 
-    void release() {
-        released.set(true);
-        if (!cleanupStarted.compareAndSet(false, true)) return;
+    void releaseAsync() {
+        if (!released.compareAndSet(false, true)) return;
         Handler activeHandler = handler;
-        if (activeHandler == null) return;
-        CountDownLatch released = new CountDownLatch(1);
-        activeHandler.post(() -> {
-            try {
-                releaseGl();
-            } finally {
-                released.countDown();
-            }
-        });
-        try {
-            released.await(START_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
+        if (activeHandler == null) {
+            reportStopped(null);
+            return;
         }
-        thread.quitSafely();
-        handler = null;
+        activeHandler.post(() -> cleanupAndStop(null));
     }
 
-    private boolean startInternal() {
-        CountDownLatch ready = new CountDownLatch(1);
+    private void startInternal() {
         thread.start();
         handler = new Handler(thread.getLooper());
         handler.post(() -> {
+            Throwable failure = null;
             try {
+                if (released.get()) {
+                    cleanupAndStop(null);
+                    return;
+                }
                 initializeGl();
+                if (released.get()) {
+                    cleanupAndStop(null);
+                    return;
+                }
+                Surface surface = cameraSurface;
+                require(surface != null && surface.isValid(),
+                        "dewarp renderer unavailable");
+                notifyReady(surface);
             } catch (Throwable error) {
-                startupError = error;
-                reportStartupFailure(error);
-            } finally {
-                ready.countDown();
+                if (!released.get()) {
+                    failure = error;
+                    reportStartupFailure(error);
+                }
+                released.set(true);
+                cleanupAndStop(failure);
             }
         });
+    }
+
+    private void cleanupAndStop(Throwable startupError) {
+        if (!cleanupStarted.compareAndSet(false, true)) return;
+        Handler activeHandler = handler;
+        if (activeHandler != null) activeHandler.removeCallbacksAndMessages(null);
         try {
-            if (!ready.await(START_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                released.set(true);
-                startupError = new IllegalStateException("dewarp renderer startup timeout");
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            released.set(true);
-            startupError = interrupted;
+            releaseGl();
+        } catch (Throwable error) {
+            Log.w(TAG, "Dewarp cleanup failed", error);
+        } finally {
+            handler = null;
+            thread.quitSafely();
+            reportStopped(startupError);
         }
-        if (startupError == null && cameraSurface != null && cameraSurface.isValid()) return true;
-        reportStartupFailure(startupError == null
-                ? new IllegalStateException("dewarp renderer unavailable") : startupError);
-        release();
-        return false;
+    }
+
+    private void notifyReady(Surface surface) {
+        try {
+            lifecycleCallback.onReady(this, surface);
+        } catch (Throwable error) {
+            Log.w(TAG, "Dewarp ready callback failed", error);
+            releaseAsync();
+        }
+    }
+
+    private void reportStopped(Throwable startupError) {
+        if (!stoppedReported.compareAndSet(false, true)) return;
+        try {
+            lifecycleCallback.onStopped(this, startupError);
+        } catch (Throwable error) {
+            Log.w(TAG, "Dewarp stopped callback failed", error);
+        }
     }
 
     private void initializeGl() {

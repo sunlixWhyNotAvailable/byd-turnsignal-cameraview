@@ -7,8 +7,9 @@
 
 ## Project status
 
-Current source version: `0.53.1` (version code `98`). The application interface is Ukrainian.
-The canonical debug APK name is `byd-extend-v0.53.1.apk`; published builds are listed in the
+Current source version: `1.0.0` (version code `99`). The application has Ukrainian and English
+interfaces, dark and light themes, and a redesigned Compose UI. The canonical debug APK name is
+`byd-extend-v1.0.0.apk`; published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
 ## Features
@@ -19,6 +20,7 @@ The canonical debug APK name is `byd-extend-v0.53.1.apk`; published builds are l
 - Independent parking-camera views driven by compatible proximity and speed telemetry.
 - Reverse composition, direct camera preview, calibration, fisheye correction, mirroring, crop,
   rotation, placement, scale, transparency, corner rounding, and image-quality controls.
+- User-selectable Reverse panes with optional integrated front side and central camera profiles.
 - Optional music metadata and local weather for the stock BYD weather UI.
 - Diagnostics and explicit log sharing.
 
@@ -78,7 +80,7 @@ missing or inaccessible optional files are reported in the package instead of st
 
 ## Installation
 
-1. Download `byd-extend-v0.53.1.apk` from
+1. Download `byd-extend-v1.0.0.apk` from
    [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 2. Install it manually, grant camera/location access as requested, and accept the BYD Extend local
    ADB authorization prompt.

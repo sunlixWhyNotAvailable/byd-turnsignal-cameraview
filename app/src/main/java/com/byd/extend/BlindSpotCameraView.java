@@ -4,6 +4,8 @@ import android.content.Context;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Surface;
 import android.view.TextureView;
@@ -42,8 +44,17 @@ final class BlindSpotCameraView extends TextureView
     }
 
     private Callback callback;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Surface cameraSurface;
     private CameraDewarpRenderer dewarpRenderer;
+    private SurfaceTexture rendererTexture;
+    private CameraDewarpRenderer retiringRenderer;
+    private SurfaceTexture retiringTexture;
+    private SurfaceTexture pendingTexture;
+    private int pendingWidth;
+    private int pendingHeight;
+    private boolean restartAfterRetire;
+    private SurfaceTexture deferredReleaseTexture;
     private SurfaceTexture rawMirrorTexture;
     private SurfaceTexture correctedMirrorTexture;
     private CameraDewarpConfig dewarpConfig =
@@ -98,7 +109,7 @@ final class BlindSpotCameraView extends TextureView
     }
 
     void setPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
-        if (cameraSurface != null) {
+        if (hasCameraInputLifecycle()) {
             throw new IllegalStateException("camera buffer must be sized before attach");
         }
         int[] size = paneBoundedBufferSize(paneWidth, paneHeight, quality);
@@ -136,14 +147,9 @@ final class BlindSpotCameraView extends TextureView
     }
 
     void retireCameraInput() {
-        dewarpGeneration++;
-        if (dewarpRenderer != null) {
-            dewarpRenderer.release();
-            dewarpRenderer = null;
-        } else if (cameraSurface != null) {
-            cameraSurface.release();
-        }
-        cameraSurface = null;
+        restartAfterRetire = false;
+        pendingTexture = null;
+        retireActiveInput();
         rawFallbackActive = false;
         dewarpStatsRequestId = 0;
         dewarpStatsGeneration = 0;
@@ -151,14 +157,15 @@ final class BlindSpotCameraView extends TextureView
 
     int ensureCameraInput() {
         if (isCameraSurfaceReady()) return inputGeneration.current();
+        if (dewarpRenderer != null) return inputGeneration.current();
         SurfaceTexture texture = getSurfaceTexture();
         if (texture == null) return 0;
-        createCameraInput(texture, getWidth(), getHeight());
-        return cameraInputGeneration();
+        requestCameraInput(texture, getWidth(), getHeight());
+        return inputGeneration.current();
     }
 
     void setForceDewarpPipeline(boolean value) {
-        if (cameraSurface != null) {
+        if (hasCameraInputLifecycle()) {
             throw new IllegalStateException("dewarp pipeline must be selected before attach");
         }
         forceDewarpPipeline = value;
@@ -280,11 +287,31 @@ final class BlindSpotCameraView extends TextureView
 
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
-        createCameraInput(texture, width, height);
+        requestCameraInput(texture, width, height);
     }
 
-    private void createCameraInput(SurfaceTexture texture, int width, int height) {
-        retireCameraInput();
+    private void requestCameraInput(SurfaceTexture texture, int width, int height) {
+        pendingTexture = texture;
+        pendingWidth = width;
+        pendingHeight = height;
+        restartAfterRetire = true;
+        if (dewarpRenderer != null || cameraSurface != null) retireActiveInput();
+        startPendingInput();
+    }
+
+    private void startPendingInput() {
+        if (!restartAfterRetire || retiringRenderer != null
+                || dewarpRenderer != null || cameraSurface != null) return;
+        SurfaceTexture texture = pendingTexture;
+        int width = pendingWidth;
+        int height = pendingHeight;
+        pendingTexture = null;
+        restartAfterRetire = false;
+        if (texture == null || texture != getSurfaceTexture() || !isAvailable()) return;
+        startCameraInput(texture, width, height);
+    }
+
+    private void startCameraInput(SurfaceTexture texture, int width, int height) {
         if (automaticBufferQuality >= 0) {
             int[] size = paneBoundedBufferSize(width, height, automaticBufferQuality);
             bufferWidth = size[0];
@@ -294,17 +321,19 @@ final class BlindSpotCameraView extends TextureView
         configureBuffer();
         if (usesDewarpPipeline()) {
             int rendererGeneration = ++dewarpGeneration;
-            dewarpRenderer = CameraDewarpRenderer.start(
+            rendererTexture = texture;
+            dewarpRenderer = CameraDewarpRenderer.startAsync(
                     texture, bufferWidth, bufferHeight,
                     dewarpConfig, dewarpRequestToken, cameraGeneration,
                     dewarpStatsRequestId, dewarpStatsGeneration,
                     getWidth(), getHeight(),
-                    stats -> post(() -> {
+                    stats -> mainHandler.post(() -> {
                         if (rendererGeneration != dewarpGeneration
+                                || texture != getSurfaceTexture()
                                 || dewarpRenderer == null) return;
                         Consumer<CameraDewarpRenderer.Stats> sink = dewarpStatsSink;
                         if (sink != null) sink.accept(stats);
-                    }), event -> post(() -> {
+                    }), event -> mainHandler.post(() -> {
                         if (rendererGeneration != dewarpGeneration) return;
                         if (!CameraDewarpRenderer.shouldHandleEvent(
                                 event.kind, event.requestToken,
@@ -326,33 +355,126 @@ final class BlindSpotCameraView extends TextureView
                                 && callback != null) {
                             callback.onCameraRenderFailed(this, event);
                         }
-                    }));
-            // Startup is synchronous; invalidate any events queued before a timeout fallback.
-            if (dewarpRenderer == null) dewarpGeneration++;
-            else {
-                dewarpRenderer.setRawMirror(rawMirrorTexture);
-                dewarpRenderer.setCorrectedMirror(correctedMirrorTexture);
-            }
+                    }), new CameraDewarpRenderer.LifecycleCallback() {
+                        @Override
+                        public void onReady(
+                                CameraDewarpRenderer renderer, Surface surface) {
+                            mainHandler.post(() -> onRendererReady(
+                                    renderer, surface, texture,
+                                    rendererGeneration, cameraGeneration, width, height));
+                        }
+
+                        @Override
+                        public void onStopped(
+                                CameraDewarpRenderer renderer, Throwable startupError) {
+                            mainHandler.post(() -> onRendererStopped(
+                                    renderer, startupError, texture,
+                                    rendererGeneration, cameraGeneration, width, height));
+                        }
+                    });
+            setAlpha(dewarpConfig.enabled ? 0.0f : 1.0f);
+            setRawFallbackActive(false);
+            applyCurrentCrop();
+            return;
         }
-        setAlpha(dewarpRenderer != null && dewarpConfig.enabled ? 0.0f : 1.0f);
-        setRawFallbackActive(dewarpRenderer == null && dewarpConfig.enabled);
-        if (dewarpRenderer != null) {
-            cameraSurface = dewarpRenderer.cameraSurface();
-        } else {
-            if (usesDewarpPipeline()) {
-                Log.e(TAG, "Dewarp renderer unavailable; using direct Surface");
-            }
-            cameraSurface = new Surface(texture);
-        }
+        cameraSurface = new Surface(texture);
+        setAlpha(1.0f);
+        setRawFallbackActive(false);
         applyCurrentCrop();
-        if (callback != null) {
+        notifyCameraSurfaceAvailable(width, height, cameraGeneration);
+    }
+
+    private void onRendererReady(
+            CameraDewarpRenderer renderer, Surface surface, SurfaceTexture texture,
+            int rendererGeneration, int cameraGeneration, int width, int height) {
+        if (!isCurrentRendererCallback(
+                rendererGeneration, dewarpGeneration,
+                texture, getSurfaceTexture(), renderer, dewarpRenderer)) {
+            renderer.releaseAsync();
+            return;
+        }
+        cameraSurface = surface;
+        renderer.setRawMirror(rawMirrorTexture);
+        renderer.setCorrectedMirror(correctedMirrorTexture);
+        setRawFallbackActive(false);
+        setAlpha(dewarpConfig.enabled ? 0.0f : 1.0f);
+        applyCurrentCrop();
+        notifyCameraSurfaceAvailable(width, height, cameraGeneration);
+    }
+
+    private void onRendererStopped(
+            CameraDewarpRenderer renderer, Throwable startupError, SurfaceTexture texture,
+            int rendererGeneration, int cameraGeneration, int width, int height) {
+        boolean current = renderer == dewarpRenderer;
+        boolean retiring = renderer == retiringRenderer;
+        if (!current && !retiring) return;
+        if (current) {
+            dewarpRenderer = null;
+            rendererTexture = null;
+            cameraSurface = null;
+        }
+        if (retiring) {
+            retiringRenderer = null;
+            retiringTexture = null;
+        }
+        if (deferredReleaseTexture == texture) {
+            deferredReleaseTexture = null;
+            texture.release();
+        } else if (current && startupError != null
+                && rendererGeneration == dewarpGeneration
+                && texture == getSurfaceTexture() && isAvailable()) {
+            Log.e(TAG, "Dewarp renderer unavailable; using direct Surface", startupError);
+            cameraSurface = new Surface(texture);
+            setRawFallbackActive(dewarpConfig.enabled);
+            setAlpha(1.0f);
+            applyCurrentCrop();
+            notifyCameraSurfaceAvailable(width, height, cameraGeneration);
+        }
+        startPendingInput();
+    }
+
+    private void notifyCameraSurfaceAvailable(int width, int height, int cameraGeneration) {
+        if (callback != null && cameraSurface != null && cameraSurface.isValid()) {
             callback.onCameraSurfaceAvailable(
                     this, cameraSurface, width, height, cameraGeneration);
         }
     }
 
+    private void retireActiveInput() {
+        dewarpGeneration++;
+        CameraDewarpRenderer renderer = dewarpRenderer;
+        if (renderer != null) {
+            dewarpRenderer = null;
+            retiringRenderer = renderer;
+            retiringTexture = rendererTexture;
+            rendererTexture = null;
+            cameraSurface = null;
+            renderer.releaseAsync();
+        } else if (cameraSurface != null) {
+            cameraSurface.release();
+            cameraSurface = null;
+        }
+    }
+
+    private boolean hasCameraInputLifecycle() {
+        return cameraSurface != null || dewarpRenderer != null;
+    }
+
+    static boolean isCurrentRendererCallback(
+            int callbackGeneration, int currentGeneration,
+            Object callbackTexture, Object currentTexture,
+            Object callbackRenderer, Object currentRenderer) {
+        return callbackGeneration == currentGeneration
+                && callbackTexture == currentTexture
+                && callbackRenderer == currentRenderer;
+    }
+
     @Override
     public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+        if (pendingTexture == texture) {
+            pendingWidth = width;
+            pendingHeight = height;
+        }
         configureBuffer();
         applyCurrentCrop();
         if (callback != null && cameraSurface != null) {
@@ -363,8 +485,15 @@ final class BlindSpotCameraView extends TextureView
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
         if (callback != null) callback.onCameraSurfaceDestroyed(this);
+        boolean rendererOwnsTexture = texture == rendererTexture
+                || texture == retiringTexture;
+        if (pendingTexture == texture) {
+            pendingTexture = null;
+            restartAfterRetire = false;
+        }
+        if (rendererOwnsTexture) deferredReleaseTexture = texture;
         retireCameraInput();
-        return true;
+        return !rendererOwnsTexture;
     }
 
     @Override

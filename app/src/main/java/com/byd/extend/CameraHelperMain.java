@@ -63,7 +63,7 @@ final class CameraHelperMain {
     private CameraHelperMain() {}
 
     static class HelperBinder extends Binder {
-        private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private final Handler callbackHandler;
         private final TurnSignalController turnController;
         private final Consumer<String> logSink;
         private final SharedPreferences counters;
@@ -103,11 +103,19 @@ final class CameraHelperMain {
         private int pendingReversePreviewRequestId;
 
         HelperBinder(Context context, Consumer<String> logSink) {
+            this(context, new Handler(Looper.getMainLooper()), logSink);
+        }
+
+        HelperBinder(Context context, Handler callbackHandler, Consumer<String> logSink) {
+            if (callbackHandler == null) {
+                throw new IllegalArgumentException("callbackHandler is null");
+            }
+            this.callbackHandler = callbackHandler;
             this.logSink = logSink;
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             migrateLegacyCounters(context);
             turnController = new TurnSignalController(
-                    context, mainHandler, this::acceptShellEvent, this::acceptControllerEvent);
+                    context, callbackHandler, this::acceptShellEvent, this::acceptControllerEvent);
         }
 
         void startGuardRuntime() {
@@ -319,7 +327,7 @@ final class CameraHelperMain {
             if (!callbacks.register(newCallback, registrationGeneration)) return false;
             try {
                 newCallback.linkToDeath(
-                        () -> mainHandler.post(() -> disconnectCallback(
+                        () -> callbackHandler.post(() -> disconnectCallback(
                                 newCallback, registrationGeneration)), 0);
             } catch (RemoteException error) {
                 callbacks.detach(newCallback, registrationGeneration);
@@ -888,6 +896,10 @@ final class CameraHelperMain {
             persistentSession.setActive(parkingGroup, target, active);
         }
 
+        synchronized void setReverseTargetActive(Surface target, boolean active) throws Exception {
+            persistentSession.setActive(reverseGroup, target, active);
+        }
+
         synchronized String openParkingCameras(
                 Surface[] requestedSurfaces, int[] indexes, int requestId) {
             if (requestedSurfaces == null || indexes == null
@@ -1429,19 +1441,19 @@ final class CameraHelperMain {
                     @Override
                     public void onConsumerFailure(
                             Surface failedSurface, int index, Throwable error) {
-                        mainHandler.post(() -> acceptRawConsumerFailure(
+                        callbackHandler.post(() -> acceptRawConsumerFailure(
                                 openedHubGeneration, failedSurface, index, error));
                     }
 
                     @Override
                     public void onSourceFailure(int index, Throwable error) {
-                        mainHandler.post(() -> acceptRawSourceFailure(
+                        callbackHandler.post(() -> acceptRawSourceFailure(
                                 openedHubGeneration, index, error));
                     }
 
                     @Override
                     public void onStats(int index, DirectCameraSourceHub.Stats stats) {
-                        mainHandler.post(() -> {
+                        callbackHandler.post(() -> {
                             if (sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer) return;
                             emit("camera_source_hub_stats",
@@ -1519,7 +1531,7 @@ final class CameraHelperMain {
                     @Override
                     public void onTargetStall(
                             Surface surface, int index, long swapWaitNs) {
-                        mainHandler.post(() -> {
+                        callbackHandler.post(() -> {
                             if (sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer) return;
                             emit("camera_source_target_stall",
@@ -2368,6 +2380,62 @@ final class CameraHelperMain {
                 }
             }
 
+            void invalidateStockAvmGroup(
+                    PersistentCameraPort port, String reason,
+                    PersistentEventSink events, int cameraId, int epoch)
+                    throws PersistentSessionFailure {
+                if (!isStockAvmGroup(activityGroup)) return;
+                ConsumerGroup.Snapshot invalid = activityGroup.snapshot();
+                if (isReverseStockAvmGroup(activityGroup) && invalid.surfaces.length > 1) {
+                    try {
+                        if (!port.remove(invalid.surfaces[0], invalid.indexes[0])) {
+                            throw new IllegalStateException("rmPreviewSurface returned false");
+                        }
+                    } catch (Throwable error) {
+                        throw new PersistentSessionFailure(
+                                "consumer_detach_failed", root(error), true,
+                                false, false);
+                    }
+                    Surface[] remainingSurfaces = Arrays.copyOfRange(
+                            invalid.surfaces, 1, invalid.surfaces.length);
+                    int[] remainingIndexes = Arrays.copyOfRange(
+                            invalid.indexes, 1, invalid.indexes.length);
+                    activityGroup.set(remainingSurfaces, remainingIndexes, invalid.requestId,
+                            invalid.view, invalid.exclusive, invalid.shellOwned,
+                            invalid.attached, false);
+                    activityGroup.restoreActive(Arrays.copyOfRange(
+                            invalid.active, 1, invalid.active.length));
+                    if (invalid.surfaces[0] != null) invalid.surfaces[0].release();
+                    events.emit("stock_avm_input_detached", "camera_owner", invalid.owner,
+                            "request_id", invalid.requestId, "view", invalid.view,
+                            "reason", reason, "producer_epoch", epoch);
+                    return;
+                }
+                try {
+                    detachGroup(port, activityGroup);
+                } catch (Throwable error) {
+                    throw new PersistentSessionFailure(
+                            "consumer_detach_failed", root(error), true,
+                            false, false);
+                }
+                activityGroup.clear();
+                invalid.release();
+                emitConsumerClosed(events, invalid.owner, invalid.requestId,
+                        invalid.view, invalid.indexes, reason, cameraId, epoch);
+            }
+
+            static boolean isStockAvmGroup(ConsumerGroup group) {
+                return group != null && group.has() && group.shellOwned
+                        && ("stock_avm_input".equals(group.view)
+                        || isReverseStockAvmGroup(group));
+            }
+
+            static boolean isReverseStockAvmGroup(ConsumerGroup group) {
+                return group != null && group.has() && group.shellOwned
+                        && "reverse_preview_with_stock_base".equals(group.view)
+                        && group.indexes.length > 0 && group.indexes[0] == 0;
+            }
+
             TeardownOutcome tearDown(
                     PersistentCameraPort port, String reason, Throwable failure,
                     boolean closeStock, int stockRequestId,
@@ -3170,6 +3238,39 @@ final class CameraHelperMain {
             if ("camera_shell_died".equals(kind)) {
                 cameraShellDiedCleanup();
                 turnController.recoverCameraHelper();
+            } else if ("stock_avm_shell_died".equals(kind)) {
+                stockAvmShellDiedCleanup();
+            }
+        }
+
+        private synchronized void stockAvmShellDiedCleanup() {
+            boolean stockWasActive = stockCameraRequested
+                    || (camera != null && CAMERA_OWNER_ACTIVITY.equals(activeCameraOwner)
+                    && viewName != null && !viewName.startsWith("direct_"));
+            stockCameraRequested = false;
+            pendingStockCameraRequestId = 0;
+            releaseSurfaces(pendingReversePreviewSurfaces);
+            pendingReversePreviewSurfaces = new Surface[0];
+            pendingReversePreviewRequestId = 0;
+            if (!persistentPanoProducer) {
+                if (stockWasActive && camera != null) {
+                    closeOneShotCamera("stock_avm_shell_died", false);
+                } else if (camera == null) {
+                    emit("camera_closed", "renderer", "stock_avm_shell",
+                            "view", viewName == null ? "unknown" : viewName,
+                            "reason", "stock_avm_shell_died", "request_id", activeCameraRequestId,
+                            "error", "");
+                }
+                return;
+            }
+            try {
+                persistentSession.invalidateStockAvmGroup(
+                        new ReflectivePersistentCameraPort(camera),
+                        "stock_avm_shell_died", this::emit,
+                        producerCameraId, producerEpoch);
+                refreshPersistentLegacyState();
+            } catch (PersistentSessionFailure failure) {
+                tearDownPersistentProducer(failure.reason, failure.getCause(), true);
             }
         }
 
@@ -3202,6 +3303,9 @@ final class CameraHelperMain {
                 JSONObject event = new JSONObject(line);
                 String kind = event.optString("kind");
                 key = lifetimeCounterKey(kind);
+                if ("reverse_overlay_target".equals(kind)) {
+                    applyReverseTargetEvent(event);
+                }
                 if (isMusicJournalEvent(kind)) {
                     synchronized (musicJournal) {
                         appendBounded(musicJournal, line, 20);
@@ -3239,6 +3343,32 @@ final class CameraHelperMain {
             if (key != null) incrementCounter(key);
             forwardLine(line);
             if (key != null) emitCounters();
+        }
+
+        private synchronized void applyReverseTargetEvent(JSONObject event) {
+            int requestId = event.optInt("request_id", 0);
+            int sourceIndex = event.optInt("camera_index", -1);
+            if (!reverseGroup.attached || requestId <= 0
+                    || reverseGroup.requestId != requestId
+                    || sourceIndex < 1 || sourceIndex > 4) return;
+            Surface target = null;
+            for (int i = 0; i < reverseGroup.indexes.length; i++) {
+                if (reverseGroup.indexes[i] == sourceIndex) {
+                    target = reverseGroup.surfaces[i];
+                    break;
+                }
+            }
+            if (target == null) return;
+            boolean active = event.optBoolean("active", false);
+            try {
+                persistentSession.setActive(reverseGroup, target, active);
+                emit("reverse_target_state", "request_id", requestId,
+                        "camera_index", sourceIndex, "active", active);
+            } catch (Throwable error) {
+                emit("reverse_camera_error", "stage", "set_target_active",
+                        "request_id", requestId, "camera_index", sourceIndex,
+                        "active", active, "error", summary(error));
+            }
         }
 
         private void emitMusicJournalSnapshot() {

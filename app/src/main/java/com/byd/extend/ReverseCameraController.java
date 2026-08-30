@@ -333,6 +333,7 @@ final class ReverseCameraController {
         }
         try {
             activeHelper.openReverseCamera(value.surfaces, activeRequestId);
+            applyInitialTargetActivity(activeHelper, value.surfaces);
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "open_surfaces",
                     "error", summary(error));
@@ -341,6 +342,30 @@ final class ReverseCameraController {
         }
         emit("reverse_camera_surfaces", "request_id", activeRequestId,
                 "generations", Arrays.toString(generations));
+    }
+
+    private void applyInitialTargetActivity(
+            CameraHelperMain.HelperBinder activeHelper, Surface[] surfaces) {
+        if (surfaces == null) return;
+        int visibilityMask = loadVisibilityMask(settings);
+        for (int i = 0; i < surfaces.length; i++) {
+            Surface surface = surfaces[i];
+            if (surface == null) continue;
+            int sourceIndex = i + 1;
+            // The optional central Front target starts paused while the selector
+            // is in its default Rear mode.  It is resumed by the view only when
+            // Front is selected, and then waits for its fresh-frame gate.
+            boolean active = sourceIndex < 4
+                    && ReverseCameraLayout.isVisible(visibilityMask, sourceIndex);
+            try {
+                activeHelper.setReverseTargetActive(surface, active);
+            } catch (Throwable error) {
+                emit("reverse_camera_error", "stage", "set_initial_target_active",
+                        "request_id", activeRequestId,
+                        "camera_index", sourceIndex, "active", active,
+                        "error", summary(error));
+            }
+        }
     }
 
     private void cameraOpened(int requestId) {

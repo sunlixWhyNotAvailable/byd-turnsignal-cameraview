@@ -206,6 +206,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     @Override
+    public void onReverseTargetActive(int sourceIndex, int generation, boolean active) {
+        emit("reverse_overlay_target", "state", "active",
+                "request_id", requestId,
+                "camera_index", sourceIndex,
+                "surface_generation", generation,
+                "active", active);
+    }
+
+    @Override
     public void onReverseFrameGateBlocked(
             int frameRequestId, String reason, int source, int expectedGeneration,
             int actualGeneration) {

@@ -30,6 +30,33 @@ public final class WeatherRuntimeTest {
     public void failuresUseFiveMinuteRetryRegardlessOfConfiguredInterval() {
         assertEquals(TimeUnit.MINUTES.toMillis(5),
                 WeatherRuntime.delayAfterResultMs(false, 180));
+        assertTrue(WeatherRuntime.shouldUseFailureTimer(false, true));
+        assertFalse(WeatherRuntime.shouldUseFailureTimer(false, false));
+        assertFalse(WeatherRuntime.shouldUseFailureTimer(true, true));
+    }
+
+    @Test
+    public void prerequisiteMatrixKeepsLocationAndNetworkIndependent() {
+        assertEquals(WeatherRuntime.PrerequisiteState.LOCATION_PERMISSION_DENIED,
+                WeatherRuntime.prerequisiteState(false, false, false));
+        assertEquals(WeatherRuntime.PrerequisiteState.WAIT_BOTH,
+                WeatherRuntime.prerequisiteState(true, false, false));
+        assertEquals(WeatherRuntime.PrerequisiteState.WAIT_LOCATION,
+                WeatherRuntime.prerequisiteState(true, false, true));
+        assertEquals(WeatherRuntime.PrerequisiteState.WAIT_NETWORK,
+                WeatherRuntime.prerequisiteState(true, true, false));
+        assertEquals(WeatherRuntime.PrerequisiteState.READY,
+                WeatherRuntime.prerequisiteState(true, true, true));
+    }
+
+    @Test
+    public void normalScheduleNeverReplacesPendingPrerequisiteSafetyCheck() {
+        assertTrue(WeatherRuntime.canScheduleNormal(true, true, false, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, true, false, true, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, true, true, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(false, true, false, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, false, false, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, true, false, false, true));
     }
 
     @Test
@@ -56,6 +83,22 @@ public final class WeatherRuntimeTest {
         assertFalse(text.contains("forecast_days=7"));
         assertTrue(text.contains("%.6f"));
         assertFalse(text.contains("Settings.System.put"));
+        assertTrue(text.contains("registerDefaultNetworkCallback(networkWaitCallback)"));
+        assertTrue(text.contains("NET_CAPABILITY_VALIDATED"));
+        assertTrue(text.contains("removeUpdates(locationWaitListener)"));
+        assertTrue(text.contains("unregisterNetworkCallback(networkWaitCallback)"));
+        assertTrue(text.contains("queuePrerequisiteCheckLocked(\"safety_recheck\")"));
+        assertTrue(text.contains("cancelledCallback = requestPending ? pendingCallback : activeCallback"));
+        assertTrue(text.contains("deliver(cancelledCallback, false, \"weather disabled\")"));
+        assertTrue(text.contains("deliver(cancelledCallback, false, \"weather shutdown\")"));
+        assertFalse(text.contains("latch.await("));
+        assertFalse(text.contains("LOCATION_WAIT_MS"));
+
+        Path manifest = Path.of("app/src/main/AndroidManifest.xml");
+        if (!Files.exists(manifest)) manifest = Path.of("src/main/AndroidManifest.xml");
+        String manifestText = new String(
+                Files.readAllBytes(manifest), StandardCharsets.UTF_8);
+        assertTrue(manifestText.contains("android.permission.ACCESS_NETWORK_STATE"));
     }
 
     @Test
@@ -70,15 +113,23 @@ public final class WeatherRuntimeTest {
         String blockedCreate = create.substring(create.indexOf("} else if"));
         assertFalse(blockedCreate.contains("weatherRuntime.start()"));
         assertFalse(blockedCreate.contains("startForegroundRuntime()"));
-        String start = text.substring(text.indexOf("public int onStartCommand"));
-        String blocked = start.substring(
-                start.indexOf("if (LegacySettingsImporter.blocksRuntime(this))"),
-                start.indexOf("syncWeatherAccessibility(\n"));
-        assertTrue(blocked.contains("pauseActiveRuntime()"));
+        String entry = text.substring(
+                text.indexOf("public int onStartCommand"),
+                text.indexOf("private void handleStartCommand"));
+        assertTrue(entry.contains("blocked || !willRecover"));
+        assertTrue(entry.contains("START_NOT_STICKY"));
+        String start = text.substring(text.indexOf("private void handleStartCommand"));
+        int blockedStart = start.indexOf("if (LegacySettingsImporter.blocksRuntime(this))");
+        String blocked = start.substring(blockedStart,
+                start.indexOf("syncWeatherAccessibility(\n                shouldRecover",
+                        blockedStart));
+        assertTrue(blocked.contains("stopRuntime(true)"));
+        assertTrue(blocked.contains("runtimeNeedsReinit = true"));
         assertTrue(blocked.contains("syncWeatherAccessibility(false)"));
         assertTrue(blocked.contains("WEATHER_RESULT_FAILED"));
-        assertTrue(blocked.contains("return START_NOT_STICKY"));
-        assertFalse(blocked.contains("return START_STICKY"));
+        assertTrue(blocked.contains("stopServiceFromRuntime(command.startId)"));
+        assertTrue(blocked.contains("return;"));
+        assertFalse(blocked.contains("pauseActiveRuntime()"));
         assertFalse(blocked.contains("weatherRuntime.start()"));
         String activity = new String(Files.readAllBytes(
                 source.resolveSibling("CameraProbeActivity.java")), StandardCharsets.UTF_8);

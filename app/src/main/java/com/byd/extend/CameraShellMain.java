@@ -22,8 +22,8 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.FutureTask;
 
 public final class CameraShellMain {
     private static final long LOG_FLUSH_DELAY_MS = 250;
@@ -74,13 +74,11 @@ public final class CameraShellMain {
         private final Handler handler;
         private final int appUid;
         private final int versionCode;
-        private final StockAvmPreview preview;
         private final ShellCameraOverlay[] overlays =
                 new ShellCameraOverlay[CameraOverlayProfile.COUNT];
         private final ShellReverseCameraOverlay reverseOverlay;
         private final Runnable processTerminator;
         private IBinder callback;
-        private int activePreviewRequestId;
         private boolean stdoutFlushScheduled;
         private boolean processTerminationRequested;
 
@@ -98,12 +96,6 @@ public final class CameraShellMain {
             this.appUid = appUid;
             this.versionCode = versionCode;
             this.processTerminator = processTerminator;
-            preview = new StockAvmPreview(context, (stage, detail) -> {
-                emit("stock_avm_stage", "stage", stage, "detail", detail);
-                if ("apply_vehicle_config".equals(stage)) {
-                    emit("camera_config_applied", "detail", detail);
-                }
-            });
             for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 overlays[profile.id] = new ShellCameraOverlay(context, profile.id, this::emit);
             }
@@ -132,48 +124,10 @@ public final class CameraShellMain {
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OPEN) {
-                    if (reverseOverlay.isOpen()) {
-                        throw new IllegalStateException("reverse overlay has camera priority");
-                    }
-                    Surface surface = Surface.CREATOR.createFromParcel(data);
-                    try {
-                        int viewpoint = data.readInt();
-                        boolean horizontal = data.readInt() != 0;
-                        boolean stockDewarp = data.readInt() != 0;
-                        int requestId = data.readInt();
-                        if (requestId <= 0) {
-                            throw new IllegalArgumentException("camera request id required");
-                        }
-                        StockAvmPreview.Config config =
-                                StockAvmPreview.Config.readFromParcel(data);
-                        if (!StockAvmPreview.isAllowedViewpoint(viewpoint)) {
-                            throw new IllegalArgumentException("viewpoint not whitelisted");
-                        }
-                        FutureTask<Surface> openTask = new FutureTask<>(
-                                () -> openPreview(
-                                        surface, viewpoint, config, horizontal, stockDewarp,
-                                        requestId));
-                        if (!handler.post(openTask)) {
-                            throw new IllegalStateException("camera main handler rejected open");
-                        }
-                        Surface inputSurface = openTask.get(15, TimeUnit.SECONDS);
-                        reply.writeNoException();
-                        inputSurface.writeToParcel(reply, 0);
-                    } catch (Throwable error) {
-                        if (!preview.isOpen()) surface.release();
-                        throw error;
-                    }
-                    return true;
+                    throw new IllegalStateException("stock AVM is isolated in bydextend_avm");
                 }
                 if (code == CameraShellProtocol.TX_CLOSE) {
-                    String reason = data.readString();
-                    int requestId = data.readInt();
-                    runOnMain(() -> {
-                        closePreview(reason, requestId);
-                        return null;
-                    });
-                    reply.writeNoException();
-                    return true;
+                    throw new IllegalStateException("stock AVM is isolated in bydextend_avm");
                 }
                 if (code == CameraShellProtocol.TX_SHUTDOWN) {
                     try {
@@ -265,7 +219,6 @@ public final class CameraShellMain {
                     CameraShellProtocol.ReverseOverlaySpec spec =
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
                     runOnMain(() -> {
-                        closePreview("reverse_priority");
                         closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
                         reverseOverlay.prepare(spec);
                         return null;
@@ -322,77 +275,7 @@ public final class CameraShellMain {
             }
         }
 
-        private Surface openPreview(
-                Surface surface, int viewpoint, StockAvmPreview.Config config,
-                boolean horizontal, boolean stockDewarp, int requestId) {
-            String view = StockAvmPreview.viewName(viewpoint);
-            try {
-                emit("camera_config_received", "detail", config.detail(),
-                        "viewpoint", viewpoint, "orientation",
-                        horizontal ? "horizontal" : "vertical",
-                        "dewarp", stockDewarp);
-                boolean initialized = preview.open(
-                        surface, viewpoint, config, horizontal, stockDewarp);
-                activePreviewRequestId = requestId;
-                emit("camera_opened", "renderer", "stock_avm_shell",
-                        "view", view, "viewpoint", viewpoint, "initialized", initialized,
-                        "request_id", requestId,
-                        "orientation", horizontal ? "horizontal" : "vertical",
-                        "dewarp", stockDewarp,
-                        "shell_uid", Process.myUid());
-                return preview.getInputSurface();
-            } catch (Throwable error) {
-                String stage = error instanceof StockAvmPreview.StageException
-                        ? ((StockAvmPreview.StageException) error).stage : "open";
-                emit("camera_error", "renderer", "stock_avm_shell",
-                        "stage", stage, "view", view, "viewpoint", viewpoint,
-                        "request_id", requestId,
-                        "shell_uid", Process.myUid(), "error", summary(error));
-                throw new IllegalStateException(summary(error), error);
-            }
-        }
-
-        private void closePreview(String reason) {
-            closePreview(reason, 0);
-        }
-
-        private void closePreview(String reason, int expectedRequestId) {
-            if (!preview.isOpen()) {
-                int requestId = expectedRequestId > 0
-                        ? expectedRequestId : activePreviewRequestId;
-                activePreviewRequestId = 0;
-                if (requestId > 0) {
-                    emit("camera_closed", "renderer", "stock_avm_shell",
-                            "view", "unknown",
-                            "reason", reason == null ? "unknown" : reason,
-                            "request_id", requestId, "error", "");
-                }
-                return;
-            }
-            if (expectedRequestId > 0 && expectedRequestId != activePreviewRequestId) {
-                emit("camera_close_ignored", "renderer", "stock_avm_shell",
-                        "reason", reason == null ? "unknown" : reason,
-                        "request_id", expectedRequestId,
-                        "active_request_id", activePreviewRequestId);
-                return;
-            }
-            String view = StockAvmPreview.viewName(preview.getViewpoint());
-            int requestId = activePreviewRequestId;
-            String error = "";
-            try {
-                preview.close();
-            } catch (Throwable failure) {
-                error = summary(failure);
-            } finally {
-                activePreviewRequestId = 0;
-            }
-            emit("camera_closed", "renderer", "stock_avm_shell", "view", view,
-                    "reason", reason == null ? "unknown" : reason,
-                    "request_id", requestId, "error", error);
-        }
-
         private void closeAll(String reason) {
-            closePreview(reason);
             Throwable failure = null;
             try {
                 closeOverlays(reason);
@@ -581,8 +464,7 @@ public final class CameraShellMain {
     private static String summary(Throwable error) {
         Throwable current = error;
         while (current.getCause() != null
-                && (current instanceof java.lang.reflect.InvocationTargetException
-                        || current instanceof StockAvmPreview.StageException)) {
+                && current instanceof java.lang.reflect.InvocationTargetException) {
             current = current.getCause();
         }
         String message = current.getMessage();

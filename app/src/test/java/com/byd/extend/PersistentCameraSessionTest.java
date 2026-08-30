@@ -63,6 +63,29 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void reverseTargetPauseResumeKeepsSameSurfaceAndProducerWarm()
+            throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.startProducer(camera, fanout, session.reverseGroup,
+                surfaces(3), new int[]{1, 2, 3}, 9, "reverse_overlay", true, false);
+        Surface target = session.reverseGroup.surfaces[0];
+
+        session.setActive(session.reverseGroup, target, false);
+        assertFalse(session.reverseGroup.active[0]);
+        session.setActive(session.reverseGroup, target, true);
+
+        assertSame(target, session.reverseGroup.surfaces[0]);
+        assertTrue(session.reverseGroup.active[0]);
+        assertEquals(2, fanout.setActiveCalls);
+        assertEquals(0, count(trace.values, "target-remove:3"));
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+    }
+
+    @Test
     public void producerBootstrapsKnownGoodSidePairBeforeAnyLogicalConsumer()
             throws Exception {
         Trace calibrationTrace = new Trace();
@@ -599,6 +622,54 @@ public final class PersistentCameraSessionTest {
         assertEquals(0, countPrefix(trace.values, "shell:"));
         assertEquals("camera_shell_died",
                 events.byKindAndRequest("camera_closed", 86).field("reason"));
+    }
+
+    @Test
+    public void avmShellDeathDropsOnlyStockActivityConsumer() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, fanout, session.activityGroup,
+                surfaces(1), new int[]{0}, 87, "stock_avm_input", false, true);
+        session.attach(camera, session.overlayGroup,
+                surfaces(1), new int[]{1}, 88, "blind", false, false,
+                events, new FakeShellClose(trace), 7, 8);
+
+        session.invalidateStockAvmGroup(camera, "stock_avm_shell_died", events, 7, 8);
+
+        assertTrue(session.producerOpen);
+        assertFalse(session.activityGroup.has());
+        assertTrue(session.overlayGroup.has());
+        assertEquals(1, fanout.activeTargets);
+        assertEquals("stock_avm_shell_died",
+                events.byKindAndRequest("camera_closed", 87).field("reason"));
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+    }
+
+    @Test
+    public void avmShellDeathKeepsReverseSideSurfacesAttached() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, fanout, session.activityGroup,
+                surfaces(4), new int[]{0, 1, 2, 3}, 89,
+                "reverse_preview_with_stock_base", false, true, true);
+
+        session.invalidateStockAvmGroup(camera, "stock_avm_shell_died", events, 7, 8);
+
+        assertTrue(session.producerOpen);
+        assertTrue(session.activityGroup.has());
+        assertEquals(3, session.activityGroup.surfaces.length);
+        assertEquals(1, session.activityGroup.indexes[0]);
+        assertFalse(session.activityGroup.firstSurfaceDirect);
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertEquals(0, count(trace.values, "remove:1"));
+        assertEquals(0, count(trace.values, "stop"));
     }
 
     @Test

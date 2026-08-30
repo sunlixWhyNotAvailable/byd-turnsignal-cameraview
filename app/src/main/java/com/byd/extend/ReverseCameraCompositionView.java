@@ -34,6 +34,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 int cameraIndex, CameraDewarpRenderer.Stats stats) {}
         default void onReverseDewarpEvent(
                 int cameraIndex, CameraDewarpRenderer.Event event) {}
+        /** Requests the existing persistent fan-out target to pause/resume. */
+        default void onReverseTargetActive(
+                int sourceIndex, int generation, boolean active) {}
     }
 
     private final View backgroundPane;
@@ -300,8 +303,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 && mode != ReverseSideSelectorView.MODE_FRONT) {
             throw new IllegalArgumentException("invalid reverse side mode");
         }
+        boolean modeChanged = sideMode != mode;
         sideMode = mode;
         if (sideSelector.mode() != mode) sideSelector.setMode(mode);
+        if (modeChanged && centralFrontSourceEnabled) resetCentralFrontFreshness();
         applyActiveDewarpConfigs();
         applyModel();
     }
@@ -324,7 +329,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     void applyVisibility(int mask) {
+        boolean centerWasVisible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX);
         visibilityMask = ReverseCameraLayout.requireVisibilityMask(mask);
+        boolean centerNowVisible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX);
+        if (!centerWasVisible && centerNowVisible
+                && sideMode == ReverseSideSelectorView.MODE_FRONT
+                && centralFrontSourceEnabled && centralFrontIntegrated) {
+            resetCentralFrontFreshness();
+            return;
+        }
         applyEffectiveVisibility();
     }
 
@@ -585,12 +600,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
         }
         resetCentralFrontFreshness();
+        resetPaneFreshness();
         setAllCovers(View.VISIBLE);
         // The optional central Front source must not delay the ordinary Rear
         // composition.  Its first frame is tracked independently and only
         // enables the central pane once it arrives.
         frameBarrier.arm(requestId, expectedGenerations[0], directGenerations,
                 centralFrontSourceEnabled ? panes.length : directCount);
+        applyEffectiveVisibility();
     }
 
     void armFrames(int requestId, int[] expectedGenerations) {
@@ -617,13 +634,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
             baseGeneration = previewBaseGeneration;
         }
         resetCentralFrontFreshness();
+        resetPaneFreshness();
         setAllCovers(View.VISIBLE);
         frameBarrier.arm(requestId, baseGeneration, expectedGenerations,
                 centralFrontSourceEnabled ? panes.length : directCount);
+        applyEffectiveVisibility();
     }
 
     void clearFrames() {
         frameBarrier.clear();
+        resetPaneFreshness();
         resetCentralFrontFreshness();
         setAllCovers(View.VISIBLE);
     }
@@ -663,6 +683,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                         && centralFrontSurfaceRecoveryPending;
                 pane.surface = surface;
                 pane.generation = inputGeneration;
+                pane.targetActive = false;
+                pane.frameFresh = false;
+                pane.discardNextFrame = true;
                 if (sourceIndex == 4) {
                     resetCentralFrontFreshness();
                     if (optionalRecovery) {
@@ -688,6 +711,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
             public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {
                 int lostGeneration = pane.generation;
                 pane.surface = null;
+                pane.targetActive = false;
+                pane.frameFresh = false;
+                pane.discardNextFrame = true;
                 if (sourceIndex == 4 && centralFrontSourceEnabled
                         && frameBarrier.revealed()) {
                     centralFrontSurfaceRecoveryPending = true;
@@ -712,15 +738,24 @@ final class ReverseCameraCompositionView extends FrameLayout {
             @Override
             public void onCameraFrameUpdated(
                     BlindSpotCameraView view, int inputGeneration) {
+                boolean generationMatches = inputGeneration == pane.generation;
+                boolean fresh = generationMatches && !pane.discardNextFrame;
+                if (generationMatches) pane.discardNextFrame = false;
                 if (sourceIndex == 4) {
-                    if (inputGeneration == pane.generation) {
+                    if (generationMatches) {
                         if (centralFrontDiscardNextFrame) {
                             centralFrontDiscardNextFrame = false;
                         } else {
                             centralFrontFrameReady = true;
+                            pane.frameFresh = fresh;
+                            pane.cover.setVisibility(View.GONE);
                             applyEffectiveVisibility();
                         }
                     }
+                } else if (fresh) {
+                    pane.frameFresh = true;
+                    pane.cover.setVisibility(View.GONE);
+                    applyEffectiveVisibility();
                 }
                 acceptFrame(sourceIndex,
                         previewBase == null ? pane.generation : inputGeneration);
@@ -743,7 +778,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
     }
 
-    private void acceptFrame(int source, int generation) {
+    private FrameBarrier.FrameResult acceptFrame(int source, int generation) {
         int requestId = frameBarrier.requestId();
         FrameBarrier.FrameResult result = frameBarrier.frame(requestId, source, generation);
         if (result == FrameBarrier.FrameResult.BLOCKED_GUARD
@@ -760,6 +795,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
         }
         if (result == FrameBarrier.FrameResult.READY) maybeReportFrames();
+        return result;
     }
 
     private void maybeReportFrames() {
@@ -774,6 +810,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 || !frameBarrier.reveal(
                         requestId, baseGeneration, directGenerations)) return;
         setAllCovers(View.GONE);
+        applyEffectiveVisibility();
     }
 
     private void setAllCovers(int visibility) {
@@ -1089,27 +1126,62 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID));
         boolean centerVisible = ReverseCameraLayout.isVisible(
                 visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX);
-        boolean centralFrontVisible = centerVisible
+        boolean centralFrontEligible = centerVisible
                 && sideMode == ReverseSideSelectorView.MODE_FRONT
                 && centralFrontIntegrated && centralFrontSourceEnabled
-                && centralFrontPane != null && centralFrontFrameReady;
-        panes[0].setAlpha(centerVisible && !centralFrontVisible ? 1.0f : 0.0f);
+                && centralFrontPane != null;
+        boolean centralFrontVisible = centralFrontEligible
+                && centralFrontFrameReady && centralFrontPane.frameFresh;
+        boolean front = sideMode == ReverseSideSelectorView.MODE_FRONT;
+        boolean leftEligible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                && (!front || frontLeftIntegrated);
+        boolean rightEligible = ReverseCameraLayout.isVisible(
+                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)
+                && (!front || frontRightIntegrated);
+        boolean preReveal = frameBarrier.requestId() > 0 && !frameBarrier.revealed();
+        setPaneTargetActive(panes[0], preReveal || centerVisible && !centralFrontVisible);
+        setPaneTargetActive(panes[1], preReveal || leftEligible);
+        setPaneTargetActive(panes[2], preReveal || rightEligible);
+        if (centralFrontPane != null) {
+            setPaneTargetActive(centralFrontPane, centralFrontEligible);
+        }
+        panes[0].setAlpha(centerVisible && !centralFrontVisible && panes[0].frameFresh
+                ? 1.0f : 0.0f);
         if (centralFrontPane != null) {
             centralFrontPane.setAlpha(centralFrontVisible ? 1.0f : 0.0f);
         }
-        boolean front = sideMode == ReverseSideSelectorView.MODE_FRONT;
-        boolean leftVisible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
-                && (!front || frontLeftIntegrated);
-        boolean rightVisible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)
-                && (!front || frontRightIntegrated);
-        panes[1].setAlpha(leftVisible ? 1.0f : 0.0f);
-        panes[2].setAlpha(rightVisible ? 1.0f : 0.0f);
+        panes[1].setAlpha(leftEligible && panes[1].frameFresh ? 1.0f : 0.0f);
+        panes[2].setAlpha(rightEligible && panes[2].frameFresh ? 1.0f : 0.0f);
         sideSelector.setEffectiveVisibility(
-                leftVisible, rightVisible, front ? centralFrontVisible : centerVisible);
+                leftEligible, rightEligible, front ? centralFrontVisible : centerVisible);
         sideSelector.setVisibility(widgetVisible && widgetAvailable
                 ? View.VISIBLE : View.GONE);
+    }
+
+    private void setPaneTargetActive(PaneView pane, boolean active) {
+        if (pane == null) return;
+        if (pane.targetActive == active) return;
+        pane.targetActive = active;
+        pane.frameFresh = false;
+        pane.discardNextFrame = true;
+        pane.cover.setVisibility(View.VISIBLE);
+        if (pane.surface != null && pane.surface.isValid() && callback != null) {
+            callback.onReverseTargetActive(pane.sourceIndex, pane.generation, active);
+        }
+    }
+
+    private void resetPaneFreshness() {
+        for (PaneView pane : panes) {
+            pane.frameFresh = false;
+            pane.discardNextFrame = true;
+            pane.cover.setVisibility(View.VISIBLE);
+        }
+        if (centralFrontPane != null) {
+            centralFrontPane.frameFresh = false;
+            centralFrontPane.discardNextFrame = true;
+            centralFrontPane.cover.setVisibility(View.VISIBLE);
+        }
     }
 
     private PaneView ensureCentralFrontPane() {
@@ -1169,6 +1241,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
         CameraDewarpConfig dewarpConfig;
         Surface surface;
         int generation;
+        boolean targetActive;
+        boolean frameFresh;
+        boolean discardNextFrame = true;
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(0, 0, 1, 1);
         int rotationDegrees;
         int displayMode = ReverseCameraLayout.DEFAULT_DISPLAY_MODE;

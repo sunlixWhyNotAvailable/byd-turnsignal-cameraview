@@ -12,17 +12,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
-
-import org.json.JSONObject;
-
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -69,12 +63,12 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.SHUTDOWN";
     private static final String ACTION_SETTINGS_RELOADED =
             "com.byd.extend.action.SETTINGS_RELOADED";
-    private static final String EXTRA_ENABLED = "enabled";
-    private static final String EXTRA_REASON = "reason";
-    private static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
-    private static final String EXTRA_WEATHER_RECEIVER = "weather_receiver";
-    private static final String EXTRA_WEATHER_REASON = "weather_reason";
-    private static final String EXTRA_FULL_IMPORT = "full_import";
+    static final String EXTRA_ENABLED = "enabled";
+    static final String EXTRA_REASON = "reason";
+    static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
+    static final String EXTRA_WEATHER_RECEIVER = "weather_receiver";
+    static final String EXTRA_WEATHER_REASON = "weather_reason";
+    static final String EXTRA_FULL_IMPORT = "full_import";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
     static final int WEATHER_RESULT_OK = 0;
@@ -82,17 +76,42 @@ public final class CameraHelperService extends Service {
     static final int WEATHER_RESULT_BUSY = 2;
     static final String WEATHER_RESULT_MESSAGE = "weather_result_message";
 
-    private final Object logLock = new Object();
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    static final class RuntimeLifecycleGate {
+        interface Queue {
+            void clear();
+            boolean post(Runnable action);
+        }
+
+        enum TeardownResult { ENQUEUED, ALREADY_CLAIMED, POST_REJECTED }
+
+        private boolean accepting = true;
+        private boolean teardownClaimed;
+
+        synchronized boolean post(Queue queue, Runnable action) {
+            return accepting && queue != null && queue.post(action);
+        }
+
+        synchronized TeardownResult beginTeardown(Queue queue, Runnable teardown) {
+            if (teardownClaimed) return TeardownResult.ALREADY_CLAIMED;
+            accepting = false;
+            teardownClaimed = true;
+            if (queue == null) return TeardownResult.POST_REJECTED;
+            queue.clear();
+            return queue.post(teardown)
+                    ? TeardownResult.ENQUEUED : TeardownResult.POST_REJECTED;
+        }
+    }
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final RuntimeLifecycleGate runtimeLifecycle = new RuntimeLifecycleGate();
     private final ExecutorService weatherAccessibilityExecutor =
             Executors.newSingleThreadExecutor(r -> new Thread(r, "weather-accessibility"));
-    private final Runnable flushLog = this::flushLogWriter;
     private final Runnable heartbeat = new Runnable() {
         @Override
         public void run() {
             if (!GuardRecovery.shouldRecover(CameraHelperService.this)) return;
             GuardRecovery.heartbeat(CameraHelperService.this);
-            handler.postDelayed(this, 30_000);
+            runtimeHandler.postDelayed(this, 30_000);
         }
     };
     private final Runnable resumeOverlay = this::resumeOverlayIfIdle;
@@ -102,19 +121,21 @@ public final class CameraHelperService extends Service {
             if (helper == null || !GuardRecovery.shouldRecover(CameraHelperService.this)) return;
             boolean ready = helper.discoverCamera();
             lifecycle("camera_discovery_retry", "ready", ready);
-            if (!ready) handler.postDelayed(this, CAMERA_DISCOVERY_RETRY_MS);
+            if (!ready) runtimeHandler.postDelayed(this, CAMERA_DISCOVERY_RETRY_MS);
         }
     };
-    private CameraHelperMain.HelperBinder helper;
+    private HandlerThread runtimeThread;
+    private Handler runtimeHandler;
+    private RuntimeLifecycleGate.Queue runtimeQueue;
+    private AsyncServiceLog serviceLog;
+    private volatile CameraHelperMain.HelperBinder helper;
+    private boolean helperRuntimeStarted;
     private BlindSpotOverlayController overlay;
     private ParkingCameraController parkingCameras;
     private ReverseCameraController reverseCameras;
     private ClusterFullscreenController clusterFullscreen;
     private WeatherRuntime weatherRuntime;
-    private File logFile;
-    private BufferedWriter logWriter;
-    private boolean logFlushScheduled;
-    private boolean logClosed;
+    private boolean controllersInitialized;
     private boolean foreground;
     private boolean activityVisible;
     private boolean cameraPreviewActive;
@@ -142,7 +163,6 @@ public final class CameraHelperService extends Service {
     }
 
     static void activityOpened(Context context) {
-        GuardRecovery.setUserShutdownActive(context, false);
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_ACTIVITY_OPEN);
         context.startService(intent);
@@ -172,16 +192,16 @@ public final class CameraHelperService extends Service {
     static boolean pauseActiveRuntime() {
         CameraHelperService service = activeInstance;
         if (service == null) return true;
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            service.stopRuntime(true);
-            service.runtimeNeedsReinit = true;
+        if (service.isRuntimeThread()) {
+            service.pauseRuntimeForImport();
             return true;
         }
+        // Import callers already run on workers. Refuse an accidental main-thread wait.
+        if (Looper.myLooper() == Looper.getMainLooper()) return false;
         CountDownLatch done = new CountDownLatch(1);
-        if (!service.handler.post(() -> {
+        if (!service.postRuntime(() -> {
             try {
-                service.stopRuntime(true);
-                service.runtimeNeedsReinit = true;
+                service.pauseRuntimeForImport();
             } finally {
                 done.countDown();
             }
@@ -192,6 +212,11 @@ public final class CameraHelperService extends Service {
             Thread.currentThread().interrupt();
             return false;
         }
+    }
+
+    private void pauseRuntimeForImport() {
+        stopRuntime(true);
+        runtimeNeedsReinit = true;
     }
 
     /** Reload all consumers after a camera-only or full settings import. */
@@ -265,7 +290,6 @@ public final class CameraHelperService extends Service {
     }
 
     static void updateAutoStart(Context context, boolean enabled) {
-        GuardRecovery.setAutoStartEnabled(context, enabled);
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_AUTO_START_CHANGED)
                 .putExtra(EXTRA_ENABLED, enabled);
@@ -274,7 +298,6 @@ public final class CameraHelperService extends Service {
     }
 
     static void requestShutdown(Context context) {
-        GuardRecovery.setUserShutdownActive(context, true);
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_SHUTDOWN));
     }
@@ -289,29 +312,44 @@ public final class CameraHelperService extends Service {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
-        overlay = new BlindSpotOverlayController(this, handler, this::lifecycle);
-        parkingCameras = new ParkingCameraController(this, handler, this::parkingEvent);
+        overlay = new BlindSpotOverlayController(this, runtimeHandler, this::lifecycle);
+        parkingCameras = new ParkingCameraController(this, runtimeHandler, this::parkingEvent);
         reverseCameras = new ReverseCameraController(
-                this, handler, this::reverseEvent, value -> {
+                this, runtimeHandler, this::reverseEvent, value -> {
                     overlay.setReversePriority(value);
                     if (parkingCameras != null) parkingCameras.setReversePriority(value);
                 });
         clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
+        controllersInitialized = true;
+    }
+
+    private void ensureControllersInitialized() {
+        if (!controllersInitialized) initializeControllers();
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        runtimeThread = new HandlerThread("service-runtime");
+        runtimeThread.start();
+        runtimeHandler = new Handler(runtimeThread.getLooper());
+        runtimeQueue = new RuntimeLifecycleGate.Queue() {
+            @Override
+            public void clear() {
+                runtimeHandler.removeCallbacksAndMessages(null);
+            }
+
+            @Override
+            public boolean post(Runnable action) {
+                return runtimeHandler.post(action);
+            }
+        };
+        serviceLog = new AsyncServiceLog(this::createLogFile, LOG_FLUSH_DELAY_MS);
         activeInstance = this;
-        createLogFile();
-        initializeControllers();
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
         if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
             startForegroundRuntime();
-            ensureHelperStarted();
-            weatherRuntime.start();
-            startHeartbeat();
         } else if (GuardRecovery.shouldRecover(this)) {
             lifecycle("runtime_blocked", "reason", "legacy_handover");
         }
@@ -319,24 +357,79 @@ public final class CameraHelperService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent == null ? ACTION_START : intent.getAction();
-        String reason = intent == null ? "" : intent.getStringExtra(EXTRA_REASON);
-        boolean refreshMusicAfterClose = false;
+        ServiceRuntimeCommand command =
+                ServiceRuntimeCommand.capture(intent, startId, ACTION_START);
+        String action = command.action;
         lifecycle("service_start", "action", action == null ? "" : action,
-                "reason", reason == null ? "" : reason, "start_id", startId);
-        if (ACTION_SHUTDOWN.equals(action)) {
-            GuardRecovery.setUserShutdownActive(this, true);
-            stopRuntime(true);
+                "reason", command.reason, "start_id", startId);
+        boolean blocked = LegacySettingsImporter.blocksRuntime(this);
+        boolean targetAutoStart = ACTION_AUTO_START_CHANGED.equals(action)
+                ? command.enabled : GuardRecovery.isAutoStartEnabled(this);
+        boolean targetUserShutdown = ACTION_ACTIVITY_OPEN.equals(action)
+                ? false : ACTION_SHUTDOWN.equals(action)
+                ? true : GuardRecovery.isUserShutdownActive(this);
+        boolean willRecover = GuardRecovery.shouldRecover(targetAutoStart, targetUserShutdown);
+        if (willRecover && !blocked) {
+            startForegroundRuntime();
+        }
+        if (!postRuntime(() -> handleStartCommand(command))) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
+        return blocked || !willRecover
+                ? START_NOT_STICKY : START_STICKY;
+    }
+
+    private void handleStartCommand(ServiceRuntimeCommand command) {
+        String action = command.action;
+        if (ACTION_SHUTDOWN.equals(action)) {
+            GuardRecovery.setUserShutdownActive(this, true);
+            stopRuntime(true);
+            stopServiceFromRuntime(command.startId);
+            return;
+        }
         if (ACTION_FLUSH_LOGS.equals(action)) {
-            flushLogWriter();
-            ResultReceiver receiver = intent == null
-                    ? null : intent.getParcelableExtra(EXTRA_FLUSH_RECEIVER);
-            if (receiver != null) receiver.send(0, Bundle.EMPTY);
-        } else if (ACTION_ACTIVITY_OPEN.equals(action)) {
+            ResultReceiver receiver = command.flushReceiver;
+            serviceLog.flush(() -> {
+                if (receiver != null) receiver.send(0, Bundle.EMPTY);
+            });
+        }
+        if (ACTION_AUTO_START_CHANGED.equals(action)) {
+            GuardRecovery.setAutoStartEnabled(this, command.enabled);
+        }
+        if (ACTION_ACTIVITY_OPEN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, false);
+        }
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        boolean shouldRecover = GuardRecovery.shouldRecover(this);
+        if (LegacySettingsImporter.blocksRuntime(this)) {
+            lifecycle("runtime_blocked", "reason", "legacy_handover");
+            stopRuntime(true);
+            runtimeNeedsReinit = true;
+            syncWeatherAccessibility(false);
+            if (ACTION_WEATHER_REFRESH.equals(action)) {
+                sendWeatherResult(command.weatherReceiver, WEATHER_RESULT_FAILED,
+                        "Спочатку завершіть перехід зі старого застосунку");
+            }
+            stopServiceFromRuntime(command.startId);
+            return;
+        }
+        syncWeatherAccessibility(
+                shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
+        if (!shouldRecover) {
+            if (helper != null) helper.setRecoveryEnabled(false);
+            runtimeHandler.removeCallbacks(heartbeat);
+            stopServiceFromRuntime(command.startId);
+            return;
+        }
+        if (runtimeNeedsReinit) {
+            initializeControllers();
+            runtimeNeedsReinit = false;
+        } else {
+            ensureControllersInitialized();
+        }
+        boolean refreshMusicAfterClose = false;
+        if (ACTION_ACTIVITY_OPEN.equals(action)) {
             activityVisible = true;
             overlay.setUiHidden(true);
             parkingCameras.setUiHidden(true);
@@ -345,52 +438,20 @@ public final class CameraHelperService extends Service {
             cameraPreviewActive = false;
             overlay.setUiHidden(false);
             parkingCameras.setUiHidden(false);
-            handler.removeCallbacks(resumeOverlay);
-            handler.postDelayed(resumeOverlay, 250);
+            runtimeHandler.removeCallbacks(resumeOverlay);
+            runtimeHandler.postDelayed(resumeOverlay, 250);
             refreshMusicAfterClose = true;
         } else if (ACTION_CAMERA_PREVIEW_STARTED.equals(action)) {
             cameraPreviewActive = true;
-            handler.removeCallbacks(resumeOverlay);
+            runtimeHandler.removeCallbacks(resumeOverlay);
             overlay.setSuspended(true);
             parkingCameras.setSuspended(true);
         } else if (ACTION_CAMERA_PREVIEW_STOPPED.equals(action)) {
             cameraPreviewActive = false;
-            handler.removeCallbacks(resumeOverlay);
-            if (!activityVisible) handler.postDelayed(resumeOverlay, 250);
+            runtimeHandler.removeCallbacks(resumeOverlay);
+            if (!activityVisible) runtimeHandler.postDelayed(resumeOverlay, 250);
             parkingCameras.setSuspended(false);
-        } else if (ACTION_AUTO_START_CHANGED.equals(action)) {
-            GuardRecovery.setAutoStartEnabled(this,
-                    intent.getBooleanExtra(EXTRA_ENABLED, true));
         }
-        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-        boolean shouldRecover = GuardRecovery.shouldRecover(this);
-        if (LegacySettingsImporter.blocksRuntime(this)) {
-            lifecycle("runtime_blocked", "reason", "legacy_handover");
-            pauseActiveRuntime();
-            syncWeatherAccessibility(false);
-            if (ACTION_WEATHER_REFRESH.equals(action)) {
-                ResultReceiver receiver = intent == null
-                        ? null : intent.getParcelableExtra(EXTRA_WEATHER_RECEIVER);
-                sendWeatherResult(receiver, WEATHER_RESULT_FAILED,
-                        "Спочатку завершіть перехід зі старого застосунку");
-            }
-            stopSelf(startId);
-            return START_NOT_STICKY;
-        }
-        syncWeatherAccessibility(
-                shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
-        if (!shouldRecover) {
-            if (helper != null) helper.setRecoveryEnabled(false);
-            handler.removeCallbacks(heartbeat);
-            stopForegroundRuntime();
-            stopSelf(startId);
-            return START_NOT_STICKY;
-        }
-        if (runtimeNeedsReinit) {
-            initializeControllers();
-            runtimeNeedsReinit = false;
-        }
-        startForegroundRuntime();
         ensureHelperStarted();
         weatherRuntime.start();
         helper.setRecoveryEnabled(true);
@@ -417,10 +478,8 @@ public final class CameraHelperService extends Service {
         } else if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
             weatherRuntime.settingsChanged();
         } else if (ACTION_WEATHER_REFRESH.equals(action)) {
-            ResultReceiver receiver = intent == null
-                    ? null : intent.getParcelableExtra(EXTRA_WEATHER_RECEIVER);
-            String weatherReason = intent == null
-                    ? "manual" : intent.getStringExtra(EXTRA_WEATHER_REASON);
+            ResultReceiver receiver = command.weatherReceiver;
+            String weatherReason = command.weatherReason;
             boolean accepted = weatherRuntime.requestNow(weatherReason, (success, error) ->
                     sendWeatherResult(receiver,
                             success ? WEATHER_RESULT_OK : WEATHER_RESULT_FAILED,
@@ -433,10 +492,16 @@ public final class CameraHelperService extends Service {
                                 ? "Оновлення вже виконується" : "Погода вимкнена");
             }
         } else if (ACTION_SETTINGS_RELOADED.equals(action)) {
-            reloadSettings(intent != null && intent.getBooleanExtra(EXTRA_FULL_IMPORT, false));
+            reloadSettings(command.fullImport);
         }
         startHeartbeat();
-        return START_STICKY;
+    }
+
+    private void stopServiceFromRuntime(int startId) {
+        mainHandler.post(() -> {
+            stopForegroundRuntime();
+            stopSelf(startId);
+        });
     }
 
     private void syncWeatherAccessibility(boolean enabled) {
@@ -523,31 +588,58 @@ public final class CameraHelperService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         if (LegacySettingsImporter.blocksRuntime(this)) return null;
-        ensureHelperStarted();
-        helper.setRecoveryEnabled(GuardRecovery.shouldRecover(this));
-        return helper;
+        ensureHelperCreated();
+        CameraHelperMain.HelperBinder boundHelper = helper;
+        if (boundHelper == null) return null;
+        postRuntime(() -> {
+            ensureControllersInitialized();
+            ensureHelperStarted();
+            CameraHelperMain.HelperBinder activeHelper = helper;
+            if (activeHelper != null) {
+                activeHelper.setRecoveryEnabled(GuardRecovery.shouldRecover(this));
+            }
+        });
+        return boundHelper;
     }
 
     @Override
     public boolean onUnbind(Intent intent) {
-        if (!GuardRecovery.shouldRecover(this)) stopSelf();
+        postRuntime(() -> {
+            if (!GuardRecovery.shouldRecover(this)) {
+                mainHandler.post(this::stopSelf);
+            }
+        });
         return false;
     }
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         lifecycle("service_task_removed", "recover", GuardRecovery.shouldRecover(this));
-        if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
-            GuardRecovery.scheduleSoon(this);
-            startPersistent(this, "task_removed");
-        }
+        postRuntime(() -> {
+            if (GuardRecovery.shouldRecover(this)
+                    && !LegacySettingsImporter.blocksRuntime(this)) {
+                GuardRecovery.scheduleSoon(this);
+                startPersistent(this, "task_removed");
+            }
+        });
         super.onTaskRemoved(rootIntent);
     }
 
     @Override
     public void onDestroy() {
-        handler.removeCallbacks(heartbeat);
-        handler.removeCallbacks(retryCameraDiscovery);
+        RuntimeLifecycleGate.TeardownResult teardown =
+                runtimeLifecycle.beginTeardown(runtimeQueue, this::destroyRuntime);
+        stopForegroundRuntime();
+        if (activeInstance == this) activeInstance = null;
+        if (teardown == RuntimeLifecycleGate.TeardownResult.POST_REJECTED) {
+            Thread fallback = new Thread(this::destroyRuntime, "service-runtime-teardown");
+            fallback.start();
+        }
+        super.onDestroy();
+    }
+
+    private void destroyRuntime() {
+        runtimeHandler.removeCallbacksAndMessages(null);
         boolean recover = GuardRecovery.shouldRecover(this);
         lifecycle("service_destroy", "recover", recover);
         if (reverseCameras != null) reverseCameras.shutdown();
@@ -556,19 +648,28 @@ public final class CameraHelperService extends Service {
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (weatherRuntime != null) weatherRuntime.shutdown();
         if (helper != null) helper.shutdown(!recover);
+        controllersInitialized = false;
         helper = null;
+        helperRuntimeStarted = false;
         weatherAccessibilityExecutor.shutdownNow();
-        stopForegroundRuntime();
         if (recover) GuardRecovery.scheduleSoon(this);
-        closeLogWriter();
-        if (activeInstance == this) activeInstance = null;
-        super.onDestroy();
+        if (serviceLog != null) serviceLog.close();
+        runtimeHandler.removeCallbacksAndMessages(null);
+        runtimeThread.quit();
+    }
+
+    private synchronized void ensureHelperCreated() {
+        if (helper != null) return;
+        helper = new CameraHelperMain.HelperBinder(
+                getApplicationContext(), runtimeHandler, this::acceptHelperLine);
+        helperRuntimeStarted = false;
     }
 
     private void ensureHelperStarted() {
         if (LegacySettingsImporter.blocksRuntime(this)) return;
-        if (helper != null) return;
-        helper = new CameraHelperMain.HelperBinder(getApplicationContext(), this::acceptHelperLine);
+        ensureHelperCreated();
+        if (helperRuntimeStarted) return;
+        helperRuntimeStarted = true;
         boolean cameraReady = helper.discoverCamera();
         helper.startGuardRuntime();
 
@@ -593,17 +694,24 @@ public final class CameraHelperService extends Service {
     }
 
     private void stopRuntime(boolean terminateShells) {
-        handler.removeCallbacks(heartbeat);
-        handler.removeCallbacks(resumeOverlay);
-        handler.removeCallbacks(retryCameraDiscovery);
+        runtimeHandler.removeCallbacks(heartbeat);
+        runtimeHandler.removeCallbacks(resumeOverlay);
+        runtimeHandler.removeCallbacks(retryCameraDiscovery);
         if (reverseCameras != null) reverseCameras.shutdown();
         if (overlay != null) overlay.shutdown();
         if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
         if (weatherRuntime != null) weatherRuntime.shutdown();
         if (helper != null) helper.shutdown(terminateShells);
+        overlay = null;
+        parkingCameras = null;
+        reverseCameras = null;
+        clusterFullscreen = null;
+        weatherRuntime = null;
+        controllersInitialized = false;
         helper = null;
-        stopForegroundRuntime();
+        helperRuntimeStarted = false;
+        mainHandler.post(this::stopForegroundRuntime);
         GuardRecovery.schedule(this);
     }
 
@@ -636,13 +744,13 @@ public final class CameraHelperService extends Service {
     }
 
     private void startHeartbeat() {
-        handler.removeCallbacks(heartbeat);
+        runtimeHandler.removeCallbacks(heartbeat);
         heartbeat.run();
     }
 
     private void scheduleCameraDiscoveryRetry(long delayMs) {
-        handler.removeCallbacks(retryCameraDiscovery);
-        handler.postDelayed(retryCameraDiscovery, Math.max(0, delayMs));
+        runtimeHandler.removeCallbacks(retryCameraDiscovery);
+        runtimeHandler.postDelayed(retryCameraDiscovery, Math.max(0, delayMs));
     }
 
     static boolean shouldRetryCameraDiscovery(boolean cameraReady, boolean recover) {
@@ -678,86 +786,37 @@ public final class CameraHelperService extends Service {
                 .build();
     }
 
-    private void createLogFile() {
+    private File createLogFile() {
         File base = getExternalFilesDir(null);
         if (base == null) base = getFilesDir();
         File captures = new File(base, "captures");
         if (!captures.isDirectory() && !captures.mkdirs()) captures = getFilesDir();
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        logFile = new File(captures, "helper-service-" + stamp + ".jsonl");
-    }
-
-    private void writeLine(String line) {
-        synchronized (logLock) {
-            if (logClosed) return;
-            try {
-                if (shouldReopenLog(logWriter != null, logFile.exists())) {
-                    closeLogWriterLocked();
-                }
-                if (logWriter == null) {
-                    logWriter = new BufferedWriter(new OutputStreamWriter(
-                            new FileOutputStream(logFile, true), StandardCharsets.UTF_8));
-                }
-                logWriter.write(line);
-                logWriter.newLine();
-                if (!logFlushScheduled) {
-                    logFlushScheduled = true;
-                    if (!handler.postDelayed(flushLog, LOG_FLUSH_DELAY_MS)) {
-                        logFlushScheduled = false;
-                        logWriter.flush();
-                    }
-                }
-            } catch (Throwable ignored) {
-                // Logcat still receives the same helper event.
-                closeLogWriterLocked();
-            }
-        }
+        return new File(captures, "helper-service-" + stamp + ".jsonl");
     }
 
     static boolean shouldReopenLog(boolean writerOpen, boolean fileExists) {
         return writerOpen && !fileExists;
     }
 
-    private void flushLogWriter() {
-        synchronized (logLock) {
-            logFlushScheduled = false;
-            if (logWriter == null) return;
-            try {
-                logWriter.flush();
-            } catch (Throwable ignored) {
-                closeLogWriterLocked();
-            }
-        }
+    private boolean postRuntime(Runnable action) {
+        return runtimeLifecycle.post(runtimeQueue, action);
     }
 
-    private void closeLogWriter() {
-        handler.removeCallbacks(flushLog);
-        synchronized (logLock) {
-            logClosed = true;
-            closeLogWriterLocked();
-        }
-    }
-
-    private void closeLogWriterLocked() {
-        logFlushScheduled = false;
-        if (logWriter == null) return;
-        try {
-            logWriter.flush();
-        } catch (Throwable ignored) {
-        }
-        try {
-            logWriter.close();
-        } catch (Throwable ignored) {
-        }
-        logWriter = null;
+    private boolean isRuntimeThread() {
+        Handler activeHandler = runtimeHandler;
+        return activeHandler != null && Looper.myLooper() == activeHandler.getLooper();
     }
 
     private void acceptHelperLine(String line) {
-        if (overlay != null) overlay.acceptEvent(line);
-        if (parkingCameras != null) parkingCameras.acceptEvent(line);
-        if (reverseCameras != null) reverseCameras.acceptEvent(line);
-        if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
-        writeLine(line);
+        if (line == null) return;
+        postRuntime(() -> {
+            if (overlay != null) overlay.acceptEvent(line);
+            if (parkingCameras != null) parkingCameras.acceptEvent(line);
+            if (reverseCameras != null) reverseCameras.acceptEvent(line);
+            if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
+            serviceLog.appendRaw(line);
+        });
     }
 
     private void parkingEvent(String kind, Object... fields) {
@@ -782,17 +841,9 @@ public final class CameraHelperService extends Service {
     }
 
     private void lifecycle(String kind, Object... fields) {
-        try {
-            JSONObject event = new JSONObject();
-            event.put("kind", kind);
-            event.put("source", "helper_service");
-            event.put("t_ms", SystemClock.elapsedRealtime());
-            for (int i = 0; i + 1 < fields.length; i += 2) {
-                event.put(String.valueOf(fields[i]), fields[i + 1]);
-            }
-            writeLine(event.toString());
-        } catch (Throwable ignored) {
-            // Lifecycle logging must not affect service recovery.
+        AsyncServiceLog activeLog = serviceLog;
+        if (activeLog != null) {
+            activeLog.appendLifecycle(kind, SystemClock.elapsedRealtime(), fields);
         }
     }
 }

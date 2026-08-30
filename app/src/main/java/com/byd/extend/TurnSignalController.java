@@ -55,6 +55,15 @@ final class TurnSignalController {
             return true;
         }
     };
+    private final Binder avmCallback = new Binder() {
+        @Override
+        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
+            if (code != StockAvmShellProtocol.CB_EVENT) return false;
+            data.enforceInterface(StockAvmShellProtocol.CALLBACK_DESCRIPTOR);
+            acceptShellEvent(data.readString());
+            return true;
+        }
+    };
     private final Runnable pingRunnable = new Runnable() {
         @Override
         public void run() {
@@ -69,9 +78,16 @@ final class TurnSignalController {
     private volatile LocalAdbClient.PromptMode authorizationMode;
     private volatile IBinder helper;
     private volatile IBinder cameraHelper;
+    private volatile IBinder avmShell;
     private IBinder.DeathRecipient helperDeathRecipient;
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
+    private IBinder.DeathRecipient avmShellDeathRecipient;
     private long cameraHelperEpoch;
+    private long avmShellEpoch;
+    private volatile int stockAvmRetryRequestId;
+    private volatile int stockAvmRetryAttempt;
+    private volatile boolean stockAvmRetryActive;
+    private volatile boolean stockAvmResetInProgress;
     private boolean cameraRecoveryPending;
     private final PendingOverlay[] pendingOverlays =
             new PendingOverlay[CameraOverlayProfile.COUNT];
@@ -115,6 +131,7 @@ final class TurnSignalController {
         LocalAdbClient.cancelPendingAuthorization();
         if (terminateShells) {
             shutdownTurnHelper();
+            shutdownAvmShell();
             shutdownCameraHelper();
         } else {
             closeStockAvmNow("controller_shutdown");
@@ -126,6 +143,7 @@ final class TurnSignalController {
             }
         }
         clearHelper(null);
+        clearAvmShell(null);
         clearCameraHelper(null);
         healthy = false;
         worker.shutdownNow();
@@ -241,34 +259,66 @@ final class TurnSignalController {
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
+            boolean resetRetried = false;
             try {
-                value = ensureCameraHelper();
-                epoch = cameraHelperEpoch(value);
-                Surface inputSurface = transactCameraOpen(
-                        value, surface, viewpoint, horizontal, stockDewarp, requestId, config);
-                transactionComplete = true;
-                boolean inputSurfaceValid = inputSurface.isValid();
-                try {
-                    inputSurfaceSink.accept(inputSurface);
-                } catch (Throwable error) {
-                    inputSurface.release();
-                    throw error;
+                beginStockAvmAttempt(requestId, 1);
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        value = ensureAvmShell();
+                        epoch = avmShellEpoch(value);
+                        Surface inputSurface = transactAvmOpen(
+                                value, surface, viewpoint, horizontal, stockDewarp,
+                                requestId, attempt + 1, config);
+                        transactionComplete = true;
+                        boolean inputSurfaceValid = inputSurface.isValid();
+                        try {
+                            inputSurfaceSink.accept(inputSurface);
+                        } catch (Throwable error) {
+                            inputSurface.release();
+                            throw error;
+                        }
+                        emit("camera_shell_opened", "viewpoint", viewpoint,
+                                "request_id", requestId,
+                                "orientation", horizontal ? "horizontal" : "vertical",
+                                "dewarp", stockDewarp,
+                                "input_surface_valid", inputSurfaceValid,
+                                "avm_shell_epoch", epoch);
+                        break;
+                    } catch (Throwable error) {
+                        if (!shouldRetryStockAvm(transactionComplete, resetRetried, stopped)) {
+                            throw error;
+                        }
+                        resetRetried = true;
+                        setStockAvmAttempt(requestId, 2);
+                        emit("stock_avm_reset_retry", "request_id", requestId,
+                                "viewpoint", viewpoint, "error", summary(error));
+                        stockAvmResetInProgress = true;
+                        try {
+                            resetAvmShell();
+                        } finally {
+                            stockAvmResetInProgress = false;
+                        }
+                    }
                 }
-                emit("camera_shell_opened", "viewpoint", viewpoint,
-                        "request_id", requestId,
-                        "orientation", horizontal ? "horizontal" : "vertical",
-                        "dewarp", stockDewarp,
-                        "input_surface_valid", inputSurfaceValid);
+                if (!transactionComplete) {
+                    throw new IllegalStateException("stock_avm_open_retry_exhausted");
+                }
             } catch (Throwable error) {
-                if (!transactionComplete && value != null && !cameraPing(value)) {
-                    cameraHelperLost(value, epoch, summary(error));
+                boolean shellFailureNotified = false;
+                if (!transactionComplete && value != null && !avmPing(value)) {
+                    shellFailureNotified = avmShellLost(value, epoch, summary(error));
+                }
+                if (!transactionComplete && !shellFailureNotified) {
+                    emit("stock_avm_shell_died", "avm_shell_epoch", epoch,
+                            "error", summary(error));
                 }
                 emit("camera_error", "renderer", "stock_avm_shell",
-                        "stage", "camera_shell_launch_or_open",
+                        "stage", "avm_shell_launch_or_open",
                         "view", StockAvmPreview.viewName(viewpoint),
                         "viewpoint", viewpoint, "request_id", requestId,
                         "error", summary(error));
             } finally {
+                endStockAvmAttempt(requestId);
                 surface.release();
             }
         });
@@ -1097,6 +1147,90 @@ final class TurnSignalController {
         }
     }
 
+    private IBinder ensureAvmShell() throws Exception {
+        if (stopped || LegacySettingsImporter.blocksRuntime(context)) {
+            throw new IllegalStateException("runtime blocked by shutdown or legacy handover");
+        }
+        CameraHelperResolution resolution = resolveCameraHelperFlow(
+                avmShell,
+                this::avmPing,
+                this::resolveAvmShell,
+                () -> LocalAdbClient.executeAuthorized(
+                        context, avmLaunchCommand(context.getApplicationInfo().sourceDir,
+                                Process.myUid(), BuildConfig.VERSION_CODE), this::emit),
+                SystemClock::elapsedRealtime,
+                Thread::sleep,
+                3_000);
+        IBinder value = resolution.binder;
+        if (value == null) {
+            throw new IllegalStateException("stock_avm_shell_binder_timeout");
+        }
+        if (!avmPing(value)) throw new IllegalStateException("stock_avm_shell_binder_timeout");
+        if (avmShell != value) {
+            long epoch = installAvmShell(value);
+            try {
+                transactAvmCallback(value);
+            } catch (Throwable error) {
+                avmShellLost(value, epoch, summary(error));
+                throw error;
+            }
+        }
+        return value;
+    }
+
+    private IBinder resolveAvmShell() {
+        try {
+            Class<?> manager = Class.forName("android.os.ServiceManager");
+            Method getService = manager.getMethod("getService", String.class);
+            return (IBinder) getService.invoke(null, StockAvmShellProtocol.SERVICE_NAME);
+        } catch (Throwable error) {
+            emit("stock_avm_shell_resolve_error", "error", summary(error));
+            return null;
+        }
+    }
+
+    private boolean avmPing(IBinder value) {
+        if (value == null || !value.isBinderAlive()) return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
+            if (!value.transact(StockAvmShellProtocol.TX_PING, data, reply, 0)) return false;
+            reply.readException();
+            return reply.readInt() == StockAvmShellProtocol.VERSION
+                    && reply.readInt() == BuildConfig.VERSION_CODE
+                    && reply.readInt() > 0;
+        } catch (Throwable error) {
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private void transactAvmCallback(IBinder value) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
+            data.writeStrongBinder(avmCallback);
+            requireTransact(value, StockAvmShellProtocol.TX_REGISTER_CALLBACK, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private void resetAvmShell() throws Exception {
+        clearAvmShell(null);
+        LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
+                context, avmLaunchCommand(context.getApplicationInfo().sourceDir,
+                        Process.myUid(), BuildConfig.VERSION_CODE), this::emit);
+        if (!result.ok) throw new IllegalStateException(
+                "stock_avm_shell_reset_failed: " + result.error);
+        ensureAvmShell();
+    }
+
     private boolean cameraPing(IBinder value) {
         return cameraHelperPid(value) > 0;
     }
@@ -1133,25 +1267,27 @@ final class TurnSignalController {
         }
     }
 
-    private static Surface transactCameraOpen(
+    private static Surface transactAvmOpen(
             IBinder value,
             Surface surface,
             int viewpoint,
             boolean horizontal,
             boolean stockDewarp,
             int requestId,
+            int attempt,
             StockAvmPreview.Config config) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
-            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
             surface.writeToParcel(data, 0);
             data.writeInt(viewpoint);
             data.writeInt(horizontal ? 1 : 0);
             data.writeInt(stockDewarp ? 1 : 0);
             data.writeInt(requestId);
+            data.writeInt(attempt);
             config.writeToParcel(data);
-            requireTransact(value, CameraShellProtocol.TX_OPEN, data, reply);
+            requireTransact(value, StockAvmShellProtocol.TX_OPEN, data, reply);
             Surface inputSurface = Surface.CREATOR.createFromParcel(reply);
             if (inputSurface == null || !inputSurface.isValid()) {
                 if (inputSurface != null) inputSurface.release();
@@ -1494,9 +1630,9 @@ final class TurnSignalController {
     }
 
     private void closeStockAvmNow(String reason, int requestId) {
-        IBinder value = cameraHelper;
-        if (!cameraPing(value)) value = resolveCameraHelper();
-        if (!cameraPing(value)) {
+        IBinder value = avmShell;
+        if (!avmPing(value)) value = resolveAvmShell();
+        if (!avmPing(value)) {
             emit("camera_closed", "renderer", "stock_avm_shell",
                     "view", "unknown", "reason", reason == null ? "unknown" : reason,
                     "request_id", requestId,
@@ -1506,10 +1642,10 @@ final class TurnSignalController {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
-            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
             data.writeString(reason == null ? "unknown" : reason);
             data.writeInt(requestId);
-            requireTransact(value, CameraShellProtocol.TX_CLOSE, data, reply);
+            requireTransact(value, StockAvmShellProtocol.TX_CLOSE, data, reply);
         } catch (Throwable error) {
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", "close", "request_id", requestId,
@@ -1593,11 +1729,51 @@ final class TurnSignalController {
         }
     }
 
+    private void shutdownAvmShell() {
+        IBinder cached;
+        long cachedEpoch;
+        synchronized (this) {
+            cached = avmShell;
+            cachedEpoch = avmShell == null ? 0 : avmShellEpoch;
+        }
+        IBinder value = cached;
+        if (value == null || !value.isBinderAlive()) value = resolveAvmShell();
+        if (value == null || !value.isBinderAlive()) {
+            if (cached != null) clearAvmShell(cached, cachedEpoch);
+            return;
+        }
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
+            requireTransact(value, StockAvmShellProtocol.TX_SHUTDOWN, data, reply);
+            emit("shell_shutdown_requested", "helper", "stock_avm");
+        } catch (Throwable error) {
+            emit("shell_shutdown_failed", "helper", "stock_avm", "error", summary(error));
+        } finally {
+            data.recycle();
+            reply.recycle();
+            if (cached != null) clearAvmShell(cached, cachedEpoch);
+            if (value != cached) clearAvmShell(value);
+        }
+    }
+
     private void acceptShellEvent(String line) {
         if (line == null) return;
         try {
             JSONObject event = new JSONObject(line);
             String kind = event.optString("kind");
+            int eventRequestId = event.optInt("request_id", 0);
+            int eventAttempt = event.optInt("attempt", 0);
+            if (shouldSuppressStockAvmError(
+                    stockAvmRetryRequestId > 0, stockAvmRetryRequestId, stockAvmRetryAttempt,
+                    eventRequestId, eventAttempt)
+                    && "camera_error".equals(kind)
+                    && "stock_avm_shell".equals(event.optString("renderer"))) {
+                emit("stock_avm_retry_error", "request_id", eventRequestId,
+                        "error", event.optString("error", ""));
+                return;
+            }
             if ("turn_state_write".equals(kind) && event.optInt("framework_status", -1) == 0) {
                 settings.edit().putInt("assumed_latch_state",
                         event.optInt("assumed_latch_state_after", -1)).apply();
@@ -1725,6 +1901,24 @@ final class TurnSignalController {
                 + CameraShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
     }
 
+    static String avmLaunchCommand(String apkPath, int appUid, int versionCode) {
+        String apk = shellQuote(apkPath);
+        String process = StockAvmShellProtocol.PROCESS_NAME;
+        return "for pid in $(pidof " + process
+                + " 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; "
+                + "wait_count=0; while [ -n \"$(pidof " + process + " 2>/dev/null)\" ] "
+                + "&& [ \"$wait_count\" -lt 30 ]; do sleep 0.1; "
+                + "wait_count=$((wait_count + 1)); done; "
+                + "if [ -n \"$(pidof " + process + " 2>/dev/null)\" ]; then "
+                + "echo stock_avm_shell_stop_timeout; false; else "
+                + "rm -f " + StockAvmShellProtocol.LOCK_PATH + "; "
+                + "CLASSPATH=" + apk + " setsid app_process /system/bin --nice-name=" + process + " "
+                + StockAvmShellProtocol.HELPER_CLASS + " " + appUid + " " + versionCode
+                + " </dev/null >" + StockAvmShellProtocol.LOG_PATH + " 2>&1 & "
+                + "for i in 1 2 3; do service list 2>/dev/null | grep -q "
+                + StockAvmShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
+    }
+
     private synchronized void installHelper(IBinder value, int pid) throws Exception {
         if (helper == value) return;
         IBinder.DeathRecipient recipient = () -> helperDied(value, pid);
@@ -1763,6 +1957,32 @@ final class TurnSignalController {
         return epoch;
     }
 
+    private long installAvmShell(IBinder value) throws Exception {
+        IBinder previous;
+        IBinder.DeathRecipient previousRecipient;
+        long epoch;
+        synchronized (this) {
+            if (avmShell == value) return avmShellEpoch;
+            epoch = avmShellEpoch + 1;
+            IBinder.DeathRecipient recipient = () -> {
+                try {
+                    worker.execute(() -> avmShellLost(value, epoch,
+                            "stock AVM shell Binder died"));
+                } catch (Throwable ignored) {
+                }
+            };
+            value.linkToDeath(recipient, 0);
+            previous = avmShell;
+            previousRecipient = avmShellDeathRecipient;
+            avmShellEpoch = epoch;
+            avmShell = value;
+            avmShellDeathRecipient = recipient;
+        }
+        unlinkDeathRecipient(previous, previousRecipient);
+        emit("stock_avm_shell_attached", "avm_shell_epoch", epoch);
+        return epoch;
+    }
+
     private void cameraHelperLost(IBinder value, long epoch, String error) {
         if (!clearCameraHelper(value, epoch)) return;
         int[] overlayRequestIds = pendingOverlayRequestIds();
@@ -1777,6 +1997,34 @@ final class TurnSignalController {
                 "pending_overlay_request_ids", Arrays.toString(overlayRequestIds),
                 "pending_reverse_request_id", reverseRequestId,
                 "error", error == null ? "camera helper unavailable" : error);
+    }
+
+    private boolean avmShellLost(IBinder value, long epoch, String error) {
+        if (!clearAvmShell(value, epoch)) return false;
+        if (stockAvmResetInProgress
+                || (stockAvmRetryActive && stockAvmRetryAttempt == 1)) return true;
+        emit("stock_avm_shell_died", "avm_shell_epoch", epoch,
+                "error", error == null ? "stock AVM shell unavailable" : error);
+        return true;
+    }
+
+    private void beginStockAvmAttempt(int requestId, int attempt) {
+        stockAvmRetryRequestId = requestId;
+        stockAvmRetryAttempt = attempt;
+        stockAvmRetryActive = true;
+    }
+
+    private void setStockAvmAttempt(int requestId, int attempt) {
+        if (stockAvmRetryRequestId != requestId) return;
+        stockAvmRetryAttempt = attempt;
+    }
+
+    private void endStockAvmAttempt(int requestId) {
+        if (stockAvmRetryRequestId != requestId) return;
+        stockAvmRetryActive = false;
+        // Retain the completed identity so a late first-attempt callback cannot
+        // clear a successful retry's current input Surface.
+        stockAvmRetryAttempt = 2;
     }
 
     private void clearHelper(IBinder expected) {
@@ -1811,6 +2059,26 @@ final class TurnSignalController {
         return true;
     }
 
+    private boolean clearAvmShell(IBinder expected) {
+        return clearAvmShell(expected, 0);
+    }
+
+    private boolean clearAvmShell(IBinder expected, long expectedEpoch) {
+        IBinder previous;
+        IBinder.DeathRecipient previousRecipient;
+        synchronized (this) {
+            if (!matchesExpectedCameraHelper(avmShell, avmShellEpoch, expected, expectedEpoch)) {
+                return false;
+            }
+            previous = avmShell;
+            previousRecipient = avmShellDeathRecipient;
+            avmShell = null;
+            avmShellDeathRecipient = null;
+        }
+        unlinkDeathRecipient(previous, previousRecipient);
+        return true;
+    }
+
     static boolean matchesExpectedCameraHelper(IBinder current, IBinder expected) {
         return expected == null || current == expected;
     }
@@ -1835,6 +2103,10 @@ final class TurnSignalController {
 
     private synchronized long cameraHelperEpoch(IBinder expected) {
         return cameraHelper == expected ? cameraHelperEpoch : 0;
+    }
+
+    private synchronized long avmShellEpoch(IBinder expected) {
+        return avmShell == expected ? avmShellEpoch : 0;
     }
 
     static boolean isCurrentCameraShellEpoch(long current, long event) {
@@ -1878,6 +2150,18 @@ final class TurnSignalController {
 
     static boolean shouldQueueCameraRecovery(boolean stopped, boolean pending) {
         return !stopped && !pending;
+    }
+
+    static boolean shouldRetryStockAvm(
+            boolean transactionComplete, boolean resetRetried, boolean stopped) {
+        return !transactionComplete && !resetRetried && !stopped;
+    }
+
+    static boolean shouldSuppressStockAvmError(
+            boolean tracked, int activeRequestId, int activeAttempt,
+            int eventRequestId, int eventAttempt) {
+        return tracked && activeRequestId > 0 && activeAttempt >= 1
+                && eventRequestId == activeRequestId && eventAttempt == 1;
     }
 
     private int[] pendingOverlayRequestIds() {

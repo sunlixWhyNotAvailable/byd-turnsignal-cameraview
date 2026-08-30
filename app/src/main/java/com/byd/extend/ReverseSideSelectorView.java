@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.MotionEvent;
@@ -39,7 +38,6 @@ final class ReverseSideSelectorView extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path carPath = new Path();
     private Listener listener;
     private int mode = MODE_REAR;
     private boolean leftVisible;
@@ -200,19 +198,6 @@ final class ReverseSideSelectorView extends View {
         stroke.setColor(BODY_STROKE_COLOR);
         stroke.setStrokeWidth(Math.max(1.0f, dp(1.5f)));
         canvas.drawRoundRect(body, bodyRadius, bodyRadius, stroke);
-
-        carPath.reset();
-        carPath.moveTo(body.left + bodyWidth * 0.13f, bodyTop + bodyWidth * 0.22f);
-        carPath.lineTo(body.right - bodyWidth * 0.13f, bodyTop + bodyWidth * 0.22f);
-        carPath.lineTo(body.right - bodyWidth * 0.2f, bodyTop + bodyWidth * 0.41f);
-        carPath.lineTo(body.left + bodyWidth * 0.2f, bodyTop + bodyWidth * 0.41f);
-        carPath.close();
-        fill.setColor(0xFF6C849F);
-        canvas.drawPath(carPath, fill);
-        stroke.setColor(0xFFB8C9DC);
-        canvas.drawPath(carPath, stroke);
-        canvas.drawLine(body.left + bodyWidth * 0.16f, bodyTop + bodyWidth * 0.48f,
-                body.right - bodyWidth * 0.16f, bodyTop + bodyWidth * 0.48f, stroke);
 
         float wheelWidth = unit * 0.11f;
         float wheelHeight = unit * 0.18f;
