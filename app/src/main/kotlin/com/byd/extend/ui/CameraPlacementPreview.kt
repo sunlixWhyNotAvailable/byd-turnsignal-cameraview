@@ -10,10 +10,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,13 +73,21 @@ internal fun CameraPlacementPreview(
 ) {
     val storedX = state.x.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
     val storedY = state.y.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
-    var dragX by remember(profile, state.x) { mutableFloatStateOf(storedX) }
-    var dragY by remember(profile, state.y) { mutableFloatStateOf(storedY) }
+    val dragX = remember(profile) { mutableFloatStateOf(storedX) }
+    val dragY = remember(profile) { mutableFloatStateOf(storedY) }
+    val latestOnMove by rememberUpdatedState(onMove)
+    val latestStoredX by rememberUpdatedState(storedX)
+    val latestStoredY by rememberUpdatedState(storedY)
+    LaunchedEffect(profile, state.x, state.y) {
+        dragX.floatValue = storedX
+        dragY.floatValue = storedY
+    }
     val canvasAspect = if (state.target == DisplayTarget.Cluster) {
         PLACEMENT_CLUSTER_ASPECT
     } else PLACEMENT_TABLET_ASPECT
     val placement = calculatePlacementFractions(
-        state.size.toFloatOrNull() ?: 30f, state.frameAspect, canvasAspect, dragX, dragY)
+        state.size.toFloatOrNull() ?: 30f, state.frameAspect, canvasAspect,
+        dragX.floatValue, dragY.floatValue)
     val density = LocalDensity.current
 
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -104,22 +113,22 @@ internal fun CameraPlacementPreview(
                     canvasHeight * placement.height,
                 ).clip(RoundedCornerShape(8.dp))
                     .border(2.dp, colors.accent, RoundedCornerShape(8.dp))
-                    .pointerInput(profile, placement.width, placement.height) {
+                    .pointerInput(profile, placement.width, placement.height, canvasWidthPx, canvasHeightPx) {
                         detectDragGestures(
-                            onDragEnd = { onMove(dragX, dragY) },
+                            onDragEnd = { latestOnMove(dragX.floatValue, dragY.floatValue) },
                             onDragCancel = {
-                                dragX = storedX
-                                dragY = storedY
+                                dragX.floatValue = latestStoredX
+                                dragY.floatValue = latestStoredY
                             },
                         ) { change, amount ->
                             change.consume()
                             val remainingX = canvasWidthPx * (1f - placement.width)
                             val remainingY = canvasHeightPx * (1f - placement.height)
-                            dragX = if (remainingX > 0f) {
-                                (dragX + amount.x / remainingX).coerceIn(0f, 1f)
+                            dragX.floatValue = if (remainingX > 0f) {
+                                (dragX.floatValue + amount.x / remainingX).coerceIn(0f, 1f)
                             } else 0f
-                            dragY = if (remainingY > 0f) {
-                                (dragY + amount.y / remainingY).coerceIn(0f, 1f)
+                            dragY.floatValue = if (remainingY > 0f) {
+                                (dragY.floatValue + amount.y / remainingY).coerceIn(0f, 1f)
                             } else 0f
                         }
                     }.testTag("placement-frame"),

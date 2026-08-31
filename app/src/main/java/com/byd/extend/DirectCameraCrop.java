@@ -319,8 +319,10 @@ final class DirectCameraCrop {
                     preferences.getFloat(prefix + "width", raw.width),
                     preferences.getFloat(prefix + "height", raw.height),
                     raw.aspectMode, raw.rotationDegrees, raw.rotationMode, LEGACY_MIN_SIZE);
-            DirectCameraCrop result = preserveCenterAndAspect(migrateActive(stored), raw);
-            if (result != stored) saveCorrected(preferences, profile, result);
+            DirectCameraCrop migrated = migrateActive(stored);
+            DirectCameraCrop result = preserveCenterAndAspect(migrated, raw);
+            // Reading a new RAW aspect/output must not persist a Correction-stage edit.
+            if (migrated != stored) saveCorrected(preferences, profile, result);
             return result;
         } catch (RuntimeException invalidValue) {
             DirectCameraCrop fallback = raw.centered();
@@ -389,6 +391,15 @@ final class DirectCameraCrop {
                 CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT,
                 mirrorHorizontally)
                 .constrainAligned();
+    }
+
+    /** Applies output-only defaults without changing the calibrated geometry. */
+    DirectCameraCrop withOutputTransformPreservingGeometry(
+            int degrees, int mode, boolean mirror) {
+        return new DirectCameraCrop(left, top, width, height, aspectMode,
+                CameraRotation.clamp(degrees),
+                CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT,
+                mirror);
     }
 
     DirectCameraCrop geometryOnly() {

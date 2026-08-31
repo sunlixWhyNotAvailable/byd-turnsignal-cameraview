@@ -85,7 +85,8 @@ fun BydExtendApp(
                         RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost)
                         RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost)
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost)
-                        RootTab.Settings -> SettingsScreen(state.settings, strings, colors, onAction)
+                        RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
+                            strings, colors, onAction)
                         RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, onAction, cameraHost)
                     }
                 }
@@ -114,7 +115,7 @@ private fun AppHeader(
                 Text(strings.subtitle, color = colors.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(state.header.adb, "ADB", colors)
+                StatusPill(state.header.adb.copy(text = ""), "ADB", colors)
                 if (state.header.location.visible || state.header.weatherEnabled) {
                     StatusPill(state.header.location, strings.text("Геолокація", "Location"), colors)
                 }

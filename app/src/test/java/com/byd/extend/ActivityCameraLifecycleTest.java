@@ -14,6 +14,42 @@ import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
+    public void headerUsesLastAdbResultAndActualWeatherPermission() {
+        com.byd.extend.ui.HeaderUiState header = CameraProbeActivity.productionHeader(
+                LocalAdbClient.AccessState.Status.OK, true, false);
+        assertEquals("ADB", header.getAdb().getText());
+        assertEquals(com.byd.extend.ui.StatusTone.Ok, header.getAdb().getTone());
+        assertTrue(header.getLocation().getVisible());
+        assertEquals(com.byd.extend.ui.StatusTone.Error, header.getLocation().getTone());
+        header = CameraProbeActivity.productionHeader(LocalAdbClient.AccessState.Status.ERROR, false, true);
+        assertEquals(com.byd.extend.ui.StatusTone.Error, header.getAdb().getTone());
+        assertFalse(header.getLocation().getVisible());
+        header = CameraProbeActivity.productionHeader(LocalAdbClient.AccessState.Status.UNKNOWN, true, true);
+        assertEquals(com.byd.extend.ui.StatusTone.Neutral, header.getAdb().getTone());
+        assertEquals(com.byd.extend.ui.StatusTone.Ok, header.getLocation().getTone());
+    }
+
+    @Test
+    public void manualDiagnosticsRequireHealthyParkedIdleRuntime() {
+        assertTrue(CameraProbeActivity.manualDiagnosticsAllowed(true, true, true, false, false, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(false, true, true, false, false, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(true, false, true, false, false, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(true, true, false, false, false, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(true, true, true, true, false, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(true, true, true, false, true, false));
+        assertFalse(CameraProbeActivity.manualDiagnosticsAllowed(true, true, true, false, false, true));
+    }
+
+    @Test
+    public void composeManualCommandsKeepApprovedPayloadMapping() {
+        assertEquals(2, CameraProbeActivity.manualSignalPayload(com.byd.extend.ui.CommandId.SignalLeft));
+        assertEquals(3, CameraProbeActivity.manualSignalPayload(com.byd.extend.ui.CommandId.SignalRight));
+        assertEquals(1, CameraProbeActivity.manualSignalPayload(com.byd.extend.ui.CommandId.SignalHazard));
+        assertEquals(0, CameraProbeActivity.manualSignalPayload(com.byd.extend.ui.CommandId.SignalReset));
+        assertEquals(-1, CameraProbeActivity.manualSignalPayload(com.byd.extend.ui.CommandId.StopDiagnosticCamera));
+    }
+
+    @Test
     public void freshGateAcceptsOnlyCurrentRequestAndInputGeneration() {
         CameraProbeActivity.PreviewFreshnessGate gate =
                 new CameraProbeActivity.PreviewFreshnessGate();

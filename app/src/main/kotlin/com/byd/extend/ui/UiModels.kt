@@ -338,6 +338,7 @@ data class DialogUiState(
 @Immutable
 data class BydExtendUiState(
     val activeTab: RootTab = RootTab.Signals,
+    val legacyRuntimeBlocked: Boolean = false,
     val language: UiLanguage = UiLanguage.Ukrainian,
     val theme: UiTheme = UiTheme.Dark,
     val header: HeaderUiState = HeaderUiState(),

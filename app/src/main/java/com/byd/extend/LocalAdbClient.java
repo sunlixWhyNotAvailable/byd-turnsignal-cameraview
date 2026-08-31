@@ -2,6 +2,7 @@ package com.byd.extend;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -26,10 +27,13 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.function.BiConsumer;
 
 final class LocalAdbClient {
     enum PromptMode { AUTO_ONCE, FORCE, NEVER }
+
+    static final long AUTHORIZED_CACHE_TTL_MS = 30_000L;
 
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 5555;
@@ -41,6 +45,8 @@ final class LocalAdbClient {
     private static final String PREFS = "local_adb";
     private static final String AUTO_PROMPT_KEY = "auto_prompt_key";
     private static final String AUTHORIZED_KEY = "authorized_key";
+    private static final String ACCESS_STATUS_KEY = "access_status";
+    private static final String ACCESS_STATUS_FINGERPRINT_KEY = "access_status_fingerprint";
     private static final byte[] SHA1_DIGEST_INFO = new byte[]{
             0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
             0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14
@@ -49,8 +55,66 @@ final class LocalAdbClient {
     private static final Object PENDING_LOCK = new Object();
     private static Socket pendingAuthorization;
     private static long cancellationGeneration;
+    private static final AccessCache ACCESS_CACHE = new AccessCache();
+    private static volatile AccessState currentAccessState = AccessState.unknown();
+    private static volatile long accessStateVersion;
+    private static volatile AccessStateListener accessStateListener;
 
     private LocalAdbClient() {}
+
+    static final class AccessState {
+        enum Status { UNKNOWN, OK, ERROR }
+
+        final Status status;
+        final String fingerprint;
+
+        AccessState(Status status, String fingerprint) {
+            this.status = status == null ? Status.UNKNOWN : status;
+            this.fingerprint = fingerprint == null ? "" : fingerprint;
+        }
+
+        static AccessState unknown() {
+            return new AccessState(Status.UNKNOWN, "");
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof AccessState)) return false;
+            AccessState state = (AccessState) other;
+            return status == state.status && fingerprint.equals(state.fingerprint);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(status, fingerprint);
+        }
+    }
+
+    interface AccessStateListener {
+        void onAccessStateChanged(AccessState state);
+    }
+
+    static void setAccessStateListener(AccessStateListener listener) {
+        accessStateListener = listener;
+    }
+
+    static void clearAccessStateListener(AccessStateListener listener) {
+        if (accessStateListener == listener) accessStateListener = null;
+    }
+
+    static boolean hasAccessStateListenerForTest(AccessStateListener listener) {
+        return accessStateListener == listener;
+    }
+
+    static AccessState readAccessState(Context context) {
+        if (context == null) return AccessState.unknown();
+        SharedPreferences preferences = prefs(context.getApplicationContext());
+        AccessState state = decodeAccessState(
+                preferences.getString(ACCESS_STATUS_KEY, ""),
+                preferences.getString(ACCESS_STATUS_FINGERPRINT_KEY, ""));
+        currentAccessState = state;
+        return state;
+    }
 
     static Result authorize(
             Context context, PromptMode mode, BiConsumer<String, Object[]> eventSink) {
@@ -62,10 +126,24 @@ final class LocalAdbClient {
             PromptMode mode,
             long cancellationToken,
             BiConsumer<String, Object[]> eventSink) {
+        Context applicationContext = context.getApplicationContext();
+        long stateVersion = accessStateVersion();
+        Result result;
         synchronized (LOCK) {
-            return connectOnly(
-                    context.getApplicationContext(), mode, cancellationToken, eventSink);
+            if (!isCancellationTokenCurrent(cancellationToken)) {
+                result = Result.superseded();
+            } else {
+                String fingerprint = currentFingerprint(applicationContext);
+                invalidateCacheForIdentity(applicationContext, fingerprint);
+                if (ACCESS_CACHE.isValid(fingerprint, mode)) {
+                    result = Result.ok("", 0, fingerprint, false);
+                } else {
+                    result = connectOnly(applicationContext, mode, cancellationToken, eventSink);
+                }
+            }
         }
+        notifyAccessStateChanged(stateVersion);
+        return result;
     }
 
     static Result executeAuthorized(
@@ -78,39 +156,57 @@ final class LocalAdbClient {
             String fixedCommand,
             long cancellationToken,
             BiConsumer<String, Object[]> eventSink) {
+        Context applicationContext = context.getApplicationContext();
+        long stateVersion = accessStateVersion();
+        Result result;
         synchronized (LOCK) {
             Connection connection = null;
+            String operationFingerprint = "";
             try {
                 OpenResult open = Connection.open(
-                        context.getApplicationContext(), PromptMode.NEVER,
+                        applicationContext, PromptMode.NEVER,
                         cancellationToken, eventSink);
+                operationFingerprint = open.fingerprint;
                 if (open.connection == null) {
-                    return Result.authorizationRequired(
+                    result = Result.authorizationRequired(
                             open.authorizationError, open.publicKeySent, open.fingerprint);
+                } else {
+                    connection = open.connection;
+                    if (!isCancellationTokenCurrent(cancellationToken)) {
+                        result = Result.superseded();
+                    } else {
+                        ShellResult shell = connection.shell(fixedCommand);
+                        if (!isCancellationTokenCurrent(cancellationToken)) {
+                            result = Result.superseded();
+                        } else {
+                            result = shell.exitCode == 0
+                                    ? Result.ok(shell.output, shell.exitCode, open.fingerprint, false)
+                                    : Result.failed("shell_exit_" + shell.exitCode, shell.output,
+                                            shell.exitCode, open.fingerprint);
+                            if (shell.exitCode < 0) {
+                                recordAccessError(applicationContext, open.fingerprint);
+                            }
+                        }
+                    }
                 }
-                connection = open.connection;
-                if (!isCancellationTokenCurrent(cancellationToken)) {
-                    return Result.superseded();
-                }
-                ShellResult shell = connection.shell(fixedCommand);
-                if (!isCancellationTokenCurrent(cancellationToken)) {
-                    return Result.superseded();
-                }
-                return shell.exitCode == 0
-                        ? Result.ok(shell.output, shell.exitCode, open.fingerprint, false)
-                        : Result.failed("shell_exit_" + shell.exitCode, shell.output,
-                                shell.exitCode, open.fingerprint);
             } catch (AuthorizationSupersededException superseded) {
-                return Result.superseded();
+                result = Result.superseded();
             } catch (Throwable error) {
                 if (!isCancellationTokenCurrent(cancellationToken)) {
-                    return Result.superseded();
+                    result = Result.superseded();
+                } else {
+                    if (!operationFingerprint.isEmpty()
+                            && shouldInvalidateAccess(error, false)) {
+                        recordAccessError(applicationContext, operationFingerprint);
+                    }
+                    result = Result.failed(summary(error), "", -1, "unavailable");
                 }
-                return Result.failed(summary(error), "", -1, "unavailable");
             } finally {
                 if (connection != null) connection.close();
             }
         }
+        notifyAccessStateChanged(stateVersion);
+        return result;
     }
 
     /** Executes a fixed shell command while streaming raw stdout without UTF-8 buffering. */
@@ -138,40 +234,61 @@ final class LocalAdbClient {
         if (readTimeoutMs <= 0) {
             return Result.failed("invalid_read_timeout", "", -1, "unavailable");
         }
+        Context applicationContext = context.getApplicationContext();
+        long stateVersion = accessStateVersion();
+        Result result;
         synchronized (LOCK) {
             Connection connection = null;
+            String operationFingerprint = "";
             try {
                 OpenResult open = Connection.open(
-                        context.getApplicationContext(), PromptMode.NEVER,
+                        applicationContext, PromptMode.NEVER,
                         NO_CANCELLATION, eventSink, cancellation);
+                operationFingerprint = open.fingerprint;
                 if (open.connection == null) {
-                    return Result.authorizationRequired(
+                    result = Result.authorizationRequired(
                             open.authorizationError, open.publicKeySent, open.fingerprint);
+                } else {
+                    connection = open.connection;
+                    if (cancellation != null && cancellation.isCancellationRequested()) {
+                        result = Result.cancelled();
+                    } else {
+                        // Connection.open keeps its handshake timeout unchanged. Export-only streams
+                        // switch to their longer inactivity timeout after CNXN is received.
+                        connection.setReadTimeout(readTimeoutMs);
+                        StreamShellResult shell = connection.shellTo(
+                                fixedCommand, output, maxBytes, cancellation);
+                        result = shell.exitCode == 0
+                                ? Result.ok("", shell.exitCode, open.fingerprint, false)
+                                : Result.failed("shell_exit_" + shell.exitCode, "",
+                                        shell.exitCode, open.fingerprint);
+                        if (shell.exitCode < 0) {
+                            recordAccessError(applicationContext, open.fingerprint);
+                        }
+                    }
                 }
-                connection = open.connection;
-                if (cancellation != null && cancellation.isCancellationRequested()) {
-                    return Result.cancelled();
-                }
-                // Connection.open keeps its handshake timeout unchanged. Export-only streams
-                // switch to their longer inactivity timeout after CNXN is received.
-                connection.setReadTimeout(readTimeoutMs);
-                StreamShellResult shell = connection.shellTo(
-                        fixedCommand, output, maxBytes, cancellation);
-                return shell.exitCode == 0
-                        ? Result.ok("", shell.exitCode, open.fingerprint, false)
-                        : Result.failed("shell_exit_" + shell.exitCode, "",
-                                shell.exitCode, open.fingerprint);
             } catch (TooLargeException tooLarge) {
-                return Result.failed("too_large", "", -1, "unavailable");
+                result = Result.failed("too_large", "", -1, "unavailable");
+            } catch (OutputSinkException sinkError) {
+                result = Result.failed(summary(sinkError), "", -1,
+                        operationFingerprint.isEmpty() ? "unavailable" : operationFingerprint);
             } catch (Throwable error) {
                 if (cancellation != null && cancellation.isCancellationRequested()) {
-                    return Result.cancelled();
+                    result = Result.cancelled();
+                } else {
+                    if (!operationFingerprint.isEmpty()
+                            && shouldInvalidateAccess(error,
+                            cancellation != null && cancellation.isCancellationRequested())) {
+                        recordAccessError(applicationContext, operationFingerprint);
+                    }
+                    result = Result.failed(summary(error), "", -1, "unavailable");
                 }
-                return Result.failed(summary(error), "", -1, "unavailable");
             } finally {
                 if (connection != null) connection.close();
             }
         }
+        notifyAccessStateChanged(stateVersion);
+        return result;
     }
 
     static Result executeAuthorizedText(
@@ -276,11 +393,9 @@ final class LocalAdbClient {
     }
 
     static String keyFingerprint(Context context) {
-        try {
-            return fingerprint(loadOrCreateKeys(context.getApplicationContext()));
-        } catch (Throwable error) {
-            return "unavailable";
-        }
+        String value = currentFingerprint(context.getApplicationContext());
+        invalidateCacheForIdentity(context, value);
+        return value;
     }
 
     static boolean shouldSendPublicKey(
@@ -288,6 +403,86 @@ final class LocalAdbClient {
         return mode == PromptMode.FORCE
                 || mode == PromptMode.AUTO_ONCE
                 && (authorizedFingerprintRejected || !alreadyPrompted);
+    }
+
+    static AccessState decodeAccessStateForTest(String status, String fingerprint) {
+        return decodeAccessState(status, fingerprint);
+    }
+
+    static boolean shouldInvalidateAccess(Throwable error, boolean cancelledOrSuperseded) {
+        return !cancelledOrSuperseded
+                && !(error instanceof OutputSinkException)
+                && !(error instanceof TooLargeException)
+                && !(error instanceof OperationCancelledException)
+                && !(error instanceof AuthorizationSupersededException);
+    }
+
+    static final class AccessCache {
+        interface Clock {
+            long elapsedRealtime();
+        }
+
+        private final Clock clock;
+        private String fingerprint = "";
+        private long successAt = Long.MIN_VALUE;
+
+        AccessCache() {
+            this(SystemClock::elapsedRealtime);
+        }
+
+        AccessCache(Clock clock) {
+            this.clock = clock;
+        }
+
+        synchronized boolean isValid(String identity, PromptMode mode) {
+            if (mode == PromptMode.FORCE || mode == null || identity == null
+                    || identity.isEmpty() || !identity.equals(fingerprint)) {
+                if (!identityEquals(identity)) clear();
+                return false;
+            }
+            long age = clock.elapsedRealtime() - successAt;
+            if (successAt == Long.MIN_VALUE || age < 0L || age >= AUTHORIZED_CACHE_TTL_MS) {
+                clear();
+                return false;
+            }
+            return true;
+        }
+
+        synchronized void markSuccess(String identity) {
+            if (identity == null || identity.isEmpty()) {
+                clear();
+                return;
+            }
+            fingerprint = identity;
+            successAt = clock.elapsedRealtime();
+        }
+
+        synchronized void invalidate() {
+            clear();
+        }
+
+        synchronized boolean invalidateIfIdentityChanged(String identity) {
+            if (fingerprint.isEmpty() || Objects.equals(fingerprint, identity)) return false;
+            clear();
+            return true;
+        }
+
+        synchronized long successAtForTest() {
+            return successAt;
+        }
+
+        synchronized String fingerprintForTest() {
+            return fingerprint;
+        }
+
+        private boolean identityEquals(String identity) {
+            return Objects.equals(fingerprint, identity);
+        }
+
+        private void clear() {
+            fingerprint = "";
+            successAt = Long.MIN_VALUE;
+        }
     }
 
     private static final class Connection {
@@ -324,11 +519,14 @@ final class LocalAdbClient {
                 long authGeneration,
                 BiConsumer<String, Object[]> eventSink,
                 OperationCancellation cancellation) throws Exception {
-            KeyPair keys = loadOrCreateKeys(context);
-            String fingerprint = fingerprint(keys);
+            KeyPair keys;
+            String fingerprint = "unavailable";
             Socket socket = new Socket();
             if (cancellation != null) cancellation.registerActiveSocket(socket);
             try {
+                keys = loadOrCreateKeys(context);
+                fingerprint = fingerprint(keys);
+                invalidateCacheForIdentity(context, fingerprint);
                 if (cancellation != null && cancellation.isCancellationRequested()) {
                     throw new OperationCancelledException();
                 }
@@ -354,6 +552,7 @@ final class LocalAdbClient {
                             emitStage(eventSink, "authorization_timeout",
                                     "fingerprint", fingerprint,
                                     "public_key_sent", true);
+                            recordAccessError(context, fingerprint);
                             connection.close();
                             return OpenResult.authorizationRequired(
                                     "authorization_prompt_timeout", true, fingerprint);
@@ -371,6 +570,7 @@ final class LocalAdbClient {
                                 "public_key_sent", publicKeySent);
                         clearPending(socket);
                         markAuthorized(context, fingerprint);
+                        recordAccessSuccess(context, fingerprint);
                         return OpenResult.connected(connection, publicKeySent, fingerprint);
                     }
                     if (packet.command != AdbPacket.A_AUTH
@@ -401,6 +601,7 @@ final class LocalAdbClient {
                                 "fingerprint", fingerprint,
                                 "public_key_sent", true,
                                 "token_bytes", packet.payload.length);
+                        recordAccessError(context, fingerprint);
                         connection.close();
                         return OpenResult.authorizationRequired(
                                 "authorization_rejected", true, fingerprint);
@@ -410,6 +611,7 @@ final class LocalAdbClient {
                         emitStage(eventSink, "authorization_required",
                                 "fingerprint", fingerprint,
                                 "public_key_sent", false);
+                        recordAccessError(context, fingerprint);
                         connection.close();
                         return OpenResult.authorizationRequired(
                                 "authorization_required", false, fingerprint);
@@ -433,6 +635,9 @@ final class LocalAdbClient {
                 clearPending(socket);
                 if (cancellation != null) cancellation.clearActiveSocket(socket);
                 LocalAdbClient.close(socket);
+                if ("unavailable".equals(fingerprint)) {
+                    invalidateCacheForIdentity(context, fingerprint);
+                }
                 if (cancellation != null && cancellation.isCancellationRequested()) {
                     throw new OperationCancelledException();
                 }
@@ -441,6 +646,7 @@ final class LocalAdbClient {
                     emitStage(eventSink, "socket_cancelled", "fingerprint", fingerprint);
                     throw new AuthorizationSupersededException();
                 }
+                recordAccessError(context, fingerprint);
                 throw error;
             }
         }
@@ -511,7 +717,7 @@ final class LocalAdbClient {
                         byte[] bytes = pending.toByteArray();
                         int flush = bytes.length - tailLimit;
                         if (written > maxBytes - flush) throw new TooLargeException();
-                        output.write(bytes, 0, flush);
+                        writeOutput(output, bytes, 0, flush);
                         written += flush;
                         pending.reset();
                         pending.write(bytes, flush, bytes.length - flush);
@@ -537,7 +743,7 @@ final class LocalAdbClient {
             int markerIndex = lastIndexOf(tail, markerBytes);
             int dataLength = markerIndex >= 0 ? markerIndex : tail.length;
             if (written > maxBytes - dataLength) throw new TooLargeException();
-            if (dataLength > 0) output.write(tail, 0, dataLength);
+            if (dataLength > 0) writeOutput(output, tail, 0, dataLength);
             written += dataLength;
             int exitCode = -1;
             if (markerIndex >= 0) {
@@ -684,11 +890,17 @@ final class LocalAdbClient {
         }
     }
 
-    private static final class TooLargeException extends IOException {
+    static final class TooLargeException extends IOException {
         TooLargeException() { super("stream limit exceeded"); }
     }
 
-    private static final class OperationCancelledException extends IOException {
+    static final class OutputSinkException extends IOException {
+        OutputSinkException(IOException cause) {
+            super("output_write_failed", cause);
+        }
+    }
+
+    static final class OperationCancelledException extends IOException {
         OperationCancelledException() { super("operation_cancelled"); }
     }
 
@@ -790,6 +1002,77 @@ final class LocalAdbClient {
                 .apply();
     }
 
+    private static String currentFingerprint(Context context) {
+        try {
+            return fingerprint(loadOrCreateKeys(context));
+        } catch (Throwable error) {
+            return "unavailable";
+        }
+    }
+
+    private static void invalidateCacheForIdentity(Context context, String fingerprint) {
+        SharedPreferences preferences = prefs(context);
+        String persistedFingerprint = preferences.getString(ACCESS_STATUS_FINGERPRINT_KEY, "");
+        boolean cacheChanged = ACCESS_CACHE.invalidateIfIdentityChanged(fingerprint);
+        boolean persistedChanged = !persistedFingerprint.isEmpty()
+                && !Objects.equals(persistedFingerprint, fingerprint);
+        if (!cacheChanged && !persistedChanged) return;
+        preferences.edit()
+                .remove(ACCESS_STATUS_KEY)
+                .remove(ACCESS_STATUS_FINGERPRINT_KEY)
+                .apply();
+        currentAccessState = AccessState.unknown();
+        accessStateVersion++;
+    }
+
+    private static void recordAccessSuccess(Context context, String fingerprint) {
+        ACCESS_CACHE.markSuccess(fingerprint);
+        persistAccessState(context, new AccessState(AccessState.Status.OK, fingerprint));
+    }
+
+    private static void recordAccessError(Context context, String fingerprint) {
+        ACCESS_CACHE.invalidate();
+        persistAccessState(context, new AccessState(AccessState.Status.ERROR, fingerprint));
+    }
+
+    private static void persistAccessState(Context context, AccessState state) {
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (state.status == AccessState.Status.UNKNOWN) {
+            editor.remove(ACCESS_STATUS_KEY).remove(ACCESS_STATUS_FINGERPRINT_KEY);
+        } else {
+            editor.putString(ACCESS_STATUS_KEY, state.status.name())
+                    .putString(ACCESS_STATUS_FINGERPRINT_KEY, state.fingerprint);
+        }
+        editor.apply();
+        currentAccessState = state;
+        accessStateVersion++;
+    }
+
+    private static AccessState decodeAccessState(String status, String fingerprint) {
+        if (AccessState.Status.OK.name().equals(status)) {
+            return new AccessState(AccessState.Status.OK, fingerprint);
+        }
+        if (AccessState.Status.ERROR.name().equals(status)) {
+            return new AccessState(AccessState.Status.ERROR, fingerprint);
+        }
+        return AccessState.unknown();
+    }
+
+    private static long accessStateVersion() {
+        return accessStateVersion;
+    }
+
+    private static void notifyAccessStateChanged(long priorVersion) {
+        if (accessStateVersion == priorVersion) return;
+        AccessStateListener listener = accessStateListener;
+        if (listener == null) return;
+        try {
+            listener.onAccessStateChanged(currentAccessState);
+        } catch (Throwable ignored) {
+            // UI observers are best-effort and must not change ADB operation results.
+        }
+    }
+
     private static String promptKey(String fingerprint) {
         return BuildConfig.VERSION_CODE + ":" + fingerprint;
     }
@@ -830,6 +1113,15 @@ final class LocalAdbClient {
         }
     }
 
+    private static void writeOutput(
+            OutputStream output, byte[] bytes, int offset, int length) throws OutputSinkException {
+        try {
+            output.write(bytes, offset, length);
+        } catch (IOException error) {
+            throw new OutputSinkException(error);
+        }
+    }
+
     private static String summary(Throwable error) {
         String message = error.getMessage();
         return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
@@ -845,7 +1137,7 @@ final class LocalAdbClient {
         eventSink.accept("local_adb_stage", payload);
     }
 
-    private static final class AuthorizationSupersededException extends IOException {
+    static final class AuthorizationSupersededException extends IOException {
         AuthorizationSupersededException() {
             super("ADB authorization superseded");
         }

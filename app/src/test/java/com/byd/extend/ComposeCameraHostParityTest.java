@@ -34,13 +34,29 @@ public final class ComposeCameraHostParityTest {
         String ui = readMain("kotlin/com/byd/extend/ui/CameraPlacementPreview.kt");
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
         assertTrue(ui.contains("detectDragGestures("));
-        assertTrue(ui.contains("onMove(dragX, dragY)"));
+        assertTrue(ui.contains("remember(profile) { mutableFloatStateOf(storedX) }"));
+        assertTrue(ui.contains("rememberUpdatedState(onMove)"));
+        assertTrue(ui.contains("latestOnMove(dragX.floatValue, dragY.floatValue)"));
         assertTrue(ui.contains("state.frameAspect"));
         assertTrue(ui.contains("testTag(\"placement-canvas\")"));
         assertTrue(ui.contains("state.target == DisplayTarget.Cluster"));
         assertTrue(activity.contains("float safeX = clamp(x, 0.0f, 1.0f);"));
         assertTrue(activity.contains("id instanceof CameraProfileId.Blind"));
         assertTrue(activity.contains("id instanceof CameraProfileId.Parking"));
+    }
+
+    @Test
+    public void diagnosticIntentsUseTheComposeActionPath() throws Exception {
+        String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
+        String intentHandler = activity.substring(activity.indexOf("private void acceptDiagnosticIntent("),
+                activity.indexOf("private void verifyMappings()"));
+        assertTrue(intentHandler.contains("new BydExtendUiAction.Navigate(RootTab.Debug)"));
+        assertTrue(intentHandler.contains("SelectionId.DiagnosticMode), DiagnosticMode.Avm.ordinal()"));
+        assertTrue(intentHandler.contains("SelectionId.AvmMode), index"));
+        assertTrue(intentHandler.contains("new BydExtendUiAction.Run(CommandId.StopDiagnosticCamera, null)"));
+        assertFalse(intentHandler.contains("selectTab("));
+        assertFalse(intentHandler.contains("selectDebugMode("));
+        assertFalse(activity.contains("pendingDiagnosticAvmModeIndex"));
     }
 
     private static String readMain(String relative) throws Exception {

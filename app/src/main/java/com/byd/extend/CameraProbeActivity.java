@@ -72,6 +72,7 @@ import com.byd.extend.ui.DiagnosticMode;
 import com.byd.extend.ui.NumberTarget;
 import com.byd.extend.ui.BlindNumber;
 import com.byd.extend.ui.GuardNumber;
+import com.byd.extend.ui.HeaderUiState;
 import com.byd.extend.ui.OutputNumber;
 import com.byd.extend.ui.ParkingNumber;
 import com.byd.extend.ui.ProfileNumber;
@@ -120,7 +121,6 @@ public final class CameraProbeActivity extends ComponentActivity
     static final long ADB_AUTH_UI_SETTLE_MS = 600;
     static final long BACKGROUND_START_UI_SETTLE_MS = 600;
     static final long WEATHER_PERMISSION_UI_SETTLE_MS = 600;
-    private static final String ADB_WAITING_STATUS = "Очікування ADB/RSA...";
     private static final String PREF_BACKGROUND_START_SETTINGS_SHOWN =
             "background_start_settings_shown";
     private static final String PREF_WEATHER_PERMISSION_REQUEST_PENDING =
@@ -480,7 +480,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private volatile boolean cameraDiscovered;
     private volatile boolean requestedOpen;
     private boolean telemetryReady;
+    private boolean manualGearPark;
     private boolean manualTurnRequestPending;
+    private StatusUiState manualSignalStatus = new StatusUiState("", StatusTone.Neutral, false);
     private boolean adbAuthPending;
     private LocalAdbClient.PromptMode adbAuthMode;
     private boolean adbAuthorizationRequested;
@@ -498,7 +500,12 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean helperBound;
     private boolean shutdownRequested;
     private boolean activityResumed;
+    private boolean activityStarted;
     private boolean activityDestroyed;
+    private final LocalAdbClient.AccessStateListener adbAccessListener = state ->
+            mainHandler.post(() -> {
+                if (activityStarted && !activityDestroyed) refreshProductionHeader();
+            });
     private boolean updateCheckInFlight;
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
@@ -546,7 +553,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private float dragStartRawY;
     private float dragStartX;
     private float dragStartY;
-    private int pendingDiagnosticAvmModeIndex = -1;
     private int pendingCameraViewpoint = -1;
     private int activeCameraViewpoint = -1;
     private int activeDirectCameraIndex = -1;
@@ -660,6 +666,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 helperBound = false;
             }
             record("helper_service_blocked", "reason", "legacy_handover");
+            legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(CameraProbeActivity.this);
             updateControls();
             advanceStartupAuthorizationFlow();
         }
@@ -674,6 +681,7 @@ public final class CameraProbeActivity extends ComponentActivity
             adbAuthorizationRequested = false;
             cancelPendingForegroundAdbAuthorization();
             telemetryReady = false;
+            manualGearPark = false;
             manualTurnRequestPending = false;
             cameraDiscovered = false;
             requestedOpen = false;
@@ -686,9 +694,8 @@ public final class CameraProbeActivity extends ComponentActivity
             retryStockViewpoint = -1;
             retryStockDebug = false;
             publishGuardStatus("Службу зупинено", StatusTone.Error);
-            publishSettingsFeedback("ADB/helper недоступний", StatusTone.Error);
-            publishSettingsOperation(SettingsOperation.Adb,
-                    "ADB/helper недоступний", StatusTone.Error, false);
+            publishSettingsFeedback("Службу зупинено", StatusTone.Error);
+            publishAdbOperation(false);
             if (productionUi != null) {
                 StatusUiState unavailable = new StatusUiState(
                         "Службу зупинено", StatusTone.Error, true);
@@ -778,6 +785,9 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onStart() {
         super.onStart();
+        activityStarted = true;
+        LocalAdbClient.setAccessStateListener(adbAccessListener);
+        refreshProductionHeader();
         invalidStockSurfaceRetryUsed = false;
         CameraHelperService.activityOpened(this);
         if (!helperBound) startAndBindHelperService();
@@ -788,6 +798,8 @@ public final class CameraProbeActivity extends ComponentActivity
     protected void onResume() {
         super.onResume();
         legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
+        updateControls();
+        refreshProductionHeader();
         if (!helperBound) startAndBindHelperService();
         activityResumed = true;
         ensureAutomaticPreviewInputs();
@@ -893,6 +905,7 @@ public final class CameraProbeActivity extends ComponentActivity
             } else {
                 weatherRefreshAfterPermission = false;
             }
+            refreshProductionHeader();
             advanceStartupAuthorizationFlow();
             updateControls();
         }
@@ -900,6 +913,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     @Override
     protected void onStop() {
+        activityStarted = false;
+        LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
         stopCalibrationCopies(true);
@@ -930,6 +945,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
+        LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingWeatherLocationPermission();
         CompatibilityBundleExporter.ExportControl exportControl =
                 compatibilityExportControl;
@@ -1235,7 +1251,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private void confirmSettingsTransfer(boolean legacy, Map<String, Object> values) {
         dismissSettingsTransferDialog();
         if (activityDestroyed || isFinishing()) return;
-        if (legacy) publishSettingsFeedback("ADB/RSA авторизовано", StatusTone.Ok);
         settingsTransferDialog = new AlertDialog.Builder(this)
                 .setTitle(legacy ? "Імпортувати всі налаштування?" : "Завантажити пресети камер?")
                 .setMessage(legacy
@@ -1256,6 +1271,11 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void applySettingsTransfer(boolean legacy, Map<String, Object> values) {
+        if (!legacy && runtimeBlockedByLegacy()) {
+            finishSettingsTransfer();
+            productionUi.setLegacyRuntimeBlocked(true);
+            return;
+        }
         settingsReloadPending = true;
         showSettingsTransferProgress(legacy
                 ? "Збереження налаштувань і зупинка старого застосунку..."
@@ -1604,10 +1624,9 @@ public final class CameraProbeActivity extends ComponentActivity
         helper = received;
         IBinder registrationTarget = helperCallbackRegistration.connected(received);
         telemetryReady = false;
+        manualGearPark = false;
         cameraDiscovered = false;
         publishGuardStatus("Підключення телеметрії...", StatusTone.Warning);
-        publishSettingsFeedback("Служба підключена; перевірка ADB/RSA...",
-                StatusTone.Warning);
         if (productionUi != null) {
             productionUi.setDiagnosticStatus(true, new StatusUiState(
                     "Пошук direct camera...", StatusTone.Warning, true), true);
@@ -2066,6 +2085,12 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     @Override
+    public boolean runtimeBlockedByLegacy() {
+        legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
+        return legacyRuntimeBlocked;
+    }
+
+    @Override
     public void onProductionUiAction(BydExtendUiAction action) {
         if (action instanceof BydExtendUiAction.Navigate) {
             selectProductionTab(rootTabToLegacy(
@@ -2087,8 +2112,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void selectProductionTab(int tab) {
-        if (settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress) return;
+        if ((settingsTransferInProgress || settingsReloadPending
+                || logExportInProgress || compatibilityExportInProgress)
+                && !(legacyRuntimeBlocked && tab == TAB_SETTINGS)) return;
         if (!isValidTab(tab)) tab = TAB_GUARD;
         int previous = selectedTab;
         if (previous == tab) return;
@@ -2133,6 +2159,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (id == ToggleId.Guard) {
                 preferences.edit().putBoolean("guard_enabled", value).apply();
                 pushGuardConfigFromPreferences();
+                updateControls();
             } else if (id == ToggleId.Music) {
                 preferences.edit().putBoolean("music_visualizer_enabled", value).apply();
                 onMusicEnabledChanged(value);
@@ -2361,10 +2388,7 @@ public final class CameraProbeActivity extends ComponentActivity
             ReverseCameraController.resetLayout(preferences);
             applyProductionReverseState();
             CameraHelperService.reverseCameraSettingsChanged(this);
-        } else if (command == CommandId.SignalLeft) requestManualTurnState(1);
-        else if (command == CommandId.SignalRight) requestManualTurnState(2);
-        else if (command == CommandId.SignalHazard) requestManualTurnState(3);
-        else if (command == CommandId.SignalReset) requestManualTurnState(0);
+        } else if (manualSignalPayload(command) >= 0) requestManualTurnState(manualSignalPayload(command));
         else if (command == CommandId.StopDiagnosticCamera) stopActivityCameraManually("ui_stop");
         else if (command == CommandId.OpenBackgroundSettings) openBackgroundStartSettings("settings_button");
         else if (command == CommandId.GrantAdb) requestAdbAuthorization(
@@ -2402,6 +2426,34 @@ public final class CameraProbeActivity extends ComponentActivity
             SettingsOperation operation, String text, StatusTone tone, boolean pending) {
         if (productionUi != null) productionUi.setSettingsOperation(
                 operation, new StatusUiState(text, tone, true), pending);
+    }
+
+    private void publishAdbOperation(boolean pending) {
+        if (productionUi != null) productionUi.setSettingsOperation(SettingsOperation.Adb,
+                new StatusUiState("", StatusTone.Neutral, false), pending);
+    }
+
+    private void refreshProductionHeader() {
+        if (productionUi == null) return;
+        LocalAdbClient.AccessState access = LocalAdbClient.readAccessState(this);
+        productionUi.setHeader(productionHeader(access.status,
+                preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false), hasLocationPermission()));
+    }
+
+    static HeaderUiState productionHeader(LocalAdbClient.AccessState.Status access,
+            boolean weatherEnabled, boolean locationGranted) {
+        StatusTone adbTone = access == LocalAdbClient.AccessState.Status.OK
+                ? StatusTone.Ok : access == LocalAdbClient.AccessState.Status.ERROR
+                ? StatusTone.Error : StatusTone.Neutral;
+        return new HeaderUiState(
+                new StatusUiState("ADB", adbTone, true),
+                new StatusUiState("", locationGranted ? StatusTone.Ok : StatusTone.Error,
+                        weatherEnabled), weatherEnabled);
+    }
+
+    private void publishManualSignalStatus(String text, StatusTone tone) {
+        manualSignalStatus = new StatusUiState(text, tone, true);
+        publishGuardStatus(text, tone);
     }
 
     private void publishGuardStatus(String text, StatusTone tone) {
@@ -2450,12 +2502,14 @@ public final class CameraProbeActivity extends ComponentActivity
                         new StatusUiState("", StatusTone.Neutral, false), false);
                 productionUi.reload();
             }
+            refreshProductionHeader();
             return;
         }
         if (hasLocationPermission()) {
             preferences.edit().putBoolean(WeatherRuntime.PREF_ENABLED, true).apply();
             CameraHelperService.weatherSettingsChanged(this);
             if (productionUi != null) productionUi.reload();
+            refreshProductionHeader();
             return;
         }
         weatherEnableRequestedForPermission = true;
@@ -3074,44 +3128,20 @@ public final class CameraProbeActivity extends ComponentActivity
             notifyProductionProfileChanged(id);
             return;
         }
+        CameraCalibrationPreset.Stage stage = command == CommandId.ResetProfileOriginal
+                ? CameraCalibrationPreset.Stage.ORIGINAL
+                : command == CommandId.ResetProfileCorrection
+                ? CameraCalibrationPreset.Stage.CORRECTION : CameraCalibrationPreset.Stage.OUTPUT;
         if (id instanceof CameraProfileId.Blind) {
-            CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
-            DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
-            if (command == CommandId.ResetProfileOriginal) {
-                DirectCameraCrop.save(preferences, profile, DirectCameraCrop.defaultFor(profile));
-            } else if (command == CommandId.ResetProfileCorrection) {
-                DirectCameraCrop.saveCorrected(preferences, profile,
-                        DirectCameraCrop.defaultCorrectedFor(profile, raw));
-                CameraDewarpConfig.saveForProfile(preferences, profile,
-                        CameraDewarpConfig.defaultForProfile(profile));
-            } else if (command == CommandId.ResetProfileOutput) {
-                DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
-                DirectCameraCrop.save(preferences, profile, raw.withOutputTransform(
-                        defaults.rotationDegrees, defaults.rotationMode)
-                        .withMirrorHorizontally(defaults.mirrorHorizontally));
-            }
+            CameraCalibrationPreset.resetCameraStage(
+                    preferences, blindProfile((CameraProfileId.Blind) id), stage);
         } else if (id instanceof CameraProfileId.Parking) {
-            ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
-            DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
-            DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
-            if (command == CommandId.ResetProfileOriginal) {
-                DirectCameraCrop.save(preferences, profile, defaults);
-            } else if (command == CommandId.ResetProfileCorrection) {
-                DirectCameraCrop.saveCorrected(preferences, profile, defaults.centered());
-                CameraDewarpConfig.saveForParking(preferences, profile,
-                        CameraDewarpConfig.disabled(CameraDewarpConfig.lensFor(profile)));
-            } else if (command == CommandId.ResetProfileOutput) {
-                DirectCameraCrop.save(preferences, profile, raw.withOutputTransform(
-                        defaults.rotationDegrees, defaults.rotationMode)
-                        .withMirrorHorizontally(defaults.mirrorHorizontally));
-            }
-        } else {
+            CameraCalibrationPreset.resetParkingStage(
+                    preferences, parkingProfile((CameraProfileId.Parking) id), stage);
+        } else if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
-            if (reverse.getSource() == ReverseSource.Front) {
-                CameraCalibrationPreset.resetReverseFrontToDefault(
-                        preferences, reverseProfileIndex(reverse));
-            } else CameraCalibrationPreset.resetReverseToDefault(
-                    preferences, reverseProfileIndex(reverse));
+            CameraCalibrationPreset.resetReverseStage(preferences, reverseProfileIndex(reverse),
+                    reverse.getSource() == ReverseSource.Front, stage);
         }
         notifyProductionProfileChanged(id);
     }
@@ -3923,6 +3953,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         "Не вдалося запросити дозвіл геолокації",
                         StatusTone.Error, true), false);
             }
+            refreshProductionHeader();
             return false;
         }
     }
@@ -8202,9 +8233,9 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void requestManualTurnState(int payload) {
         IBinder current = helper;
-        if (current == null || !telemetryReady || manualTurnRequestPending) return;
+        if (!manualDiagnosticsAllowed() || payload < 0 || payload > 3) return;
         manualTurnRequestPending = true;
-        publishGuardStatus("Команда поворотників: payload " + payload + "...",
+        publishManualSignalStatus("Команда поворотників: payload " + payload + "...",
                 StatusTone.Warning);
         record("manual_turn_state_ui_request", "payload", payload);
         updateControls();
@@ -9067,10 +9098,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void acceptDiagnosticIntent(Intent intent) {
-        if (!BuildConfig.DEBUG || intent == null) return;
+        if (!BuildConfig.DEBUG || intent == null || productionUi == null) return;
         if (intent.getBooleanExtra(EXTRA_DIAGNOSTIC_AVM_CLOSE, false)) {
-            pendingDiagnosticAvmModeIndex = -1;
-            closeCamera("diagnostic_intent");
+            productionUi.dispatch(new BydExtendUiAction.Run(CommandId.StopDiagnosticCamera, null));
             return;
         }
         if (!intent.hasExtra(EXTRA_DIAGNOSTIC_AVM_MODE_INDEX)) return;
@@ -9081,22 +9111,13 @@ public final class CameraProbeActivity extends ComponentActivity
             return;
         }
 
-        invalidStockSurfaceRetryUsed = false;
-        selectDebugMode(1);
-        selectTab(TAB_CAMERA_DEBUG);
-        pendingDiagnosticAvmModeIndex = index;
+        productionUi.dispatch(new BydExtendUiAction.Navigate(RootTab.Debug));
+        productionUi.dispatch(new BydExtendUiAction.Select(
+                new SelectionTarget.Simple(SelectionId.DiagnosticMode), DiagnosticMode.Avm.ordinal()));
+        productionUi.dispatch(new BydExtendUiAction.Select(
+                new SelectionTarget.Simple(SelectionId.AvmMode), index));
         String mode = StockAvmPreview.horizontalLayoutName(index);
-        publishDiagnosticStatus(false, "Queued " + mode + "...",
-                StatusTone.Warning, true);
         record("diagnostic_mode_requested", "index", index, "view", mode);
-        updateControls();
-    }
-
-    private void maybeOpenPendingDiagnosticMode(boolean stockReady) {
-        if (!stockReady || pendingDiagnosticAvmModeIndex < 0) return;
-        int index = pendingDiagnosticAvmModeIndex;
-        pendingDiagnosticAvmModeIndex = -1;
-        openStockAvm(StockAvmPreview.horizontalViewpoint(index), true);
     }
 
     private void verifyMappings() {
@@ -10181,9 +10202,7 @@ public final class CameraProbeActivity extends ComponentActivity
         cancelPendingForegroundAdbAuthorization();
         adbAuthPending = true;
         adbAuthMode = mode;
-        publishSettingsFeedback(ADB_WAITING_STATUS, StatusTone.Warning);
-        publishSettingsOperation(SettingsOperation.Adb,
-                ADB_WAITING_STATUS, StatusTone.Warning, true);
+        publishAdbOperation(true);
         updateControls();
         record(event, "automatic", automatic, "mode", mode.name());
         ipcExecutor.execute(() -> {
@@ -10198,12 +10217,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 adbAuthPending = false;
                 adbAuthMode = null;
                 adbAuthorizationRequested = result.ok;
-                publishSettingsFeedback(result.ok
-                                ? "ADB/RSA авторизовано" : "ADB/RSA: " + result.error,
-                        result.ok ? StatusTone.Ok : StatusTone.Error);
-                publishSettingsOperation(SettingsOperation.Adb,
-                        result.ok ? "ADB/RSA авторизовано" : "ADB/RSA: " + result.error,
-                        result.ok ? StatusTone.Ok : StatusTone.Error, false);
+                publishAdbOperation(false);
                 updateControls();
                 advanceStartupAuthorizationFlow();
             });
@@ -10246,9 +10260,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     adbAuthMode = null;
                 }
                 if (automatic) adbAuthorizationRequested = false;
-                publishSettingsFeedback("ADB retry IPC error", StatusTone.Error);
-                publishSettingsOperation(SettingsOperation.Adb,
-                        "ADB retry IPC error", StatusTone.Error, false);
+                publishAdbOperation(false);
                 updateControls();
                 advanceStartupAuthorizationFlow();
             });
@@ -10286,7 +10298,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     "error", error.toString());
             runOnUiThread(() -> {
                 manualTurnRequestPending = false;
-                publishGuardStatus("Turn-state IPC error", StatusTone.Error);
+                publishManualSignalStatus("Turn-state IPC error", StatusTone.Error);
                 updateControls();
             });
         } finally {
@@ -10622,6 +10634,12 @@ public final class CameraProbeActivity extends ComponentActivity
                                     ? "Телеметрія готова"
                                     : "Telemetry error: " + json.optString("error"),
                             telemetryReady ? StatusTone.Ok : StatusTone.Error);
+                } else if ("reverse_gear_state".equals(kind)) {
+                    manualGearPark = json.optBoolean("valid") && json.optInt("raw", -1) == 1;
+                } else if ("reverse_gear_listener".equals(kind)) {
+                    if (!json.optBoolean("ok") || "stopped".equals(json.optString("action"))) {
+                        manualGearPark = false;
+                    }
                 } else if ("adb_auth_start".equals(kind)) {
                     adbAuthPending = true;
                     LocalAdbClient.PromptMode eventMode = adbPromptMode(
@@ -10630,60 +10648,29 @@ public final class CameraProbeActivity extends ComponentActivity
                             || eventMode == LocalAdbClient.PromptMode.FORCE) {
                         adbAuthMode = eventMode;
                     }
-                    publishSettingsFeedback(ADB_WAITING_STATUS, StatusTone.Warning);
-                    publishSettingsOperation(SettingsOperation.Adb,
-                            ADB_WAITING_STATUS, StatusTone.Warning, true);
+                    publishAdbOperation(true);
                 } else if ("adb_auth_state".equals(kind)) {
                     adbAuthPending = json.optBoolean("pending");
                     adbAuthMode = adbAuthPending
                             ? adbPromptMode(json.optString("mode")) : null;
-                    if (adbAuthPending) {
-                        publishSettingsFeedback(ADB_WAITING_STATUS, StatusTone.Warning);
-                        publishSettingsOperation(SettingsOperation.Adb,
-                                ADB_WAITING_STATUS, StatusTone.Warning, true);
-                    } else {
-                        String status = telemetryReady
-                                ? "ADB/RSA авторизовано" : "ADB авторизація потрібна";
-                        StatusTone tone = telemetryReady ? StatusTone.Ok : StatusTone.Warning;
-                        publishSettingsFeedback(status, tone);
-                        publishSettingsOperation(SettingsOperation.Adb,
-                                status, tone, false);
-                    }
+                    publishAdbOperation(adbAuthPending);
                 } else if ("authorization_superseded".equals(kind)) {
                     adbAuthMode = adbPromptMode(json.optString("next_mode"));
                     adbAuthPending = adbAuthMode != null;
-                    if (adbAuthPending) {
-                        publishSettingsFeedback(ADB_WAITING_STATUS, StatusTone.Warning);
-                        publishSettingsOperation(SettingsOperation.Adb,
-                                ADB_WAITING_STATUS, StatusTone.Warning, true);
-                    }
+                    publishAdbOperation(adbAuthPending);
                 } else if ("adb_auth_auto_blocked".equals(kind)) {
-                    publishSettingsFeedback(
-                            "ADB авторизація потрібна; натисніть повторити",
-                            StatusTone.Warning);
-                    publishSettingsOperation(SettingsOperation.Adb,
-                            "ADB авторизація потрібна; натисніть повторити",
-                            StatusTone.Warning, false);
+                    publishAdbOperation(adbAuthPending);
                 } else if ("adb_auth_result".equals(kind)) {
-                    if (!json.optBoolean("ok")) {
-                        telemetryReady = false;
-                        publishSettingsFeedback("ADB: " + json.optString("error"),
-                                StatusTone.Error);
-                        publishSettingsOperation(SettingsOperation.Adb,
-                                "ADB: " + json.optString("error"),
-                                StatusTone.Error, false);
-                    } else {
-                        publishSettingsFeedback("ADB/RSA авторизовано", StatusTone.Ok);
-                        publishSettingsOperation(SettingsOperation.Adb,
-                                "ADB/RSA авторизовано", StatusTone.Ok, false);
-                    }
+                    publishAdbOperation(adbAuthPending);
                 } else if ("helper_launch".equals(kind) && !json.optBoolean("ok")) {
                     telemetryReady = false;
+                    manualGearPark = false;
                     publishSettingsFeedback("Helper: " + json.optString("error"),
                             StatusTone.Error);
                 } else if ("helper_death".equals(kind)
                         || "helper_ping_failed".equals(kind)) {
                     telemetryReady = false;
+                    manualGearPark = false;
                     publishGuardStatus("Helper відновлюється: "
                             + json.optString("error"), StatusTone.Error);
                     publishSettingsFeedback("Helper відновлюється: "
@@ -10745,23 +10732,24 @@ public final class CameraProbeActivity extends ComponentActivity
                     publishGuardStatus(kind + ": " + json.optString("reason"),
                             StatusTone.Error);
                 } else if ("manual_turn_state_requested".equals(kind)) {
-                    publishGuardStatus("Команду прийнято; перевірка blink...",
+                    manualTurnRequestPending = true;
+                    publishManualSignalStatus("Команду прийнято; перевірка blink...",
                             StatusTone.Warning);
                 } else if ("manual_turn_state_confirmed".equals(kind)) {
                     manualTurnRequestPending = false;
                     if (json.optInt("payload") == 0
                             && !json.optBoolean("observable_transition")) {
-                        publishGuardStatus(
+                        publishManualSignalStatus(
                                 "Payload 0 прийнято; очищення перевірити після restart",
                                 StatusTone.Warning);
                     } else {
-                        publishGuardStatus("Стан підтверджено: "
+                        publishManualSignalStatus("Стан підтверджено: "
                                 + json.optString("action"), StatusTone.Ok);
                     }
                 } else if ("manual_turn_state_rejected".equals(kind)
                         || "manual_turn_state_failed".equals(kind)) {
                     manualTurnRequestPending = false;
-                    publishGuardStatus(kind + ": " + json.optString("reason"),
+                    publishManualSignalStatus(kind + ": " + json.optString("reason"),
                             StatusTone.Error);
                 } else if ("correction_failed".equals(kind)
                         || "guard_suppressed".equals(kind)
@@ -11308,6 +11296,11 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void updateControls() {
+        boolean manualAllowed = manualDiagnosticsAllowed();
+        if (productionUi != null) {
+            productionUi.setLegacyRuntimeBlocked(legacyRuntimeBlocked);
+            productionUi.setManualDiagnostics(manualAllowed, manualSignalStatus);
+        }
         if (musicPanel != null) musicPanel.setControlEnabled(!shutdownRequested);
         if (weatherPanel != null) weatherPanel.setControlsEnabled(
                 !shutdownRequested && !legacyRuntimeBlocked
@@ -11411,11 +11404,28 @@ public final class CameraProbeActivity extends ComponentActivity
                             || !calibrationDewarpSwitch.isChecked());
         }
         for (Button button : turnStateButtons) {
-            if (button != null) button.setEnabled(
-                    helper != null && telemetryReady && !manualTurnRequestPending
-                            && !guardSwitch.isChecked());
+            if (button != null) button.setEnabled(manualAllowed);
         }
-        maybeOpenPendingDiagnosticMode(debugStockReady);
+    }
+
+    private boolean manualDiagnosticsAllowed() {
+        return manualDiagnosticsAllowed(helper != null, telemetryReady, manualGearPark,
+                preferences.getBoolean("guard_enabled", false), manualTurnRequestPending,
+                legacyRuntimeBlocked || settingsTransferInProgress || settingsReloadPending
+                        || shutdownRequested);
+    }
+
+    static boolean manualDiagnosticsAllowed(boolean helperReady, boolean telemetryReady,
+            boolean gearPark, boolean guardEnabled, boolean pending, boolean blocked) {
+        return helperReady && telemetryReady && gearPark && !guardEnabled && !pending && !blocked;
+    }
+
+    static int manualSignalPayload(CommandId command) {
+        if (command == CommandId.SignalLeft) return 2;
+        if (command == CommandId.SignalRight) return 3;
+        if (command == CommandId.SignalHazard) return 1;
+        if (command == CommandId.SignalReset) return 0;
+        return -1;
     }
 
     static boolean shouldEnableManualAdbAuthorization(

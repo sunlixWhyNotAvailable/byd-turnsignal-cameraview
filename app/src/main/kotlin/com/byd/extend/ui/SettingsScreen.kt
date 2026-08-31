@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun SettingsScreen(
     state: SettingsUiState,
+    legacyRuntimeBlocked: Boolean,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
@@ -78,6 +79,12 @@ internal fun SettingsScreen(
             Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
                 .border(1.dp, colors.border, RoundedCornerShape(12.dp)).background(colors.surface)
                 .padding(12.dp).verticalScroll(LocalPrimaryScroll.current)) {
+                if (legacyRuntimeBlocked) {
+                    StatusText(StatusUiState(strings.text(
+                        "Керування заблоковано до завершення переходу налаштувань.",
+                        "Runtime controls are locked while settings transfer completes."),
+                        StatusTone.Warning, true), colors)
+                }
                 when (state.category) {
                     SettingsCategory.Permissions -> PermissionsSettings(state, strings, colors, onAction)
                     SettingsCategory.CameraOutput -> CameraOutputSettings(state, strings, colors, onAction)

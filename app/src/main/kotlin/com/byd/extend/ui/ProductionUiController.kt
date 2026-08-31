@@ -21,6 +21,7 @@ interface ProductionUiBackend {
     fun releaseProductionCameraHost(view: View, slot: CameraHostSlot)
     fun automaticStartEnabled(): Boolean
     fun legacyAccessRestoreVisible(): Boolean
+    fun runtimeBlockedByLegacy(): Boolean
 }
 
 /** Main-thread state boundary between the production runtime and Compose. */
@@ -34,6 +35,11 @@ class ProductionUiController(
         private set
 
     fun dispatch(action: BydExtendUiAction) {
+        syncLegacyRuntimeBlock()
+        if (state.legacyRuntimeBlocked && !allowedWhileLegacyBlocked(action)) {
+            showLegacyHandoverBlock()
+            return
+        }
         if (action is BydExtendUiAction.Run && interceptDialogCommand(action.command)) return
         when (action) {
             is BydExtendUiAction.Navigate -> {
@@ -42,7 +48,14 @@ class ProductionUiController(
             }
             is BydExtendUiAction.SetLanguage -> {
                 preferences.edit().putString(PREF_LANGUAGE, action.language.wire()).apply()
-                state = state.copy(language = action.language)
+                state = state.copy(
+                    language = action.language,
+                    settings = if (state.legacyRuntimeBlocked &&
+                        state.settings.feedback.text == handoverReason(state.language)) {
+                        state.settings.copy(feedback = StatusUiState(
+                            handoverReason(action.language), StatusTone.Warning, true))
+                    } else state.settings,
+                )
             }
             is BydExtendUiAction.SetTheme -> {
                 preferences.edit().putBoolean(PREF_DARK_THEME, action.theme == UiTheme.Dark).apply()
@@ -60,7 +73,8 @@ class ProductionUiController(
             else -> Unit
         }
         backend.onProductionUiAction(action)
-        if (action is BydExtendUiAction.Toggle &&
+        if (action is BydExtendUiAction.Run && action.command.reloadsValidatedState() ||
+            action is BydExtendUiAction.Toggle &&
                 action.target != ToggleTarget.Simple(ToggleId.AutoStart) ||
             action is BydExtendUiAction.CommitNumber ||
             action is BydExtendUiAction.MoveProfile ||
@@ -69,9 +83,12 @@ class ProductionUiController(
 
     /** Re-read validated values while preserving navigation and live runtime feedback. */
     fun reload() {
+        syncLegacyRuntimeBlock()
         val old = state
         val fresh = readState()
         state = fresh.copy(
+            activeTab = if (fresh.legacyRuntimeBlocked) RootTab.Settings else old.activeTab,
+            legacyRuntimeBlocked = fresh.legacyRuntimeBlocked,
             header = fresh.header.copy(adb = old.header.adb, location = old.header.location),
             signals = fresh.signals.copy(
                 guard = fresh.signals.guard.copy(operation = old.signals.guard.operation),
@@ -109,7 +126,8 @@ class ProductionUiController(
                 compatibilityOperation = old.settings.compatibilityOperation,
                 presetOperation = old.settings.presetOperation,
                 importOperation = old.settings.importOperation,
-                feedback = old.settings.feedback,
+                feedback = if (fresh.legacyRuntimeBlocked) fresh.settings.feedback
+                    else old.settings.feedback,
             ),
             debug = fresh.debug.copy(
                 mode = old.debug.mode,
@@ -125,6 +143,40 @@ class ProductionUiController(
     }
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
+
+    /** Updates the legacy-handover gate and keeps the Activity's selected tab in sync. */
+    fun setLegacyRuntimeBlocked(blocked: Boolean) {
+        val wasBlocked = state.legacyRuntimeBlocked
+        if (!blocked) {
+            if (!wasBlocked) return
+            val feedback = state.settings.feedback
+            val cleared = if (feedback.text == handoverReason(state.language)) {
+                StatusUiState()
+            } else feedback
+            state = state.copy(legacyRuntimeBlocked = false,
+                settings = state.settings.copy(feedback = cleared))
+            return
+        }
+        if (wasBlocked && state.activeTab == RootTab.Settings) return
+
+        val previousTab = state.activeTab
+        state = state.copy(
+            legacyRuntimeBlocked = true,
+            activeTab = RootTab.Settings,
+            settings = state.settings.copy(
+                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true)),
+        )
+        preferences.edit().putInt("selected_tab", RootTab.Settings.legacyTab()).apply()
+        if (previousTab != RootTab.Settings) {
+            backend.onProductionUiAction(BydExtendUiAction.Navigate(RootTab.Settings))
+        }
+    }
+
+    /** Publishes the runtime-derived manual P diagnostics gate and status. */
+    fun setManualDiagnostics(allowed: Boolean, status: StatusUiState) {
+        state = state.copy(debug = state.debug.copy(
+            manualSignalsAllowed = allowed, manualSignalStatus = status))
+    }
 
     fun setGuardStatus(status: StatusUiState) {
         state = state.copy(signals = state.signals.copy(
@@ -185,7 +237,61 @@ class ProductionUiController(
     }
 
     private fun readState() = readProductionUiState(
-        preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible())
+        preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible()).let { fresh ->
+        if (!backend.runtimeBlockedByLegacy()) fresh
+        else fresh.copy(
+            activeTab = RootTab.Settings,
+            legacyRuntimeBlocked = true,
+            settings = fresh.settings.copy(
+                feedback = StatusUiState(handoverReason(fresh.language), StatusTone.Warning, true)),
+        )
+    }
+
+    private fun syncLegacyRuntimeBlock() {
+        val blocked = backend.runtimeBlockedByLegacy()
+        if (blocked != state.legacyRuntimeBlocked) setLegacyRuntimeBlocked(blocked)
+    }
+
+    private fun showLegacyHandoverBlock() {
+        if (!state.legacyRuntimeBlocked || state.activeTab != RootTab.Settings) {
+            setLegacyRuntimeBlocked(true)
+        }
+        if (state.legacyRuntimeBlocked) {
+            state = state.copy(settings = state.settings.copy(
+                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true)))
+        }
+    }
+
+    private fun allowedWhileLegacyBlocked(action: BydExtendUiAction): Boolean = when (action) {
+        is BydExtendUiAction.Navigate -> action.tab == RootTab.Settings
+        is BydExtendUiAction.SetLanguage, is BydExtendUiAction.SetTheme -> true
+        is BydExtendUiAction.Select -> action.target is SelectionTarget.Simple &&
+            action.target.id == SelectionId.SettingsCategory
+        is BydExtendUiAction.Toggle -> action.target == ToggleTarget.Simple(ToggleId.AutoStart) ||
+            action.target == ToggleTarget.Simple(ToggleId.AutomaticUpdate)
+        is BydExtendUiAction.Run -> when (action.command) {
+            CommandId.OpenBackgroundSettings,
+            CommandId.GrantAdb,
+            CommandId.CheckForUpdates,
+            CommandId.ShareLogs,
+            CommandId.ShareCompatibilityPackage,
+            CommandId.ExportCameraPresets,
+            CommandId.ImportLegacySettings,
+            CommandId.RestoreLegacyAccess,
+            CommandId.OpenWeatherAttribution,
+            CommandId.Shutdown,
+            CommandId.DismissDialog,
+            CommandId.CancelOperation -> true
+            CommandId.ConfirmDialog -> pendingDialogCommand == null ||
+                pendingDialogCommand!!.allowedInLegacyHandover()
+            else -> false
+        }
+        is BydExtendUiAction.CommitNumber, is BydExtendUiAction.MoveProfile -> false
+    }
+
+    private fun handoverReason(language: UiLanguage) = if (language == UiLanguage.English) {
+        "Runtime controls are locked while settings transfer completes."
+    } else "Керування заблоковано до завершення переходу налаштувань."
 
     private fun applyLocalSelection(target: SelectionTarget, index: Int) {
         val simple = target as? SelectionTarget.Simple ?: return
@@ -294,7 +400,11 @@ class ProductionUiController(
             val pending = pendingDialogCommand
             pendingDialogCommand = null
             state = state.copy(dialog = null)
-            if (pending != null) backend.onProductionUiAction(BydExtendUiAction.Run(pending))
+            if (pending != null && (!state.legacyRuntimeBlocked || pending.allowedInLegacyHandover())) {
+                backend.onProductionUiAction(BydExtendUiAction.Run(pending))
+            } else if (pending != null) {
+                showLegacyHandoverBlock()
+            }
             return true
         }
         if (command == CommandId.CancelOperation) {
@@ -343,6 +453,26 @@ private fun RootTab.legacyTab() = when (this) {
 }
 
 private fun UiLanguage.wire() = if (this == UiLanguage.English) "en" else "uk"
+
+private fun CommandId.reloadsValidatedState() = this == CommandId.LoadProfilePreset ||
+    this == CommandId.TransferProfilePreset ||
+    this == CommandId.ResetProfilePlacement ||
+    this == CommandId.ResetProfileOriginal ||
+    this == CommandId.ResetProfileCorrection ||
+    this == CommandId.ResetProfileOutput ||
+    this == CommandId.EnableAllParking ||
+    this == CommandId.DisableAllParking
+
+private fun CommandId.allowedInLegacyHandover() = this == CommandId.OpenBackgroundSettings ||
+    this == CommandId.GrantAdb ||
+    this == CommandId.CheckForUpdates ||
+    this == CommandId.Shutdown ||
+    this == CommandId.ShareLogs ||
+    this == CommandId.ShareCompatibilityPackage ||
+    this == CommandId.ExportCameraPresets ||
+    this == CommandId.ImportLegacySettings ||
+    this == CommandId.RestoreLegacyAccess ||
+    this == CommandId.OpenWeatherAttribution
 
 private fun SelectionTarget.isLocalSelection() = this is SelectionTarget.Simple && id in setOf(
     SelectionId.CameraSection, SelectionId.BlindGroup, SelectionId.BlindSide,

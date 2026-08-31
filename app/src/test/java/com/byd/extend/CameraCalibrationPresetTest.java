@@ -3,8 +3,10 @@ package com.byd.extend;
 import org.junit.Test;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -296,6 +298,109 @@ public final class CameraCalibrationPresetTest {
         for (Map.Entry<String, ?> entry : reverseSlotBefore.entrySet()) {
             if (entry.getKey().startsWith("reverse_calibration_preset_v1_")) {
                 assertEquals(entry.getValue(), preferences.getAll().get(entry.getKey()));
+            }
+        }
+    }
+
+    @Test
+    public void scopedDirectResetsChangeOnlyTheirCalibrationStage() {
+        for (CameraProfile profile : CameraProfile.values()) {
+            for (CameraCalibrationPreset.Stage stage : CameraCalibrationPreset.Stage.values()) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                seedDirect(preferences, profile);
+                Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                CameraCalibrationPreset.resetCameraStage(preferences, profile, stage);
+
+                assertOnlyChanged(before, preferences.getAll(), directChangedKeys(profile, stage));
+                assertDirectStage(preferences, profile, stage, before);
+            }
+        }
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            for (CameraCalibrationPreset.Stage stage : CameraCalibrationPreset.Stage.values()) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                seedDirect(preferences, profile);
+                Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                CameraCalibrationPreset.resetParkingStage(preferences, profile, stage);
+
+                assertOnlyChanged(before, preferences.getAll(), parkingChangedKeys(profile, stage));
+                assertParkingStage(preferences, profile, stage, before);
+            }
+        }
+    }
+
+    @Test
+    public void scopedOriginalAndOutputResetFixedAspectWithoutChangingOtherFields() {
+        for (CameraProfile profile : CameraProfile.values()) {
+            for (CameraCalibrationPreset.Stage stage : new CameraCalibrationPreset.Stage[]{
+                    CameraCalibrationPreset.Stage.ORIGINAL,
+                    CameraCalibrationPreset.Stage.OUTPUT}) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                seedDirectFixed(preferences, profile);
+                Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                CameraCalibrationPreset.resetCameraStage(preferences, profile, stage);
+
+                assertOnlyChanged(before, preferences.getAll(), directChangedKeys(profile, stage));
+                assertFixedDirectStage(preferences, profile, stage);
+            }
+        }
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            for (CameraCalibrationPreset.Stage stage : new CameraCalibrationPreset.Stage[]{
+                    CameraCalibrationPreset.Stage.ORIGINAL,
+                    CameraCalibrationPreset.Stage.OUTPUT}) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                seedDirectFixed(preferences, profile);
+                Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                CameraCalibrationPreset.resetParkingStage(preferences, profile, stage);
+
+                assertOnlyChanged(before, preferences.getAll(), parkingChangedKeys(profile, stage));
+                assertFixedParkingStage(preferences, profile, stage);
+            }
+        }
+    }
+
+    @Test
+    public void parkingResetKeepsOtherStageKeysAfterProductionSnapshotReload() {
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            for (CameraCalibrationPreset.Stage stage : new CameraCalibrationPreset.Stage[]{
+                    CameraCalibrationPreset.Stage.ORIGINAL,
+                    CameraCalibrationPreset.Stage.OUTPUT}) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                seedDirectFixed(preferences, profile);
+                ProductionStateSnapshot.readProductionUiState(preferences, false, false);
+                Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                CameraCalibrationPreset.resetParkingStage(preferences, profile, stage);
+                ProductionStateSnapshot.readProductionUiState(preferences, false, false);
+                ProductionStateSnapshot.readProductionUiState(preferences, false, false);
+
+                assertOnlyChanged(before, preferences.getAll(), parkingChangedKeys(profile, stage));
+            }
+        }
+    }
+
+    @Test
+    public void scopedReverseResetsChangeOnlySelectedRearOrFrontStage() {
+        int[] indexes = {ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
+        for (boolean front : new boolean[]{false, true}) {
+            for (int index : indexes) {
+                for (CameraCalibrationPreset.Stage stage : CameraCalibrationPreset.Stage.values()) {
+                    TestSharedPreferences preferences = new TestSharedPreferences();
+                    seedReverse(preferences, index, front);
+                    Map<String, ?> before = new HashMap<>(preferences.getAll());
+
+                    CameraCalibrationPreset.resetReverseStage(
+                            preferences, index, front, stage);
+
+                    assertOnlyChanged(before, preferences.getAll(),
+                            reverseChangedKeys(index, front, stage));
+                    assertReverseStage(preferences, index, front, stage, before);
+                }
             }
         }
     }
@@ -799,6 +904,393 @@ public final class CameraCalibrationPresetTest {
 
         assertFalse(CameraCalibrationPreset.loadReverse(preferences, cameraIndex));
         assertEquals(before, preferences.getAll());
+    }
+
+    private static void seedDirect(
+            TestSharedPreferences preferences, CameraProfile profile) {
+        DirectCameraCrop raw = DirectCameraCrop.of(
+                0.11f, 0.17f, 0.43f, 0.51f, DirectCameraCrop.ASPECT_FREE,
+                17, CameraRotation.MODE_FILL).withMirrorHorizontally(false);
+        DirectCameraCrop corrected = DirectCameraCrop.of(
+                0.22f, 0.13f, 0.31f, 0.37f, DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop.saveCorrected(preferences, profile, corrected);
+        CameraDewarpConfig.saveForProfile(preferences, profile,
+                CameraDewarpConfig.of(CameraDewarpConfig.lensFor(profile), false, 91,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        preferences.putInt("camera_min_speed_kph", 37);
+        CameraCalibrationPreset.saveCamera(preferences, profile);
+    }
+
+    private static void seedDirectFixed(
+            TestSharedPreferences preferences, CameraProfile profile) {
+        DirectCameraCrop raw = fixedDirectRaw();
+        DirectCameraCrop corrected = DirectCameraCrop.of(
+                0.22f, 0.13f, 0.31f, 0.37f, DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop.saveCorrected(preferences, profile, corrected);
+        CameraDewarpConfig.saveForProfile(preferences, profile,
+                CameraDewarpConfig.of(CameraDewarpConfig.lensFor(profile), false, 91,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        preferences.putInt("camera_min_speed_kph", 37);
+        CameraCalibrationPreset.saveCamera(preferences, profile);
+    }
+
+    private static void seedDirect(
+            TestSharedPreferences preferences, ParkingCameraProfile profile) {
+        DirectCameraCrop raw = DirectCameraCrop.of(
+                0.11f, 0.17f, 0.43f, 0.51f, DirectCameraCrop.ASPECT_FREE,
+                17, CameraRotation.MODE_FILL).withMirrorHorizontally(false);
+        DirectCameraCrop corrected = DirectCameraCrop.of(
+                0.22f, 0.13f, 0.31f, 0.37f, DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop.saveCorrected(preferences, profile, corrected);
+        CameraDewarpConfig.saveForParking(preferences, profile,
+                CameraDewarpConfig.of(CameraDewarpConfig.lensFor(profile), true, 91,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        preferences.putInt("parking_max_speed_kph", 37);
+        CameraCalibrationPreset.saveParking(preferences, profile);
+    }
+
+    private static void seedDirectFixed(
+            TestSharedPreferences preferences, ParkingCameraProfile profile) {
+        DirectCameraCrop raw = fixedDirectRaw();
+        DirectCameraCrop corrected = DirectCameraCrop.of(
+                0.22f, 0.13f, 0.31f, 0.37f, DirectCameraCrop.ASPECT_FREE,
+                0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop.saveCorrected(preferences, profile, corrected);
+        CameraDewarpConfig.saveForParking(preferences, profile,
+                CameraDewarpConfig.of(CameraDewarpConfig.lensFor(profile), true, 91,
+                        CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        preferences.putInt("parking_max_speed_kph", 37);
+        CameraCalibrationPreset.saveParking(preferences, profile);
+    }
+
+    private static Set<String> directChangedKeys(
+            CameraProfile profile, CameraCalibrationPreset.Stage stage) {
+        Set<String> keys = new HashSet<>();
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            for (int field = 0; field <= 4; field++) {
+                keys.add(DirectCameraCrop.preferenceKey(profile, field));
+            }
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            String prefix = "direct_crop_v3_corrected_" + profile.id + "_";
+            for (String field : new String[]{"left", "top", "width", "height"}) {
+                keys.add(prefix + field);
+            }
+            String dewarp = "camera_dewarp_v3_overlay_" + profile.wireName + "_";
+            keys.add(dewarp + "enabled");
+            keys.add(dewarp + "fov");
+            keys.add(dewarp + "projection");
+        } else {
+            keys.add(DirectCameraCrop.preferenceKey(profile, 5));
+            keys.add(DirectCameraCrop.preferenceKey(profile, 6));
+            keys.add(DirectCameraCrop.preferenceKey(profile, 7));
+        }
+        return keys;
+    }
+
+    private static Set<String> parkingChangedKeys(
+            ParkingCameraProfile profile, CameraCalibrationPreset.Stage stage) {
+        Set<String> keys = new HashSet<>();
+        String prefix = "parking_direct_crop_v1_"
+                + profile.wireName.toLowerCase(Locale.US) + "_";
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            for (String field : new String[]{"x", "y", "width", "height", "aspect"}) {
+                keys.add(prefix + field);
+            }
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            for (String field : new String[]{"x", "y", "width", "height"}) {
+                keys.add(prefix + "corrected_" + field);
+            }
+            String dewarp = "camera_dewarp_v3_parking_"
+                    + profile.wireName.toLowerCase(Locale.US) + "_";
+            keys.add(dewarp + "enabled");
+            keys.add(dewarp + "fov");
+            keys.add(dewarp + "projection");
+        } else {
+            keys.add(prefix + "rotation");
+            keys.add(prefix + "rotation_mode");
+            keys.add(prefix + "mirror");
+        }
+        return keys;
+    }
+
+    private static Set<String> reverseChangedKeys(
+            int cameraIndex, boolean front, CameraCalibrationPreset.Stage stage) {
+        Set<String> keys = new HashSet<>();
+        String cropPrefix = front
+                ? "reverse_camera_front_" + cameraIndex + "_"
+                : "reverse_camera_" + cameraIndex + "_";
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            String prefix = cropPrefix + (front ? "crop_" : "crop_");
+            for (String field : new String[]{"left", "top", "width", "height"}) {
+                keys.add(prefix + field);
+            }
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            String prefix = cropPrefix + "corrected_"
+                    + (front ? "crop_" : "v3_crop_");
+            for (String field : new String[]{"left", "top", "width", "height"}) {
+                keys.add(prefix + field);
+            }
+            String dewarp = front ? "camera_dewarp_v3_reverse_front_"
+                    : "camera_dewarp_v3_reverse_";
+            dewarp += cameraIndex + "_";
+            keys.add(dewarp + "enabled");
+            keys.add(dewarp + "fov");
+            keys.add(dewarp + "projection");
+        } else {
+            if (front) {
+                String prefix = "reverse_camera_front_" + cameraIndex + "_";
+                keys.add(prefix + "rotation_degrees");
+                keys.add(prefix + "display_mode");
+                keys.add(prefix + "mirror");
+            } else {
+                keys.add(ReverseCameraController.paneSettingKey(
+                        cameraIndex, "rotation_degrees"));
+                keys.add(ReverseCameraController.displayModeKey(cameraIndex));
+                keys.add(ReverseCameraController.mirrorKey(cameraIndex));
+            }
+        }
+        return keys;
+    }
+
+    private static void seedReverse(
+            TestSharedPreferences preferences, int selectedIndex, boolean front) {
+        int[] indexes = {ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
+        ReverseCameraLayout layout = ReverseCameraLayout.defaults();
+        for (int index : indexes) {
+            ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(
+                    0.08f + 0.08f * (index - 1), 0.12f, 0.25f, 0.30f);
+            ReverseCameraLayout.Rect raw = ReverseCameraLayout.sourceCrop(
+                    0.10f + 0.05f * (index - 1), 0.14f, 0.43f, 0.51f);
+            layout = ReverseCameraLayout.withPane(layout, index, destination, raw, 17);
+            layout = ReverseCameraLayout.withDisplayMode(
+                    layout, index, ReverseCameraLayout.DISPLAY_MODE_STRETCH);
+            layout = ReverseCameraLayout.withMirrorHorizontally(layout, index, false);
+            ReverseCameraController.saveSourceCrop(preferences, index,
+                    ReverseCameraLayout.sourceCrop(0.21f, 0.11f, 0.31f, 0.39f), true);
+            CameraDewarpConfig.saveForReverse(preferences, index,
+                    CameraDewarpConfig.of(CameraDewarpConfig.lensForReverseCamera(index),
+                            false, 91, CameraDewarpConfig.PROJECTION_RECTILINEAR));
+            ReverseCameraController.saveFrontSourceCrop(preferences, index,
+                    ReverseCameraLayout.sourceCrop(0.19f, 0.09f, 0.33f, 0.41f), false);
+            ReverseCameraController.saveFrontSourceCrop(preferences, index,
+                    ReverseCameraLayout.sourceCrop(0.27f, 0.15f, 0.29f, 0.35f), true);
+            ReverseCameraController.saveFrontPaneTransform(preferences, index,
+                    -17, ReverseCameraLayout.DISPLAY_MODE_FILL, true);
+            CameraDewarpConfig.saveForReverseFront(preferences, index,
+                    CameraDewarpConfig.of(CameraDewarpConfig.lensForReverseFrontCamera(index),
+                            true, 147, CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+            ReverseCameraController.saveVisibility(preferences, index, false);
+            ReverseCameraController.saveFrontIntegrated(preferences, index, true);
+            CameraCalibrationPreset.saveReverse(preferences, index);
+            CameraCalibrationPreset.saveReverseFront(preferences, index);
+        }
+        layout = ReverseCameraLayout.bringToFront(layout, selectedIndex);
+        ReverseCameraController.saveLayout(preferences, layout);
+        ReverseCameraController.saveVisibility(preferences,
+                ReverseCameraLayout.BACKGROUND_PANE_ID, false);
+        ReverseCameraController.saveWidgetVisible(preferences, true);
+        preferences.putBoolean(ReverseCameraController.PREF_ENABLED, true);
+        preferences.putBoolean("reverse_camera_parking_guidelines", false);
+        preferences.putInt("reverse_trigger_speed", 27);
+    }
+
+    private static void assertOnlyChanged(
+            Map<String, ?> before, Map<String, ?> after, Set<String> allowed) {
+        Set<String> all = new HashSet<>(before.keySet());
+        all.addAll(after.keySet());
+        for (String key : all) {
+            Object oldValue = before.get(key);
+            Object newValue = after.get(key);
+            if (oldValue == null ? newValue != null : !oldValue.equals(newValue)) {
+                assertTrue("unexpected reset mutation: " + key, allowed.contains(key));
+            }
+        }
+    }
+
+    private static void assertDirectStage(
+            TestSharedPreferences preferences, CameraProfile profile,
+            CameraCalibrationPreset.Stage stage, Map<String, ?> before) {
+        DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            assertGeometry(defaults, raw);
+            assertEquals(defaults.aspectMode, raw.aspectMode);
+            assertEquals(17, raw.rotationDegrees);
+            assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
+            assertFalse(raw.mirrorHorizontally);
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            DirectCameraCrop expected = DirectCameraCrop.preserveCenterAndAspect(
+                    DirectCameraCrop.defaultCorrectedFor(profile, raw), raw);
+            assertGeometry(expected,
+                    DirectCameraCrop.loadCorrected(preferences, profile, raw));
+            assertConfig(CameraDewarpConfig.loadForProfile(preferences, profile),
+                    true, profile.rear() ? 165 : 130,
+                    profile.rear() ? CameraDewarpConfig.PROJECTION_CYLINDRICAL
+                            : CameraDewarpConfig.PROJECTION_RECTILINEAR);
+        } else {
+            assertEquals(defaults.rotationDegrees, raw.rotationDegrees);
+            assertEquals(defaults.rotationMode, raw.rotationMode);
+            assertEquals(defaults.mirrorHorizontally, raw.mirrorHorizontally);
+            assertGeometry(customDirectRaw(), raw);
+            assertEquals(DirectCameraCrop.ASPECT_FREE, raw.aspectMode);
+        }
+    }
+
+    private static void assertFixedDirectStage(
+            TestSharedPreferences preferences, CameraProfile profile,
+            CameraCalibrationPreset.Stage stage) {
+        DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            assertGeometry(defaults, raw);
+            assertEquals(defaults.aspectMode, raw.aspectMode);
+            assertEquals(17, raw.rotationDegrees);
+            assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
+            assertFalse(raw.mirrorHorizontally);
+        } else {
+            assertGeometry(fixedDirectRaw(), raw);
+            assertEquals(DirectCameraCrop.ASPECT_ONE_ONE, raw.aspectMode);
+            assertEquals(defaults.rotationDegrees, raw.rotationDegrees);
+            assertEquals(defaults.rotationMode, raw.rotationMode);
+            assertEquals(defaults.mirrorHorizontally, raw.mirrorHorizontally);
+        }
+    }
+
+    private static void assertParkingStage(
+            TestSharedPreferences preferences, ParkingCameraProfile profile,
+            CameraCalibrationPreset.Stage stage, Map<String, ?> before) {
+        DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            assertGeometry(defaults, raw);
+            assertEquals(defaults.aspectMode, raw.aspectMode);
+            assertEquals(17, raw.rotationDegrees);
+            assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
+            assertFalse(raw.mirrorHorizontally);
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            assertGeometry(DirectCameraCrop.preserveCenterAndAspect(defaults.centered(), raw),
+                    DirectCameraCrop.loadCorrected(preferences, profile, raw));
+            assertConfig(CameraDewarpConfig.loadForParking(preferences, profile),
+                    false, CameraDewarpConfig.DEFAULT_FOV_DEGREES,
+                    CameraDewarpConfig.DEFAULT_PROJECTION);
+        } else {
+            assertEquals(defaults.rotationDegrees, raw.rotationDegrees);
+            assertEquals(defaults.rotationMode, raw.rotationMode);
+            assertEquals(defaults.mirrorHorizontally, raw.mirrorHorizontally);
+            assertGeometry(customDirectRaw(), raw);
+            assertEquals(DirectCameraCrop.ASPECT_FREE, raw.aspectMode);
+        }
+    }
+
+    private static void assertFixedParkingStage(
+            TestSharedPreferences preferences, ParkingCameraProfile profile,
+            CameraCalibrationPreset.Stage stage) {
+        DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            assertGeometry(defaults, raw);
+            assertEquals(defaults.aspectMode, raw.aspectMode);
+            assertEquals(17, raw.rotationDegrees);
+            assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
+            assertFalse(raw.mirrorHorizontally);
+        } else {
+            assertGeometry(fixedDirectRaw(), raw);
+            assertEquals(DirectCameraCrop.ASPECT_ONE_ONE, raw.aspectMode);
+            assertEquals(defaults.rotationDegrees, raw.rotationDegrees);
+            assertEquals(defaults.rotationMode, raw.rotationMode);
+            assertEquals(defaults.mirrorHorizontally, raw.mirrorHorizontally);
+        }
+    }
+
+    private static DirectCameraCrop customDirectRaw() {
+        return DirectCameraCrop.of(0.11f, 0.17f, 0.43f, 0.51f,
+                DirectCameraCrop.ASPECT_FREE, 17, CameraRotation.MODE_FILL)
+                .withMirrorHorizontally(false);
+    }
+
+    private static DirectCameraCrop fixedDirectRaw() {
+        return DirectCameraCrop.of(0.30f, 0.30f, 0.20f, 0.20f,
+                DirectCameraCrop.ASPECT_ONE_ONE, 17, CameraRotation.MODE_FILL)
+                .withMirrorHorizontally(false);
+    }
+
+    private static void assertReverseStage(
+            TestSharedPreferences preferences, int cameraIndex, boolean front,
+            CameraCalibrationPreset.Stage stage, Map<String, ?> before) {
+        ReverseCameraLayout.Pane pane = (front
+                ? ReverseCameraController.loadFrontRawLayout(preferences)
+                : ReverseCameraController.loadRawLayout(preferences)).pane(cameraIndex);
+        if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+            ReverseCameraLayout.Rect expected = front
+                    ? frontDefaultRect(cameraIndex)
+                    : ReverseCameraLayout.defaults().pane(cameraIndex).sourceCrop;
+            assertRect(expected, pane.sourceCrop);
+            assertEquals(front ? -17 : 17, pane.rotationDegrees);
+            assertEquals(front ? ReverseCameraLayout.DISPLAY_MODE_FILL
+                    : ReverseCameraLayout.DISPLAY_MODE_STRETCH, pane.displayMode);
+            assertEquals(front, pane.mirrorHorizontally);
+        } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            ReverseCameraLayout.Rect expected = front
+                    ? frontCorrectedRect(cameraIndex)
+                    : ReverseCameraController.defaultCorrectedSourceCrop(cameraIndex);
+            ReverseCameraLayout.Rect actual = front
+                    ? ReverseCameraController.loadFrontCorrectedSourceCrop(
+                            preferences, cameraIndex)
+                    : ReverseCameraController.loadCorrectedSourceCrop(
+                            preferences, cameraIndex,
+                            ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop));
+            assertRect(expected, actual);
+            CameraDewarpConfig config = front
+                    ? CameraDewarpConfig.loadForReverseFront(preferences, cameraIndex)
+                    : CameraDewarpConfig.loadForReverse(preferences, cameraIndex);
+            CameraDewarpConfig expectedConfig = front
+                    ? CameraDewarpConfig.defaultForReverseFront(cameraIndex)
+                    : CameraDewarpConfig.defaultForReverse(cameraIndex);
+            assertConfig(config, expectedConfig.enabled,
+                    expectedConfig.fovDegrees, expectedConfig.projection);
+        } else {
+            ReverseCameraLayout.Pane defaults = ReverseCameraLayout.defaults().pane(cameraIndex);
+            assertEquals(front ? frontDefaultRotation(cameraIndex) : defaults.rotationDegrees,
+                    pane.rotationDegrees);
+            assertEquals(front ? ReverseCameraLayout.DISPLAY_MODE_STRETCH
+                    : ReverseCameraLayout.DISPLAY_MODE_FILL, pane.displayMode);
+            assertEquals(front ? false : true, pane.mirrorHorizontally);
+        }
+    }
+
+    private static int frontDefaultRotation(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) return 0;
+        return DirectCameraCrop.defaultFor(
+                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex)).rotationDegrees;
+    }
+
+    private static ReverseCameraLayout.Rect frontDefaultRect(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 1.0f, 1.0f);
+        }
+        DirectCameraCrop crop = DirectCameraCrop.defaultFor(
+                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
+        return ReverseCameraLayout.sourceCrop(crop.left, crop.top, crop.width, crop.height);
+    }
+
+    private static ReverseCameraLayout.Rect frontCorrectedRect(int cameraIndex) {
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            return frontDefaultRect(cameraIndex);
+        }
+        DirectCameraCrop raw = DirectCameraCrop.defaultFor(
+                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
+        DirectCameraCrop crop = DirectCameraCrop.defaultCorrectedFor(
+                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw);
+        return ReverseCameraLayout.sourceCrop(crop.left, crop.top, crop.width, crop.height);
     }
 
     private static DirectCameraCrop crop(

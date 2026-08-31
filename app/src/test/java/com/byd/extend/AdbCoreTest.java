@@ -131,6 +131,94 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void adbAccessCacheHonorsTtlForceAndIdentityWithoutRefreshingHits() {
+        long[] now = {100L};
+        LocalAdbClient.AccessCache cache = new LocalAdbClient.AccessCache(() -> now[0]);
+        assertFalse(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+
+        cache.markSuccess("key-a");
+        assertEquals(100L, cache.successAtForTest());
+        assertTrue(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertEquals(100L, cache.successAtForTest());
+        assertTrue(cache.isValid("key-a", LocalAdbClient.PromptMode.NEVER));
+        assertFalse(cache.isValid("key-a", LocalAdbClient.PromptMode.FORCE));
+        assertEquals(100L, cache.successAtForTest());
+
+        now[0] = 30_099L;
+        assertTrue(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        now[0] = 30_100L;
+        assertFalse(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertEquals(Long.MIN_VALUE, cache.successAtForTest());
+
+        cache.markSuccess("key-a");
+        assertTrue(cache.invalidateIfIdentityChanged("key-b"));
+        assertFalse(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        assertFalse(cache.invalidateIfIdentityChanged("key-b"));
+    }
+
+    @Test
+    public void adbAccessStateRestoresAndUnknownsInvalidValues() {
+        LocalAdbClient.AccessState ok = LocalAdbClient.decodeAccessStateForTest("OK", "key-a");
+        assertEquals(LocalAdbClient.AccessState.Status.OK, ok.status);
+        assertEquals("key-a", ok.fingerprint);
+        LocalAdbClient.AccessState error =
+                LocalAdbClient.decodeAccessStateForTest("ERROR", "key-a");
+        assertEquals(LocalAdbClient.AccessState.Status.ERROR, error.status);
+        LocalAdbClient.AccessState unknown =
+                LocalAdbClient.decodeAccessStateForTest("garbage", "key-a");
+        assertEquals(LocalAdbClient.AccessState.Status.UNKNOWN, unknown.status);
+        assertEquals(LocalAdbClient.AccessState.Status.UNKNOWN,
+                LocalAdbClient.decodeAccessStateForTest(null, null).status);
+
+        LocalAdbClient.Result shellFailure =
+                LocalAdbClient.Result.failed("shell_exit_7", "", 7, "key-a");
+        assertFalse(shellFailure.ok);
+        assertFalse(shellFailure.superseded);
+        LocalAdbClient.Result cancelled = LocalAdbClient.Result.cancelled();
+        assertEquals("cancelled", cancelled.error);
+        assertFalse(cancelled.superseded);
+        assertTrue(LocalAdbClient.Result.superseded().superseded);
+    }
+
+    @Test
+    public void adbAccessFailureClassificationOnlyInvalidatesTransportOrAuth() {
+        assertTrue(LocalAdbClient.shouldInvalidateAccess(new IOException("socket"), false));
+        assertFalse(LocalAdbClient.shouldInvalidateAccess(
+                new LocalAdbClient.OutputSinkException(new IOException("sink")), false));
+        assertFalse(LocalAdbClient.shouldInvalidateAccess(
+                new LocalAdbClient.TooLargeException(), false));
+        assertFalse(LocalAdbClient.shouldInvalidateAccess(
+                new LocalAdbClient.OperationCancelledException(), false));
+        assertFalse(LocalAdbClient.shouldInvalidateAccess(
+                new LocalAdbClient.AuthorizationSupersededException(), false));
+        assertFalse(LocalAdbClient.shouldInvalidateAccess(new IOException("cancelled"), true));
+
+        long[] now = {1L};
+        LocalAdbClient.AccessCache cache = new LocalAdbClient.AccessCache(() -> now[0]);
+        cache.markSuccess("key-a");
+        assertTrue(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        cache.invalidate();
+        assertFalse(cache.isValid("key-a", LocalAdbClient.PromptMode.AUTO_ONCE));
+        LocalAdbClient.AccessState restored =
+                LocalAdbClient.decodeAccessStateForTest("OK", "key-a");
+        assertEquals(LocalAdbClient.AccessState.Status.OK, restored.status);
+        // Persisted display state is deliberately not a process-memory cache hit.
+        assertFalse(cache.isValid(restored.fingerprint, LocalAdbClient.PromptMode.AUTO_ONCE));
+    }
+
+    @Test
+    public void adbAccessListenerClearUsesCallbackIdentity() {
+        LocalAdbClient.AccessStateListener first = state -> { };
+        LocalAdbClient.AccessStateListener second = state -> { };
+        LocalAdbClient.setAccessStateListener(first);
+        LocalAdbClient.setAccessStateListener(second);
+        LocalAdbClient.clearAccessStateListener(first);
+        assertTrue(LocalAdbClient.hasAccessStateListenerForTest(second));
+        LocalAdbClient.clearAccessStateListener(second);
+        assertFalse(LocalAdbClient.hasAccessStateListenerForTest(second));
+    }
+
+    @Test
     public void cameraShellKeepsMainLooperAndHasNoQuitSafelyPath() throws Exception {
         Path source = Path.of("app/src/main/java/com/byd/extend/CameraShellMain.java");
         if (!Files.exists(source)) {
