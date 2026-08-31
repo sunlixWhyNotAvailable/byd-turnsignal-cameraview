@@ -54,6 +54,12 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     androidTestImplementation("junit:junit:4.13.2")
+    // Platform test APIs are optional SDK libraries, not production dependencies.
+    listOf("base", "runner").forEach { library ->
+        androidTestCompileOnly(files(androidComponents.sdkComponents.sdkDirectory.map { sdk ->
+            sdk.file("platforms/android-${android.compileSdk}/optional/android.test.$library.jar")
+        }))
+    }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

@@ -199,10 +199,11 @@ internal fun StatusPill(state: StatusUiState, fallback: String, colors: UiPalett
 }
 
 @Composable
-internal fun StatusText(state: StatusUiState, colors: UiPalette) {
-    if (!state.visible) return
+internal fun StatusText(state: StatusUiState, colors: UiPalette, reserveLines: Boolean = false) {
+    if (!state.visible && !reserveLines) return
     val (foreground, _) = toneColors(state.tone, colors)
-    Text(state.text, color = foreground, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Text(if (state.visible) state.text else "", color = foreground, fontSize = 12.sp,
+        minLines = if (reserveLines) 2 else 1, maxLines = 2, overflow = TextOverflow.Ellipsis)
 }
 
 private fun toneColors(tone: StatusTone, colors: UiPalette) = when (tone) {
@@ -292,13 +293,18 @@ internal fun Segmented(
     }
 }
 
-private object DropdownPosition : PopupPositionProvider {
+internal object DropdownPosition : PopupPositionProvider {
     override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection,
         popupContentSize: IntSize): IntOffset {
         val x = if (layoutDirection == LayoutDirection.Ltr) anchorBounds.left else anchorBounds.right - popupContentSize.width
         val below = anchorBounds.bottom
         val above = anchorBounds.top - popupContentSize.height
-        val y = if (below + popupContentSize.height <= windowSize.height) below else above.coerceAtLeast(0)
+        val maxY = (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        val y = when {
+            below + popupContentSize.height <= windowSize.height -> below
+            above >= 0 -> above
+            else -> below.coerceIn(0, maxY)
+        }
         return IntOffset(x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)), y)
     }
 }
@@ -313,8 +319,11 @@ internal fun ChoiceField(
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     val compact = LocalCompactControls.current
     val safeSelected = selected.coerceIn(0, choices.lastIndex.coerceAtLeast(0))
+    val selectedBackground = colors.accent.copy(alpha = if (colors.dark) .78f else .08f)
+    val selectedContent = if (colors.dark) Color.White else colors.text
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
@@ -322,13 +331,15 @@ internal fun ChoiceField(
         BoxWithConstraints(Modifier.width(if (compact) 190.dp else 220.dp)) {
             val menuWidth = maxWidth
             Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(6.dp))
-                .border(1.dp, colors.accent, RoundedCornerShape(6.dp)).background(colors.active)
-                .clickable(enabled = choices.isNotEmpty()) { expanded = true }.padding(horizontal = 8.dp),
+                .border(1.dp, colors.accent, RoundedCornerShape(6.dp)).background(selectedBackground)
+                .clickable(enabled = choices.isNotEmpty(), role = Role.Button) {
+                    focusManager.clearFocus(); expanded = true
+                }.padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center) {
-                Text(choices.getOrElse(safeSelected) { "—" }, color = colors.text, fontSize = 14.sp,
+                Text(choices.getOrElse(safeSelected) { "—" }, color = selectedContent, fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                Icon(Icons.Outlined.ExpandMore, null, tint = colors.text.copy(alpha = .78f),
+                Icon(Icons.Outlined.ExpandMore, null, tint = selectedContent.copy(alpha = .78f),
                     modifier = Modifier.align(Alignment.CenterEnd).size(20.dp))
             }
             if (expanded) Popup(DropdownPosition, { expanded = false }, PopupProperties(focusable = true)) {
@@ -336,9 +347,18 @@ internal fun ChoiceField(
                     .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)) {
                     choices.forEachIndexed { index, option ->
                         Box(Modifier.fillMaxWidth().height(40.dp)
-                            .background(if (index == safeSelected) colors.active else Color.Transparent)
-                            .clickable { onSelect(index); expanded = false }, contentAlignment = Alignment.Center) {
-                            Text(option, color = colors.text, fontSize = 14.sp, textAlign = TextAlign.Center)
+                            .background(if (index == safeSelected) selectedBackground else Color.Transparent)
+                            .clickable(role = Role.Button) { onSelect(index); expanded = false },
+                            contentAlignment = Alignment.Center) {
+                            Text(option, color = if (index == safeSelected) selectedContent else colors.text,
+                                fontSize = 14.sp,
+                                fontWeight = if (index == safeSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+                            if (index < choices.lastIndex) {
+                                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(1.dp)
+                                    .background(colors.border))
+                            }
                         }
                     }
                 }
@@ -361,6 +381,7 @@ internal fun NumericSetting(
     slider: Boolean = false,
     sliderDots: Boolean = false,
     inlineLabel: Boolean = false,
+    compactSuffix: Boolean = false,
     beforeInput: (@Composable () -> Unit)? = null,
     afterInput: (@Composable () -> Unit)? = null,
 ) {
@@ -435,7 +456,8 @@ internal fun NumericSetting(
             decorationBox = { field -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { field() } })
         if (adjustable) NumberStep("+", title, colors, enabled) { adjust(1f) }
         Text(suffix, color = colors.muted, fontSize = if (suffix == "°") 22.sp else 12.sp,
-            modifier = Modifier.offset(y = if (suffix == "°") (-3).dp else 0.dp))
+            modifier = Modifier.then(if (compactSuffix || (compact && adjustable)) Modifier else Modifier.width(46.dp))
+                .offset(y = if (suffix == "°") (-3).dp else 0.dp))
         afterInput?.invoke()
     }
 }

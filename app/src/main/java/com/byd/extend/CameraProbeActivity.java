@@ -568,6 +568,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private int selectedTab = -1;
     private int selectedDebugMode;
     private int activeActivityCameraRequestId;
+    private CameraProfileId activeActivityCameraProfile;
     private int activeActivityConsumerGeneration;
     private int[] activeActivityInputGenerations = new int[0];
     private int closingActivityCameraRequestId;
@@ -693,12 +694,11 @@ public final class CameraProbeActivity extends ComponentActivity
                         "Службу зупинено", StatusTone.Error, true);
                 productionUi.setDiagnosticStatus(true, unavailable, false);
                 productionUi.setDiagnosticStatus(false, unavailable, false);
-                productionUi.setMusicStatus(new StatusUiState(
-                        "Helper недоступний", StatusTone.Error, true));
             }
             stopCalibrationCopies(true);
             clearPreview("helper_service_disconnected");
             activePreview = null;
+            activeActivityCameraProfile = null;
             activePreviewCover = null;
             activeCameraViewpoint = -1;
             activeDirectCameraIndex = -1;
@@ -1971,9 +1971,11 @@ public final class CameraProbeActivity extends ComponentActivity
                 "fov", event.fovDegrees,
                 "projection", CameraDewarpConfig.projectionLabel(event.projection),
                 "error", event.error);
-        if (activePreview == view) closeCamera("dewarp_renderer_failed");
-        TextView status = calibration ? calibrationStatus : cameraStatus;
-        status.setText("Помилка корекції камери; відкрийте preview повторно");
+        if (activePreview != view) return;
+        CameraProfileId failedProfile = activeActivityCameraProfile;
+        closeCamera("dewarp_renderer_failed");
+        publishCameraStatus(failedProfile, null,
+                "Помилка корекції камери; відкрийте preview повторно", StatusTone.Error, false);
     }
 
     private void onCalibrationDewarpStats(CameraDewarpRenderer.Stats stats) {
@@ -2047,9 +2049,10 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (!CameraDewarpRenderer.isFatalEventKind(event.kind)
                 || activePreview != reverseCameraPreview) return;
+        CameraProfileId failedProfile = activeActivityCameraProfile;
         closeCamera("reverse_dewarp_renderer_failed");
-        publishSettingsFeedback(
-                "Помилка корекції камери; відкрийте preview повторно", StatusTone.Error);
+        publishCameraStatus(failedProfile, null,
+                "Помилка корекції камери; відкрийте preview повторно", StatusTone.Error, false);
     }
 
     @Override
@@ -8643,7 +8646,8 @@ public final class CameraProbeActivity extends ComponentActivity
         activeCameraViewpoint = -1;
         showPreview(debugPreview, activePreviewCover, false, false);
         requestedOpen = true;
-        debugCameraStatus.setText("Opening " + viewName + " (preview " + index + ")...");
+        publishDiagnosticStatus(false, "Opening " + viewName + " (preview " + index + ")...",
+                StatusTone.Warning, true);
         record("open_requested", "view", viewName, "preview_index", index,
                 "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
                 "request_id", requestId, "consumer_generation", 0,
@@ -8739,6 +8743,7 @@ public final class CameraProbeActivity extends ComponentActivity
             pendingReversePreviewGenerations = bundle.generations.clone();
         } catch (Throwable error) {
             activeActivityCameraRequestId = 0;
+            activeActivityCameraProfile = null;
             activeActivityConsumerGeneration = 0;
             activeActivityInputGenerations = new int[0];
             activeActivityCameraOpened = false;
@@ -8829,6 +8834,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     "camera_tag", cameraTag, "preview_index", index,
                     "reason", "camera_not_ready_after_handoff");
             activePreview = null;
+            activeActivityCameraProfile = null;
             activePreviewCover = null;
             CameraHelperService.cameraPreviewStopped(this);
             updateControls();
@@ -8908,6 +8914,8 @@ public final class CameraProbeActivity extends ComponentActivity
             throw new IllegalArgumentException("automatic camera input required");
         }
         activeActivityCameraRequestId = requestId;
+        // Compose selects the next profile before notifying the backend; retain this request's owner.
+        activeActivityCameraProfile = automatic ? selectedProductionProfile() : null;
         activeActivityConsumerGeneration = 0;
         activeActivityInputGenerations = inputGenerations == null
                 ? new int[0] : inputGenerations.clone();
@@ -9121,12 +9129,14 @@ public final class CameraProbeActivity extends ComponentActivity
             clearResumeAutoPreview();
         }
         cancelProductionPreviewFirstFrameWait();
-        TextView status = activeCameraStatus();
+        CameraProfileId closingProfile = activeActivityCameraProfile;
+        DiagnosticMode closingDiagnostic = activeCameraDiagnosticMode();
         if (cameraHandoffPending) {
-            cameraPreview.removeCallbacks(finishCameraHandoff);
-            debugPreview.removeCallbacks(finishCameraHandoff);
+            if (cameraPreview != null) cameraPreview.removeCallbacks(finishCameraHandoff);
+            if (debugPreview != null) debugPreview.removeCallbacks(finishCameraHandoff);
             cameraHandoffPending = false;
             pendingCameraViewpoint = -1;
+            pendingCameraDebug = false;
             record("camera_preview_handoff", "state", "canceled", "reason", reason);
         }
         boolean wasOpen = requestedOpen;
@@ -9147,17 +9157,19 @@ public final class CameraProbeActivity extends ComponentActivity
             ipcExecutor.execute(() -> transactClose(
                     current, reason, exactClosingRequestId));
         }
-        CameraHelperService.cameraPreviewStopped(this);
-        status.setText("Camera closed");
         activePreview = null;
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         activeDirectCameraIndex = -1;
         activeActivityCameraRequestId = 0;
+        activeActivityCameraProfile = null;
         activeActivityConsumerGeneration = 0;
         activeActivityCameraOpened = false;
         activeActivityCameraFresh = false;
         activeActivityInputGenerations = new int[0];
+        CameraHelperService.cameraPreviewStopped(this);
+        publishCameraStatus(closingProfile, closingDiagnostic,
+                "Camera closed", StatusTone.Warning, false);
         updateControls();
         return wasOpen && current != null;
     }
@@ -9441,34 +9453,37 @@ public final class CameraProbeActivity extends ComponentActivity
         else if (selectedTab == TAB_REVERSE_CAMERAS) maybeOpenReversePreview();
     }
 
-    private TextView cameraStatus(boolean debug) {
-        return debug ? debugCameraStatus : cameraStatus;
-    }
-
     private void publishCameraEventStatus(
             JSONObject event, String text, StatusTone tone, boolean pending) {
-        boolean direct = activePreview == directCameraPreview
-                || "direct_avm".equals(event.optString("renderer"));
-        boolean debug = direct || activePreview == debugPreview
-                || event.optString("renderer").startsWith("stock_avm");
-        if (debug) publishDiagnosticStatus(direct, text, tone, pending);
-        else publishSettingsFeedback(text, tone);
-        TextView legacy = cameraStatusForEvent(event);
-        if (legacy != null) legacy.setText(text);
+        DiagnosticMode diagnostic = activeCameraDiagnosticMode();
+        if (activePreview == null && activeActivityCameraProfile == null) {
+            String renderer = event.optString("renderer");
+            if ("direct_avm".equals(renderer)) diagnostic = DiagnosticMode.Direct;
+            else if (renderer.startsWith("stock_avm")) diagnostic = DiagnosticMode.Avm;
+        }
+        publishCameraStatus(activeActivityCameraProfile, diagnostic, text, tone, pending);
     }
 
-    private TextView activeCameraStatus() {
-        if (activePreview == reverseCameraPreview) return reverseCameraStatus;
-        if (activePreview == calibrationPreview) return calibrationStatus;
-        if (activePreview == directCameraPreview) return directCameraStatus;
-        return cameraStatus(activePreview == debugPreview
-                || (!requestedOpen && pendingCameraDebug));
+    private DiagnosticMode activeCameraDiagnosticMode() {
+        if (activePreview != null && activePreview == directCameraPreview) {
+            return DiagnosticMode.Direct;
+        }
+        if ((activePreview != null && activePreview == debugPreview)
+                || (cameraHandoffPending && pendingCameraDebug)) return DiagnosticMode.Avm;
+        return null;
     }
 
-    private TextView cameraStatusForEvent(JSONObject event) {
-        if (!event.optString("view").startsWith("direct_")) return activeCameraStatus();
-        if (activePreview == cameraPreview) return cameraStatus;
-        return activePreview == calibrationPreview ? calibrationStatus : directCameraStatus;
+    private void publishCameraStatus(
+            CameraProfileId profile, DiagnosticMode diagnostic,
+            String text, StatusTone tone, boolean pending) {
+        if (productionUi == null) return;
+        StatusUiState status = new StatusUiState(text, tone, true);
+        if (diagnostic != null) {
+            productionUi.setDiagnosticStatus(diagnostic == DiagnosticMode.Direct, status, pending);
+        } else {
+            productionUi.setSettingsFeedback(status);
+            if (profile != null) productionUi.setProfileStatus(profile, status, pending);
+        }
     }
 
     private void enqueueHelperCallbackRegistration(IBinder target) {
@@ -9594,9 +9609,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 activeActivityCameraFresh = false;
                 activeActivityInputGenerations = new int[0];
                 String message = "Open failed: " + error.getClass().getSimpleName();
-                if (activePreview == debugPreview) publishDiagnosticStatus(
-                        false, message, StatusTone.Error, false);
-                else publishSettingsFeedback(message, StatusTone.Error);
+                publishCameraStatus(activeActivityCameraProfile, activeCameraDiagnosticMode(),
+                        message, StatusTone.Error, false);
+                activeActivityCameraProfile = null;
                 updateControls();
             });
         } finally {
@@ -9637,9 +9652,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 activeActivityInputGenerations = new int[0];
                 CameraHelperService.cameraPreviewStopped(this);
                 String message = "Open failed: " + error.getClass().getSimpleName();
-                if (activePreview == directCameraPreview) publishDiagnosticStatus(
-                        true, message, StatusTone.Error, false);
-                else publishSettingsFeedback(message, StatusTone.Error);
+                publishCameraStatus(activeActivityCameraProfile, activeCameraDiagnosticMode(),
+                        message, StatusTone.Error, false);
+                activeActivityCameraProfile = null;
                 stopCalibrationCopies(true);
                 clearPreview("direct_open_failed");
                 activePreview = null;
@@ -9675,9 +9690,10 @@ public final class CameraProbeActivity extends ComponentActivity
             runOnUiThread(() -> {
                 if (!failClosedReversePreviewRequest(requestId)) return;
                 CameraHelperService.cameraPreviewStopped(this);
-                publishSettingsFeedback(
+                publishCameraStatus(activeActivityCameraProfile, null,
                         "Open failed: " + error.getClass().getSimpleName(),
-                        StatusTone.Error);
+                        StatusTone.Error, false);
+                activeActivityCameraProfile = null;
                 if (activePreview == reverseCameraPreview) {
                     reverseCameraPreview.clearFrames();
                     activePreview = null;
@@ -9735,8 +9751,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 activeActivityCameraFresh = false;
                 activeActivityInputGenerations = new int[0];
                 CameraHelperService.cameraPreviewStopped(this);
-                cameraStatus(activePreview == debugPreview).setText(
-                        "Stock AVM failed: " + error.getClass().getSimpleName());
+                publishCameraStatus(activeActivityCameraProfile, activeCameraDiagnosticMode(),
+                        "Stock AVM failed: " + error.getClass().getSimpleName(),
+                        StatusTone.Error, false);
+                activeActivityCameraProfile = null;
                 updateControls();
             });
         } finally {
@@ -10347,11 +10365,6 @@ public final class CameraProbeActivity extends ComponentActivity
                 JSONObject json = parsed;
                 String kind = json.optString("kind");
                 if (musicPanel != null) musicPanel.acceptEvent(json);
-                if (productionUi != null && (kind.startsWith("music_")
-                        || kind.startsWith("media_"))) {
-                    productionUi.appendMusicJournal(kind + ": "
-                            + json.optString("status", json.optString("reason", "")));
-                }
                 handleCameraLaneEvent(json);
                 if ("reverse_camera_start".equals(kind)) {
                     int requestId = json.optInt("request_id", -1);
@@ -10511,6 +10524,7 @@ public final class CameraProbeActivity extends ComponentActivity
                                 StatusTone.Error, false);
                         clearPreview("camera_error");
                         activePreview = null;
+                        activeActivityCameraProfile = null;
                         activePreviewCover = null;
                         if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                     }
@@ -10589,10 +10603,12 @@ public final class CameraProbeActivity extends ComponentActivity
                         activeActivityInputGenerations = new int[0];
                         closingActivityCameraRequestId = 0;
                         stopCalibrationCopies(true);
-                        publishCameraEventStatus(json, "Camera closed",
+                        // A locally closed request already published to its captured profile.
+                        if (resumeOverlay) publishCameraEventStatus(json, "Camera closed",
                                 StatusTone.Warning, false);
                         clearPreview("camera_closed");
                         activePreview = null;
+                        activeActivityCameraProfile = null;
                         activePreviewCover = null;
                         if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                         if (hasAutoPreviewIntent()) {
@@ -10672,9 +10688,6 @@ public final class CameraProbeActivity extends ComponentActivity
                             + json.optString("error"), StatusTone.Error);
                     publishSettingsFeedback("Helper відновлюється: "
                             + json.optString("error"), StatusTone.Error);
-                    if (productionUi != null) productionUi.setMusicStatus(
-                            new StatusUiState("Helper недоступний",
-                                    StatusTone.Error, true));
                 } else if ("guard_config".equals(kind)) {
                     if (json.optBoolean("active")) {
                         publishGuardStatus("Guard активний", StatusTone.Ok);
@@ -10816,6 +10829,7 @@ public final class CameraProbeActivity extends ComponentActivity
         stopCalibrationCopies(true);
         clearPreview("camera_shell_died");
         activePreview = null;
+        activeActivityCameraProfile = null;
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         activeDirectCameraIndex = -1;

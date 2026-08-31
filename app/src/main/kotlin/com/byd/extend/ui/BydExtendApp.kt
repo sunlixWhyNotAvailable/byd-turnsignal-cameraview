@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -90,7 +91,7 @@ fun BydExtendApp(
                 }
                 BottomNavigation(state.activeTab, strings, colors) { onAction(BydExtendUiAction.Navigate(it)) }
             }
-            state.dialog?.let { AppDialog(it, state.signals.music.journal, strings, colors, onAction) }
+            state.dialog?.let { AppDialog(it, strings, colors, onAction) }
         }
     }
 }
@@ -106,7 +107,8 @@ private fun AppHeader(
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Image(painterResource(R.drawable.byd_extend_mark), "BYD Extend",
-                Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).testTag("app-artwork"))
+                Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).testTag("app-artwork"),
+                contentScale = ContentScale.Crop)
             Column(Modifier.weight(1f)) {
                 Text("BYD Extend", color = colors.text, fontSize = 23.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 Text(strings.subtitle, color = colors.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -143,14 +145,12 @@ private fun SignalsScreen(
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Section(strings.text("Захист поворотника", "Turn-signal guard"), colors,
                 Modifier.weight(1f).fillMaxHeight(), trailing = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatusText(state.guard.operation.status, colors)
-                        AppSwitch(state.guard.enabled,
-                            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Guard), it)) }, colors,
-                            pending = state.guard.operation.pending, enabled = state.guard.operation.enabled,
-                            label = strings.text("Захист поворотника", "Turn-signal guard"))
-                    }
+                    AppSwitch(state.guard.enabled,
+                        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Guard), it)) }, colors,
+                        pending = state.guard.operation.pending, enabled = state.guard.operation.enabled,
+                        label = strings.text("Захист поворотника", "Turn-signal guard"))
                 }) {
+                StatusText(state.guard.operation.status, colors, reserveLines = true)
                 GuardNumber.entries.forEach { field ->
                     val value = when (field) {
                         GuardNumber.OutwardAngle -> state.guard.outwardAngle
@@ -187,13 +187,6 @@ private fun SignalsScreen(
                         state.music.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Music), it)) }, colors,
                         pending = state.music.operation.pending, enabled = state.music.operation.enabled)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        StatusText(state.music.operation.status, colors)
-                        ActionButton(strings.text("Журнал", "Journal"), colors, Modifier.width(150.dp),
-                            enabled = state.music.journal.isNotEmpty()) {
-                            onAction(BydExtendUiAction.Run(CommandId.OpenMusicJournal))
-                        }
-                    }
                 }
                 Section(strings.text("Погода", "Weather"), colors, Modifier.weight(1f)) {
                     SwitchLine(strings.text("Локальна погода", "Local weather"),
@@ -205,6 +198,7 @@ private fun SignalsScreen(
                         strings.text("хв", "min"), colors,
                         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.WeatherInterval, it)) }, 5f..180f,
                         enabled = state.weather.enabled && !state.weather.operation.pending,
+                        compactSuffix = true,
                         beforeInput = {
                             ActionButton(strings.text("Оновити зараз", "Refresh now"), colors, Modifier.width(170.dp),
                                 icon = Icons.Outlined.Refresh,
@@ -248,7 +242,6 @@ private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPale
 @Composable
 private fun AppDialog(
     state: DialogUiState,
-    musicJournal: List<String>,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
@@ -263,9 +256,7 @@ private fun AppDialog(
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(colors.field)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp)).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (state.kind == DialogKind.MusicJournal) {
-                    musicJournal.takeLast(20).forEach { Text(it, color = colors.text, fontSize = 13.sp) }
-                } else Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 state.progress?.let { progress ->
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }

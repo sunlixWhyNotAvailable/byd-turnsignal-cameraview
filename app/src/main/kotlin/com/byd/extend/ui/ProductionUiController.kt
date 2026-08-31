@@ -75,8 +75,7 @@ class ProductionUiController(
             header = fresh.header.copy(adb = old.header.adb, location = old.header.location),
             signals = fresh.signals.copy(
                 guard = fresh.signals.guard.copy(operation = old.signals.guard.operation),
-                music = fresh.signals.music.copy(
-                    operation = old.signals.music.operation, journal = old.signals.music.journal),
+                music = fresh.signals.music.copy(operation = old.signals.music.operation),
                 weather = fresh.signals.weather.copy(
                     operation = old.signals.weather.operation, refresh = old.signals.weather.refresh),
             ),
@@ -131,17 +130,6 @@ class ProductionUiController(
         state = state.copy(signals = state.signals.copy(
             guard = state.signals.guard.copy(
                 operation = state.signals.guard.operation.copy(status = status))))
-    }
-
-    fun setMusicStatus(status: StatusUiState) {
-        state = state.copy(signals = state.signals.copy(
-            music = state.signals.music.copy(
-                operation = state.signals.music.operation.copy(status = status))))
-    }
-
-    fun appendMusicJournal(line: String) {
-        state = state.copy(signals = state.signals.copy(music = state.signals.music.copy(
-            journal = (state.signals.music.journal + line).takeLast(20))))
     }
 
     fun setWeatherStatus(status: StatusUiState, pending: Boolean = false) {
@@ -270,11 +258,6 @@ class ProductionUiController(
     private fun interceptDialogCommand(command: CommandId): Boolean {
         val english = state.language == UiLanguage.English
         val dialog = when (command) {
-            CommandId.OpenMusicJournal -> DialogUiState(
-                DialogKind.MusicJournal,
-                if (english) "Music journal" else "Журнал музики",
-                "",
-            )
             CommandId.OpenBackgroundSettings -> DialogUiState(
                 DialogKind.Background,
                 if (english) "DiLink background start" else "Фоновий запуск DiLink",
@@ -298,7 +281,7 @@ class ProductionUiController(
             else -> null
         }
         if (dialog != null) {
-            pendingDialogCommand = if (command == CommandId.OpenMusicJournal) null else command
+            pendingDialogCommand = command
             state = state.copy(dialog = dialog)
             return true
         }

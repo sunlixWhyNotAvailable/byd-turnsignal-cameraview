@@ -14,7 +14,7 @@ enum class ReverseSource { Rear, Front }
 enum class DiagnosticMode { Signals, Direct, Avm }
 enum class SettingsCategory { Permissions, CameraOutput, Logs }
 enum class SettingsOperation { AutoStart, Adb, Update, Logs, Compatibility, Preset, Import }
-enum class DialogKind { Background, Update, Shutdown, MusicJournal, Progress, Message }
+enum class DialogKind { Background, Update, Shutdown, Progress, Message }
 enum class StatusTone { Ok, Warning, Error, Neutral }
 enum class AvmOrientation { Horizontal, Vertical }
 
@@ -75,7 +75,6 @@ enum class SelectionId {
 
 enum class CommandId {
     WeatherRefresh,
-    OpenMusicJournal,
     SaveProfilePreset,
     LoadProfilePreset,
     TransferProfilePreset,
@@ -209,7 +208,6 @@ data class GuardUiState(
 data class MusicUiState(
     val enabled: Boolean = false,
     val operation: OperationUiState = OperationUiState(),
-    val journal: List<String> = emptyList(),
 )
 
 @Immutable
