@@ -34,6 +34,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 int cameraIndex, CameraDewarpRenderer.Stats stats) {}
         default void onReverseDewarpEvent(
                 int cameraIndex, CameraDewarpRenderer.Event event) {}
+        /** Reports the transient RAW fallback for a live pane without changing preferences. */
+        default void onReverseDewarpFallbackChanged(
+                int cameraIndex, boolean frontSource, boolean active) {}
         /** Requests the existing persistent fan-out target to pause/resume. */
         default void onReverseTargetActive(
                 int sourceIndex, int generation, boolean active) {}
@@ -222,7 +225,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyDewarpConfigs(rear, left, right);
         if (nextCentralFrontDewarp != null) {
             centralFrontDewarp = nextCentralFrontDewarp;
-            if (centralFrontPane != null) centralFrontPane.applyDewarpConfig(centralFrontDewarp);
+            if (centralFrontPane != null) applyPaneDewarpConfig(centralFrontPane, centralFrontDewarp);
         }
         applyModel();
     }
@@ -270,7 +273,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         centralFrontIntegrated = nextCentralFrontIntegrated;
         centralFrontSourceEnabled = nextCentralFrontSourceEnabled;
         if (centralFrontSourceEnabled) ensureCentralFrontPane();
-        if (centralFrontPane != null) centralFrontPane.applyDewarpConfig(centralFrontDewarp);
+        if (centralFrontPane != null) applyPaneDewarpConfig(centralFrontPane, centralFrontDewarp);
         widgetVisible = nextWidgetVisible;
         widgetAvailable = true;
         sideMode = ReverseSideSelectorView.MODE_REAR;
@@ -764,6 +767,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
             @Override
             public void onDewarpFallbackChanged(BlindSpotCameraView view) {
                 applyModel();
+                if (callback != null) {
+                    callback.onReverseDewarpFallbackChanged(
+                            cameraIndex, pane.frontCalibration, view.usesRawFallback());
+                }
             }
 
         });
@@ -1111,13 +1118,34 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void applyActiveDewarpConfigs() {
-        panes[0].applyDewarpConfig(rearDewarp);
-        panes[1].applyDewarpConfig(sideMode == ReverseSideSelectorView.MODE_FRONT
+        applyPaneDewarpConfig(panes[0], rearDewarp);
+        applyPaneDewarpConfig(panes[1], sideMode == ReverseSideSelectorView.MODE_FRONT
                 ? frontLeftDewarp : leftDewarp);
-        panes[2].applyDewarpConfig(sideMode == ReverseSideSelectorView.MODE_FRONT
+        applyPaneDewarpConfig(panes[2], sideMode == ReverseSideSelectorView.MODE_FRONT
                 ? frontRightDewarp : rightDewarp);
         if (centralFrontPane != null) {
-            centralFrontPane.applyDewarpConfig(centralFrontDewarp);
+            applyPaneDewarpConfig(centralFrontPane, centralFrontDewarp);
+        }
+    }
+
+    static boolean fallbackSourceIsFront(int sourceIndex, int sideMode) {
+        return sourceIndex == 4 || (sideMode == ReverseSideSelectorView.MODE_FRONT
+                && (sourceIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX
+                || sourceIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+    }
+
+    private void applyPaneDewarpConfig(PaneView pane, CameraDewarpConfig value) {
+        boolean previousFront = pane.frontCalibration;
+        pane.frontCalibration = fallbackSourceIsFront(pane.sourceIndex, sideMode);
+        boolean sourceChanged = previousFront != pane.frontCalibration;
+        if (sourceChanged && callback != null) {
+            callback.onReverseDewarpFallbackChanged(pane.cameraIndex, previousFront, false);
+        }
+        // Capture the role before applying config; renderer request-token checks reject old events.
+        pane.applyDewarpConfig(value);
+        if (sourceChanged && callback != null) {
+            callback.onReverseDewarpFallbackChanged(
+                    pane.cameraIndex, pane.frontCalibration, pane.texture.usesRawFallback());
         }
     }
 
@@ -1239,6 +1267,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         final CropMaskView cropMask;
         final View cover;
         CameraDewarpConfig dewarpConfig;
+        boolean frontCalibration;
         Surface surface;
         int generation;
         boolean targetActive;
@@ -1253,6 +1282,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             super(context);
             this.cameraIndex = cameraIndex;
             this.sourceIndex = sourceIndex;
+            frontCalibration = fallbackSourceIsFront(sourceIndex, ReverseSideSelectorView.MODE_REAR);
             dewarpConfig = CameraDewarpConfig.disabled(
                     dewarpLens);
             setClipChildren(true);

@@ -47,15 +47,22 @@ final class CameraCalibrationPreset {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         if (stage == null) throw new IllegalArgumentException("reset stage required");
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
         DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
-            case ORIGINAL:
-                DirectCameraCrop.write(editor, profile, raw.withGeometry(defaults));
+            case ORIGINAL: {
+                DirectCameraCrop resetRaw = raw.withGeometry(defaults);
+                DirectCameraCrop.write(editor, profile, resetRaw);
+                preserveCorrectedOnAspectReset(editor, preferences,
+                        DirectCameraCrop.correctedAspectKey(profile), raw, resetRaw, corrected,
+                        profile);
                 break;
+            }
             case CORRECTION:
                 DirectCameraCrop.writeCorrected(editor, profile,
                         DirectCameraCrop.defaultCorrectedFor(profile, raw));
+                editor.remove(DirectCameraCrop.correctedAspectKey(profile));
                 CameraDewarpConfig.writeForProfile(
                         editor, profile, CameraDewarpConfig.defaultForProfile(profile));
                 break;
@@ -79,6 +86,7 @@ final class CameraCalibrationPreset {
         DirectCameraCrop.write(editor, profile, raw);
         DirectCameraCrop.writeCorrected(editor, profile,
                 DirectCameraCrop.defaultCorrectedFor(profile, raw));
+        editor.remove(DirectCameraCrop.correctedAspectKey(profile));
         CameraDewarpConfig.writeForProfile(
                 editor, profile, CameraDewarpConfig.defaultForProfile(profile));
         editor.putFloat(BlindSpotOverlayController.positionKey(profile, false),
@@ -127,14 +135,21 @@ final class CameraCalibrationPreset {
         if (profile == null) throw new IllegalArgumentException("parking profile required");
         if (stage == null) throw new IllegalArgumentException("reset stage required");
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
         DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
-            case ORIGINAL:
-                DirectCameraCrop.write(editor, profile, raw.withGeometry(defaults));
+            case ORIGINAL: {
+                DirectCameraCrop resetRaw = raw.withGeometry(defaults);
+                DirectCameraCrop.write(editor, profile, resetRaw);
+                preserveCorrectedOnAspectReset(editor, preferences,
+                        DirectCameraCrop.correctedAspectKey(profile), raw, resetRaw, corrected,
+                        profile);
                 break;
+            }
             case CORRECTION:
                 DirectCameraCrop.writeCorrected(editor, profile, defaults.centered());
+                editor.remove(DirectCameraCrop.correctedAspectKey(profile));
                 CameraDewarpConfig.writeForParking(editor, profile,
                         CameraDewarpConfig.disabled(CameraDewarpConfig.lensFor(profile)));
                 break;
@@ -161,7 +176,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection)));
+                        value.dewarp.projection), value.correctedAspect));
     }
 
     static int parkingMirrorTarget(ParkingCameraProfile source) {
@@ -188,7 +203,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection)));
+                        value.dewarp.projection), value.correctedAspect));
         return true;
     }
 
@@ -412,12 +427,39 @@ final class CameraCalibrationPreset {
         return true;
     }
 
+    private static void preserveCorrectedOnAspectReset(
+            SharedPreferences.Editor editor, SharedPreferences preferences, String marker,
+            DirectCameraCrop raw, DirectCameraCrop resetRaw, DirectCameraCrop corrected,
+            CameraProfile profile) {
+        if (raw.aspectMode == resetRaw.aspectMode || preferences.contains(marker)) return;
+        DirectCameraCrop pinned = DirectCameraCrop.requireUiGeometry(
+                corrected.left, corrected.top, corrected.width, corrected.height,
+                corrected.rotationDegrees, corrected.rotationMode)
+                .withMirrorHorizontally(corrected.mirrorHorizontally);
+        DirectCameraCrop.writeCorrected(editor, profile, pinned);
+        editor.putInt(marker, DirectCameraCrop.ASPECT_FREE);
+    }
+
+    private static void preserveCorrectedOnAspectReset(
+            SharedPreferences.Editor editor, SharedPreferences preferences, String marker,
+            DirectCameraCrop raw, DirectCameraCrop resetRaw, DirectCameraCrop corrected,
+            ParkingCameraProfile profile) {
+        if (raw.aspectMode == resetRaw.aspectMode || preferences.contains(marker)) return;
+        DirectCameraCrop pinned = DirectCameraCrop.requireUiGeometry(
+                corrected.left, corrected.top, corrected.width, corrected.height,
+                corrected.rotationDegrees, corrected.rotationMode)
+                .withMirrorHorizontally(corrected.mirrorHorizontally);
+        DirectCameraCrop.writeCorrected(editor, profile, pinned);
+        editor.putInt(marker, DirectCameraCrop.ASPECT_FREE);
+    }
+
     private static CameraValue activeCamera(
             SharedPreferences preferences, CameraProfile profile) {
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
         return new CameraValue(raw,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw),
-                CameraDewarpConfig.loadForProfile(preferences, profile));
+                CameraDewarpConfig.loadForProfile(preferences, profile),
+                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)));
     }
 
     private static CameraValue activeParking(
@@ -425,7 +467,8 @@ final class CameraCalibrationPreset {
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
         return new CameraValue(raw,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw),
-                CameraDewarpConfig.loadForParking(preferences, profile));
+                CameraDewarpConfig.loadForParking(preferences, profile),
+                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)));
     }
 
     private static void applyCamera(
@@ -434,6 +477,8 @@ final class CameraCalibrationPreset {
         DirectCameraCrop.write(editor, profile, value.raw);
         DirectCameraCrop.writeCorrected(editor, profile,
                 value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
+        writeCorrectedAspect(editor, DirectCameraCrop.correctedAspectKey(profile),
+                value.correctedAspect);
         CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
@@ -446,6 +491,8 @@ final class CameraCalibrationPreset {
         DirectCameraCrop.write(editor, profile, value.raw);
         DirectCameraCrop.writeCorrected(editor, profile,
                 value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
+        writeCorrectedAspect(editor, DirectCameraCrop.correctedAspectKey(profile),
+                value.correctedAspect);
         CameraDewarpConfig.writeForParking(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
@@ -531,6 +578,7 @@ final class CameraCalibrationPreset {
         writeRect(editor, prefix + "corrected_", value.corrected.left,
                 value.corrected.top, value.corrected.width, value.corrected.height);
         editor.putBoolean(prefix + "corrected_mirror", value.raw.mirrorHorizontally);
+        writeCorrectedAspect(editor, prefix + "corrected_aspect", value.correctedAspect);
         writeDewarp(editor, prefix, value.dewarp);
     }
 
@@ -547,15 +595,34 @@ final class CameraCalibrationPreset {
                 aspect, rotation, mode);
         raw = raw.withMirrorHorizontally(
                 readOptionalMirror(preferences, prefix + "raw_mirror", false));
-        DirectCameraCrop corrected = DirectCameraCrop.requireNormalized(
-                readFloat(preferences, prefix + "corrected_x"),
-                readFloat(preferences, prefix + "corrected_y"),
-                readFloat(preferences, prefix + "corrected_w"),
-                readFloat(preferences, prefix + "corrected_h"),
-                aspect, rotation, mode);
-        corrected = corrected.withMirrorHorizontally(readOptionalMirror(
-                preferences, prefix + "corrected_mirror", raw.mirrorHorizontally));
-        return new CameraValue(raw, corrected, readDewarp(preferences, prefix, lens));
+        int correctedAspect = correctedAspect(preferences, prefix + "corrected_aspect");
+        boolean correctedMirror = readOptionalMirror(
+                preferences, prefix + "corrected_mirror", raw.mirrorHorizontally);
+        DirectCameraCrop corrected;
+        if (correctedAspect == DirectCameraCrop.ASPECT_FREE) {
+            // FREE corrected geometry is independent of RAW output transforms. Validate it
+            // in neutral FIT space, then attach the stored RAW rotation/mode without
+            // constrainAligned reshaping an accepted near-boundary ROI.
+            corrected = DirectCameraCrop.requireNormalized(
+                    readFloat(preferences, prefix + "corrected_x"),
+                    readFloat(preferences, prefix + "corrected_y"),
+                    readFloat(preferences, prefix + "corrected_w"),
+                    readFloat(preferences, prefix + "corrected_h"),
+                    DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT)
+                    .withOutputTransformPreservingGeometry(rotation, mode, correctedMirror);
+        } else {
+            // Legacy slots have no independent marker and retain their historical
+            // aspect/rotation coupling.
+            corrected = DirectCameraCrop.requireNormalized(
+                    readFloat(preferences, prefix + "corrected_x"),
+                    readFloat(preferences, prefix + "corrected_y"),
+                    readFloat(preferences, prefix + "corrected_w"),
+                    readFloat(preferences, prefix + "corrected_h"),
+                    aspect, rotation, mode)
+                    .withMirrorHorizontally(correctedMirror);
+        }
+        return new CameraValue(raw, corrected, readDewarp(preferences, prefix, lens),
+                correctedAspect);
     }
 
     private static void writeReverse(
@@ -709,6 +776,30 @@ final class CameraCalibrationPreset {
         }
     }
 
+    private static int correctedAspect(SharedPreferences preferences, String key) {
+        if (!preferences.contains(key)) return -1;
+        final int value;
+        try {
+            value = preferences.getInt(key, -1);
+        } catch (RuntimeException invalidMarker) {
+            throw new IllegalArgumentException("invalid corrected geometry marker", invalidMarker);
+        }
+        if (value != DirectCameraCrop.ASPECT_FREE) {
+            throw new IllegalArgumentException("corrected geometry marker must be FREE");
+        }
+        return value;
+    }
+
+    private static void writeCorrectedAspect(
+            SharedPreferences.Editor editor, String key, int aspect) {
+        if (aspect >= DirectCameraCrop.ASPECT_FOUR_THREE
+                && aspect <= DirectCameraCrop.ASPECT_FREE) {
+            editor.putInt(key, aspect);
+        } else {
+            editor.remove(key);
+        }
+    }
+
     private static String cameraPrefix(CameraProfile profile) {
         return "camera_calibration_preset_v1_" + profile.wireName + "_";
     }
@@ -733,13 +824,15 @@ final class CameraCalibrationPreset {
         final DirectCameraCrop raw;
         final DirectCameraCrop corrected;
         final CameraDewarpConfig dewarp;
+        final int correctedAspect;
 
         CameraValue(
                 DirectCameraCrop raw, DirectCameraCrop corrected,
-                CameraDewarpConfig dewarp) {
+                CameraDewarpConfig dewarp, int correctedAspect) {
             this.raw = raw;
             this.corrected = corrected;
             this.dewarp = dewarp;
+            this.correctedAspect = correctedAspect;
         }
     }
 

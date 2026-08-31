@@ -1,51 +1,52 @@
 package com.byd.extend
 
-import com.byd.extend.ui.PLACEMENT_CLUSTER_ASPECT
-import com.byd.extend.ui.PLACEMENT_PARKING_FRAME_ASPECT
-import com.byd.extend.ui.PLACEMENT_TABLET_ASPECT
+import com.byd.extend.ui.CameraDisplayGeometry
+import com.byd.extend.ui.CameraGroup
+import com.byd.extend.ui.CameraProfileId
+import com.byd.extend.ui.CameraSide
+import com.byd.extend.ui.DisplayTarget
 import com.byd.extend.ui.ParkingView
-import com.byd.extend.ui.calculatePlacementFractions
+import com.byd.extend.ui.ProductionPlacementGeometry
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import kotlin.math.roundToInt
 
 class CameraPlacementGeometryTest {
     @Test
-    fun geometryUsesScaleAspectAndNormalizedRemainingSpace() {
-        val result = calculatePlacementFractions(
-            sizePercent = 30f,
-            frameAspect = PLACEMENT_TABLET_ASPECT,
-            canvasAspect = PLACEMENT_TABLET_ASPECT,
-            x = 1f,
-            y = 1f,
-        )
+    fun parkingGeometryUsesProductionScaleAndNormalizedRemainingSpace() {
+        val display = CameraDisplayGeometry(1920, 1080, target = DisplayTarget.Tablet)
+        val actual = productionPlacementGeometry(
+            CameraProfileId.Parking(ParkingView.FrontLeft), display,
+            sizePercent = 30f, frameAspect = 16f / 9f, x = 1f, y = 1f)
+        val expected = ParkingCameraController.overlayGeometry(1920, 1080, 30, 1f, 1f)
 
-        assertEquals(.30f, result.width, .0001f)
-        assertEquals(.30f, result.height, .0001f)
-        assertEquals(.70f, result.left, .0001f)
-        assertEquals(.70f, result.top, .0001f)
+        assertGeometryEquals(expected, actual)
+        assertEquals(.30f, actual.width / actual.canvasWidth.toFloat(), .0001f)
+        // Parking camera output is fixed 4:3, even on a 16:9 display.
+        assertEquals(.40f, actual.height / actual.canvasHeight.toFloat(), .0001f)
+        assertEquals(.70f, actual.left / actual.canvasWidth.toFloat(), .0001f)
+        assertEquals(.60f, actual.top / actual.canvasHeight.toFloat(), .0001f)
     }
 
     @Test
-    fun tallFrameFitsTabletAndCoordinatesStayBounded() {
-        val result = calculatePlacementFractions(
-            sizePercent = 60f,
-            frameAspect = .5f,
-            canvasAspect = PLACEMENT_TABLET_ASPECT,
-            x = -2f,
-            y = 4f,
-        )
+    fun tallBlindFrameFitsDisplayAndCoordinatesStayBounded() {
+        val display = CameraDisplayGeometry(1920, 1080, target = DisplayTarget.Tablet)
+        val actual = productionPlacementGeometry(
+            CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left), display,
+            sizePercent = 60f, frameAspect = .5f, x = -2f, y = 4f)
+        val expected = BlindSpotOverlayController.overlayGeometry(
+            1920, 1080, 60, .5f, -2f, 4f, 0, 0, 0)
 
-        assertEquals(1f, result.height, .0001f)
-        assertEquals(0f, result.left, .0001f)
-        assertEquals(0f, result.top, .0001f)
-        assertEquals(.28125f, result.width, .0001f)
+        assertGeometryEquals(expected, actual)
+        assertEquals(0, actual.left)
+        assertEquals(0, actual.top)
+        assertEquals(1f, actual.height / actual.canvasHeight.toFloat(), .0001f)
+        assertEquals(.28125f, actual.width / actual.canvasWidth.toFloat(), .0001f)
     }
 
     @Test
     fun blindPlacementMatchesProductionFitForTabletAndCluster() {
-        assertBlindGeometryMatches(1920, 1080, PLACEMENT_TABLET_ASPECT)
-        assertBlindGeometryMatches(1920, 720, PLACEMENT_CLUSTER_ASPECT)
+        assertBlindGeometryMatches(CameraDisplayGeometry(1920, 1080, target = DisplayTarget.Tablet))
+        assertBlindGeometryMatches(CameraDisplayGeometry(1920, 720, target = DisplayTarget.Cluster))
     }
 
     @Test
@@ -55,32 +56,48 @@ class CameraPlacementGeometryTest {
         DirectCameraCrop.save(preferences, profile, DirectCameraCrop.of(
             0f, 0f, .8f, .2f, DirectCameraCrop.ASPECT_FREE))
 
-        val state = readProductionUiState(preferences, false, false)
+        val display = CameraDisplayGeometry(1500, 1000, target = DisplayTarget.Tablet)
+        val state = readProductionUiState(preferences, false, false) { display }
         val uiProfile = state.parking.views[ParkingView.FrontLeft]!!.profile
-        assertEquals(PLACEMENT_PARKING_FRAME_ASPECT, uiProfile.frameAspect, .0001f)
+        assertEquals(display, uiProfile.displayGeometry)
 
-        val actual = calculatePlacementFractions(
-            25f, uiProfile.frameAspect, PLACEMENT_TABLET_ASPECT, .6f, .4f)
-        val expected = ParkingCameraController.overlayGeometry(1920, 1080, 25, .6f, .4f)
-        assertEquals(expected[0], (actual.left * 1920).roundToInt())
-        assertEquals(expected[1], (actual.top * 1080).roundToInt())
-        assertEquals(expected[2], (actual.width * 1920).roundToInt())
-        assertEquals(expected[3], (actual.height * 1080).roundToInt())
+        val actual = productionPlacementGeometry(
+            CameraProfileId.Parking(ParkingView.FrontLeft), uiProfile.displayGeometry,
+            uiProfile.size.toFloat(), uiProfile.frameAspect,
+            uiProfile.x.toFloat() / 100f, uiProfile.y.toFloat() / 100f)
+        val expected = ParkingCameraController.overlayGeometry(
+            display.width, display.height, uiProfile.size.toInt(),
+            uiProfile.x.toFloat() / 100f, uiProfile.y.toFloat() / 100f)
+        assertGeometryEquals(expected, actual)
+        assertEquals(expected[2].toFloat() / expected[3].coerceAtLeast(1), uiProfile.frameAspect, .0001f)
+
+        // The output frame remains fixed 4:3 regardless of the persisted raw-crop aspect.
+        val canonicalPreferences = TestSharedPreferences()
+        DirectCameraCrop.save(canonicalPreferences, profile, DirectCameraCrop.of(
+            0f, 0f, .75f, .25f, DirectCameraCrop.ASPECT_FOUR_THREE))
+        val canonical = readProductionUiState(canonicalPreferences, false, false) { display }
+            .parking.views[ParkingView.FrontLeft]!!.profile
+        assertEquals(canonical.frameAspect, uiProfile.frameAspect, .0001f)
     }
 
-    private fun assertBlindGeometryMatches(width: Int, height: Int, canvasAspect: Float) {
+    private fun assertBlindGeometryMatches(display: CameraDisplayGeometry) {
         val scale = 36
         val aspect = 1.4f
         val x = .65f
         val y = .2f
-        val actual = calculatePlacementFractions(scale.toFloat(), aspect, canvasAspect, x, y)
-        val expectedSize = BlindSpotOverlayController.fitAspect(
-            width * scale / 100, width, height, aspect)
-        assertEquals(expectedSize[0], (actual.width * width).roundToInt())
-        assertEquals(expectedSize[1], (actual.height * height).roundToInt())
-        assertEquals((x * (width - expectedSize[0])).roundToInt(),
-            (actual.left * width).roundToInt())
-        assertEquals((y * (height - expectedSize[1])).roundToInt(),
-            (actual.top * height).roundToInt())
+        val actual = productionPlacementGeometry(
+            CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left), display,
+            scale.toFloat(), aspect, x, y)
+        val expected = BlindSpotOverlayController.overlayGeometry(
+            display.width, display.height, scale, aspect, x, y,
+            display.marginLeft, display.marginTop, display.marginBottom)
+        assertGeometryEquals(expected, actual)
+    }
+
+    private fun assertGeometryEquals(expected: IntArray, actual: ProductionPlacementGeometry) {
+        assertEquals(expected[0], actual.left)
+        assertEquals(expected[1], actual.top)
+        assertEquals(expected[2], actual.width)
+        assertEquals(expected[3], actual.height)
     }
 }

@@ -68,7 +68,7 @@ internal fun BlindScreen(
                     parameters = { BlindParameters(state.selectedGroup, rules, strings, colors, onAction) })
             },
             preview = { CameraProfilePreview(
-                profileId, sourceIndex, profile, state.section, colors, onAction, cameraHost) },
+                profileId, sourceIndex, profile, state.section, strings, colors, onAction, cameraHost) },
         )
     }
 }
@@ -83,15 +83,18 @@ private fun BlindParameters(
 ) {
     NumericSetting(strings.text("Мінімальна швидкість", "Minimum speed"), rules.minimumSpeed,
         strings.text("км/год", "km/h"), colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MinimumSpeed), it)) }, 0f..300f)
+        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MinimumSpeed), it)) }, 0f..300f,
+        identity = NumberTarget.Blind(group, BlindNumber.MinimumSpeed))
     NumericSetting(strings.text("Максимальна швидкість", "Maximum speed"), rules.maximumSpeed,
         strings.text("км/год", "km/h"), colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MaximumSpeed), it)) }, 0f..300f)
+        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MaximumSpeed), it)) }, 0f..300f,
+        identity = NumberTarget.Blind(group, BlindNumber.MaximumSpeed))
     NumericSetting(
         if (group == CameraGroup.Rear) strings.text("Кут різкого повороту", "Sharp-turn angle")
         else strings.text("Мінімальний кут керма", "Minimum steering angle"),
         rules.steeringAngle, "°", colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.SteeringAngle), it)) }, 0f..780f)
+        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.SteeringAngle), it)) }, 0f..780f,
+        identity = NumberTarget.Blind(group, BlindNumber.SteeringAngle))
     if (group == CameraGroup.Rear) {
         SwitchLine(strings.text("Протилежна камера різкого повороту", "Opposite camera on sharp turns"), "",
             rules.sharpTurnEnabled,
@@ -161,7 +164,7 @@ internal fun ParkingScreen(
                     parameters = { ParkingParameters(state, view, viewState, strings, colors, onAction) })
             },
             preview = { CameraProfilePreview(
-                profileId, view.sourceIndex, viewState.profile, state.section,
+                profileId, view.sourceIndex, viewState.profile, state.section, strings,
                 colors, onAction, cameraHost) },
         )
     }
@@ -178,10 +181,12 @@ private fun ParkingParameters(
 ) {
     NumericSetting(strings.text("Відстань спрацювання", "Trigger distance"), viewState.triggerDistance,
         strings.text("см", "cm"), colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(view, ParkingNumber.TriggerDistance), it)) }, 0f..150f)
+        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(view, ParkingNumber.TriggerDistance), it)) }, 0f..150f,
+        identity = NumberTarget.Parking(view, ParkingNumber.TriggerDistance))
     NumericSetting(strings.text("Макс. швидкість • усі види", "Max. speed • all views"), state.maximumSpeed,
         strings.text("км/год", "km/h"), colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(null, ParkingNumber.MaximumSpeed), it)) }, 0f..300f)
+        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(null, ParkingNumber.MaximumSpeed), it)) }, 0f..300f,
+        identity = NumberTarget.Parking(null, ParkingNumber.MaximumSpeed))
     if (view in listOf(ParkingView.FrontLeft, ParkingView.FrontRight, ParkingView.RearRight, ParkingView.RearLeft)) {
         val central = if (view == ParkingView.FrontLeft || view == ParkingView.FrontRight) {
             strings.text("Передня", "Front")

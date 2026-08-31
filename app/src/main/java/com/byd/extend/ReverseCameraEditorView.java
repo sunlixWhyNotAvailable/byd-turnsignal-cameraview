@@ -23,6 +23,7 @@ final class ReverseCameraEditorView extends View {
     private ReverseCameraLayout layout = ReverseCameraLayout.defaults();
     private Listener listener;
     private int selectedCamera = ReverseCameraLayout.REAR_CAMERA_INDEX;
+    private boolean editable = true;
     private float downX;
     private float downY;
     private ReverseCameraLayout.Rect startRect;
@@ -40,6 +41,16 @@ final class ReverseCameraEditorView extends View {
 
     void setListener(Listener value) {
         listener = value;
+    }
+
+    /** Placement is the only Reverse section allowed to consume editor gestures. */
+    void setEditable(boolean value) {
+        editable = value;
+        if (!value) {
+            startRect = null;
+            resizeCorner = 0;
+        }
+        invalidate();
     }
 
     void setLayoutModel(ReverseCameraLayout value) {
@@ -61,6 +72,16 @@ final class ReverseCameraEditorView extends View {
         return selectedCamera;
     }
 
+    /** Synchronizes the Compose-selected pane without dispatching a duplicate change event. */
+    void setSelectedCameraSilently(int cameraIndex) {
+        if (cameraIndex != ReverseCameraLayout.BACKGROUND_PANE_ID
+                && cameraIndex != ReverseCameraLayout.WIDGET_PANE_ID) {
+            layout.pane(cameraIndex);
+        }
+        selectedCamera = cameraIndex;
+        invalidate();
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
@@ -76,6 +97,7 @@ final class ReverseCameraEditorView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (!editable) return false;
         if (getWidth() <= 0 || getHeight() <= 0) return false;
         float x = clamp(event.getX() / getWidth());
         float y = clamp(event.getY() / getHeight());

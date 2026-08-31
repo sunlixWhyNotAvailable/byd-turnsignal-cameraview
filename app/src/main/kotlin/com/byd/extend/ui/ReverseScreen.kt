@@ -1,14 +1,21 @@
 package com.byd.extend.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -63,7 +70,7 @@ internal fun ReverseScreen(
                         parameters = {})
                 },
                 preview = { CameraProfilePreview(
-                    profileId, sourceIndex, profile, state.section, colors, onAction, cameraHost) },
+                    profileId, sourceIndex, profile, state.section, strings, colors, onAction, cameraHost) },
             )
         } else {
             CameraWorkspace(
@@ -88,7 +95,7 @@ internal fun ReverseScreen(
                     }
                 },
                 preview = {
-                    cameraHost(CameraHostSlot(CameraHostKind.ReverseComposition, reverseElement = selected))
+                    ReverseCompositionFrame(state, cameraHost, selected)
                 },
             )
         }
@@ -109,11 +116,15 @@ private fun ReverseCompositionControls(
         onAction(BydExtendUiAction.CommitNumber(NumberTarget.ReverseGeometry(selected, field), value))
     }
     NumericSetting(strings.text("Ширина", "Width"), geometry.width, "%", colors,
-        { commit(ReverseGeometryNumber.Width, it) }, 5f..100f, adjustable = true)
+        { commit(ReverseGeometryNumber.Width, it) }, 5f..100f, adjustable = true,
+        identity = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width))
     NumericSetting(strings.text("Висота", "Height"), geometry.height, "%", colors,
-        { commit(ReverseGeometryNumber.Height, it) }, 5f..100f, adjustable = true)
+        { commit(ReverseGeometryNumber.Height, it) }, 5f..100f, adjustable = true,
+        identity = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height))
     CoordinatePair(geometry.x, geometry.y, colors,
-        { commit(ReverseGeometryNumber.X, it) }, { commit(ReverseGeometryNumber.Y, it) })
+        { commit(ReverseGeometryNumber.X, it) }, { commit(ReverseGeometryNumber.Y, it) },
+        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.X),
+        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y))
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         listOf(
             strings.text("Вліво", "Left") to CommandId.ReverseNudgeLeft,
@@ -139,6 +150,23 @@ private fun ReverseCompositionControls(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
         ActionButton(strings.text("Скинути вигляд", "Reset layout"), colors, Modifier.width(260.dp)) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout))
+        }
+    }
+}
+
+@Composable
+private fun ReverseCompositionFrame(
+    state: ReverseUiState,
+    cameraHost: @Composable (CameraHostSlot) -> Unit,
+    selected: ReverseElement,
+) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        val aspect = state.displayGeometry.aspect.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+        val width = minOf(maxWidth, maxHeight * aspect)
+        Box(Modifier.size(width, width / aspect).clip(RoundedCornerShape(7.dp))) {
+            cameraHost(CameraHostSlot(CameraHostKind.ReverseComposition,
+                reverseElement = selected,
+                editable = state.section == CameraSection.Placement))
         }
     }
 }

@@ -290,14 +290,19 @@ final class DirectCameraCrop {
                     ? raw.centered() : defaultCorrectedFor(profile, raw);
         }
         try {
+            int correctedAspect = readCorrectedAspect(preferences, prefix + "aspect", -1);
+            int aspect = correctedAspect >= ASPECT_FOUR_THREE
+                    ? correctedAspect : raw.aspectMode;
             DirectCameraCrop stored = normalized(
                     preferences.getFloat(prefix + "left", raw.left),
                     preferences.getFloat(prefix + "top", raw.top),
                     preferences.getFloat(prefix + "width", raw.width),
                     preferences.getFloat(prefix + "height", raw.height),
-                    raw.aspectMode, 0, CameraRotation.MODE_FIT, LEGACY_MIN_SIZE);
+                    aspect, 0, CameraRotation.MODE_FIT, LEGACY_MIN_SIZE);
             DirectCameraCrop migrated = migrateActive(stored);
-            DirectCameraCrop result = preserveCenterAndAspect(migrated, raw);
+            DirectCameraCrop result = correctedAspect == ASPECT_FREE
+                    ? independentCorrected(migrated, raw)
+                    : preserveCenterAndAspect(migrated, raw);
             if (migrated != stored) saveCorrected(preferences, profile, result);
             return result;
         } catch (IllegalArgumentException invalidActiveValue) {
@@ -313,14 +318,23 @@ final class DirectCameraCrop {
         String prefix = parkingPrefix(profile) + "corrected_";
         if (!preferences.contains(prefix + "x")) return raw.centered();
         try {
+            int correctedAspect = readCorrectedAspect(preferences, prefix + "aspect", -1);
+            int aspect = correctedAspect >= ASPECT_FOUR_THREE
+                    ? correctedAspect : raw.aspectMode;
             DirectCameraCrop stored = normalized(
                     preferences.getFloat(prefix + "x", raw.left),
                     preferences.getFloat(prefix + "y", raw.top),
                     preferences.getFloat(prefix + "width", raw.width),
                     preferences.getFloat(prefix + "height", raw.height),
-                    raw.aspectMode, raw.rotationDegrees, raw.rotationMode, LEGACY_MIN_SIZE);
+                    aspect,
+                    correctedAspect == ASPECT_FREE ? 0 : raw.rotationDegrees,
+                    correctedAspect == ASPECT_FREE
+                            ? CameraRotation.MODE_FIT : raw.rotationMode,
+                    LEGACY_MIN_SIZE);
             DirectCameraCrop migrated = migrateActive(stored);
-            DirectCameraCrop result = preserveCenterAndAspect(migrated, raw);
+            DirectCameraCrop result = correctedAspect == ASPECT_FREE
+                    ? independentCorrected(migrated, raw)
+                    : preserveCenterAndAspect(migrated, raw);
             // Reading a new RAW aspect/output must not persist a Correction-stage edit.
             if (migrated != stored) saveCorrected(preferences, profile, result);
             return result;
@@ -343,6 +357,157 @@ final class DirectCameraCrop {
         SharedPreferences.Editor editor = preferences.edit();
         writeCorrected(editor, profile, crop);
         editor.apply();
+    }
+
+    /** Saves a corrected-stage geometry edit and records its independent FREE aspect atomically. */
+    static DirectCameraCrop saveCorrectedGeometryEdit(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        if (preferences == null || profile == null || crop == null) {
+            throw new IllegalArgumentException("crop required");
+        }
+        DirectCameraCrop accepted = requireUiGeometry(crop.left, crop.top, crop.width,
+                crop.height, crop.rotationDegrees, crop.rotationMode)
+                .withMirrorHorizontally(crop.mirrorHorizontally);
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCorrected(editor, profile, accepted);
+        editor.putInt(correctedAspectKey(profile), ASPECT_FREE);
+        editor.apply();
+        return accepted;
+    }
+
+    /** Parking equivalent of {@link #saveCorrectedGeometryEdit(SharedPreferences, CameraProfile, DirectCameraCrop)}. */
+    static DirectCameraCrop saveCorrectedGeometryEdit(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        if (preferences == null || profile == null || crop == null) {
+            throw new IllegalArgumentException("crop required");
+        }
+        DirectCameraCrop accepted = requireUiGeometry(crop.left, crop.top, crop.width,
+                crop.height, crop.rotationDegrees, crop.rotationMode)
+                .withMirrorHorizontally(crop.mirrorHorizontally);
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCorrected(editor, profile, accepted);
+        editor.putInt(correctedAspectKey(profile), ASPECT_FREE);
+        editor.apply();
+        return accepted;
+    }
+
+    /**
+     * Saves the first explicit RAW geometry edit without reshaping the other dimension.
+     * A fixed-aspect RAW crop is atomically switched to FREE while its effective corrected ROI
+     * is pinned as independent FREE geometry.
+     */
+    static DirectCameraCrop saveRawGeometryEdit(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        if (preferences == null || profile == null || crop == null) {
+            throw new IllegalArgumentException("crop required");
+        }
+        DirectCameraCrop accepted = requireUiGeometry(crop.left, crop.top, crop.width,
+                crop.height, crop.rotationDegrees, crop.rotationMode)
+                .withMirrorHorizontally(crop.mirrorHorizontally);
+        DirectCameraCrop priorRaw = load(preferences, profile);
+        DirectCameraCrop priorCorrected = loadCorrected(preferences, profile, priorRaw);
+        SharedPreferences.Editor editor = preferences.edit();
+        if (priorRaw.aspectMode != ASPECT_FREE) {
+            DirectCameraCrop pinned = requireUiGeometry(priorCorrected.left,
+                    priorCorrected.top, priorCorrected.width, priorCorrected.height,
+                    priorCorrected.rotationDegrees, priorCorrected.rotationMode)
+                    .withMirrorHorizontally(priorCorrected.mirrorHorizontally);
+            writeCorrected(editor, profile, pinned);
+            editor.putInt(correctedAspectKey(profile), ASPECT_FREE);
+        }
+        write(editor, profile, accepted);
+        editor.apply();
+        return accepted;
+    }
+
+    /** Alias kept for host callers that describe the operation as an atomic save. */
+    static DirectCameraCrop saveRawGeometry(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        return saveRawGeometryEdit(preferences, profile, crop);
+    }
+
+    /** Parking equivalent of {@link #saveRawGeometryEdit(SharedPreferences, CameraProfile, DirectCameraCrop)}. */
+    static DirectCameraCrop saveRawGeometryEdit(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        if (preferences == null || profile == null || crop == null) {
+            throw new IllegalArgumentException("crop required");
+        }
+        DirectCameraCrop accepted = requireUiGeometry(crop.left, crop.top, crop.width,
+                crop.height, crop.rotationDegrees, crop.rotationMode)
+                .withMirrorHorizontally(crop.mirrorHorizontally);
+        DirectCameraCrop priorRaw = load(preferences, profile);
+        DirectCameraCrop priorCorrected = loadCorrected(preferences, profile, priorRaw);
+        SharedPreferences.Editor editor = preferences.edit();
+        if (priorRaw.aspectMode != ASPECT_FREE) {
+            DirectCameraCrop pinned = requireUiGeometry(priorCorrected.left,
+                    priorCorrected.top, priorCorrected.width, priorCorrected.height,
+                    priorCorrected.rotationDegrees, priorCorrected.rotationMode)
+                    .withMirrorHorizontally(priorCorrected.mirrorHorizontally);
+            writeCorrected(editor, profile, pinned);
+            editor.putInt(correctedAspectKey(profile), ASPECT_FREE);
+        }
+        write(editor, profile, accepted);
+        editor.apply();
+        return accepted;
+    }
+
+    /** Parking alias kept for host callers that describe the operation as an atomic save. */
+    static DirectCameraCrop saveRawGeometry(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        return saveRawGeometryEdit(preferences, profile, crop);
+    }
+
+    /** Strict normalized geometry for UI numeric and gesture edits. */
+    static DirectCameraCrop requireUiGeometry(
+            float left, float top, float width, float height,
+            int rotationDegrees, int rotationMode) {
+        SourceCropPolicy.requireValid(left, top, width, height);
+        if (!CameraRotation.isValid(rotationDegrees)
+                || !CameraRotation.isValidMode(rotationMode)) {
+            throw new IllegalArgumentException("invalid rotation");
+        }
+        if (rotationMode == CameraRotation.MODE_ALIGNED && rotationDegrees != 0
+                && !alignedFits(left, top, width, height, rotationDegrees)) {
+            throw new IllegalArgumentException("rotated crop exceeds source bounds");
+        }
+        return new DirectCameraCrop(left, top, width, height, ASPECT_FREE,
+                rotationDegrees, rotationMode);
+    }
+
+    /** Produces a FREE geometry edit while retaining output transform and mirror. */
+    DirectCameraCrop withIndependentGeometry(
+            float left, float top, float width, float height) {
+        DirectCameraCrop result = requireUiGeometry(left, top, width, height,
+                rotationDegrees, rotationMode);
+        return result.withMirrorHorizontally(mirrorHorizontally);
+    }
+
+    DirectCameraCrop moveIndependent(float dx, float dy) {
+        return withIndependentGeometry(left + dx, top + dy, width, height);
+    }
+
+    DirectCameraCrop resizeIndependent(int edges, float dx, float dy) {
+        boolean dragLeft = (edges & EDGE_LEFT) != 0;
+        boolean dragRight = (edges & EDGE_RIGHT) != 0;
+        boolean dragTop = (edges & EDGE_TOP) != 0;
+        boolean dragBottom = (edges & EDGE_BOTTOM) != 0;
+        if (!(dragLeft || dragRight || dragTop || dragBottom)) {
+            return moveIndependent(dx, dy);
+        }
+        float nextLeft = left + (dragLeft ? dx : 0.0f);
+        float nextTop = top + (dragTop ? dy : 0.0f);
+        float nextRight = right() + (dragRight ? dx : 0.0f);
+        float nextBottom = bottom() + (dragBottom ? dy : 0.0f);
+        return withIndependentGeometry(nextLeft, nextTop,
+                nextRight - nextLeft, nextBottom - nextTop);
+    }
+
+    DirectCameraCrop withRotationStrict(int degrees) {
+        int safeDegrees = CameraRotation.clamp(degrees);
+        DirectCameraCrop strict = requireUiGeometry(left, top, width, height,
+                safeDegrees, rotationMode);
+        return new DirectCameraCrop(left, top, width, height, aspectMode,
+                strict.rotationDegrees, rotationMode, mirrorHorizontally);
     }
 
     static void writeCorrected(
@@ -378,6 +543,14 @@ final class DirectCameraCrop {
         return raw.withGeometry(geometry);
     }
 
+    /** Keeps a FREE corrected ROI exact when RAW output rotation changes. */
+    private static DirectCameraCrop independentCorrected(
+            DirectCameraCrop corrected, DirectCameraCrop raw) {
+        return new DirectCameraCrop(corrected.left, corrected.top,
+                corrected.width, corrected.height, ASPECT_FREE,
+                raw.rotationDegrees, raw.rotationMode, raw.mirrorHorizontally);
+    }
+
     DirectCameraCrop withGeometry(DirectCameraCrop geometry) {
         return new DirectCameraCrop(
                 geometry.left, geometry.top, geometry.width, geometry.height,
@@ -410,6 +583,25 @@ final class DirectCameraCrop {
     private static String correctedPrefix(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         return "direct_crop_v3_corrected_" + profile.id + "_";
+    }
+
+    static String correctedAspectKey(CameraProfile profile) {
+        return correctedPrefix(profile) + "aspect";
+    }
+
+    static String correctedAspectKey(ParkingCameraProfile profile) {
+        return parkingPrefix(profile) + "corrected_aspect";
+    }
+
+    private static int readCorrectedAspect(
+            SharedPreferences preferences, String key, int fallback) {
+        if (!preferences.contains(key)) return fallback;
+        try {
+            int value = preferences.getInt(key, fallback);
+            return value >= ASPECT_FOUR_THREE && value <= ASPECT_FREE ? value : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private static boolean hasRawPreferences(
@@ -790,5 +982,20 @@ final class DirectCameraCrop {
     private static float clamp(float value, float minimum, float maximum) {
         if (maximum < minimum) return maximum;
         return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static boolean alignedFits(
+            float left, float top, float width, float height, int rotationDegrees) {
+        double radians = Math.toRadians(rotationDegrees);
+        double cosine = Math.abs(Math.cos(radians));
+        double sine = Math.abs(Math.sin(radians));
+        double pixelWidth = width * SOURCE_WIDTH;
+        double pixelHeight = height * SOURCE_HEIGHT;
+        double extentX = cosine * pixelWidth / 2.0d + sine * pixelHeight / 2.0d;
+        double extentY = sine * pixelWidth / 2.0d + cosine * pixelHeight / 2.0d;
+        double centerX = (left + width / 2.0d) * SOURCE_WIDTH;
+        double centerY = (top + height / 2.0d) * SOURCE_HEIGHT;
+        return extentX <= centerX && extentX <= SOURCE_WIDTH - centerX
+                && extentY <= centerY && extentY <= SOURCE_HEIGHT - centerY;
     }
 }

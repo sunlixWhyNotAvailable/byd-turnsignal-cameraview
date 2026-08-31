@@ -14,6 +14,21 @@ import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
+    public void reverseFallbackSourceKeepsCentralIdentityAndTracksSideConfigRole() {
+        for (int mode : new int[]{ReverseSideSelectorView.MODE_REAR,
+                ReverseSideSelectorView.MODE_FRONT}) {
+            assertFalse(ReverseCameraCompositionView.fallbackSourceIsFront(1, mode));
+            assertTrue(ReverseCameraCompositionView.fallbackSourceIsFront(4, mode));
+        }
+        for (int source : new int[]{2, 3}) {
+            assertFalse(ReverseCameraCompositionView.fallbackSourceIsFront(
+                    source, ReverseSideSelectorView.MODE_REAR));
+            assertTrue(ReverseCameraCompositionView.fallbackSourceIsFront(
+                    source, ReverseSideSelectorView.MODE_FRONT));
+        }
+    }
+
+    @Test
     public void headerUsesLastAdbResultAndActualWeatherPermission() {
         com.byd.extend.ui.HeaderUiState header = CameraProbeActivity.productionHeader(
                 LocalAdbClient.AccessState.Status.OK, true, false);

@@ -139,11 +139,13 @@ private fun CameraOutputSettings(state: SettingsUiState, strings: UiStrings, col
         NumericSetting(strings.text("Заокруглення камер", "Camera corner radius"),
             state.cameraOutput.cornerRadius, "dp", colors,
             { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Output(OutputNumber.CornerRadius), it)) },
-            0f..48f, adjustable = true, slider = true, sliderDots = true)
+            0f..48f, adjustable = true, slider = true, sliderDots = true,
+            identity = NumberTarget.Output(OutputNumber.CornerRadius))
         NumericSetting(strings.text("Прозорість камер", "Camera transparency"),
             state.cameraOutput.transparency, "%", colors,
             { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Output(OutputNumber.Transparency), it)) },
-            0f..100f, adjustable = true, slider = true)
+            0f..100f, adjustable = true, slider = true,
+            identity = NumberTarget.Output(OutputNumber.Transparency))
     }
 }
 

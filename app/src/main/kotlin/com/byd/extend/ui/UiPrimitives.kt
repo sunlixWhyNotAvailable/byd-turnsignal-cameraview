@@ -317,6 +317,7 @@ internal fun ChoiceField(
     onSelect: (Int) -> Unit,
     colors: UiPalette,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -332,7 +333,7 @@ internal fun ChoiceField(
             val menuWidth = maxWidth
             Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(6.dp))
                 .border(1.dp, colors.accent, RoundedCornerShape(6.dp)).background(selectedBackground)
-                .clickable(enabled = choices.isNotEmpty(), role = Role.Button) {
+                .clickable(enabled = enabled && choices.isNotEmpty(), role = Role.Button) {
                     focusManager.clearFocus(); expanded = true
                 }.padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center) {
@@ -348,7 +349,7 @@ internal fun ChoiceField(
                     choices.forEachIndexed { index, option ->
                         Box(Modifier.fillMaxWidth().height(40.dp)
                             .background(if (index == safeSelected) selectedBackground else Color.Transparent)
-                            .clickable(role = Role.Button) { onSelect(index); expanded = false },
+                            .clickable(enabled = enabled, role = Role.Button) { onSelect(index); expanded = false },
                             contentAlignment = Alignment.Center) {
                             Text(option, color = if (index == safeSelected) selectedContent else colors.text,
                                 fontSize = 14.sp,
@@ -384,18 +385,25 @@ internal fun NumericSetting(
     compactSuffix: Boolean = false,
     beforeInput: (@Composable () -> Unit)? = null,
     afterInput: (@Composable () -> Unit)? = null,
+    identity: Any = Unit,
 ) {
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    var draft by remember(value) { mutableStateOf(value) }
+    var draft by remember(identity, value) { mutableStateOf(value) }
     var focused by remember { mutableStateOf(false) }
-    var invalid by remember { mutableStateOf(false) }
-    var sliderValue by remember(value) { mutableStateOf((value.toFloatOrNull() ?: range.start).coerceIn(range)) }
+    var invalid by remember(identity, value) { mutableStateOf(false) }
+    var sliderValue by remember(identity, value) {
+        mutableStateOf((value.toFloatOrNull() ?: range.start).coerceIn(range))
+    }
+    var suppressBlurCommit by remember(identity) { mutableStateOf(false) }
     fun commit(raw: String = draft) {
-        val parsed = raw.toFloatOrNull()
-        invalid = parsed == null || !parsed.isFinite() || parsed !in range
-        if (!invalid) onCommit(raw) else draft = value
+        val result = NumericDraftPolicy.resolve(raw, value, range)
+        invalid = !result.valid
+        draft = result.draft
+        sliderValue = result.slider.coerceIn(range)
+        suppressBlurCommit = true
+        if (result.valid) onCommit(raw)
     }
     fun adjust(delta: Float) {
         val next = ((draft.toFloatOrNull() ?: range.start) + delta).coerceIn(range)
@@ -431,6 +439,7 @@ internal fun NumericSetting(
                 (range.start < 0 || !text.startsWith("-"))) {
                 draft = text
                 invalid = false
+                suppressBlurCommit = false
             }
         }, enabled = enabled, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
@@ -448,8 +457,9 @@ internal fun NumericSetting(
                         true
                     } else false
                 }.onFocusChanged {
-                    if (focused && !it.isFocused && draft != value) commit()
-                    focused = it.isFocused
+            if (focused && !it.isFocused && !suppressBlurCommit && draft != value) commit()
+            if (!it.isFocused) suppressBlurCommit = false
+            focused = it.isFocused
                 }.clip(RoundedCornerShape(7.dp)).background(colors.field)
                 .border(1.dp, if (invalid) colors.red else colors.borderStrong, RoundedCornerShape(7.dp))
                 .semantics { contentDescription = title.replace('\n', ' ') }.padding(horizontal = 11.dp),

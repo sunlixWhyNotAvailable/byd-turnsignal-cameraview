@@ -92,7 +92,8 @@ public final class DiagnosticLogExporterTest {
                 "dumpsys dropbox --print 2>/dev/null | tail -c 2097152",
                 "for file in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 3); do printf '\\n--- %s ---\\n' \"$file\"; tail -c 524288 \"$file\" 2>/dev/null; done",
                 "for prop in ro.build.version.release ro.build.version.incremental ro.build.version.security_patch ro.build.id ro.build.display.id ro.product.board ro.board.platform ro.hardware ro.boot.hardware ro.product.cpu.abi ro.product.cpu.abilist; do printf '%s=' \"$prop\"; getprop \"$prop\"; done",
-                "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20"
+                "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20",
+                "tail -c 1048576 /data/local/tmp/bydextend_avm.log 2>/dev/null"
         };
         assertArrayEquals(expected, DiagnosticLogExporter.fixedCommands());
 
@@ -172,6 +173,52 @@ public final class DiagnosticLogExporterTest {
                 "\"entry\":\"system/dropbox-crash.txt\",\"status\":\"error\""));
         assertTrue(manifest.contains("\"error\":\"shell_exit_13\""));
         assertEquals(DiagnosticLogExporter.fixedCommands().length, commands.size());
+    }
+
+    @Test
+    public void includesIsolatedAvmLogInArchiveAndManifest() throws Exception {
+        String avmCommand = "tail -c 1048576 " + StockAvmShellProtocol.LOG_PATH + " 2>/dev/null";
+        String avmLog = "stock_avm_stage request_id=7 stage=initDisplay\n";
+        File archive = DiagnosticLogExporter.export(
+                temporary.newFolder("cache-avm"),
+                new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                identity(),
+                command -> command.equals(avmCommand)
+                        ? DiagnosticLogExporter.CommandResult.success(avmLog) : missing(),
+                5100L);
+
+        assertEquals(avmLog, readEntry(archive, "system/bydextend_avm.log"));
+        String manifest = readEntry(archive, "manifest.json");
+        assertTrue(manifest.contains(
+                "\"entry\":\"system/bydextend_avm.log\",\"status\":\"included\""));
+        assertEquals(avmLog.getBytes(StandardCharsets.UTF_8).length,
+                entrySize(archive, "system/bydextend_avm.log"));
+    }
+
+    @Test
+    public void unavailableAvmLogDoesNotPreventDiagnosticArchive() throws Exception {
+        String avmCommand = "tail -c 1048576 " + StockAvmShellProtocol.LOG_PATH + " 2>/dev/null";
+        DiagnosticLogExporter.CommandResult[] results = {
+                DiagnosticLogExporter.CommandResult.success(""),
+                DiagnosticLogExporter.CommandResult.failure("", "shell_exit_1", 1)
+        };
+        String[] statuses = {"missing", "error"};
+        for (int i = 0; i < results.length; i++) {
+            DiagnosticLogExporter.CommandResult result = results[i];
+            File archive = DiagnosticLogExporter.export(
+                    temporary.newFolder("cache-avm-unavailable-" + i),
+                    new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                    identity(),
+                    command -> command.equals(avmCommand) ? result : missing(),
+                    5150L + i);
+
+            assertTrue(archive.isFile());
+            assertTrue(readEntry(archive, "manifest.json").contains(
+                    "\"entry\":\"system/bydextend_avm.log\",\"status\":\"" + statuses[i] + "\""));
+            try (ZipFile zip = new ZipFile(archive)) {
+                assertTrue(zip.getEntry("system/bydextend_avm.log") == null);
+            }
+        }
     }
 
     @Test

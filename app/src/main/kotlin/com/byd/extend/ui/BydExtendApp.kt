@@ -178,7 +178,8 @@ private fun SignalsScreen(
                     }
                     NumericSetting(title, value, suffix, colors,
                         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Guard(field), it)) }, range,
-                        enabled = state.guard.operation.enabled && !state.guard.operation.pending)
+                        enabled = state.guard.operation.enabled && !state.guard.operation.pending,
+                        identity = NumberTarget.Guard(field))
                 }
             }
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -199,6 +200,7 @@ private fun SignalsScreen(
                         strings.text("хв", "min"), colors,
                         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.WeatherInterval, it)) }, 5f..180f,
                         enabled = state.weather.enabled && !state.weather.operation.pending,
+                        identity = NumberTarget.WeatherInterval,
                         compactSuffix = true,
                         beforeInput = {
                             ActionButton(strings.text("Оновити зараз", "Refresh now"), colors, Modifier.width(170.dp),

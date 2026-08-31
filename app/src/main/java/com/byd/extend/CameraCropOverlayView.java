@@ -127,10 +127,10 @@ final class CameraCropOverlayView extends View {
                         int degrees = Math.round((float) Math.toDegrees(Math.atan2(
                                 event.getY() - startRect.centerY(),
                                 event.getX() - startRect.centerX())) + 90.0f);
-                        return gestureStart.withRotation(normalizeDegrees(degrees));
+                        return gestureStart.withRotationStrict(normalizeDegrees(degrees));
                     }
                     if (moving) {
-                        return gestureStart.move(
+                        return gestureStart.moveIndependent(
                                 (event.getX() - downX) / getWidth(),
                                 (event.getY() - downY) / getHeight());
                     }
@@ -141,7 +141,7 @@ final class CameraCropOverlayView extends View {
                             - Math.sin(radians) * dyPixels) / getWidth();
                     float localDy = (float) (Math.sin(radians) * dxPixels
                             + Math.cos(radians) * dyPixels) / getHeight();
-                    return gestureStart.resize(dragEdges, localDx, localDy);
+                    return gestureStart.resizeIndependent(dragEdges, localDx, localDy);
                 });
                 if (crop == previous) return true;
                 invalidate();

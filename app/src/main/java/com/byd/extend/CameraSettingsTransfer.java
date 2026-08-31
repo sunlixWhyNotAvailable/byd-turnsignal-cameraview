@@ -191,11 +191,13 @@ public final class CameraSettingsTransfer {
                     BlindSpotOverlayController.readScale(p, profile),
                     BlindSpotOverlayController.readTarget(p, profile),
                     BlindSpotOverlayController.readFrameAspect(p, profile, raw.outputAspect()));
+            addOptionalCorrectedAspect(out, p, DirectCameraCrop.correctedAspectKey(profile));
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             DirectCameraCrop raw = DirectCameraCrop.load(p, profile);
             DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(p, profile, raw);
             addParking(out, p, profile, raw, corrected, CameraDewarpConfig.loadForParking(p, profile));
+            addOptionalCorrectedAspect(out, p, DirectCameraCrop.correctedAspectKey(profile));
         }
 
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(p);
@@ -274,6 +276,17 @@ public final class CameraSettingsTransfer {
             case 0: return crop.left; case 1: return crop.top; case 2: return crop.width; case 3: return crop.height;
             case 4: return crop.aspectMode; case 5: return crop.rotationDegrees; case 6: return crop.rotationMode;
             case 7: return crop.mirrorHorizontally; default: throw new IllegalArgumentException("crop field");
+        }
+    }
+
+    private static void addOptionalCorrectedAspect(
+            Map<String, Object> out, SharedPreferences preferences, String key) {
+        if (!preferences.contains(key)) return;
+        try {
+            int value = preferences.getInt(key, -1);
+            if (value == DirectCameraCrop.ASPECT_FREE) out.put(key, value);
+        } catch (RuntimeException ignored) {
+            // Invalid optional markers are omitted from exports and fail closed on import.
         }
     }
 
@@ -442,14 +455,26 @@ public final class CameraSettingsTransfer {
 
     private static void requireCorrected(Map<String, Object> values, String prefix,
             CameraProfile profile, boolean parking) {
-        requireCorrectedGeometry(values, prefix, profile == null ? DirectCameraCrop.ASPECT_FREE : integer(values,
-                DirectCameraCrop.preferenceKey(profile, 4)), profile == null ? 0 : integer(values,
+        int rawAspect = profile == null ? DirectCameraCrop.ASPECT_FREE : integer(values,
+                DirectCameraCrop.preferenceKey(profile, 4));
+        String marker = prefix + "aspect";
+        if (values.containsKey(marker)
+                && integer(values, marker) != DirectCameraCrop.ASPECT_FREE) {
+            throw new IllegalArgumentException("corrected geometry marker must be FREE");
+        }
+        int aspect = values.containsKey(marker) ? integer(values, marker) : rawAspect;
+        requireCorrectedGeometry(values, prefix, aspect, profile == null ? 0 : integer(values,
                 DirectCameraCrop.preferenceKey(profile, 5)), profile == null ? 0 : integer(values,
                 DirectCameraCrop.preferenceKey(profile, 6)));
     }
 
     private static void requireParkingCrop(Map<String, Object> values, String prefix, boolean corrected) {
         if (corrected) {
+            String marker = prefix + "aspect";
+            if (values.containsKey(marker)
+                    && integer(values, marker) != DirectCameraCrop.ASPECT_FREE) {
+                throw new IllegalArgumentException("corrected geometry marker must be FREE");
+            }
             DirectCameraCrop.requireNormalized(number(values, prefix + "x"), number(values, prefix + "y"),
                     number(values, prefix + "width"), number(values, prefix + "height"),
                     DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT);
@@ -511,6 +536,7 @@ public final class CameraSettingsTransfer {
             for (int field = 0; field < 8; field++) keys.add(DirectCameraCrop.preferenceKey(profile, field));
             String corrected = "direct_crop_v3_corrected_" + profile.id + "_";
             keys.add(corrected + "left"); keys.add(corrected + "top"); keys.add(corrected + "width"); keys.add(corrected + "height");
+            keys.add(corrected + "aspect");
             keys.add(BlindSpotOverlayController.positionKey(profile, false)); keys.add(BlindSpotOverlayController.positionKey(profile, true));
             keys.add(BlindSpotOverlayController.scaleKey(profile)); keys.add(BlindSpotOverlayController.targetKey(profile));
             keys.add(BlindSpotOverlayController.frameAspectKey(profile));
@@ -522,6 +548,7 @@ public final class CameraSettingsTransfer {
             for (int field = 0; field < 8; field++) keys.add(parkingCropKey(profile, field));
             String c = "parking_direct_crop_v1_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_corrected_";
             keys.add(c + "x"); keys.add(c + "y"); keys.add(c + "width"); keys.add(c + "height");
+            keys.add(c + "aspect");
             addDewarpKeys(keys, "camera_dewarp_v3_parking_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_");
         }
         for (int index : new int[]{1, 2, 3}) {
@@ -551,7 +578,9 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key) {
         return key != null && (key.startsWith("reverse_camera_front_1_")
-                || key.startsWith("camera_dewarp_v3_reverse_front_1_"));
+                || key.startsWith("camera_dewarp_v3_reverse_front_1_")
+                || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
+                || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
     }
 
     private static void addDewarpKeys(Set<String> keys, String prefix) {
@@ -613,6 +642,10 @@ public final class CameraSettingsTransfer {
         if (value instanceof Number) {
             double n = ((Number) value).doubleValue();
             if (!Double.isFinite(n)) throw new IllegalArgumentException("nonfinite legacy value");
+            if (isCorrectedAspectMarker(key)
+                    && n != DirectCameraCrop.ASPECT_FREE) {
+                throw new IllegalArgumentException("corrected geometry marker must be FREE");
+            }
             if (key.contains("speed") || key.equals("max_speed_kph")) requireRange(n, 0, 300, key);
             if (key.contains("distance_cm")) requireRange(n, 0, 150, key);
             if (key.contains("angle") || key.endsWith("_deg")) requireRange(n, 0, 780, key);
@@ -705,6 +738,12 @@ public final class CameraSettingsTransfer {
                 || key.equals("music_visualizer_enabled") || key.equals("parking_any_enabled")
                 || key.equals("weather_enabled") || key.equals("weather_interval_minutes")
                 || key.equals("auto_start_enabled");
+    }
+
+    private static boolean isCorrectedAspectMarker(String key) {
+        return key != null && (key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
+                || key.startsWith("parking_direct_crop_v1_")
+                && key.endsWith("_corrected_aspect"));
     }
 
     private static Object readLegacyValue(Element element) {

@@ -339,11 +339,17 @@ public final class CameraCalibrationPresetTest {
                 TestSharedPreferences preferences = new TestSharedPreferences();
                 seedDirectFixed(preferences, profile);
                 Map<String, ?> before = new HashMap<>(preferences.getAll());
+                DirectCameraCrop beforeCorrected = DirectCameraCrop.loadCorrected(
+                        preferences, profile, DirectCameraCrop.load(preferences, profile));
 
                 CameraCalibrationPreset.resetCameraStage(preferences, profile, stage);
 
                 assertOnlyChanged(before, preferences.getAll(), directChangedKeys(profile, stage));
                 assertFixedDirectStage(preferences, profile, stage);
+                if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+                    assertGeometry(beforeCorrected, DirectCameraCrop.loadCorrected(
+                            preferences, profile, DirectCameraCrop.load(preferences, profile)));
+                }
             }
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
@@ -353,13 +359,208 @@ public final class CameraCalibrationPresetTest {
                 TestSharedPreferences preferences = new TestSharedPreferences();
                 seedDirectFixed(preferences, profile);
                 Map<String, ?> before = new HashMap<>(preferences.getAll());
+                DirectCameraCrop beforeCorrected = DirectCameraCrop.loadCorrected(
+                        preferences, profile, DirectCameraCrop.load(preferences, profile));
 
                 CameraCalibrationPreset.resetParkingStage(preferences, profile, stage);
 
                 assertOnlyChanged(before, preferences.getAll(), parkingChangedKeys(profile, stage));
                 assertFixedParkingStage(preferences, profile, stage);
+                if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+                    assertGeometry(beforeCorrected, DirectCameraCrop.loadCorrected(
+                            preferences, profile, DirectCameraCrop.load(preferences, profile)));
+                }
             }
         }
+    }
+
+    @Test
+    public void originalAndOutputResetsPreserveCorrectedFreeMarkerCorrectionClearsIt() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        DirectCameraCrop.save(preferences, profile, DirectCameraCrop.of(
+                0.12f, 0.13f, 0.41f, 0.40f, DirectCameraCrop.ASPECT_FREE,
+                21, CameraRotation.MODE_ALIGNED));
+        DirectCameraCrop corrected = DirectCameraCrop.requireUiGeometry(
+                0.22f, 0.18f, 0.33f, 0.37f, 21, CameraRotation.MODE_ALIGNED);
+        DirectCameraCrop.saveCorrectedGeometryEdit(preferences, profile, corrected);
+        DirectCameraCrop before = DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile));
+
+        CameraCalibrationPreset.resetCameraStage(
+                preferences, profile, CameraCalibrationPreset.Stage.ORIGINAL);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        DirectCameraCrop afterOriginal = DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile));
+        assertGeometry(before, afterOriginal);
+
+        CameraCalibrationPreset.resetCameraStage(
+                preferences, profile, CameraCalibrationPreset.Stage.OUTPUT);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        DirectCameraCrop afterOutput = DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile));
+        assertGeometry(before, afterOutput);
+
+        CameraCalibrationPreset.resetCameraStage(
+                preferences, profile, CameraCalibrationPreset.Stage.CORRECTION);
+        assertFalse(preferences.contains(DirectCameraCrop.correctedAspectKey(profile)));
+    }
+
+    @Test
+    public void savedSlotPreservesNewFreeMarkerAndOldSlotClearsIt() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        DirectCameraCrop.save(preferences, profile, DirectCameraCrop.defaultFor(profile));
+        DirectCameraCrop.saveCorrectedGeometryEdit(preferences, profile,
+                DirectCameraCrop.requireUiGeometry(
+                        0.18f, 0.19f, 0.36f, 0.38f, 9, CameraRotation.MODE_ALIGNED));
+        CameraCalibrationPreset.saveCamera(preferences, profile);
+        String slotPrefix = "camera_calibration_preset_v1_" + profile.wireName + "_";
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(slotPrefix + "corrected_aspect", -1));
+
+        DirectCameraCrop.saveCorrected(preferences, profile,
+                DirectCameraCrop.defaultCorrectedFor(profile,
+                        DirectCameraCrop.load(preferences, profile)));
+        assertTrue(CameraCalibrationPreset.loadCamera(preferences, profile));
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+
+        // Simulate an old slot with no marker; loading it removes any stale active marker.
+        preferences.remove(slotPrefix + "corrected_aspect");
+        assertTrue(CameraCalibrationPreset.loadCamera(preferences, profile));
+        assertFalse(preferences.contains(DirectCameraCrop.correctedAspectKey(profile)));
+    }
+
+    @Test
+    public void originalResetPinsLegacyCorrectedWhenFixedRawBecomesFree() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        DirectCameraCrop fixedRaw = DirectCameraCrop.of(
+                0.24f, 0.22f, 0.32f, 0.30f,
+                DirectCameraCrop.ASPECT_FOUR_THREE, 0, CameraRotation.MODE_FIT);
+        DirectCameraCrop legacyCorrected = DirectCameraCrop.of(
+                0.31f, 0.27f, 0.25f, 0.28f,
+                DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(preferences, profile, fixedRaw);
+        DirectCameraCrop.saveCorrected(preferences, profile, legacyCorrected);
+        DirectCameraCrop before = DirectCameraCrop.loadCorrected(
+                preferences, profile, fixedRaw);
+        assertFalse(preferences.contains(DirectCameraCrop.correctedAspectKey(profile)));
+
+        CameraCalibrationPreset.resetCameraStage(
+                preferences, profile, CameraCalibrationPreset.Stage.ORIGINAL);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        DirectCameraCrop after = DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile));
+        assertGeometry(before, after);
+
+        ParkingCameraProfile parking = ParkingCameraProfile.of(ParkingCameraProfile.FRONT);
+        TestSharedPreferences parkingPreferences = new TestSharedPreferences();
+        DirectCameraCrop parkingRaw = DirectCameraCrop.of(
+                0.20f, 0.20f, 0.35f, 0.33f,
+                DirectCameraCrop.ASPECT_FOUR_THREE, 0, CameraRotation.MODE_FIT);
+        DirectCameraCrop.save(parkingPreferences, parking, parkingRaw);
+        DirectCameraCrop.saveCorrected(parkingPreferences, parking, legacyCorrected);
+        DirectCameraCrop parkingBefore = DirectCameraCrop.loadCorrected(
+                parkingPreferences, parking, parkingRaw);
+        CameraCalibrationPreset.resetParkingStage(
+                parkingPreferences, parking, CameraCalibrationPreset.Stage.ORIGINAL);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                parkingPreferences.getInt(DirectCameraCrop.correctedAspectKey(parking), -1));
+        assertGeometry(parkingBefore, DirectCameraCrop.loadCorrected(
+                parkingPreferences, parking, DirectCameraCrop.load(parkingPreferences, parking)));
+    }
+
+    @Test
+    public void outputResetKeepsCorrectedFreeGeometryNearAlignedSourceBoundary() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        DirectCameraCrop raw = DirectCameraCrop.of(
+                0.18f, 0.19f, 0.48f, 0.42f,
+                DirectCameraCrop.ASPECT_FREE, 90, CameraRotation.MODE_ALIGNED);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop corrected = DirectCameraCrop.saveCorrectedGeometryEdit(
+                preferences, profile, DirectCameraCrop.requireUiGeometry(
+                        0.08f, 0.23f, 0.24f, 0.24f, 90, CameraRotation.MODE_ALIGNED));
+        CameraCalibrationPreset.resetCameraStage(
+                preferences, profile, CameraCalibrationPreset.Stage.OUTPUT);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        DirectCameraCrop loaded = DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile));
+        assertGeometry(corrected, loaded);
+    }
+
+    @Test
+    public void parkingFreeCorrectedGeometrySurvivesRotatedOutputAndReset() {
+        ParkingCameraProfile profile = ParkingCameraProfile.of(ParkingCameraProfile.FRONT);
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        DirectCameraCrop raw = DirectCameraCrop.of(
+                0.40f, 0.40f, 0.20f, 0.20f,
+                DirectCameraCrop.ASPECT_FREE, 90, CameraRotation.MODE_ALIGNED);
+        DirectCameraCrop.save(preferences, profile, raw);
+        DirectCameraCrop corrected = DirectCameraCrop.saveCorrectedGeometryEdit(
+                preferences, profile, DirectCameraCrop.requireUiGeometry(
+                        0.08f, 0.10f, 0.80f, 0.80f, 0, CameraRotation.MODE_ALIGNED));
+
+        assertGeometry(corrected, DirectCameraCrop.loadCorrected(
+                preferences, profile, raw));
+
+        // Saved slots must preserve the independent geometry even when RAW output is
+        // ALIGNED90 (the old slot reader constrained and silently shrank this ROI).
+        CameraCalibrationPreset.saveParking(preferences, profile);
+        String correctedPrefix = "parking_direct_crop_v1_"
+                + profile.wireName.toLowerCase(Locale.US) + "_corrected_";
+        preferences.edit()
+                .putFloat(correctedPrefix + "x", 0.20f)
+                .putFloat(correctedPrefix + "y", 0.20f)
+                .putFloat(correctedPrefix + "width", 0.60f)
+                .putFloat(correctedPrefix + "height", 0.60f)
+                .apply();
+        assertTrue(CameraCalibrationPreset.loadParking(preferences, profile));
+        DirectCameraCrop loadedSlotRaw = DirectCameraCrop.load(preferences, profile);
+        assertEquals(90, loadedSlotRaw.rotationDegrees);
+        assertEquals(CameraRotation.MODE_ALIGNED, loadedSlotRaw.rotationMode);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        assertGeometry(corrected, DirectCameraCrop.loadCorrected(
+                preferences, profile, loadedSlotRaw));
+
+        // Mirroring a saved FREE profile must keep the exact independent rectangle while
+        // changing only its horizontal placement and RAW transform.
+        assertTrue(CameraCalibrationPreset.mirrorParking(preferences, profile));
+        ParkingCameraProfile mirroredProfile = ParkingCameraProfile.of(
+                CameraCalibrationPreset.parkingMirrorTarget(profile));
+        DirectCameraCrop mirroredRaw = DirectCameraCrop.load(preferences, mirroredProfile);
+        assertEquals(-90, mirroredRaw.rotationDegrees);
+        assertEquals(CameraRotation.MODE_ALIGNED, mirroredRaw.rotationMode);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(mirroredProfile), -1));
+        assertGeometry(corrected.mirrored(), DirectCameraCrop.loadCorrected(
+                preferences, mirroredProfile, mirroredRaw));
+
+        // The same near-boundary FREE geometry must survive the transfer codec and
+        // reattach the destination RAW transform without a reshape.
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(preferences));
+        TestSharedPreferences transferTarget = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(transferTarget, parsed);
+        DirectCameraCrop transferredRaw = DirectCameraCrop.load(transferTarget, profile);
+        assertEquals(90, transferredRaw.rotationDegrees);
+        assertEquals(CameraRotation.MODE_ALIGNED, transferredRaw.rotationMode);
+        assertGeometry(corrected, DirectCameraCrop.loadCorrected(
+                transferTarget, profile, transferredRaw));
+
+        CameraCalibrationPreset.resetParkingStage(
+                preferences, profile, CameraCalibrationPreset.Stage.OUTPUT);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        assertGeometry(corrected, DirectCameraCrop.loadCorrected(
+                preferences, profile, DirectCameraCrop.load(preferences, profile)));
     }
 
     @Test
@@ -372,12 +573,18 @@ public final class CameraCalibrationPresetTest {
                 seedDirectFixed(preferences, profile);
                 ProductionStateSnapshot.readProductionUiState(preferences, false, false);
                 Map<String, ?> before = new HashMap<>(preferences.getAll());
+                DirectCameraCrop beforeCorrected = DirectCameraCrop.loadCorrected(
+                        preferences, profile, DirectCameraCrop.load(preferences, profile));
 
                 CameraCalibrationPreset.resetParkingStage(preferences, profile, stage);
                 ProductionStateSnapshot.readProductionUiState(preferences, false, false);
                 ProductionStateSnapshot.readProductionUiState(preferences, false, false);
 
                 assertOnlyChanged(before, preferences.getAll(), parkingChangedKeys(profile, stage));
+                if (stage == CameraCalibrationPreset.Stage.ORIGINAL) {
+                    assertGeometry(beforeCorrected, DirectCameraCrop.loadCorrected(
+                            preferences, profile, DirectCameraCrop.load(preferences, profile)));
+                }
             }
         }
     }
@@ -977,8 +1184,14 @@ public final class CameraCalibrationPresetTest {
             for (int field = 0; field <= 4; field++) {
                 keys.add(DirectCameraCrop.preferenceKey(profile, field));
             }
+            keys.add(DirectCameraCrop.correctedAspectKey(profile));
+            String corrected = "direct_crop_v3_corrected_" + profile.id + "_";
+            for (String field : new String[]{"left", "top", "width", "height"}) {
+                keys.add(corrected + field);
+            }
         } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
             String prefix = "direct_crop_v3_corrected_" + profile.id + "_";
+            keys.add(DirectCameraCrop.correctedAspectKey(profile));
             for (String field : new String[]{"left", "top", "width", "height"}) {
                 keys.add(prefix + field);
             }
@@ -1003,7 +1216,12 @@ public final class CameraCalibrationPresetTest {
             for (String field : new String[]{"x", "y", "width", "height", "aspect"}) {
                 keys.add(prefix + field);
             }
+            keys.add(DirectCameraCrop.correctedAspectKey(profile));
+            for (String field : new String[]{"x", "y", "width", "height"}) {
+                keys.add(prefix + "corrected_" + field);
+            }
         } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
+            keys.add(DirectCameraCrop.correctedAspectKey(profile));
             for (String field : new String[]{"x", "y", "width", "height"}) {
                 keys.add(prefix + "corrected_" + field);
             }

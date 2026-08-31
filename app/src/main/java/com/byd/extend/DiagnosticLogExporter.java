@@ -72,7 +72,10 @@ final class DiagnosticLogExporter {
                     "for prop in ro.build.version.release ro.build.version.incremental ro.build.version.security_patch ro.build.id ro.build.display.id ro.product.board ro.board.platform ro.hardware ro.boot.hardware ro.product.cpu.abi ro.product.cpu.abilist; do printf '%s=' \"$prop\"; getprop \"$prop\"; done"),
             new CollectorSpec(
                     "system/byd-avc-package.txt",
-                    "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20")
+                    "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20"),
+            new CollectorSpec(
+                    "system/bydextend_avm.log",
+                    "tail -c 1048576 " + StockAvmShellProtocol.LOG_PATH + " 2>/dev/null")
     };
 
     private DiagnosticLogExporter() {}

@@ -23,11 +23,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.byd.extend.productionPlacementGeometry
 import kotlin.math.roundToInt
-
-internal const val PLACEMENT_TABLET_ASPECT = 16f / 9f
-internal const val PLACEMENT_CLUSTER_ASPECT = 1920f / 720f
-internal const val PLACEMENT_PARKING_FRAME_ASPECT = 4f / 3f
 
 internal data class PlacementFractions(
     val width: Float,
@@ -35,32 +32,6 @@ internal data class PlacementFractions(
     val left: Float,
     val top: Float,
 )
-
-internal fun calculatePlacementFractions(
-    sizePercent: Float,
-    frameAspect: Float,
-    canvasAspect: Float,
-    x: Float,
-    y: Float,
-): PlacementFractions {
-    var width = (sizePercent / 100f).coerceIn(.05f, .60f)
-    val safeAspect = frameAspect.takeIf { it.isFinite() && it > 0f } ?: PLACEMENT_TABLET_ASPECT
-    val safeCanvasAspect = canvasAspect.takeIf { it.isFinite() && it > 0f }
-        ?: PLACEMENT_TABLET_ASPECT
-    var height = width * safeCanvasAspect / safeAspect
-    if (height > 1f) {
-        width /= height
-        height = 1f
-    }
-    val safeX = x.coerceIn(0f, 1f)
-    val safeY = y.coerceIn(0f, 1f)
-    return PlacementFractions(
-        width = width,
-        height = height,
-        left = (1f - width) * safeX,
-        top = (1f - height) * safeY,
-    )
-}
 
 @Composable
 internal fun CameraPlacementPreview(
@@ -82,21 +53,28 @@ internal fun CameraPlacementPreview(
         dragX.floatValue = storedX
         dragY.floatValue = storedY
     }
-    val canvasAspect = if (state.target == DisplayTarget.Cluster) {
-        PLACEMENT_CLUSTER_ASPECT
-    } else PLACEMENT_TABLET_ASPECT
-    val placement = calculatePlacementFractions(
-        state.size.toFloatOrNull() ?: 30f, state.frameAspect, canvasAspect,
+    val display = state.displayGeometry
+    val geometry = productionPlacementGeometry(
+        profile, display, state.size.toFloatOrNull() ?: 30f, state.frameAspect,
         dragX.floatValue, dragY.floatValue)
+    val canvasWidth = geometry.canvasWidth.toFloat().coerceAtLeast(1f)
+    val canvasHeight = geometry.canvasHeight.toFloat().coerceAtLeast(1f)
+    val placement = PlacementFractions(
+        width = geometry.width / canvasWidth,
+        height = geometry.height / canvasHeight,
+        left = geometry.left / canvasWidth,
+        top = geometry.top / canvasHeight,
+    )
+    val canvasAspect = canvasWidth / canvasHeight
     val density = LocalDensity.current
 
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        val canvasWidth = minOf(maxWidth, maxHeight * canvasAspect)
-        val canvasHeight = canvasWidth / canvasAspect
-        val canvasWidthPx = with(density) { canvasWidth.toPx() }
-        val canvasHeightPx = with(density) { canvasHeight.toPx() }
+        val canvasDpWidth = minOf(maxWidth, maxHeight * canvasAspect)
+        val canvasDpHeight = canvasDpWidth / canvasAspect
+        val canvasWidthPx = with(density) { canvasDpWidth.toPx() }
+        val canvasHeightPx = with(density) { canvasDpHeight.toPx() }
         Box(
-            Modifier.size(canvasWidth, canvasHeight)
+            Modifier.size(canvasDpWidth, canvasDpHeight)
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.field)
                 .border(1.dp, colors.borderStrong, RoundedCornerShape(12.dp))
@@ -109,8 +87,8 @@ internal fun CameraPlacementPreview(
                         (canvasHeightPx * placement.top).roundToInt(),
                     )
                 }.size(
-                    canvasWidth * placement.width,
-                    canvasHeight * placement.height,
+                    canvasDpWidth * placement.width,
+                    canvasDpHeight * placement.height,
                 ).clip(RoundedCornerShape(8.dp))
                     .border(2.dp, colors.accent, RoundedCornerShape(8.dp))
                     .pointerInput(profile, placement.width, placement.height, canvasWidthPx, canvasHeightPx) {
@@ -122,8 +100,17 @@ internal fun CameraPlacementPreview(
                             },
                         ) { change, amount ->
                             change.consume()
-                            val remainingX = canvasWidthPx * (1f - placement.width)
-                            val remainingY = canvasHeightPx * (1f - placement.height)
+                            val displayScaleX = canvasWidthPx / display.width.coerceAtLeast(1)
+                            val displayScaleY = canvasHeightPx / display.height.coerceAtLeast(1)
+                            val horizontalMargin = if (profile is CameraProfileId.Blind) {
+                                display.marginLeft
+                            } else 0
+                            val verticalTop = if (profile is CameraProfileId.Blind) display.marginTop else 0
+                            val verticalBottom = if (profile is CameraProfileId.Blind) display.marginBottom else 0
+                            val remainingX = (display.width - horizontalMargin * 2
+                                - geometry.width).coerceAtLeast(0) * displayScaleX
+                            val remainingY = (display.height - verticalTop - verticalBottom
+                                - geometry.height).coerceAtLeast(0) * displayScaleY
                             dragX.floatValue = if (remainingX > 0f) {
                                 (dragX.floatValue + amount.x / remainingX).coerceIn(0f, 1f)
                             } else 0f

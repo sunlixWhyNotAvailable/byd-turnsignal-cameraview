@@ -18,12 +18,63 @@ enum class DialogKind { Background, Update, Shutdown, Progress, Message }
 enum class StatusTone { Ok, Warning, Error, Neutral }
 enum class AvmOrientation { Horizontal, Vertical }
 
+/** Real target display bounds and the tablet chrome margins used by production overlays. */
+@Immutable
+data class CameraDisplayGeometry(
+    val width: Int = 1920,
+    val height: Int = 1080,
+    val marginLeft: Int = 0,
+    val marginTop: Int = 0,
+    val marginRight: Int = 0,
+    val marginBottom: Int = 0,
+    val target: DisplayTarget = DisplayTarget.Tablet,
+) {
+    val aspect: Float get() = width.toFloat() / height.coerceAtLeast(1)
+
+    companion object {
+        fun default(target: DisplayTarget) = if (target == DisplayTarget.Cluster) {
+            CameraDisplayGeometry(1920, 720, target = DisplayTarget.Cluster)
+        } else {
+            CameraDisplayGeometry(1920, 1080, 16, 36, 16, 88, DisplayTarget.Tablet)
+        }
+    }
+}
+
+/** Runtime-only indication that requested correction currently resolves to RAW input. */
+@Immutable
+data class ProductionPlacementGeometry(
+    val left: Int,
+    val top: Int,
+    val width: Int,
+    val height: Int,
+    val canvasWidth: Int,
+    val canvasHeight: Int,
+)
+
 enum class GuardNumber { OutwardAngle, CentreTolerance, CorrectionDelayMs, MaximumSpeed }
 enum class BlindNumber { MinimumSpeed, MaximumSpeed, SteeringAngle }
 enum class ParkingNumber { TriggerDistance, MaximumSpeed }
 enum class OutputNumber { CornerRadius, Transparency }
 enum class ProfileNumber { Size, X, Y, OriginalX, OriginalY, OriginalWidth, OriginalHeight, Fov, CorrectedX, CorrectedY, CorrectedWidth, CorrectedHeight, Rotation }
 enum class ReverseGeometryNumber { X, Y, Width, Height }
+
+internal data class NumericDraftResult(
+    val draft: String,
+    val slider: Float,
+    val valid: Boolean,
+)
+
+/** Shared synchronous numeric-control policy; rejected input always returns to canonical state. */
+internal object NumericDraftPolicy {
+    fun resolve(raw: String, canonical: String, range: ClosedFloatingPointRange<Float>): NumericDraftResult {
+        val parsed = raw.toFloatOrNull()
+        // Local validity does not imply backend acceptance (paired limits and crop bounds).
+        // A successful synchronous dispatch supplies the new canonical value on recomposition.
+        return NumericDraftResult(canonical,
+            (canonical.toFloatOrNull() ?: range.start).coerceIn(range),
+            parsed != null && parsed.isFinite() && parsed in range)
+    }
+}
 
 enum class ToggleId {
     Guard,
@@ -163,6 +214,7 @@ data class CalibrationUiState(
     val mirrored: Boolean = false,
     val outputMode: Int = 0,
     val rotation: String = "0",
+    val rawFallback: Boolean = false,
 )
 
 internal object UiSelectionPreferences {
@@ -182,6 +234,7 @@ data class CameraProfileUiState(
     val x: String = "0",
     val y: String = "0",
     val frameAspect: Float = 16f / 9f,
+    val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val calibration: CalibrationUiState = CalibrationUiState(),
     val presetAvailable: Boolean = false,
     val operation: OperationUiState = OperationUiState(),
@@ -284,6 +337,7 @@ data class ReverseUiState(
     val frontIntegration: Map<ReverseElement, Boolean> = emptyMap(),
     val geometry: Map<ReverseElement, ReverseGeometryUiState> = emptyMap(),
     val profiles: Map<CameraProfileId.Reverse, CameraProfileUiState> = emptyMap(),
+    val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val zOrder: List<ReverseElement> = listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight),
 )
 
@@ -323,6 +377,8 @@ data class DebugUiState(
     val avmOrientation: AvmOrientation = AvmOrientation.Horizontal,
     val avmShowRaw: Boolean = true,
     val avmDewarp: Boolean = false,
+    /** Resolved tablet output bounds used to size diagnostic camera frames. */
+    val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
 )
 
 @Immutable

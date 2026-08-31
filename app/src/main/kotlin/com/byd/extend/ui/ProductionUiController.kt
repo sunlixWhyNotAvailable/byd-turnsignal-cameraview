@@ -22,6 +22,10 @@ interface ProductionUiBackend {
     fun automaticStartEnabled(): Boolean
     fun legacyAccessRestoreVisible(): Boolean
     fun runtimeBlockedByLegacy(): Boolean
+
+    /** Activity supplies real display pixels and tablet chrome insets when available. */
+    fun productionDisplayGeometry(target: DisplayTarget): CameraDisplayGeometry =
+        CameraDisplayGeometry.default(target)
 }
 
 /** Main-thread state boundary between the production runtime and Compose. */
@@ -108,7 +112,10 @@ class ProductionUiController(
                 views = fresh.parking.views.mapValues { (view, value) -> value.copy(
                     profile = value.profile.copy(
                         operation = old.parking.views[view]?.profile?.operation
-                            ?: value.profile.operation)) },
+                            ?: value.profile.operation,
+                        calibration = value.profile.calibration.copy(
+                            rawFallback = old.parking.views[view]?.profile?.calibration?.rawFallback == true),
+                    )) },
             ),
             reverse = fresh.reverse.copy(
                 section = old.reverse.section,
@@ -143,6 +150,12 @@ class ProductionUiController(
     }
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
+
+    /** Canvas selection updates controls without restarting the running camera. */
+    fun setReverseEditorSelection(element: ReverseElement) {
+        if (state.reverse.selectedElement == element) return
+        applyLocalSelection(SelectionTarget.Simple(SelectionId.ReverseElement), element.ordinal)
+    }
 
     /** Updates the legacy-handover gate and keeps the Activity's selected tab in sync. */
     fun setLegacyRuntimeBlocked(blocked: Boolean) {
@@ -236,8 +249,28 @@ class ProductionUiController(
         }
     }
 
+    /** Publishes the transient RAW fallback without changing persisted correction settings. */
+    fun setCalibrationRawFallback(profile: CameraProfileId, active: Boolean) {
+        fun update(value: CameraProfileUiState) = value.copy(
+            calibration = value.calibration.copy(rawFallback = active))
+        state = when (profile) {
+            is CameraProfileId.Blind -> state.copy(blind = state.blind.copy(
+                profiles = state.blind.profiles + (profile to update(
+                    state.blind.profiles[profile] ?: CameraProfileUiState()))))
+            is CameraProfileId.Parking -> {
+                val view = state.parking.views[profile.view] ?: ParkingViewUiState()
+                state.copy(parking = state.parking.copy(views = state.parking.views +
+                    (profile.view to view.copy(profile = update(view.profile)))))
+            }
+            is CameraProfileId.Reverse -> state.copy(reverse = state.reverse.copy(
+                profiles = state.reverse.profiles + (profile to update(
+                    state.reverse.profiles[profile] ?: CameraProfileUiState()))))
+        }
+    }
+
     private fun readState() = readProductionUiState(
-        preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible()).let { fresh ->
+        preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible(),
+        backend::productionDisplayGeometry).let { fresh ->
         if (!backend.runtimeBlockedByLegacy()) fresh
         else fresh.copy(
             activeTab = RootTab.Settings,
@@ -484,4 +517,6 @@ private fun SelectionTarget.isLocalSelection() = this is SelectionTarget.Simple 
 private fun <K> mergeProfileOperations(
     fresh: Map<K, CameraProfileUiState>, old: Map<K, CameraProfileUiState>,
 ) = fresh.mapValues { (key, value) -> value.copy(
-    operation = old[key]?.operation ?: value.operation) }
+    operation = old[key]?.operation ?: value.operation,
+    calibration = value.calibration.copy(rawFallback = old[key]?.calibration?.rawFallback == true),
+) }

@@ -55,6 +55,33 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
+    public void correctedFreeMarkerRoundTripsAndOldPresetClearsStaleMarker() {
+        TestSharedPreferences source = new TestSharedPreferences();
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        DirectCameraCrop.saveCorrectedGeometryEdit(source, profile,
+                DirectCameraCrop.requireUiGeometry(
+                        0.21f, 0.18f, 0.37f, 0.41f, 11, CameraRotation.MODE_ALIGNED));
+        String json = CameraSettingsTransfer.exportCameraPreset(source);
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(json);
+        Map<?, ?> values = (Map<?, ?>) parsed.get("settings");
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                values.get(DirectCameraCrop.correctedAspectKey(profile)));
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putInt(DirectCameraCrop.correctedAspectKey(profile),
+                DirectCameraCrop.ASPECT_FREE);
+        CameraSettingsTransfer.applyCameraPreset(target, parsed);
+        assertEquals(DirectCameraCrop.ASPECT_FREE,
+                target.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+
+        TestSharedPreferences old = new TestSharedPreferences();
+        String oldJson = CameraSettingsTransfer.exportCameraPreset(old);
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(oldJson));
+        assertFalse(target.contains(DirectCameraCrop.correctedAspectKey(profile)));
+    }
+
+    @Test
     public void cameraPresetScopeKeepsTriggerAndUnrelatedKeys() {
         TestSharedPreferences source = new TestSharedPreferences();
         source.putInt(BlindSpotOverlayController.PREF_LEFT_SCALE, 47);

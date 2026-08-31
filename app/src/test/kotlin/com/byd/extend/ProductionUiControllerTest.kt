@@ -18,6 +18,14 @@ import com.byd.extend.ui.DiagnosticMode
 import com.byd.extend.ui.ParkingView
 import com.byd.extend.ui.SelectionId
 import com.byd.extend.ui.SelectionTarget
+import com.byd.extend.ui.UiSelectionPreferences
+import com.byd.extend.ui.CameraDisplayGeometry
+import com.byd.extend.ui.CameraProfileUiState
+import com.byd.extend.ui.ReverseElement
+import com.byd.extend.ui.ReverseSource
+import com.byd.extend.ui.GuardNumber
+import com.byd.extend.ui.NumberTarget
+import com.byd.extend.ui.NumericDraftPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -163,6 +171,89 @@ class ProductionUiControllerTest {
         controller.dispatch(BydExtendUiAction.Run(CommandId.StopDiagnosticCamera))
         assertEquals(null, controller.state.debug.avmSelection)
         assertEquals(null, controller.state.debug.directSelection)
+    }
+
+    @Test
+    fun reverseCanvasSelectionPersistsWithoutDispatchingCameraEffects() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        controller.setReverseEditorSelection(ReverseElement.Widget)
+        controller.setReverseEditorSelection(ReverseElement.Widget)
+        controller.reload()
+        assertEquals(ReverseElement.Widget, controller.state.reverse.selectedElement)
+        assertEquals(ReverseElement.Widget.ordinal,
+            preferences.getInt(UiSelectionPreferences.REVERSE_ELEMENT, -1))
+        assertTrue(backend.actions.isEmpty())
+        assertEquals(ReverseElement.Widget,
+            ProductionUiController(preferences, backend).state.reverse.selectedElement)
+    }
+
+    @Test
+    fun rawFallbackSurvivesReloadWithoutChangingSettingsOrOtherProfiles() {
+        val preferences = TestSharedPreferences()
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+        val profiles = listOf(
+            CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left),
+            CameraProfileId.Parking(ParkingView.FrontLeft),
+            CameraProfileId.Reverse(ReverseElement.RearLeft, ReverseSource.Rear),
+            CameraProfileId.Reverse(ReverseElement.RearLeft, ReverseSource.Front),
+        )
+        fun profileState(profile: CameraProfileId): CameraProfileUiState = when (profile) {
+            is CameraProfileId.Blind -> controller.state.blind.profiles.getValue(profile)
+            is CameraProfileId.Parking -> controller.state.parking.views.getValue(profile.view).profile
+            is CameraProfileId.Reverse -> controller.state.reverse.profiles.getValue(profile)
+        }
+        val stored = HashMap(preferences.all)
+        val correctionSettings = profiles.associateWith { profileState(it).calibration.correctionEnabled }
+        for (active in profiles) {
+            controller.setCalibrationRawFallback(active, true)
+            controller.reload()
+            for (profile in profiles) {
+                assertEquals(profile.toString(), profile == active, profileState(profile).calibration.rawFallback)
+                assertEquals(correctionSettings[profile], profileState(profile).calibration.correctionEnabled)
+            }
+            controller.setCalibrationRawFallback(active, false)
+            controller.reload()
+            assertFalse(profileState(active).calibration.rawFallback)
+        }
+        assertEquals(stored, preferences.all)
+    }
+
+    @Test
+    fun reversePreviewUsesDestinationPixelsOnTheActualTablet() {
+        val preferences = TestSharedPreferences()
+        val tablet = CameraDisplayGeometry(2304, 1440)
+        val state = readProductionUiState(preferences, false, false) { tablet }
+        val layout = ReverseCameraController.loadRawLayout(preferences)
+        val pane = layout.pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+        val projected = ReverseCameraLayout.project(pane.destination, tablet.width, tablet.height)
+        val profile = state.reverse.profiles.getValue(
+            CameraProfileId.Reverse(ReverseElement.RearLeft, ReverseSource.Rear))
+        assertEquals(tablet, state.reverse.displayGeometry)
+        assertEquals(tablet, profile.displayGeometry)
+        assertEquals(projected.width.toFloat() / projected.height, profile.frameAspect, 0f)
+    }
+
+    @Test
+    fun numericSubmissionKeepsCanonicalDraftOnBackendRejectionAndReloadsAcceptedValue() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        val target = NumberTarget.Guard(GuardNumber.OutwardAngle)
+        val draft = NumericDraftPolicy.resolve("5", controller.state.signals.guard.outwardAngle, 0f..780f)
+        assertTrue(draft.valid)
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "5"))
+        assertEquals("90", controller.state.signals.guard.outwardAngle)
+        assertEquals("90", draft.draft)
+        assertEquals(90f, draft.slider, 0f)
+
+        backend.effect = { preferences.edit().putFloat("outward_deg", 91f).apply() }
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "91.00"))
+        assertEquals("91", controller.state.signals.guard.outwardAngle)
+        val reloaded = NumericDraftPolicy.resolve("91.00", controller.state.signals.guard.outwardAngle, 0f..780f)
+        assertEquals("91", reloaded.draft)
+        assertEquals(91f, reloaded.slider, 0f)
     }
 
     private class FakeBackend(private val preferences: TestSharedPreferences) : ProductionUiBackend {

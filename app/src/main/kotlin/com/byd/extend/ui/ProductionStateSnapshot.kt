@@ -7,19 +7,21 @@ import com.byd.extend.ui.*
 import java.util.Locale
 
 /** Reads production state through the same validated camera-domain objects used at runtime. */
+@JvmOverloads
 fun readProductionUiState(
     preferences: SharedPreferences,
     automaticStart: Boolean,
     legacyAccessRestoreVisible: Boolean,
+    displayGeometry: (DisplayTarget) -> CameraDisplayGeometry = { CameraDisplayGeometry.default(it) },
 ): BydExtendUiState = BydExtendUiState(
     activeTab = storedRootTab(preferences),
     language = if (preferences.getString("ui_language", "uk") == "en") UiLanguage.English else UiLanguage.Ukrainian,
     theme = if (preferences.getBoolean("ui_dark_theme", true)) UiTheme.Dark else UiTheme.Light,
     header = HeaderUiState(weatherEnabled = preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false)),
     signals = readSignals(preferences),
-    blind = readBlind(preferences),
-    parking = readParking(preferences),
-    reverse = readReverse(preferences),
+    blind = readBlind(preferences, displayGeometry),
+    parking = readParking(preferences, displayGeometry),
+    reverse = readReverse(preferences, displayGeometry),
     settings = SettingsUiState(
         category = enumPreference(preferences, UiSelectionPreferences.SETTINGS_CATEGORY,
             SettingsCategory.Permissions),
@@ -38,6 +40,7 @@ fun readProductionUiState(
         avmOrientation = if (preferences.getBoolean("debug_avm_horizontal", true)) AvmOrientation.Horizontal else AvmOrientation.Vertical,
         avmShowRaw = preferences.getBoolean("debug_avm_show_raw", true),
         avmDewarp = preferences.getBoolean("debug_avm_dewarp", false),
+        displayGeometry = displayGeometry(DisplayTarget.Tablet),
     ),
 )
 
@@ -57,14 +60,28 @@ private fun readSignals(preferences: SharedPreferences) = SignalsUiState(
     ),
 )
 
-private fun readBlind(preferences: SharedPreferences): BlindUiState {
+private fun readBlind(
+    preferences: SharedPreferences,
+    displayGeometry: (DisplayTarget) -> CameraDisplayGeometry,
+): BlindUiState {
     val selectedId = preferences.getInt("camera_selected_profile", CameraProfile.REAR_LEFT)
         .takeIf(CameraProfile::isValid) ?: CameraProfile.REAR_LEFT
     val selected = CameraProfile.of(selectedId)
     val profiles = CameraProfile.values().associate { profile ->
         val raw = DirectCameraCrop.load(preferences, profile)
+        val target = BlindSpotOverlayController.readTarget(preferences, profile)
+        val display = displayGeometry(
+            if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet)
+        val requestedAspect = BlindSpotOverlayController.readFrameAspect(
+            preferences, profile, raw.outputAspect())
+        val output = BlindSpotOverlayController.overlayGeometry(
+            display.width, display.height, BlindSpotOverlayController.readScale(preferences, profile),
+            requestedAspect, BlindSpotOverlayController.readPosition(preferences, profile, false),
+            BlindSpotOverlayController.readPosition(preferences, profile, true),
+            display.marginLeft.coerceAtLeast(0), display.marginTop.coerceAtLeast(0),
+            display.marginBottom.coerceAtLeast(0))
         blindId(profile) to cameraProfile(
-            target = BlindSpotOverlayController.readTarget(preferences, profile),
+            target = target,
             size = BlindSpotOverlayController.readScale(preferences, profile),
             x = BlindSpotOverlayController.readPosition(preferences, profile, false),
             y = BlindSpotOverlayController.readPosition(preferences, profile, true),
@@ -72,8 +89,8 @@ private fun readBlind(preferences: SharedPreferences): BlindUiState {
             corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw),
             dewarp = CameraDewarpConfig.loadForProfile(preferences, profile),
             preset = CameraCalibrationPreset.hasCamera(preferences, profile),
-            frameAspect = BlindSpotOverlayController.readFrameAspect(
-                preferences, profile, raw.outputAspect()),
+            frameAspect = output[2].toFloat() / output[3].coerceAtLeast(1),
+            displayGeometry = display,
         )
     }
     return BlindUiState(
@@ -114,7 +131,10 @@ private fun readBlind(preferences: SharedPreferences): BlindUiState {
     )
 }
 
-private fun readParking(preferences: SharedPreferences): ParkingUiState {
+private fun readParking(
+    preferences: SharedPreferences,
+    displayGeometry: (DisplayTarget) -> CameraDisplayGeometry,
+): ParkingUiState {
     val defaultX = floatArrayOf(0f, .5f, 1f, 1f, .5f, 0f, 0f, 1f)
     val defaultY = floatArrayOf(0f, 0f, 0f, 1f, 1f, 1f, .5f, .5f)
     val views = ParkingCameraProfile.values().associate { profile ->
@@ -122,22 +142,29 @@ private fun readParking(preferences: SharedPreferences): ParkingUiState {
         val prefix = "parking_camera_${profile.wireName.lowercase(Locale.US)}_"
         val raw = DirectCameraCrop.load(preferences, profile)
         val rule = ParkingCameraSettings.readRule(preferences, profile)
+        val display = displayGeometry(DisplayTarget.Tablet)
+        val size = preferences.getInt(prefix + "scale", 25).coerceIn(
+            BlindSpotOverlayController.MIN_SCALE_PERCENT,
+            BlindSpotOverlayController.MAX_SCALE_PERCENT)
+        val x = preferences.getFloat(prefix + "x", defaultX[profile.id]).coerceIn(0f, 1f)
+        val y = preferences.getFloat(prefix + "y", defaultY[profile.id]).coerceIn(0f, 1f)
+        val output = ParkingCameraController.overlayGeometry(
+            display.width, display.height, size, x, y)
         view to ParkingViewUiState(
             enabled = rule.enabled,
             triggerDistance = rule.distanceCm.toString(),
             addCentralCamera = rule.addCentral,
             profile = cameraProfile(
                 target = CameraDisplayTarget.TABLET,
-                size = preferences.getInt(prefix + "scale", 25).coerceIn(
-                    BlindSpotOverlayController.MIN_SCALE_PERCENT,
-                    BlindSpotOverlayController.MAX_SCALE_PERCENT),
-                x = preferences.getFloat(prefix + "x", defaultX[profile.id]).coerceIn(0f, 1f),
-                y = preferences.getFloat(prefix + "y", defaultY[profile.id]).coerceIn(0f, 1f),
+                size = size,
+                x = x,
+                y = y,
                 raw = raw,
                 corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw),
                 dewarp = CameraDewarpConfig.loadForParking(preferences, profile),
                 preset = CameraCalibrationPreset.hasParking(preferences, profile),
-                frameAspect = PLACEMENT_PARKING_FRAME_ASPECT,
+                frameAspect = output[2].toFloat() / output[3].coerceAtLeast(1),
+                displayGeometry = display,
             ),
         )
     }
@@ -155,7 +182,11 @@ private fun readParking(preferences: SharedPreferences): ParkingUiState {
     )
 }
 
-private fun readReverse(preferences: SharedPreferences): ReverseUiState {
+private fun readReverse(
+    preferences: SharedPreferences,
+    displayGeometry: (DisplayTarget) -> CameraDisplayGeometry,
+): ReverseUiState {
+    val targetGeometry = displayGeometry(DisplayTarget.Tablet)
     val raw = ReverseCameraController.loadRawLayout(preferences)
     val frontRaw = ReverseCameraController.loadFrontRawLayout(preferences)
     val geometry = mapOf(
@@ -178,14 +209,15 @@ private fun readReverse(preferences: SharedPreferences): ReverseUiState {
             val corrected = ReverseCameraController.loadCorrectedSourceCrop(
                 preferences, index, ReverseCameraLayout.centeredSourceCrop(rearPane.sourceCrop))
             put(CameraProfileId.Reverse(element, ReverseSource.Rear), reverseProfile(
-                rearPane, corrected, rearDewarp, CameraCalibrationPreset.hasReverse(preferences, index)))
+                rearPane, corrected, rearDewarp, CameraCalibrationPreset.hasReverse(preferences, index),
+                targetGeometry))
 
             val frontPane = frontRaw.pane(index)
             put(CameraProfileId.Reverse(element, ReverseSource.Front), reverseProfile(
                 frontPane,
                 ReverseCameraController.loadFrontCorrectedSourceCrop(preferences, index),
                 CameraDewarpConfig.loadForReverseFront(preferences, index),
-                CameraCalibrationPreset.hasReverseFront(preferences, index)))
+                CameraCalibrationPreset.hasReverseFront(preferences, index), targetGeometry))
         }
     }
     return ReverseUiState(
@@ -208,6 +240,7 @@ private fun readReverse(preferences: SharedPreferences): ReverseUiState {
         ),
         geometry = geometry,
         profiles = profiles,
+        displayGeometry = targetGeometry,
         zOrder = raw.panes().sortedBy { it.zOrder }.map { reverseElement(it.cameraIndex) },
     )
 }
@@ -222,11 +255,13 @@ private fun cameraProfile(
     dewarp: CameraDewarpConfig,
     preset: Boolean,
     frameAspect: Float,
+    displayGeometry: CameraDisplayGeometry,
 ) = CameraProfileUiState(
     target = if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet,
     size = size.toString(),
     x = percent(x), y = percent(y),
     frameAspect = frameAspect,
+    displayGeometry = displayGeometry,
     calibration = calibration(raw, corrected, dewarp),
     presetAvailable = preset,
 )
@@ -236,10 +271,15 @@ private fun reverseProfile(
     corrected: ReverseCameraLayout.Rect,
     dewarp: CameraDewarpConfig,
     preset: Boolean,
+    displayGeometry: CameraDisplayGeometry,
 ) = CameraProfileUiState(
     target = DisplayTarget.Tablet,
     size = percent(pane.destination.width),
     x = percent(pane.destination.left), y = percent(pane.destination.top),
+    frameAspect = ReverseCameraLayout.project(
+        pane.destination, displayGeometry.width.coerceAtLeast(1),
+        displayGeometry.height.coerceAtLeast(1)).let { it.width.toFloat() / it.height.coerceAtLeast(1) },
+    displayGeometry = displayGeometry,
     calibration = CalibrationUiState(
         original = crop(pane.sourceCrop),
         sourceAspect = DirectCameraCrop.ASPECT_FREE,
@@ -304,3 +344,32 @@ else String.format(Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
 private inline fun <reified T : Enum<T>> enumPreference(
     preferences: SharedPreferences, key: String, fallback: T,
 ): T = enumValues<T>().getOrElse(preferences.getInt(key, fallback.ordinal)) { fallback }
+
+/** Uses the production overlay/layout math while keeping Compose's drag state normalized. */
+fun productionPlacementGeometry(
+    profile: CameraProfileId,
+    display: CameraDisplayGeometry,
+    sizePercent: Float,
+    frameAspect: Float,
+    x: Float,
+    y: Float,
+): ProductionPlacementGeometry {
+    val width = display.width.coerceAtLeast(1)
+    val height = display.height.coerceAtLeast(1)
+    val pixels = when (profile) {
+        is CameraProfileId.Blind -> {
+            BlindSpotOverlayController.overlayGeometry(
+                width, height, sizePercent.toInt(), frameAspect, x, y,
+                display.marginLeft.coerceAtLeast(0), display.marginTop.coerceAtLeast(0),
+                display.marginBottom.coerceAtLeast(0),
+            )
+        }
+        is CameraProfileId.Parking -> ParkingCameraController.overlayGeometry(
+            width, height, sizePercent.toInt(), x, y)
+        is CameraProfileId.Reverse -> intArrayOf(
+            0, 0, width, height,
+        )
+    }
+    return ProductionPlacementGeometry(
+        pixels[0], pixels[1], pixels[2], pixels[3], width, height)
+}
