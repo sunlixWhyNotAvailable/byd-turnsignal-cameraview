@@ -16,6 +16,7 @@ internal fun BlindScreen(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
+    onPreview: (NumberTarget, String, Long) -> String?,
 ) {
     val profileId = CameraProfileId.Blind(state.selectedGroup, state.selectedSide)
     val profile = state.profiles[profileId] ?: CameraProfileUiState()
@@ -65,6 +66,7 @@ internal fun BlindScreen(
             },
             controls = {
                 CameraProfileControls(profileId, profile, state.section, true, strings, colors, onAction,
+                    onPreview = onPreview,
                     parameters = { BlindParameters(state.selectedGroup, rules, strings, colors, onAction) })
             },
             preview = { CameraProfilePreview(
@@ -119,6 +121,7 @@ internal fun ParkingScreen(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
+    onPreview: (NumberTarget, String, Long) -> String?,
 ) {
     val view = state.selectedView
     val viewState = state.views[view] ?: ParkingViewUiState()
@@ -155,6 +158,7 @@ internal fun ParkingScreen(
             },
             controls = {
                 CameraProfileControls(profileId, viewState.profile, state.section, false, strings, colors, onAction,
+                    onPreview = onPreview,
                     placementExtra = {
                         SwitchLine(strings.text("Синхронізувати розмір", "Synchronize size"), "",
                             state.synchronizeSize,

@@ -17,6 +17,8 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -88,6 +90,7 @@ final class TurnSignalController {
     private volatile int stockAvmRetryAttempt;
     private volatile boolean stockAvmRetryActive;
     private volatile boolean stockAvmResetInProgress;
+    private StockAvmOpenState activeStockAvmOpen;
     private boolean cameraRecoveryPending;
     private final PendingOverlay[] pendingOverlays =
             new PendingOverlay[CameraOverlayProfile.COUNT];
@@ -129,12 +132,11 @@ final class TurnSignalController {
         stopped = true;
         handler.removeCallbacks(pingRunnable);
         LocalAdbClient.cancelPendingAuthorization();
+        StockAvmOpenState canceledOpen = cancelStockAvmOpen(0);
         if (terminateShells) {
             shutdownTurnHelper();
-            shutdownAvmShell();
             shutdownCameraHelper();
         } else {
-            closeStockAvmNow("controller_shutdown");
             for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 closeCameraOverlayNow(profile.id, "controller_shutdown");
             }
@@ -143,10 +145,21 @@ final class TurnSignalController {
             }
         }
         clearHelper(null);
-        clearAvmShell(null);
         clearCameraHelper(null);
         healthy = false;
-        worker.shutdownNow();
+        try {
+            if (canceledOpen != null) {
+                queueStockAvmCleanup(canceledOpen, "controller_shutdown");
+            }
+            if (terminateShells) {
+                worker.execute(this::shutdownAvmShell);
+            } else if (canceledOpen == null) {
+                worker.execute(() -> closeStockAvmNow("controller_shutdown"));
+            }
+        } catch (RejectedExecutionException ignored) {
+            // The worker may already be draining after a repeated shutdown call.
+        }
+        worker.shutdown();
     }
 
     void setRecoveryEnabled(boolean enabled) {
@@ -218,9 +231,12 @@ final class TurnSignalController {
             surface.release();
             throw new IllegalArgumentException("viewpoint not whitelisted");
         }
+        StockAvmOpenState openState = beginStockAvmOpen(requestId);
         if (!handler.post(() -> readCameraConfigAndOpen(
-                surface, viewpoint, horizontal, stockDewarp, requestId, inputSurfaceSink))) {
+                openState, surface, viewpoint, horizontal, stockDewarp,
+                requestId, inputSurfaceSink))) {
             surface.release();
+            cancelStockAvmOpen(openState);
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", "config_main_handler_unavailable",
                     "viewpoint", viewpoint, "request_id", requestId,
@@ -229,9 +245,10 @@ final class TurnSignalController {
     }
 
     private void readCameraConfigAndOpen(
-            Surface surface, int viewpoint, boolean horizontal, boolean stockDewarp,
+            StockAvmOpenState openState, Surface surface, int viewpoint,
+            boolean horizontal, boolean stockDewarp,
             int requestId, Consumer<Surface> inputSurfaceSink) {
-        if (stopped) {
+        if (isStockAvmCanceled(openState)) {
             surface.release();
             return;
         }
@@ -252,31 +269,40 @@ final class TurnSignalController {
                     "stage", stage, "view", StockAvmPreview.viewName(viewpoint),
                     "viewpoint", viewpoint, "request_id", requestId,
                     "error", summary(error));
+            clearStockAvmOpen(openState);
             surface.release();
             return;
         }
-        worker.execute(() -> {
+        if (isStockAvmCanceled(openState)) {
+            surface.release();
+            return;
+        }
+        try {
+            worker.execute(() -> {
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
             boolean resetRetried = false;
             try {
+                if (isStockAvmCanceled(openState)) return;
                 beginStockAvmAttempt(requestId, 1);
                 for (int attempt = 0; attempt < 2; attempt++) {
                     try {
+                        if (isStockAvmCanceled(openState)) return;
                         value = ensureAvmShell();
                         epoch = avmShellEpoch(value);
+                        if (isStockAvmCanceled(openState)) return;
                         Surface inputSurface = transactAvmOpen(
                                 value, surface, viewpoint, horizontal, stockDewarp,
                                 requestId, attempt + 1, config);
                         transactionComplete = true;
-                        boolean inputSurfaceValid = inputSurface.isValid();
-                        try {
-                            inputSurfaceSink.accept(inputSurface);
-                        } catch (Throwable error) {
-                            inputSurface.release();
-                            throw error;
+                        if (!publishStockAvmInput(
+                                openState, inputSurface, inputSurfaceSink)) return;
+                        synchronized (openState) {
+                            if (isStockAvmCanceled(openState)) return;
+                            openState.published.set(true);
                         }
+                        boolean inputSurfaceValid = inputSurface.isValid();
                         emit("camera_shell_opened", "viewpoint", viewpoint,
                                 "request_id", requestId,
                                 "orientation", horizontal ? "horizontal" : "vertical",
@@ -285,16 +311,20 @@ final class TurnSignalController {
                                 "avm_shell_epoch", epoch);
                         break;
                     } catch (Throwable error) {
-                        if (!shouldRetryStockAvm(transactionComplete, resetRetried, stopped)) {
+                        if (isStockAvmCanceled(openState)
+                                || !shouldRetryStockAvm(transactionComplete, resetRetried, stopped)) {
                             throw error;
                         }
+                        if (isStockAvmCanceled(openState)) return;
                         resetRetried = true;
                         setStockAvmAttempt(requestId, 2);
                         emit("stock_avm_reset_retry", "request_id", requestId,
                                 "viewpoint", viewpoint, "error", summary(error));
                         stockAvmResetInProgress = true;
                         try {
+                            if (isStockAvmCanceled(openState)) return;
                             resetAvmShell();
+                            if (isStockAvmCanceled(openState)) return;
                         } finally {
                             stockAvmResetInProgress = false;
                         }
@@ -305,6 +335,7 @@ final class TurnSignalController {
                 }
             } catch (Throwable error) {
                 boolean shellFailureNotified = false;
+                if (isStockAvmCanceled(openState)) return;
                 if (!transactionComplete && value != null && !avmPing(value)) {
                     shellFailureNotified = avmShellLost(value, epoch, summary(error));
                 }
@@ -320,13 +351,51 @@ final class TurnSignalController {
             } finally {
                 endStockAvmAttempt(requestId);
                 surface.release();
+                if (!openState.published.get()) clearStockAvmOpen(openState);
             }
-        });
+            });
+        } catch (RejectedExecutionException error) {
+            surface.release();
+            clearStockAvmOpen(openState);
+        }
     }
 
     void closeStockAvm(String reason, int requestId) {
         if (requestId <= 0) return;
-        worker.execute(() -> closeStockAvmNow(reason, requestId));
+        StockAvmOpenState canceledOpen = cancelStockAvmOpen(requestId);
+        if (canceledOpen != null) {
+            queueStockAvmCleanup(canceledOpen, reason);
+            return;
+        }
+        try {
+            worker.execute(() -> closeStockAvmNow(reason, requestId));
+        } catch (RejectedExecutionException ignored) {
+        }
+    }
+
+    void updateCameraVisuals(int cornerRadiusDp, int transparencyPercent) {
+        CameraShellProtocol.validateVisualStyle(cornerRadiusDp, transparencyPercent);
+        try {
+            worker.execute(() -> {
+                IBinder value;
+                long epoch;
+                synchronized (TurnSignalController.this) {
+                    value = cameraHelper;
+                    epoch = cameraHelper == null ? 0L : cameraHelperEpoch;
+                }
+                if (value == null || !value.isBinderAlive()) return;
+                synchronized (TurnSignalController.this) {
+                    if (cameraHelper != value || cameraHelperEpoch != epoch) return;
+                }
+                try {
+                    transactCameraVisuals(value, cornerRadiusDp, transparencyPercent);
+                } catch (Throwable error) {
+                    emit("camera_shell_visuals_error", "error", summary(error),
+                            "camera_helper_epoch", epoch);
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+        }
     }
 
     void recoverCameraHelper() {
@@ -355,7 +424,7 @@ final class TurnSignalController {
             throw new IllegalArgumentException("overlay spec/sinks required");
         }
         worker.execute(() -> {
-            PendingOverlay pending = new PendingOverlay(spec.requestId, surfaceSink);
+            PendingOverlay pending = new PendingOverlay(spec.cameraId, spec.requestId, surfaceSink);
             pendingOverlays[spec.cameraId] = pending;
             IBinder value = null;
             long epoch = 0;
@@ -363,7 +432,21 @@ final class TurnSignalController {
             try {
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
-                transactOverlayPrepare(value, spec);
+                int prepareResult = transactOverlayPrepare(value, spec);
+                if (prepareResult == CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
+                    if (!isCurrentPendingOverlay(pending)) return;
+                    emit("camera_shell_restart", "scope", "overlay",
+                            "camera_id", spec.cameraId, "request_id", spec.requestId,
+                            "reason", "incompatible_prepare", "camera_shell_epoch", epoch);
+                    value = restartCameraHelper(value, epoch, "overlay_prepare");
+                    epoch = cameraHelperEpoch(value);
+                    if (!isCurrentPendingOverlay(pending)) return;
+                    prepareResult = transactOverlayPrepare(value, spec);
+                }
+                if (prepareResult != CameraShellProtocol.PREPARE_OK) {
+                    throw new IllegalStateException("unknown overlay prepare result: "
+                            + prepareResult);
+                }
                 pending.preparedHelper = value;
                 pending.preparedEpoch = epoch;
                 transactionComplete = true;
@@ -400,6 +483,15 @@ final class TurnSignalController {
                         "error", summary(error));
             }
         });
+    }
+
+    private boolean isCurrentPendingOverlay(PendingOverlay pending) {
+        return pending != null && !stopped
+                && pendingOverlays[pending.cameraId()] == pending;
+    }
+
+    private boolean isCurrentPendingReverse(int requestId) {
+        return !stopped && requestId > 0 && pendingReverseRequestId == requestId;
     }
 
     void setCameraOverlayVisible(
@@ -482,7 +574,21 @@ final class TurnSignalController {
             try {
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
-                transactReversePrepare(value, spec);
+                int prepareResult = transactReversePrepare(value, spec);
+                if (prepareResult == CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
+                    if (!isCurrentPendingReverse(spec.requestId)) return;
+                    emit("camera_shell_restart", "scope", "reverse",
+                            "request_id", spec.requestId,
+                            "reason", "incompatible_prepare", "camera_shell_epoch", epoch);
+                    value = restartCameraHelper(value, epoch, "reverse_prepare");
+                    epoch = cameraHelperEpoch(value);
+                    if (!isCurrentPendingReverse(spec.requestId)) return;
+                    prepareResult = transactReversePrepare(value, spec);
+                }
+                if (prepareResult != CameraShellProtocol.PREPARE_OK) {
+                    throw new IllegalStateException("unknown reverse prepare result: "
+                            + prepareResult);
+                }
                 pendingReverseHelper = value;
                 pendingReverseHelperEpoch = epoch;
                 transactionComplete = true;
@@ -535,6 +641,31 @@ final class TurnSignalController {
         worker.execute(() -> {
             boolean success = closeReverseOverlayNow(reason);
             postCompletion(completion, success, "reverse_close", 0);
+        });
+    }
+
+    /** Updates Reverse pane visibility in place; no prepare/reload or Surface recreation. */
+    void updateReverseOverlayVisibility(
+            int requestId, int[] generations, int visibilityMask,
+            boolean widgetVisible, Consumer<Boolean> completion) {
+        if (requestId <= 0 || generations == null
+                || (generations.length != 3 && generations.length != 4)) {
+            throw new IllegalArgumentException("reverse visibility identity is required");
+        }
+        ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+        worker.execute(() -> {
+            boolean success = false;
+            try {
+                IBinder value = ensureCameraHelper();
+                transactReverseVisibilityMask(
+                        value, requestId, generations, visibilityMask, widgetVisible);
+                success = true;
+            } catch (Throwable error) {
+                emit("reverse_overlay_error", "stage", "visibility_mask",
+                        "request_id", requestId, "error", summary(error));
+            } finally {
+                postCompletion(completion, success, "reverse_visibility_mask", requestId);
+            }
         });
     }
 
@@ -620,12 +751,9 @@ final class TurnSignalController {
                 attach(ping);
                 return;
             }
-            try {
-                transactNoArgs(ping.binder, TurnSignalShellProtocol.TX_REPORT_STATUS);
-                return;
-            } catch (Throwable error) {
-                ping = Ping.failed("status_binder_error: " + summary(error));
-            }
+            // TX_PING is the only steady-state health probe.  Full status is emitted only on
+            // attach/reconnect, explicit reportStatus(), or a material/error transition.
+            return;
         }
         if (healthy) {
             healthy = false;
@@ -1089,13 +1217,27 @@ final class TurnSignalController {
     }
 
     private IBinder ensureCameraHelper() throws Exception {
+        return ensureCameraHelper(false);
+    }
+
+    private IBinder ensureCameraHelper(boolean forceFresh) throws Exception {
+        return ensureCameraHelper(forceFresh, null);
+    }
+
+    private IBinder ensureCameraHelper(boolean forceFresh, IBinder staleBinder)
+            throws Exception {
         if (stopped || LegacySettingsImporter.blocksRuntime(context)) {
             throw new IllegalStateException("runtime blocked by shutdown or legacy handover");
         }
+        IBinder stale = forceFresh
+                ? (staleBinder == null ? cameraHelper : staleBinder) : null;
         CameraHelperResolution resolution = resolveCameraHelperFlow(
-                cameraHelper,
+                forceFresh ? null : cameraHelper,
                 this::cameraPing,
-                this::resolveCameraHelper,
+                forceFresh ? () -> {
+                    IBinder candidate = resolveCameraHelper();
+                    return candidate == stale ? null : candidate;
+                } : this::resolveCameraHelper,
                 () -> {
                     if (stopped || !migrateHelperNamespace()) {
                         return LocalAdbClient.Result.failed(
@@ -1133,6 +1275,28 @@ final class TurnSignalController {
                 throw error;
             }
         }
+        return value;
+    }
+
+    /**
+     * Replaces a camera shell once after it reports an incompatible Windowless host.  The shell
+     * owns no safe in-process destruction path, so TX_SHUTDOWN is followed by the existing launch
+     * command's process kill/reap and a bounded Binder readiness wait before reattach.
+     */
+    private IBinder restartCameraHelper(
+            IBinder expected, long expectedEpoch, String reason) throws Exception {
+        if (stopped) throw new IllegalStateException("camera shell restart cancelled");
+        try {
+            if (cameraPing(expected)) {
+                transactNoArgs(expected, CameraShellProtocol.TX_SHUTDOWN);
+            }
+        } finally {
+            clearCameraHelper(expected, expectedEpoch);
+        }
+        IBinder value = ensureCameraHelper(true, expected);
+        long epoch = cameraHelperEpoch(value);
+        emit("camera_shell_restarted", "reason", reason,
+                "camera_shell_epoch", epoch);
         return value;
     }
 
@@ -1300,7 +1464,7 @@ final class TurnSignalController {
         }
     }
 
-    private static void transactOverlayPrepare(
+    private static int transactOverlayPrepare(
             IBinder value, CameraShellProtocol.OverlaySpec spec) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -1308,6 +1472,24 @@ final class TurnSignalController {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             spec.writeToParcel(data);
             requireTransact(value, CameraShellProtocol.TX_OVERLAY_PREPARE, data, reply);
+            return reply.dataAvail() > 0
+                    ? requirePrepareResult(reply.readInt()) : CameraShellProtocol.PREPARE_OK;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactCameraVisuals(
+            IBinder value, int cornerRadiusDp, int transparencyPercent) throws Exception {
+        CameraShellProtocol.validateVisualStyle(cornerRadiusDp, transparencyPercent);
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(cornerRadiusDp);
+            data.writeInt(transparencyPercent);
+            requireTransact(value, CameraShellProtocol.TX_UPDATE_VISUALS, data, reply);
         } finally {
             data.recycle();
             reply.recycle();
@@ -1415,7 +1597,7 @@ final class TurnSignalController {
         }
     }
 
-    private static void transactReversePrepare(
+    private static int transactReversePrepare(
             IBinder value, CameraShellProtocol.ReverseOverlaySpec spec) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -1423,6 +1605,37 @@ final class TurnSignalController {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             spec.writeToParcel(data);
             requireTransact(value, CameraShellProtocol.TX_REVERSE_PREPARE, data, reply);
+            return reply.dataAvail() > 0
+                    ? requirePrepareResult(reply.readInt()) : CameraShellProtocol.PREPARE_OK;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static int requirePrepareResult(int result) {
+        if (result != CameraShellProtocol.PREPARE_OK
+                && result != CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
+            throw new IllegalStateException("invalid camera prepare result: " + result);
+        }
+        return result;
+    }
+
+    private static void transactReverseVisibilityMask(
+            IBinder value, int requestId, int[] generations,
+            int visibilityMask, boolean widgetVisible) throws Exception {
+        ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(generations.length);
+            for (int generation : generations) data.writeInt(generation);
+            data.writeInt(visibilityMask);
+            data.writeInt(widgetVisible ? 1 : 0);
+            requireTransact(
+                    value, CameraShellProtocol.TX_REVERSE_UPDATE_VISIBILITY, data, reply);
         } finally {
             data.recycle();
             reply.recycle();
@@ -1760,6 +1973,7 @@ final class TurnSignalController {
 
     private void acceptShellEvent(String line) {
         if (line == null) return;
+        line = enrichShellEpoch(line);
         try {
             JSONObject event = new JSONObject(line);
             String kind = event.optString("kind");
@@ -1796,6 +2010,38 @@ final class TurnSignalController {
             emit("shell_event_parse_error", "error", summary(error));
         }
         shellEventSink.accept(line);
+    }
+
+    /** Adds the controller-owned Binder epoch to events emitted by either camera shell. */
+    private String enrichShellEpoch(String line) {
+        try {
+            JSONObject event = new JSONObject(line);
+            String source = event.optString("source");
+            if ("camera_shell_helper".equals(source)
+                    && !event.has("camera_shell_epoch")) {
+                long epoch;
+                synchronized (this) {
+                    epoch = cameraHelper == null ? 0L : cameraHelperEpoch;
+                }
+                if (epoch > 0L) event.put("camera_shell_epoch", epoch);
+            } else if ("stock_avm_shell".equals(source)) {
+                long avmEpoch;
+                long cameraEpoch;
+                synchronized (this) {
+                    avmEpoch = avmShell == null ? 0L : avmShellEpoch;
+                    cameraEpoch = cameraHelper == null ? 0L : cameraHelperEpoch;
+                }
+                if (!event.has("avm_shell_epoch") && avmEpoch > 0L) {
+                    event.put("avm_shell_epoch", avmEpoch);
+                }
+                if (!event.has("camera_shell_epoch") && cameraEpoch > 0L) {
+                    event.put("camera_shell_epoch", cameraEpoch);
+                }
+            }
+            return event.toString();
+        } catch (Throwable ignored) {
+            return line;
+        }
     }
 
     private void emitUnavailable(String kind) {
@@ -2014,6 +2260,109 @@ final class TurnSignalController {
         stockAvmRetryActive = true;
     }
 
+    private StockAvmOpenState beginStockAvmOpen(int requestId) {
+        StockAvmOpenState previous;
+        StockAvmOpenState next = new StockAvmOpenState(requestId);
+        synchronized (this) {
+            previous = activeStockAvmOpen;
+            activeStockAvmOpen = next;
+        }
+        if (previous != null) {
+            synchronized (previous) {
+                previous.cancelled.set(true);
+            }
+            queueStockAvmCleanup(previous, "stock_avm_open_replaced");
+        }
+        return next;
+    }
+
+    private StockAvmOpenState cancelStockAvmOpen(int requestId) {
+        StockAvmOpenState current;
+        synchronized (this) {
+            current = activeStockAvmOpen;
+            if (current == null || (requestId > 0 && current.requestId != requestId)) {
+                return null;
+            }
+        }
+        cancelStockAvmOpen(current);
+        return current;
+    }
+
+    private void cancelStockAvmOpen(StockAvmOpenState expected) {
+        if (expected == null) return;
+        synchronized (this) {
+            if (activeStockAvmOpen != expected) return;
+        }
+        synchronized (expected) {
+            expected.cancelled.set(true);
+        }
+    }
+
+    private boolean isStockAvmCanceled(StockAvmOpenState state) {
+        return state == null || !stockAvmCanContinue(!state.cancelled.get(), stopped);
+    }
+
+    private boolean publishStockAvmInput(
+            StockAvmOpenState state, Surface inputSurface, Consumer<Surface> sink) {
+        return publishStockAvmInputGate(state, state.cancelled, stopped,
+                inputSurface::release, () -> sink.accept(inputSurface));
+    }
+
+    static boolean stockAvmCanContinue(boolean requestActive, boolean stopped) {
+        return requestActive && !stopped;
+    }
+
+    static boolean publishStockAvmInputGate(
+            Object requestLock, AtomicBoolean canceled, boolean stopped,
+            Runnable release, Runnable publish) {
+        if (requestLock == null || canceled == null || release == null || publish == null) {
+            throw new IllegalArgumentException("stock AVM publish gate arguments are required");
+        }
+        synchronized (requestLock) {
+            if (!stockAvmCanContinue(!canceled.get(), stopped)) {
+                release.run();
+                return false;
+            }
+        }
+        try {
+            publish.run();
+            return true;
+        } catch (RuntimeException error) {
+            release.run();
+            throw error;
+        } catch (Error error) {
+            release.run();
+            throw error;
+        }
+    }
+
+    private void clearStockAvmOpen(StockAvmOpenState state) {
+        synchronized (this) {
+            if (activeStockAvmOpen == state && !state.published.get()) {
+                activeStockAvmOpen = null;
+            }
+        }
+    }
+
+    private void queueStockAvmCleanup(StockAvmOpenState state, String reason) {
+        if (state == null || !state.cleanupQueued.compareAndSet(false, true)) return;
+        try {
+            worker.execute(() -> {
+                try {
+                    closeStockAvmNow(reason, state.requestId);
+                } finally {
+                    synchronized (TurnSignalController.this) {
+                        if (activeStockAvmOpen == state) activeStockAvmOpen = null;
+                    }
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            synchronized (this) {
+                if (activeStockAvmOpen == state) activeStockAvmOpen = null;
+            }
+        }
+    }
+
     private void setStockAvmAttempt(int requestId, int attempt) {
         if (stockAvmRetryRequestId != requestId) return;
         stockAvmRetryAttempt = attempt;
@@ -2157,6 +2506,12 @@ final class TurnSignalController {
         return !transactionComplete && !resetRetried && !stopped;
     }
 
+    static boolean shouldRetryStockAvm(
+            boolean transactionComplete, boolean resetRetried,
+            boolean stopped, boolean canceled) {
+        return !canceled && shouldRetryStockAvm(transactionComplete, resetRetried, stopped);
+    }
+
     static boolean shouldSuppressStockAvmError(
             boolean tracked, int activeRequestId, int activeAttempt,
             int eventRequestId, int eventAttempt) {
@@ -2191,6 +2546,17 @@ final class TurnSignalController {
     private static String summary(Throwable error) {
         String message = error.getMessage();
         return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+    }
+
+    private static final class StockAvmOpenState {
+        final int requestId;
+        final AtomicBoolean cancelled = new AtomicBoolean();
+        final AtomicBoolean cleanupQueued = new AtomicBoolean();
+        final AtomicBoolean published = new AtomicBoolean();
+
+        StockAvmOpenState(int requestId) {
+            this.requestId = requestId;
+        }
     }
 
     private static final class Ping {
@@ -2248,14 +2614,20 @@ final class TurnSignalController {
     }
 
     private static final class PendingOverlay {
+        final int cameraId;
         final int requestId;
         final Consumer<OverlaySurface> sink;
         IBinder preparedHelper;
         long preparedEpoch;
 
-        PendingOverlay(int requestId, Consumer<OverlaySurface> sink) {
+        PendingOverlay(int cameraId, int requestId, Consumer<OverlaySurface> sink) {
+            this.cameraId = cameraId;
             this.requestId = requestId;
             this.sink = sink;
+        }
+
+        int cameraId() {
+            return cameraId;
         }
     }
 

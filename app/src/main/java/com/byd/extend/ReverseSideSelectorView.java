@@ -27,7 +27,7 @@ final class ReverseSideSelectorView extends View {
     private static final float FRONT_BUTTON_BOTTOM = 0.22f;
     private static final float REAR_BUTTON_TOP = 0.78f;
     private static final float REAR_BUTTON_BOTTOM = 0.96f;
-    private static final int PANEL_COLOR = 0xA8101826;
+    private static final int PANEL_COLOR = 0xFF101826;
     private static final int BODY_COLOR = 0xFF26364C;
     private static final int BODY_STROKE_COLOR = 0xFF9FB7D5;
     private static final int INACTIVE_COLOR = 0xFF77869A;
@@ -76,6 +76,14 @@ final class ReverseSideSelectorView extends View {
 
     int mode() {
         return mode;
+    }
+
+    /** Mirrors a press received by the transparent control host above this view. */
+    void setExternalPressedMode(int value) {
+        if (value != -1) requireMode(value);
+        if (pressedMode == value) return;
+        pressedMode = value;
+        invalidate();
     }
 
     void setEffectiveVisibility(boolean left, boolean right, boolean center) {
@@ -173,6 +181,8 @@ final class ReverseSideSelectorView extends View {
         boolean selected = mode == buttonMode;
         boolean active = selected && (leftVisible || rightVisible || centerVisible);
         boolean pressed = pressedMode == buttonMode;
+        if (pressed) canvas.save();
+        if (pressed) canvas.scale(0.97f, 0.97f, rect.centerX(), rect.centerY());
         fill.setColor(pressed ? PRESSED_BUTTON_COLOR
                 : active ? ACTIVE_BUTTON_COLOR : 0x99314257);
         canvas.drawRoundRect(rect, rect.height() * 0.28f, rect.height() * 0.28f, fill);
@@ -182,6 +192,7 @@ final class ReverseSideSelectorView extends View {
         text.setTextSize(Math.max(dp(12), rect.height() * 0.46f));
         canvas.drawText(buttonMode == MODE_FRONT ? "Перед" : "Зад",
                 rect.centerX(), rect.centerY() - (text.ascent() + text.descent()) / 2.0f, text);
+        if (pressed) canvas.restore();
     }
 
     private void drawCar(Canvas canvas, float width, float height, float unit) {

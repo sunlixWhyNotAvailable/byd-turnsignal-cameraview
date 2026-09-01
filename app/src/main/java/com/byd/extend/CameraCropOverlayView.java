@@ -54,7 +54,9 @@ final class CameraCropOverlayView extends View {
     }
 
     void setCrop(DirectCameraCrop crop) {
-        this.crop = crop;
+        // The overlay edits only the source ROI. Output rotation/mirror stay in the renderer so
+        // the selected region remains an axis-aligned rectangle in every calibration stage.
+        this.crop = crop == null ? DirectCameraCrop.defaultFor(false) : crop.geometryOnly();
         invalidate();
     }
 

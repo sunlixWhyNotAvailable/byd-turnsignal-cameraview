@@ -41,13 +41,10 @@ final class CameraRotation {
             boolean mirrorHorizontally) {
         int safeDegrees = clamp(degrees);
         if (mode == MODE_ALIGNED) {
-            float[] source = rotatedCorners(sourceCrop, safeDegrees);
-            float[] target = new float[]{
-                    destination.left, destination.top,
-                    destination.right, destination.top,
-                    destination.right, destination.bottom,
-                    destination.left, destination.bottom
-            };
+            // Stretch keeps the destination pane axis aligned.  Rotate the transient source
+            // geometry instead; the persisted ROI remains the original axis-aligned rectangle.
+            float[] source = rotatedSourceCorners(sourceCrop, safeDegrees);
+            float[] target = axisDestinationCorners(destination);
             transform.setPolyToPoly(source, 0, target, 0, 4);
         } else {
             transform.setValues(proportionalTransformValues(
@@ -80,15 +77,10 @@ final class CameraRotation {
         }
         int safeDegrees = clamp(degrees);
         if (mode == MODE_ALIGNED) {
-            float[] source = alignedSourceCorners(
-                    cropLeft, cropTop, cropWidth, cropHeight, safeDegrees,
-                    sourceWidth, sourceHeight, inputWidth, inputHeight);
-            float[] target = new float[]{
-                    destination.left, destination.top,
-                    destination.right, destination.top,
-                    destination.right, destination.bottom,
-                    destination.left, destination.bottom
-            };
+            float[] source = rotatedSourceCorners(
+                    cropLeft, cropTop, cropWidth, cropHeight,
+                    safeDegrees, sourceWidth, sourceHeight, inputWidth, inputHeight);
+            float[] target = axisDestinationCorners(destination);
             transform.setPolyToPoly(source, 0, target, 0, 4);
         } else {
             float[] values = sourceAwareProportionalTransformValues(
@@ -102,6 +94,80 @@ final class CameraRotation {
             transform.postScale(-1.0f, 1.0f,
                     destination.centerX(), destination.centerY());
         }
+    }
+
+    /**
+     * Returns the output-space polygon occupied by the selected source ROI after the same
+     * transform used by a live camera view.  Consumers draw this polygon as a black-outside
+     * mask; the texture matrix alone cannot prevent samples outside an ROI after rotation.
+     */
+    static float[] transformedCropCornersForInput(
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            RectF destination, int degrees, int mode,
+            int sourceWidth, int sourceHeight, int inputWidth, int inputHeight,
+            boolean mirrorHorizontally) {
+        if (destination == null) throw new IllegalArgumentException("destination is required");
+        if (mode == MODE_ALIGNED) {
+            if (sourceWidth <= 0 || sourceHeight <= 0
+                    || inputWidth <= 0 || inputHeight <= 0
+                    || !(cropWidth > 0.0f) || !(cropHeight > 0.0f)) {
+                throw new IllegalArgumentException("positive source and crop bounds are required");
+            }
+            // Stretch maps the rotated transient source polygon onto the fixed pane rectangle,
+            // so its visible crop mask is the pane itself rather than the unrotated source ROI.
+            return fixedOutputCorners(mode, destination.left, destination.top,
+                    destination.right, destination.bottom);
+        }
+        Matrix transform = new Matrix();
+        setSourceCropTransformForInput(
+                transform, cropLeft, cropTop, cropWidth, cropHeight, destination,
+                degrees, mode, sourceWidth, sourceHeight, inputWidth, inputHeight,
+                mirrorHorizontally);
+        float[] corners = axisSourceCorners(
+                cropLeft, cropTop, cropWidth, cropHeight,
+                sourceWidth, sourceHeight, inputWidth, inputHeight);
+        transform.mapPoints(corners);
+        return corners;
+    }
+
+    static float[] fixedOutputCorners(
+            int mode, float left, float top, float right, float bottom) {
+        if (mode != MODE_ALIGNED) return null;
+        return new float[]{left, top, right, top, right, bottom, left, bottom};
+    }
+
+    static float[] axisSourceCorners(
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            int sourceWidth, int sourceHeight, int inputWidth, int inputHeight) {
+        float scaleX = (float) inputWidth / sourceWidth;
+        float scaleY = (float) inputHeight / sourceHeight;
+        float left = cropLeft * sourceWidth * scaleX;
+        float top = cropTop * sourceHeight * scaleY;
+        float right = (cropLeft + cropWidth) * sourceWidth * scaleX;
+        float bottom = (cropTop + cropHeight) * sourceHeight * scaleY;
+        return new float[]{left, top, right, top, right, bottom, left, bottom};
+    }
+
+    private static float[] axisDestinationCorners(RectF destination) {
+        return fixedOutputCorners(MODE_ALIGNED, destination.left, destination.top,
+                destination.right, destination.bottom);
+    }
+
+    private static float[] rotatedSourceCorners(RectF source, int degrees) {
+        float[] corners = axisDestinationCorners(source);
+        Matrix rotation = new Matrix();
+        rotation.setRotate(clamp(degrees), source.centerX(), source.centerY());
+        rotation.mapPoints(corners);
+        return corners;
+    }
+
+    private static float[] rotatedSourceCorners(
+            float cropLeft, float cropTop, float cropWidth, float cropHeight,
+            int degrees, int sourceWidth, int sourceHeight,
+            int inputWidth, int inputHeight) {
+        return alignedSourceCorners(
+                cropLeft, cropTop, cropWidth, cropHeight,
+                degrees, sourceWidth, sourceHeight, inputWidth, inputHeight);
     }
 
     static float[] alignedSourceCorners(
@@ -157,6 +223,10 @@ final class CameraRotation {
         double sine = Math.sin(radians);
         double absoluteCosine = Math.abs(cosine);
         double absoluteSine = Math.abs(sine);
+        double rotatedWidth = absoluteCosine * physicalCropWidth
+                + absoluteSine * physicalCropHeight;
+        double rotatedHeight = absoluteSine * physicalCropWidth
+                + absoluteCosine * physicalCropHeight;
         double scale = mode == MODE_FILL
                 ? Math.max(
                         (absoluteCosine * destinationWidth
@@ -164,12 +234,8 @@ final class CameraRotation {
                         (absoluteSine * destinationWidth
                                 + absoluteCosine * destinationHeight) / physicalCropHeight)
                 : Math.min(
-                        destinationWidth
-                                / (absoluteCosine * physicalCropWidth
-                                + absoluteSine * physicalCropHeight),
-                        destinationHeight
-                                / (absoluteSine * physicalCropWidth
-                                + absoluteCosine * physicalCropHeight));
+                        destinationWidth / rotatedWidth,
+                        destinationHeight / rotatedHeight);
         double sourceCenterX = (cropLeft + cropWidth / 2.0d) * sourceWidth;
         double sourceCenterY = (cropTop + cropHeight / 2.0d) * sourceHeight;
         double destinationCenterX = (destinationLeft + destinationRight) / 2.0d;

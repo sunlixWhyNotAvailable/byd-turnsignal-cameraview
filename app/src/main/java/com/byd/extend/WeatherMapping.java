@@ -311,7 +311,7 @@ public final class WeatherMapping {
     }
 
     private static String nonEmpty(String value, String fallback) {
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+        return value == null || value.trim().isEmpty() ? fallback : value;
     }
 
     private static long parseTime(String value) {

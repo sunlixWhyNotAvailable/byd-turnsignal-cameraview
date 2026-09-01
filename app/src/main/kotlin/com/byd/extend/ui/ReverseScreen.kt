@@ -25,6 +25,7 @@ internal fun ReverseScreen(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
+    onPreview: (NumberTarget, String, Long) -> String?,
 ) {
     val selected = state.selectedElement
     val cameraElement = selected in listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)
@@ -67,6 +68,7 @@ internal fun ReverseScreen(
                 profileControls = profileControls,
                 controls = {
                     CameraProfileControls(profileId, profile, state.section, false, strings, colors, onAction,
+                        onPreview = onPreview,
                         parameters = {})
                 },
                 preview = { CameraProfilePreview(
@@ -88,7 +90,7 @@ internal fun ReverseScreen(
                             SwitchLine(strings.reverseElements[element.ordinal], "", visible,
                                 { onAction(BydExtendUiAction.Toggle(
                                     ToggleTarget.Reverse(ToggleId.ReverseElementVisible, element), it)) },
-                                colors, strikeThrough = !visible)
+                                colors)
                         }
                     } else {
                         ReverseCompositionControls(state, selected, cameraElement, strings, colors, onAction)
@@ -115,40 +117,36 @@ private fun ReverseCompositionControls(
     fun commit(field: ReverseGeometryNumber, value: String) {
         onAction(BydExtendUiAction.CommitNumber(NumberTarget.ReverseGeometry(selected, field), value))
     }
-    NumericSetting(strings.text("Ширина", "Width"), geometry.width, "%", colors,
-        { commit(ReverseGeometryNumber.Width, it) }, 5f..100f, adjustable = true,
-        identity = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width))
-    NumericSetting(strings.text("Висота", "Height"), geometry.height, "%", colors,
-        { commit(ReverseGeometryNumber.Height, it) }, 5f..100f, adjustable = true,
-        identity = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height))
+    val width = (geometry.width.toFloatOrNull() ?: 100f).coerceIn(5f, 100f)
+    val height = (geometry.height.toFloatOrNull() ?: 100f).coerceIn(5f, 100f)
+    val x = (geometry.x.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
+    val y = (geometry.y.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     CoordinatePair(geometry.x, geometry.y, colors,
         { commit(ReverseGeometryNumber.X, it) }, { commit(ReverseGeometryNumber.Y, it) },
         NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.X),
-        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y))
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        listOf(
-            strings.text("Вліво", "Left") to CommandId.ReverseNudgeLeft,
-            strings.text("Вгору", "Up") to CommandId.ReverseNudgeUp,
-            strings.text("Вправо", "Right") to CommandId.ReverseNudgeRight,
-            strings.text("Вниз", "Down") to CommandId.ReverseNudgeDown,
-        ).forEach { (label, command) ->
-            ActionButton(label, colors, Modifier.weight(1f), height = 32.dp, enabled = cameraElement) {
-                onAction(BydExtendUiAction.Run(command))
-            }
-        }
-    }
+        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y),
+        maxX = 100f - width, maxY = 100f - height,
+        horizontalTitle = strings.text("Горизонталь", "Horizontal"),
+        verticalTitle = strings.text("Вертикаль", "Vertical"))
+    GeometryPair(strings.text("Ширина", "Width"), geometry.width,
+        { commit(ReverseGeometryNumber.Width, it) }, strings.text("Висота", "Height"), geometry.height,
+        { commit(ReverseGeometryNumber.Height, it) }, colors,
+        5f..(100f - x).coerceAtLeast(5f), "reverse-size-pair",
+        secondRange = 5f..(100f - y).coerceAtLeast(5f),
+        identityFirst = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width),
+        identitySecond = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ActionButton(strings.text("Нижче", "Lower"), colors, Modifier.weight(1f), height = 32.dp,
+        ActionButton(strings.text("Нижче шар", "Lower layer"), colors, Modifier.weight(1f), height = 32.dp,
             enabled = cameraElement && state.zOrder.indexOf(selected) > 0) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseLower))
         }
-        ActionButton(strings.text("Вище", "Raise"), colors, Modifier.weight(1f), height = 32.dp,
+        ActionButton(strings.text("Вище шар", "Raise layer"), colors, Modifier.weight(1f), height = 32.dp,
             enabled = cameraElement && state.zOrder.indexOf(selected) in 0 until state.zOrder.lastIndex) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseRaise))
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-        ActionButton(strings.text("Скинути вигляд", "Reset layout"), colors, Modifier.width(260.dp)) {
+        ActionButton(strings.text("Скинути вигляд", "Reset layout"), colors, Modifier.width(260.dp), mainBackground = true) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout))
         }
     }

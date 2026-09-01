@@ -1,6 +1,7 @@
 package com.byd.extend.ui
 
 import androidx.compose.runtime.Immutable
+import java.util.concurrent.atomic.AtomicLong
 
 enum class UiLanguage { Ukrainian, English }
 enum class UiTheme { Dark, Light }
@@ -73,6 +74,41 @@ internal object NumericDraftPolicy {
         return NumericDraftResult(canonical,
             (canonical.toFloatOrNull() ?: range.start).coerceIn(range),
             parsed != null && parsed.isFinite() && parsed in range)
+    }
+}
+
+/** One slider gesture; disposed sessions cannot emit a late finish commit. */
+internal class NumericPreviewSession {
+    private var id: Long = 0L
+    private var active = false
+    private var closed = false
+    private var disposed = false
+
+    fun begin(): Long {
+        if (disposed) return -1L
+        if (!active || closed) {
+            id = nextId.incrementAndGet()
+            active = true
+            closed = false
+        }
+        return id
+    }
+
+    fun finish(sessionId: Long): Boolean {
+        if (disposed || closed || !active || id != sessionId) return false
+        closed = true
+        active = false
+        return true
+    }
+
+    fun dispose() {
+        disposed = true
+        closed = true
+        active = false
+    }
+
+    companion object {
+        private val nextId = AtomicLong()
     }
 }
 
@@ -435,7 +471,17 @@ sealed interface BydExtendUiAction {
     @Immutable data class SetLanguage(val language: UiLanguage) : BydExtendUiAction
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
     @Immutable data class Toggle(val target: ToggleTarget, val value: Boolean) : BydExtendUiAction
-    @Immutable data class CommitNumber(val target: NumberTarget, val value: String) : BydExtendUiAction
+    /** Live, non-persisting numeric update emitted while a slider is dragged. */
+    @Immutable data class PreviewNumber(
+        val target: NumberTarget,
+        val value: String,
+        val sessionId: Long? = null,
+    ) : BydExtendUiAction
+    @Immutable data class CommitNumber(
+        val target: NumberTarget,
+        val value: String,
+        val sessionId: Long? = null,
+    ) : BydExtendUiAction
     @Immutable data class Select(val target: SelectionTarget, val index: Int) : BydExtendUiAction
     @Immutable data class MoveProfile(val profile: CameraProfileId, val x: Float, val y: Float) : BydExtendUiAction
     @Immutable data class Run(val command: CommandId, val profile: CameraProfileId? = null) : BydExtendUiAction

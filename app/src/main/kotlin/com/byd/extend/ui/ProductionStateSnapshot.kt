@@ -72,8 +72,7 @@ private fun readBlind(
         val target = BlindSpotOverlayController.readTarget(preferences, profile)
         val display = displayGeometry(
             if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet)
-        val requestedAspect = BlindSpotOverlayController.readFrameAspect(
-            preferences, profile, raw.outputAspect())
+        val requestedAspect = BlindSpotOverlayController.readFrameAspect(preferences, profile)
         val output = BlindSpotOverlayController.overlayGeometry(
             display.width, display.height, BlindSpotOverlayController.readScale(preferences, profile),
             requestedAspect, BlindSpotOverlayController.readPosition(preferences, profile, false),

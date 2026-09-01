@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 26;
+    static final int VERSION = 27;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -32,7 +32,22 @@ final class CameraShellProtocol {
     static final int TX_REVERSE_ARM_FRAMES = IBinder.FIRST_CALL_TRANSACTION + 13;
     static final int TX_REVERSE_SET_VISIBLE = IBinder.FIRST_CALL_TRANSACTION + 14;
     static final int TX_REVERSE_CLOSE = IBinder.FIRST_CALL_TRANSACTION + 15;
+    static final int TX_UPDATE_VISUALS = IBinder.FIRST_CALL_TRANSACTION + 16;
+    /** Updates one Reverse pane mask without rebuilding the host or camera inputs. */
+    static final int TX_REVERSE_UPDATE_VISIBILITY = IBinder.FIRST_CALL_TRANSACTION + 17;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
+
+    static final int PREPARE_OK = 0;
+    static final int PREPARE_RESTART_REQUIRED = 1;
+
+    static final class PrepareRestartRequired extends IllegalStateException {
+        final String reason;
+
+        PrepareRestartRequired(String reason) {
+            super("camera host restart required: " + reason);
+            this.reason = reason == null || reason.isEmpty() ? "incompatible" : reason;
+        }
+    }
 
     static final int WARNING_MODE_OFF = 0;
     static final int WARNING_MODE_CONSTANT = 1;
@@ -45,6 +60,13 @@ final class CameraShellProtocol {
 
     static boolean isCallerAllowed(int actualUid, int appUid) {
         return actualUid == appUid;
+    }
+
+    static void validateVisualStyle(int cornerRadiusDp, int transparencyPercent) {
+        if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
+            throw new IllegalArgumentException("invalid camera corner radius");
+        }
+        requireTransparencyPercent(transparencyPercent);
     }
 
     static void validateWarning(

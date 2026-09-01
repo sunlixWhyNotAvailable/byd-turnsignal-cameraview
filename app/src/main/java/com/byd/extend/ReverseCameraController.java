@@ -929,7 +929,6 @@ final class ReverseCameraController {
                 : new float[]{left, top, width, height};
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(
                 geometry[0], geometry[1], geometry[2], geometry[3]);
-        if (migrate) saveSourceCrop(settings, cameraIndex, crop, corrected);
         return crop;
     }
 
@@ -1114,7 +1113,6 @@ final class ReverseCameraController {
                 : new float[]{left, top, width, height};
         ReverseCameraLayout.Rect crop = ReverseCameraLayout.sourceCrop(
                 geometry[0], geometry[1], geometry[2], geometry[3]);
-        if (migrate) saveFrontSourceCrop(settings, cameraIndex, crop, corrected);
         return crop;
     }
 

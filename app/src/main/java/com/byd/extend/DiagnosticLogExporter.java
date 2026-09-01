@@ -57,7 +57,7 @@ final class DiagnosticLogExporter {
                     "for tag in system_server_anr system_app_anr data_app_anr; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
             new CollectorSpec(
                     "system/dropbox-tombstone.txt",
-                    "for tag in system_server_tombstone system_app_tombstone data_app_tombstone; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+                    "for tag in system_server_tombstone system_app_tombstone data_app_tombstone SYSTEM_TOMBSTONE; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
             new CollectorSpec(
                     "system/dropbox-watchdog.txt",
                     "for tag in system_server_watchdog system_server_wtf; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),

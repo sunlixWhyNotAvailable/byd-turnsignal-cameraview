@@ -3,6 +3,7 @@ package com.byd.extend.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,7 @@ fun BydExtendApp(
     state: BydExtendUiState,
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
+    onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
 ) {
     val strings = remember(state.language) { UiStrings(state.language) }
     val colors = remember(state.theme) { palette(state.theme) }
@@ -82,11 +84,11 @@ fun BydExtendApp(
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (state.activeTab) {
                         RootTab.Signals -> SignalsScreen(state.signals, strings, colors, onAction)
-                        RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost)
-                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost)
-                        RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost)
+                        RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost, onPreview)
+                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost, onPreview)
+                        RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
-                            strings, colors, onAction)
+                            strings, colors, onAction, onPreview)
                         RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, onAction, cameraHost)
                     }
                 }
@@ -115,9 +117,9 @@ private fun AppHeader(
                 Text(strings.subtitle, color = colors.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(state.header.adb.copy(text = ""), "ADB", colors)
+                HeaderStatusPill(state.header.adb, "ADB", strings, colors)
                 if (state.header.location.visible || state.header.weatherEnabled) {
-                    StatusPill(state.header.location, strings.text("Геолокація", "Location"), colors)
+                    HeaderStatusPill(state.header.location, strings.text("Геолокація", "Location"), strings, colors)
                 }
                 Segmented(if (strings.ukrainian) listOf("Укр", "Англ") else listOf("UA", "ENG"),
                     if (state.language == UiLanguage.Ukrainian) 0 else 1, colors, Modifier.width(138.dp)) {
@@ -130,6 +132,23 @@ private fun AppHeader(
             }
         }
     }
+}
+
+@Composable
+private fun HeaderStatusPill(
+    state: StatusUiState,
+    label: String,
+    strings: UiStrings,
+    colors: UiPalette,
+) {
+    if (!state.visible) return
+    val suffix = when (state.tone) {
+        StatusTone.Ok -> strings.text("ОК", "OK")
+        StatusTone.Error -> strings.text("Помилка", "Error")
+        StatusTone.Warning -> strings.text("Очікування", "Pending")
+        StatusTone.Neutral -> strings.text("—", "—")
+    }
+    StatusPill(state.copy(text = "$label: $suffix"), label, colors)
 }
 
 @Composable
@@ -151,7 +170,6 @@ private fun SignalsScreen(
                         pending = state.guard.operation.pending, enabled = state.guard.operation.enabled,
                         label = strings.text("Захист поворотника", "Turn-signal guard"))
                 }) {
-                StatusText(state.guard.operation.status, colors, reserveLines = true)
                 GuardNumber.entries.forEach { field ->
                     val value = when (field) {
                         GuardNumber.OutwardAngle -> state.guard.outwardAngle
@@ -171,8 +189,8 @@ private fun SignalsScreen(
                         GuardNumber.MaximumSpeed -> strings.text("км/год", "km/h")
                     }
                     val range = when (field) {
-                        GuardNumber.OutwardAngle -> 30f..360f
-                        GuardNumber.CentreTolerance -> 2f..45f
+                        GuardNumber.OutwardAngle -> 0f..360f
+                        GuardNumber.CentreTolerance -> 0f..45f
                         GuardNumber.CorrectionDelayMs -> 0f..1000f
                         GuardNumber.MaximumSpeed -> 0f..300f
                     }
@@ -228,10 +246,14 @@ private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPale
         .padding(6.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         RootTab.entries.forEachIndexed { index, tab ->
             val selected = active == tab
+            val press = rememberPressFeedback()
             Row(Modifier.weight(rootWeights[index]).fillMaxHeight().clip(RoundedCornerShape(6.dp))
                 .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
-                .background(if (selected) colors.active else Color.Transparent)
-                .selectable(selected, role = Role.Tab) { onSelect(tab) }, verticalAlignment = Alignment.CenterVertically,
+                .background(pressBackground(if (selected) colors.active else Color.Transparent, colors, press.pressed))
+                .then(press.modifier)
+                .clickable(interactionSource = press.interactionSource, indication = null,
+                    role = Role.Tab) { onSelect(tab) },
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center) {
                 Icon(rootIcons[index], null, tint = if (selected) colors.text else colors.muted, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(9.dp))
@@ -255,8 +277,22 @@ private fun AppDialog(
         Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp))
             .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text(state.title, color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(colors.field)
+            Text(state.title, color = colors.text,
+                fontSize = if (state.kind == DialogKind.Background) 20.sp else 22.sp,
+                fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (state.kind == DialogKind.Background) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        .background(colors.accent.copy(alpha = if (colors.dark) .22f else .12f))
+                        .border(1.dp, colors.yellow.copy(alpha = .55f), RoundedCornerShape(8.dp)).padding(14.dp)) {
+                        Text(strings.text("Установіть Disable background Apps -> BYD HUD = OFF",
+                            "Set Disable background Apps -> BYD HUD = OFF"),
+                            color = if (colors.dark) colors.yellow else colors.text,
+                            fontWeight = FontWeight.Bold, fontSize = 16.sp, lineHeight = 20.sp)
+                    }
+                    Text(state.message, color = colors.muted, fontSize = 14.sp, lineHeight = 19.sp)
+                }
+            } else Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(colors.field)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp)).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -265,11 +301,19 @@ private fun AppDialog(
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
-                if (state.cancellable) ActionButton(strings.text("Скасувати", "Cancel"), colors, Modifier.width(138.dp)) {
+                if (state.kind == DialogKind.Background) ActionButton(strings.text("Відкрити", "Open"), colors,
+                    Modifier.width(138.dp), primary = true) {
+                    onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog))
+                }
+                if (state.kind == DialogKind.Background) ActionButton(strings.text("Зрозуміло", "Got it"), colors,
+                    Modifier.width(138.dp)) {
+                    onAction(BydExtendUiAction.Run(CommandId.DismissDialog))
+                }
+                if (state.kind != DialogKind.Background && state.cancellable) ActionButton(strings.text("Скасувати", "Cancel"), colors, Modifier.width(138.dp)) {
                     onAction(BydExtendUiAction.Run(if (state.kind == DialogKind.Progress) CommandId.CancelOperation
                     else CommandId.DismissDialog))
                 }
-                ActionButton(
+                if (state.kind != DialogKind.Background) ActionButton(
                     if (state.kind == DialogKind.Shutdown) strings.text("Зупинити", "Stop")
                     else strings.text("Готово", "Done"),
                     colors,

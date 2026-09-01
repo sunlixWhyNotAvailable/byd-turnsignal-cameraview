@@ -20,12 +20,14 @@ import com.byd.extend.ui.SelectionId
 import com.byd.extend.ui.SelectionTarget
 import com.byd.extend.ui.UiSelectionPreferences
 import com.byd.extend.ui.CameraDisplayGeometry
+import com.byd.extend.ui.CameraSection
 import com.byd.extend.ui.CameraProfileUiState
 import com.byd.extend.ui.ReverseElement
 import com.byd.extend.ui.ReverseSource
 import com.byd.extend.ui.GuardNumber
 import com.byd.extend.ui.NumberTarget
 import com.byd.extend.ui.NumericDraftPolicy
+import com.byd.extend.ui.ProfileNumber
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -74,6 +76,29 @@ class ProductionUiControllerTest {
             CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)))
         assertEquals(before, backend.actions.size)
         assertTrue(controller.state.settings.feedback.visible)
+    }
+
+    @Test
+    fun backgroundDialogUsesTheAcceptedPreviewCopyInBothLanguages() {
+        val ukrainianPreferences = TestSharedPreferences()
+        val ukrainian = ProductionUiController(
+            ukrainianPreferences, FakeBackend(ukrainianPreferences))
+        ukrainian.dispatch(BydExtendUiAction.Run(CommandId.OpenBackgroundSettings))
+        assertEquals("Робота у фоні", ukrainian.state.dialog?.title)
+        assertEquals(
+            "Це потрібно перевірити після кожного встановлення або оновлення, інакше DiLink може зупинити HUD у фоні.",
+            ukrainian.state.dialog?.message)
+
+        val englishPreferences = TestSharedPreferences().apply {
+            edit().putString("ui_language", "en").apply()
+        }
+        val english = ProductionUiController(
+            englishPreferences, FakeBackend(englishPreferences))
+        english.dispatch(BydExtendUiAction.Run(CommandId.OpenBackgroundSettings))
+        assertEquals("Background work", english.state.dialog?.title)
+        assertEquals(
+            "Check this after every install or update, otherwise DiLink can stop HUD while the app is in the background.",
+            english.state.dialog?.message)
     }
 
     @Test
@@ -190,6 +215,69 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun reverseSectionSelectionUsesTypedHostTransitionWithoutGenericAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        backend.actions.clear()
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.CameraSection), CameraSection.Placement.ordinal))
+
+        assertEquals(1, backend.sectionChanges.size)
+        assertEquals(CameraSection.Parameters, backend.sectionChanges.single().first)
+        assertEquals(CameraSection.Placement, backend.sectionChanges.single().second)
+        assertTrue(backend.actions.isEmpty())
+    }
+
+    @Test
+    fun reverseVisibilityUsesTypedUpdateWithoutGenericReloadAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Reverse(ToggleId.ReverseElementVisible, ReverseElement.Rear), false))
+
+        assertEquals(listOf(ReverseElement.Rear to false), backend.visibilityChanges)
+        assertFalse(controller.state.reverse.geometry.getValue(ReverseElement.Rear).visible)
+        assertTrue(backend.actions.none { it is BydExtendUiAction.Toggle })
+    }
+
+    @Test
+    fun reverseElementFocusUsesTypedHostCallbackWithoutGenericAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        backend.actions.clear()
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.Rear.ordinal))
+
+        assertEquals(1, backend.focusChanges.size)
+        assertEquals(ReverseElement.RearLeft, backend.focusChanges.single().first)
+        assertEquals(ReverseElement.Rear, backend.focusChanges.single().second)
+        assertTrue(backend.actions.isEmpty())
+    }
+
+    @Test
+    fun reverseEditorFocusUsesSameTypedHostSeamWithoutGenericAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        backend.actions.clear()
+        controller.setReverseEditorSelection(ReverseElement.Rear)
+
+        assertEquals(listOf(ReverseElement.RearLeft to ReverseElement.Rear), backend.focusChanges)
+        assertTrue(backend.actions.isEmpty())
+    }
+
+    @Test
     fun rawFallbackSurvivesReloadWithoutChangingSettingsOrOtherProfiles() {
         val preferences = TestSharedPreferences()
         val controller = ProductionUiController(preferences, FakeBackend(preferences))
@@ -256,10 +344,133 @@ class ProductionUiControllerTest {
         assertEquals(91f, reloaded.slider, 0f)
     }
 
+    @Test
+    fun previewTicksUpdateUiWithoutDurableActionsAndFinishCommitsOnce() {
+        val preferences = TestSharedPreferences().apply {
+            edit().putInt(BlindSpotOverlayController.PREF_LEFT_SCALE, 24).apply()
+        }
+        val backend = FakeBackend(preferences).also {
+            it.previewResolver = { _, value -> value.toFloatOrNull()?.let { parsed ->
+                kotlin.math.round(parsed).toInt().toString()
+            } }
+        }
+        val controller = ProductionUiController(preferences, backend)
+        val profile = CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)
+        val target = NumberTarget.Profile(profile, ProfileNumber.Size)
+        val original = controller.state.blind.profiles.getValue(profile).size
+
+        assertEquals("30", controller.preview(target, "30.4", 10L))
+        assertEquals("31", controller.preview(target, "31.0", 10L))
+        // Normalized duplicate ticks are deduped by the UI; a repeated controller call is also
+        // harmless and must not become a durable action.
+        assertEquals("31", controller.preview(target, "31", 10L))
+        assertEquals("31", controller.state.blind.profiles.getValue(profile).size)
+        assertEquals(0, backend.actions.filterIsInstance<BydExtendUiAction.CommitNumber>().size)
+        assertEquals(original.toInt(), preferences.getInt(BlindSpotOverlayController.PREF_LEFT_SCALE, -1))
+
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "31", 10L))
+        assertEquals(1, backend.actions.filterIsInstance<BydExtendUiAction.CommitNumber>().size)
+    }
+
+    @Test
+    fun consecutiveGesturesCommitIndependentlyAndStaleFinishIsIgnored() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences).also { it.previewResolver = { _, value -> value } }
+        val controller = ProductionUiController(preferences, backend)
+        val profile = CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)
+        val target = NumberTarget.Profile(profile, ProfileNumber.Size)
+
+        controller.preview(target, "30", 100L)
+        controller.preview(target, "31", 100L)
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "31", 100L))
+        controller.preview(target, "32", 101L)
+        controller.preview(target, "33", 101L)
+        // A disposed first-slider callback arriving while the second gesture is active cannot
+        // erase or finalize the second gesture's accepted value.
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "31", 100L))
+        assertEquals(1, backend.actions.filterIsInstance<BydExtendUiAction.CommitNumber>().size)
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Settings))
+        // Navigation flushes the second gesture exactly once; its late finish remains stale.
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "33", 101L))
+        assertEquals(null, controller.preview(target, "30", 100L))
+
+        assertEquals(2, backend.actions.filterIsInstance<BydExtendUiAction.CommitNumber>().size)
+    }
+
+    @Test
+    fun navigationFlushesLatestPreviewForOriginalTargetAndSuppressesLateFinish() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences).also { it.previewResolver = { _, value -> value } }
+        val controller = ProductionUiController(preferences, backend)
+        val profile = CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)
+        val target = NumberTarget.Profile(profile, ProfileNumber.Size)
+
+        controller.preview(target, "34", 200L)
+        controller.preview(target, "35", 200L)
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Settings))
+        // The old composable may still report onValueChangeFinished after navigation.
+        controller.dispatch(BydExtendUiAction.CommitNumber(target, "35", 200L))
+
+        val commits = backend.actions.filterIsInstance<BydExtendUiAction.CommitNumber>()
+        assertEquals(1, commits.size)
+        assertEquals(target, commits.single().target)
+        assertEquals("35", commits.single().value)
+        assertEquals(RootTab.Settings, controller.state.activeTab)
+    }
+
+    @Test
+    fun previewRejectionLeavesCanonicalAndAcceptedNormalizationReconciles() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences).also {
+            it.previewResolver = { _, value ->
+                if (value == "99") null else value.toFloatOrNull()?.let { parsed ->
+                    kotlin.math.round(parsed).toInt().toString()
+                }
+            }
+        }
+        val controller = ProductionUiController(preferences, backend)
+        val profile = CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)
+        val target = NumberTarget.Profile(profile, ProfileNumber.Size)
+        val canonical = controller.state.blind.profiles.getValue(profile).size
+
+        assertEquals(null, controller.preview(target, "99", 300L))
+        assertEquals(canonical, controller.state.blind.profiles.getValue(profile).size)
+        assertEquals("37", controller.preview(target, "36.6", 300L))
+        assertEquals("37", controller.state.blind.profiles.getValue(profile).size)
+    }
+
     private class FakeBackend(private val preferences: TestSharedPreferences) : ProductionUiBackend {
         var blocked = false
         val actions = mutableListOf<BydExtendUiAction>()
         var effect: (BydExtendUiAction) -> Unit = {}
+        var previewResolver: (NumberTarget, String) -> String? = { _, _ -> null }
+        val previews = mutableListOf<Pair<NumberTarget, String>>()
+        val sectionChanges = mutableListOf<Pair<CameraSection, CameraSection>>()
+        val focusChanges = mutableListOf<Pair<ReverseElement, ReverseElement>>()
+        val visibilityChanges = mutableListOf<Pair<ReverseElement, Boolean>>()
+
+        override fun onProductionCameraSectionChanged(
+            tab: RootTab, previous: CameraSection, next: CameraSection,
+        ) {
+            sectionChanges += previous to next
+        }
+
+        override fun onProductionReverseVisibilityChanged(
+            element: ReverseElement, visible: Boolean,
+        ) {
+            visibilityChanges += element to visible
+        }
+
+        override fun onProductionReverseElementFocusChanged(
+            section: CameraSection, previous: ReverseElement, next: ReverseElement,
+        ) {
+            focusChanges += previous to next
+        }
+
+        override fun onProductionUiPreview(target: NumberTarget, value: String): String? {
+            previews += target to value
+            return previewResolver(target, value)
+        }
 
         override fun onProductionUiAction(action: BydExtendUiAction) {
             actions += action

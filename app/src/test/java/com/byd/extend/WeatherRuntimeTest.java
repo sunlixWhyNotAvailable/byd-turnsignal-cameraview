@@ -36,6 +36,21 @@ public final class WeatherRuntimeTest {
     }
 
     @Test
+    public void fallbackFollowsAppLanguage() {
+        assertEquals("Current location", WeatherRuntime.friendlyLocationFallback("en"));
+        assertEquals("Поточне місце", WeatherRuntime.friendlyLocationFallback("uk"));
+        assertEquals("Поточне місце", WeatherRuntime.friendlyLocationFallback("unknown"));
+    }
+
+    @Test
+    public void cityNameUsesAddressLocalityThenAdministrativeParts() {
+        assertEquals("Berlin", WeatherRuntime.firstNonEmpty("Berlin", "Brandenburg", "Germany"));
+        assertEquals(" Brandenburg ", WeatherRuntime.firstNonEmpty("", " Brandenburg ", "Germany"));
+        assertEquals("Germany", WeatherRuntime.firstNonEmpty(null, "", "Germany"));
+        assertEquals(null, WeatherRuntime.firstNonEmpty(null, " ", ""));
+    }
+
+    @Test
     public void prerequisiteMatrixKeepsLocationAndNetworkIndependent() {
         assertEquals(WeatherRuntime.PrerequisiteState.LOCATION_PERMISSION_DENIED,
                 WeatherRuntime.prerequisiteState(false, false, false));
@@ -93,12 +108,29 @@ public final class WeatherRuntimeTest {
         assertTrue(text.contains("deliver(cancelledCallback, false, \"weather shutdown\")"));
         assertFalse(text.contains("latch.await("));
         assertFalse(text.contains("LOCATION_WAIT_MS"));
+        assertEquals(1, occurrences(text, "getFromLocation("));
+        assertTrue(text.contains("new Geocoder(context).getFromLocation("));
+        assertFalse(text.contains("new Geocoder(context,"));
+        assertFalse(text.contains("geocoderLocale("));
+        assertTrue(text.contains("new City(city, city)"));
+        assertTrue(text.contains("friendlyLocationFallback(language)"));
+        assertTrue(text.contains("weather_geocoder_fallback"));
+        assertTrue(text.contains("\"latitude\", latitude"));
+        assertTrue(text.contains("\"longitude\", longitude"));
+        assertFalse(text.contains("String.format(Locale.US, \"%.4f, %.4f\""));
+        assertFalse(text.contains("Locale.ENGLISH).getFromLocation"));
 
         Path manifest = Path.of("app/src/main/AndroidManifest.xml");
         if (!Files.exists(manifest)) manifest = Path.of("src/main/AndroidManifest.xml");
         String manifestText = new String(
                 Files.readAllBytes(manifest), StandardCharsets.UTF_8);
         assertTrue(manifestText.contains("android.permission.ACCESS_NETWORK_STATE"));
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int index = 0; (index = text.indexOf(needle, index)) >= 0; index += needle.length()) count++;
+        return count;
     }
 
     @Test

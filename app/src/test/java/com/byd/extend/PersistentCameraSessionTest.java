@@ -117,6 +117,25 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void standaloneStockInputUsesDirectSurfaceWithoutFanoutSuffix() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+
+        session.startProducer(camera, fanout, session.activityGroup,
+                surfaces(1), new int[]{0}, 17, "stock_avm_input", true, true, true);
+
+        // Producer startup retains its stable 2/3 bootstrap sources; only the requested
+        // stock input is attached directly and no fanout target is required.
+        assertEquals(3, camera.addCalls);
+        assertEquals(0, fanout.activeTargets);
+        assertEquals(1, fanout.attachCalls);
+        assertTrue(trace.values.contains("add:0"));
+        assertTrue(session.activityGroup.firstSurfaceDirect);
+    }
+
+    @Test
     public void startupAttachFailureStopsProducerBeforeFanoutRelease() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
@@ -531,6 +550,200 @@ public final class PersistentCameraSessionTest {
         assertEquals("rear_left", error.field("view"));
         assertEquals("consumer_render_failed",
                 events.byKind("camera_closed").field("reason"));
+    }
+
+    @Test
+    public void detachedConsumerFailureDoesNotTearDownTheProducer() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface detachedSurface = new Surface((android.graphics.SurfaceTexture) null);
+        session.startProducer(camera, fanout, session.overlayGroup,
+                new Surface[]{detachedSurface}, new int[]{2}, 77,
+                "rear_left", false, false);
+        CameraHelperMain.HelperBinder.ConsumerGroup.Snapshot detached =
+                session.overlayGroup.snapshot();
+        fanout.detach(detached.surfaces);
+        session.rememberDetached(detached, 7);
+        session.overlayGroup.clear();
+
+        assertFalse(session.failConsumer(camera, detachedSurface, 2,
+                new IllegalStateException("late swap failed"), events,
+                new FakeShellClose(trace), 7, 7));
+
+        CameraHelperMain.HelperBinder.PersistentSession.DetachedConsumerIdentity identity =
+                session.detachedConsumerIdentity(detachedSurface, 7);
+        assertEquals(CameraHelperMain.CAMERA_OWNER_OVERLAY, identity.owner);
+        assertEquals(77, identity.requestId);
+        assertEquals(7, identity.producerEpoch);
+        assertTrue(session.producerOpen);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+        assertEquals(0, count(trace.values, "event:camera_error"));
+    }
+
+    @Test
+    public void staleRetainedConsumerFailureIsIgnoredWithoutTerminalClose() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shellClose = new FakeShellClose(trace);
+        Surface staleSurface = new TestSurface();
+        session.startProducer(camera, fanout, session.overlayGroup,
+                new Surface[]{staleSurface}, new int[]{2}, 81,
+                "rear_left", false, false);
+        fanout.detach(new Surface[]{staleSurface});
+        session.overlayGroup.attached = false;
+
+        assertFalse(session.failConsumer(camera, staleSurface, 2,
+                new IllegalStateException("late stale swap failed"), events,
+                shellClose, 7, 7));
+
+        assertTrue(session.overlayGroup.has());
+        assertFalse(session.overlayGroup.attached);
+        assertTrue(session.producerOpen);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+        assertEquals(0, countPrefix(trace.values, "shell:"));
+        assertEquals(0, events.count("camera_error", 81));
+        CameraHelperMain.HelperBinder.PersistentSession.DetachedConsumerIdentity identity =
+                session.detachedConsumerIdentity(staleSurface, 7);
+        assertEquals(CameraHelperMain.CAMERA_OWNER_OVERLAY, identity.owner);
+        assertEquals(81, identity.requestId);
+        assertEquals(7, identity.producerEpoch);
+    }
+
+    @Test
+    public void optionalReverseCentralFrontFailureKeepsCoreTargetsAttached() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface[] reverse = new Surface[]{
+                new TestSurface(), new TestSurface(), new TestSurface(), new TestSurface()};
+        session.startProducer(camera, fanout, session.reverseGroup,
+                reverse, new int[]{1, 2, 3, 4}, 78, "reverse_overlay", true, false);
+        Surface failed = reverse[3];
+        fanout.detach(new Surface[]{failed});
+
+        assertTrue(session.failConsumer(camera, failed, 4,
+                new IllegalStateException("central front failed"), events,
+                new FakeShellClose(trace), 7, 7));
+
+        assertTrue(session.reverseGroup.has());
+        assertTrue(session.reverseGroup.attached);
+        assertEquals(3, session.reverseGroup.surfaces.length);
+        assertEquals(1, session.reverseGroup.indexes[0]);
+        assertEquals(3, fanout.activeTargets);
+        assertTrue(session.producerOpen);
+        assertEquals(0, events.count("camera_error", 78));
+        assertEquals("optional_reverse_target_failed",
+                events.byKind("camera_consumer_detached").field("reason"));
+        CameraHelperMain.HelperBinder.PersistentSession.DetachedConsumerIdentity identity =
+                session.detachedConsumerIdentity(failed, 7);
+        assertEquals(CameraHelperMain.CAMERA_OWNER_REVERSE, identity.owner);
+        assertEquals(78, identity.requestId);
+        assertEquals(7, identity.producerEpoch);
+    }
+
+    @Test
+    public void activityReverseCentralFrontFailureIsOptionalButCoreFailureIsTerminal()
+            throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface[] activity = new Surface[]{
+                new TestSurface(), new TestSurface(), new TestSurface(),
+                new TestSurface(), new TestSurface()};
+        session.startProducer(camera, fanout, session.activityGroup,
+                activity, new int[]{0, 1, 2, 3, 4}, 83,
+                "reverse_preview_with_stock_base", false, true, true);
+        Surface failed = activity[4];
+        fanout.detach(new Surface[]{failed});
+
+        assertTrue(session.failConsumer(camera, failed, 4,
+                new IllegalStateException("central front failed"), events,
+                new FakeShellClose(trace), 7, 7));
+
+        assertTrue(session.activityGroup.has());
+        assertTrue(session.activityGroup.attached);
+        assertTrue(session.activityGroup.firstSurfaceDirect);
+        assertEquals(4, session.activityGroup.surfaces.length);
+        assertEquals(0, session.activityGroup.indexes[0]);
+        assertEquals(3, session.activityGroup.indexes[3]);
+        assertEquals(3, fanout.activeTargets);
+        assertTrue(session.producerOpen);
+        assertEquals(0, events.count("camera_error", 83));
+        assertEquals("optional_reverse_target_failed",
+                events.byKindAndRequest("camera_consumer_detached", 83).field("reason"));
+        CameraHelperMain.HelperBinder.PersistentSession.DetachedConsumerIdentity identity =
+                session.detachedConsumerIdentity(failed, 7);
+        assertEquals(CameraHelperMain.CAMERA_OWNER_ACTIVITY, identity.owner);
+        assertEquals(83, identity.requestId);
+        assertEquals(7, identity.producerEpoch);
+
+        assertTrue(session.failConsumer(camera, activity[1], 1,
+                new IllegalStateException("rear left failed"), events,
+                new FakeShellClose(trace), 7, 7));
+        assertFalse(session.activityGroup.has());
+        assertEquals(1, events.count("camera_error", 83));
+        assertEquals("raw_fanout_consumer",
+                events.byKindAndRequest("camera_error", 83).field("stage"));
+        assertTrue(session.producerOpen);
+    }
+
+    @Test
+    public void requiredReverseTargetFailureStillClearsReverseGroup() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface[] reverse = new Surface[]{new TestSurface(), new TestSurface(), new TestSurface()};
+        session.startProducer(camera, fanout, session.reverseGroup,
+                reverse, new int[]{1, 2, 3}, 79, "reverse_overlay", true, false);
+
+        assertTrue(session.failConsumer(camera, reverse[1], 2,
+                new IllegalStateException("rear left failed"), events,
+                new FakeShellClose(trace), 7, 7));
+
+        assertFalse(session.reverseGroup.has());
+        assertEquals(0, fanout.activeTargets);
+        assertTrue(session.producerOpen);
+        assertEquals(1, events.count("camera_error", 79));
+        assertEquals("raw_fanout_consumer",
+                events.byKindAndRequest("camera_error", 79).field("stage"));
+    }
+
+    @Test
+    public void ordinaryStockAvmDetachRemembersDetachedIdentity() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface stock = new TestSurface();
+        session.startProducer(camera, fanout, session.activityGroup,
+                new Surface[]{stock}, new int[]{0}, 80,
+                "stock_avm_input", false, true, true);
+
+        session.invalidateStockAvmGroup(camera, "stock_avm_shell_died", events, 7, 8);
+
+        assertFalse(session.activityGroup.has());
+        assertTrue(session.producerOpen);
+        assertEquals(1, count(trace.values, "remove:0"));
+        CameraHelperMain.HelperBinder.PersistentSession.DetachedConsumerIdentity identity =
+                session.detachedConsumerIdentity(stock, 8);
+        assertEquals(CameraHelperMain.CAMERA_OWNER_ACTIVITY, identity.owner);
+        assertEquals(80, identity.requestId);
+        assertEquals(8, identity.producerEpoch);
     }
 
     @Test
@@ -1132,6 +1345,21 @@ public final class PersistentCameraSessionTest {
 
     private static final class Trace {
         final List<String> values = new ArrayList<>();
+    }
+
+    private static final class TestSurface extends Surface {
+        TestSurface() {
+            super((android.graphics.SurfaceTexture) null);
+        }
+
+        @Override
+        public void release() {
+        }
+
+        @Override
+        public boolean isValid() {
+            return true;
+        }
     }
 
     private static final class FakeCameraPort

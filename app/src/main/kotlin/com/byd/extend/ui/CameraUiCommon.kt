@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.runtime.Composable
@@ -30,6 +31,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 
 @Composable
@@ -99,15 +102,18 @@ internal fun ColumnScope.CameraProfileControls(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
     placementExtra: @Composable ColumnScope.() -> Unit = {},
     parameters: @Composable ColumnScope.() -> Unit,
 ) {
     var stage by rememberSaveable(profile) { mutableStateOf(CalibrationStage.Original) }
     val calibration = state.calibration
-    fun profileNumber(field: ProfileNumber, value: String) {
-        onAction(BydExtendUiAction.CommitNumber(NumberTarget.Profile(profile, field), value))
+    fun profileNumber(field: ProfileNumber, value: String, sessionId: Long? = null) {
+        onAction(BydExtendUiAction.CommitNumber(NumberTarget.Profile(profile, field), value, sessionId))
     }
-    if (state.operation.status.visible) StatusText(state.operation.status, colors)
+    fun profilePreview(field: ProfileNumber, value: String, sessionId: Long): String? {
+        return onPreview(NumberTarget.Profile(profile, field), value, sessionId)
+    }
     when (section) {
         CameraSection.Parameters -> parameters()
         CameraSection.Placement -> {
@@ -118,11 +124,15 @@ internal fun ColumnScope.CameraProfileControls(
             }
             NumericSetting(strings.text("Розмір", "Size"), state.size, "%", colors,
                 { profileNumber(ProfileNumber.Size, it) }, 5f..60f, adjustable = true, slider = true,
-                identity = NumberTarget.Profile(profile, ProfileNumber.Size))
+                identity = NumberTarget.Profile(profile, ProfileNumber.Size),
+                onPreview = { value, session -> profilePreview(ProfileNumber.Size, value, session) },
+                onCommitSession = { value, session -> profileNumber(ProfileNumber.Size, value, session) })
             placementExtra()
             CoordinatePair(state.x, state.y, colors,
                 { profileNumber(ProfileNumber.X, it) }, { profileNumber(ProfileNumber.Y, it) },
-                NumberTarget.Profile(profile, ProfileNumber.X), NumberTarget.Profile(profile, ProfileNumber.Y))
+                NumberTarget.Profile(profile, ProfileNumber.X), NumberTarget.Profile(profile, ProfileNumber.Y),
+                horizontalTitle = strings.text("Горизонталь", "Horizontal"),
+                verticalTitle = strings.text("Вертикаль", "Vertical"))
             ResetProfileButton(strings.text("Скинути розташування", "Reset placement"),
                 CommandId.ResetProfilePlacement, profile, colors, onAction)
         }
@@ -146,13 +156,15 @@ internal fun ColumnScope.CameraProfileControls(
                         colors)
                     NumericSetting(strings.text("Огляд", "FOV"), calibration.fov, "°", colors,
                         { profileNumber(ProfileNumber.Fov, it) }, 60f..170f, adjustable = true, slider = true,
-                        enabled = !calibration.rawFallback,
-                        identity = NumberTarget.Profile(profile, ProfileNumber.Fov))
+                        enabled = true,
+                        identity = NumberTarget.Profile(profile, ProfileNumber.Fov),
+                        onPreview = { value, session -> profilePreview(ProfileNumber.Fov, value, session) },
+                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Fov, value, session) })
                     ChoiceField(strings.text("Проєкція", "Projection"),
                         listOf(strings.text("Прямолінійна", "Rectilinear"), strings.text("Циліндрична", "Cylindrical")),
                         calibration.projection, { onAction(BydExtendUiAction.Select(
                             SelectionTarget.Profile(SelectionId.ProfileProjection, profile), it)) }, colors,
-                        enabled = !calibration.rawFallback)
+                        enabled = true)
                     CropControls(profile, calibration.corrected, ProfileNumber.CorrectedX, ProfileNumber.CorrectedY,
                         ProfileNumber.CorrectedWidth, ProfileNumber.CorrectedHeight, strings, colors, onAction,
                         enabled = !calibration.rawFallback)
@@ -169,7 +181,9 @@ internal fun ColumnScope.CameraProfileControls(
                             SelectionTarget.Profile(SelectionId.ProfileOutputMode, profile), it)) }, colors)
                     NumericSetting(strings.text("Поворот", "Rotation"), calibration.rotation, "°", colors,
                         { profileNumber(ProfileNumber.Rotation, it) }, -180f..180f, adjustable = true, slider = true,
-                        identity = NumberTarget.Profile(profile, ProfileNumber.Rotation))
+                        identity = NumberTarget.Profile(profile, ProfileNumber.Rotation),
+                        onPreview = { value, session -> profilePreview(ProfileNumber.Rotation, value, session) },
+                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Rotation, value, session) })
                     ResetProfileButton(strings.text("Скинути вивід", "Reset output"), CommandId.ResetProfileOutput,
                         profile, colors, onAction)
                 }
@@ -220,12 +234,47 @@ internal fun CameraProfilePreview(
 @Composable
 internal fun CoordinatePair(x: String, y: String, colors: UiPalette,
     onX: (String) -> Unit, onY: (String) -> Unit,
-    identityX: Any = Unit, identityY: Any = Unit, enabled: Boolean = true) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        NumericSetting("X", x, "%", colors, onX, 0f..100f, adjustable = true, inlineLabel = true,
-            enabled = enabled, identity = identityX)
-        NumericSetting("Y", y, "%", colors, onY, 0f..100f, adjustable = true, inlineLabel = true,
-            enabled = enabled, identity = identityY)
+    identityX: Any = Unit, identityY: Any = Unit, enabled: Boolean = true,
+    maxX: Float = 100f, maxY: Float = 100f,
+    horizontalTitle: String = "Горизонталь", verticalTitle: String = "Вертикаль") {
+    GeometryPair(horizontalTitle, x, onX, verticalTitle, y, onY, colors,
+        0f..maxX.coerceIn(0f, 100f), "coordinate-pair",
+        secondRange = 0f..maxY.coerceIn(0f, 100f),
+        identityFirst = identityX, identitySecond = identityY, enabled = enabled)
+}
+
+@Composable
+internal fun GeometryPair(
+    firstTitle: String, firstValue: String, onFirstChange: (String) -> Unit,
+    secondTitle: String, secondValue: String, onSecondChange: (String) -> Unit,
+    colors: UiPalette, range: ClosedFloatingPointRange<Float>, tag: String,
+    secondRange: ClosedFloatingPointRange<Float> = range,
+    identityFirst: Any = Unit, identitySecond: Any = Unit, enabled: Boolean = true,
+) {
+    Row(Modifier.fillMaxWidth().testTag(tag), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        GeometryField(firstTitle, firstValue, onFirstChange, colors, range,
+            Modifier.weight(1f), identityFirst, enabled)
+        GeometryField(secondTitle, secondValue, onSecondChange, colors, secondRange,
+            Modifier.weight(1f), identitySecond, enabled)
+    }
+}
+
+@Composable
+private fun GeometryField(
+    title: String, value: String, onValueChange: (String) -> Unit,
+    colors: UiPalette, range: ClosedFloatingPointRange<Float>, modifier: Modifier,
+    identity: Any, enabled: Boolean,
+) {
+    Column(modifier.clip(RoundedCornerShape(8.dp))
+        .border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp))
+        .background(colors.panelAlt).padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, color = colors.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            fontStyle = FontStyle.Italic, textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth())
+        NumericSetting(title, value, "%", colors, onValueChange, range,
+            enabled = enabled, adjustable = true, inlineLabel = true, showLabel = false, compactSuffix = true,
+            identity = identity)
     }
 }
 
@@ -245,14 +294,21 @@ private fun CropControls(
     fun commit(field: ProfileNumber, value: String) {
         onAction(BydExtendUiAction.CommitNumber(NumberTarget.Profile(profile, field), value))
     }
+    val width = (crop.width.toFloatOrNull() ?: 100f).coerceIn(1f, 100f)
+    val height = (crop.height.toFloatOrNull() ?: 100f).coerceIn(1f, 100f)
+    val x = (crop.x.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
+    val y = (crop.y.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     CoordinatePair(crop.x, crop.y, colors, { commit(xField, it) }, { commit(yField, it) },
-        NumberTarget.Profile(profile, xField), NumberTarget.Profile(profile, yField), enabled)
-    NumericSetting(strings.text("Ширина", "Width"), crop.width, "%", colors,
-        { commit(widthField, it) }, 1f..100f, adjustable = true, enabled = enabled,
-        identity = NumberTarget.Profile(profile, widthField))
-    NumericSetting(strings.text("Висота", "Height"), crop.height, "%", colors,
-        { commit(heightField, it) }, 1f..100f, adjustable = true, enabled = enabled,
-        identity = NumberTarget.Profile(profile, heightField))
+        NumberTarget.Profile(profile, xField), NumberTarget.Profile(profile, yField), enabled,
+        maxX = 100f - width, maxY = 100f - height,
+        horizontalTitle = strings.text("Горизонталь", "Horizontal"),
+        verticalTitle = strings.text("Вертикаль", "Vertical"))
+    GeometryPair(strings.text("Ширина", "Width"), crop.width,
+        { commit(widthField, it) }, strings.text("Висота", "Height"), crop.height,
+        { commit(heightField, it) }, colors, 1f..(100f - x).coerceAtLeast(1f), "size-pair",
+        secondRange = 1f..(100f - y).coerceAtLeast(1f),
+        identityFirst = NumberTarget.Profile(profile, widthField),
+        identitySecond = NumberTarget.Profile(profile, heightField), enabled = enabled)
 }
 
 /** Known direct-camera source geometry (pano_h source). */
@@ -281,7 +337,8 @@ internal fun CameraStageFrame(
 private fun ResetProfileButton(label: String, command: CommandId, profile: CameraProfileId,
     colors: UiPalette, onAction: (BydExtendUiAction) -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        ActionButton(label, colors, Modifier.width(260.dp), icon = Icons.Outlined.Refresh) {
+        ActionButton(label, colors, Modifier.width(260.dp), icon = Icons.Outlined.Refresh,
+            mainBackground = true) {
             onAction(BydExtendUiAction.Run(command, profile))
         }
     }

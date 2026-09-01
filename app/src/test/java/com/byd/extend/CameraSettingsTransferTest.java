@@ -234,4 +234,60 @@ public final class CameraSettingsTransferTest {
             }
         }
     }
+
+    @Test
+    public void importsWithoutAspectPinPriorDestinationAndExplicitAspectWins() throws Exception {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        String key = BlindSpotOverlayController.frameAspectKey(profile);
+        for (boolean legacy : new boolean[]{false, true}) {
+            for (boolean explicit : new boolean[]{false, true}) {
+                TestSharedPreferences target = new TestSharedPreferences();
+                android.content.SharedPreferences.Editor seed = target.edit();
+                DirectCameraCrop.write(seed, profile, DirectCameraCrop.of(
+                        0.1f, 0.1f, 0.4f, 0.2f, DirectCameraCrop.ASPECT_FREE));
+                seed.apply();
+                float prior = DirectCameraCrop.load(target, profile).outputAspect();
+                int transactions = target.transactions;
+                if (legacy) {
+                    Map<String, Object> values = new HashMap<>();
+                    values.put(DirectCameraCrop.preferenceKey(profile, 2), 0.5f);
+                    if (explicit) values.put(key, 2.25f);
+                    CameraSettingsTransfer.applyLegacySettings(target, values);
+                } else {
+                    org.json.JSONObject preset = new org.json.JSONObject(
+                            CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+                    if (explicit) preset.getJSONObject("settings").put(key, 2.25f);
+                    else preset.getJSONObject("settings").remove(key);
+                    CameraSettingsTransfer.applyCameraPreset(target,
+                            CameraSettingsTransfer.parseCameraPreset(preset.toString()));
+                }
+                assertEquals(transactions + 1, target.transactions);
+                assertEquals(explicit ? 2.25f : prior, target.getFloat(key, -1), 0.00001f);
+            }
+        }
+    }
+
+    @Test
+    public void invalidImportedFrameAspectCannotClearOrWritePreferences() throws Exception {
+        TestSharedPreferences target = new TestSharedPreferences();
+        String key = BlindSpotOverlayController.frameAspectKey(
+                CameraProfile.of(CameraProfile.REAR_LEFT));
+        target.putFloat(key, 1.65f);
+        Map<String, ?> before = target.getAll();
+        for (float invalid : new float[]{0, -1, Float.NaN, Float.POSITIVE_INFINITY}) {
+            Map<String, Object> legacy = new HashMap<>();
+            legacy.put(key, invalid);
+            assertThrows(IllegalArgumentException.class,
+                    () -> CameraSettingsTransfer.applyLegacySettings(target, legacy));
+            Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                    CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+            @SuppressWarnings("unchecked") Map<String, Object> values =
+                    (Map<String, Object>) parsed.get("settings");
+            values.put(key, invalid);
+            assertThrows(IllegalArgumentException.class,
+                    () -> CameraSettingsTransfer.applyCameraPreset(target, parsed));
+            assertEquals(before, target.getAll());
+            assertEquals(0, target.transactions);
+        }
+    }
 }

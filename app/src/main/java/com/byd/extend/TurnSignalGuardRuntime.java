@@ -1281,8 +1281,8 @@ final class TurnSignalGuardRuntime {
 
     private static boolean validThresholds(float outward, float center) {
         return Float.isFinite(outward) && Float.isFinite(center)
-                && outward >= 30.0f && outward <= 360.0f
-                && center >= 2.0f && center <= 45.0f && center < outward;
+                && outward >= 0.0f && outward <= 360.0f
+                && center >= 0.0f && center <= 45.0f;
     }
 
     private static boolean validCorrectionDelay(int value) {
@@ -1596,6 +1596,10 @@ final class TurnSignalGuardRuntime {
                 && !isActivationGesture(BLINK_LEFT, BLINK_LEFT, BLINK_OFF, 100)
                 && !isActivationGesture(BLINK_LEFT, BLINK_OFF, BLINK_LEFT, 100)
                 && validThresholds(90.0f, 10.0f)
+                && validThresholds(0.0f, 0.0f)
+                && validThresholds(360.0f, 45.0f)
+                && !validThresholds(-0.1f, 0.0f)
+                && !validThresholds(0.0f, 45.1f)
                 && validCorrectionDelay(0)
                 && validCorrectionDelay(1_000)
                 && !validCorrectionDelay(-1)

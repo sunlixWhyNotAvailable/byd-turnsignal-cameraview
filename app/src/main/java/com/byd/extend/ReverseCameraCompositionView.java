@@ -1,11 +1,8 @@
 package com.byd.extend;
 
 import android.content.Context;
-import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
@@ -301,6 +298,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyModel();
     }
 
+    /** Updates the persisted widget visibility without resetting the selected front/rear side. */
+    void setWidgetVisible(boolean visible) {
+        widgetVisible = visible;
+        applyModel();
+    }
+
     void setSideMode(int mode) {
         if (mode != ReverseSideSelectorView.MODE_REAR
                 && mode != ReverseSideSelectorView.MODE_FRONT) {
@@ -316,6 +319,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     int sideMode() {
         return sideMode;
+    }
+
+    void setSelectorPressed(int mode, boolean pressed) {
+        if (mode != ReverseSideSelectorView.MODE_REAR
+                && mode != ReverseSideSelectorView.MODE_FRONT) {
+            throw new IllegalArgumentException("invalid reverse selector mode");
+        }
+        sideSelector.setExternalPressedMode(pressed ? mode : -1);
     }
 
     ReverseCameraLayout.PixelRect selectorButtonBounds(
@@ -516,6 +527,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     boolean previewSurfacesReady() {
         return surfacesReady() && previewBaseSurface != null && previewBaseSurface.isValid();
+    }
+
+    boolean centralFrontSurfaceRecoveryPending() {
+        return centralFrontSurfaceRecoveryPending;
     }
 
     void retirePreviewInputs() {
@@ -1327,11 +1342,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
             int height = getHeight();
             if (width <= 0 || height <= 0) return;
 
-            boolean fit = displayMode == ReverseCameraLayout.DISPLAY_MODE_FIT;
+            int safeMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);
+            boolean fit = safeMode == ReverseCameraLayout.DISPLAY_MODE_FIT;
             ReverseCameraLayout.PixelRect fitted = fit
                     ? ReverseCameraLayout.fitSourceCrop(
-                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT,
-                            rotationDegrees)
+                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT, rotationDegrees)
                     : new ReverseCameraLayout.PixelRect(0, 0, width, height);
             FrameLayout.LayoutParams textureParams =
                     (FrameLayout.LayoutParams) texture.getLayoutParams();
@@ -1345,32 +1360,26 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 texture.setLayoutParams(textureParams);
             }
             Matrix transform = new Matrix();
-            if (displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
-                cropMask.setCrop(null);
-            }
+            int cameraMode = safeMode == ReverseCameraLayout.DISPLAY_MODE_FILL
+                    ? CameraRotation.MODE_FILL
+                    : safeMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH
+                    ? CameraRotation.MODE_ALIGNED : CameraRotation.MODE_FIT;
+            RectF destination = new RectF(0, 0, fitted.width, fitted.height);
             CameraRotation.setSourceCropTransformForInput(
                     transform, value.left, value.top, value.width, value.height,
-                    new RectF(0, 0, fitted.width, fitted.height), rotationDegrees,
-                    displayMode == ReverseCameraLayout.DISPLAY_MODE_FILL
-                            ? CameraRotation.MODE_FILL
-                            : displayMode == ReverseCameraLayout.DISPLAY_MODE_STRETCH
-                                    ? CameraRotation.MODE_ALIGNED : CameraRotation.MODE_FIT,
+                    destination, rotationDegrees, cameraMode,
                     SOURCE_WIDTH, SOURCE_HEIGHT, fitted.width, fitted.height,
                     mirrorHorizontally);
-            if (displayMode != ReverseCameraLayout.DISPLAY_MODE_STRETCH) {
-                float[] visibleCrop = new float[]{
-                        value.left * fitted.width, value.top * fitted.height,
-                        value.right() * fitted.width, value.top * fitted.height,
-                        value.right() * fitted.width, value.bottom() * fitted.height,
-                        value.left * fitted.width, value.bottom() * fitted.height
-                };
-                transform.mapPoints(visibleCrop);
-                for (int i = 0; i < visibleCrop.length; i += 2) {
-                    visibleCrop[i] += fitted.left;
-                    visibleCrop[i + 1] += fitted.top;
-                }
-                cropMask.setCrop(visibleCrop);
+            float[] transformed = CameraRotation.transformedCropCornersForInput(
+                    value.left, value.top, value.width, value.height,
+                    destination, rotationDegrees, cameraMode,
+                    SOURCE_WIDTH, SOURCE_HEIGHT, fitted.width, fitted.height,
+                    mirrorHorizontally);
+            for (int i = 0; i + 1 < transformed.length; i += 2) {
+                transformed[i] += fitted.left;
+                transformed[i + 1] += fitted.top;
             }
+            cropMask.setCrop(transformed);
             texture.setRotation(0.0f);
             texture.setScaleX(1.0f);
             texture.setScaleY(1.0f);
@@ -1390,33 +1399,4 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
     }
 
-    private static final class CropMaskView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path path = new Path();
-        private float[] crop;
-
-        CropMaskView(Context context) {
-            super(context);
-            paint.setColor(Color.BLACK);
-        }
-
-        void setCrop(float[] value) {
-            crop = value;
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            if (crop == null) return;
-            path.reset();
-            path.setFillType(Path.FillType.EVEN_ODD);
-            path.addRect(0, 0, getWidth(), getHeight(), Path.Direction.CW);
-            path.moveTo(crop[0], crop[1]);
-            for (int i = 2; i < crop.length; i += 2) {
-                path.lineTo(crop[i], crop[i + 1]);
-            }
-            path.close();
-            canvas.drawPath(path, paint);
-        }
-    }
 }

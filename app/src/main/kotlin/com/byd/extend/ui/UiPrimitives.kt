@@ -7,6 +7,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -35,17 +36,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -69,6 +73,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -84,6 +89,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.flow.collect
 import kotlin.math.roundToInt
 
 @Stable
@@ -213,6 +219,29 @@ private fun toneColors(tone: StatusTone, colors: UiPalette) = when (tone) {
     StatusTone.Neutral -> colors.muted to colors.disabled
 }
 
+internal data class PressFeedback(
+    val interactionSource: MutableInteractionSource,
+    val pressed: Boolean,
+    val modifier: Modifier,
+)
+
+@Composable
+internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (enabled && pressed) .97f else 1f,
+        label = "pressScale",
+    )
+    return PressFeedback(interactionSource, enabled && pressed, Modifier.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    })
+}
+
+internal fun pressBackground(base: Color, colors: UiPalette, pressed: Boolean): Color =
+    if (pressed) colors.accent.copy(alpha = if (colors.dark) .24f else .14f) else base
+
 @Composable
 internal fun SwitchLine(
     title: String,
@@ -225,7 +254,13 @@ internal fun SwitchLine(
     strikeThrough: Boolean = false,
 ) {
     val compact = LocalCompactControls.current
-    Row(Modifier.fillMaxWidth().toggleable(checked, enabled && !pending, Role.Switch, onValueChange = onCheckedChange)
+    val press = rememberPressFeedback(enabled && !pending)
+    Row(Modifier.fillMaxWidth()
+        .background(pressBackground(Color.Transparent, colors, press.pressed))
+        .then(press.modifier)
+        .clickable(interactionSource = press.interactionSource, indication = null,
+            enabled = enabled && !pending, role = Role.Switch,
+            onClick = { onCheckedChange(!checked) })
         .padding(vertical = if (compact) 4.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
@@ -252,12 +287,18 @@ internal fun AppSwitch(
     val height = if (compact) 27.dp else 32.dp
     val knob = if (compact) 20.dp else 25.dp
     val knobOff = if (compact) 16.dp else 19.dp
+    val press = rememberPressFeedback(enabled && !pending)
     val size by animateDpAsState(if (pending) knob else if (checked) knob else knobOff, tween(140), label = "switchSize")
     val offset by animateDpAsState(if (pending) (width - knob) / 2 else if (checked) width - knob - 3.dp else 3.dp,
         tween(140), label = "switchOffset")
     Box(Modifier.size(width, height).semantics { label?.let { contentDescription = it } }
-        .clip(RoundedCornerShape(100.dp)).background(if (pending) colors.yellowSoft else if (checked) colors.accent else colors.disabled)
-        .toggleable(checked, enabled && !pending, Role.Switch, onValueChange = onCheckedChange)
+        .clip(RoundedCornerShape(100.dp))
+        .background(pressBackground(if (pending) colors.yellowSoft else if (checked) colors.accent else colors.disabled,
+            colors, press.pressed))
+        .then(press.modifier)
+        .clickable(interactionSource = press.interactionSource, indication = null,
+            enabled = enabled && !pending, role = Role.Switch,
+            onClick = { onCheckedChange(!checked) })
         .then(if (clearSemantics) Modifier.clearAndSetSemantics { } else Modifier), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.offset(x = offset).size(size).clip(RoundedCornerShape(100.dp))
             .background(if (pending) colors.yellow else if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
@@ -280,9 +321,14 @@ internal fun Segmented(
         .padding(if (compact) 4.dp else 5.dp).selectableGroup()) {
         items.forEachIndexed { index, item ->
             val itemEnabled = enabled(index)
+            val press = rememberPressFeedback(itemEnabled)
             Box(Modifier.weight(1f).height(if (compact) 30.dp else 32.dp).clip(RoundedCornerShape(18.dp))
-                .background(if (index == selected) colors.accent else Color.Transparent)
-                .selectable(index == selected, itemEnabled, Role.Tab) { focus.clearFocus(); onSelect(index) },
+                .background(pressBackground(if (index == selected) colors.accent else Color.Transparent, colors, press.pressed))
+                .then(press.modifier)
+                .clickable(interactionSource = press.interactionSource, indication = null,
+                    enabled = itemEnabled, role = Role.Tab) {
+                    focus.clearFocus(); onSelect(index)
+                },
                 contentAlignment = Alignment.Center) {
                 Text(item, color = if (!itemEnabled) colors.muted.copy(alpha = .4f)
                     else if (index == selected) Color.White else colors.muted,
@@ -325,6 +371,7 @@ internal fun ChoiceField(
     val safeSelected = selected.coerceIn(0, choices.lastIndex.coerceAtLeast(0))
     val selectedBackground = colors.accent.copy(alpha = if (colors.dark) .78f else .08f)
     val selectedContent = if (colors.dark) Color.White else colors.text
+    val fieldPress = rememberPressFeedback(enabled)
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
@@ -332,8 +379,11 @@ internal fun ChoiceField(
         BoxWithConstraints(Modifier.width(if (compact) 190.dp else 220.dp)) {
             val menuWidth = maxWidth
             Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(6.dp))
-                .border(1.dp, colors.accent, RoundedCornerShape(6.dp)).background(selectedBackground)
-                .clickable(enabled = enabled && choices.isNotEmpty(), role = Role.Button) {
+                .border(1.dp, colors.accent, RoundedCornerShape(6.dp))
+                .background(pressBackground(selectedBackground, colors, fieldPress.pressed))
+                .then(fieldPress.modifier)
+                .clickable(interactionSource = fieldPress.interactionSource, indication = null,
+                    enabled = enabled && choices.isNotEmpty(), role = Role.Button) {
                     focusManager.clearFocus(); expanded = true
                 }.padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center) {
@@ -347,9 +397,13 @@ internal fun ChoiceField(
                 Column(Modifier.width(menuWidth).clip(RoundedCornerShape(6.dp))
                     .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)) {
                     choices.forEachIndexed { index, option ->
+                        val optionPress = rememberPressFeedback(enabled)
                         Box(Modifier.fillMaxWidth().height(40.dp)
-                            .background(if (index == safeSelected) selectedBackground else Color.Transparent)
-                            .clickable(enabled = enabled, role = Role.Button) { onSelect(index); expanded = false },
+                            .background(pressBackground(if (index == safeSelected) selectedBackground else Color.Transparent,
+                                colors, optionPress.pressed))
+                            .then(optionPress.modifier)
+                            .clickable(interactionSource = optionPress.interactionSource, indication = null,
+                                enabled = enabled, role = Role.Button) { onSelect(index); expanded = false },
                             contentAlignment = Alignment.Center) {
                             Text(option, color = if (index == safeSelected) selectedContent else colors.text,
                                 fontSize = 14.sp,
@@ -382,10 +436,13 @@ internal fun NumericSetting(
     slider: Boolean = false,
     sliderDots: Boolean = false,
     inlineLabel: Boolean = false,
+    showLabel: Boolean = true,
     compactSuffix: Boolean = false,
     beforeInput: (@Composable () -> Unit)? = null,
     afterInput: (@Composable () -> Unit)? = null,
     identity: Any = Unit,
+    onPreview: (String, Long) -> String? = { value, _ -> value },
+    onCommitSession: ((String, Long) -> Unit)? = null,
 ) {
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -397,13 +454,24 @@ internal fun NumericSetting(
         mutableStateOf((value.toFloatOrNull() ?: range.start).coerceIn(range))
     }
     var suppressBlurCommit by remember(identity) { mutableStateOf(false) }
-    fun commit(raw: String = draft) {
+    var lastPreview by remember(identity, value) { mutableStateOf<String?>(null) }
+    val previewSession = remember(identity) { NumericPreviewSession() }
+    var gestureSessionId by remember(identity) { mutableStateOf<Long?>(null) }
+    var suppressNextSliderFinish by remember(identity) { mutableStateOf(false) }
+    var activeDragStart by remember(identity) { mutableStateOf<DragInteraction.Start?>(null) }
+    DisposableEffect(identity) {
+        onDispose { previewSession.dispose() }
+    }
+    fun commit(raw: String = draft, sessionId: Long? = null) {
         val result = NumericDraftPolicy.resolve(raw, value, range)
         invalid = !result.valid
         draft = result.draft
         sliderValue = result.slider.coerceIn(range)
         suppressBlurCommit = true
-        if (result.valid) onCommit(raw)
+        if (result.valid) {
+            if (sessionId != null && onCommitSession != null) onCommitSession(raw, sessionId)
+            else onCommit(raw)
+        }
     }
     fun adjust(delta: Float) {
         val next = ((draft.toFloatOrNull() ?: range.start) + delta).coerceIn(range)
@@ -411,9 +479,46 @@ internal fun NumericSetting(
         invalid = false
         commit(draft)
     }
+    fun finishSliderGesture() {
+        // Material's slider may report both DragInteraction.Cancel and
+        // onValueChangeFinished for one pointer sequence.  Make either callback the one
+        // finalization point and suppress the paired callback; the next gesture clears this bit.
+        if (suppressNextSliderFinish) {
+            suppressNextSliderFinish = false
+            return
+        }
+        activeDragStart = null
+        val raw = sliderText(sliderValue)
+        draft = raw
+        val sessionId = gestureSessionId
+        if (sessionId != null) {
+            if (previewSession.finish(sessionId)) commit(raw, sessionId)
+            gestureSessionId = null
+        } else {
+            commit(raw)
+        }
+        suppressNextSliderFinish = true
+    }
+    val sliderInteractionSource = remember(identity) { MutableInteractionSource() }
+    val latestFinishSliderGesture by rememberUpdatedState(::finishSliderGesture)
+    LaunchedEffect(sliderInteractionSource) {
+        sliderInteractionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> activeDragStart = interaction
+                is DragInteraction.Cancel -> if (activeDragStart === interaction.start) {
+                    activeDragStart = null
+                    latestFinishSliderGesture()
+                }
+                is DragInteraction.Stop -> if (activeDragStart === interaction.start) {
+                    activeDragStart = null
+                }
+            }
+        }
+    }
     Row(if (inlineLabel) Modifier else Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 8.dp)) {
-        Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
+        if (showLabel) Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp,
+            fontWeight = FontWeight.SemiBold,
             modifier = if (slider) Modifier.width(if (compact) 60.dp else 200.dp)
                 else if (inlineLabel) Modifier else Modifier.weight(1f), maxLines = 2)
         if (slider) {
@@ -421,12 +526,38 @@ internal fun NumericSetting(
                 thumbColor = if (colors.dark) Color(0xFFD9ECFF) else Color.White,
                 activeTrackColor = colors.accent, inactiveTrackColor = colors.borderStrong,
             )
-            Slider(sliderValue, { sliderValue = it }, valueRange = range, enabled = enabled,
-                onValueChangeFinished = {
-                    val raw = if (sliderValue % 1f == 0f) sliderValue.roundToInt().toString() else sliderValue.toString()
+            Slider(sliderValue, {
+                val normalized = normalizeSliderValue(it, range)
+                if (normalized != sliderValue) {
+                    val sessionId = gestureSessionId ?: previewSession.begin().also {
+                        // Dedupe only within one pointer gesture.  If the backend rejects a
+                        // gesture and the canonical value is unchanged, a later gesture must
+                        // still be allowed to retry the same normalized tick.
+                        lastPreview = null
+                        suppressNextSliderFinish = false
+                        gestureSessionId = it
+                    }
+                    sliderValue = normalized
+                    val raw = sliderText(normalized)
                     draft = raw
-                    commit(raw)
-                }, steps = if (sliderDots) ((range.endInclusive - range.start).roundToInt() - 1).coerceAtLeast(0) else 0,
+                    invalid = false
+                    suppressBlurCommit = false
+                    if (lastPreview != raw) {
+                        lastPreview = raw
+                        val accepted = onPreview(raw, sessionId)
+                        // Preview callbacks are synchronous.  A null result is a backend
+                        // rejection, so immediately restore both draft and slider to the
+                        // canonical value instead of waiting for a recomposition that may never
+                        // happen when the persisted value is unchanged.
+                        val acceptedText = accepted ?: value
+                        draft = acceptedText
+                        sliderValue = (acceptedText.toFloatOrNull() ?: range.start).coerceIn(range)
+                    }
+                }
+            }, valueRange = range, enabled = enabled,
+                onValueChangeFinished = { finishSliderGesture() },
+                interactionSource = sliderInteractionSource,
+                steps = if (sliderDots) ((range.endInclusive - range.start).roundToInt() - 1).coerceAtLeast(0) else 0,
                 colors = sliderColors, track = { state ->
                     if (sliderDots) SliderDefaults.Track(state, colors = sliderColors)
                     else SliderDefaults.Track(state, colors = sliderColors, drawStopIndicator = null)
@@ -472,10 +603,20 @@ internal fun NumericSetting(
     }
 }
 
+/** Slider-backed production values are integer-normalized before preview/commit dispatch. */
+internal fun normalizeSliderValue(value: Float, range: ClosedFloatingPointRange<Float>): Float =
+    value.roundToInt().toFloat().coerceIn(range)
+
+internal fun sliderText(value: Float): String = value.roundToInt().toString()
+
 @Composable
 private fun NumberStep(symbol: String, title: String, colors: UiPalette, enabled: Boolean, onClick: () -> Unit) {
+    val press = rememberPressFeedback(enabled)
     Box(Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)).border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp))
-        .background(colors.panelAlt).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        .background(pressBackground(if (enabled) colors.panelAlt else colors.disabled, colors, press.pressed))
+        .then(press.modifier)
+        .clickable(interactionSource = press.interactionSource, indication = null,
+            enabled = enabled, role = Role.Button, onClick = onClick)
         .semantics { contentDescription = "$title $symbol" }, contentAlignment = Alignment.Center) {
         Text(symbol, color = colors.text, fontSize = 20.sp)
     }
@@ -490,17 +631,17 @@ internal fun ActionButton(
     primary: Boolean = false,
     destructive: Boolean = false,
     enabled: Boolean = true,
+    mainBackground: Boolean = false,
     height: Dp = 44.dp,
     maxLines: Int = 1,
     onClick: () -> Unit,
 ) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed && enabled) .97f else 1f, label = "press")
+    val press = rememberPressFeedback(enabled)
     val background = when {
         !enabled -> colors.disabled
         destructive -> colors.redSoft
         primary -> colors.accent.copy(alpha = if (colors.dark) .78f else .08f)
+        mainBackground -> colors.background
         else -> colors.panelAlt
     }
     val foreground = when {
@@ -511,15 +652,42 @@ internal fun ActionButton(
     }
     Row(modifier.height(height).clip(RoundedCornerShape(7.dp))
         .border(1.dp, if (primary && enabled) colors.accent else colors.borderStrong, RoundedCornerShape(7.dp))
-        .background(if (pressed) colors.accent.copy(alpha = .2f) else background)
-        .graphicsLayer { scaleX = scale; scaleY = scale }
-        .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+        .background(pressBackground(background, colors, press.pressed))
+        .then(press.modifier)
+        .clickable(interactionSource = press.interactionSource, indication = null,
+            enabled = enabled, role = Role.Button, onClick = onClick)
         .padding(horizontal = if (maxLines > 1) 4.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
         icon?.let { Icon(it, null, tint = foreground, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)) }
         Text(text, color = foreground, fontSize = if (height < 40.dp || maxLines > 1) 12.sp else 14.sp,
             fontWeight = FontWeight.SemiBold, maxLines = maxLines, textAlign = TextAlign.Center,
             overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** BYD HUD shutdown affordance: fixed square hit area and immediate dispatch. */
+@Composable
+internal fun ShutdownButton(
+    contentDescription: String,
+    colors: UiPalette,
+    onClick: () -> Unit,
+) {
+    val press = rememberPressFeedback()
+    val tint = colors.red
+    val base = tint.copy(alpha = if (colors.dark) .20f else .12f)
+    val pressed = tint.copy(alpha = if (colors.dark) .88f else .72f)
+    Box(
+        Modifier.size(42.dp).clip(RoundedCornerShape(7.dp))
+            .border(1.dp, tint.copy(alpha = .85f), RoundedCornerShape(7.dp))
+            .background(if (press.pressed) pressed else base)
+            .then(press.modifier)
+            .clickable(interactionSource = press.interactionSource, indication = null,
+                role = Role.Button, onClick = onClick)
+            .padding(6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Outlined.PowerSettingsNew, contentDescription,
+            tint = if (press.pressed) Color.White else tint, modifier = Modifier.size(28.dp))
     }
 }
 
@@ -531,14 +699,14 @@ internal fun SettingsActionRow(
     title: String,
     hint: String,
     colors: UiPalette,
+    verticalPadding: Dp = 12.dp,
     action: @Composable () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = verticalPadding), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             if (hint.isNotBlank()) Text(hint, color = colors.muted, fontSize = 13.sp)
         }
-        Spacer(Modifier.width(10.dp))
         action()
     }
 }

@@ -154,15 +154,6 @@ final class CameraDewarpConfig {
         String enabledKey = scopedPrefix + "enabled";
         String fovKey = scopedPrefix + "fov";
         String projectionKey = scopedPrefix + "projection";
-        boolean complete = preferences.contains(enabledKey)
-                && preferences.contains(fovKey)
-                && preferences.contains(projectionKey);
-        boolean hasStoredValue = preferences.contains(enabledKey)
-                || preferences.contains(fovKey)
-                || preferences.contains(projectionKey)
-                || preferences.contains(legacyPrefix + "enabled")
-                || preferences.contains(legacyPrefix + "fov")
-                || preferences.contains(legacyPrefix + "projection");
         try {
             String enabledSource = preferences.contains(enabledKey) ? enabledKey
                     : preferences.contains(legacyPrefix + "enabled")
@@ -183,11 +174,8 @@ final class CameraDewarpConfig {
                     || !isValidProjection(projection)) {
                 return disabled(lens);
             }
-            CameraDewarpConfig value = of(lens, enabled, fov, projection);
-            if (!complete && hasStoredValue) {
-                writeScoped(preferences.edit(), lens, scopedPrefix, value).apply();
-            }
-            return value;
+            // Legacy fallback stays read-only; an explicit scoped edit writes all three fields.
+            return of(lens, enabled, fov, projection);
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -202,6 +190,9 @@ final class CameraDewarpConfig {
     static void saveForProfile(
             SharedPreferences preferences, CameraProfile profile, CameraDewarpConfig value) {
         SharedPreferences.Editor editor = preferences.edit();
+        if (loadForProfile(preferences, profile).enabled != value.enabled) {
+            BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
+        }
         writeForProfile(editor, profile, value);
         editor.apply();
     }

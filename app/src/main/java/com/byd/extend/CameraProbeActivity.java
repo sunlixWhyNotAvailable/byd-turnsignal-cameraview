@@ -14,6 +14,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
@@ -295,6 +296,7 @@ public final class CameraProbeActivity extends ComponentActivity
             new EnumMap<>(CameraHostKind.class);
     /** Compose receives these roots; camera state always stays on the child owner views. */
     private FrameLayout productionPlacementHost;
+    private CropMaskView productionPlacementCropMask;
     private FrameLayout productionDirectHost;
     private FrameLayout productionAvmHost;
     private Switch guardSwitch;
@@ -356,6 +358,15 @@ public final class CameraProbeActivity extends ComponentActivity
     private FrameLayout calibrationRawMirrorHost;
     private FrameLayout calibrationCorrectedMirrorHost;
     private FrameLayout calibrationOutputHost;
+    private CropMaskView calibrationOutputCropMask;
+    /**
+     * Retained Compose calibration workspace identity.  Individual conditional stage hosts may
+     * disappear (for example Corrected when correction is switched off), but this bundle keeps the
+     * single owner and all three stage roots until an explicit workspace/tab teardown.  It is also
+     * the identity gate used by release callbacks so a stale host cannot detach a replacement
+     * owner's mirror.
+     */
+    private final CalibrationHostBundle calibrationHostBundle = new CalibrationHostBundle();
     private View calibrationRawMirrorCover;
     private View calibrationCorrectedMirrorCover;
     private CameraCropOverlayView productionCalibrationRawOverlay;
@@ -383,6 +394,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private Button calibrationOutputMirrorButton;
     private DirectCameraCrop calibrationRawCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop calibrationCorrectedCrop = DirectCameraCrop.defaultFor(false);
+    private long productionCalibrationHostGeneration;
     private ImageView calibrationCropPreview;
     private FrameLayout calibrationSourceHost;
     private View calibrationSourceFrame;
@@ -431,7 +443,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private Bitmap reverseCalibrationResultBitmap;
     private boolean reverseCalibrationCopyPending;
     private final Button[] reversePaneButtons = new Button[5];
-    private final Button[] reverseNudgeButtons = new Button[4];
     private final Button[] reverseInspectorButtons = new Button[4];
     private SeekBar reverseRotationSlider;
     private TextView reverseRotationValue;
@@ -545,6 +556,11 @@ public final class CameraProbeActivity extends ComponentActivity
     private int calibrationOriginTab = TAB_CAMERAS;
     private boolean calibrationParkingMode;
     private CameraProfileId calibrationHostProfile;
+    private Integer transientCornerRadiusDp;
+    private Integer transientTransparencyPercent;
+    private CameraProfileId transientProfilePreviewId;
+    private Integer transientProfilePreviewFov;
+    private Integer transientProfilePreviewRotation;
     private int selectedParkingCameraId = ParkingCameraProfile.FL;
     private boolean parkingUiUpdating;
     private final float[] parkingCameraX = new float[ParkingCameraProfile.COUNT];
@@ -583,6 +599,12 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean retryStockDebug;
     private boolean cameraShellRecoveryPending;
     private boolean cameraShellAvailable;
+    /** Shell identity gate for Activity camera callbacks; stale epochs cannot invalidate a new host. */
+    private long activityCameraShellEpoch;
+    private long activityCameraShellLastDeathEpoch;
+    /** Latest Stock AVM shell lifecycle epoch observed by this Activity. */
+    private long activityAvmShellEpoch;
+    private boolean activityCameraShellDeathHandled;
     private boolean invalidStockSurfaceRetryUsed;
     private boolean pendingCameraDebug;
     private boolean cameraHandoffPending;
@@ -714,6 +736,12 @@ public final class CameraProbeActivity extends ComponentActivity
             cameraTransition.cancel();
             cameraShellRecoveryPending = false;
             cameraShellAvailable = false;
+            activityCameraShellEpoch = 0;
+            activityCameraShellLastDeathEpoch = 0;
+            activityCameraShellDeathHandled = false;
+            activityAvmShellEpoch = 0;
+            pendingCameraViewpoint = -1;
+            pendingCameraDebug = false;
             retryStockViewpoint = -1;
             retryStockDebug = false;
             publishGuardStatus("Службу зупинено", StatusTone.Error);
@@ -1804,11 +1832,10 @@ public final class CameraProbeActivity extends ComponentActivity
         productionPreviewAwaitingFrame = false;
         mainHandler.removeCallbacks(productionPreviewFirstFrameTimeout);
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.INVISIBLE);
-        publishSettingsFeedback(
-                "Showing " + CameraProfile.of(selectedCameraId).wireName, StatusTone.Ok);
         record("camera_preview_first_frame", "request_id", productionPreviewFrameRequest,
                 "frame_updates", productionPreviewFrameUpdates,
-                "camera_id", selectedCameraId);
+                "camera_id", selectedCameraId,
+                "status", "Showing " + CameraProfile.of(selectedCameraId).wireName);
     }
 
     private void confirmCompatibilityBundleShare() {
@@ -2109,7 +2136,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 reverseCalibrationCameraIndex,
                 reverseCalibrationFront,
                 reverseCalibrationCopiesRaw());
-        publishSettingsFeedback("Live preview", StatusTone.Ok);
+        record("camera_status", "profile", "reverse", "text", "Live preview",
+                "tone", StatusTone.Ok.name(), "pending", false);
         record("reverse_preview_frames", "request_id", requestId,
                 "generations", java.util.Arrays.toString(generations));
         startReverseCalibrationCopies();
@@ -2118,15 +2146,29 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onReverseSurfaceLost(int cameraIndex, int generation) {
         stopReverseCalibrationCopies(true);
+        boolean terminal = reverseSurfaceLossIsTerminal(
+                cameraIndex,
+                reverseCameraPreview != null
+                        && reverseCameraPreview.centralFrontSurfaceRecoveryPending());
+        reverseCameraSurfacesReady = reverseCameraPreview != null
+                && reverseCameraPreview.previewSurfacesReady();
+        record("reverse_preview_surfaces",
+                "state", terminal ? "destroyed" : "optional_destroyed",
+                "camera_index", cameraIndex, "generation", generation);
+        if (!terminal) {
+            updateControls();
+            return;
+        }
         reversePreviewFreshness.clear();
         pendingReversePreviewRequestId = 0;
         pendingReversePreviewGenerations = null;
-        reverseCameraSurfacesReady = reverseCameraPreview != null
-                && reverseCameraPreview.previewSurfacesReady();
-        record("reverse_preview_surfaces", "state", "destroyed",
-                "camera_index", cameraIndex, "generation", generation);
         if (activePreview == reverseCameraPreview) closeCamera("reverse_surface_destroyed");
         updateControls();
+    }
+
+    static boolean reverseSurfaceLossIsTerminal(
+            int cameraIndex, boolean centralFrontRecoveryPending) {
+        return cameraIndex != 4 || !centralFrontRecoveryPending;
     }
 
     @Override
@@ -2141,7 +2183,14 @@ public final class CameraProbeActivity extends ComponentActivity
                 && ("dewarp_mesh_applied".equals(event.kind)
                 || "dewarp_fallback_raw".equals(event.kind))) {
             stopReverseCalibrationCopies(true);
-            updateReverseCalibrationDisplay();
+            // The Compose path has no legacy calibration overlays.  Keep the callback on the
+            // production state path there; only the dormant View-built editor may render copies.
+            if (reverseCalibrationPane != null
+                    && reverseCalibrationPane.getVisibility() == View.VISIBLE) {
+                updateReverseCalibrationDisplay();
+            } else if (productionUi != null) {
+                productionUi.reload();
+            }
         }
         if (!CameraDewarpRenderer.isFatalEventKind(event.kind)
                 || activePreview != reverseCameraPreview) return;
@@ -2204,6 +2253,321 @@ public final class CameraProbeActivity extends ComponentActivity
             saveProductionProfilePosition(move.getProfile(), move.getX(), move.getY());
         } else if (action instanceof BydExtendUiAction.Run) {
             handleProductionCommand((BydExtendUiAction.Run) action);
+        }
+    }
+
+    /**
+     * Section navigation is a UI concern unless Calibration is entered or left.  Parameters and
+     * Placement share the same live Reverse host; only the editor overlay changes visibility and
+     * editability in place.
+     */
+    @Override
+    public void onProductionCameraSectionChanged(
+            RootTab tab, CameraSection previous, CameraSection next) {
+        if (tab == null || previous == null || next == null || previous == next) return;
+        if (previous == CameraSection.Calibration || next == CameraSection.Calibration) {
+            onProductionCameraSelectionChanged(SelectionId.CameraSection);
+            return;
+        }
+        if (tab != RootTab.Reverse) return;
+        syncProductionReverseCompositionHost(next == CameraSection.Placement);
+    }
+
+    /** Reverse Parameters/Placement changes editor focus only; camera inputs stay attached. */
+    @Override
+    public void onProductionReverseElementFocusChanged(
+            CameraSection section, ReverseElement previous, ReverseElement next) {
+        if (section == null || previous == null || next == null || previous == next) return;
+        if (section == CameraSection.Calibration) {
+            onProductionCameraSelectionChanged(SelectionId.ReverseElement);
+            return;
+        }
+        syncProductionReverseCompositionHost(section == CameraSection.Placement);
+    }
+
+    /** Persists one visibility bit and updates the already-open native Reverse overlay in place. */
+    @Override
+    public void onProductionReverseVisibilityChanged(ReverseElement element, boolean visible) {
+        if (element == null) return;
+        int pane = reverseElementIndex(element);
+        if (pane == ReverseCameraLayout.WIDGET_PANE_ID) {
+            ReverseCameraController.saveWidgetVisible(preferences, visible);
+        } else if (pane == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+            // Background is a fixed pane; never route it through camera-pane bit lookup.
+            preferences.edit().putBoolean(
+                    ReverseCameraController.PREF_BACKGROUND_VISIBLE, visible).apply();
+        } else if (ReverseCameraLayout.REAR_CAMERA_INDEX <= pane
+                && pane <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
+            ReverseCameraController.saveVisibility(preferences, pane, visible);
+        } else {
+            return;
+        }
+        if (reverseCameraPreview != null) {
+            reverseCameraPreview.applyVisibility(
+                    ReverseCameraController.loadVisibilityMask(preferences));
+            reverseCameraPreview.setWidgetVisible(
+                    ReverseCameraController.loadWidgetVisible(preferences));
+        }
+        requestReverseVisibilityUpdate();
+    }
+
+    private void syncProductionReverseCompositionHost(boolean editable) {
+        if (productionReverseEditor == null || reverseCameraPreview == null) return;
+        productionReverseEditorEditable = editable;
+        productionReverseEditor.setEditable(editable);
+        productionReverseEditor.setVisibility(editable ? View.VISIBLE : View.GONE);
+        productionReverseEditor.setLayoutModel(reverseCameraLayout);
+        if (productionUi != null) {
+            productionReverseEditor.setSelectedCameraSilently(reverseElementIndex(
+                    productionUi.getState().getReverse().getSelectedElement()));
+        }
+        reverseCameraPreview.applyVisibility(
+                ReverseCameraController.loadVisibilityMask(preferences));
+        reverseCameraPreview.setWidgetVisible(
+                ReverseCameraController.loadWidgetVisible(preferences));
+    }
+
+    /**
+     * Sends the typed visibility update through the helper's persistent Reverse owner.  The
+     * request/generation identity is the current activity Reverse request; if no request is open,
+     * persisted state is consumed by the next prepare without an unnecessary IPC.
+     */
+    private void requestReverseVisibilityUpdate() {
+        if (helper == null || !helper.isBinderAlive()
+                || !requestedOpen || activePreview != reverseCameraPreview
+                || activeActivityCameraRequestId <= 0
+                || (activeActivityInputGenerations.length != 4
+                && activeActivityInputGenerations.length != 5)) return;
+        final IBinder current = helper;
+        final int requestId = activeActivityCameraRequestId;
+        // SurfaceBundle includes the preview-base generation at index 0; the native Reverse shell
+        // identity is the direct-pane generation vector only (3 panes, or 3 + central Front).
+        final int[] generations = java.util.Arrays.copyOfRange(
+                activeActivityInputGenerations, 1, activeActivityInputGenerations.length);
+        final int visibilityMask = ReverseCameraController.loadVisibilityMask(preferences);
+        final boolean widgetVisible = ReverseCameraController.loadWidgetVisible(preferences);
+        ipcExecutor.execute(() -> {
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
+                data.writeInt(requestId);
+                data.writeInt(generations.length);
+                for (int generation : generations) data.writeInt(generation);
+                data.writeInt(visibilityMask);
+                data.writeInt(widgetVisible ? 1 : 0);
+                requireTransaction(current, CameraHelperMain.TX_UPDATE_REVERSE_VISIBILITY,
+                        data, reply);
+                record("ipc_reply", "operation", "reverse_visibility_update",
+                        "request_id", requestId, "visibility_mask", visibilityMask,
+                        "widget_visible", widgetVisible, "reply", reply.readString());
+            } catch (Throwable error) {
+                record("ipc_error", "operation", "reverse_visibility_update",
+                        "request_id", requestId, "error", error.toString());
+            } finally {
+                reply.recycle();
+                data.recycle();
+            }
+        });
+    }
+
+    /**
+     * Applies a slider tick to the currently displayed native hosts without writing preferences,
+     * notifying the helper service, or reloading the Compose snapshot.  The controller owns the
+     * transient state and sends one CommitNumber when the gesture ends.
+     */
+    @Override
+    public String onProductionUiPreview(NumberTarget target, String value) {
+        if (target == null || value == null) return null;
+        final float parsed;
+        try {
+            parsed = Float.parseFloat(value.trim());
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+        if (!Float.isFinite(parsed)) return null;
+        if (target instanceof NumberTarget.Profile) {
+            NumberTarget.Profile profileTarget = (NumberTarget.Profile) target;
+            ProfileNumber field = profileTarget.getField();
+            int minimum;
+            int maximum;
+            if (field == ProfileNumber.Size) {
+                minimum = 5;
+                maximum = 60;
+            } else if (field == ProfileNumber.Fov) {
+                minimum = CameraDewarpConfig.MIN_FOV_DEGREES;
+                maximum = CameraDewarpConfig.MAX_FOV_DEGREES;
+            } else if (field == ProfileNumber.Rotation) {
+                minimum = CameraRotation.MIN_DEGREES;
+                maximum = CameraRotation.MAX_DEGREES;
+            } else {
+                return null;
+            }
+            int accepted = Math.round(parsed);
+            if (accepted < minimum || accepted > maximum) return null;
+            try {
+                applyTransientProductionProfileNumber(
+                        profileTarget.getProfile(), field, accepted);
+            } catch (IllegalArgumentException invalid) {
+                return null;
+            }
+            return Integer.toString(accepted);
+        }
+        if (target instanceof NumberTarget.Output) {
+            NumberTarget.Output output = (NumberTarget.Output) target;
+            int minimum = 0;
+            int maximum = output.getField() == OutputNumber.CornerRadius ? 48 : 100;
+            int accepted = Math.round(parsed);
+            if (accepted < minimum || accepted > maximum) return null;
+            int radius = output.getField() == OutputNumber.CornerRadius
+                    ? accepted : transientCornerRadiusDp != null
+                            ? transientCornerRadiusDp
+                            : BlindSpotOverlayController.readCornerRadius(preferences);
+            int transparency = output.getField() == OutputNumber.Transparency
+                    ? accepted : transientTransparencyPercent != null
+                            ? transientTransparencyPercent
+                            : BlindSpotOverlayController.readTransparencyPercent(preferences);
+            // A detached helper is not a validation failure: Compose must still accept the
+            // normalized tick so the eventual CommitNumber can persist it.  Send the transient
+            // visual update only when the current helper binder is already bound/alive.
+            enqueueTransientCameraVisuals(radius, transparency);
+            if (output.getField() == OutputNumber.CornerRadius) transientCornerRadiusDp = accepted;
+            else transientTransparencyPercent = accepted;
+            return Integer.toString(accepted);
+        }
+        return null;
+    }
+
+    private boolean enqueueTransientCameraVisuals(int cornerRadiusDp, int transparencyPercent) {
+        IBinder current = helper;
+        if (current == null || !current.isBinderAlive()) return false;
+        ipcExecutor.execute(() -> {
+            if (helper != current || !current.isBinderAlive()) return;
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
+                data.writeInt(cornerRadiusDp);
+                data.writeInt(transparencyPercent);
+                requireTransaction(current, CameraHelperMain.TX_UPDATE_VISUALS, data, reply);
+                record("ipc_reply", "operation", "camera_visuals_preview",
+                        "reply", reply.readString(), "corner_radius_dp", cornerRadiusDp,
+                        "transparency_percent", transparencyPercent);
+            } catch (Throwable error) {
+                record("ipc_error", "operation", "camera_visuals_preview",
+                        "error", error.toString());
+            } finally {
+                reply.recycle();
+                data.recycle();
+            }
+        });
+        return true;
+    }
+
+    private void applyTransientProductionProfileNumber(
+            CameraProfileId id, ProfileNumber field, int value) {
+        if (field == ProfileNumber.Size) {
+            // Compose's placement geometry is derived from the accepted state value; no native
+            // camera transform or preference write is needed for this field.
+            return;
+        }
+        if (field == ProfileNumber.Fov) {
+            transientProfilePreviewId = id;
+            transientProfilePreviewFov = value;
+            CameraDewarpConfig current = loadProductionCalibrationDewarp(id);
+            applyTransientDewarpConfig(id, current.withFov(value));
+            return;
+        }
+        if (field != ProfileNumber.Rotation) return;
+        transientProfilePreviewId = id;
+        transientProfilePreviewRotation = value;
+        applyTransientOutputRotation(id, value);
+    }
+
+    private void clearTransientProfilePreview(CameraProfileId id, ProfileNumber field) {
+        if (id == null || !id.equals(transientProfilePreviewId)) return;
+        if (field == ProfileNumber.Fov) transientProfilePreviewFov = null;
+        else if (field == ProfileNumber.Rotation) transientProfilePreviewRotation = null;
+        if (transientProfilePreviewFov == null && transientProfilePreviewRotation == null) {
+            transientProfilePreviewId = null;
+        }
+    }
+
+    private void applyTransientDewarpConfig(
+            CameraProfileId id, CameraDewarpConfig config) {
+        CameraProfileId selected = selectedProductionProfile();
+        if (cameraPreview != null && id.equals(selected)) {
+            cameraPreview.applyDewarpConfig(config);
+        }
+        if (calibrationPreview != null && id.equals(calibrationHostProfile)) {
+            calibrationPreview.applyDewarpConfig(config);
+        }
+    }
+
+    private void applyTransientOutputRotation(CameraProfileId id, int rotation) {
+        if (id instanceof CameraProfileId.Reverse) {
+            CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+            int index = reverseProfileIndex(reverse);
+            boolean front = reverse.getSource() == ReverseSource.Front;
+            DirectCameraCrop[] crops = reverseRotationPreviewCrops(
+                    preferences, index, front, rotation);
+            applyTransientCalibrationCrop(id, crops[0], crops[1]);
+            return;
+        }
+        DirectCameraCrop raw;
+        DirectCameraCrop corrected;
+        if (id instanceof CameraProfileId.Blind) {
+            CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
+            raw = DirectCameraCrop.load(preferences, profile);
+            corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
+        } else if (id instanceof CameraProfileId.Parking) {
+            ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
+            raw = DirectCameraCrop.load(preferences, profile);
+            corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
+        } else {
+            return;
+        }
+        raw = raw.withOutputTransformPreservingGeometry(
+                rotation, raw.rotationMode, raw.mirrorHorizontally);
+        corrected = corrected.withOutputTransformPreservingGeometry(
+                rotation, corrected.rotationMode, corrected.mirrorHorizontally);
+        applyTransientCalibrationCrop(id, raw, corrected);
+    }
+
+    /** Live rotation preserves independent RAW fallback and Corrected source geometries. */
+    static DirectCameraCrop[] reverseRotationPreviewCrops(
+            SharedPreferences settings, int cameraIndex, boolean front, int rotation) {
+        ReverseCameraLayout layout = front
+                ? ReverseCameraController.loadFrontRawLayout(settings)
+                : ReverseCameraController.loadRawLayout(settings);
+        ReverseCameraLayout.Pane pane = layout.pane(cameraIndex);
+        ReverseCameraLayout.Rect corrected = front
+                ? ReverseCameraController.loadFrontCorrectedSourceCrop(settings, cameraIndex)
+                : ReverseCameraController.loadCorrectedSourceCrop(settings, cameraIndex,
+                        ReverseCameraLayout.centeredSourceCrop(pane.sourceCrop));
+        return new DirectCameraCrop[]{
+                directCrop(pane.sourceCrop, pane).withOutputTransformPreservingGeometry(
+                        rotation, pane.displayMode, pane.mirrorHorizontally),
+                directCrop(corrected, pane).withOutputTransformPreservingGeometry(
+                        rotation, pane.displayMode, pane.mirrorHorizontally)
+        };
+    }
+
+    private void applyTransientCalibrationCrop(
+            CameraProfileId id, DirectCameraCrop raw, DirectCameraCrop corrected) {
+        CameraDewarpConfig dewarp = loadProductionCalibrationDewarp(id);
+        CameraProfileId selected = selectedProductionProfile();
+        DirectCameraCrop previewRaw = raw;
+        DirectCameraCrop previewActive = dewarp.enabled ? corrected : raw;
+        if (cameraPreview != null && id.equals(selected)) {
+            cameraPreview.applyRawFallbackCrop(previewRaw);
+            applyDewarpSourceRoi(cameraPreview, previewRaw);
+            cameraPreview.applyDirectCameraCrop(previewActive);
+        }
+        if (calibrationPreview != null && id.equals(calibrationHostProfile)) {
+            calibrationPreview.applyRawFallbackCrop(previewRaw);
+            applyDewarpSourceRoi(calibrationPreview, previewRaw);
+            calibrationPreview.applyDirectCameraCrop(previewActive);
         }
     }
 
@@ -2332,11 +2696,10 @@ public final class CameraProbeActivity extends ComponentActivity
             ToggleTarget.Reverse reverse = (ToggleTarget.Reverse) target;
             int pane = reverseElementIndex(reverse.getElement());
             if (reverse.getId() == ToggleId.ReverseElementVisible) {
-                if (pane == ReverseCameraLayout.WIDGET_PANE_ID) {
-                    ReverseCameraController.saveWidgetVisible(preferences, value);
-                } else {
-                    ReverseCameraController.saveVisibility(preferences, pane, value);
-                }
+                // The typed controller path persists one bit and performs one targeted native
+                // update.  Keep this fallback path equivalent without triggering a full reload.
+                onProductionReverseVisibilityChanged(reverse.getElement(), value);
+                return;
             } else if (reverse.getId() == ToggleId.ReverseFrontIntegration && pane > 0) {
                 ReverseCameraController.saveFrontIntegrated(preferences, pane, value);
             }
@@ -2356,14 +2719,18 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void handleProductionNumber(BydExtendUiAction.CommitNumber action) {
         String text = action.getValue().trim();
+        NumberTarget target = action.getTarget();
         final float value;
         try {
             value = Float.parseFloat(text);
         } catch (NumberFormatException invalid) {
-            publishSettingsFeedback("Некоректне числове значення", StatusTone.Error);
+            if (isCameraNumberTarget(target)) {
+                recordCameraValidationRejected(target, text, "invalid_number");
+            } else {
+                publishSettingsFeedback("Некоректне числове значення", StatusTone.Error);
+            }
             return;
         }
-        NumberTarget target = action.getTarget();
         if (target instanceof NumberTarget.Guard) {
             saveProductionGuardNumber((NumberTarget.Guard) target, value);
         } else if (target == NumberTarget.WeatherInterval.INSTANCE) {
@@ -2385,13 +2752,61 @@ public final class CameraProbeActivity extends ComponentActivity
             if (output.getField().name().equals("CornerRadius")) {
                 rounded = clamp(rounded, 0, 48);
                 preferences.edit().putInt(BlindSpotOverlayController.PREF_CORNER_RADIUS, rounded).apply();
+                transientCornerRadiusDp = null;
                 onCameraCornerRadiusChanged(rounded);
             } else {
                 rounded = clamp(rounded, 0, 100);
                 preferences.edit().putInt(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT, rounded).apply();
+                transientTransparencyPercent = null;
                 onCameraTransparencyChanged(rounded);
             }
         }
+    }
+
+    private static boolean isCameraNumberTarget(NumberTarget target) {
+        return target instanceof NumberTarget.Profile
+                || target instanceof NumberTarget.Output
+                || target instanceof NumberTarget.Blind
+                || target instanceof NumberTarget.Parking
+                || target instanceof NumberTarget.ReverseGeometry;
+    }
+
+    private void recordCameraValidationRejected(
+            NumberTarget target, String value, String reason) {
+        String profile = "unknown";
+        String source = "unknown";
+        String stage = "unknown";
+        String field = "unknown";
+        if (target instanceof NumberTarget.Profile) {
+            NumberTarget.Profile profileTarget = (NumberTarget.Profile) target;
+            CameraProfileId id = profileTarget.getProfile();
+            profile = id == null ? "unknown" : id.toString();
+            field = profileTarget.getField().name();
+            stage = field.startsWith("Corrected") ? "corrected"
+                    : field.startsWith("Original") ? "original"
+                    : field.equals("Rotation") ? "output" : "correction";
+            if (id instanceof CameraProfileId.Reverse) {
+                source = ((CameraProfileId.Reverse) id).getSource().name();
+            }
+        } else if (target instanceof NumberTarget.Output) {
+            field = ((NumberTarget.Output) target).getField().name();
+            stage = "output";
+        } else if (target instanceof NumberTarget.ReverseGeometry) {
+            field = ((NumberTarget.ReverseGeometry) target).getField().name();
+            stage = "reverse_geometry";
+            profile = ((NumberTarget.ReverseGeometry) target).getElement().name();
+        } else if (target instanceof NumberTarget.Blind) {
+            field = ((NumberTarget.Blind) target).getField().name();
+            profile = ((NumberTarget.Blind) target).getGroup().name();
+            stage = "signals";
+        } else if (target instanceof NumberTarget.Parking) {
+            field = ((NumberTarget.Parking) target).getField().name();
+            profile = String.valueOf(((NumberTarget.Parking) target).getView());
+            stage = "signals";
+        }
+        record("validation_rejected", "domain", "camera", "profile", profile,
+                "source", source, "stage", stage, "field", field,
+                "value", value, "reason", reason == null ? "invalid" : reason);
     }
 
     private void handleProductionSelection(BydExtendUiAction.Select action) {
@@ -2430,6 +2845,11 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void onProductionCameraSelectionChanged(SelectionId id) {
+        if (id == SelectionId.CameraSection && !isProductionCalibrationSection()) {
+            // Parameters/Placement in the same root tab ends the retained calibration
+            // workspace explicitly; a conditional stage's Compose onRelease is not teardown.
+            releaseProductionCalibrationHosts();
+        }
         CameraProfileId profile = selectedProductionProfile();
         if (profile != null) configureProductionCameraProfile(profile, null);
         if (id == SelectionId.ReverseSource && reverseCameraPreview != null) {
@@ -2636,9 +3056,7 @@ public final class CameraProbeActivity extends ComponentActivity
         else if (target.getField() == GuardNumber.CentreTolerance) center = value;
         else if (target.getField() == GuardNumber.CorrectionDelayMs) delay = Math.round(value);
         else speed = Math.round(value);
-        if (!Float.isFinite(outward) || !Float.isFinite(center)
-                || outward < 30.0f || outward > 360.0f
-                || center < 2.0f || center > 45.0f || center >= outward
+        if (!isValidGuardThresholds(outward, center)
                 || delay < 0 || delay > 1_000 || speed < 0 || speed > 300) {
             publishSettingsFeedback(
                     "Некоректні значення: кути, затримка 0..1000 мс або швидкість 0..300",
@@ -2648,6 +3066,12 @@ public final class CameraProbeActivity extends ComponentActivity
         preferences.edit().putFloat("outward_deg", outward).putFloat("center_deg", center)
                 .putInt("correction_delay_ms", delay).putInt("max_speed_kph", speed).apply();
         pushGuardConfigFromPreferences();
+    }
+
+    static boolean isValidGuardThresholds(float outward, float center) {
+        return Float.isFinite(outward) && Float.isFinite(center)
+                && outward >= 0.0f && outward <= 360.0f
+                && center >= 0.0f && center <= 45.0f;
     }
 
     private void saveProductionBlindNumber(NumberTarget.Blind target, float value) {
@@ -2669,9 +3093,8 @@ public final class CameraProbeActivity extends ComponentActivity
             else maximumKeyValue = Math.round(value);
             if (minimumKeyValue < 0 || minimumKeyValue > maximumKeyValue
                     || maximumKeyValue > 300) {
-                publishSettingsFeedback(
-                        "Швидкість має бути в межах 0..300 км/год, мінімальна не перевищує максимальну",
-                        StatusTone.Error);
+                recordCameraValidationRejected(target, Float.toString(value),
+                        "minimum_speed_exceeds_maximum_or_out_of_range");
                 return;
             }
             preferences.edit().putInt(BlindSpotOverlayController.PREF_MIN_SPEED, minimumKeyValue)
@@ -2694,9 +3117,8 @@ public final class CameraProbeActivity extends ComponentActivity
             else maximumKeyValue = Math.round(value);
             if (minimumKeyValue < 0 || minimumKeyValue > maximumKeyValue
                     || maximumKeyValue > 300) {
-                publishSettingsFeedback(
-                        "Швидкість має бути в межах 0..300 км/год, мінімальна не перевищує максимальну",
-                        StatusTone.Error);
+                recordCameraValidationRejected(target, Float.toString(value),
+                        "minimum_speed_exceeds_maximum_or_out_of_range");
                 return;
             }
             preferences.edit()
@@ -2789,12 +3211,12 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
             DirectCameraCrop crop = DirectCameraCrop.load(preferences, profile)
                     .withMirrorHorizontally(mirror);
-            DirectCameraCrop.save(preferences, profile, crop);
+            DirectCameraCrop.saveOutputTransform(preferences, profile, crop);
         } else if (id instanceof CameraProfileId.Parking) {
             ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
             DirectCameraCrop crop = DirectCameraCrop.load(preferences, profile)
                     .withMirrorHorizontally(mirror);
-            DirectCameraCrop.save(preferences, profile, crop);
+            DirectCameraCrop.saveOutputTransform(preferences, profile, crop);
         } else if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
             int index = reverseProfileIndex(reverse);
@@ -2827,10 +3249,11 @@ public final class CameraProbeActivity extends ComponentActivity
             } else {
                 saveProductionCropNumber(id, field, value / 100.0f);
             }
+            clearTransientProfilePreview(id, field);
             notifyProductionProfileChanged(id);
         } catch (IllegalArgumentException invalid) {
-            publishSettingsFeedback(invalid.getMessage() == null
-                    ? "Некоректна геометрія камери" : invalid.getMessage(), StatusTone.Error);
+            recordCameraValidationRejected(
+                    target, Float.toString(value), invalid.getMessage());
         }
     }
 
@@ -2990,12 +3413,12 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
             DirectCameraCrop crop = DirectCameraCrop.load(preferences, profile);
             crop = strictOutputTransform(crop, rotation, mode);
-            DirectCameraCrop.save(preferences, profile, crop);
+            DirectCameraCrop.saveOutputTransform(preferences, profile, crop);
         } else if (id instanceof CameraProfileId.Parking) {
             ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
             DirectCameraCrop crop = DirectCameraCrop.load(preferences, profile);
             crop = strictOutputTransform(crop, rotation, mode);
-            DirectCameraCrop.save(preferences, profile, crop);
+            DirectCameraCrop.saveOutputTransform(preferences, profile, crop);
         } else {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
             int index = reverseProfileIndex(reverse);
@@ -3059,8 +3482,13 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 saveProductionOutputTransform(target.getProfile(), null, index);
             } catch (IllegalArgumentException invalid) {
-                publishSettingsFeedback(
-                        "Поворот/режим не відповідає межам кадру", StatusTone.Error);
+                CameraProfileId profile = target.getProfile();
+                record("validation_rejected", "domain", "camera",
+                        "profile", profile == null ? "unknown" : profile.toString(),
+                        "source", profile instanceof CameraProfileId.Reverse
+                                ? ((CameraProfileId.Reverse) profile).getSource().name() : "unknown",
+                        "stage", "output", "field", "ProfileOutputMode",
+                        "value", index, "reason", invalid.getMessage());
             }
         }
     }
@@ -3110,7 +3538,6 @@ public final class CameraProbeActivity extends ComponentActivity
         if (id instanceof CameraProfileId.Blind) {
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
             selectedCameraId = profile.id;
-            preferences.edit().putInt("camera_selected_profile", profile.id).apply();
             raw = DirectCameraCrop.load(preferences, profile);
             corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
             dewarp = CameraDewarpConfig.loadForProfile(preferences, profile);
@@ -3120,7 +3547,6 @@ public final class CameraProbeActivity extends ComponentActivity
         } else if (id instanceof CameraProfileId.Parking) {
             ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
             selectedParkingCameraId = profile.id;
-            preferences.edit().putInt("parking_camera_selected_profile", profile.id).apply();
             raw = DirectCameraCrop.load(preferences, profile);
             corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
             dewarp = CameraDewarpConfig.loadForParking(preferences, profile);
@@ -3167,18 +3593,35 @@ public final class CameraProbeActivity extends ComponentActivity
         } else return;
         if (requestedSourceIndex != null) sourceIndex = requestedSourceIndex;
 
+        // AndroidView.update runs again when Compose accepts a slider preview.  Keep that
+        // recomposition from re-reading stale persisted FOV/rotation over the live gesture.
+        if (id.equals(transientProfilePreviewId)) {
+            if (transientProfilePreviewFov != null) {
+                dewarp = dewarp.withFov(transientProfilePreviewFov);
+            }
+            if (transientProfilePreviewRotation != null) {
+                raw = raw.withOutputTransformPreservingGeometry(
+                        transientProfilePreviewRotation, raw.rotationMode,
+                        raw.mirrorHorizontally);
+                corrected = corrected.withOutputTransformPreservingGeometry(
+                        transientProfilePreviewRotation, corrected.rotationMode,
+                        corrected.mirrorHorizontally);
+            }
+        }
+
+        DirectCameraCrop previewRaw = raw;
         DirectCameraCrop active = dewarp.enabled ? corrected : raw;
         if (cameraPreview != null) {
-            cameraPreview.applyRawFallbackCrop(raw);
-            applyDewarpSourceRoi(cameraPreview, raw);
+            cameraPreview.applyRawFallbackCrop(previewRaw);
+            applyDewarpSourceRoi(cameraPreview, previewRaw);
             cameraPreview.applyDewarpConfig(dewarp);
             cameraPreview.applyDirectCameraCrop(active);
         }
         if (calibrationPreview != null) {
             calibrationRawCrop = raw;
             calibrationCorrectedCrop = corrected;
-            calibrationPreview.applyRawFallbackCrop(raw);
-            applyDewarpSourceRoi(calibrationPreview, raw);
+            calibrationPreview.applyRawFallbackCrop(previewRaw);
+            applyDewarpSourceRoi(calibrationPreview, previewRaw);
             calibrationPreview.applyDewarpConfig(dewarp);
             calibrationPreview.applyDirectCameraCrop(active);
         }
@@ -3198,21 +3641,29 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void saveProductionPreset(CameraProfileId id) {
+        boolean saved = false;
         if (id instanceof CameraProfileId.Blind) {
             CameraCalibrationPreset.saveCamera(
                     preferences, blindProfile((CameraProfileId.Blind) id));
+            saved = true;
         } else if (id instanceof CameraProfileId.Parking) {
             CameraCalibrationPreset.saveParking(
                     preferences, parkingProfile((CameraProfileId.Parking) id));
+            saved = true;
         } else if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
             if (reverse.getSource() == ReverseSource.Front) {
                 CameraCalibrationPreset.saveReverseFront(
                         preferences, reverseProfileIndex(reverse));
-            } else CameraCalibrationPreset.saveReverse(
-                    preferences, reverseProfileIndex(reverse));
+            } else {
+                CameraCalibrationPreset.saveReverse(
+                        preferences, reverseProfileIndex(reverse));
+            }
+            saved = true;
         }
-        publishSettingsFeedback("Пресет збережено", StatusTone.Ok);
+        showProductionPresetToast("save", id, saved,
+                "Пресет збережено", "Preset saved",
+                "Не вдалося зберегти пресет", "Preset save failed");
         if (productionUi != null) productionUi.reload();
     }
 
@@ -3232,9 +3683,9 @@ public final class CameraProbeActivity extends ComponentActivity
                     : CameraCalibrationPreset.loadReverse(
                             preferences, reverseProfileIndex(reverse));
         }
-        publishSettingsFeedback(loaded ? "Пресет завантажено"
-                : "Пресет відсутній або некоректний",
-                loaded ? StatusTone.Ok : StatusTone.Error);
+        showProductionPresetToast("load", id, loaded,
+                "Пресет завантажено", "Preset loaded",
+                "Пресет відсутній або некоректний", "Preset missing or invalid");
         if (loaded) notifyProductionProfileChanged(id);
     }
 
@@ -3255,7 +3706,26 @@ public final class CameraProbeActivity extends ComponentActivity
                     : CameraCalibrationPreset.mirrorReverse(
                             preferences, reverseProfileIndex(reverse));
         }
+        showProductionPresetToast("transfer", id, transferred,
+                "Налаштування віддзеркалено", "Settings mirrored",
+                "Не вдалося віддзеркалити налаштування", "Settings mirror failed");
         if (transferred) notifyProductionProfileChanged(id);
+    }
+
+    private void showProductionPresetToast(
+            String operation, CameraProfileId profile, boolean success,
+            String successUk, String successEn,
+            String failureUk, String failureEn) {
+        record("camera_preset", "operation", operation,
+                "outcome", success ? "success" : "failure",
+                "profile", profile == null ? "unknown" : profile.toString());
+        boolean english = productionUi != null
+                && productionUi.getState().getLanguage()
+                        == com.byd.extend.ui.UiLanguage.English;
+        Toast.makeText(this,
+                english ? (success ? successEn : failureEn)
+                        : (success ? successUk : failureUk),
+                Toast.LENGTH_SHORT).show();
     }
 
     private void resetProductionProfile(CameraProfileId id, CommandId command) {
@@ -3368,6 +3838,9 @@ public final class CameraProbeActivity extends ComponentActivity
         View existing = productionCameraHosts.get(kind);
         if (existing != null) {
             detachFromParent(existing);
+            if (isProductionCalibrationKind(kind)) {
+                calibrationHostBundle.activateStage(kind, existing);
+            }
             productionCameraSlots.put(kind, slot);
             return existing;
         }
@@ -3401,9 +3874,11 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             if (calibrationHostProfile == null
                     || !calibrationHostProfile.equals(profile)) {
+                productionCalibrationHostGeneration++;
                 productionCalibrationGestureStart = null;
                 productionCalibrationGestureActive = false;
                 productionCalibrationGestureTransformChanged = false;
+                bindProductionCalibrationOverlayListeners();
             }
             calibrationHostProfile = profile;
         }
@@ -3436,6 +3911,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 && productionReverseEditor != null) {
             productionReverseEditorEditable = slot.getEditable();
             productionReverseEditor.setEditable(productionReverseEditorEditable);
+            // The placement editor is a conditional sibling of the composition.  Hide the
+            // entire editor in Parameters so its outlines/selection cannot cover live panes.
+            productionReverseEditor.setVisibility(
+                    productionReverseEditorEditable ? View.VISIBLE : View.GONE);
             productionReverseEditor.setLayoutModel(reverseCameraLayout);
             if (slot.getReverseElement() != null) {
                 int selected = reverseElementIndex(slot.getReverseElement());
@@ -3443,6 +3922,12 @@ public final class CameraProbeActivity extends ComponentActivity
                     productionReverseEditor.setSelectedCameraSilently(selected);
                 }
             }
+            // Visibility and widget state are persisted independently from the editor host.  Push
+            // both on every update so Compose recomposition cannot resurrect hidden panes/widget.
+            reverseCameraPreview.applyVisibility(
+                    ReverseCameraController.loadVisibilityMask(preferences));
+            reverseCameraPreview.setWidgetVisible(
+                    ReverseCameraController.loadWidgetVisible(preferences));
         }
     }
 
@@ -3450,7 +3935,18 @@ public final class CameraProbeActivity extends ComponentActivity
     public void releaseProductionCameraHost(View view, CameraHostSlot slot) {
         if (productionCameraHosts.get(slot.getKind()) != view) return;
         if (isProductionCalibrationKind(slot.getKind())) {
-            releaseProductionCalibrationHosts();
+            // Compose may release one conditional stage (notably Corrected when correction is
+            // toggled off) while Output and Original still own the same camera input.  Keep the
+            // retained calibration bundle alive; detach only the mirror surface represented by
+            // this host. Explicit tab/workspace teardown owns owner/input retirement.
+            calibrationHostBundle.releaseStage(slot.getKind(), view, () -> {
+                if (calibrationPreview == null) return;
+                if (slot.getKind() == CameraHostKind.CalibrationOriginal) {
+                    calibrationPreview.setRawMirrorTexture(null);
+                } else if (slot.getKind() == CameraHostKind.CalibrationCorrected) {
+                    calibrationPreview.setCorrectedMirrorTexture(null);
+                }
+            });
             return;
         }
         productionCameraHosts.remove(slot.getKind(), view);
@@ -3462,6 +3958,7 @@ public final class CameraProbeActivity extends ComponentActivity
             cameraPreview.retireCameraInput();
             cameraPreview = null;
             cameraPreviewCover = null;
+            productionPlacementCropMask = null;
             productionPlacementHost = null;
         } else if (slot.getKind() == CameraHostKind.ReverseComposition
                 && reverseCameraPreview != null) {
@@ -3486,6 +3983,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private static boolean slotBelongsToTab(CameraHostSlot slot, int tab) {
+        if (isProductionCalibrationKind(slot.getKind())) {
+            return tab == TAB_CAMERA_CALIBRATION;
+        }
         if (slot.getKind() == CameraHostKind.Direct || slot.getKind() == CameraHostKind.Avm) {
             return tab == TAB_CAMERA_DEBUG;
         }
@@ -3526,6 +4026,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (tab == TAB_CAMERAS || tab == TAB_PARKING_CAMERAS) {
             cameraPreview = null;
             cameraPreviewCover = null;
+            productionPlacementCropMask = null;
             productionPlacementHost = null;
             cameraSurfaceReady = false;
             calibrationSurfaceReady = false;
@@ -3566,11 +4067,17 @@ public final class CameraProbeActivity extends ComponentActivity
         directCameraPreview = null;
         debugPreview = null;
         cameraPreviewCover = null;
+        productionPlacementCropMask = null;
         directCameraPreviewCover = null;
         debugPreviewCover = null;
         productionPlacementHost = null;
         productionDirectHost = null;
         productionAvmHost = null;
+        transientCornerRadiusDp = null;
+        transientTransparencyPercent = null;
+        transientProfilePreviewId = null;
+        transientProfilePreviewFov = null;
+        transientProfilePreviewRotation = null;
     }
 
     private View createProductionPlacementHost() {
@@ -3582,6 +4089,12 @@ public final class CameraProbeActivity extends ComponentActivity
         productionPlacementHost.addView(view, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        productionPlacementCropMask = new CropMaskView(this);
+        productionPlacementHost.addView(productionPlacementCropMask,
+                new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        view.setOutputCropMask(productionPlacementCropMask);
         cameraPreviewCover = blackCover();
         productionPlacementHost.addView(cameraPreviewCover, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -3591,15 +4104,32 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void ensureProductionCalibrationHosts() {
-        if (calibrationPreview != null && calibrationRawMirror != null
-                && calibrationCorrectedMirror != null
-                && productionCameraHosts.get(CameraHostKind.CalibrationOutput)
-                        == calibrationOutputHost
-                && productionCameraHosts.get(CameraHostKind.CalibrationOriginal)
-                        == calibrationRawMirrorHost
-                && productionCameraHosts.get(CameraHostKind.CalibrationCorrected)
-                        == calibrationCorrectedMirrorHost) return;
-        releaseProductionCalibrationHosts();
+        if (calibrationHostBundle.isComplete(
+                calibrationPreview, calibrationRawMirrorHost,
+                calibrationCorrectedMirrorHost, calibrationOutputHost,
+                calibrationRawMirror, calibrationCorrectedMirror)
+                && calibrationOutputCropMask != null
+                && productionCalibrationRawOverlay != null
+                && productionCalibrationCorrectedOverlay != null) {
+            // Stage AndroidViews can disappear independently; never infer owner death from a
+            // missing conditional stage.  Restore map identity for a retained bundle instead.
+            productionCameraHosts.put(CameraHostKind.CalibrationOriginal, calibrationRawMirrorHost);
+            productionCameraHosts.put(CameraHostKind.CalibrationCorrected,
+                    calibrationCorrectedMirrorHost);
+            productionCameraHosts.put(CameraHostKind.CalibrationOutput, calibrationOutputHost);
+            return;
+        }
+        // A retained owner without all three roots/maps cannot safely serve an obtain; retire the
+        // incomplete bundle once before rebuilding all roots with one owner.
+        if (calibrationHostBundle.hasAny() || calibrationPreview != null
+                || calibrationRawMirrorHost != null
+                || calibrationCorrectedMirrorHost != null || calibrationOutputHost != null
+                || calibrationRawMirror != null || calibrationCorrectedMirror != null
+                || calibrationOutputCropMask != null
+                || productionCalibrationRawOverlay != null
+                || productionCalibrationCorrectedOverlay != null) {
+            releaseProductionCalibrationHosts();
+        }
         BlindSpotCameraView owner = new BlindSpotCameraView(this);
         owner.setAutomaticBufferQuality(CameraBufferQuality.load(preferences));
         owner.setForceDewarpPipeline(true);
@@ -3627,12 +4157,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT));
+        calibrationOutputCropMask = new CropMaskView(this);
         productionCalibrationRawOverlay = new CameraCropOverlayView(this);
         productionCalibrationCorrectedOverlay = new CameraCropOverlayView(this);
-        productionCalibrationRawOverlay.setListener(
-                (crop, finished) -> onProductionCalibrationCropChanged(false, crop, finished));
-        productionCalibrationCorrectedOverlay.setListener(
-                (crop, finished) -> onProductionCalibrationCropChanged(true, crop, finished));
+        bindProductionCalibrationOverlayListeners();
         calibrationRawMirrorHost.addView(productionCalibrationRawOverlay,
                 new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
@@ -3644,6 +4172,11 @@ public final class CameraProbeActivity extends ComponentActivity
         calibrationOutputHost.addView(owner, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        calibrationOutputHost.addView(calibrationOutputCropMask,
+                new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+        owner.setOutputCropMask(calibrationOutputCropMask);
         calibrationOutputHost.addView(calibrationPreviewCover,
                 new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
@@ -3651,6 +4184,8 @@ public final class CameraProbeActivity extends ComponentActivity
         calibrationPreview = owner;
         calibrationRawMirror = raw;
         calibrationCorrectedMirror = corrected;
+        calibrationHostBundle.bind(owner, calibrationRawMirrorHost,
+                calibrationCorrectedMirrorHost, calibrationOutputHost, raw, corrected);
         productionCameraHosts.put(CameraHostKind.CalibrationOriginal, calibrationRawMirrorHost);
         productionCameraHosts.put(CameraHostKind.CalibrationCorrected,
                 calibrationCorrectedMirrorHost);
@@ -3663,14 +4198,14 @@ public final class CameraProbeActivity extends ComponentActivity
         mirror.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(
                     SurfaceTexture texture, int width, int height) {
-                if (calibrationPreview != owner) return;
+                if (!calibrationHostBundle.acceptMirror(owner, mirror, raw)) return;
                 if (raw) owner.setRawMirrorTexture(texture);
                 else owner.setCorrectedMirrorTexture(texture);
             }
             @Override public void onSurfaceTextureSizeChanged(
                     SurfaceTexture texture, int width, int height) {}
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
-                if (calibrationPreview != owner) return true;
+                if (!calibrationHostBundle.acceptMirror(owner, mirror, raw)) return true;
                 if (raw) owner.setRawMirrorTexture(null);
                 else owner.setCorrectedMirrorTexture(null);
                 return true;
@@ -3703,19 +4238,35 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraProfileId profile, CameraDewarpConfig dewarp, boolean rawFallback) {
         if (profile == null || dewarp == null) return;
         if (productionCalibrationRawOverlay != null) {
-            productionCalibrationRawOverlay.setCrop(calibrationRawCrop);
+            productionCalibrationRawOverlay.setCrop(calibrationRawCrop.geometryOnly());
             productionCalibrationRawOverlay.setGridVisible(dewarp.enabled);
             productionCalibrationRawOverlay.setEnabled(true);
         }
         if (productionCalibrationCorrectedOverlay != null) {
-            productionCalibrationCorrectedOverlay.setCrop(calibrationCorrectedCrop);
+            productionCalibrationCorrectedOverlay.setCrop(calibrationCorrectedCrop.geometryOnly());
             productionCalibrationCorrectedOverlay.setGridVisible(dewarp.enabled);
             productionCalibrationCorrectedOverlay.setEnabled(dewarp.enabled && !rawFallback);
         }
     }
 
+    /** Rebinds retained overlay callbacks to the active calibration owner/profile generation. */
+    private void bindProductionCalibrationOverlayListeners() {
+        final long generation = productionCalibrationHostGeneration;
+        final CameraCropOverlayView raw = productionCalibrationRawOverlay;
+        final CameraCropOverlayView corrected = productionCalibrationCorrectedOverlay;
+        if (raw != null) {
+            raw.setListener((crop, finished) -> onProductionCalibrationCropChanged(
+                    generation, false, crop, finished));
+        }
+        if (corrected != null) {
+            corrected.setListener((crop, finished) -> onProductionCalibrationCropChanged(
+                    generation, true, crop, finished));
+        }
+    }
+
     private void onProductionCalibrationCropChanged(
-            boolean corrected, DirectCameraCrop crop, boolean finished) {
+            long generation, boolean corrected, DirectCameraCrop crop, boolean finished) {
+        if (generation != productionCalibrationHostGeneration) return;
         CameraProfileId profile = calibrationHostProfile;
         if (profile == null || calibrationPreview == null || crop == null) return;
         CameraDewarpConfig dewarp = loadProductionCalibrationDewarp(profile);
@@ -3733,48 +4284,19 @@ public final class CameraProbeActivity extends ComponentActivity
             productionCalibrationGestureActive = true;
         }
         DirectCameraCrop gestureStart = productionCalibrationGestureStart;
-        boolean transformChanged = crop.rotationDegrees != gestureStart.rotationDegrees
-                || crop.rotationMode != gestureStart.rotationMode;
-        productionCalibrationGestureTransformChanged |= transformChanged;
         final DirectCameraCrop candidate;
         try {
-            if (productionCalibrationGestureTransformChanged) {
-                DirectCameraCrop.requireUiGeometry(
-                        crop.left, crop.top, crop.width, crop.height,
-                        crop.rotationDegrees, crop.rotationMode);
-                DirectCameraCrop strictTransform = DirectCameraCrop.requireUiGeometry(
-                        gestureStart.left, gestureStart.top,
-                        gestureStart.width, gestureStart.height,
-                        crop.rotationDegrees, crop.rotationMode);
-                candidate = gestureStart.withOutputTransformPreservingGeometry(
-                        strictTransform.rotationDegrees, strictTransform.rotationMode,
-                        gestureStart.mirrorHorizontally);
-            } else {
-                candidate = base.withIndependentGeometry(
-                        crop.left, crop.top, crop.width, crop.height);
-            }
+            // Production overlays expose geometryOnly() crops; neutral metadata must not
+            // overwrite the independently persisted Output transform.
+            DirectCameraCrop geometry = crop.geometryOnly();
+            candidate = base.withIndependentGeometry(
+                    geometry.left, geometry.top, geometry.width, geometry.height);
         } catch (IllegalArgumentException invalid) {
             updateProductionCalibrationOverlays(profile, dewarp, rawFallback);
             return;
         }
         if (corrected) calibrationCorrectedCrop = candidate;
         else calibrationRawCrop = candidate;
-        if (productionCalibrationGestureTransformChanged) {
-            // Rotation is an output transform shared by RAW and CORRECTED.
-            // Keep both mirrors visually in sync while preserving each stage's
-            // independent ROI; the strict output save persists the transform
-            // without turning a rotation-only edit into a geometry edit.
-            if (corrected) {
-                calibrationRawCrop = calibrationRawCrop.withOutputTransformPreservingGeometry(
-                        candidate.rotationDegrees, candidate.rotationMode,
-                        calibrationRawCrop.mirrorHorizontally);
-            } else {
-                calibrationCorrectedCrop = calibrationCorrectedCrop
-                        .withOutputTransformPreservingGeometry(
-                                candidate.rotationDegrees, candidate.rotationMode,
-                                calibrationCorrectedCrop.mirrorHorizontally);
-            }
-        }
         if (!corrected) {
             applyDewarpSourceRoi(calibrationPreview, calibrationRawCrop);
         }
@@ -3783,23 +4305,16 @@ public final class CameraProbeActivity extends ComponentActivity
         calibrationPreview.applyDirectCameraCrop(active);
         updateProductionCalibrationOverlays(profile, dewarp, rawFallback);
         if (!finished) return;
-        boolean changed = productionCalibrationGestureTransformChanged
-                || candidate.left != gestureStart.left
+        boolean changed = candidate.left != gestureStart.left
                 || candidate.top != gestureStart.top
                 || candidate.width != gestureStart.width
-                || candidate.height != gestureStart.height
-                || candidate.mirrorHorizontally != gestureStart.mirrorHorizontally;
-        boolean transformEdit = productionCalibrationGestureTransformChanged;
+                || candidate.height != gestureStart.height;
         productionCalibrationGestureActive = false;
         productionCalibrationGestureStart = null;
         productionCalibrationGestureTransformChanged = false;
         if (!changed) return;
         try {
-            if (transformEdit) {
-                saveProductionCalibrationTransform(profile, candidate);
-            } else {
-                saveProductionCalibrationCrop(profile, corrected, candidate);
-            }
+            saveProductionCalibrationCrop(profile, corrected, candidate);
         } catch (IllegalArgumentException invalid) {
             // The strict domain endpoint is authoritative; restore the last persisted value.
             configureProductionCameraProfile(profile, null);
@@ -3846,13 +4361,13 @@ public final class CameraProbeActivity extends ComponentActivity
             DirectCameraCrop raw = DirectCameraCrop.load(preferences, camera);
             DirectCameraCrop accepted = strictOutputTransform(
                     raw, crop.rotationDegrees, crop.rotationMode);
-            DirectCameraCrop.save(preferences, camera, accepted);
+            DirectCameraCrop.saveOutputTransform(preferences, camera, accepted);
         } else if (profile instanceof CameraProfileId.Parking) {
             ParkingCameraProfile parking = parkingProfile((CameraProfileId.Parking) profile);
             DirectCameraCrop raw = DirectCameraCrop.load(preferences, parking);
             DirectCameraCrop accepted = strictOutputTransform(
                     raw, crop.rotationDegrees, crop.rotationMode);
-            DirectCameraCrop.save(preferences, parking, accepted);
+            DirectCameraCrop.saveOutputTransform(preferences, parking, accepted);
         } else if (profile instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) profile;
             int index = reverseProfileIndex(reverse);
@@ -3883,7 +4398,108 @@ public final class CameraProbeActivity extends ComponentActivity
                 || kind == CameraHostKind.CalibrationOutput;
     }
 
+    /** Package-visible seam for JVM lifecycle tests; production uses the same identity gate. */
+    static final class CalibrationHostBundle {
+        private Object owner;
+        private Object rawHost;
+        private Object correctedHost;
+        private Object outputHost;
+        private Object rawMirror;
+        private Object correctedMirror;
+        private boolean rawActive;
+        private boolean correctedActive;
+        private boolean outputActive;
+
+        void bind(Object owner, Object rawHost, Object correctedHost, Object outputHost) {
+            bind(owner, rawHost, correctedHost, outputHost, null, null);
+        }
+
+        void bind(Object owner, Object rawHost, Object correctedHost, Object outputHost,
+                Object rawMirror, Object correctedMirror) {
+            this.owner = owner;
+            this.rawHost = rawHost;
+            this.correctedHost = correctedHost;
+            this.outputHost = outputHost;
+            this.rawMirror = rawMirror;
+            this.correctedMirror = correctedMirror;
+            this.rawActive = rawHost != null;
+            this.correctedActive = correctedHost != null;
+            this.outputActive = outputHost != null;
+        }
+
+        boolean hasAny() {
+            return owner != null || rawHost != null || correctedHost != null || outputHost != null;
+        }
+
+        boolean isComplete(Object owner, Object rawHost, Object correctedHost, Object outputHost) {
+            return this.owner == owner && owner != null
+                    && this.rawHost == rawHost && rawHost != null
+                    && this.correctedHost == correctedHost && correctedHost != null
+                    && this.outputHost == outputHost && outputHost != null;
+        }
+
+        boolean isComplete(Object owner, Object rawHost, Object correctedHost, Object outputHost,
+                Object rawMirror, Object correctedMirror) {
+            return isComplete(owner, rawHost, correctedHost, outputHost)
+                    && this.rawMirror == rawMirror && rawMirror != null
+                    && this.correctedMirror == correctedMirror && correctedMirror != null;
+        }
+
+        boolean matches(CameraHostKind kind, Object host) {
+            if (host == null || kind == null) return false;
+            if (kind == CameraHostKind.CalibrationOriginal) return rawHost == host;
+            if (kind == CameraHostKind.CalibrationCorrected) return correctedHost == host;
+            if (kind == CameraHostKind.CalibrationOutput) return outputHost == host;
+            return false;
+        }
+
+        void activateStage(CameraHostKind kind, Object host) {
+            if (!matches(kind, host)) return;
+            if (kind == CameraHostKind.CalibrationOriginal) rawActive = true;
+            else if (kind == CameraHostKind.CalibrationCorrected) correctedActive = true;
+            else if (kind == CameraHostKind.CalibrationOutput) outputActive = true;
+        }
+
+        boolean acceptMirror(Object owner, Object mirror, boolean raw) {
+            return this.owner == owner
+                    && (raw ? rawMirror == mirror && rawActive
+                            : correctedMirror == mirror && correctedActive);
+        }
+
+        /** Returns true only for the current stage identity; the bundle remains retained. */
+        boolean releaseStage(CameraHostKind kind, Object host, Runnable detachMirror) {
+            if (!matches(kind, host)) return false;
+            if (kind == CameraHostKind.CalibrationOriginal) {
+                rawActive = false;
+                if (detachMirror != null) detachMirror.run();
+            } else if (kind == CameraHostKind.CalibrationCorrected) {
+                correctedActive = false;
+                if (detachMirror != null) detachMirror.run();
+            } else if (kind == CameraHostKind.CalibrationOutput) {
+                outputActive = false;
+            }
+            return true;
+        }
+
+        /** Clears the retained owner and all stage identities; repeated clears are no-ops. */
+        boolean clear() {
+            boolean hadBundle = hasAny();
+            owner = null;
+            rawHost = null;
+            correctedHost = null;
+            outputHost = null;
+            rawMirror = null;
+            correctedMirror = null;
+            rawActive = false;
+            correctedActive = false;
+            outputActive = false;
+            return hadBundle;
+        }
+    }
+
     private void releaseProductionCalibrationHosts() {
+        productionCalibrationHostGeneration++;
+        calibrationHostBundle.clear();
         BlindSpotCameraView owner = calibrationPreview;
         if (calibrationHostProfile != null && productionUi != null) {
             productionUi.setCalibrationRawFallback(calibrationHostProfile, false);
@@ -3905,6 +4521,7 @@ public final class CameraProbeActivity extends ComponentActivity
         calibrationRawMirrorHost = null;
         calibrationCorrectedMirrorHost = null;
         calibrationOutputHost = null;
+        calibrationOutputCropMask = null;
         calibrationRawMirrorCover = null;
         calibrationCorrectedMirrorCover = null;
         productionCalibrationRawOverlay = null;
@@ -3939,6 +4556,10 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (productionReverseHost == null) {
             productionReverseHost = cameraHostRoot();
+            // ReverseCameraCompositionView owns its configured background pane and preview-base
+            // layer.  The host must stay transparent so the normalized background rectangle (and
+            // the Compose black frame outside it) remain the source of truth.
+            productionReverseHost.setBackgroundColor(Color.TRANSPARENT);
             productionReverseHost.addView(reverseCameraPreview,
                     new FrameLayout.LayoutParams(
                             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -4702,19 +5323,6 @@ public final class CameraProbeActivity extends ComponentActivity
         editorPane.addView(reverseVisibilityRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
-        LinearLayout nudgeRow = new LinearLayout(this);
-        String[] nudgeNames = {"Вліво", "Вверх", "Вправо", "Вниз"};
-        float[] nudgeX = {-0.01f, 0.0f, 0.01f, 0.0f};
-        float[] nudgeY = {0.0f, -0.01f, 0.0f, 0.01f};
-        for (int i = 0; i < reverseNudgeButtons.length; i++) {
-            final float deltaX = nudgeX[i];
-            final float deltaY = nudgeY[i];
-            reverseNudgeButtons[i] = button(nudgeNames[i]);
-            reverseNudgeButtons[i].setOnClickListener(
-                    view -> nudgeReversePane(deltaX, deltaY));
-            nudgeRow.addView(reverseNudgeButtons[i],
-                    new LinearLayout.LayoutParams(0, dp(38), 1));
-        }
         LinearLayout rotationRow = new LinearLayout(this);
         rotationRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView rotationLabel = label("Поворот");
@@ -4759,14 +5367,12 @@ public final class CameraProbeActivity extends ComponentActivity
                 android.R.layout.simple_spinner_dropdown_item);
         reverseDisplayModeInput.setAdapter(displayModeAdapter);
         LinearLayout zRow = new LinearLayout(this);
-        reverseLowerButton = button("Нижче");
-        reverseRaiseButton = button("Вище");
+        reverseLowerButton = button("Нижче шар");
+        reverseRaiseButton = button("Вище шар");
         zRow.addView(reverseLowerButton, new LinearLayout.LayoutParams(0, dp(46), 1));
         zRow.addView(reverseRaiseButton, new LinearLayout.LayoutParams(0, dp(46), 1));
         LinearLayout positionPanel = new LinearLayout(this);
         positionPanel.setOrientation(LinearLayout.VERTICAL);
-        positionPanel.addView(nudgeRow, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
         positionPanel.addView(zRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
         View correctionPanel = buildDewarpControls(true);
@@ -4784,7 +5390,7 @@ public final class CameraProbeActivity extends ComponentActivity
         editorPane.addView(mainActions, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
         editorPane.addView(positionPanel, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(84)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
 
         reverseCameraStatus = statusText("Очікування AVM camera...");
         previewPane.addView(reverseCameraStatus);
@@ -5589,8 +6195,17 @@ public final class CameraProbeActivity extends ComponentActivity
                 crop.rotationMode, ReverseCameraCompositionView.SOURCE_WIDTH,
                 ReverseCameraCompositionView.SOURCE_HEIGHT, sourceWidth, sourceHeight,
                 pane.mirrorHorizontally);
-        canvas.drawBitmap(
-                reverseCalibrationCaptureBitmap, transform, calibrationCropPaint);
+        float[] visibleCrop = CameraRotation.transformedCropCornersForInput(
+                pane.sourceCrop.left, pane.sourceCrop.top,
+                pane.sourceCrop.width, pane.sourceCrop.height,
+                new RectF(0, 0, width, height), pane.rotationDegrees,
+                crop.rotationMode, ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT, sourceWidth, sourceHeight,
+                pane.mirrorHorizontally);
+        canvas.save();
+        canvas.clipPath(cropPath(visibleCrop));
+        canvas.drawBitmap(reverseCalibrationCaptureBitmap, transform, calibrationCropPaint);
+        canvas.restore();
         reverseCalibrationLivePreview.setImageBitmap(reverseCalibrationResultBitmap);
         reverseCalibrationLivePreview.invalidate();
     }
@@ -5653,9 +6268,17 @@ public final class CameraProbeActivity extends ComponentActivity
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
         for (int i = 0; i < reversePaneButtons.length; i++) {
             reversePaneButtons[i].setBackgroundColor(tabColor(paneIds[i] == cameraIndex));
-            boolean paneVisible = paneIds[i] == ReverseCameraLayout.WIDGET_PANE_ID
-                    ? binding.widgetVisible
-                    : ReverseCameraLayout.isVisible(binding.visibilityMask, paneIds[i]);
+            // Fixed Background/Widget elements have dedicated preference bits.  Never feed their
+            // sentinel IDs into the camera-pane visibility lookup.
+            boolean paneVisible;
+            if (paneIds[i] == ReverseCameraLayout.WIDGET_PANE_ID) {
+                paneVisible = binding.widgetVisible;
+            } else if (paneIds[i] == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+                paneVisible = (binding.visibilityMask
+                        & ReverseCameraLayout.VISIBILITY_BACKGROUND) != 0;
+            } else {
+                paneVisible = ReverseCameraLayout.isVisible(binding.visibilityMask, paneIds[i]);
+            }
             reversePaneButtons[i].setPaintFlags(reversePaneButtonPaintFlags(
                     reversePaneButtons[i].getPaintFlags(),
                     paneVisible));
@@ -5869,18 +6492,6 @@ public final class CameraProbeActivity extends ComponentActivity
         CameraHelperService.reverseCameraSettingsChanged(this);
         record("reverse_z_changed", "camera_index", cameraIndex,
                 "action", raise ? "raise" : "lower");
-    }
-
-    private void nudgeReversePane(float deltaX, float deltaY) {
-        int cameraIndex = reverseCameraEditor.selectedCamera();
-        reverseCameraLayout = ReverseCameraLayout.move(
-                reverseCameraLayout, cameraIndex, deltaX, deltaY);
-        ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
-        reverseCameraEditor.setLayoutModel(reverseCameraLayout);
-        reverseCameraPreview.applyLayout(reverseCameraLayout);
-        CameraHelperService.reverseCameraSettingsChanged(this);
-        record("reverse_position_nudged", "camera_index", cameraIndex,
-                "delta_x", deltaX, "delta_y", deltaY);
     }
 
     private View buildCameraPanel() {
@@ -6529,7 +7140,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private void selectParkingCamera(int cameraId) {
         if (!ParkingCameraProfile.isValid(cameraId)) return;
         selectedParkingCameraId = cameraId;
-        preferences.edit().putInt("parking_camera_selected_profile", cameraId).apply();
+        if (preferences.getInt("parking_camera_selected_profile", cameraId) != cameraId) {
+            preferences.edit().putInt("parking_camera_selected_profile", cameraId).apply();
+        }
         ParkingCameraProfile profile = ParkingCameraProfile.of(cameraId);
         parkingUiUpdating = true;
         ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(preferences, profile);
@@ -8085,7 +8698,10 @@ public final class CameraProbeActivity extends ComponentActivity
             selectedParkingCameraId = calibrationParkingCameraId;
         } else {
             selectedCameraId = calibrationCameraId;
-            preferences.edit().putInt("camera_selected_profile", selectedCameraId).apply();
+            if (preferences.getInt("camera_selected_profile", selectedCameraId)
+                    != selectedCameraId) {
+                preferences.edit().putInt("camera_selected_profile", selectedCameraId).apply();
+            }
         }
         selectTab(origin);
         if (origin == TAB_PARKING_CAMERAS) {
@@ -8518,11 +9134,10 @@ public final class CameraProbeActivity extends ComponentActivity
         activePreview = calibrationPreview;
         activePreviewCover = calibrationPreviewCover;
         activeCameraViewpoint = -1;
-        publishSettingsFeedback(
-                "Opening pano_h / index " + index + "...", StatusTone.Warning);
         record("camera_preview_attach", "state", "started",
                 "renderer", "direct_crop_calibration", "camera_tag", "pano_h",
-                "preview_index", index, "exclusive", false);
+                "preview_index", index, "exclusive", false,
+                "status", "Opening pano_h / index " + index + "...");
         CameraHelperService.cameraPreviewStarted(this);
         openDirectCameraNow("pano_h", index, true);
     }
@@ -8659,9 +9274,28 @@ public final class CameraProbeActivity extends ComponentActivity
                 BlindSpotCameraView.BUFFER_HEIGHT,
                 sourceWidth, sourceHeight,
                 crop.mirrorHorizontally);
+        canvas.save();
+        canvas.clipPath(cropPath(CameraRotation.transformedCropCornersForInput(
+                crop.left, crop.top, crop.width, crop.height,
+                new RectF(0.0f, 0.0f, width, height), crop.rotationDegrees,
+                crop.rotationMode, BlindSpotCameraView.BUFFER_WIDTH,
+                BlindSpotCameraView.BUFFER_HEIGHT, sourceWidth, sourceHeight,
+                crop.mirrorHorizontally)));
         canvas.drawBitmap(calibrationCaptureBitmap, transform, calibrationCropPaint);
+        canvas.restore();
         calibrationCropPreview.setImageBitmap(calibrationResultBitmap);
         calibrationCropPreview.invalidate();
+    }
+
+    private static Path cropPath(float[] corners) {
+        Path path = new Path();
+        if (corners == null || corners.length < 6) return path;
+        path.moveTo(corners[0], corners[1]);
+        for (int i = 2; i + 1 < corners.length; i += 2) {
+            path.lineTo(corners[i], corners[i + 1]);
+        }
+        path.close();
+        return path;
     }
 
     private void selectDebugOrientation(boolean horizontal) {
@@ -9015,7 +9649,9 @@ public final class CameraProbeActivity extends ComponentActivity
         selectedCameraId = cameraId;
         if (switchingOpenCamera) closeCameraForTransition("production_camera_changed");
         CameraProfile profile = CameraProfile.of(cameraId);
-        preferences.edit().putInt("camera_selected_profile", cameraId).apply();
+        if (preferences.getInt("camera_selected_profile", cameraId) != cameraId) {
+            preferences.edit().putInt("camera_selected_profile", cameraId).apply();
+        }
         boolean front = profile.front();
         rearCameraControlPane.setVisibility(front ? View.GONE : View.VISIBLE);
         frontCameraControlPane.setVisibility(front ? View.VISIBLE : View.GONE);
@@ -9211,9 +9847,7 @@ public final class CameraProbeActivity extends ComponentActivity
         try {
             float outward = Float.parseFloat(outwardInput.getText().toString());
             float center = Float.parseFloat(centerInput.getText().toString());
-            if (!Float.isFinite(outward) || !Float.isFinite(center)
-                    || outward < 30.0f || outward > 360.0f
-                    || center < 2.0f || center > 45.0f || center >= outward) {
+            if (!isValidGuardThresholds(outward, center)) {
                 return null;
             }
             return new Thresholds(outward, center);
@@ -9389,7 +10023,9 @@ public final class CameraProbeActivity extends ComponentActivity
             activeActivityCameraFresh = false;
             pendingReversePreviewRequestId = 0;
             pendingReversePreviewGenerations = null;
-            publishSettingsFeedback("Reverse camera surface unavailable", StatusTone.Error);
+            record("camera_status", "profile", "reverse", "text",
+                    "Reverse camera surface unavailable",
+                    "tone", StatusTone.Error.name(), "pending", false);
             record("reverse_preview_error", "stage", "acquire_surfaces",
                     "error", error.toString());
             return;
@@ -9398,7 +10034,9 @@ public final class CameraProbeActivity extends ComponentActivity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         requestedOpen = true;
-        publishSettingsFeedback("Відкриття камер заднього ходу...", StatusTone.Warning);
+        record("camera_status", "profile", "reverse", "text",
+                "Відкриття камер заднього ходу...",
+                "tone", StatusTone.Warning.name(), "pending", true);
         CameraHelperService.cameraPreviewStarted(this);
         record("reverse_preview_open",
                 "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
@@ -9493,10 +10131,7 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         showPreview(target, cover, false, false);
         requestedOpen = true;
-        if (calibration) publishSettingsFeedback(
-                "Opening " + cameraTag + " / index " + index + "...",
-                StatusTone.Warning);
-        else publishDiagnosticStatus(true,
+        if (!calibration) publishDiagnosticStatus(true,
                 "Opening " + cameraTag + " / index " + index + "...",
                 StatusTone.Warning, true);
         record("open_requested", "renderer", renderer,
@@ -9669,7 +10304,6 @@ public final class CameraProbeActivity extends ComponentActivity
             cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
             requestedOpen = true;
             int previewIndex = right ? 3 : 2;
-            publishSettingsFeedback("Opening " + viewName + "...", StatusTone.Warning);
             record("open_requested", "renderer", renderer,
                     "camera_tag", "pano_h", "preview_index", previewIndex,
                     "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
@@ -9677,6 +10311,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     "input_generations", java.util.Arrays.toString(
                             activeActivityInputGenerations),
                     "direction", right ? "right" : "left",
+                    "status", "Opening " + viewName + "...",
                     "camera_id", profile.id, "camera", profile.wireName);
             updateControls();
             ipcExecutor.execute(() -> transactOpenDirect(
@@ -10107,13 +10742,16 @@ public final class CameraProbeActivity extends ComponentActivity
     private void publishCameraStatus(
             CameraProfileId profile, DiagnosticMode diagnostic,
             String text, StatusTone tone, boolean pending) {
-        if (productionUi == null) return;
-        StatusUiState status = new StatusUiState(text, tone, true);
         if (diagnostic != null) {
-            productionUi.setDiagnosticStatus(diagnostic == DiagnosticMode.Direct, status, pending);
+            if (productionUi != null) {
+                productionUi.setDiagnosticStatus(diagnostic == DiagnosticMode.Direct,
+                        new StatusUiState(text, tone, true), pending);
+            }
         } else {
-            productionUi.setSettingsFeedback(status);
-            if (profile != null) productionUi.setProfileStatus(profile, status, pending);
+            // Camera lifecycle/render events belong in the structured camera log.  Do not leak
+            // them into the Settings feedback channel (or a removed profile status pill).
+            record("camera_status", "profile", profile == null ? "unknown" : profile.toString(),
+                    "text", text, "tone", tone.name(), "pending", pending);
         }
     }
 
@@ -10534,7 +11172,6 @@ public final class CameraProbeActivity extends ComponentActivity
         cameraTransition.cancel();
         record("activity_camera_cold_reset", "state", "failed",
                 "request_id", requestId, "error", failure);
-        publishSettingsFeedback("Camera reset failed", StatusTone.Error);
         updateControls();
     }
 
@@ -10567,7 +11204,6 @@ public final class CameraProbeActivity extends ComponentActivity
             record("activity_camera_close", "state", "failed",
                     "reason", "activity_stopped", "request_id", requestId,
                     "error", failure);
-            publishSettingsFeedback("Camera close failed", StatusTone.Error);
             closingActivityCameraRequestId = 0;
             updateControls();
             return;
@@ -10670,12 +11306,29 @@ public final class CameraProbeActivity extends ComponentActivity
 
     static boolean isMatchingColdResetShellCallback(
             String token, String reason, String renderer, String kind, String error,
-            int expectedRequestId, int eventRequestId) {
+            int expectedRequestId, int eventRequestId,
+            long currentCameraShellEpoch, long eventCameraShellEpoch) {
         return CameraTransition.reasonEquals(
                 token, CameraHelperMain.ACTIVITY_RESUME_COLD_RESET)
                 && token.equals(reason)
                 && isSuccessfulShellCloseEvent(renderer, kind, error)
-                && expectedRequestId > 0 && expectedRequestId == eventRequestId;
+                && expectedRequestId > 0 && expectedRequestId == eventRequestId
+                && isMatchingActivityCameraShellEpochStrict(
+                currentCameraShellEpoch, eventCameraShellEpoch);
+    }
+
+    static boolean isMatchingPendingActivityTransitionShellClose(
+            String token, String reason, String renderer, String kind, String error,
+            int expectedRequestId, int eventRequestId,
+            long currentCameraShellEpoch, long eventCameraShellEpoch,
+            long currentAvmEpoch, long eventAvmEpoch) {
+        return token != null && token.equals(reason)
+                && CameraTransition.owns(token)
+                && isSuccessfulShellCloseEvent(renderer, kind, error)
+                && expectedRequestId > 0 && expectedRequestId == eventRequestId
+                && isMatchingActivityCameraShellEpochStrict(
+                currentCameraShellEpoch, eventCameraShellEpoch)
+                && isMatchingActivityAvmShellEpoch(currentAvmEpoch, eventAvmEpoch);
     }
 
     static boolean shouldRetainColdResetAfterCancel(
@@ -10986,6 +11639,7 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 JSONObject json = parsed;
                 String kind = json.optString("kind");
+                rememberActivityAvmShellEpoch(json, false);
                 if (musicPanel != null) musicPanel.acceptEvent(json);
                 handleCameraLaneEvent(json);
                 if ("reverse_camera_start".equals(kind)) {
@@ -11009,7 +11663,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     if (shouldHandleReverseCameraStopped(requestId)) {
                         resumeSelectedCameraPreview();
                     } else {
-                        record("activity_camera_event_ignored", "kind", kind,
+                        record("activity_camera_event_ignored", "event_kind", kind,
+                                "event_source", json.optString("source"),
                                 "request_id", requestId,
                                 "resume_request_id",
                                 automaticPreviewIntentRequestId,
@@ -11028,10 +11683,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 } else if ("camera_opened".equals(kind)) {
                     int requestId = json.optInt("request_id", 0);
                     if (!isCurrentActivityCameraEvent(
-                            requestedOpen, activeActivityCameraRequestId, requestId,
-                            json.optString("source"))) {
+                            requestedOpen, activeActivityCameraRequestId, json)) {
                         recordIgnoredActivityCameraEvent(kind, json);
                     } else {
+                        rememberActivityAvmShellEpoch(json, true);
                         activeActivityCameraOpened = true;
                         activeActivityCameraFresh = false;
                         activeActivityConsumerGeneration = json.optInt(
@@ -11072,8 +11727,9 @@ public final class CameraProbeActivity extends ComponentActivity
                         if (activePreview == reverseCameraPreview
                                 && "reverse_preview_with_stock_base".equals(
                                         json.optString("view"))) {
-                            publishSettingsFeedback(
-                                    "Очікування перших кадрів...", StatusTone.Warning);
+                            record("camera_status", "profile", "reverse",
+                                    "text", "Очікування перших кадрів...",
+                                    "tone", StatusTone.Warning.name(), "pending", false);
                         } else publishCameraEventStatus(json,
                                 json.optString("renderer").startsWith("stock_avm")
                                 || json.optInt("preview_index", -1) < 0
@@ -11092,7 +11748,9 @@ public final class CameraProbeActivity extends ComponentActivity
                             ? "AVM camera ready"
                             : "Camera discovery failed: " + json.optString("error");
                     StatusTone tone = cameraDiscovered ? StatusTone.Ok : StatusTone.Error;
-                    publishSettingsFeedback(status, tone);
+                    record("camera_status", "profile", "diagnostic",
+                            "text", status, "tone", tone.name(), "pending", false,
+                            "candidate_ids", json.optString("candidate_ids"));
                     publishDiagnosticStatus(false, status, tone, false);
                     publishDiagnosticStatus(true, cameraDiscovered
                             ? "Detected " + json.optString("candidate_ids") : status,
@@ -11117,8 +11775,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         return;
                     }
                     boolean accepted = isCurrentActivityCameraEvent(
-                            requestedOpen, activeActivityCameraRequestId, requestId,
-                            json.optString("source"));
+                            requestedOpen, activeActivityCameraRequestId, json);
                     if (!accepted) {
                         recordIgnoredActivityCameraEvent(kind, json);
                     } else {
@@ -11155,6 +11812,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         activeActivityCameraFresh = false;
                         activeActivityInputGenerations = new int[0];
                         closingActivityCameraRequestId = 0;
+                        pendingCameraViewpoint = -1;
+                        pendingCameraDebug = false;
                         stopCalibrationCopies(true);
                         publishCameraEventStatus(json,
                                 "Camera error: " + json.optString("error"),
@@ -11182,9 +11841,18 @@ public final class CameraProbeActivity extends ComponentActivity
                             recordIgnoredActivityCameraEvent(kind, json);
                             return;
                         }
-                        if (!isMatchingColdResetShellCallback(
+                        boolean cameraEpochMatches = isMatchingActivityCameraShellEpochStrict(
+                                activityCameraShellEpoch,
+                                json.optLong("camera_shell_epoch", 0));
+                        boolean avmEpochMatches = isMatchingCurrentAvmShellEpoch(json);
+                        if (!cameraEpochMatches || !avmEpochMatches) {
+                            clearStaleColdResetInFlight(reason);
+                            recordIgnoredActivityCameraEvent(kind, json);
+                        } else if (!isMatchingColdResetShellCallback(
                                 reason, reason, renderer, kind, error,
-                                closingActivityCameraRequestId, requestId)) {
+                                closingActivityCameraRequestId, requestId,
+                                activityCameraShellEpoch,
+                                json.optLong("camera_shell_epoch", 0))) {
                             failActivityColdReset(requestId,
                                     error == null || error.isEmpty()
                                     ? "invalid stock shell close callback" : error);
@@ -11204,15 +11872,32 @@ public final class CameraProbeActivity extends ComponentActivity
                         recordIgnoredActivityCameraEvent(kind, json);
                         return;
                     }
-                    boolean accepted = isCurrentActivityCameraTerminalEvent(requestId);
+                    boolean accepted = isCurrentActivityCameraTerminalEvent(requestId, json);
                     if (!accepted) {
+                        recordIgnoredActivityCameraEvent(kind, json);
+                        return;
+                    }
+                    if (cameraTransition.pending() && !cameraTransition.matches(reason)) {
                         recordIgnoredActivityCameraEvent(kind, json);
                         return;
                     }
                     if (CameraTransition.owns(reason)) {
                         if ("stock_avm_shell".equals(renderer)) {
-                            if (isSuccessfulShellCloseEvent(
-                                    renderer, kind, error)) {
+                            boolean identityMatches = cameraTransition.matches(reason)
+                                    && closingActivityCameraRequestId > 0
+                                    && closingActivityCameraRequestId == requestId
+                                    && isMatchingActivityCameraShellEpochStrict(
+                                    activityCameraShellEpoch,
+                                    json.optLong("camera_shell_epoch", 0))
+                                    && isMatchingCurrentAvmShellEpoch(json);
+                            if (!identityMatches) {
+                                recordIgnoredActivityCameraEvent(kind, json);
+                            } else if (isMatchingPendingActivityTransitionShellClose(
+                                    cameraTransition.pendingToken(), reason, renderer, kind, error,
+                                    closingActivityCameraRequestId, requestId,
+                                    activityCameraShellEpoch,
+                                    json.optLong("camera_shell_epoch", 0),
+                                    activityAvmShellEpoch, json.optLong("avm_shell_epoch", 0))) {
                                 finishCameraTransition(reason, "shell_callback");
                             } else {
                                 failCameraTransition(reason, error);
@@ -11239,6 +11924,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         activeActivityCameraFresh = false;
                         activeActivityInputGenerations = new int[0];
                         closingActivityCameraRequestId = 0;
+                        pendingCameraViewpoint = -1;
+                        pendingCameraDebug = false;
                         stopCalibrationCopies(true);
                         // A locally closed request already published to its captured profile.
                         if (resumeOverlay) publishCameraEventStatus(json, "Camera closed",
@@ -11399,9 +12086,27 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void handleActivityCameraShellDied(JSONObject event) {
+        long shellEpoch = event.optLong("camera_shell_epoch", 0);
+        if (!shouldAcceptActivityCameraShellDeath(
+                activityCameraShellEpoch, shellEpoch,
+                activityCameraShellLastDeathEpoch, activityCameraShellDeathHandled)) {
+            record("activity_camera_shell_death_ignored",
+                    "reason", "stale_or_duplicate_epoch",
+                    "selected_tab", selectedTab,
+                    "camera_shell_epoch", shellEpoch,
+                    "active_camera_shell_epoch", activityCameraShellEpoch);
+            return;
+        }
+        if (shellEpoch > 0) {
+            activityCameraShellEpoch = shellEpoch;
+            activityCameraShellLastDeathEpoch = shellEpoch;
+        }
+        activityCameraShellDeathHandled = true;
         cameraShellAvailable = false;
         boolean transitionPending = cameraTransition.pending();
         boolean hadResumeIntent = hasAutoPreviewIntent();
+        boolean debugRequestClaimed = activePreview == debugPreview
+                || (cameraHandoffPending && pendingCameraDebug);
         boolean shellDependentSelection = selectedTab == TAB_REVERSE_CAMERAS
                 || selectedTab == TAB_CAMERA_DEBUG && selectedDebugMode == 1;
         boolean invalidate = shouldInvalidateActivityForCameraShellDeath(
@@ -11438,6 +12143,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (debugPreview != null) debugPreview.removeCallbacks(finishCameraHandoff);
         cameraHandoffPending = false;
         pendingCameraViewpoint = -1;
+        pendingCameraDebug = false;
         requestedOpen = false;
         stopCalibrationCopies(true);
         clearPreview("camera_shell_died");
@@ -11452,14 +12158,45 @@ public final class CameraProbeActivity extends ComponentActivity
         activeActivityCameraFresh = false;
         activeActivityInputGenerations = new int[0];
         if (previewClaimed) CameraHelperService.cameraPreviewStopped(this);
-        publishDiagnosticStatus(false, "Camera helper відновлюється...",
-                StatusTone.Warning, true);
-        publishSettingsFeedback(reverseFailClosed
-                ? "Camera closed; reopen the tab to retry"
-                : "Camera helper відновлюється...", StatusTone.Warning);
+        // Death is a terminal fail-closed state for the matching AVM/debug request.  Recovery is
+        // driven by the later shell-attached event, never by a stale pending indicator.
+        if (debugRequestClaimed) {
+            publishDiagnosticStatus(false, "Camera helper недоступний",
+                    StatusTone.Error, false);
+        }
         record("activity_camera_output_invalidated",
-                "camera_shell_epoch", event.optLong("camera_shell_epoch", 0),
-                "reopen_pending", cameraShellRecoveryPending);
+                "camera_shell_epoch", shellEpoch,
+                "reopen_pending", cameraShellRecoveryPending,
+                "status", reverseFailClosed
+                        ? "Camera closed; reopen the tab to retry"
+                        : "Camera helper відновлюється...");
+    }
+
+    private void rememberActivityAvmShellEpoch(
+            JSONObject event, boolean acceptedCameraOpen) {
+        if (event == null) return;
+        activityAvmShellEpoch = nextActivityAvmShellEpoch(
+                activityAvmShellEpoch,
+                event.optString("kind"), event.optString("renderer"),
+                event.optLong("avm_shell_epoch", 0), acceptedCameraOpen);
+    }
+
+    static long nextActivityAvmShellEpoch(
+            long currentEpoch, String kind, String renderer,
+            long eventEpoch, boolean acceptedCameraOpen) {
+        if (eventEpoch <= 0) return currentEpoch;
+        if ("stock_avm_shell_died".equals(kind)) {
+            return eventEpoch == currentEpoch ? 0 : currentEpoch;
+        }
+        if ("stock_avm_shell_attached".equals(kind)) {
+            return Math.max(currentEpoch, eventEpoch);
+        }
+        if (acceptedCameraOpen && "camera_opened".equals(kind)
+                && "stock_avm_shell".equals(renderer)) {
+            return Math.max(currentEpoch, eventEpoch);
+        }
+        // In particular, camera_closed must validate against the already tracked epoch.
+        return currentEpoch;
     }
 
     static boolean shouldAutoRecoverAfterCameraShellDeath(boolean reverseTabSelected) {
@@ -11478,6 +12215,17 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void handleActivityCameraShellAttached(JSONObject event) {
+        long shellEpoch = event.optLong("camera_shell_epoch", 0);
+        if (!shouldAcceptActivityCameraShellAttach(
+                activityCameraShellEpoch, shellEpoch, cameraShellAvailable)) {
+            record("activity_camera_shell_attach_ignored",
+                    "reason", "stale_or_duplicate_epoch",
+                    "camera_shell_epoch", shellEpoch,
+                    "active_camera_shell_epoch", activityCameraShellEpoch);
+            return;
+        }
+        if (shellEpoch > 0) activityCameraShellEpoch = shellEpoch;
+        activityCameraShellDeathHandled = false;
         cameraShellAvailable = true;
         if ((!hasAutoPreviewIntent() && !hasScopedShellRetry())
                 || (!isAutoPreviewTab(selectedTab) && !hasScopedShellRetry())) {
@@ -11485,7 +12233,7 @@ public final class CameraProbeActivity extends ComponentActivity
             return;
         }
         resumeActivityCameraAfterShellRecovery(
-                "camera_shell_attached", event.optLong("camera_shell_epoch", 0));
+                "camera_shell_attached", shellEpoch);
     }
 
     private void resumeActivityCameraAfterShellRecovery(String reason, long epoch) {
@@ -11613,10 +12361,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean isCurrentActivityCameraTerminalEvent(int eventRequestId) {
-        return requestedOpen && activeActivityCameraRequestId > 0
-                && eventRequestId == activeActivityCameraRequestId
-                || !requestedOpen && closingActivityCameraRequestId > 0
-                && eventRequestId == closingActivityCameraRequestId;
+        int expectedRequestId = requestedOpen
+                ? activeActivityCameraRequestId : closingActivityCameraRequestId;
+        return expectedRequestId > 0 && eventRequestId == expectedRequestId;
     }
 
     private boolean shouldPreserveAutoPreviewAfterClose(String reason) {
@@ -11798,10 +12545,17 @@ public final class CameraProbeActivity extends ComponentActivity
         return pending && resumed && shellAvailable;
     }
 
-    static boolean isCurrentActivityCameraTerminalEvent(
-            int activeRequestId, int eventRequestId) {
-        return activeRequestId > 0
-                ? eventRequestId == activeRequestId : eventRequestId <= 0;
+    private boolean isCurrentActivityCameraTerminalEvent(
+            int eventRequestId, JSONObject event) {
+        if (!isCurrentActivityCameraTerminalEvent(eventRequestId)) return false;
+        if (!isMatchingActivityCameraShellEpoch(
+                activityCameraShellEpoch, event.optLong("camera_shell_epoch", 0))) {
+            return false;
+        }
+        if ("stock_avm_shell".equals(event.optString("renderer"))) {
+            return isMatchingCurrentAvmShellEpoch(event);
+        }
+        return true;
     }
 
     static boolean shouldHandleReverseCameraStopped(
@@ -11883,16 +12637,18 @@ public final class CameraProbeActivity extends ComponentActivity
         record("camera_preview_first_frame_timeout",
                 "request_id", productionPreviewFrameRequest,
                 "camera_id", selectedCameraId,
+                "status", "Кадр не отримано; повторне відкриття...",
                 "retry", !productionPreviewRetryUsed);
         if (!productionPreviewRetryUsed) {
             productionPreviewRetryUsed = true;
-            publishSettingsFeedback(
-                    "Кадр не отримано; повторне відкриття...", StatusTone.Warning);
             closeCameraForTransition("production_first_frame_timeout");
             return;
         }
         closeCamera("production_first_frame_timeout_final");
-        publishSettingsFeedback("Кадр камери не отримано", StatusTone.Error);
+        record("camera_status", "profile", selectedProductionProfile() == null
+                        ? "unknown" : selectedProductionProfile().toString(),
+                "text", "Кадр камери не отримано", "tone", StatusTone.Error.name(),
+                "pending", false);
     }
 
     static boolean shouldRetryProductionPreviewFrame(
@@ -12107,19 +12863,65 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void recordIgnoredActivityCameraEvent(
             String kind, JSONObject event) {
-        record("activity_camera_event_ignored", "kind", kind,
+        record("activity_camera_event_ignored", "event_kind", kind,
                 "camera_owner", event.optString("camera_owner"),
                 "request_id", event.optInt("request_id", 0),
                 "consumer_generation", event.optInt("consumer_generation", 0),
                 "active_request_id", activeActivityCameraRequestId,
                 "active_consumer_generation", activeActivityConsumerGeneration,
-                "source", event.optString("source"));
+                "event_source", event.optString("source"));
     }
 
     static boolean isCurrentActivityCameraEvent(
             boolean requestedOpen, int activeRequestId, int eventRequestId, String source) {
         return requestedOpen && "helper".equals(source)
                 && activeRequestId > 0 && eventRequestId == activeRequestId;
+    }
+
+    /** Accepts only a new shell attachment, or a same-epoch reattach after a recorded death. */
+    static boolean shouldAcceptActivityCameraShellAttach(
+            long currentEpoch, long eventEpoch, boolean shellAvailable) {
+        // A shell identity is established by a positive attach epoch.  Reattach always means a
+        // new shell instance; accepting the dead epoch would reopen stale surfaces.
+        return eventEpoch > 0 && (currentEpoch <= 0 || eventEpoch > currentEpoch);
+    }
+
+    /** A shell death is terminal once per epoch; older and duplicate deaths are ignored. */
+    static boolean shouldAcceptActivityCameraShellDeath(
+            long currentEpoch, long eventEpoch, long lastDeathEpoch,
+            boolean deathHandled) {
+        return currentEpoch > 0 && eventEpoch == currentEpoch
+                && eventEpoch != lastDeathEpoch && !deathHandled;
+    }
+
+    static boolean isMatchingActivityCameraShellEpoch(
+            long currentEpoch, long eventEpoch) {
+        return currentEpoch <= 0 || eventEpoch <= 0 || eventEpoch == currentEpoch;
+    }
+
+    static boolean isMatchingActivityCameraShellEpochStrict(
+            long currentEpoch, long eventEpoch) {
+        return currentEpoch > 0 && eventEpoch > 0 && eventEpoch == currentEpoch;
+    }
+
+    static boolean isMatchingActivityAvmShellEpoch(
+            long currentEpoch, long eventEpoch) {
+        return currentEpoch > 0 && eventEpoch > 0 && eventEpoch == currentEpoch;
+    }
+
+    private boolean isMatchingCurrentAvmShellEpoch(JSONObject event) {
+        return isMatchingActivityAvmShellEpoch(
+                activityAvmShellEpoch, event.optLong("avm_shell_epoch", 0));
+    }
+
+    private boolean isCurrentActivityCameraEvent(
+            boolean requested, int activeRequestId, JSONObject event) {
+        return isCurrentActivityCameraEvent(
+                requested, activeRequestId, event.optInt("request_id", 0),
+                event.optString("source"))
+                && isMatchingActivityCameraShellEpoch(
+                        activityCameraShellEpoch,
+                        event.optLong("camera_shell_epoch", 0));
     }
 
     static boolean isMatchingStockShellCloseError(

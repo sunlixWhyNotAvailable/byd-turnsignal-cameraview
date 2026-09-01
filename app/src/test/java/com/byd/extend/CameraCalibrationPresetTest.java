@@ -17,7 +17,7 @@ public final class CameraCalibrationPresetTest {
     private static final float EPSILON = 0.0001f;
 
     @Test
-    public void percentEntryAcceptsCommaDotAndValidatesBoundsAndAspect() {
+    public void percentEntryAcceptsIndependentDimensionsAndValidatesBoundsAndEnums() {
         DirectCameraCrop free = DirectCameraCrop.parsePercent(
                 "10.25", "20,50", "30", "40,00",
                 DirectCameraCrop.ASPECT_FREE, 17, CameraRotation.MODE_FILL);
@@ -57,9 +57,11 @@ public final class CameraCalibrationPresetTest {
                 0, CameraRotation.MODE_FIT);
         assertEquals(0.01f, minimum.width, 0.0f);
         assertEquals(0.01f, minimum.height, 0.0f);
-        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
+        DirectCameraCrop independent = DirectCameraCrop.parsePercent(
                 "0", "0", "40", "44.50", DirectCameraCrop.ASPECT_FOUR_THREE,
-                0, CameraRotation.MODE_FIT));
+                0, CameraRotation.MODE_FIT);
+        assertEquals(0.40f, independent.width, 0.0f);
+        assertEquals(0.445f, independent.height, 0.0f);
         assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
                 "NaN", "0", "20", "20", DirectCameraCrop.ASPECT_FREE,
                 0, CameraRotation.MODE_FIT));
@@ -67,10 +69,13 @@ public final class CameraCalibrationPresetTest {
                 0.0f, 0.0f, 0.40f, 0.10f, DirectCameraCrop.ASPECT_FOUR_THREE);
         float displayedHeight = Float.parseFloat(String.format(
                 Locale.US, "%.2f", shaped.height * 100.0f));
-        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
+        DirectCameraCrop changedHeight = DirectCameraCrop.parsePercent(
                 "0", "0", "40.00",
                 String.format(Locale.US, "%.2f", displayedHeight + 0.01f),
-                DirectCameraCrop.ASPECT_FOUR_THREE, 0, CameraRotation.MODE_FIT));
+                DirectCameraCrop.ASPECT_FOUR_THREE, 0, CameraRotation.MODE_FIT);
+        assertEquals(0.1001f, changedHeight.height, EPSILON);
+        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
+                "0", "0", "40", "20", -1, 0, CameraRotation.MODE_FIT));
         assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
                 "0", "0", "1e-40", "20", DirectCameraCrop.ASPECT_FREE,
                 0, CameraRotation.MODE_FIT));
@@ -1346,8 +1351,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
             assertFalse(raw.mirrorHorizontally);
         } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
-            DirectCameraCrop expected = DirectCameraCrop.preserveCenterAndAspect(
-                    DirectCameraCrop.defaultCorrectedFor(profile, raw), raw);
+            DirectCameraCrop expected = DirectCameraCrop.defaultCorrectedFor(profile, raw);
             assertGeometry(expected,
                     DirectCameraCrop.loadCorrected(preferences, profile, raw));
             assertConfig(CameraDewarpConfig.loadForProfile(preferences, profile),
@@ -1395,7 +1399,7 @@ public final class CameraCalibrationPresetTest {
             assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
             assertFalse(raw.mirrorHorizontally);
         } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
-            assertGeometry(DirectCameraCrop.preserveCenterAndAspect(defaults.centered(), raw),
+            assertGeometry(defaults.centered(),
                     DirectCameraCrop.loadCorrected(preferences, profile, raw));
             assertConfig(CameraDewarpConfig.loadForParking(preferences, profile),
                     false, CameraDewarpConfig.DEFAULT_FOV_DEGREES,

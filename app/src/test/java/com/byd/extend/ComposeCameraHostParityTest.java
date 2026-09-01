@@ -25,8 +25,9 @@ public final class ComposeCameraHostParityTest {
         assertTrue(activity.contains(
                 "productionCameraHosts.put(CameraHostKind.CalibrationOutput, calibrationOutputHost);"));
         assertTrue(activity.contains("calibrationOutputHost.addView(owner"));
-        assertTrue(activity.contains("productionCalibrationRawOverlay.setListener"));
-        assertTrue(activity.contains("productionCalibrationCorrectedOverlay.setListener"));
+        assertTrue(activity.contains("bindProductionCalibrationOverlayListeners();"));
+        assertTrue(activity.contains("raw.setListener((crop, finished)"));
+        assertTrue(activity.contains("corrected.setListener((crop, finished)"));
         assertTrue(activity.contains("calibrationHostProfile instanceof CameraProfileId.Reverse"));
         assertTrue(activity.contains("CameraDewarpStatsEvent.reverse("));
         assertTrue(activity.contains("owner.setRawMirrorTexture(null)"));
@@ -77,6 +78,30 @@ public final class ComposeCameraHostParityTest {
         assertTrue(activity.contains("productionCameraSlots.get(CameraHostKind.Placement)"));
         assertTrue(activity.contains(
                 "if (!shutdownRequested && isAutoPreviewTab(selectedTab)) armResumeAutoPreview();"));
+    }
+
+    @Test
+    public void everyLiveCameraHostUsesTheSharedTransformedCropMask() throws Exception {
+        String blind = readMain("java/com/byd/extend/BlindSpotCameraView.java");
+        String reverse = readMain("java/com/byd/extend/ReverseCameraCompositionView.java");
+        assertTrue(blind.contains(
+                "outputCropMask.setCrop(CameraRotation.transformedCropCornersForInput("));
+        assertFalse(blind.contains("outputCropMask.setCrop(new float[]{"));
+        assertTrue(reverse.contains(
+                "float[] transformed = CameraRotation.transformedCropCornersForInput("));
+    }
+
+    @Test
+    public void reverseBackgroundAndWidgetKeepEditableBoundedGeometry() throws Exception {
+        String ui = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
+        String controls = ui.substring(ui.indexOf("private fun ReverseCompositionControls("),
+                ui.indexOf("private fun ReverseCompositionFrame("));
+        assertTrue(controls.contains("maxX = 100f - width, maxY = 100f - height"));
+        assertTrue(controls.contains("5f..(100f - x).coerceAtLeast(5f)"));
+        assertTrue(controls.contains("5f..(100f - y).coerceAtLeast(5f)"));
+        String sizeControls = controls.substring(controls.indexOf("GeometryPair("),
+                controls.indexOf("Row(horizontalArrangement"));
+        assertFalse(sizeControls.contains("enabled = cameraElement"));
     }
 
     @Test

@@ -143,9 +143,7 @@ private fun CameraDiagnostics(
         }
         Section(if (direct) strings.text("Попередній перегляд", "Preview")
             else diagnosticGroupTitle(false, state.avmOrientation), colors,
-            Modifier.weight(.66f).fillMaxHeight(), trailing = {
-                StatusPill(operation.status, if (selection != null) "LIVE" else "IDLE", colors)
-            }) {
+            Modifier.weight(.66f).fillMaxHeight()) {
             if (selection != null) {
                 // Direct pano_h has a known 1920x1300 source. AVM's SDK output dimensions are
                 // vehicle-configured at runtime, so the resolved tablet display is the only

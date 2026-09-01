@@ -25,6 +25,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.IdentityHashMap;
 import java.util.Locale;
 import java.util.function.Consumer;
 
@@ -43,6 +44,8 @@ final class CameraHelperMain {
     static final int TX_OPEN_STOCK_AVM = IBinder.FIRST_CALL_TRANSACTION + 7;
     static final int TX_OPEN_DIRECT = IBinder.FIRST_CALL_TRANSACTION + 8;
     static final int TX_OPEN_REVERSE_PREVIEW = IBinder.FIRST_CALL_TRANSACTION + 9;
+    static final int TX_UPDATE_VISUALS = IBinder.FIRST_CALL_TRANSACTION + 10;
+    static final int TX_UPDATE_REVERSE_VISIBILITY = IBinder.FIRST_CALL_TRANSACTION + 11;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
     static final int ADB_AUTH_MODE_AUTO_ONCE = 0;
     static final int ADB_AUTH_MODE_FORCE = 1;
@@ -270,6 +273,57 @@ final class CameraHelperMain {
                     reply.writeString(result);
                     return true;
                 }
+                if (code == TX_UPDATE_VISUALS) {
+                    if (!CameraShellProtocol.isCallerAllowed(
+                            Binder.getCallingUid(), Process.myUid())) {
+                        reply.writeException(new SecurityException("caller uid denied"));
+                        return true;
+                    }
+                    int cornerRadiusDp = data.readInt();
+                    int transparencyPercent = data.readInt();
+                    CameraShellProtocol.validateVisualStyle(
+                            cornerRadiusDp, transparencyPercent);
+                    turnController.updateCameraVisuals(
+                            cornerRadiusDp, transparencyPercent);
+                    reply.writeNoException();
+                    reply.writeString(result("camera_visuals_update_queued", null));
+                    return true;
+                }
+                if (code == TX_UPDATE_REVERSE_VISIBILITY) {
+                    if (!CameraShellProtocol.isCallerAllowed(
+                            Binder.getCallingUid(), Process.myUid())) {
+                        reply.writeException(new SecurityException("caller uid denied"));
+                        return true;
+                    }
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
+                    if (activeReverseControllerRequestId > 0
+                            && activeReverseControllerRequestId != requestId) {
+                        throw new IllegalStateException(
+                                "reverse visibility request is stale");
+                    }
+                    int count = data.readInt();
+                    if (count != 3 && count != 4) {
+                        throw new IllegalArgumentException(
+                                "three or four reverse generations required");
+                    }
+                    int[] generations = new int[count];
+                    for (int i = 0; i < count; i++) {
+                        generations[i] = data.readInt();
+                        if (generations[i] <= 0) {
+                            throw new IllegalArgumentException(
+                                    "invalid reverse Surface generation");
+                        }
+                    }
+                    int visibilityMask = data.readInt();
+                    boolean widgetVisible = data.readInt() != 0;
+                    ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+                    turnController.updateReverseOverlayVisibility(
+                            requestId, generations, visibilityMask, widgetVisible, null);
+                    reply.writeNoException();
+                    reply.writeString(result("reverse_visibility_update_queued", null));
+                    return true;
+                }
                 return super.onTransact(code, data, reply, flags);
             } catch (Throwable error) {
                 reply.writeException(new IllegalStateException(summary(error)));
@@ -399,7 +453,7 @@ final class CameraHelperMain {
                         activityGroup, new Surface[]{requestedSurface},
                         new int[]{requestedIndex}, requestId,
                         requestedView, persistentActivityExclusive(stockInput),
-                        stockInput, null, "open");
+                        stockInput, null, "open", stockInput);
             }
             if (closeExisting && !canReplaceCamera(requestedCameraOwner)) {
                 requestedSurface.release();
@@ -1610,9 +1664,19 @@ final class CameraHelperMain {
                 return;
             }
             if (!handled) {
-                emit("camera_error", "stage", "raw_fanout_consumer_stale",
-                        "camera_tag", "pano_h", "preview_index", index,
-                        "producer_epoch", producerEpoch, "error", summary(error));
+                PersistentSession.DetachedConsumerIdentity identity =
+                        persistentSession.detachedConsumerIdentity(failedSurface, producerEpoch);
+                emit("camera_consumer_event_ignored", "reason", "raw_fanout_consumer_stale",
+                        "camera_id", producerCameraId,
+                        "camera_tag", "pano_h",
+                        "camera_owner", identity == null ? "unknown" : identity.owner,
+                        "request_id", identity == null ? 0 : identity.requestId,
+                        "index", index, "preview_index", index,
+                        "target_surface_id", System.identityHashCode(failedSurface),
+                        "producer_epoch", producerEpoch,
+                        "generation", hubGeneration,
+                        "source_hub_generation", hubGeneration,
+                        "error", summary(error));
             }
             refreshPersistentLegacyState();
         }
@@ -2186,6 +2250,8 @@ final class CameraHelperMain {
             final ConsumerGroup overlayGroup = new ConsumerGroup(CAMERA_OWNER_OVERLAY);
             final ConsumerGroup parkingGroup = new ConsumerGroup(CAMERA_OWNER_PARKING);
             final ConsumerGroup reverseGroup = new ConsumerGroup(CAMERA_OWNER_REVERSE);
+            private final IdentityHashMap<Surface, DetachedConsumerIdentity>
+                    detachedConsumerIdentities = new IdentityHashMap<>();
             final Surface[] sourceSurfaces = new Surface[5];
             final boolean[] sourceAttached = new boolean[5];
             boolean producerOpen;
@@ -2208,6 +2274,7 @@ final class CameraHelperMain {
                     Surface[] surfaces, int[] indexes, int requestId,
                     String view, boolean exclusive, boolean shellOwned,
                     boolean firstSurfaceDirect) throws Exception {
+                clearDetachedConsumerIdentities();
                 fanout = requestedFanout;
                 boolean targetAttached = false;
                 try {
@@ -2293,6 +2360,7 @@ final class CameraHelperMain {
                             rollbackFailed, false, false);
                 }
 
+                rememberDetached(previous, epoch);
                 target.set(surfaces, indexes, requestId,
                         view, exclusive, shellOwned, true, firstSurfaceDirect);
                 boolean shellCloseQueued = false;
@@ -2305,6 +2373,7 @@ final class CameraHelperMain {
                         shellCloseQueued = shellClose.close(
                                 "replace_with_multi_preview", preempted.requestId);
                     }
+                    rememberDetached(preempted, epoch);
                     activityGroup.clear();
                     preempted.release();
                 }
@@ -2348,6 +2417,7 @@ final class CameraHelperMain {
                             group.firstSurfaceDirect,
                             false, false);
                 }
+                rememberDetached(closed, epoch);
                 group.clear();
                 closed.release();
                 boolean shellCloseQueued = closed.shellOwned
@@ -2373,6 +2443,7 @@ final class CameraHelperMain {
                                 "consumer_detach_failed", root(error), true,
                                 false, false);
                     }
+                    rememberDetached(invalid, epoch);
                     group.clear();
                     invalid.release();
                     emitConsumerClosed(events, invalid.owner, invalid.requestId,
@@ -2405,7 +2476,11 @@ final class CameraHelperMain {
                             invalid.attached, false);
                     activityGroup.restoreActive(Arrays.copyOfRange(
                             invalid.active, 1, invalid.active.length));
-                    if (invalid.surfaces[0] != null) invalid.surfaces[0].release();
+                    if (invalid.surfaces[0] != null) {
+                        rememberDetached(invalid.surfaces[0], invalid.owner,
+                                invalid.requestId, epoch);
+                        invalid.surfaces[0].release();
+                    }
                     events.emit("stock_avm_input_detached", "camera_owner", invalid.owner,
                             "request_id", invalid.requestId, "view", invalid.view,
                             "reason", reason, "producer_epoch", epoch);
@@ -2418,6 +2493,7 @@ final class CameraHelperMain {
                             "consumer_detach_failed", root(error), true,
                             false, false);
                 }
+                rememberDetached(invalid, epoch);
                 activityGroup.clear();
                 invalid.release();
                 emitConsumerClosed(events, invalid.owner, invalid.requestId,
@@ -2442,6 +2518,7 @@ final class CameraHelperMain {
                     boolean shellCloseAlreadyQueued,
                     PersistentShellCloseSink shellClose,
                     PersistentEventSink events, int epoch) {
+                clearDetachedConsumerIdentities();
                 Throwable first = failure;
                 ConsumerGroup.Snapshot[] abandoned = activeSnapshots();
                 String terminalError = first == null ? reason : summary(first);
@@ -2488,6 +2565,43 @@ final class CameraHelperMain {
                 return new TeardownOutcome(shellCloseQueued, first);
             }
 
+            void rememberDetached(ConsumerGroup.Snapshot snapshot, int epoch) {
+                if (snapshot == null || epoch <= 0 || snapshot.surfaces == null) return;
+                DetachedConsumerIdentity identity = new DetachedConsumerIdentity(
+                        snapshot.owner, snapshot.requestId, epoch);
+                for (Surface target : snapshot.surfaces) {
+                    if (target != null) detachedConsumerIdentities.put(target, identity);
+                }
+            }
+
+            void rememberDetached(Surface target, String owner, int requestId, int epoch) {
+                if (target == null || epoch <= 0) return;
+                detachedConsumerIdentities.put(target,
+                        new DetachedConsumerIdentity(owner, requestId, epoch));
+            }
+
+            void clearDetachedConsumerIdentities() {
+                detachedConsumerIdentities.clear();
+            }
+
+            DetachedConsumerIdentity detachedConsumerIdentity(Surface target, int epoch) {
+                if (target == null || epoch <= 0) return null;
+                DetachedConsumerIdentity identity = detachedConsumerIdentities.get(target);
+                return identity != null && identity.producerEpoch == epoch ? identity : null;
+            }
+
+            static final class DetachedConsumerIdentity {
+                final String owner;
+                final int requestId;
+                final int producerEpoch;
+
+                DetachedConsumerIdentity(String owner, int requestId, int producerEpoch) {
+                    this.owner = owner;
+                    this.requestId = requestId;
+                    this.producerEpoch = producerEpoch;
+                }
+            }
+
             private ConsumerGroup.Snapshot[] activeSnapshots() {
                 ArrayDeque<ConsumerGroup.Snapshot> result = new ArrayDeque<>();
                 if (activityGroup.has()) result.add(activityGroup.snapshot());
@@ -2495,6 +2609,27 @@ final class CameraHelperMain {
                 if (parkingGroup.has()) result.add(parkingGroup.snapshot());
                 if (reverseGroup.has()) result.add(reverseGroup.snapshot());
                 return result.toArray(new ConsumerGroup.Snapshot[0]);
+            }
+
+            private static Surface removeTarget(ConsumerGroup group, int position) {
+                Surface detached = group.surfaces[position];
+                int nextLength = group.surfaces.length - 1;
+                Surface[] nextSurfaces = new Surface[nextLength];
+                int[] nextIndexes = new int[nextLength];
+                boolean[] nextActive = new boolean[nextLength];
+                System.arraycopy(group.surfaces, 0, nextSurfaces, 0, position);
+                System.arraycopy(group.surfaces, position + 1,
+                        nextSurfaces, position, nextLength - position);
+                System.arraycopy(group.indexes, 0, nextIndexes, 0, position);
+                System.arraycopy(group.indexes, position + 1,
+                        nextIndexes, position, nextLength - position);
+                System.arraycopy(group.active, 0, nextActive, 0, position);
+                System.arraycopy(group.active, position + 1,
+                        nextActive, position, nextLength - position);
+                group.surfaces = nextSurfaces;
+                group.indexes = nextIndexes;
+                group.active = nextActive;
+                return detached;
             }
 
             private ConsumerGroup[] groupsToDetach(ConsumerGroup target, boolean exclusive) {
@@ -2584,6 +2719,7 @@ final class CameraHelperMain {
                     return false;
                 }
                 target.clear();
+                rememberDetached(requested, epoch);
                 requested.release();
                 if (previous.surfaces.length == 0) return true;
                 if (!previous.attached) {
@@ -2613,6 +2749,7 @@ final class CameraHelperMain {
                         restoreFailure.addSuppressed(detachError);
                         return false;
                     }
+                    rememberDetached(target.snapshot(), epoch);
                     target.clear();
                     terminalSnapshot(previous, "consumer_restore_failed", restoreFailure,
                             events, shellClose, cameraId, epoch);
@@ -2626,6 +2763,7 @@ final class CameraHelperMain {
                     int cameraId, int epoch) {
                 ConsumerGroup.Snapshot failed = group.snapshot();
                 group.clear();
+                rememberDetached(failed, epoch);
                 terminalSnapshot(failed, reason, error,
                         events, shellClose, cameraId, epoch);
             }
@@ -2690,6 +2828,30 @@ final class CameraHelperMain {
                     int cameraId, int epoch) throws PersistentSessionFailure {
                 ConsumerGroup group = groupContaining(failedSurface);
                 if (group == null) return false;
+                if (!group.attached) {
+                    rememberDetached(failedSurface, group.owner, group.requestId, epoch);
+                    return false;
+                }
+                int failedPosition = group.indexOf(failedSurface);
+                if (failedIndex == 4
+                        && failedPosition >= 0
+                        && group.indexes[failedPosition] == 4
+                        && (group == reverseGroup
+                        || group == activityGroup
+                        && "reverse_preview_with_stock_base".equals(group.view))) {
+                    Surface detached = removeTarget(group, failedPosition);
+                    rememberDetached(detached, group.owner, group.requestId, epoch);
+                    if (detached != null) detached.release();
+                    events.emit("camera_consumer_detached",
+                            "camera_owner", group.owner,
+                            "request_id", group.requestId,
+                            "view", group.view == null ? "unknown" : group.view,
+                            "preview_index", failedIndex,
+                            "preview_indexes", Arrays.toString(new int[]{failedIndex}),
+                            "reason", "optional_reverse_target_failed",
+                            "producer_epoch", epoch);
+                    return true;
+                }
                 ConsumerGroup.Snapshot failed = group.snapshot();
                 try {
                     detachGroup(port, group);
@@ -2698,6 +2860,7 @@ final class CameraHelperMain {
                             "consumer_detach_failed", root(cleanupError), true,
                             true, false);
                 }
+                rememberDetached(failed, epoch);
                 group.clear();
                 if (failed.shellOwned) {
                     shellClose.close("consumer_render_failed", failed.requestId);
@@ -2841,7 +3004,8 @@ final class CameraHelperMain {
             private static Surface[] fanoutSurfaces(
                     Surface[] surfaces, boolean firstSurfaceDirect) {
                 if (!firstSurfaceDirect) return surfaces;
-                if (surfaces.length < 2) {
+                if (surfaces.length == 1) return new Surface[0];
+                if (surfaces.length == 0) {
                     throw new IllegalArgumentException(
                             "direct input plus at least one fanout Surface required");
                 }
@@ -2851,7 +3015,8 @@ final class CameraHelperMain {
             private static int[] fanoutIndexes(
                     int[] indexes, boolean firstSurfaceDirect) {
                 if (!firstSurfaceDirect) return indexes;
-                if (indexes.length < 2) {
+                if (indexes.length == 1) return new int[0];
+                if (indexes.length == 0) {
                     throw new IllegalArgumentException(
                             "direct input plus at least one fanout index required");
                 }

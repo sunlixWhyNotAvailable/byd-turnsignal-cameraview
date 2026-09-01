@@ -71,6 +71,7 @@ final class BlindSpotCameraView extends TextureView
     private DirectCameraCrop requestedCrop = DirectCameraCrop.defaultFor(false);
     private DirectCameraCrop rawFallbackCrop = DirectCameraCrop.defaultFor(false);
     private boolean rawFallbackActive;
+    private CropMaskView outputCropMask;
     private int dewarpStatsRequestId;
     private int dewarpStatsGeneration;
     private int bufferWidth = BUFFER_WIDTH;
@@ -241,8 +242,15 @@ final class BlindSpotCameraView extends TextureView
     }
 
     void applyDirectCameraCrop(DirectCameraCrop crop) {
+        if (crop == null) throw new IllegalArgumentException("camera crop is required");
         requestedCrop = crop;
         configureBuffer();
+        applyCurrentCrop();
+    }
+
+    /** Installs the sibling mask used by production Output/Placement hosts. */
+    void setOutputCropMask(CropMaskView value) {
+        outputCropMask = value;
         applyCurrentCrop();
     }
 
@@ -263,11 +271,12 @@ final class BlindSpotCameraView extends TextureView
         if (width <= 0 || height <= 0) return;
         DirectCameraCrop directCrop = rawFallbackActive ? rawFallbackCrop : requestedCrop;
         Matrix transform = new Matrix();
+        RectF destination = new RectF(0.0f, 0.0f, width, height);
         CameraRotation.setSourceCropTransformForInput(
                 transform,
                 directCrop.left, directCrop.top,
                 directCrop.width, directCrop.height,
-                new RectF(0.0f, 0.0f, width, height),
+                destination,
                 directCrop.rotationDegrees,
                 directCrop.rotationMode,
                 BUFFER_WIDTH, BUFFER_HEIGHT,
@@ -277,6 +286,22 @@ final class BlindSpotCameraView extends TextureView
         setScaleX(1.0f);
         setScaleY(1.0f);
         setTransform(transform);
+        if (outputCropMask != null) {
+            outputCropMask.setCrop(CameraRotation.transformedCropCornersForInput(
+                    directCrop.left, directCrop.top,
+                    directCrop.width, directCrop.height,
+                    destination, directCrop.rotationDegrees, directCrop.rotationMode,
+                    BUFFER_WIDTH, BUFFER_HEIGHT, width, height,
+                    directCrop.mirrorHorizontally));
+        }
+    }
+
+    @Override
+    protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
+        // Compose/tablet layout can resize an already-live host without recreating its
+        // SurfaceTexture.  Recompute both the texture transform and the output mask in-place.
+        applyCurrentCrop();
     }
 
     private void configureBuffer() {

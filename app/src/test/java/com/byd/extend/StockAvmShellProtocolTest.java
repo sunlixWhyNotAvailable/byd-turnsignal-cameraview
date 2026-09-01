@@ -1,9 +1,14 @@
 package com.byd.extend;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class StockAvmShellProtocolTest {
     @Test
@@ -21,6 +26,45 @@ public final class StockAvmShellProtocolTest {
         assertFalse(TurnSignalController.shouldRetryStockAvm(false, true, false));
         assertFalse(TurnSignalController.shouldRetryStockAvm(true, false, false));
         assertFalse(TurnSignalController.shouldRetryStockAvm(false, false, true));
+        assertFalse(TurnSignalController.shouldRetryStockAvm(false, false, false, true));
+        assertTrue(TurnSignalController.shouldRetryStockAvm(false, false, false, false));
+    }
+
+    @Test
+    public void canceledBlockingOpenCannotPublishAndReleasesReturnedCopy() throws Exception {
+        Object requestLock = new Object();
+        AtomicBoolean canceled = new AtomicBoolean();
+        AtomicInteger released = new AtomicInteger();
+        AtomicInteger published = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+        Thread blockedOpen = new Thread(() -> {
+            entered.countDown();
+            try {
+                unblock.await();
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            TurnSignalController.publishStockAvmInputGate(
+                    requestLock, canceled, false,
+                    released::incrementAndGet, published::incrementAndGet);
+        });
+        blockedOpen.start();
+        assertTrue(entered.await(1, java.util.concurrent.TimeUnit.SECONDS));
+        canceled.set(true);
+        unblock.countDown();
+        blockedOpen.join(1_000);
+        assertFalse(TurnSignalController.stockAvmCanContinue(!canceled.get(), false));
+        assertEquals(0, published.get());
+        assertEquals(1, released.get());
+
+        boolean accepted = TurnSignalController.publishStockAvmInputGate(
+                requestLock, canceled, false,
+                released::incrementAndGet, published::incrementAndGet);
+        assertFalse(accepted);
+        assertEquals(0, published.get());
+        assertEquals(2, released.get());
     }
 
     @Test

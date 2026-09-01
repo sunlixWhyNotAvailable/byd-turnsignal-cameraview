@@ -14,6 +14,63 @@ import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
+    public void reverseRotationPreviewKeepsBothStageGeometriesWithoutWrites() {
+        for (boolean front : new boolean[]{false, true}) {
+            for (int cameraIndex : new int[]{1, 2, 3}) {
+                TestSharedPreferences settings = new TestSharedPreferences();
+                ReverseCameraLayout.Rect raw = ReverseCameraLayout.sourceCrop(
+                        0.10f, 0.15f, 0.70f, 0.65f);
+                ReverseCameraLayout.Rect corrected = ReverseCameraLayout.sourceCrop(
+                        0.25f, 0.30f, 0.35f, 0.40f);
+                android.content.SharedPreferences.Editor editor = settings.edit();
+                if (front) {
+                    ReverseCameraController.writeFrontSourceCrop(editor, cameraIndex, raw, false);
+                    ReverseCameraController.writeFrontSourceCrop(editor, cameraIndex, corrected, true);
+                } else {
+                    ReverseCameraController.writeSourceCrop(editor, cameraIndex, raw, false);
+                    ReverseCameraController.writeSourceCrop(editor, cameraIndex, corrected, true);
+                }
+                editor.apply();
+                Map<String, ?> before = settings.getAll();
+                for (int rotation : new int[]{-90, -30, 0, 45, 90, 180}) {
+                    DirectCameraCrop[] crops = CameraProbeActivity.reverseRotationPreviewCrops(
+                            settings, cameraIndex, front, rotation);
+                    for (int stage = 0; stage < 2; stage++) {
+                        ReverseCameraLayout.Rect expected = stage == 0 ? raw : corrected;
+                        assertEquals(expected.left, crops[stage].left, 0.0f);
+                        assertEquals(expected.top, crops[stage].top, 0.0f);
+                        assertEquals(expected.width, crops[stage].width, 0.0f);
+                        assertEquals(expected.height, crops[stage].height, 0.0f);
+                        assertEquals(rotation, crops[stage].rotationDegrees);
+                    }
+                    assertEquals(crops[0].rotationMode, crops[1].rotationMode);
+                    assertEquals(crops[0].mirrorHorizontally, crops[1].mirrorHorizontally);
+                }
+                assertEquals(before, settings.getAll());
+                assertEquals(1, settings.transactions);
+            }
+        }
+    }
+
+    @Test
+    public void tabletPreviewKeepsSelectedModeWithoutChangingGeometryOrMirror() {
+        DirectCameraCrop fill = DirectCameraCrop.requireUiGeometry(
+                0.12f, 0.18f, 0.62f, 0.54f, 42,
+                CameraRotation.MODE_FILL).withOutputTransformPreservingGeometry(
+                42, CameraRotation.MODE_FILL, true);
+        assertEquals(0.12f, fill.left, 0.0f);
+        assertEquals(0.18f, fill.top, 0.0f);
+        assertEquals(0.62f, fill.width, 0.0f);
+        assertEquals(0.54f, fill.height, 0.0f);
+        assertEquals(42, fill.rotationDegrees);
+        assertEquals(CameraRotation.MODE_FILL, fill.rotationMode);
+        assertTrue(fill.mirrorHorizontally);
+        DirectCameraCrop stretch = fill.withOutputTransformPreservingGeometry(
+                42, CameraRotation.MODE_ALIGNED, true);
+        assertEquals(CameraRotation.MODE_ALIGNED, stretch.rotationMode);
+    }
+
+    @Test
     public void reverseFallbackSourceKeepsCentralIdentityAndTracksSideConfigRole() {
         for (int mode : new int[]{ReverseSideSelectorView.MODE_REAR,
                 ReverseSideSelectorView.MODE_FRONT}) {
@@ -26,6 +83,13 @@ public final class ActivityCameraLifecycleTest {
             assertTrue(ReverseCameraCompositionView.fallbackSourceIsFront(
                     source, ReverseSideSelectorView.MODE_FRONT));
         }
+    }
+
+    @Test
+    public void revealedOptionalCentralFrontLossKeepsActivityReverseOpen() {
+        assertFalse(CameraProbeActivity.reverseSurfaceLossIsTerminal(4, true));
+        assertTrue(CameraProbeActivity.reverseSurfaceLossIsTerminal(4, false));
+        assertTrue(CameraProbeActivity.reverseSurfaceLossIsTerminal(3, true));
     }
 
     @Test
@@ -131,18 +195,22 @@ public final class ActivityCameraLifecycleTest {
         String token = transition.begin(CameraHelperMain.ACTIVITY_RESUME_COLD_RESET);
 
         assertTrue(CameraProbeActivity.isMatchingColdResetShellCallback(
-                token, token, "stock_avm_shell", "camera_closed", "", 27, 27));
+                token, token, "stock_avm_shell", "camera_closed", "", 27, 27, 7, 7));
         assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
-                token, token, "pano_h", "camera_closed", "", 27, 27));
+                token, token, "pano_h", "camera_closed", "", 27, 27, 7, 7));
         assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
-                token, token, "stock_avm_shell", "camera_closed", "", 27, 26));
+                token, token, "stock_avm_shell", "camera_closed", "", 27, 26, 7, 7));
         assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
-                token, token, "stock_avm_shell", "camera_closed", "", 0, 0));
+                token, token, "stock_avm_shell", "camera_closed", "", 0, 0, 7, 7));
         assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
-                token, "activity_stopped", "stock_avm_shell", "camera_closed", "", 27, 27));
+                token, token, "stock_avm_shell", "camera_closed", "", 27, 27, 7, 6));
+        assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
+                token, token, "stock_avm_shell", "camera_closed", "", 27, 27, 7, 0));
+        assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
+                token, "activity_stopped", "stock_avm_shell", "camera_closed", "", 27, 27, 7, 7));
         assertFalse(CameraProbeActivity.isMatchingColdResetShellCallback(
                 "activity_transition:99:activity_resume_cold_reset", token,
-                "stock_avm_shell", "camera_closed", "", 27, 27));
+                "stock_avm_shell", "camera_closed", "", 27, 27, 7, 7));
     }
 
     @Test
@@ -212,6 +280,96 @@ public final class ActivityCameraLifecycleTest {
                 true, 42, 42, "activity"));
         assertFalse(CameraProbeActivity.isCurrentActivityCameraEvent(
                 false, 42, 42, "helper"));
+    }
+
+    @Test
+    public void shellEpochGateRejectsStaleAndDuplicateTerminalEvents() {
+        assertTrue(CameraProbeActivity.shouldAcceptActivityCameraShellAttach(0, 7, false));
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellAttach(7, 7, true));
+        assertTrue(CameraProbeActivity.shouldAcceptActivityCameraShellAttach(7, 8, true));
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellAttach(7, 7, false));
+
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellDeath(0, 7, 0, false));
+        assertTrue(CameraProbeActivity.shouldAcceptActivityCameraShellDeath(7, 7, 0, false));
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellDeath(7, 7, 7, true));
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellDeath(8, 7, 8, false));
+        assertFalse(CameraProbeActivity.shouldAcceptActivityCameraShellDeath(7, 9, 7, true));
+        assertTrue(CameraProbeActivity.isMatchingActivityCameraShellEpoch(7, 0));
+        assertFalse(CameraProbeActivity.isMatchingActivityCameraShellEpoch(7, 6));
+        assertTrue(CameraProbeActivity.isMatchingActivityCameraShellEpoch(7, 7));
+    }
+
+    @Test
+    public void avmEpochIsEstablishedOnlyByAttachOrAcceptedOpen() {
+        assertEquals(7, CameraProbeActivity.nextActivityAvmShellEpoch(
+                0, "stock_avm_shell_attached", "", 7, false));
+        assertEquals(8, CameraProbeActivity.nextActivityAvmShellEpoch(
+                7, "camera_opened", "stock_avm_shell", 8, true));
+        assertEquals(7, CameraProbeActivity.nextActivityAvmShellEpoch(
+                7, "camera_opened", "stock_avm_shell", 8, false));
+        assertEquals(7, CameraProbeActivity.nextActivityAvmShellEpoch(
+                7, "camera_closed", "stock_avm_shell", 8, false));
+        assertEquals(7, CameraProbeActivity.nextActivityAvmShellEpoch(
+                7, "stock_avm_shell_died", "", 8, false));
+        assertEquals(0, CameraProbeActivity.nextActivityAvmShellEpoch(
+                7, "stock_avm_shell_died", "", 7, false));
+    }
+
+    @Test
+    public void guardAnglesAllowIndependentZeroValues() {
+        assertTrue(CameraProbeActivity.isValidGuardThresholds(0.0f, 0.0f));
+        assertTrue(CameraProbeActivity.isValidGuardThresholds(360.0f, 45.0f));
+        assertTrue(CameraProbeActivity.isValidGuardThresholds(5.0f, 45.0f));
+        assertFalse(CameraProbeActivity.isValidGuardThresholds(-0.1f, 0.0f));
+        assertFalse(CameraProbeActivity.isValidGuardThresholds(0.0f, 45.1f));
+        assertFalse(CameraProbeActivity.isValidGuardThresholds(Float.NaN, 0.0f));
+    }
+
+    @Test
+    public void stockAvmTerminalCallbackRequiresCurrentLifecycleEpoch() {
+        assertTrue(CameraProbeActivity.isMatchingActivityAvmShellEpoch(4, 4));
+        assertFalse(CameraProbeActivity.isMatchingActivityAvmShellEpoch(4, 3));
+        assertFalse(CameraProbeActivity.isMatchingActivityAvmShellEpoch(4, 0));
+        assertFalse(CameraProbeActivity.isMatchingActivityAvmShellEpoch(0, 4));
+        assertTrue(CameraProbeActivity.isMatchingActivityCameraShellEpochStrict(4, 4));
+        assertFalse(CameraProbeActivity.isMatchingActivityCameraShellEpochStrict(4, 0));
+        assertFalse(CameraProbeActivity.isMatchingActivityCameraShellEpochStrict(0, 4));
+    }
+
+    @Test
+    public void queuedActivityTransitionAcceptsExactAvmCloseOnceAndRejectsStaleIdentity() {
+        CameraTransition transition = new CameraTransition();
+        String token = transition.begin("camera_tab_changed");
+        int closingRequestId = 27;
+
+        assertTrue(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, token, "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId, 7, 7, 8, 8));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, token, "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId - 1, 7, 7, 8, 8));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, token, "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId, 7, 7, 8, 7));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, token, "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId, 7, 6, 8, 8));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, token, "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId, 7, 0, 8, 8));
+        assertFalse(CameraProbeActivity.isMatchingPendingActivityTransitionShellClose(
+                token, "activity_transition:99:camera_tab_changed",
+                "stock_avm_shell", "camera_closed", "",
+                closingRequestId, closingRequestId, 7, 7, 8, 8));
+        assertFalse(transition.matches("camera_closed_without_transition_token"));
+        assertTrue(transition.pending());
+        assertTrue(transition.complete(token));
+        assertFalse(transition.complete(token));
+        assertFalse(transition.pending());
+
+        String nextToken = transition.begin("camera_tab_changed");
+        assertTrue(transition.pending());
+        assertFalse(token.equals(nextToken));
     }
 
     @Test
@@ -552,5 +710,59 @@ public final class ActivityCameraLifecycleTest {
                     conditions[5], conditions[6], conditions[7], conditions[8]));
             conditions[i] = true;
         }
+    }
+
+    @Test
+    public void retainedCalibrationBundleDetachesStageOnlyAndRejectsStaleRelease() {
+        CameraProbeActivity.CalibrationHostBundle bundle =
+                new CameraProbeActivity.CalibrationHostBundle();
+        Object owner = new Object();
+        Object raw = new Object();
+        Object corrected = new Object();
+        Object output = new Object();
+        Object rawMirror = new Object();
+        Object correctedMirror = new Object();
+        AtomicInteger correctedDetach = new AtomicInteger();
+        bundle.bind(owner, raw, corrected, output, rawMirror, correctedMirror);
+
+        // Initial OFF has no corrected surface, but the owner and roots stay reusable for ON.
+        assertTrue(bundle.isComplete(owner, raw, corrected, output));
+        assertTrue(bundle.acceptMirror(owner, correctedMirror, false));
+        assertTrue(bundle.releaseStage(
+                com.byd.extend.ui.CameraHostKind.CalibrationCorrected,
+                corrected, correctedDetach::incrementAndGet));
+        assertEquals(1, correctedDetach.get());
+        assertFalse(bundle.acceptMirror(owner, correctedMirror, false));
+        assertTrue(bundle.isComplete(owner, raw, corrected, output));
+        bundle.activateStage(
+                com.byd.extend.ui.CameraHostKind.CalibrationCorrected, corrected);
+        assertTrue(bundle.acceptMirror(owner, correctedMirror, false));
+        assertTrue(bundle.releaseStage(
+                com.byd.extend.ui.CameraHostKind.CalibrationOriginal,
+                raw, null));
+        assertTrue(bundle.isComplete(owner, raw, corrected, output));
+
+        // A late release from an old bundle cannot detach a replacement owner's mirror.
+        assertTrue(bundle.clear());
+        Object replacementOwner = new Object();
+        Object replacementRaw = new Object();
+        Object replacementCorrected = new Object();
+        Object replacementOutput = new Object();
+        Object replacementMirror = new Object();
+        bundle.bind(replacementOwner, replacementRaw, replacementCorrected, replacementOutput,
+                new Object(), replacementMirror);
+        assertFalse(bundle.acceptMirror(owner, correctedMirror, false));
+        assertTrue(bundle.acceptMirror(replacementOwner, replacementMirror, false));
+        assertFalse(bundle.releaseStage(
+                com.byd.extend.ui.CameraHostKind.CalibrationCorrected,
+                corrected, correctedDetach::incrementAndGet));
+        assertEquals(1, correctedDetach.get());
+        assertTrue(bundle.isComplete(
+                replacementOwner, replacementRaw, replacementCorrected, replacementOutput));
+
+        // Workspace exit retires once; repeated teardown cannot retire a new/empty owner.
+        assertTrue(bundle.clear());
+        assertFalse(bundle.clear());
+        assertFalse(bundle.hasAny());
     }
 }

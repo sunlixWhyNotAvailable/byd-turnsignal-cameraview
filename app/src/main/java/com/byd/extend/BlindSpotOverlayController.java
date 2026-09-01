@@ -342,13 +342,15 @@ final class BlindSpotOverlayController {
         }
     }
 
-    /**
-     * Reads the profile's stable production frame aspect, migrating it once from the
-     * caller's current active crop aspect when the key is absent or invalid.
-     *
-     * Activity calibration must call this after loading its active crop and pass that
-     * crop's {@link DirectCameraCrop#outputAspect()} as {@code fallback}.
-     */
+    /** One destination fallback for preview, export and production, independent of live drafts. */
+    static float readFrameAspect(SharedPreferences settings, CameraProfile profile) {
+        DirectCameraCrop raw = DirectCameraCrop.load(settings, profile);
+        DirectCameraCrop active = CameraDewarpConfig.loadForProfile(settings, profile).enabled
+                ? DirectCameraCrop.loadCorrected(settings, profile, raw) : raw;
+        return readFrameAspect(settings, profile, active.outputAspect());
+    }
+
+    /** Reads the stored aspect or its effective fallback without changing preferences. */
     static float readFrameAspect(
             SharedPreferences settings, CameraProfile profile, float fallback) {
         float safeFallback = isValidFrameAspect(fallback)
@@ -359,13 +361,24 @@ final class BlindSpotOverlayController {
                 float stored = settings.getFloat(key, safeFallback);
                 if (isValidFrameAspect(stored)) return stored;
             } catch (ClassCastException ignored) {
-                // Repair malformed preference values below.
+                // A malformed key uses the same read-only fallback as an absent key.
             }
         }
-        float defaultAspect = hasRawPreferences(settings, profile)
-                ? safeFallback : defaultFrameAspect(profile);
-        settings.edit().putFloat(key, defaultAspect).apply();
-        return defaultAspect;
+        return hasRawPreferences(settings, profile) ? safeFallback : defaultFrameAspect(profile);
+    }
+
+    /** Pins the pre-edit destination in the caller's geometry transaction, never on read. */
+    static void pinFrameAspect(SharedPreferences.Editor editor,
+            SharedPreferences settings, CameraProfile profile) {
+        String key = frameAspectKey(profile);
+        try {
+            if (settings.contains(key) && isValidFrameAspect(settings.getFloat(key, 0.0f))) {
+                return;
+            }
+        } catch (ClassCastException ignored) {
+            // An explicit edit may replace the malformed key with its prior effective value.
+        }
+        editor.putFloat(key, readFrameAspect(settings, profile));
     }
 
     static boolean isValidFrameAspect(float aspect) {
@@ -1153,7 +1166,7 @@ final class BlindSpotOverlayController {
         DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop crop = dewarp.enabled
                 ? DirectCameraCrop.loadCorrected(settings, profile, rawCrop) : rawCrop;
-        float frameAspect = readFrameAspect(settings, profile, crop.outputAspect());
+        float frameAspect = readFrameAspect(settings, profile);
         int[] geometry = overlayGeometry(
                 displayWidth, displayHeight, readScale(settings, profile),
                 frameAspect, readPosition(settings, profile, false),
@@ -1206,7 +1219,7 @@ final class BlindSpotOverlayController {
 
     private static boolean hasRawPreferences(
             SharedPreferences settings, CameraProfile profile) {
-        for (int field = 0; field < 8; field++) {
+        for (int field = 0; field < 4; field++) {
             if (settings.contains(DirectCameraCrop.preferenceKey(profile, field))) return true;
         }
         return false;

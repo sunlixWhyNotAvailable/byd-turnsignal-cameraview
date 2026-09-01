@@ -20,6 +20,26 @@ public final class CameraRotationTest {
     }
 
     @Test
+    public void alignedSourceRoiRemainsAxisAlignedBeforeOutputTransform() {
+        assertArrayEquals(new float[]{192.0f, 130.0f, 1152.0f, 130.0f,
+                        1152.0f, 910.0f, 192.0f, 910.0f},
+                CameraRotation.axisSourceCorners(
+                        0.10f, 0.10f, 0.50f, 0.60f,
+                        1920, 1300, 1920, 1300), 0.0001f);
+    }
+
+    @Test
+    public void stretchCropMaskIsTheFixedDestinationPane() {
+        assertArrayEquals(new float[]{12.0f, 8.0f, 212.0f, 8.0f,
+                        212.0f, 108.0f, 12.0f, 108.0f},
+                CameraRotation.fixedOutputCorners(
+                        CameraRotation.MODE_ALIGNED, 12.0f, 8.0f, 212.0f, 108.0f),
+                0.0001f);
+        assertEquals(null, CameraRotation.fixedOutputCorners(
+                CameraRotation.MODE_FILL, 12.0f, 8.0f, 212.0f, 108.0f));
+    }
+
+    @Test
     public void fitLetterboxesDifferingAspectWithoutStretching() {
         float[] transform = transform(CameraRotation.MODE_FIT, 0, false);
 

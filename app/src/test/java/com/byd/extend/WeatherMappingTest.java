@@ -134,13 +134,14 @@ public final class WeatherMappingTest {
         JSONObject airQuality = new JSONObject().put("current", new JSONObject()
                 .put("european_aqi", 42).put("pm10", 18).put("pm2_5", 9));
         String payload = WeatherMapping.toBydJson(forecast, airQuality,
-                "Київ", "Kyiv", 1_756_200_000_000L);
+                " Київ ", " Kyiv ", 1_756_200_000_000L);
         assertTrue(WeatherMapping.isComplete(payload));
         JSONObject root = new JSONObject(payload);
         assertEquals("0", root.getString("resultcode"));
         assertEquals("success", root.getString("resultinfo"));
         JSONObject data = root.getJSONObject("data");
-        assertEquals("Київ", data.getJSONObject("city").getString("name"));
+        assertEquals(" Київ ", data.getJSONObject("city").getString("name"));
+        assertEquals(" Kyiv ", data.getJSONObject("city").getString("englishCityName"));
         assertEquals(8, data.getJSONObject("hourlys").getJSONArray("hourlyweathers").length());
         JSONArray days = data.getJSONObject("dailys").getJSONArray("dailyweathers");
         assertEquals(16, days.length());

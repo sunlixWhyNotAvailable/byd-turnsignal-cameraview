@@ -16,6 +16,32 @@ import com.byd.extend.readProductionUiState
 /** Activity-owned effects. Compose never receives Binder, Surface, Bitmap or preferences. */
 interface ProductionUiBackend {
     fun onProductionUiAction(action: BydExtendUiAction)
+
+    /**
+     * Camera section changes are separate from profile/source changes.  Implementations can
+     * update the existing host in place and reserve close/reopen for a real calibration entry.
+     */
+    fun onProductionCameraSectionChanged(
+        tab: RootTab, previous: CameraSection, next: CameraSection,
+    ) = Unit
+
+    /** Reverse element selection changes editor focus only; the composition host stays warm. */
+    fun onProductionReverseElementFocusChanged(
+        section: CameraSection, previous: ReverseElement, next: ReverseElement,
+    ) = Unit
+
+    /** Persist and propagate one Reverse pane visibility bit without a full state reload. */
+    fun onProductionReverseVisibilityChanged(
+        element: ReverseElement, visible: Boolean,
+    ) = Unit
+
+    /**
+     * Applies a transient numeric preview to the live host.  Returning null rejects the value;
+     * returning a string supplies the canonical accepted value for the UI state.  The default
+     * rejects previews so an Activity that has not opted into a live host cannot falsely accept.
+     */
+    fun onProductionUiPreview(target: NumberTarget, value: String): String? = null
+
     fun obtainProductionCameraHost(slot: CameraHostSlot): View
     fun updateProductionCameraHost(view: View, slot: CameraHostSlot)
     fun releaseProductionCameraHost(view: View, slot: CameraHostSlot)
@@ -34,6 +60,12 @@ class ProductionUiController(
     internal val backend: ProductionUiBackend,
 ) {
     private var pendingDialogCommand: CommandId? = null
+    /** Last accepted slider previews, keyed by stable target identity until final commit. */
+    private val previewValues = linkedMapOf<NumberTarget, String>()
+    private val previewSessions = linkedMapOf<NumberTarget, Long>()
+    /** Values already finalized by navigation; suppresses a late disposed-slider finish callback. */
+    private val flushedPreviewValues = linkedMapOf<NumberTarget, String>()
+    private val flushedPreviewSessions = linkedMapOf<NumberTarget, Long>()
 
     var state: BydExtendUiState by mutableStateOf(readState())
         private set
@@ -45,6 +77,40 @@ class ProductionUiController(
             return
         }
         if (action is BydExtendUiAction.Run && interceptDialogCommand(action.command)) return
+
+        // A gesture can leave the slider before the next navigation/selection event.  Flush the
+        // accepted preview exactly once before that event; the final CommitNumber path removes
+        // its own target below and therefore does not duplicate the write.
+        if (action !is BydExtendUiAction.PreviewNumber &&
+            action !is BydExtendUiAction.CommitNumber) flushPreviewValues()
+        if (action is BydExtendUiAction.CommitNumber) {
+            val sessionId = action.sessionId
+            val closedSession = flushedPreviewSessions[action.target]
+            if (sessionId != null && closedSession != null && sessionId <= closedSession) {
+                // Already finalized token; do not disturb a newer gesture for this target.
+                return
+            }
+            if (sessionId != null && previewSessions[action.target] != sessionId) return
+            val hadPreview = previewValues.remove(action.target) != null
+            if (!hadPreview && sessionId == null && flushedPreviewValues[action.target] == action.value) {
+                // The old slider can report onValueChangeFinished after its host was disposed by
+                // navigation.  Its value was already committed synchronously by flushPreviewValues.
+                flushedPreviewValues.remove(action.target)
+                return
+            }
+            // Keep the just-finished token closed until a newer gesture starts.  A disposed
+            // slider can still deliver a late preview callback after its final commit; accepting
+            // that old token would reopen the preview map and cause a second durable write.
+            if (sessionId != null) flushedPreviewSessions[action.target] = sessionId
+            previewSessions.remove(action.target)
+            flushedPreviewValues.remove(action.target)
+        }
+
+        if (action is BydExtendUiAction.PreviewNumber) {
+            preview(action.target, action.value, action.sessionId)
+            return
+        }
+        var typedBackendHandled = false
         when (action) {
             is BydExtendUiAction.Navigate -> {
                 state = state.copy(activeTab = action.tab)
@@ -66,23 +132,101 @@ class ProductionUiController(
                 state = state.copy(theme = action.theme)
             }
             is BydExtendUiAction.Select -> if (action.target.isLocalSelection()) {
+                val simple = action.target as? SelectionTarget.Simple
+                val previousSection = if (simple?.id == SelectionId.CameraSection) {
+                    cameraSection(state.activeTab)
+                } else null
+                val previousElement = if (simple?.id == SelectionId.ReverseElement &&
+                    state.activeTab == RootTab.Reverse) state.reverse.selectedElement else null
                 applyLocalSelection(action.target, action.index)
+                when {
+                    simple?.id == SelectionId.CameraSection && previousSection != null -> {
+                        // CameraSection is fully typed, including no-op selections; never fall
+                        // through to the legacy close/reopen profile path.
+                        typedBackendHandled = true
+                        val next = cameraSection(state.activeTab)
+                        if (next != null && next != previousSection) {
+                            backend.onProductionCameraSectionChanged(
+                                state.activeTab, previousSection, next)
+                        }
+                    }
+                    simple?.id == SelectionId.ReverseElement && previousElement != null -> {
+                        typedBackendHandled = true
+                        val next = state.reverse.selectedElement
+                        if (next != previousElement) {
+                            backend.onProductionReverseElementFocusChanged(
+                                state.reverse.section, previousElement, next)
+                        }
+                    }
+                    simple?.id == SelectionId.ReverseElement -> typedBackendHandled = true
+                }
             }
-            is BydExtendUiAction.Toggle -> if (
-                action.target == ToggleTarget.Simple(ToggleId.AutoStart)
-            ) {
-                state = state.copy(settings = state.settings.copy(automaticStart = action.value))
+            is BydExtendUiAction.Toggle -> when {
+                action.target == ToggleTarget.Simple(ToggleId.AutoStart) -> {
+                    state = state.copy(settings = state.settings.copy(
+                        automaticStart = action.value))
+                }
+                action.target is ToggleTarget.Reverse &&
+                    (action.target as ToggleTarget.Reverse).id == ToggleId.ReverseElementVisible -> {
+                    val target = action.target as ToggleTarget.Reverse
+                    val element = target.element
+                    if (element != null && state.activeTab == RootTab.Reverse) {
+                        // Visibility is a typed in-place operation even when the requested value
+                        // already matches state; avoid generic reload/close handling in either case.
+                        typedBackendHandled = true
+                        val current = state.reverse.geometry[element] ?: ReverseGeometryUiState()
+                        if (current.visible != action.value) {
+                            state = state.copy(reverse = state.reverse.copy(
+                                geometry = state.reverse.geometry +
+                                    (element to current.copy(visible = action.value))))
+                            backend.onProductionReverseVisibilityChanged(element, action.value)
+                        }
+                    }
+                }
             }
             is BydExtendUiAction.Run -> applyLocalCommand(action.command)
             else -> Unit
         }
-        backend.onProductionUiAction(action)
+        if (!typedBackendHandled) backend.onProductionUiAction(action)
         if (action is BydExtendUiAction.Run && action.command.reloadsValidatedState() ||
             action is BydExtendUiAction.Toggle &&
-                action.target != ToggleTarget.Simple(ToggleId.AutoStart) ||
+                action.target != ToggleTarget.Simple(ToggleId.AutoStart) && !typedBackendHandled ||
             action is BydExtendUiAction.CommitNumber ||
             action is BydExtendUiAction.MoveProfile ||
             action is BydExtendUiAction.Select && !action.target.isLocalSelection()) reload()
+    }
+
+    /** Synchronous preview entry point used by slider controls to restore rejected values locally. */
+    fun preview(target: NumberTarget, value: String, sessionId: Long? = null): String? {
+        syncLegacyRuntimeBlock()
+        if (state.legacyRuntimeBlocked) return null
+        if (sessionId != null && sessionId <= 0L) return null
+        val closedSession = flushedPreviewSessions[target]
+        if (sessionId != null && closedSession != null) {
+            if (sessionId <= closedSession) return null
+            // Keep the watermark so callbacks from any older disposed gesture remain stale
+            // while this newer gesture is active; a successful final replaces it below.
+        }
+        if (sessionId != null && previewSessions[target]?.let { sessionId < it } == true) return null
+        if (sessionId != null && previewSessions[target] != null && previewSessions[target] != sessionId) {
+            val previousSession = previewSessions[target]
+            val previousValue = previewValues.remove(target)
+            if (previousSession != null && previousValue != null && sessionId > previousSession) {
+                // A new pointer gesture for the same target implicitly finishes an abandoned
+                // prior gesture.  Preserve its last accepted value before switching identity.
+                flushedPreviewSessions[target] = previousSession
+                backend.onProductionUiAction(BydExtendUiAction.CommitNumber(
+                    target, previousValue, previousSession))
+            }
+            previewSessions.remove(target)
+        }
+        if (sessionId != null) previewSessions[target] = sessionId
+        flushedPreviewValues.remove(target)
+        if (previewValues[target] == value) return value
+        val accepted = backend.onProductionUiPreview(target, value) ?: return null
+        previewValues[target] = accepted
+        state = applyNumberValue(state, target, accepted)
+        return accepted
     }
 
     /** Re-read validated values while preserving navigation and live runtime feedback. */
@@ -90,7 +234,7 @@ class ProductionUiController(
         syncLegacyRuntimeBlock()
         val old = state
         val fresh = readState()
-        state = fresh.copy(
+        state = applyPreviewValues(fresh.copy(
             activeTab = if (fresh.legacyRuntimeBlocked) RootTab.Settings else old.activeTab,
             legacyRuntimeBlocked = fresh.legacyRuntimeBlocked,
             header = fresh.header.copy(adb = old.header.adb, location = old.header.location),
@@ -146,15 +290,23 @@ class ProductionUiController(
                 avmOperation = old.debug.avmOperation,
             ),
             dialog = old.dialog,
-        )
+        ))
     }
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
 
     /** Canvas selection updates controls without restarting the running camera. */
     fun setReverseEditorSelection(element: ReverseElement) {
-        if (state.reverse.selectedElement == element) return
+        val previous = state.reverse.selectedElement
+        if (previous == element) return
         applyLocalSelection(SelectionTarget.Simple(SelectionId.ReverseElement), element.ordinal)
+        // Editor taps arrive through the Android host rather than a Compose Select action. Keep
+        // them on the same typed focus seam so Activity can update the existing editor in place
+        // without falling through to the legacy close/reopen path.
+        if (state.activeTab == RootTab.Reverse) {
+            backend.onProductionReverseElementFocusChanged(
+                state.reverse.section, previous, element)
+        }
     }
 
     /** Updates the legacy-handover gate and keeps the Activity's selected tab in sync. */
@@ -268,6 +420,118 @@ class ProductionUiController(
         }
     }
 
+    private fun flushPreviewValues() {
+        if (previewValues.isEmpty()) return
+        val pending = previewValues.toList()
+        previewValues.clear()
+        pending.forEach { (target, value) ->
+            flushedPreviewValues[target] = value
+            previewSessions[target]?.let { flushedPreviewSessions[target] = it }
+            previewSessions.remove(target)
+            backend.onProductionUiAction(BydExtendUiAction.CommitNumber(target, value))
+        }
+    }
+
+    private fun applyPreviewValues(base: BydExtendUiState): BydExtendUiState =
+        previewValues.entries.fold(base) { current, (target, value) ->
+            applyNumberValue(current, target, value)
+        }
+
+    /** Updates only the in-memory state used by Compose; persistence remains CommitNumber-owned. */
+    private fun applyNumberValue(
+        source: BydExtendUiState,
+        target: NumberTarget,
+        value: String,
+    ): BydExtendUiState = when (target) {
+        is NumberTarget.Guard -> source.copy(signals = source.signals.copy(guard = when (target.field) {
+            GuardNumber.OutwardAngle -> source.signals.guard.copy(outwardAngle = value)
+            GuardNumber.CentreTolerance -> source.signals.guard.copy(centreTolerance = value)
+            GuardNumber.CorrectionDelayMs -> source.signals.guard.copy(correctionDelayMs = value)
+            GuardNumber.MaximumSpeed -> source.signals.guard.copy(maximumSpeed = value)
+        }))
+        NumberTarget.WeatherInterval -> source.copy(signals = source.signals.copy(weather =
+            source.signals.weather.copy(refreshMinutes = value)))
+        is NumberTarget.Blind -> source.copy(blind = source.blind.copy(
+            rules = source.blind.rules + (target.group to (source.blind.rules[target.group]
+                ?: BlindRuleUiState()).let { rule ->
+                when (target.field) {
+                    BlindNumber.MinimumSpeed -> rule.copy(minimumSpeed = value)
+                    BlindNumber.MaximumSpeed -> rule.copy(maximumSpeed = value)
+                    BlindNumber.SteeringAngle -> rule.copy(steeringAngle = value)
+                }
+            })))
+        is NumberTarget.Parking -> if (target.view == null) source.copy(
+            parking = source.parking.copy(maximumSpeed = value)) else {
+            val view = target.view ?: return source
+            val current = source.parking.views[view] ?: ParkingViewUiState()
+            source.copy(parking = source.parking.copy(views = source.parking.views +
+                (view to if (target.field == ParkingNumber.TriggerDistance) {
+                    current.copy(triggerDistance = value)
+                } else current)))
+        }
+        is NumberTarget.Profile -> updateProfileValue(source, target.profile, target.field, value)
+        is NumberTarget.ReverseGeometry -> {
+            val current = source.reverse.geometry[target.element] ?: ReverseGeometryUiState()
+            source.copy(reverse = source.reverse.copy(geometry = source.reverse.geometry +
+                (target.element to when (target.field) {
+                    ReverseGeometryNumber.X -> current.copy(x = value)
+                    ReverseGeometryNumber.Y -> current.copy(y = value)
+                    ReverseGeometryNumber.Width -> current.copy(width = value)
+                    ReverseGeometryNumber.Height -> current.copy(height = value)
+                })))
+        }
+        is NumberTarget.Output -> source.copy(settings = source.settings.copy(cameraOutput =
+            when (target.field) {
+                OutputNumber.CornerRadius -> source.settings.cameraOutput.copy(cornerRadius = value)
+                OutputNumber.Transparency -> source.settings.cameraOutput.copy(transparency = value)
+            }))
+    }
+
+    private fun updateProfileValue(
+        source: BydExtendUiState,
+        profile: CameraProfileId,
+        field: ProfileNumber,
+        value: String,
+    ): BydExtendUiState {
+        fun update(current: CameraProfileUiState): CameraProfileUiState = when (field) {
+            ProfileNumber.Size -> current.copy(size = value)
+            ProfileNumber.X -> current.copy(x = value)
+            ProfileNumber.Y -> current.copy(y = value)
+            ProfileNumber.OriginalX -> current.copy(calibration = current.calibration.copy(
+                original = current.calibration.original.copy(x = value)))
+            ProfileNumber.OriginalY -> current.copy(calibration = current.calibration.copy(
+                original = current.calibration.original.copy(y = value)))
+            ProfileNumber.OriginalWidth -> current.copy(calibration = current.calibration.copy(
+                original = current.calibration.original.copy(width = value)))
+            ProfileNumber.OriginalHeight -> current.copy(calibration = current.calibration.copy(
+                original = current.calibration.original.copy(height = value)))
+            ProfileNumber.Fov -> current.copy(calibration = current.calibration.copy(fov = value))
+            ProfileNumber.CorrectedX -> current.copy(calibration = current.calibration.copy(
+                corrected = current.calibration.corrected.copy(x = value)))
+            ProfileNumber.CorrectedY -> current.copy(calibration = current.calibration.copy(
+                corrected = current.calibration.corrected.copy(y = value)))
+            ProfileNumber.CorrectedWidth -> current.copy(calibration = current.calibration.copy(
+                corrected = current.calibration.corrected.copy(width = value)))
+            ProfileNumber.CorrectedHeight -> current.copy(calibration = current.calibration.copy(
+                corrected = current.calibration.corrected.copy(height = value)))
+            ProfileNumber.Rotation -> current.copy(calibration = current.calibration.copy(rotation = value))
+        }
+        return when (profile) {
+            is CameraProfileId.Blind -> source.copy(blind = source.blind.copy(profiles =
+                source.blind.profiles + (profile to update(source.blind.profiles[profile]
+                    ?: CameraProfileUiState()))))
+            is CameraProfileId.Parking -> {
+                val view = profile.view
+                val current = source.parking.views[view] ?: ParkingViewUiState()
+                source.copy(parking = source.parking.copy(views = source.parking.views +
+                    (view to current.copy(profile = update(current.profile)))))
+            }
+            is CameraProfileId.Reverse -> source.copy(reverse = source.reverse.copy(profiles =
+                source.reverse.profiles + (profile to update(source.reverse.profiles[profile]
+                    ?: CameraProfileUiState()))))
+        }
+    }
+
     private fun readState() = readProductionUiState(
         preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible(),
         backend::productionDisplayGeometry).let { fresh ->
@@ -319,7 +583,8 @@ class ProductionUiController(
                 pendingDialogCommand!!.allowedInLegacyHandover()
             else -> false
         }
-        is BydExtendUiAction.CommitNumber, is BydExtendUiAction.MoveProfile -> false
+        is BydExtendUiAction.PreviewNumber, is BydExtendUiAction.CommitNumber,
+        is BydExtendUiAction.MoveProfile -> false
     }
 
     private fun handoverReason(language: UiLanguage) = if (language == UiLanguage.English) {
@@ -378,6 +643,13 @@ class ProductionUiController(
         }
     }
 
+    private fun cameraSection(tab: RootTab): CameraSection? = when (tab) {
+        RootTab.Blind -> state.blind.section
+        RootTab.Parking -> state.parking.section
+        RootTab.Reverse -> state.reverse.section
+        else -> null
+    }
+
     private inline fun selectSection(
         key: String, index: Int, apply: (CameraSection) -> Unit,
     ) {
@@ -399,9 +671,9 @@ class ProductionUiController(
         val dialog = when (command) {
             CommandId.OpenBackgroundSettings -> DialogUiState(
                 DialogKind.Background,
-                if (english) "DiLink background start" else "Фоновий запуск DiLink",
-                if (english) "This action opens the system background-start settings."
-                else "Ця дія відкриє системні налаштування фонового запуску.",
+                if (english) "Background work" else "Робота у фоні",
+                if (english) "Check this after every install or update, otherwise DiLink can stop HUD while the app is in the background."
+                else "Це потрібно перевірити після кожного встановлення або оновлення, інакше DiLink може зупинити HUD у фоні.",
                 cancellable = false,
             )
             CommandId.CheckForUpdates -> DialogUiState(
@@ -410,12 +682,6 @@ class ProductionUiController(
                 if (english) "Check whether a newer BYD Extend version is available?"
                 else "Перевірити, чи доступна новіша версія BYD Extend?",
                 cancellable = false,
-            )
-            CommandId.Shutdown -> DialogUiState(
-                DialogKind.Shutdown,
-                "Shutdown",
-                if (english) "Services will stop until the application is opened again."
-                else "Служби буде зупинено до наступного ручного відкриття застосунку.",
             )
             else -> null
         }
@@ -459,9 +725,19 @@ object ProductionUiInstaller {
     @JvmStatic
     fun install(activity: ComponentActivity, controller: ProductionUiController) {
         activity.setContent {
-            BydExtendApp(controller.state, controller::dispatch) { slot ->
+            // Keep the host lambda explicitly composable; otherwise Kotlin may infer a regular
+            // lambda and reject the ProductionCameraHost invocation during composition.
+            val host: @Composable (CameraHostSlot) -> Unit = { slot ->
                 ProductionCameraHost(controller, slot)
             }
+            BydExtendApp(
+                state = controller.state,
+                onAction = controller::dispatch,
+                cameraHost = host,
+                onPreview = { target, value, sessionId ->
+                    controller.preview(target, value, sessionId)
+                },
+            )
         }
     }
 }

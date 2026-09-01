@@ -40,6 +40,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int completedFrameRequestId;
     private int completedFrameEpoch;
     private boolean visible;
+    private boolean active;
     private int warningEdge;
     private int activeTarget = -1;
     private int activeDisplayId = -1;
@@ -68,15 +69,23 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         spec.validate(metrics.widthPixels, metrics.heightPixels);
         if (root != null) {
             if (activeTarget != spec.target || activeDisplayId != display.getDisplayId()) {
-                close("display_target_changed");
+                quiesce("display_target_changed");
+                throw new CameraShellProtocol.PrepareRestartRequired(
+                        "display_target_changed");
             } else if (preview.usesDewarpPipeline() != spec.dewarp.usesGpu()) {
-                close("dewarp_pipeline_changed");
+                quiesce("dewarp_pipeline_changed");
+                throw new CameraShellProtocol.PrepareRestartRequired(
+                        "dewarp_pipeline_changed");
             } else if (!samePaneSize(
                     windowless.width(), windowless.height(), spec.width, spec.height)) {
-                close("camera_geometry_changed");
+                quiesce("camera_geometry_changed");
+                throw new CameraShellProtocol.PrepareRestartRequired(
+                        "camera_geometry_changed");
             } else if (!preview.usesPaneBoundedBuffer(
                     spec.width, spec.height, spec.bufferQuality)) {
-                close("camera_buffer_size_changed");
+                quiesce("camera_buffer_size_changed");
+                throw new CameraShellProtocol.PrepareRestartRequired(
+                        "camera_buffer_size_changed");
             }
         }
         if (root == null) {
@@ -95,7 +104,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
         }
         if (root == null) createWindow(spec, display);
-        else updateWindow(spec);
+        else {
+            preview.setCallback(this);
+            updateWindow(spec);
+        }
+        active = true;
         preview.setDewarpStatsContext(requestId, surfaceGeneration);
         if (preview.isCameraSurfaceReady()) emitSurfaceReady(true);
     }
@@ -176,21 +189,36 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                         ? WARNING_PULSE_HALF_CYCLE_MS : 0);
     }
 
+    void updateVisuals(int cornerRadiusDp, int transparencyPercent) {
+        CameraShellProtocol.validateVisualStyle(cornerRadiusDp, transparencyPercent);
+        if (root == null) return;
+        GradientDrawable background = (GradientDrawable) root.getBackground();
+        background.setCornerRadius(dp(cornerRadiusDp));
+        root.invalidateOutline();
+        if (previewLayer != null) {
+            previewLayer.setAlpha(WindowlessOverlayHost.alphaForTransparency(
+                    transparencyPercent));
+        }
+    }
+
     void close(String reason) {
         FrameLayout activeRoot = root;
-        if (activeRoot == null) return;
+        if (activeRoot == null || !active) return;
+        quiesce(reason);
+    }
+
+    private void quiesce(String reason) {
+        FrameLayout activeRoot = root;
+        if (activeRoot == null || !active) return;
         clearWarning("overlay_close");
-        root = null;
-        previewLayer = null;
-        preview = null;
-        warningGlow = null;
+        BlindSpotCameraView activePreview = preview;
+        if (activePreview != null) {
+            activePreview.setCallback(null);
+        }
         WindowlessOverlayHost activeHost = windowless;
-        windowless = null;
-        windowContext = null;
         int closedTarget = activeTarget;
         int closedDisplayId = activeDisplayId;
-        activeTarget = -1;
-        activeDisplayId = -1;
+        active = false;
         visible = false;
         requestId = 0;
         armedFrameRequestId = 0;
@@ -199,11 +227,14 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
         try {
-            if (activeHost != null) activeHost.release();
+            if (activeHost != null) {
+                activeHost.quiesce();
+            }
             emit("camera_overlay_window", "state", "removed",
                     "reason", safeReason(reason),
                     "target", CameraDisplayTarget.name(closedTarget),
-                    "display_id", closedDisplayId);
+                    "display_id", closedDisplayId,
+                    "reusable", true);
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "remove_window",
                     "error", summary(error));
@@ -211,7 +242,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     boolean isOpen() {
-        return root != null;
+        return root != null && active;
     }
 
     private void createWindow(CameraShellProtocol.OverlaySpec spec, Display display)
@@ -244,6 +275,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextPreviewLayer.addView(nextPreview, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        CropMaskView nextCropMask = new CropMaskView(windowContext);
+        nextPreviewLayer.addView(nextCropMask, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        nextPreview.setOutputCropMask(nextCropMask);
         nextRoot.addView(nextPreviewLayer, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -275,7 +311,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             previewLayer = null;
             preview = null;
             warningGlow = null;
-            throw error;
+            throw new CameraShellProtocol.PrepareRestartRequired("overlay_attach_failed");
         }
         emit("camera_overlay_window", "state", "added",
                 "request_id", requestId, "width", spec.width, "height", spec.height,
@@ -347,6 +383,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "request_id", requestId, "surface_generation", surfaceGeneration,
                 "width", width, "height", height);
     }
+
 
     @Override
     public void onCameraSurfaceDestroyed(BlindSpotCameraView view) {

@@ -149,11 +149,22 @@ public final class CameraShellMain {
                             && !overlayAllowedWhileReverseActive(spec.cameraId)) {
                         throw new IllegalStateException("reverse overlay has camera priority");
                     }
-                    runOnMain(() -> {
-                        overlay(spec.cameraId).prepare(spec);
-                        return null;
-                    });
+                    int prepareResult;
+                    try {
+                        runOnMain(() -> {
+                            overlay(spec.cameraId).prepare(spec);
+                            return null;
+                        });
+                        prepareResult = CameraShellProtocol.PREPARE_OK;
+                    } catch (CameraShellProtocol.PrepareRestartRequired restart) {
+                        prepareResult = CameraShellProtocol.PREPARE_RESTART_REQUIRED;
+                        emit("camera_shell_prepare_restart_required",
+                                "camera_id", spec.cameraId,
+                                "request_id", spec.requestId,
+                                "reason", restart.reason);
+                    }
                     reply.writeNoException();
+                    reply.writeInt(prepareResult);
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_OVERLAY_ACQUIRE_SURFACE) {
@@ -218,12 +229,22 @@ public final class CameraShellMain {
                 if (code == CameraShellProtocol.TX_REVERSE_PREPARE) {
                     CameraShellProtocol.ReverseOverlaySpec spec =
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
-                    runOnMain(() -> {
-                        closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
-                        reverseOverlay.prepare(spec);
-                        return null;
-                    });
+                    int prepareResult;
+                    try {
+                        runOnMain(() -> {
+                            closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
+                            reverseOverlay.prepare(spec);
+                            return null;
+                        });
+                        prepareResult = CameraShellProtocol.PREPARE_OK;
+                    } catch (CameraShellProtocol.PrepareRestartRequired restart) {
+                        prepareResult = CameraShellProtocol.PREPARE_RESTART_REQUIRED;
+                        emit("camera_shell_reverse_prepare_restart_required",
+                                "request_id", spec.requestId,
+                                "reason", restart.reason);
+                    }
                     reply.writeNoException();
+                    reply.writeInt(prepareResult);
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_REVERSE_ACQUIRE_SURFACES) {
@@ -258,10 +279,49 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_REVERSE_UPDATE_VISIBILITY) {
+                    int requestId = data.readInt();
+                    int[] generations = readReverseGenerations(data);
+                    int visibilityMask = data.readInt();
+                    boolean widgetVisible = data.readInt() != 0;
+                    runOnMain(() -> {
+                        reverseOverlay.updateVisibility(
+                                requestId, generations, visibilityMask, widgetVisible);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == CameraShellProtocol.TX_REVERSE_CLOSE) {
                     String reason = data.readString();
                     runOnMain(() -> {
                         reverseOverlay.close(reason);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_UPDATE_VISUALS) {
+                    int cornerRadiusDp = data.readInt();
+                    int transparencyPercent = data.readInt();
+                    CameraShellProtocol.validateVisualStyle(
+                            cornerRadiusDp, transparencyPercent);
+                    runOnMain(() -> {
+                        Throwable[] failure = new Throwable[1];
+                        for (ShellCameraOverlay overlay : overlays) {
+                            try {
+                                overlay.updateVisuals(cornerRadiusDp, transparencyPercent);
+                            } catch (Throwable error) {
+                                if (failure[0] == null) failure[0] = error;
+                            }
+                        }
+                        try {
+                            reverseOverlay.updateVisuals(cornerRadiusDp, transparencyPercent);
+                        } catch (Throwable error) {
+                            if (failure[0] == null) failure[0] = error;
+                        }
+                        if (failure[0] != null) throw new IllegalStateException(
+                                summary(failure[0]), failure[0]);
                         return null;
                     });
                     reply.writeNoException();
@@ -337,7 +397,14 @@ public final class CameraShellMain {
             if (!handler.post(task)) {
                 throw new IllegalStateException("camera main handler rejected task");
             }
-            return task.get(5, TimeUnit.SECONDS);
+            try {
+                return task.get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException error) {
+                Throwable cause = error.getCause();
+                if (cause instanceof Exception) throw (Exception) cause;
+                if (cause instanceof Error) throw (Error) cause;
+                throw error;
+            }
         }
 
         private synchronized void registerCallback(IBinder value) throws RemoteException {

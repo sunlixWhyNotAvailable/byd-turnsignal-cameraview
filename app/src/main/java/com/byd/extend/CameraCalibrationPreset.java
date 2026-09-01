@@ -52,6 +52,7 @@ final class CameraCalibrationPreset {
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
             case ORIGINAL: {
+                BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
                 DirectCameraCrop resetRaw = raw.withGeometry(defaults);
                 DirectCameraCrop.write(editor, profile, resetRaw);
                 preserveCorrectedOnAspectReset(editor, preferences,
@@ -60,6 +61,7 @@ final class CameraCalibrationPreset {
                 break;
             }
             case CORRECTION:
+                BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
                 DirectCameraCrop.writeCorrected(editor, profile,
                         DirectCameraCrop.defaultCorrectedFor(profile, raw));
                 editor.remove(DirectCameraCrop.correctedAspectKey(profile));
@@ -67,7 +69,7 @@ final class CameraCalibrationPreset {
                         editor, profile, CameraDewarpConfig.defaultForProfile(profile));
                 break;
             case OUTPUT:
-                DirectCameraCrop.write(editor, profile,
+                DirectCameraCrop.writeOutputTransform(editor, profile,
                         raw.withOutputTransformPreservingGeometry(
                                 defaults.rotationDegrees, defaults.rotationMode,
                                 defaults.mirrorHorizontally));
@@ -154,7 +156,7 @@ final class CameraCalibrationPreset {
                         CameraDewarpConfig.disabled(CameraDewarpConfig.lensFor(profile)));
                 break;
             case OUTPUT:
-                DirectCameraCrop.write(editor, profile,
+                DirectCameraCrop.writeOutputTransform(editor, profile,
                         raw.withOutputTransformPreservingGeometry(
                                 defaults.rotationDegrees, defaults.rotationMode,
                                 defaults.mirrorHorizontally));
@@ -474,6 +476,7 @@ final class CameraCalibrationPreset {
     private static void applyCamera(
             SharedPreferences preferences, CameraProfile profile, CameraValue value) {
         SharedPreferences.Editor editor = preferences.edit();
+        BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
         DirectCameraCrop.write(editor, profile, value.raw);
         DirectCameraCrop.writeCorrected(editor, profile,
                 value.corrected.withMirrorHorizontally(value.raw.mirrorHorizontally));
@@ -601,8 +604,7 @@ final class CameraCalibrationPreset {
         DirectCameraCrop corrected;
         if (correctedAspect == DirectCameraCrop.ASPECT_FREE) {
             // FREE corrected geometry is independent of RAW output transforms. Validate it
-            // in neutral FIT space, then attach the stored RAW rotation/mode without
-            // constrainAligned reshaping an accepted near-boundary ROI.
+            // in neutral FIT space, then attach the stored RAW rotation/mode.
             corrected = DirectCameraCrop.requireNormalized(
                     readFloat(preferences, prefix + "corrected_x"),
                     readFloat(preferences, prefix + "corrected_y"),

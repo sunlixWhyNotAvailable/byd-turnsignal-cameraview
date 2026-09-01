@@ -34,7 +34,7 @@ public final class DirectCameraCropTest {
     }
 
     @Test
-    public void activeRawAndCorrectedValuesMigrateOnceAroundTheirCenters() {
+    public void activeRawAndCorrectedTinyValuesUseReadOnlyCenteredFallback() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
         preferences.putFloat(DirectCameraCrop.preferenceKey(profile, 0), 0.4f);
@@ -47,7 +47,9 @@ public final class DirectCameraCropTest {
         preferences.putInt(DirectCameraCrop.preferenceKey(profile, 6),
                 CameraRotation.MODE_FIT);
 
+        Map<String, ?> beforeRaw = preferences.getAll();
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+        assertEquals(beforeRaw, preferences.getAll());
         assertEquals(0.4025f, raw.left + raw.width / 2.0f, EPSILON);
         assertEquals(0.40125f, raw.top + raw.height / 2.0f, EPSILON);
         assertEquals(2.0f, raw.width / raw.height, EPSILON);
@@ -59,8 +61,10 @@ public final class DirectCameraCropTest {
         preferences.putFloat(correctedPrefix + "top", 0.3f);
         preferences.putFloat(correctedPrefix + "width", 0.004f);
         preferences.putFloat(correctedPrefix + "height", 0.008f);
+        Map<String, ?> beforeCorrected = preferences.getAll();
         DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(
                 preferences, profile, raw);
+        assertEquals(beforeCorrected, preferences.getAll());
         assertEquals(0.702f, corrected.left + corrected.width / 2.0f, EPSILON);
         assertEquals(0.304f, corrected.top + corrected.height / 2.0f, EPSILON);
         assertEquals(0.01f, corrected.width, EPSILON);
@@ -76,10 +80,12 @@ public final class DirectCameraCropTest {
     }
 
     @Test
-    public void alignedRotationRejectsImpossibleFloorAndKeepsAcceptedGeometryValid() {
-        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.parsePercent(
+    public void outputRotationDoesNotConstrainSourceGeometry() {
+        DirectCameraCrop narrow = DirectCameraCrop.parsePercent(
                 "0", "0", "100", "1", DirectCameraCrop.ASPECT_FREE,
-                90, CameraRotation.MODE_ALIGNED));
+                90, CameraRotation.MODE_ALIGNED);
+        assertEquals(1.0f, narrow.width, 0.0f);
+        assertEquals(0.01f, narrow.height, 0.0f);
 
         DirectCameraCrop accepted = DirectCameraCrop.parsePercent(
                 "0", "0", "100", "2", DirectCameraCrop.ASPECT_FREE,
@@ -91,7 +97,7 @@ public final class DirectCameraCropTest {
     }
 
     @Test
-    public void impossibleLegacyAlignedValueFallsBackOnceAndThenStaysStable() {
+    public void edgeSourceSelectionStaysExactAcrossRotatedLoad() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
         preferences.putFloat(DirectCameraCrop.preferenceKey(profile, 0), 0.0f);
@@ -104,7 +110,13 @@ public final class DirectCameraCropTest {
         preferences.putInt(DirectCameraCrop.preferenceKey(profile, 6),
                 CameraRotation.MODE_ALIGNED);
 
+        Map<String, ?> before = preferences.getAll();
         DirectCameraCrop first = DirectCameraCrop.load(preferences, profile);
+        assertEquals(before, preferences.getAll());
+        assertEquals(0.0f, first.left, 0.0f);
+        assertEquals(0.0f, first.top, 0.0f);
+        assertEquals(1.0f, first.width, 0.0f);
+        assertEquals(0.01f, first.height, 0.0f);
         Map<String, ?> afterFirstLoad = new HashMap<>(preferences.getAll());
         DirectCameraCrop second = DirectCameraCrop.load(preferences, profile);
 
@@ -118,7 +130,7 @@ public final class DirectCameraCropTest {
     }
 
     @Test
-    public void alignedTouchMutationKeepsLastValidCropInsteadOfEscaping() {
+    public void legacyTouchResizeUsesAxisBoundsWithoutRotationShrink() {
         DirectCameraCrop valid = DirectCameraCrop.requireNormalized(
                 0.0f, 0.4f, 0.01f, 0.01f, DirectCameraCrop.ASPECT_FREE,
                 45, CameraRotation.MODE_ALIGNED);
@@ -127,9 +139,15 @@ public final class DirectCameraCropTest {
                 valid, () -> valid.resize(
                         DirectCameraCrop.EDGE_RIGHT, 1.0f, 0.0f));
 
-        assertEquals(valid, result);
+        assertEquals(1.0f, result.width, EPSILON);
+        assertEquals(valid.top, result.top, EPSILON);
+        assertEquals(valid.rotationDegrees, result.rotationDegrees);
         assertTrue(result.width >= SourceCropPolicy.MIN_SIZE);
         assertTrue(result.height >= SourceCropPolicy.MIN_SIZE);
+        DirectCameraCrop independent = valid.resizeIndependent(
+                DirectCameraCrop.EDGE_RIGHT, 0.50f, 0.0f);
+        assertEquals(0.51f, independent.width, EPSILON);
+        assertEquals(valid.height, independent.height, 0.0f);
     }
 
     @Test
@@ -213,6 +231,25 @@ public final class DirectCameraCropTest {
     }
 
     @Test
+    public void firstRawEditPreservesUnstoredCorrectedStageEvenWhenRawAlreadyFree() {
+        for (CameraProfile profile : CameraProfile.values()) {
+            TestSharedPreferences preferences = new TestSharedPreferences();
+            DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
+            DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
+            DirectCameraCrop.saveRawGeometryEdit(preferences, profile,
+                    raw.withIndependentGeometry(0.1f, 0.1f, 0.4f, 0.4f));
+            DirectCameraCrop after = DirectCameraCrop.loadCorrected(preferences, profile,
+                    DirectCameraCrop.load(preferences, profile));
+            assertEquals(corrected.left, after.left, 0.0f);
+            assertEquals(corrected.top, after.top, 0.0f);
+            assertEquals(corrected.width, after.width, 0.0f);
+            assertEquals(corrected.height, after.height, 0.0f);
+            assertEquals(DirectCameraCrop.ASPECT_FREE,
+                    preferences.getInt(DirectCameraCrop.correctedAspectKey(profile), -1));
+        }
+    }
+
+    @Test
     public void strictEditsKeepUntouchedDimensionAndTransformIndependent() {
         DirectCameraCrop base = DirectCameraCrop.of(
                 0.20f, 0.21f, 0.40f, 0.35f, DirectCameraCrop.ASPECT_FOUR_THREE,
@@ -234,9 +271,10 @@ public final class DirectCameraCropTest {
     }
 
     @Test
-    public void strictAlignedBoundsRejectAndGestureKeepsLastValidCandidate() {
-        assertThrows(IllegalArgumentException.class, () -> DirectCameraCrop.requireUiGeometry(
-                0.0f, 0.0f, 1.0f, 0.20f, 90, CameraRotation.MODE_ALIGNED));
+    public void strictAxisBoundsRejectButOutputRotationDoesNot() {
+        DirectCameraCrop edge = DirectCameraCrop.requireUiGeometry(
+                0.0f, 0.0f, 1.0f, 0.20f, 90, CameraRotation.MODE_ALIGNED);
+        assertEquals(1.0f, edge.width, 0.0f);
         DirectCameraCrop valid = DirectCameraCrop.requireUiGeometry(
                 0.35f, 0.35f, 0.20f, 0.20f, 0, CameraRotation.MODE_ALIGNED);
         DirectCameraCrop retained = CameraCropOverlayView.keepLastValid(
@@ -246,5 +284,28 @@ public final class DirectCameraCropTest {
         assertEquals(valid.top, retained.top, 0.0f);
         assertEquals(valid.width, retained.width, 0.0f);
         assertEquals(valid.height, retained.height, 0.0f);
+    }
+
+    @Test
+    public void legacyAspectMetadataAndAllOutputAnglesLeaveStoredRoiExact() {
+        for (int degrees : new int[]{0, -30, 30, -45, 45, -90, 90, 180}) {
+            TestSharedPreferences preferences = new TestSharedPreferences();
+            CameraProfile profile = CameraProfile.of(CameraProfile.FRONT_LEFT);
+            DirectCameraCrop crop = DirectCameraCrop.requireNormalized(
+                    0.0f, 0.1f, 0.9f, 0.4f, DirectCameraCrop.ASPECT_ONE_ONE,
+                    degrees, CameraRotation.MODE_ALIGNED);
+            android.content.SharedPreferences.Editor seed = preferences.edit();
+            DirectCameraCrop.write(seed, profile, crop);
+            seed.apply();
+            Map<String, ?> before = preferences.getAll();
+            DirectCameraCrop loaded = DirectCameraCrop.load(preferences, profile);
+            assertEquals(before, preferences.getAll());
+            assertEquals(crop.left, loaded.left, 0.0f);
+            assertEquals(crop.top, loaded.top, 0.0f);
+            assertEquals(crop.width, loaded.width, 0.0f);
+            assertEquals(crop.height, loaded.height, 0.0f);
+            assertEquals(degrees, loaded.rotationDegrees);
+            assertEquals(crop.height, loaded.withRotation(-degrees).height, 0.0f);
+        }
     }
 }

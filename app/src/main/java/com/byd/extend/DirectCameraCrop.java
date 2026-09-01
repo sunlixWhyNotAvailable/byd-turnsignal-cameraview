@@ -208,11 +208,8 @@ final class DirectCameraCrop {
                             fallback.rotationMode), LEGACY_MIN_SIZE)
                     .withMirrorHorizontally(readMirror(preferences,
                             preferenceKey(profile, 7), fallback.mirrorHorizontally));
-            DirectCameraCrop migrated = migrateActive(stored);
-            if (migrated != stored) save(preferences, profile, migrated);
-            return migrated;
-        } catch (IllegalArgumentException invalidActiveValue) {
-            save(preferences, profile, fallback);
+            return migrateActive(stored);
+        } catch (RuntimeException invalidActiveValue) {
             return fallback;
         }
     }
@@ -233,11 +230,8 @@ final class DirectCameraCrop {
                     LEGACY_MIN_SIZE)
                     .withMirrorHorizontally(preferences.getBoolean(
                             prefix + "mirror", fallback.mirrorHorizontally));
-            DirectCameraCrop migrated = migrateActive(stored);
-            if (migrated != stored) save(preferences, profile, migrated);
-            return migrated;
+            return migrateActive(stored);
         } catch (RuntimeException invalidValue) {
-            save(preferences, profile, fallback);
             return fallback;
         }
     }
@@ -245,6 +239,9 @@ final class DirectCameraCrop {
     static void save(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
         SharedPreferences.Editor editor = preferences.edit();
+        if (!sameGeometry(load(preferences, profile), crop)) {
+            BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
+        }
         write(editor, profile, crop);
         editor.apply();
     }
@@ -266,6 +263,35 @@ final class DirectCameraCrop {
                 .putInt(preferenceKey(profile, 5), crop.rotationDegrees)
                 .putInt(preferenceKey(profile, 6), crop.rotationMode)
                 .putBoolean(preferenceKey(profile, 7), crop.mirrorHorizontally);
+    }
+
+    static void saveOutputTransform(
+            SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeOutputTransform(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void saveOutputTransform(
+            SharedPreferences preferences, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        SharedPreferences.Editor editor = preferences.edit();
+        writeOutputTransform(editor, profile, crop);
+        editor.apply();
+    }
+
+    static void writeOutputTransform(
+            SharedPreferences.Editor editor, CameraProfile profile, DirectCameraCrop crop) {
+        editor.putInt(preferenceKey(profile, 5), crop.rotationDegrees)
+                .putInt(preferenceKey(profile, 6), crop.rotationMode)
+                .putBoolean(preferenceKey(profile, 7), crop.mirrorHorizontally);
+    }
+
+    static void writeOutputTransform(
+            SharedPreferences.Editor editor, ParkingCameraProfile profile, DirectCameraCrop crop) {
+        String prefix = parkingPrefix(profile);
+        editor.putInt(prefix + "rotation", crop.rotationDegrees)
+                .putInt(prefix + "rotation_mode", crop.rotationMode)
+                .putBoolean(prefix + "mirror", crop.mirrorHorizontally);
     }
 
     static void write(
@@ -300,15 +326,9 @@ final class DirectCameraCrop {
                     preferences.getFloat(prefix + "height", raw.height),
                     aspect, 0, CameraRotation.MODE_FIT, LEGACY_MIN_SIZE);
             DirectCameraCrop migrated = migrateActive(stored);
-            DirectCameraCrop result = correctedAspect == ASPECT_FREE
-                    ? independentCorrected(migrated, raw)
-                    : preserveCenterAndAspect(migrated, raw);
-            if (migrated != stored) saveCorrected(preferences, profile, result);
-            return result;
-        } catch (IllegalArgumentException invalidActiveValue) {
-            DirectCameraCrop fallback = raw.centered();
-            saveCorrected(preferences, profile, fallback);
-            return fallback;
+            return independentCorrected(migrated, raw);
+        } catch (RuntimeException invalidActiveValue) {
+            return raw.centered();
         }
     }
 
@@ -332,22 +352,18 @@ final class DirectCameraCrop {
                             ? CameraRotation.MODE_FIT : raw.rotationMode,
                     LEGACY_MIN_SIZE);
             DirectCameraCrop migrated = migrateActive(stored);
-            DirectCameraCrop result = correctedAspect == ASPECT_FREE
-                    ? independentCorrected(migrated, raw)
-                    : preserveCenterAndAspect(migrated, raw);
-            // Reading a new RAW aspect/output must not persist a Correction-stage edit.
-            if (migrated != stored) saveCorrected(preferences, profile, result);
-            return result;
+            return independentCorrected(migrated, raw);
         } catch (RuntimeException invalidValue) {
-            DirectCameraCrop fallback = raw.centered();
-            saveCorrected(preferences, profile, fallback);
-            return fallback;
+            return raw.centered();
         }
     }
 
     static void saveCorrected(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
         SharedPreferences.Editor editor = preferences.edit();
+        if (!sameGeometry(loadCorrected(preferences, profile, load(preferences, profile)), crop)) {
+            BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
+        }
         writeCorrected(editor, profile, crop);
         editor.apply();
     }
@@ -369,6 +385,7 @@ final class DirectCameraCrop {
                 crop.height, crop.rotationDegrees, crop.rotationMode)
                 .withMirrorHorizontally(crop.mirrorHorizontally);
         SharedPreferences.Editor editor = preferences.edit();
+        BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
         writeCorrected(editor, profile, accepted);
         editor.putInt(correctedAspectKey(profile), ASPECT_FREE);
         editor.apply();
@@ -393,8 +410,8 @@ final class DirectCameraCrop {
 
     /**
      * Saves the first explicit RAW geometry edit without reshaping the other dimension.
-     * A fixed-aspect RAW crop is atomically switched to FREE while its effective corrected ROI
-     * is pinned as independent FREE geometry.
+     * RAW is switched to FREE while the untouched effective corrected ROI is pinned before
+     * a missing/legacy corrected stage could start inheriting the new RAW geometry.
      */
     static DirectCameraCrop saveRawGeometryEdit(
             SharedPreferences preferences, CameraProfile profile, DirectCameraCrop crop) {
@@ -407,7 +424,8 @@ final class DirectCameraCrop {
         DirectCameraCrop priorRaw = load(preferences, profile);
         DirectCameraCrop priorCorrected = loadCorrected(preferences, profile, priorRaw);
         SharedPreferences.Editor editor = preferences.edit();
-        if (priorRaw.aspectMode != ASPECT_FREE) {
+        BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
+        if (readCorrectedAspect(preferences, correctedAspectKey(profile), -1) != ASPECT_FREE) {
             DirectCameraCrop pinned = requireUiGeometry(priorCorrected.left,
                     priorCorrected.top, priorCorrected.width, priorCorrected.height,
                     priorCorrected.rotationDegrees, priorCorrected.rotationMode)
@@ -438,7 +456,7 @@ final class DirectCameraCrop {
         DirectCameraCrop priorRaw = load(preferences, profile);
         DirectCameraCrop priorCorrected = loadCorrected(preferences, profile, priorRaw);
         SharedPreferences.Editor editor = preferences.edit();
-        if (priorRaw.aspectMode != ASPECT_FREE) {
+        if (readCorrectedAspect(preferences, correctedAspectKey(profile), -1) != ASPECT_FREE) {
             DirectCameraCrop pinned = requireUiGeometry(priorCorrected.left,
                     priorCorrected.top, priorCorrected.width, priorCorrected.height,
                     priorCorrected.rotationDegrees, priorCorrected.rotationMode)
@@ -465,10 +483,6 @@ final class DirectCameraCrop {
         if (!CameraRotation.isValid(rotationDegrees)
                 || !CameraRotation.isValidMode(rotationMode)) {
             throw new IllegalArgumentException("invalid rotation");
-        }
-        if (rotationMode == CameraRotation.MODE_ALIGNED && rotationDegrees != 0
-                && !alignedFits(left, top, width, height, rotationDegrees)) {
-            throw new IllegalArgumentException("rotated crop exceeds source bounds");
         }
         return new DirectCameraCrop(left, top, width, height, ASPECT_FREE,
                 rotationDegrees, rotationMode);
@@ -499,7 +513,8 @@ final class DirectCameraCrop {
         float nextRight = right() + (dragRight ? dx : 0.0f);
         float nextBottom = bottom() + (dragBottom ? dy : 0.0f);
         return withIndependentGeometry(nextLeft, nextTop,
-                nextRight - nextLeft, nextBottom - nextTop);
+                dragLeft || dragRight ? nextRight - nextLeft : width,
+                dragTop || dragBottom ? nextBottom - nextTop : height);
     }
 
     DirectCameraCrop withRotationStrict(int degrees) {
@@ -529,25 +544,11 @@ final class DirectCameraCrop {
                 .putFloat(prefix + "height", crop.height);
     }
 
-    static DirectCameraCrop preserveCenterAndAspect(
-            DirectCameraCrop corrected, DirectCameraCrop raw) {
-        float centerX = corrected.left + corrected.width / 2.0f;
-        float centerY = corrected.top + corrected.height / 2.0f;
-        DirectCameraCrop shaped = of(
-                0.0f, 0.0f, corrected.width, corrected.height,
-                raw.aspectMode, raw.rotationDegrees, raw.rotationMode);
-        DirectCameraCrop geometry = of(
-                centerX - shaped.width / 2.0f, centerY - shaped.height / 2.0f,
-                shaped.width, shaped.height, raw.aspectMode,
-                0, CameraRotation.MODE_FIT);
-        return raw.withGeometry(geometry);
-    }
-
-    /** Keeps a FREE corrected ROI exact when RAW output rotation changes. */
+    /** Keeps corrected ROI coordinates exact when RAW metadata/output rotation changes. */
     private static DirectCameraCrop independentCorrected(
             DirectCameraCrop corrected, DirectCameraCrop raw) {
         return new DirectCameraCrop(corrected.left, corrected.top,
-                corrected.width, corrected.height, ASPECT_FREE,
+                corrected.width, corrected.height, corrected.aspectMode,
                 raw.rotationDegrees, raw.rotationMode, raw.mirrorHorizontally);
     }
 
@@ -555,7 +556,7 @@ final class DirectCameraCrop {
         return new DirectCameraCrop(
                 geometry.left, geometry.top, geometry.width, geometry.height,
                 geometry.aspectMode, rotationDegrees, rotationMode,
-                mirrorHorizontally).constrainAligned();
+                mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     DirectCameraCrop withOutputTransform(int degrees, int mode) {
@@ -563,7 +564,7 @@ final class DirectCameraCrop {
                 CameraRotation.clamp(degrees),
                 CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT,
                 mirrorHorizontally)
-                .constrainAligned();
+                .requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     /** Applies output-only defaults without changing the calibrated geometry. */
@@ -606,7 +607,7 @@ final class DirectCameraCrop {
 
     private static boolean hasRawPreferences(
             SharedPreferences preferences, CameraProfile profile) {
-        for (int field = 0; field < 8; field++) {
+        for (int field = 0; field < 4; field++) {
             if (preferences.contains(preferenceKey(profile, field))) return true;
         }
         return false;
@@ -655,21 +656,6 @@ final class DirectCameraCrop {
         int safeRotation = CameraRotation.clamp(rotationDegrees);
         int safeRotationMode = CameraRotation.isValidMode(rotationMode)
                 ? rotationMode : CameraRotation.MODE_FIT;
-        if (safeMode != ASPECT_FREE) {
-            float ratio = heightPerWidth(safeMode);
-            float maxWidth = Math.min(1.0f, 1.0f / ratio);
-            float minWidth = Math.min(maxWidth,
-                    Math.max(minimumSize, minimumSize / ratio));
-            float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
-                    minWidth, maxWidth);
-            float safeHeight = safeWidth * ratio;
-            return new DirectCameraCrop(
-                    clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
-                    clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
-                    safeWidth, safeHeight, safeMode, safeRotation,
-                    safeRotationMode).constrainAligned(minimumSize);
-        }
-
         float safeWidth = clamp(finite(width) && width > 0.0f ? width : 0.65f,
                 minimumSize, 1.0f);
         float safeHeight = clamp(finite(height) && height > 0.0f ? height
@@ -678,7 +664,7 @@ final class DirectCameraCrop {
                 clamp(finite(left) ? left : 0.0f, 0.0f, 1.0f - safeWidth),
                 clamp(finite(top) ? top : 0.04f, 0.0f, 1.0f - safeHeight),
                 safeWidth, safeHeight, safeMode, safeRotation,
-                safeRotationMode).constrainAligned(minimumSize);
+                safeRotationMode).requireFinalGeometry(minimumSize);
     }
 
     static DirectCameraCrop parsePercent(
@@ -688,14 +674,7 @@ final class DirectCameraCrop {
         float top = parsePercentValue(y, "Y");
         float parsedWidth = parsePercentValue(width, "W");
         float parsedHeight = parsePercentValue(height, "H");
-        int safeAspect = sanitizeAspectMode(aspectMode);
-        if (safeAspect != ASPECT_FREE) {
-            if (!matchesAspectAtTwoDecimals(parsedWidth, parsedHeight, safeAspect)) {
-                throw new IllegalArgumentException(
-                        "W/H не відповідають " + aspectLabel(safeAspect));
-            }
-        }
-        return requireNormalized(left, top, parsedWidth, parsedHeight, safeAspect,
+        return requireNormalized(left, top, parsedWidth, parsedHeight, aspectMode,
                 rotationDegrees, rotationMode);
     }
 
@@ -708,14 +687,9 @@ final class DirectCameraCrop {
                 || !CameraRotation.isValidMode(rotationMode)) {
             throw new IllegalArgumentException("Некоректний aspect/rotation mode");
         }
-        if (aspectMode != ASPECT_FREE
-                && !matchesAspectAtTwoDecimals(width, height, aspectMode)) {
-            throw new IllegalArgumentException(
-                    "W/H не відповідають " + aspectLabel(aspectMode));
-        }
         return new DirectCameraCrop(
                 left, top, width, height, aspectMode, rotationDegrees, rotationMode)
-                .constrainAligned();
+                .requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     private static DirectCameraCrop migrateActive(DirectCameraCrop stored) {
@@ -742,7 +716,9 @@ final class DirectCameraCrop {
     DirectCameraCrop withAspectMode(int mode) {
         int safeMode = sanitizeAspectMode(mode);
         if (safeMode == aspectMode) return this;
-        return of(left, top, width, height, safeMode, rotationDegrees, rotationMode)
+        return of(left, top, width,
+                safeMode == ASPECT_FREE ? height : width * heightPerWidth(safeMode),
+                safeMode, rotationDegrees, rotationMode)
                 .withMirrorHorizontally(mirrorHorizontally);
     }
 
@@ -750,14 +726,14 @@ final class DirectCameraCrop {
         int safeDegrees = CameraRotation.clamp(degrees);
         return safeDegrees == rotationDegrees ? this
                 : new DirectCameraCrop(left, top, width, height, aspectMode,
-                        safeDegrees, rotationMode, mirrorHorizontally).constrainAligned();
+                        safeDegrees, rotationMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     DirectCameraCrop withRotationMode(int mode) {
         int safeMode = CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT;
         return safeMode == rotationMode ? this
                 : new DirectCameraCrop(left, top, width, height, aspectMode,
-                        rotationDegrees, safeMode, mirrorHorizontally).constrainAligned();
+                        rotationDegrees, safeMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     DirectCameraCrop centered() {
@@ -800,7 +776,7 @@ final class DirectCameraCrop {
                     dragLeft ? anchorX - safeWidth : anchorX,
                     dragTop ? anchorY - safeWidth * ratio : anchorY,
                     safeWidth, safeWidth * ratio, aspectMode,
-                    rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
+                    rotationDegrees, rotationMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
         }
 
         if (dragLeft || dragRight) {
@@ -814,7 +790,7 @@ final class DirectCameraCrop {
             return new DirectCameraCrop(dragLeft ? anchorX - safeWidth : anchorX,
                     centerY - safeWidth * ratio / 2.0f,
                     safeWidth, safeWidth * ratio, aspectMode,
-                    rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
+                    rotationDegrees, rotationMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
         }
 
         float anchorY = dragTop ? bottom() : top;
@@ -827,7 +803,7 @@ final class DirectCameraCrop {
         return new DirectCameraCrop(centerX - safeWidth / 2.0f,
                 dragTop ? anchorY - safeWidth * ratio : anchorY,
                 safeWidth, safeWidth * ratio, aspectMode,
-                rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
+                rotationDegrees, rotationMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     private DirectCameraCrop resizeFree(int edges, float dx, float dy) {
@@ -854,46 +830,9 @@ final class DirectCameraCrop {
             nextBottom = clamp(bottom() + dy, nextTop + TOUCH_MIN_HEIGHT, 1.0f);
         }
         return new DirectCameraCrop(nextLeft, nextTop,
-                nextRight - nextLeft, nextBottom - nextTop, ASPECT_FREE,
-                rotationDegrees, rotationMode, mirrorHorizontally).constrainAligned();
-    }
-
-    private DirectCameraCrop constrainAligned() {
-        return constrainAligned(SourceCropPolicy.MIN_SIZE);
-    }
-
-    private DirectCameraCrop constrainAligned(float minimumSize) {
-        if (rotationMode != CameraRotation.MODE_ALIGNED || rotationDegrees == 0) {
-            return requireFinalGeometry(minimumSize);
-        }
-        double radians = Math.toRadians(rotationDegrees);
-        double cosine = Math.abs(Math.cos(radians));
-        double sine = Math.abs(Math.sin(radians));
-        double pixelWidth = width * SOURCE_WIDTH;
-        double pixelHeight = height * SOURCE_HEIGHT;
-        double extentX = cosine * pixelWidth / 2.0d + sine * pixelHeight / 2.0d;
-        double extentY = sine * pixelWidth / 2.0d + cosine * pixelHeight / 2.0d;
-        double scale = Math.min(1.0d,
-                Math.min(SOURCE_WIDTH / (2.0d * extentX),
-                        SOURCE_HEIGHT / (2.0d * extentY)));
-        pixelWidth *= scale;
-        pixelHeight *= scale;
-        extentX *= scale;
-        extentY *= scale;
-        double centerX = clamp(
-                (left + width / 2.0f) * SOURCE_WIDTH,
-                (float) extentX, (float) (SOURCE_WIDTH - extentX));
-        double centerY = clamp(
-                (top + height / 2.0f) * SOURCE_HEIGHT,
-                (float) extentY, (float) (SOURCE_HEIGHT - extentY));
-        return new DirectCameraCrop(
-                (float) ((centerX - pixelWidth / 2.0d) / SOURCE_WIDTH),
-                (float) ((centerY - pixelHeight / 2.0d) / SOURCE_HEIGHT),
-                (float) (pixelWidth / SOURCE_WIDTH),
-                (float) (pixelHeight / SOURCE_HEIGHT),
-                aspectMode, rotationDegrees, rotationMode)
-                .withMirrorHorizontally(mirrorHorizontally)
-                .requireFinalGeometry(minimumSize);
+                dragLeft || dragRight ? nextRight - nextLeft : width,
+                dragTop || dragBottom ? nextBottom - nextTop : height, ASPECT_FREE,
+                rotationDegrees, rotationMode, mirrorHorizontally).requireFinalGeometry(SourceCropPolicy.MIN_SIZE);
     }
 
     private DirectCameraCrop requireFinalGeometry(float minimumSize) {
@@ -910,6 +849,11 @@ final class DirectCameraCrop {
 
     float outputAspect() {
         return width * SOURCE_WIDTH / (height * SOURCE_HEIGHT);
+    }
+
+    private static boolean sameGeometry(DirectCameraCrop first, DirectCameraCrop second) {
+        return first.left == second.left && first.top == second.top
+                && first.width == second.width && first.height == second.height;
     }
 
     float right() {
@@ -950,12 +894,6 @@ final class DirectCameraCrop {
         return SOURCE_WIDTH / (SOURCE_HEIGHT * outputAspect);
     }
 
-    private static boolean matchesAspectAtTwoDecimals(
-            float width, float height, int aspectMode) {
-        return Math.round(height * 10000.0f)
-                == Math.round(width * heightPerWidth(aspectMode) * 10000.0f);
-    }
-
     private static boolean finite(float value) {
         return !Float.isNaN(value) && !Float.isInfinite(value);
     }
@@ -984,18 +922,4 @@ final class DirectCameraCrop {
         return Math.max(minimum, Math.min(maximum, value));
     }
 
-    private static boolean alignedFits(
-            float left, float top, float width, float height, int rotationDegrees) {
-        double radians = Math.toRadians(rotationDegrees);
-        double cosine = Math.abs(Math.cos(radians));
-        double sine = Math.abs(Math.sin(radians));
-        double pixelWidth = width * SOURCE_WIDTH;
-        double pixelHeight = height * SOURCE_HEIGHT;
-        double extentX = cosine * pixelWidth / 2.0d + sine * pixelHeight / 2.0d;
-        double extentY = sine * pixelWidth / 2.0d + cosine * pixelHeight / 2.0d;
-        double centerX = (left + width / 2.0d) * SOURCE_WIDTH;
-        double centerY = (top + height / 2.0d) * SOURCE_HEIGHT;
-        return extentX <= centerX && extentX <= SOURCE_WIDTH - centerX
-                && extentY <= centerY && extentY <= SOURCE_HEIGHT - centerY;
-    }
 }

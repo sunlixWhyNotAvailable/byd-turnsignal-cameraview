@@ -10,6 +10,7 @@ import java.util.Set;
 
 final class TestSharedPreferences implements SharedPreferences, SharedPreferences.Editor {
     private final Map<String, Object> values = new HashMap<>();
+    int transactions;
 
     @Override public Map<String, ?> getAll() { return Collections.unmodifiableMap(new HashMap<>(values)); }
     @Override public String getString(String key, String fallback) {
@@ -33,7 +34,7 @@ final class TestSharedPreferences implements SharedPreferences, SharedPreference
         return value(key, fallback, Boolean.class);
     }
     @Override public boolean contains(String key) { return values.containsKey(key); }
-    @Override public Editor edit() { return this; }
+    @Override public Editor edit() { return new Transaction(); }
     @Override public Editor putString(String key, String value) {
         values.put(key, value); return this;
     }
@@ -60,6 +61,33 @@ final class TestSharedPreferences implements SharedPreferences, SharedPreference
             OnSharedPreferenceChangeListener listener) {}
     @Override public void unregisterOnSharedPreferenceChangeListener(
             OnSharedPreferenceChangeListener listener) {}
+
+    /** Mirrors Android's buffered Editor; direct put helpers above remain convenient test seeds. */
+    private final class Transaction implements SharedPreferences.Editor {
+        private final Map<String, Object> pending = new HashMap<>();
+        private boolean clear;
+        @Override public Editor putString(String key, String value) { pending.put(key, value); return this; }
+        @Override public Editor putStringSet(String key, Set<String> value) {
+            pending.put(key, value == null ? null : new HashSet<>(value)); return this;
+        }
+        @Override public Editor putInt(String key, int value) { pending.put(key, value); return this; }
+        @Override public Editor putLong(String key, long value) { pending.put(key, value); return this; }
+        @Override public Editor putFloat(String key, float value) { pending.put(key, value); return this; }
+        @Override public Editor putBoolean(String key, boolean value) { pending.put(key, value); return this; }
+        @Override public Editor remove(String key) { pending.put(key, null); return this; }
+        @Override public Editor clear() { clear = true; return this; }
+        @Override public boolean commit() { apply(); return true; }
+        @Override public void apply() {
+            if (clear) values.clear();
+            for (Map.Entry<String, Object> entry : pending.entrySet()) {
+                if (entry.getValue() == null) values.remove(entry.getKey());
+                else values.put(entry.getKey(), entry.getValue());
+            }
+            transactions++;
+            pending.clear();
+            clear = false;
+        }
+    }
 
     private <T> T value(String key, T fallback, Class<T> type) {
         Object value = values.get(key);

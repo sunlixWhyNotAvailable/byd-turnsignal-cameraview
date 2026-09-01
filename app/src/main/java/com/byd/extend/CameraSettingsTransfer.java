@@ -132,6 +132,7 @@ public final class CameraSettingsTransfer {
         validateCameraSettings(settings);
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : cameraClearKeys()) if (preferences.contains(key)) editor.remove(key);
+        preserveMissingFrameAspects(editor, preferences, settings);
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
         }
@@ -154,8 +155,19 @@ public final class CameraSettingsTransfer {
         for (String key : preferences.getAll().keySet()) {
             if (isLegacyAllowedKey(key)) editor.remove(key);
         }
+        preserveMissingFrameAspects(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
         if (!editor.commit()) throw new IllegalStateException("legacy settings commit failed");
+    }
+
+    private static void preserveMissingFrameAspects(SharedPreferences.Editor editor,
+            SharedPreferences preferences, Map<String, Object> imported) {
+        for (CameraProfile profile : CameraProfile.values()) {
+            String key = BlindSpotOverlayController.frameAspectKey(profile);
+            if (!imported.containsKey(key)) {
+                editor.putFloat(key, BlindSpotOverlayController.readFrameAspect(preferences, profile));
+            }
+        }
     }
 
     private static Map<String, Object> effectiveCameraSettings(SharedPreferences p) {
@@ -190,7 +202,7 @@ public final class CameraSettingsTransfer {
                     BlindSpotOverlayController.readPosition(p, profile, true),
                     BlindSpotOverlayController.readScale(p, profile),
                     BlindSpotOverlayController.readTarget(p, profile),
-                    BlindSpotOverlayController.readFrameAspect(p, profile, raw.outputAspect()));
+                    BlindSpotOverlayController.readFrameAspect(p, profile));
             addOptionalCorrectedAspect(out, p, DirectCameraCrop.correctedAspectKey(profile));
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
@@ -578,6 +590,7 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key) {
         return key != null && (key.startsWith("reverse_camera_front_1_")
+                || key.endsWith("_frame_aspect")
                 || key.startsWith("camera_dewarp_v3_reverse_front_1_")
                 || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
                 || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
@@ -677,8 +690,8 @@ public final class CameraSettingsTransfer {
             if (key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)) requireRange(n, 0, 100, key);
             if (key.equals(CameraBufferQuality.PREF_QUALITY)) requireRange(n, 0, 3, key);
             if (key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)) requireRange(n, 0, 2, key);
-            if (key.equals("outward_deg")) requireRange(n, 30, 360, key);
-            if (key.equals("center_deg")) requireRange(n, 2, 45, key);
+            if (key.equals("outward_deg")) requireRange(n, 0, 360, key);
+            if (key.equals("center_deg")) requireRange(n, 0, 45, key);
         }
     }
 

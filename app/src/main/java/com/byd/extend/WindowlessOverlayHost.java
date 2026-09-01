@@ -139,22 +139,9 @@ final class WindowlessOverlayHost {
             emitLifecycle("root_attached", attachStart, view, nextRoot, nextPackage, nextHost);
         } catch (Throwable error) {
             emitLifecycle("attach_error", attachStart, view, nextRoot, nextPackage, nextHost, error);
-            if (nextHost != null) {
-                try {
-                    nextHost.release();
-                } catch (Throwable ignored) {}
-            }
-            if (nextRoot != null) {
-                try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
-                    remove(transaction, nextRoot);
-                    transaction.apply();
-                } catch (Throwable ignored) {}
-            }
-            if (nextPackage != null) {
-                try {
-                    nextPackage.release();
-                } catch (Throwable ignored) {}
-            }
+            // An incomplete attach is terminal for this shell attempt.  Do not destroy a
+            // partially-created ViewRoot here; the controller's bounded shell restart owns
+            // reclamation and the process boundary avoids the firmware's unsafe HWUI teardown.
             throw asException(error);
         }
     }
@@ -204,63 +191,27 @@ final class WindowlessOverlayHost {
         return touchable ? flags : flags | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
     }
 
-    void release() throws Exception {
-        SurfaceControlViewHost activeHost = host;
-        SurfaceControl activeRoot = root;
-        SurfaceControlViewHost.SurfacePackage activePackage = surfacePackage;
-        View activeView = attachedView;
-        long releaseStart = SystemClock.elapsedRealtimeNanos();
-        emitLifecycle("release_start", releaseStart, activeView, activeRoot,
-                activePackage, activeHost);
-        host = null;
-        root = null;
-        surfacePackage = null;
-        attachedView = null;
-        width = 0;
-        height = 0;
-        trustedApi = null;
-        Throwable failure = null;
-        if (activeHost != null) {
-            try {
-                activeHost.release();
-                emitLifecycle("host_released", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost);
-            } catch (Throwable error) {
-                failure = rootCause(error);
-                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost, error, "host_release");
-            }
-        }
-        if (activeRoot != null) {
+    /**
+     * Hides this process-scoped host while retaining the ViewRoot/SVCH/package for reuse.
+     *
+     * The vehicle firmware can render a pending RenderNode after host destruction.  Normal
+     * camera close therefore must never call SurfaceControlViewHost.release(), remove the root,
+     * release the SurfacePackage, or mark ViewRootImpl stopped.  The owning shell process is the
+     * only terminal reclamation boundary; Android reclaims these objects when that process dies.
+     */
+    synchronized void quiesce() throws Exception {
+        long start = SystemClock.elapsedRealtimeNanos();
+        emitLifecycle("quiesce_start", start, attachedView, root, surfacePackage, host);
+        if (root != null) {
             try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
-                remove(transaction, activeRoot);
+                transaction.setVisibility(root, false);
+                transaction.setAlpha(root, 0.0f);
                 transaction.apply();
-                emitLifecycle("root_removed", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost);
-            } catch (Throwable error) {
-                if (failure == null) failure = rootCause(error);
-                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost, error, "root_remove");
+                emitLifecycle("strict_visibility", start, attachedView, root,
+                        surfacePackage, host, null, "visible", false);
             }
         }
-        if (activePackage != null) {
-            try {
-                activePackage.release();
-                emitLifecycle("package_released", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost);
-            } catch (Throwable error) {
-                if (failure == null) failure = rootCause(error);
-                emitLifecycle("release_error", releaseStart, activeView, activeRoot,
-                        activePackage, activeHost, error, "package_release");
-            }
-        }
-        if (failure != null) {
-            emitLifecycle("release_error", releaseStart, activeView, activeRoot,
-                    activePackage, activeHost, failure, "release_complete");
-            throw asException(failure);
-        }
-        emitLifecycle("release_complete", releaseStart, activeView, activeRoot,
-                activePackage, activeHost);
+        emitLifecycle("quiesce_complete", start, attachedView, root, surfacePackage, host);
     }
 
     int width() {
@@ -402,14 +353,6 @@ final class WindowlessOverlayHost {
         method.invoke(transaction, surface, x, y);
     }
 
-    private static void remove(SurfaceControl.Transaction transaction, SurfaceControl surface)
-            throws Exception {
-        Method method = SurfaceControl.Transaction.class.getDeclaredMethod(
-                "remove", SurfaceControl.class);
-        method.setAccessible(true);
-        method.invoke(transaction, surface);
-    }
-
     private static void exemptHiddenApis() throws Exception {
         Class<?> type = Class.forName("dalvik.system.VMRuntime");
         Method getRuntime = type.getDeclaredMethod("getRuntime");
@@ -427,11 +370,4 @@ final class WindowlessOverlayHost {
         return new RuntimeException(error);
     }
 
-    private static Throwable rootCause(Throwable error) {
-        Throwable current = error;
-        while (current.getCause() != null && current != current.getCause()) {
-            current = current.getCause();
-        }
-        return current;
-    }
 }

@@ -87,7 +87,7 @@ public final class DiagnosticLogExporterTest {
                 "for tag in system_server_crash system_app_crash data_app_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
                 "for tag in system_server_native_crash system_app_native_crash data_app_native_crash; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
                 "for tag in system_server_anr system_app_anr data_app_anr; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
-                "for tag in system_server_tombstone system_app_tombstone data_app_tombstone; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
+                "for tag in system_server_tombstone system_app_tombstone data_app_tombstone SYSTEM_TOMBSTONE; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
                 "for tag in system_server_watchdog system_server_wtf; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576",
                 "dumpsys dropbox --print 2>/dev/null | tail -c 2097152",
                 "for file in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 3); do printf '\\n--- %s ---\\n' \"$file\"; tail -c 524288 \"$file\" 2>/dev/null; done",
@@ -173,6 +173,28 @@ public final class DiagnosticLogExporterTest {
                 "\"entry\":\"system/dropbox-crash.txt\",\"status\":\"error\""));
         assertTrue(manifest.contains("\"error\":\"shell_exit_13\""));
         assertEquals(DiagnosticLogExporter.fixedCommands().length, commands.size());
+    }
+
+    @Test
+    public void targetedUppercaseTombstonePreservesNativeStackAndMemoryWithoutGeneralDump()
+            throws Exception {
+        String tombstone = "pid: 31380, tid: 32520, name: svm0 >>> bydextend_avm <<<\n"
+                + "#00 pc 0000000000162eb4 libSurroundViewSim.so (RenderLowCostACC+6300)\n"
+                + "memory near x14: RendererAcc.cpp:474 GL error 1282\n";
+        for (boolean partial : new boolean[]{false, true}) {
+            File archive = DiagnosticLogExporter.export(
+                    temporary.newFolder(),
+                    new DiagnosticLogExporter.Snapshot(Collections.emptyList()), identity(),
+                    command -> command.contains("data_app_tombstone SYSTEM_TOMBSTONE;")
+                            ? (partial ? DiagnosticLogExporter.CommandResult.failure(
+                                    tombstone, "shell_exit_1", 1)
+                                    : DiagnosticLogExporter.CommandResult.success(tombstone))
+                            : missing(), 5100L);
+            assertEquals(tombstone, readEntry(archive, "system/dropbox-tombstone.txt"));
+            assertTrue(readEntry(archive, "manifest.json").contains(
+                    "\"entry\":\"system/dropbox-tombstone.txt\",\"status\":\""
+                            + (partial ? "partial" : "included") + "\""));
+        }
     }
 
     @Test

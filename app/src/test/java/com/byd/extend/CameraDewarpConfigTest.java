@@ -83,7 +83,7 @@ public final class CameraDewarpConfigTest {
     }
 
     @Test
-    public void legacyValuesMaterializeThenAllSevenContextsStayIndependent() {
+    public void legacyFallbackReadsArePureAndExplicitEditsKeepSevenContextsIndependent() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraProfile rearLeft = CameraProfile.of(CameraProfile.REAR_LEFT);
         CameraProfile frontLeft = CameraProfile.of(CameraProfile.FRONT_LEFT);
@@ -97,6 +97,7 @@ public final class CameraDewarpConfigTest {
         CameraDewarpConfig.save(preferences, CameraDewarpConfig.of(
                 CameraDewarpConfig.LENS_REAR, true, 123));
         preferences.putBoolean("camera_dewarp_v3_overlay_rear_left_enabled", false);
+        java.util.Map<String, ?> beforeRead = preferences.getAll();
 
         CameraDewarpConfig migratedRearLeft =
                 CameraDewarpConfig.loadForProfile(preferences, rearLeft);
@@ -104,10 +105,7 @@ public final class CameraDewarpConfigTest {
         assertEquals(121, migratedRearLeft.fovDegrees);
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
                 migratedRearLeft.projection);
-        assertEquals(121, preferences.getInt(
-                "camera_dewarp_v3_overlay_rear_left_fov", -1));
-        assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, preferences.getInt(
-                "camera_dewarp_v3_overlay_rear_left_projection", -1));
+        assertEquals(beforeRead, preferences.getAll());
         assertTrue(CameraDewarpConfig.loadForProfile(preferences, frontLeft).enabled);
         assertTrue(CameraDewarpConfig.loadForReverse(preferences,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).enabled);
@@ -117,6 +115,7 @@ public final class CameraDewarpConfigTest {
                 ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX).enabled);
         assertTrue(CameraDewarpConfig.loadForReverse(preferences,
                 ReverseCameraLayout.REAR_CAMERA_INDEX).enabled);
+        assertEquals(beforeRead, preferences.getAll());
 
         CameraDewarpConfig.saveForProfile(preferences, rearLeft,
                 CameraDewarpConfig.of(CameraDewarpConfig.LENS_LEFT, true, 131));
@@ -388,12 +387,11 @@ public final class CameraDewarpConfigTest {
                 11, CameraRotation.MODE_FILL);
         DirectCameraCrop.save(preferences, profile, replacement);
         assertCropEquals(replacement, DirectCameraCrop.load(preferences, profile));
-        DirectCameraCrop reframed = DirectCameraCrop.preserveCenterAndAspect(
-                corrected, replacement);
-        assertEquals(corrected.left + corrected.width / 2.0f,
-                reframed.left + reframed.width / 2.0f, 0.0001f);
-        assertEquals(corrected.top + corrected.height / 2.0f,
-                reframed.top + reframed.height / 2.0f, 0.0001f);
+        DirectCameraCrop reframed = DirectCameraCrop.loadCorrected(preferences, profile, replacement);
+        assertEquals(corrected.left, reframed.left, 0.0f);
+        assertEquals(corrected.top, reframed.top, 0.0f);
+        assertEquals(corrected.width, reframed.width, 0.0f);
+        assertEquals(corrected.height, reframed.height, 0.0f);
         assertEquals(replacement.aspectMode, reframed.aspectMode);
         assertEquals(replacement.rotationDegrees, reframed.rotationDegrees);
         assertEquals(replacement.rotationMode, reframed.rotationMode);

@@ -49,6 +49,7 @@ public final class WeatherRuntime {
     public static final String THIRD_REFRESH_ACTION = "com.byd.weatherdata.action.THIRD_REFRESH";
     public static final String WEATHER_URI =
             "content://com.byd.weatherdata.utils.WeatherContentProvider/weather";
+    static final String PREF_LANGUAGE = "ui_language";
     private static final long MAX_LAST_LOCATION_AGE_MS = 30 * 60 * 1000L;
     private static final long CONNECT_TIMEOUT_MS = 8_000L;
     private static final long READ_TIMEOUT_MS = 12_000L;
@@ -679,36 +680,51 @@ public final class WeatherRuntime {
     }
 
     private City geocode(Location location) {
-        String fallback = String.format(Locale.US, "%.4f, %.4f", location.getLatitude(), location.getLongitude());
+        String language = preferences.getString(PREF_LANGUAGE, "uk");
+        String fallback = friendlyLocationFallback(language);
+        double latitude = location.getLatitude();
+        double longitude = location.getLongitude();
+        String failureReason = null;
         try {
-            if (!Geocoder.isPresent()) return new City(fallback, fallback);
-        } catch (Throwable ignored) {
-            return new City(fallback, fallback);
-        }
-        String local = fallback;
-        String english = fallback;
-        try {
-            List<Address> addresses = new Geocoder(context, Locale.getDefault()).getFromLocation(
-                    location.getLatitude(), location.getLongitude(), 1);
-            if (addresses != null && !addresses.isEmpty()) {
-                Address address = addresses.get(0);
-                local = first(address.getLocality(), address.getSubAdminArea(), address.getAdminArea(), fallback);
+            if (!Geocoder.isPresent()) {
+                failureReason = "provider_unavailable";
             }
-        } catch (Throwable ignored) {
-            emit("weather_geocoder_unavailable");
+        } catch (Throwable failure) {
+            failureReason = "availability_check_failed:" + summary(failure);
         }
-        try {
-            List<Address> englishAddresses = new Geocoder(context, Locale.ENGLISH).getFromLocation(
-                    location.getLatitude(), location.getLongitude(), 1);
-            if (englishAddresses != null && !englishAddresses.isEmpty()) {
-                Address englishAddress = englishAddresses.get(0);
-                english = first(englishAddress.getLocality(), englishAddress.getSubAdminArea(),
-                        englishAddress.getAdminArea(), local);
+        if (failureReason == null) {
+            try {
+                List<Address> addresses = new Geocoder(context).getFromLocation(
+                        latitude, longitude, 1);
+                if (addresses != null && !addresses.isEmpty()) {
+                    Address address = addresses.get(0);
+                    String city = firstNonEmpty(address.getLocality(), address.getSubAdminArea(),
+                            address.getAdminArea());
+                    if (city != null) return new City(city, city);
+                    failureReason = "no_usable_name";
+                } else {
+                    failureReason = "no_result";
+                }
+            } catch (Throwable failure) {
+                failureReason = summary(failure);
             }
-        } catch (Throwable ignored) {
-            // The localized result remains a valid non-empty city name.
         }
-        return new City(local, english);
+        emit("weather_geocoder_fallback", "ui_language", normalizedLanguage(language),
+                "latitude", latitude, "longitude", longitude, "reason", failureReason);
+        return new City(fallback, fallback);
+    }
+
+    static String normalizedLanguage(String language) {
+        return "en".equalsIgnoreCase(language) ? "en" : "uk";
+    }
+
+    static String friendlyLocationFallback(String language) {
+        return "en".equalsIgnoreCase(language) ? "Current location" : "Поточне місце";
+    }
+
+    static String firstNonEmpty(String... values) {
+        for (String value : values) if (value != null && !value.trim().isEmpty()) return value;
+        return null;
     }
 
     private JSONObject getJson(String url) throws Exception {
@@ -796,11 +812,6 @@ public final class WeatherRuntime {
                 // Diagnostics must not turn a weather success into a failed write.
             }
         }
-    }
-
-    private static String first(String... values) {
-        for (String value : values) if (value != null && !value.trim().isEmpty()) return value;
-        return "Location";
     }
 
     private static String summary(Throwable error) {

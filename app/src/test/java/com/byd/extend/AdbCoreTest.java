@@ -1419,17 +1419,15 @@ public final class AdbCoreTest {
         DirectCameraCrop aligned = left.withRotation(45)
                 .withRotationMode(CameraRotation.MODE_ALIGNED);
         assertEquals(CameraRotation.MODE_ALIGNED, aligned.rotationMode);
-        double radians = Math.toRadians(aligned.rotationDegrees);
-        double extentX = Math.abs(Math.cos(radians)) * aligned.width / 2.0d
-                + Math.abs(Math.sin(radians)) * aligned.height
-                * DirectCameraCrop.SOURCE_HEIGHT / DirectCameraCrop.SOURCE_WIDTH / 2.0d;
-        double extentY = Math.abs(Math.sin(radians)) * aligned.width
-                * DirectCameraCrop.SOURCE_WIDTH / DirectCameraCrop.SOURCE_HEIGHT / 2.0d
-                + Math.abs(Math.cos(radians)) * aligned.height / 2.0d;
-        assertTrue(aligned.left + aligned.width / 2.0f - extentX >= -0.0001d);
-        assertTrue(aligned.left + aligned.width / 2.0f + extentX <= 1.0001d);
-        assertTrue(aligned.top + aligned.height / 2.0f - extentY >= -0.0001d);
-        assertTrue(aligned.top + aligned.height / 2.0f + extentY <= 1.0001d);
+        // Rotation is now a display transform; the stored ROI remains axis-aligned and bounded.
+        assertEquals(left.left, aligned.left, 0.0001f);
+        assertEquals(left.top, aligned.top, 0.0001f);
+        assertEquals(left.width, aligned.width, 0.0001f);
+        assertEquals(left.height, aligned.height, 0.0001f);
+        assertTrue(aligned.left >= 0.0f);
+        assertTrue(aligned.top >= 0.0f);
+        assertTrue(aligned.right() <= 1.0f);
+        assertTrue(aligned.bottom() <= 1.0f);
 
         DirectCameraCrop free = wide.withAspectMode(DirectCameraCrop.ASPECT_FREE);
         float originalHeight = free.height;
@@ -1550,7 +1548,9 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(26, CameraShellProtocol.VERSION);
+        assertEquals(27, CameraShellProtocol.VERSION);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
+                CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
         assertTrue(CameraShellProtocol.TX_OVERLAY_CLOSE
                 > CameraShellProtocol.TX_OVERLAY_SET_VISIBLE);
@@ -1560,6 +1560,16 @@ public final class AdbCoreTest {
                 > CameraShellProtocol.TX_OVERLAY_SET_WARNING);
         assertTrue(CameraShellProtocol.TX_REVERSE_CLOSE
                 > CameraShellProtocol.TX_REVERSE_SET_VISIBLE);
+        assertEquals(CameraShellProtocol.TX_REVERSE_CLOSE + 1,
+                CameraShellProtocol.TX_UPDATE_VISUALS);
+        CameraShellProtocol.validateVisualStyle(0, 0);
+        CameraShellProtocol.validateVisualStyle(48, 100);
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateVisualStyle(-1, 50));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateVisualStyle(49, 50));
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraShellProtocol.validateVisualStyle(8, 101));
         CameraShellProtocol.validateWarning(1, 1,
                 CameraShellProtocol.WARNING_EDGE_NONE,
                 CameraShellProtocol.WARNING_MODE_OFF);
