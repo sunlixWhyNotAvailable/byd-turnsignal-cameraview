@@ -114,7 +114,8 @@ private fun CameraDiagnostics(
     }
     Row(Modifier.fillMaxSize().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Section(diagnosticGroupTitle(direct, state.avmOrientation), colors,
-            Modifier.weight(.34f).fillMaxHeight()) {
+            Modifier.weight(.34f).fillMaxHeight(),
+            trailing = { StatusPill(operation.status, strings.text("Статус", "Status"), colors) }) {
             if (!direct) {
                 Segmented(listOf(strings.text("Горизонтально", "Horizontal"),
                     strings.text("Вертикально", "Vertical")), state.avmOrientation.ordinal,
@@ -143,7 +144,8 @@ private fun CameraDiagnostics(
         }
         Section(if (direct) strings.text("Попередній перегляд", "Preview")
             else diagnosticGroupTitle(false, state.avmOrientation), colors,
-            Modifier.weight(.66f).fillMaxHeight()) {
+            Modifier.weight(.66f).fillMaxHeight(),
+            trailing = { StatusPill(operation.status, strings.text("Статус", "Status"), colors) }) {
             if (selection != null) {
                 // Direct pano_h has a known 1920x1300 source. AVM's SDK output dimensions are
                 // vehicle-configured at runtime, so the resolved tablet display is the only

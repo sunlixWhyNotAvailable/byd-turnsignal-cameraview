@@ -5,6 +5,7 @@ import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
+import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
@@ -81,6 +82,7 @@ final class CameraDewarpRenderer {
     private volatile MappingRequest request;
     private volatile Handler handler;
     private volatile Surface cameraSurface;
+    private volatile boolean preserveInputFrameTimestamp;
     private SurfaceTexture cameraTexture;
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
@@ -604,6 +606,10 @@ final class CameraDewarpRenderer {
         else correctedMirrorSurface = next;
     }
 
+    void setPreserveInputFrameTimestamp(boolean value) {
+        preserveInputFrameTimestamp = value;
+    }
+
     private void renderFrame() {
         if (cameraTexture == null || eglSurface == EGL14.EGL_NO_SURFACE) return;
         int concurrent = RENDERS_IN_FLIGHT.incrementAndGet();
@@ -629,8 +635,13 @@ final class CameraDewarpRenderer {
                         + "\"height\":" + height + ","
                         + "\"matrix\":" + Arrays.toString(textureMatrix) + "}");
             }
-            recordFrameAge(SystemClock.elapsedRealtimeNanos(), cameraTexture.getTimestamp());
-            drawAndSwap(eglSurface, vertices, indices, indexCount, primaryTiming);
+            long inputTimestamp = cameraTexture.getTimestamp();
+            boolean preserveTimestamp = preserveInputFrameTimestamp;
+            if (preserveTimestamp && inputTimestamp <= 0L) return;
+            recordFrameAge(preserveTimestamp ? System.nanoTime()
+                    : SystemClock.elapsedRealtimeNanos(), inputTimestamp);
+            drawAndSwap(eglSurface, vertices, indices, indexCount, primaryTiming,
+                    preserveTimestamp ? inputTimestamp : 0L);
             swapped = true;
             emitAppliedMeshAfterSwap(renderedRequest);
             renderMirror(true, mirrorTiming);
@@ -647,7 +658,8 @@ final class CameraDewarpRenderer {
 
     private void drawAndSwap(
             EGLSurface surface, FloatBuffer drawVertices,
-            ShortBuffer drawIndices, int drawIndexCount, SwapTiming timing) {
+            ShortBuffer drawIndices, int drawIndexCount, SwapTiming timing,
+            long presentationTimestamp) {
         long startedNs = SystemClock.elapsedRealtimeNanos();
         require(EGL14.eglMakeCurrent(
                 eglDisplay, surface, surface, eglContext), "EGL makeCurrent failed");
@@ -670,6 +682,10 @@ final class CameraDewarpRenderer {
         drawIndices.position(0);
         GLES20.glDrawElements(GLES20.GL_TRIANGLES, drawIndexCount,
                 GLES20.GL_UNSIGNED_SHORT, drawIndices);
+        if (presentationTimestamp > 0L) {
+            require(EGLExt.eglPresentationTimeANDROID(
+                    eglDisplay, surface, presentationTimestamp), "EGL frame timestamp failed");
+        }
         long swapStartedNs = SystemClock.elapsedRealtimeNanos();
         require(EGL14.eglSwapBuffers(eglDisplay, surface), "EGL swap failed");
         timing.preSwapNs = swapStartedNs - startedNs;
@@ -683,7 +699,7 @@ final class CameraDewarpRenderer {
             drawAndSwap(surface,
                     raw ? rawVertices : vertices,
                     raw ? rawIndices : indices,
-                    raw ? rawIndexCount : indexCount, timing);
+                    raw ? rawIndexCount : indexCount, timing, 0L);
             if (raw) rawMirrorSwapCount++;
             else correctedMirrorSwapCount++;
             mirrorPreSwapTotalNs += timing.preSwapNs;

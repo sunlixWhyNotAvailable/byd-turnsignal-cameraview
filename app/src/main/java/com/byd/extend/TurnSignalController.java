@@ -1167,6 +1167,18 @@ final class TurnSignalController {
         }
     }
 
+    private static void transactCameraNoArgs(IBinder value, int code) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            requireTransact(value, code, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     private static void requireTransact(IBinder binder, int code, Parcel data, Parcel reply)
             throws Exception {
         if (!binder.transact(code, data, reply, 0)) {
@@ -1288,7 +1300,13 @@ final class TurnSignalController {
         if (stopped) throw new IllegalStateException("camera shell restart cancelled");
         try {
             if (cameraPing(expected)) {
-                transactNoArgs(expected, CameraShellProtocol.TX_SHUTDOWN);
+                try {
+                    transactCameraNoArgs(expected, CameraShellProtocol.TX_SHUTDOWN);
+                } catch (Throwable error) {
+                    // A dead or already-stopped shell must not block the fresh replacement.
+                    emit("shell_shutdown_failed", "helper", "camera",
+                            "error", summary(error));
+                }
             }
         } finally {
             clearCameraHelper(expected, expectedEpoch);
@@ -1926,17 +1944,12 @@ final class TurnSignalController {
             if (cached != null) clearCameraHelper(cached, cachedEpoch);
             return;
         }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
         try {
-            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
-            requireTransact(value, CameraShellProtocol.TX_SHUTDOWN, data, reply);
+            transactCameraNoArgs(value, CameraShellProtocol.TX_SHUTDOWN);
             emit("shell_shutdown_requested", "helper", "camera");
         } catch (Throwable error) {
             emit("shell_shutdown_failed", "helper", "camera", "error", summary(error));
         } finally {
-            data.recycle();
-            reply.recycle();
             if (cached != null) clearCameraHelper(cached, cachedEpoch);
             if (value != cached) clearCameraHelper(value);
         }

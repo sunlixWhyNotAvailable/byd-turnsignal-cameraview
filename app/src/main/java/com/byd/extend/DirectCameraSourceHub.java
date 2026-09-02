@@ -5,6 +5,7 @@ import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
+import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
@@ -46,7 +47,6 @@ final class DirectCameraSourceHub
     private static final int CALL_TIMEOUT_MS = 1500;
     private static final long STATS_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long STALL_REPORT_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
-    private static final long MAX_VALID_FRAME_AGE_NS = TimeUnit.SECONDS.toNanos(60);
     private static final int MAX_INDEX = 4;
     private static final String LOG_TAG = "BydCameraProbe";
     private static final String VERTEX_SHADER =
@@ -360,6 +360,7 @@ final class DirectCameraSourceHub
                     throw new IllegalStateException("downstream Surface is not attached");
                 }
                 target.active = active;
+                if (active) target.timestampFrames = true;
                 return null;
             });
         }
@@ -473,8 +474,10 @@ final class DirectCameraSourceHub
             long updatedNs;
             long updateNs;
             long producerTimestampNs;
+            long acquiredFrameTimestampNanos;
             try {
                 makeCurrent(idleSurface);
+                acquiredFrameTimestampNanos = System.nanoTime();
                 long updateStartedNs = SystemClock.elapsedRealtimeNanos();
                 texture.updateTexImage();
                 updatedNs = SystemClock.elapsedRealtimeNanos();
@@ -510,7 +513,7 @@ final class DirectCameraSourceHub
                 Target target = targets.get(i);
                 if (!shouldRenderTarget(index, target.index, target.active)) continue;
                 try {
-                    DrawTiming timing = draw(target);
+                    DrawTiming timing = draw(target, acquiredFrameTimestampNanos);
                     targetCount++;
                     preSwapTotalNs += timing.preSwapNs;
                     preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
@@ -545,7 +548,6 @@ final class DirectCameraSourceHub
             Stats report = stats.record(
                     callbackStartedNs,
                     producerTimestampNs,
-                    updatedNs,
                     updateNs,
                     preSwapTotalNs,
                     preSwapMaxNs,
@@ -582,7 +584,7 @@ final class DirectCameraSourceHub
             postCoordinator(() -> listener.onSourceFailure(index, error));
         }
 
-        private DrawTiming draw(Target target) {
+        private DrawTiming draw(Target target, long acquiredFrameTimestampNanos) {
             long startedNs = SystemClock.elapsedRealtimeNanos();
             makeCurrent(target.eglSurface);
             int[] width = new int[1];
@@ -606,6 +608,12 @@ final class DirectCameraSourceHub
             GLES20.glUniform1i(textureLocation, 0);
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
             require(GLES20.glGetError() == GLES20.GL_NO_ERROR, "GPU fanout draw failed");
+            if (target.timestampFrames) {
+                // Local monotonic time travels with the buffer, independent of the vendor clock.
+                require(EGLExt.eglPresentationTimeANDROID(
+                        display, target.eglSurface, acquiredFrameTimestampNanos),
+                        "downstream frame timestamp failed");
+            }
             long swapStartedNs = SystemClock.elapsedRealtimeNanos();
             require(EGL14.eglSwapBuffers(display, target.eglSurface),
                     "downstream buffer swap failed");
@@ -881,18 +889,8 @@ final class DirectCameraSourceHub
         final long callbackGapMaxNs;
         final long updateTotalNs;
         final long updateMaxNs;
-        final int producerTimestampDeltas;
-        final long producerTimestampDeltaTotalNs;
-        final long producerTimestampDeltaMinNs;
-        final long producerTimestampDeltaMaxNs;
         final int producerTimestampRepeated;
         final int producerTimestampInvalid;
-        final int frameAgeSamples;
-        final int frameAgeNonPositive;
-        final int frameAgeFuture;
-        final int frameAgeStale;
-        final long frameAgeTotalNs;
-        final long frameAgeMaxNs;
         final int swaps;
         final long preSwapTotalNs;
         final long preSwapMaxNs;
@@ -925,18 +923,8 @@ final class DirectCameraSourceHub
                 long callbackGapMaxNs,
                 long updateTotalNs,
                 long updateMaxNs,
-                int producerTimestampDeltas,
-                long producerTimestampDeltaTotalNs,
-                long producerTimestampDeltaMinNs,
-                long producerTimestampDeltaMaxNs,
                 int producerTimestampRepeated,
                 int producerTimestampInvalid,
-                int frameAgeSamples,
-                int frameAgeNonPositive,
-                int frameAgeFuture,
-                int frameAgeStale,
-                long frameAgeTotalNs,
-                long frameAgeMaxNs,
                 int swaps,
                 long preSwapTotalNs,
                 long preSwapMaxNs,
@@ -969,18 +957,8 @@ final class DirectCameraSourceHub
             this.callbackGapMaxNs = callbackGapMaxNs;
             this.updateTotalNs = updateTotalNs;
             this.updateMaxNs = updateMaxNs;
-            this.producerTimestampDeltas = producerTimestampDeltas;
-            this.producerTimestampDeltaTotalNs = producerTimestampDeltaTotalNs;
-            this.producerTimestampDeltaMinNs = producerTimestampDeltaMinNs;
-            this.producerTimestampDeltaMaxNs = producerTimestampDeltaMaxNs;
             this.producerTimestampRepeated = producerTimestampRepeated;
             this.producerTimestampInvalid = producerTimestampInvalid;
-            this.frameAgeSamples = frameAgeSamples;
-            this.frameAgeNonPositive = frameAgeNonPositive;
-            this.frameAgeFuture = frameAgeFuture;
-            this.frameAgeStale = frameAgeStale;
-            this.frameAgeTotalNs = frameAgeTotalNs;
-            this.frameAgeMaxNs = frameAgeMaxNs;
             this.swaps = swaps;
             this.preSwapTotalNs = preSwapTotalNs;
             this.preSwapMaxNs = preSwapMaxNs;
@@ -1015,19 +993,9 @@ final class DirectCameraSourceHub
         private long callbackGapMaxNs;
         private long updateTotalNs;
         private long updateMaxNs;
-        private long previousProducerTimestampNs = -1L;
-        private int producerTimestampDeltas;
-        private long producerTimestampDeltaTotalNs;
-        private long producerTimestampDeltaMinNs = Long.MAX_VALUE;
-        private long producerTimestampDeltaMaxNs;
+        private long previousProducerTimestamp = -1L;
         private int producerTimestampRepeated;
         private int producerTimestampInvalid;
-        private int frameAgeSamples;
-        private int frameAgeNonPositive;
-        private int frameAgeFuture;
-        private int frameAgeStale;
-        private long frameAgeTotalNs;
-        private long frameAgeMaxNs;
         private int swaps;
         private long preSwapTotalNs;
         private long preSwapMaxNs;
@@ -1045,7 +1013,6 @@ final class DirectCameraSourceHub
         Stats record(
                 long callbackNs,
                 long producerTimestampNs,
-                long updatedNs,
                 long updateNs,
                 long framePreSwapTotalNs,
                 long framePreSwapMaxNs,
@@ -1063,7 +1030,7 @@ final class DirectCameraSourceHub
                 int frameTargetCount,
                 int sourceWidth,
                 int sourceHeight) {
-            return record(callbackNs, producerTimestampNs, updatedNs, updateNs,
+            return record(callbackNs, producerTimestampNs, updateNs,
                     framePreSwapTotalNs, framePreSwapMaxNs, frameSwapWaitTotalNs,
                     frameSwapWaitMaxNs, frameDrawMaxNs, frameSwaps, renderNs,
                     1, 0, 0L, targetsCurrent, targetPixelsCurrent,
@@ -1074,7 +1041,6 @@ final class DirectCameraSourceHub
         Stats record(
                 long callbackNs,
                 long producerTimestampNs,
-                long updatedNs,
                 long updateNs,
                 long framePreSwapTotalNs,
                 long framePreSwapMaxNs,
@@ -1110,7 +1076,7 @@ final class DirectCameraSourceHub
             coalescedFrames += Math.max(0, frameCoalescedCount);
             queueDelayTotalNs += Math.max(0L, frameQueueDelayNs);
             queueDelayMaxNs = Math.max(queueDelayMaxNs, frameQueueDelayNs);
-            recordProducerTimestamp(producerTimestampNs, updatedNs);
+            recordProducerTimestamp(producerTimestampNs);
             updateTotalNs += Math.max(0L, updateNs);
             updateMaxNs = Math.max(updateMaxNs, updateNs);
             swaps += Math.max(0, frameSwaps);
@@ -1134,12 +1100,7 @@ final class DirectCameraSourceHub
                     queueDelayTotalNs, queueDelayMaxNs, workerName,
                     callbackGaps, callbackGapTotalNs, callbackGapMaxNs,
                     updateTotalNs, updateMaxNs,
-                    producerTimestampDeltas, producerTimestampDeltaTotalNs,
-                    producerTimestampDeltaMinNs == Long.MAX_VALUE
-                            ? 0L : producerTimestampDeltaMinNs,
-                    producerTimestampDeltaMaxNs, producerTimestampRepeated,
-                    producerTimestampInvalid, frameAgeSamples, frameAgeNonPositive,
-                    frameAgeFuture, frameAgeStale, frameAgeTotalNs, frameAgeMaxNs,
+                    producerTimestampRepeated, producerTimestampInvalid,
                     swaps, preSwapTotalNs, preSwapMaxNs, swapWaitTotalNs,
                     swapWaitMaxNs, drawMaxNs, renderTotalNs, renderMaxNs,
                     targetsCurrent, targetsMax, targetPixelsCurrent, targetPixelsMax,
@@ -1160,41 +1121,21 @@ final class DirectCameraSourceHub
             return value.toString();
         }
 
-        private void recordProducerTimestamp(long timestampNs, long nowNs) {
-            if (timestampNs <= 0L) {
+        private void recordProducerTimestamp(long timestamp) {
+            // Vendor units/clock are unverified: only equality and ordering are meaningful.
+            if (timestamp <= 0L) {
                 producerTimestampInvalid++;
-                frameAgeNonPositive++;
                 return;
             }
-            if (previousProducerTimestampNs > 0L) {
-                long deltaNs = timestampNs - previousProducerTimestampNs;
-                if (deltaNs == 0L) {
+            if (previousProducerTimestamp > 0L) {
+                if (timestamp == previousProducerTimestamp) {
                     producerTimestampRepeated++;
-                } else if (deltaNs > 0L) {
-                    producerTimestampDeltas++;
-                    producerTimestampDeltaTotalNs += deltaNs;
-                    producerTimestampDeltaMinNs = Math.min(
-                            producerTimestampDeltaMinNs, deltaNs);
-                    producerTimestampDeltaMaxNs = Math.max(
-                            producerTimestampDeltaMaxNs, deltaNs);
-                } else {
+                } else if (timestamp < previousProducerTimestamp) {
                     producerTimestampInvalid++;
                     return;
                 }
             }
-            previousProducerTimestampNs = timestampNs;
-            if (nowNs >= timestampNs) {
-                long ageNs = nowNs - timestampNs;
-                if (ageNs <= MAX_VALID_FRAME_AGE_NS) {
-                    frameAgeSamples++;
-                    frameAgeTotalNs += ageNs;
-                    frameAgeMaxNs = Math.max(frameAgeMaxNs, ageNs);
-                } else {
-                    frameAgeStale++;
-                }
-            } else {
-                frameAgeFuture++;
-            }
+            previousProducerTimestamp = timestamp;
         }
 
         private void reset(long callbackNs) {
@@ -1211,18 +1152,8 @@ final class DirectCameraSourceHub
             callbackGapMaxNs = 0L;
             updateTotalNs = 0L;
             updateMaxNs = 0L;
-            producerTimestampDeltas = 0;
-            producerTimestampDeltaTotalNs = 0L;
-            producerTimestampDeltaMinNs = Long.MAX_VALUE;
-            producerTimestampDeltaMaxNs = 0L;
             producerTimestampRepeated = 0;
             producerTimestampInvalid = 0;
-            frameAgeSamples = 0;
-            frameAgeNonPositive = 0;
-            frameAgeFuture = 0;
-            frameAgeStale = 0;
-            frameAgeTotalNs = 0L;
-            frameAgeMaxNs = 0L;
             swaps = 0;
             preSwapTotalNs = 0L;
             preSwapMaxNs = 0L;
@@ -1253,6 +1184,7 @@ final class DirectCameraSourceHub
         final EGLSurface eglSurface;
         long lastStallReportNs;
         boolean active = true;
+        boolean timestampFrames;
 
         Target(SourceWorker worker, Surface surface, int index, EGLSurface eglSurface) {
             this.worker = worker;

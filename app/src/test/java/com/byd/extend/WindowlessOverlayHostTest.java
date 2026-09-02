@@ -143,8 +143,33 @@ public final class WindowlessOverlayHostTest {
         assertTrue(overlay.contains("currentRoot.setSelectorPressed(mode, true)"));
         assertTrue(overlay.contains("currentRoot.setSelectorPressed(mode, false)"));
         assertTrue(overlay.contains("MotionEvent.ACTION_CANCEL"));
+        int upStart = overlay.indexOf("} else if (action == MotionEvent.ACTION_UP)");
+        assertTrue(upStart >= 0);
+        String up = overlay.substring(upStart, overlay.indexOf("return false;", upStart));
+        assertTrue(up.contains("currentRoot.setSelectorPressed(mode, false)"));
+        assertFalse(up.contains("currentRoot.setSelectorPressed(mode, true)"));
+        String click = overlay.substring(overlay.indexOf("private void scheduleSelectorAction"),
+                overlay.indexOf("private void cancelPendingSelectorAction"));
+        assertTrue(click.contains("root.setSelectorPressed(mode, true)"));
+        assertTrue(overlay.contains("postDelayed(pendingSelectorAction, VISUAL_PRESS_BEFORE_ACTION_MS)"));
+        assertTrue(overlay.contains("cancelPendingSelectorAction()"));
+        assertTrue(overlay.contains("root.setSideMode(mode)"));
         assertTrue(selector.contains("setExternalPressedMode"));
         assertTrue(selector.contains("canvas.scale(0.97f, 0.97f"));
         assertTrue(selector.contains("PRESSED_BUTTON_COLOR"));
+        assertTrue(selector.contains("postDelayed(pendingAction, VISUAL_PRESS_BEFORE_ACTION_MS)"));
+        assertTrue(selector.contains("onDetachedFromWindow"));
+        assertTrue(selector.contains("cancelPendingPress()"));
+    }
+
+    @Test
+    public void composeControlsUseVisualFirstActionsButSwitchesStayImmediate() throws Exception {
+        Path source = Path.of("app/src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt");
+        if (!Files.exists(source)) source = Path.of("src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt");
+        String ui = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        assertTrue(ui.contains("rememberVisualFirstClick"));
+        assertTrue(ui.contains("delay(VISUAL_PRESS_BEFORE_ACTION_MS)"));
+        assertTrue(ui.contains("onClick = visualClick"));
+        assertTrue(ui.contains("onClick = { onCheckedChange(!checked) }"));
     }
 }

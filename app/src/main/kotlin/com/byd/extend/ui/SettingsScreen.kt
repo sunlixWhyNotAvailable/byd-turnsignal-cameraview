@@ -61,15 +61,18 @@ internal fun SettingsScreen(
                     strings.settingsCategories.forEachIndexed { index, title ->
                         val selected = state.category.ordinal == index
                         val press = rememberPressFeedback()
+                        val visualClick = rememberVisualFirstClick {
+                            focus.clearFocus()
+                            onAction(BydExtendUiAction.Select(
+                                SelectionTarget.Simple(SelectionId.SettingsCategory), index))
+                        }
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                             .background(pressBackground(if (selected) colors.accent.copy(alpha = .14f) else Color.Transparent,
                                 colors, press.pressed))
                             .then(press.modifier)
                             .clickable(interactionSource = press.interactionSource, indication = null,
                                 enabled = true, role = Role.Tab) {
-                                focus.clearFocus()
-                                onAction(BydExtendUiAction.Select(
-                                    SelectionTarget.Simple(SelectionId.SettingsCategory), index))
+                                visualClick()
                             }.padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Icon(icons[index], null, tint = if (selected) colors.accent else colors.muted,

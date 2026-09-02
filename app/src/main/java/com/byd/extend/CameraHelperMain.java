@@ -1531,29 +1531,9 @@ final class CameraHelperMain {
                                         stats.callbackGapTotalNs, stats.callbackGaps),
                                 "callback_gap_max_ms", milliseconds(
                                         stats.callbackGapMaxNs),
-                                "producer_timestamp_samples", stats.producerTimestampDeltas,
-                                "producer_timestamp_fps", ratePerSecond(
-                                        stats.producerTimestampDeltas,
-                                        stats.producerTimestampDeltaTotalNs),
-                                "producer_timestamp_delta_avg_ms", averageMs(
-                                        stats.producerTimestampDeltaTotalNs,
-                                        stats.producerTimestampDeltas),
-                                "producer_timestamp_delta_min_ms", milliseconds(
-                                        stats.producerTimestampDeltaMinNs),
-                                "producer_timestamp_delta_max_ms", milliseconds(
-                                        stats.producerTimestampDeltaMaxNs),
+                                "producer_timestamp_clock", "unverified",
                                 "producer_timestamp_repeated", stats.producerTimestampRepeated,
                                 "producer_timestamp_invalid", stats.producerTimestampInvalid,
-                                "source_frame_age_samples", stats.frameAgeSamples,
-                                "source_frame_age_non_positive", stats.frameAgeNonPositive,
-                                "source_frame_age_future", stats.frameAgeFuture,
-                                "source_frame_age_stale", stats.frameAgeStale,
-                                "source_frame_age_avg_ms", stats.frameAgeSamples <= 0
-                                        ? -1.0d : averageMs(
-                                                stats.frameAgeTotalNs,
-                                                stats.frameAgeSamples),
-                                "source_frame_age_max_ms", stats.frameAgeSamples <= 0
-                                        ? -1.0d : milliseconds(stats.frameAgeMaxNs),
                                 "update_tex_image_avg_ms", averageMs(
                                         stats.updateTotalNs, stats.callbacks),
                                 "update_tex_image_max_ms", milliseconds(

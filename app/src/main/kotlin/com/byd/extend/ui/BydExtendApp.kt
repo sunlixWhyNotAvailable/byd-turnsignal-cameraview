@@ -247,12 +247,13 @@ private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPale
         RootTab.entries.forEachIndexed { index, tab ->
             val selected = active == tab
             val press = rememberPressFeedback()
+            val visualClick = rememberVisualFirstClick { onSelect(tab) }
             Row(Modifier.weight(rootWeights[index]).fillMaxHeight().clip(RoundedCornerShape(6.dp))
                 .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
                 .background(pressBackground(if (selected) colors.active else Color.Transparent, colors, press.pressed))
                 .then(press.modifier)
                 .clickable(interactionSource = press.interactionSource, indication = null,
-                    role = Role.Tab) { onSelect(tab) },
+                    role = Role.Tab) { visualClick() },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center) {
                 Icon(rootIcons[index], null, tint = if (selected) colors.text else colors.muted, modifier = Modifier.size(20.dp))

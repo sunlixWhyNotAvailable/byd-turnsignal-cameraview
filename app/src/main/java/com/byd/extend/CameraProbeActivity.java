@@ -1819,6 +1819,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 if (calibrationCorrectedMirrorCover != null) {
                     calibrationCorrectedMirrorCover.setVisibility(View.INVISIBLE);
                 }
+                publishCameraStatus(activeActivityCameraProfile, null,
+                        "First frame ready", StatusTone.Ok, false);
                 startCalibrationCopies();
             }
             return;
@@ -1832,6 +1834,8 @@ public final class CameraProbeActivity extends ComponentActivity
         productionPreviewAwaitingFrame = false;
         mainHandler.removeCallbacks(productionPreviewFirstFrameTimeout);
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.INVISIBLE);
+        publishCameraStatus(activeActivityCameraProfile, null,
+                "First frame ready", StatusTone.Ok, false);
         record("camera_preview_first_frame", "request_id", productionPreviewFrameRequest,
                 "frame_updates", productionPreviewFrameUpdates,
                 "camera_id", selectedCameraId,
@@ -2059,6 +2063,10 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private CameraProfileId calibrationProfileForUi() {
+        if (selectedTab == TAB_REVERSE_CAMERAS && productionUi != null) {
+            CameraProfileId reverse = selectedProductionProfile();
+            if (reverse != null) return reverse;
+        }
         if (calibrationParkingMode) {
             return new CameraProfileId.Parking(
                     ParkingView.values()[calibrationParkingCameraId]);
@@ -2136,6 +2144,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 reverseCalibrationCameraIndex,
                 reverseCalibrationFront,
                 reverseCalibrationCopiesRaw());
+        publishCameraStatus(activeActivityCameraProfile, null,
+                "First frame ready", StatusTone.Ok, false);
         record("camera_status", "profile", "reverse", "text", "Live preview",
                 "tone", StatusTone.Ok.name(), "pending", false);
         record("reverse_preview_frames", "request_id", requestId,
@@ -2833,8 +2843,22 @@ public final class CameraProbeActivity extends ComponentActivity
             preferences.edit().putInt(BlindSpotOverlayController.PREF_WARNING_MODE,
                     clamp(index, 0, 2)).apply();
             CameraHelperService.cameraWarningSettingsChanged(this);
-        } else if (id == SelectionId.DirectMode || id == SelectionId.AvmMode) {
-            // AndroidView update opens the selected source after its Surface exists.
+        } else if (id == SelectionId.DirectMode) {
+            // Selection is authoritative immediately when the native Surface is ready.  If it
+            // is not, the keyed AndroidView slot retains this one desired index for surfaceCreated.
+            if (directCameraSurfaceReady && directCameraPreview != null
+                    && helper != null && productionUi != null) {
+                openDirectCamera(clamp(productionUi.getState().getDebug().getDirectSelection(), 0, 4));
+            }
+        } else if (id == SelectionId.AvmMode) {
+            // The AVM slot is the single desired-mode holder until its Surface is ready; updates
+            // remain idempotent because openStockAvm/openStockAvmNow gate the current request.
+            if (debugSurfaceReady && debugPreview != null
+                    && helper != null && productionUi != null) {
+                int mode = clamp(productionUi.getState().getDebug().getAvmSelection(), 0,
+                        StockAvmPreview.horizontalLayoutCount() - 1);
+                openStockAvm(StockAvmPreview.horizontalViewpoint(mode), true);
+            }
         } else if (id == SelectionId.AvmOrientation) {
             selectDebugOrientation(index == 0);
         } else if (id == SelectionId.CameraQuality) {
@@ -2995,10 +3019,11 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void publishDiagnosticStatus(
             boolean direct, String text, StatusTone tone, boolean pending) {
+        String localizedText = localizedCameraStatus(text);
         if (productionUi != null) productionUi.setDiagnosticStatus(
-                direct, new StatusUiState(text, tone, true), pending);
+                direct, new StatusUiState(localizedText, tone, true), pending);
         TextView legacy = direct ? directCameraStatus : debugCameraStatus;
-        if (legacy != null) legacy.setText(text);
+        if (legacy != null) legacy.setText(localizedText);
     }
 
     private void pushGuardConfigFromPreferences() {
@@ -3982,8 +4007,14 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
-    private static boolean slotBelongsToTab(CameraHostSlot slot, int tab) {
+    static boolean slotBelongsToTab(CameraHostSlot slot, int tab) {
         if (isProductionCalibrationKind(slot.getKind())) {
+            // Compose calibration is embedded in each real profile root; the legacy standalone
+            // calibration tab must not retain an owner when Blind/Parking/Reverse is exited.
+            CameraProfileId profile = slot.getProfile();
+            if (profile instanceof CameraProfileId.Blind) return tab == TAB_CAMERAS;
+            if (profile instanceof CameraProfileId.Parking) return tab == TAB_PARKING_CAMERAS;
+            if (profile instanceof CameraProfileId.Reverse) return tab == TAB_REVERSE_CAMERAS;
             return tab == TAB_CAMERA_CALIBRATION;
         }
         if (slot.getKind() == CameraHostKind.Direct || slot.getKind() == CameraHostKind.Avm) {
@@ -10034,6 +10065,8 @@ public final class CameraProbeActivity extends ComponentActivity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         requestedOpen = true;
+        publishCameraStatus(activeActivityCameraProfile, null,
+                "Відкриття камер заднього ходу...", StatusTone.Warning, true);
         record("camera_status", "profile", "reverse", "text",
                 "Відкриття камер заднього ходу...",
                 "tone", StatusTone.Warning.name(), "pending", true);
@@ -10090,6 +10123,9 @@ public final class CameraProbeActivity extends ComponentActivity
         cameraPreview.setDewarpStatsContext(
                 requestId, cameraPreview.cameraInputGeneration());
         requestedOpen = true;
+        publishCameraStatus(activeActivityCameraProfile, null,
+                "Opening direct parking camera / index " + index + "...",
+                StatusTone.Warning, true);
         CameraHelperService.cameraPreviewStarted(this);
         record("open_requested", "renderer", "direct_parking",
                 "camera_tag", "pano_h", "preview_index", index,
@@ -10126,12 +10162,17 @@ public final class CameraProbeActivity extends ComponentActivity
                         ? new int[]{calibrationPreview.cameraInputGeneration()}
                         : new int[0]);
         if (calibration) {
+            activeActivityCameraProfile = calibrationHostProfile != null
+                    ? calibrationHostProfile : calibrationProfileForUi();
             calibrationPreview.setDewarpStatsContext(
                     requestId, calibrationPreview.cameraInputGeneration());
         }
         showPreview(target, cover, false, false);
         requestedOpen = true;
         if (!calibration) publishDiagnosticStatus(true,
+                "Opening " + cameraTag + " / index " + index + "...",
+                StatusTone.Warning, true);
+        else publishCameraStatus(activeActivityCameraProfile, null,
                 "Opening " + cameraTag + " / index " + index + "...",
                 StatusTone.Warning, true);
         record("open_requested", "renderer", renderer,
@@ -10303,6 +10344,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     CameraDewarpConfig.loadForProfile(preferences, profile));
             cameraPreview.applyDirectCameraCrop(loadCalibrationCrop(selectedCameraId));
             requestedOpen = true;
+            publishCameraStatus(activeActivityCameraProfile, null,
+                    "Opening " + viewName + "...", StatusTone.Warning, true);
             int previewIndex = right ? 3 : 2;
             record("open_requested", "renderer", renderer,
                     "camera_tag", "pano_h", "preview_index", previewIndex,
@@ -10730,6 +10773,53 @@ public final class CameraProbeActivity extends ComponentActivity
         publishCameraStatus(activeActivityCameraProfile, diagnostic, text, tone, pending);
     }
 
+    /** Stage callbacks are advisory; accept them only while the current AVM request owns Debug. */
+    private boolean isCurrentDiagnosticStageEvent(JSONObject event) {
+        if (event == null || !requestedOpen || activePreview != debugPreview) return false;
+        String source = event.optString("source");
+        if (!source.isEmpty() && !"helper".equals(source)
+                && !"stock_avm_shell".equals(source)) return false;
+        String renderer = event.optString("renderer");
+        if (!renderer.isEmpty() && !renderer.startsWith("stock_avm")) return false;
+        return isDiagnosticStageIdentityMatch(
+                activeActivityCameraRequestId, event.optInt("request_id", 0),
+                activityCameraShellEpoch, event.optLong("camera_shell_epoch", 0));
+    }
+
+    static boolean isDiagnosticStageIdentityMatch(
+            int activeRequestId, int eventRequestId, long activeEpoch, long eventEpoch) {
+        // A new timestamp or a shared helper epoch cannot identify the request that emitted a stage.
+        return activeRequestId > 0 && eventRequestId == activeRequestId
+                && (eventEpoch == 0L || eventEpoch > 0L && eventEpoch == activeEpoch);
+    }
+
+    private boolean isMatchingActivityCameraRenderer(JSONObject event) {
+        if (event == null) return false;
+        String renderer = event.optString("renderer");
+        if (renderer.isEmpty()) return true; // Persistent camera consumers omit renderer.
+        if (activePreview == debugPreview || pendingCameraDebug) {
+            return renderer.startsWith("stock_avm");
+        }
+        if (activePreview == directCameraPreview || activePreview == calibrationPreview) {
+            return renderer.startsWith("direct");
+        }
+        if (activePreview == cameraPreview) {
+            // Automatic blind-spot/parking preview may be served by the direct renderer or the
+            // stock AVM shell, depending on the selected source.  Both belong to this host.
+            return renderer.startsWith("direct") || renderer.startsWith("stock_avm");
+        }
+        return true;
+    }
+
+    static boolean isTerminalDiagnosticStage(String stage) {
+        if (stage == null) return false;
+        String value = stage.trim().toLowerCase(Locale.US);
+        return value.equals("opened") || value.equals("closed") || value.equals("completed")
+                || value.endsWith("_opened") || value.endsWith("_closed")
+                || value.endsWith("_completed") || value.equals("error")
+                || value.endsWith("_error") || value.endsWith("_failed");
+    }
+
     private DiagnosticMode activeCameraDiagnosticMode() {
         if (activePreview != null && activePreview == directCameraPreview) {
             return DiagnosticMode.Direct;
@@ -10742,17 +10832,71 @@ public final class CameraProbeActivity extends ComponentActivity
     private void publishCameraStatus(
             CameraProfileId profile, DiagnosticMode diagnostic,
             String text, StatusTone tone, boolean pending) {
+        String localizedText = localizedCameraStatus(text);
         if (diagnostic != null) {
             if (productionUi != null) {
                 productionUi.setDiagnosticStatus(diagnostic == DiagnosticMode.Direct,
-                        new StatusUiState(text, tone, true), pending);
+                        new StatusUiState(localizedText, tone, true), pending);
             }
         } else {
-            // Camera lifecycle/render events belong in the structured camera log.  Do not leak
-            // them into the Settings feedback channel (or a removed profile status pill).
+            if (productionUi != null && profile != null) {
+                productionUi.setProfileStatus(profile,
+                        new StatusUiState(localizedText, tone, true), pending);
+            }
             record("camera_status", "profile", profile == null ? "unknown" : profile.toString(),
                     "text", text, "tone", tone.name(), "pending", pending);
         }
+    }
+
+    /** Lifecycle status text follows the selected app language while logs retain the raw event. */
+    private String localizedCameraStatus(String text) {
+        if (text == null) return "";
+        boolean english = productionUi == null
+                || productionUi.getState().getLanguage() == com.byd.extend.ui.UiLanguage.English;
+        return english ? localizeForEnglish(text) : localizeForUkrainian(text);
+    }
+
+    private static String localizeForEnglish(String text) {
+        if (text.startsWith("Перший кадр готовий")) {
+            return "First frame ready" + text.substring("Перший кадр готовий".length());
+        }
+        if (text.startsWith("Очікування перших кадрів")) {
+            return "Waiting for first frames" + text.substring("Очікування перших кадрів".length());
+        }
+        if (text.startsWith("Відкриття камер заднього ходу")) {
+            return "Opening reverse cameras" + text.substring("Відкриття камер заднього ходу".length());
+        }
+        if (text.startsWith("Камера закрита")) {
+            return "Camera closed" + text.substring("Камера закрита".length());
+        }
+        if (text.startsWith("Помилка камери:")) {
+            return "Camera error:" + text.substring("Помилка камери:".length());
+        }
+        return text;
+    }
+
+    private static String localizeForUkrainian(String text) {
+        if (text.startsWith("First frame ready")) {
+            return "Перший кадр готовий" + text.substring("First frame ready".length());
+        }
+        if (text.startsWith("Opening ")) return "Відкриття " + text.substring("Opening ".length());
+        if (text.startsWith("Preparing ")) return "Підготовка " + text.substring("Preparing ".length());
+        if (text.startsWith("Switching ")) return "Перемикання " + text.substring("Switching ".length());
+        if (text.startsWith("Showing ")) return "Показ " + text.substring("Showing ".length());
+        if (text.startsWith("Waiting for first frames")) {
+            return "Очікування перших кадрів" + text.substring("Waiting for first frames".length());
+        }
+        if (text.startsWith("Camera closed")) {
+            return "Камера закрита" + text.substring("Camera closed".length());
+        }
+        if (text.startsWith("Camera error:")) {
+            return "Помилка камери:" + text.substring("Camera error:".length());
+        }
+        if (text.startsWith("AVM Surface invalid; retrying once...")) {
+            return "Поверхня AVM недійсна; повторна спроба...";
+        }
+        if (text.startsWith("Stock AVM: ")) return "AVM: " + text.substring("Stock AVM: ".length());
+        return text;
     }
 
     private void enqueueHelperCallbackRegistration(IBinder target) {
@@ -11424,9 +11568,6 @@ public final class CameraProbeActivity extends ComponentActivity
             startActivity(intent);
             preferences.edit().putBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, true).apply();
             record("background_start_settings_opened", "reason", reason);
-            Toast.makeText(this,
-                    "Вимкніть BYD Extend у списку Disable background Apps",
-                    Toast.LENGTH_LONG).show();
         } catch (Throwable error) {
             backgroundStartSettingsActive = false;
             record("background_start_settings_open_failed", "reason", reason,
@@ -11683,7 +11824,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 } else if ("camera_opened".equals(kind)) {
                     int requestId = json.optInt("request_id", 0);
                     if (!isCurrentActivityCameraEvent(
-                            requestedOpen, activeActivityCameraRequestId, json)) {
+                            requestedOpen, activeActivityCameraRequestId, json)
+                            || !isMatchingActivityCameraRenderer(json)) {
                         recordIgnoredActivityCameraEvent(kind, json);
                     } else {
                         rememberActivityAvmShellEpoch(json, true);
@@ -11727,9 +11869,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         if (activePreview == reverseCameraPreview
                                 && "reverse_preview_with_stock_base".equals(
                                         json.optString("view"))) {
-                            record("camera_status", "profile", "reverse",
-                                    "text", "Очікування перших кадрів...",
-                                    "tone", StatusTone.Warning.name(), "pending", false);
+                            publishCameraEventStatus(json, "Очікування перших кадрів...",
+                                    StatusTone.Warning, false);
                         } else publishCameraEventStatus(json,
                                 json.optString("renderer").startsWith("stock_avm")
                                 || json.optInt("preview_index", -1) < 0
@@ -11739,9 +11880,14 @@ public final class CameraProbeActivity extends ComponentActivity
                                 StatusTone.Ok, false);
                     }
                 } else if ("stock_avm_stage".equals(kind)) {
-                    publishCameraEventStatus(json,
-                            "Stock AVM: " + json.optString("stage"),
-                            StatusTone.Warning, true);
+                    if (!isCurrentDiagnosticStageEvent(json)) {
+                        recordIgnoredActivityCameraEvent(kind, json);
+                    } else {
+                        String stage = json.optString("stage");
+                        boolean terminal = isTerminalDiagnosticStage(stage);
+                        publishCameraEventStatus(json, "Stock AVM: " + stage,
+                                terminal ? StatusTone.Ok : StatusTone.Warning, !terminal);
+                    }
                 } else if ("camera_discovery".equals(kind)) {
                     cameraDiscovered = json.optBoolean("ok");
                     String status = cameraDiscovered
@@ -11775,7 +11921,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         return;
                     }
                     boolean accepted = isCurrentActivityCameraEvent(
-                            requestedOpen, activeActivityCameraRequestId, json);
+                            requestedOpen, activeActivityCameraRequestId, json)
+                            && isMatchingActivityCameraRenderer(json);
                     if (!accepted) {
                         recordIgnoredActivityCameraEvent(kind, json);
                     } else {
@@ -11872,7 +12019,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         recordIgnoredActivityCameraEvent(kind, json);
                         return;
                     }
-                    boolean accepted = isCurrentActivityCameraTerminalEvent(requestId, json);
+                    boolean accepted = isCurrentActivityCameraTerminalEvent(requestId, json)
+                            && isMatchingActivityCameraRenderer(json);
                     if (!accepted) {
                         recordIgnoredActivityCameraEvent(kind, json);
                         return;

@@ -329,6 +329,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
         sideSelector.setExternalPressedMode(pressed ? mode : -1);
     }
 
+    /** Cancels a latched selector press when its window host is hidden or detached. */
+    void cancelPendingSelectorPress() {
+        sideSelector.cancelPendingPress();
+    }
+
     ReverseCameraLayout.PixelRect selectorButtonBounds(
             int mode, int viewportWidth, int viewportHeight) {
         ReverseCameraLayout.PixelRect widget = ReverseCameraLayout.project(

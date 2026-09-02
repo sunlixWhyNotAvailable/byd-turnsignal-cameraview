@@ -734,6 +734,12 @@ final class BlindSpotOverlayController {
             int frameArmEpoch = pane.freshness.arm();
             OverlayFrameArm arm = OverlayFrameArm.create(
                     pane.profile.id, pane.requestId, pane.generation, frameArmEpoch);
+            try {
+                helper.setOverlayTargetActive(pane.surface, true);
+            } catch (Exception error) {
+                cameraUnavailable("overlay_target_resume_" + pane.profile.wireName);
+                return;
+            }
             helper.armOverlayFirstFrame(arm);
             handler.postDelayed(() -> firstFrameTimedOut(arm),
                     FIRST_FRAME_TIMEOUT_MS);

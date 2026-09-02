@@ -65,6 +65,7 @@ internal fun ReverseScreen(
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
                 },
+                profileStatus = profile.operation.status,
                 profileControls = profileControls,
                 controls = {
                     CameraProfileControls(profileId, profile, state.section, false, strings, colors, onAction,
@@ -82,6 +83,7 @@ internal fun ReverseScreen(
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
                 },
+                profileStatus = profile.operation.status,
                 profileControls = profileControls,
                 controls = {
                     if (state.section == CameraSection.Parameters) {

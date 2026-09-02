@@ -89,7 +89,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Stable
@@ -225,6 +227,8 @@ internal data class PressFeedback(
     val modifier: Modifier,
 )
 
+private const val VISUAL_PRESS_BEFORE_ACTION_MS = 90L
+
 @Composable
 internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
     val interactionSource = remember { MutableInteractionSource() }
@@ -237,6 +241,21 @@ internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
         scaleX = scale
         scaleY = scale
     })
+}
+
+/** Gives the pressed frame one render opportunity before synchronous navigation/dialog work. */
+@Composable
+internal fun rememberVisualFirstClick(onClick: () -> Unit): () -> Unit {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val latestOnClick by rememberUpdatedState(onClick)
+    return remember {
+        {
+            scope.launch {
+                delay(VISUAL_PRESS_BEFORE_ACTION_MS)
+                latestOnClick()
+            }
+        }
+    }
 }
 
 internal fun pressBackground(base: Color, colors: UiPalette, pressed: Boolean): Color =
@@ -322,12 +341,16 @@ internal fun Segmented(
         items.forEachIndexed { index, item ->
             val itemEnabled = enabled(index)
             val press = rememberPressFeedback(itemEnabled)
+            val visualClick = rememberVisualFirstClick {
+                focus.clearFocus()
+                onSelect(index)
+            }
             Box(Modifier.weight(1f).height(if (compact) 30.dp else 32.dp).clip(RoundedCornerShape(18.dp))
                 .background(pressBackground(if (index == selected) colors.accent else Color.Transparent, colors, press.pressed))
                 .then(press.modifier)
                 .clickable(interactionSource = press.interactionSource, indication = null,
                     enabled = itemEnabled, role = Role.Tab) {
-                    focus.clearFocus(); onSelect(index)
+                    visualClick()
                 },
                 contentAlignment = Alignment.Center) {
                 Text(item, color = if (!itemEnabled) colors.muted.copy(alpha = .4f)
@@ -372,6 +395,10 @@ internal fun ChoiceField(
     val selectedBackground = colors.accent.copy(alpha = if (colors.dark) .78f else .08f)
     val selectedContent = if (colors.dark) Color.White else colors.text
     val fieldPress = rememberPressFeedback(enabled)
+    val openMenu = rememberVisualFirstClick {
+        focusManager.clearFocus()
+        expanded = true
+    }
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
@@ -384,7 +411,7 @@ internal fun ChoiceField(
                 .then(fieldPress.modifier)
                 .clickable(interactionSource = fieldPress.interactionSource, indication = null,
                     enabled = enabled && choices.isNotEmpty(), role = Role.Button) {
-                    focusManager.clearFocus(); expanded = true
+                    openMenu()
                 }.padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center) {
                 Text(choices.getOrElse(safeSelected) { "—" }, color = selectedContent, fontSize = 14.sp,
@@ -398,12 +425,16 @@ internal fun ChoiceField(
                     .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)) {
                     choices.forEachIndexed { index, option ->
                         val optionPress = rememberPressFeedback(enabled)
+                        val choose = rememberVisualFirstClick {
+                            onSelect(index)
+                            expanded = false
+                        }
                         Box(Modifier.fillMaxWidth().height(40.dp)
                             .background(pressBackground(if (index == safeSelected) selectedBackground else Color.Transparent,
                                 colors, optionPress.pressed))
                             .then(optionPress.modifier)
                             .clickable(interactionSource = optionPress.interactionSource, indication = null,
-                                enabled = enabled, role = Role.Button) { onSelect(index); expanded = false },
+                                enabled = enabled, role = Role.Button) { choose() },
                             contentAlignment = Alignment.Center) {
                             Text(option, color = if (index == safeSelected) selectedContent else colors.text,
                                 fontSize = 14.sp,
@@ -612,11 +643,12 @@ internal fun sliderText(value: Float): String = value.roundToInt().toString()
 @Composable
 private fun NumberStep(symbol: String, title: String, colors: UiPalette, enabled: Boolean, onClick: () -> Unit) {
     val press = rememberPressFeedback(enabled)
+    val visualClick = rememberVisualFirstClick(onClick)
     Box(Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)).border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp))
         .background(pressBackground(if (enabled) colors.panelAlt else colors.disabled, colors, press.pressed))
         .then(press.modifier)
         .clickable(interactionSource = press.interactionSource, indication = null,
-            enabled = enabled, role = Role.Button, onClick = onClick)
+            enabled = enabled, role = Role.Button, onClick = visualClick)
         .semantics { contentDescription = "$title $symbol" }, contentAlignment = Alignment.Center) {
         Text(symbol, color = colors.text, fontSize = 20.sp)
     }
@@ -637,6 +669,7 @@ internal fun ActionButton(
     onClick: () -> Unit,
 ) {
     val press = rememberPressFeedback(enabled)
+    val visualClick = rememberVisualFirstClick(onClick)
     val background = when {
         !enabled -> colors.disabled
         destructive -> colors.redSoft
@@ -655,7 +688,7 @@ internal fun ActionButton(
         .background(pressBackground(background, colors, press.pressed))
         .then(press.modifier)
         .clickable(interactionSource = press.interactionSource, indication = null,
-            enabled = enabled, role = Role.Button, onClick = onClick)
+            enabled = enabled, role = Role.Button, onClick = visualClick)
         .padding(horizontal = if (maxLines > 1) 4.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
         icon?.let { Icon(it, null, tint = foreground, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)) }
@@ -673,6 +706,7 @@ internal fun ShutdownButton(
     onClick: () -> Unit,
 ) {
     val press = rememberPressFeedback()
+    val visualClick = rememberVisualFirstClick(onClick)
     val tint = colors.red
     val base = tint.copy(alpha = if (colors.dark) .20f else .12f)
     val pressed = tint.copy(alpha = if (colors.dark) .88f else .72f)
@@ -682,7 +716,7 @@ internal fun ShutdownButton(
             .background(if (press.pressed) pressed else base)
             .then(press.modifier)
             .clickable(interactionSource = press.interactionSource, indication = null,
-                role = Role.Button, onClick = onClick)
+                role = Role.Button, onClick = visualClick)
             .padding(6.dp),
         contentAlignment = Alignment.Center,
     ) {

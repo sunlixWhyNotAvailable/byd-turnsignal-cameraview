@@ -37,6 +37,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int armedFrameRequestId;
     private int armedFrameEpoch;
     private int armedFrameUpdates;
+    private long armedFrameAfterNanos;
+    private int armedInputGeneration;
     private int completedFrameRequestId;
     private int completedFrameEpoch;
     private boolean visible;
@@ -130,11 +132,14 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         armedFrameRequestId = arm.requestId;
         armedFrameEpoch = arm.frameArmEpoch;
         armedFrameUpdates = 0;
+        armedFrameAfterNanos = CameraOverlayProfile.isParking(cameraId) ? 0L : System.nanoTime();
+        armedInputGeneration = preview.cameraInputGeneration();
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
         emit("camera_overlay_frame", "state", "armed",
                 "request_id", requestId, "surface_generation", surfaceGeneration,
-                "frame_arm_epoch", arm.frameArmEpoch);
+                "frame_arm_epoch", arm.frameArmEpoch,
+                "frame_timestamp_after_ns", armedFrameAfterNanos);
     }
 
     void setVisible(
@@ -258,6 +263,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextRoot.setBackground(background);
 
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
+        nextPreview.setPreserveInputFrameTimestamp(!CameraOverlayProfile.isParking(cameraId));
         nextPreview.setPaneBoundedBuffer(spec.width, spec.height, spec.bufferQuality);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
@@ -401,17 +407,29 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
     @Override
     public void onCameraFrameUpdated(BlindSpotCameraView view) {
+        onCameraFrameUpdated(view, view.cameraInputGeneration());
+    }
+
+    @Override
+    public void onCameraFrameUpdated(BlindSpotCameraView view, int inputGeneration) {
         if (view != preview || armedFrameRequestId == 0 || armedFrameRequestId != requestId
                 || armedFrameEpoch <= 0
                 || (completedFrameRequestId == armedFrameRequestId
                         && completedFrameEpoch == armedFrameEpoch)) {
             return;
         }
-        if (!isFramePastStaleBuffer(++armedFrameUpdates)) return;
+        long frameTimestamp = view.cameraFrameTimestampNanos();
+        if (armedFrameAfterNanos > 0L) {
+            if (!isFreshStampedFrame(armedInputGeneration, inputGeneration,
+                    armedFrameAfterNanos, frameTimestamp)) return;
+        } else if (!isFramePastStaleBuffer(++armedFrameUpdates)) return;
         completedFrameRequestId = armedFrameRequestId;
         completedFrameEpoch = armedFrameEpoch;
-        emit("camera_overlay_first_frame", OverlayFrameArm.create(
-                cameraId, requestId, surfaceGeneration, armedFrameEpoch).eventFields());
+        emit("camera_overlay_first_frame",
+                "request_id", requestId, "surface_generation", surfaceGeneration,
+                "frame_arm_epoch", armedFrameEpoch,
+                "frame_timestamp_after_ns", armedFrameAfterNanos,
+                "frame_timestamp_ns", frameTimestamp);
     }
 
     private void emitDewarpStats(CameraDewarpRenderer.Stats stats) {
@@ -467,6 +485,12 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
     static boolean isFramePastStaleBuffer(int updatesAfterArm) {
         return updatesAfterArm >= 2;
+    }
+
+    static boolean isFreshStampedFrame(
+            int armedGeneration, int frameGeneration, long afterNanos, long frameNanos) {
+        return armedGeneration > 0 && frameGeneration == armedGeneration
+                && afterNanos > 0L && frameNanos > afterNanos;
     }
 
     static boolean samePaneSize(

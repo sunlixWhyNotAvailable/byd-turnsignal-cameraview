@@ -58,14 +58,13 @@ class ProductionUiControllerTest {
     }
 
     @Test
-    fun handoverAllowsUpdateConfirmationButRejectsPresetLoad() {
+    fun handoverDispatchesUpdateDirectlyButRejectsPresetLoad() {
         val preferences = TestSharedPreferences()
         val backend = FakeBackend(preferences).also { it.blocked = true }
         val controller = ProductionUiController(preferences, backend)
 
         controller.dispatch(BydExtendUiAction.Run(CommandId.CheckForUpdates))
-        assertTrue(controller.state.dialog != null)
-        controller.dispatch(BydExtendUiAction.Run(CommandId.ConfirmDialog))
+        assertEquals(null, controller.state.dialog)
         assertTrue(backend.actions.any {
             it == BydExtendUiAction.Run(CommandId.CheckForUpdates)
         })
@@ -129,6 +128,26 @@ class ProductionUiControllerTest {
 
         assertTrue(controller.state.debug.manualSignalsAllowed)
         assertEquals(status, controller.state.debug.manualSignalStatus)
+    }
+
+    @Test
+    fun diagnosticTerminalStatusReenablesSelectionAndProfileStatusIsVisible() {
+        val preferences = TestSharedPreferences()
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+        val opening = StatusUiState("Opening", StatusTone.Warning, true)
+        controller.setDiagnosticStatus(false, opening, pending = true)
+        assertTrue(controller.state.debug.avmOperation.pending)
+        assertFalse(controller.state.debug.avmOperation.enabled)
+
+        val closed = StatusUiState("Camera closed", StatusTone.Warning, true)
+        controller.setDiagnosticStatus(false, closed, pending = false)
+        assertFalse(controller.state.debug.avmOperation.pending)
+        assertTrue(controller.state.debug.avmOperation.enabled)
+
+        val profile = CameraProfileId.Parking(ParkingView.FrontLeft)
+        controller.setProfileStatus(profile, opening, pending = true)
+        assertTrue(controller.state.parking.views.getValue(profile.view).profile.operation.pending)
+        assertFalse(controller.state.parking.views.getValue(profile.view).profile.operation.enabled)
     }
 
     @Test

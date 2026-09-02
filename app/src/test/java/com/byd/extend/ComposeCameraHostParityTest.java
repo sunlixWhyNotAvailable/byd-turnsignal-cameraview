@@ -42,6 +42,41 @@ public final class ComposeCameraHostParityTest {
     }
 
     @Test
+    public void calibrationStagesUseStableKeysAndProfileStatusIsRendered() throws Exception {
+        String ui = readMain("kotlin/com/byd/extend/ui/CameraUiCommon.kt");
+        String blindParking = readMain("kotlin/com/byd/extend/ui/BlindParkingScreens.kt");
+        String reverse = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
+        String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
+        assertTrue(ui.contains("key(CameraHostKind.CalibrationOriginal)"));
+        assertTrue(ui.contains("key(CameraHostKind.CalibrationCorrected)"));
+        assertTrue(ui.contains("key(CameraHostKind.CalibrationOutput)"));
+        assertTrue(ui.contains("profileStatus: StatusUiState = StatusUiState()"));
+        assertTrue(ui.contains("StatusPill(profileStatus, strings.text(\"Статус\", \"Status\"), colors)"));
+        assertTrue(blindParking.contains("profileStatus = profile.operation.status"));
+        assertTrue(blindParking.contains("profileStatus = viewState.profile.operation.status"));
+        assertTrue(reverse.contains("profileStatus = profile.operation.status"));
+        assertTrue(activity.contains("if (profile instanceof CameraProfileId.Blind) return tab == TAB_CAMERAS;"));
+        assertTrue(activity.contains("if (profile instanceof CameraProfileId.Parking) return tab == TAB_PARKING_CAMERAS;"));
+        assertTrue(activity.contains("if (profile instanceof CameraProfileId.Reverse) return tab == TAB_REVERSE_CAMERAS;"));
+        assertTrue(activity.contains("\"First frame ready\", StatusTone.Ok, false"));
+        assertTrue(activity.contains("localizedCameraStatus(text)"));
+        assertTrue(activity.contains("!\"stock_avm_shell\".equals(source)"));
+        assertTrue(activity.contains("isDiagnosticStageIdentityMatch("));
+        assertFalse(activity.contains("activeActivityCameraRequestStartedAtMs"));
+        assertTrue(activity.contains("!isCurrentDiagnosticStageEvent(json)"));
+    }
+
+    @Test
+    public void redundantUpdatePromptAndBackgroundToastAreAbsent() throws Exception {
+        String controller = readMain("kotlin/com/byd/extend/ui/ProductionUiController.kt");
+        String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
+        assertTrue(controller.contains("if (command == CommandId.CheckForUpdates)"));
+        assertTrue(controller.contains("backend.onProductionUiAction(BydExtendUiAction.Run(command))"));
+        assertFalse(controller.contains("Check whether a newer BYD Extend version is available?"));
+        assertFalse(activity.contains("Вимкніть BYD Extend у списку Disable background Apps"));
+    }
+
+    @Test
     public void placementUsesVisibleGeometryAndPersistsBoundedDrag() throws Exception {
         String ui = readMain("kotlin/com/byd/extend/ui/CameraPlacementPreview.kt");
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");

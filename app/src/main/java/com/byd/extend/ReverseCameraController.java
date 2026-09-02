@@ -28,7 +28,6 @@ final class ReverseCameraController {
     private static final long SURFACE_TIMEOUT_MS = 8_000;
     private static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
     private static final long RETRY_MS = 3_000;
-    private static final long GEAR_FRESHNESS_MS = 12_000;
 
     private final Handler handler;
     private final SharedPreferences settings;
@@ -37,13 +36,6 @@ final class ReverseCameraController {
     private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
     private final Runnable surfaceTimeout = () -> fail("surface_timeout");
     private final Runnable firstFrameTimeout = () -> fail("first_frame_timeout");
-    private final Runnable gearFreshnessTimeout = () -> {
-        gearValid = false;
-        reverse = false;
-        emit("reverse_camera_error", "stage", "gear_stale",
-                "timeout_ms", GEAR_FRESHNESS_MS);
-        stop("gear_stale", false);
-    };
     private final Runnable retry = () -> {
         retryScheduled = false;
         evaluate();
@@ -113,10 +105,6 @@ final class ReverseCameraController {
                 gearValid = event.optBoolean("valid", false)
                         && event.optBoolean("listener_ok", false);
                 reverse = gearValid && event.optBoolean("reverse", false);
-                handler.removeCallbacks(gearFreshnessTimeout);
-                if (reverse) {
-                    handler.postDelayed(gearFreshnessTimeout, GEAR_FRESHNESS_MS);
-                }
                 emit("reverse_camera_decision", "gear_valid", gearValid,
                         "reverse", reverse, "enabled", enabled(),
                         "gear_raw", event.optInt("raw", -1));
@@ -125,13 +113,11 @@ final class ReverseCameraController {
                     && !event.optBoolean("listener_ok", false)) {
                 gearValid = false;
                 reverse = false;
-                handler.removeCallbacks(gearFreshnessTimeout);
                 stop("gear_listener_unavailable", false);
             } else if ("helper_death".equals(kind)
                     || "helper_ping_failed".equals(kind)) {
                 gearValid = false;
                 reverse = false;
-                handler.removeCallbacks(gearFreshnessTimeout);
                 stop("gear_helper_unavailable", false);
             } else if ("camera_opened".equals(kind)
                     && "reverse".equals(event.optString("camera_owner"))) {
@@ -198,7 +184,6 @@ final class ReverseCameraController {
     void shutdown() {
         shutdown = true;
         cancelTimers();
-        handler.removeCallbacks(gearFreshnessTimeout);
         clearCleanupRetry();
         shellRecovery.clear();
         pendingShellRecoveryRequestId = 0;
@@ -491,7 +476,6 @@ final class ReverseCameraController {
 
     private void resetRuntime(String reason) {
         cancelTimers();
-        handler.removeCallbacks(gearFreshnessTimeout);
         clearCleanupRetry();
         activeRequestId = 0;
         pendingShellRecoveryRequestId = 0;

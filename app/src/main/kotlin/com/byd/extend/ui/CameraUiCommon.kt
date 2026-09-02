@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +51,7 @@ internal fun CameraWorkspace(
     strings: UiStrings,
     colors: UiPalette,
     onSection: (CameraSection) -> Unit,
+    profileStatus: StatusUiState = StatusUiState(),
     profileControls: @Composable ColumnScope.() -> Unit,
     controls: @Composable ColumnScope.() -> Unit,
     preview: @Composable ColumnScope.() -> Unit,
@@ -57,7 +59,9 @@ internal fun CameraWorkspace(
     Row(Modifier.fillMaxSize().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.width(400.dp).fillMaxHeight().verticalScroll(LocalPrimaryScroll.current),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"), content = profileControls)
+            Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"),
+                trailing = { StatusPill(profileStatus, strings.text("Статус", "Status"), colors) },
+                content = profileControls)
             Section("", colors, Modifier.testTag("camera-settings"), header = {
                 Segmented(if (reverse) strings.reverseSections else strings.cameraSections, section.ordinal, colors,
                     Modifier.fillMaxWidth().padding(start = 6.dp, top = 6.dp, end = 6.dp),
@@ -217,15 +221,21 @@ internal fun CameraProfilePreview(
                 CameraHostKind.Placement, profile, sourceIndex = sourceIndex, editable = true))
         }
         CameraSection.Calibration -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CameraStageFrame(strings.text("Оригінал", "Original"), SOURCE_CAMERA_ASPECT, colors, Modifier.weight(1f)) {
-                cameraHost(CameraHostSlot(CameraHostKind.CalibrationOriginal, profile, sourceIndex = sourceIndex))
+            key(CameraHostKind.CalibrationOriginal) {
+                CameraStageFrame(strings.text("Оригінал", "Original"), SOURCE_CAMERA_ASPECT, colors, Modifier.weight(1f)) {
+                    cameraHost(CameraHostSlot(CameraHostKind.CalibrationOriginal, profile, sourceIndex = sourceIndex))
+                }
             }
-            if (state.calibration.correctionEnabled) CameraStageFrame(strings.text("Корекція", "Correction"), SOURCE_CAMERA_ASPECT,
-                colors, Modifier.weight(1f)) {
-                cameraHost(CameraHostSlot(CameraHostKind.CalibrationCorrected, profile, sourceIndex = sourceIndex))
+            if (state.calibration.correctionEnabled) key(CameraHostKind.CalibrationCorrected) {
+                CameraStageFrame(strings.text("Корекція", "Correction"), SOURCE_CAMERA_ASPECT,
+                    colors, Modifier.weight(1f)) {
+                    cameraHost(CameraHostSlot(CameraHostKind.CalibrationCorrected, profile, sourceIndex = sourceIndex))
+                }
             }
-            CameraStageFrame(strings.text("Вивід", "Output"), state.frameAspect, colors, Modifier.weight(1f)) {
-                cameraHost(CameraHostSlot(CameraHostKind.CalibrationOutput, profile, sourceIndex = sourceIndex))
+            key(CameraHostKind.CalibrationOutput) {
+                CameraStageFrame(strings.text("Вивід", "Output"), state.frameAspect, colors, Modifier.weight(1f)) {
+                    cameraHost(CameraHostSlot(CameraHostKind.CalibrationOutput, profile, sourceIndex = sourceIndex))
+                }
             }
         }
     }

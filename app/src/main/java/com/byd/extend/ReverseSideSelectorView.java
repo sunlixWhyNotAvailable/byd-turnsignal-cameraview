@@ -6,6 +6,8 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -34,16 +36,21 @@ final class ReverseSideSelectorView extends View {
     private static final int ACTIVE_COLOR = 0xFF29A9FF;
     private static final int ACTIVE_BUTTON_COLOR = 0xFF147CC1;
     private static final int PRESSED_BUTTON_COLOR = 0xFF0D5D97;
+    static final long VISUAL_PRESS_BEFORE_ACTION_MS = 90L;
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Listener listener;
     private int mode = MODE_REAR;
     private boolean leftVisible;
     private boolean rightVisible;
     private boolean centerVisible;
     private int pressedMode = -1;
+    private int pendingMode = -1;
+    private long pendingGeneration;
+    private Runnable pendingAction;
 
     ReverseSideSelectorView(Context context) {
         super(context);
@@ -64,7 +71,9 @@ final class ReverseSideSelectorView extends View {
 
     void setMode(int value) {
         int next = requireMode(value);
+        cancelPendingModeChange();
         if (mode == next) {
+            pressedMode = -1;
             invalidate();
             return;
         }
@@ -83,6 +92,13 @@ final class ReverseSideSelectorView extends View {
         if (value != -1) requireMode(value);
         if (pressedMode == value) return;
         pressedMode = value;
+        invalidate();
+    }
+
+    /** Cancels an action whose transparent host or parent was detached before its press frame. */
+    void cancelPendingPress() {
+        cancelPendingModeChange();
+        pressedMode = -1;
         invalidate();
     }
 
@@ -141,6 +157,7 @@ final class ReverseSideSelectorView extends View {
         float y = event.getY() / getHeight();
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                cancelPendingModeChange();
                 pressedMode = modeAtNormalized(x, y);
                 if (pressedMode < 0) return false;
                 invalidate();
@@ -151,16 +168,16 @@ final class ReverseSideSelectorView extends View {
                 return true;
             case MotionEvent.ACTION_UP:
                 int selected = pressedMode;
-                pressedMode = -1;
                 if (selected >= 0 && modeAtNormalized(x, y) == selected) {
-                    setMode(selected);
+                    scheduleModeChange(selected);
                     performClick();
+                } else {
+                    pressedMode = -1;
                 }
                 invalidate();
                 return selected >= 0;
             case MotionEvent.ACTION_CANCEL:
-                pressedMode = -1;
-                invalidate();
+                cancelPendingPress();
                 return true;
             default:
                 return pressedMode >= 0;
@@ -171,6 +188,12 @@ final class ReverseSideSelectorView extends View {
     public boolean performClick() {
         super.performClick();
         return true;
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        cancelPendingPress();
+        super.onDetachedFromWindow();
     }
 
     private void drawButton(
@@ -243,6 +266,28 @@ final class ReverseSideSelectorView extends View {
 
     private float dp(float value) {
         return value * getResources().getDisplayMetrics().density;
+    }
+
+    private void scheduleModeChange(int next) {
+        cancelPendingModeChange();
+        pendingMode = next;
+        long generation = ++pendingGeneration;
+        pendingAction = () -> {
+            if (generation != pendingGeneration || pendingMode != next) return;
+            pendingAction = null;
+            pendingMode = -1;
+            pressedMode = -1;
+            invalidate();
+            if (listener != null) setMode(next);
+        };
+        mainHandler.postDelayed(pendingAction, VISUAL_PRESS_BEFORE_ACTION_MS);
+    }
+
+    private void cancelPendingModeChange() {
+        ++pendingGeneration;
+        if (pendingAction != null) mainHandler.removeCallbacks(pendingAction);
+        pendingAction = null;
+        if (pendingMode >= 0) pendingMode = -1;
     }
 
     private static boolean contains(float[] rect, float x, float y) {

@@ -378,14 +378,15 @@ class ProductionUiController(
     fun showDialog(dialog: DialogUiState?) { state = state.copy(dialog = dialog) }
 
     fun setDiagnosticStatus(direct: Boolean, status: StatusUiState, pending: Boolean = false) {
+        val operation = OperationUiState(enabled = !pending, pending = pending, status = status)
         state = state.copy(debug = if (direct) state.debug.copy(
-            directOperation = state.debug.directOperation.copy(status = status, pending = pending))
+            directOperation = operation)
         else state.debug.copy(
-            avmOperation = state.debug.avmOperation.copy(status = status, pending = pending)))
+            avmOperation = operation))
     }
 
     fun setProfileStatus(profile: CameraProfileId, status: StatusUiState, pending: Boolean = false) {
-        val operation = OperationUiState(enabled = true, pending = pending, status = status)
+        val operation = OperationUiState(enabled = !pending, pending = pending, status = status)
         state = when (profile) {
             is CameraProfileId.Blind -> state.copy(blind = state.blind.copy(
                 profiles = state.blind.profiles + (profile to
@@ -667,6 +668,14 @@ class ProductionUiController(
     }
 
     private fun interceptDialogCommand(command: CommandId): Boolean {
+        // Update availability/results already provide the meaningful confirmation surface.
+        // Dispatch the check directly and keep the explanatory background dialog below.
+        if (command == CommandId.CheckForUpdates) {
+            pendingDialogCommand = null
+            state = state.copy(dialog = null)
+            backend.onProductionUiAction(BydExtendUiAction.Run(command))
+            return true
+        }
         val english = state.language == UiLanguage.English
         val dialog = when (command) {
             CommandId.OpenBackgroundSettings -> DialogUiState(
@@ -674,13 +683,6 @@ class ProductionUiController(
                 if (english) "Background work" else "Робота у фоні",
                 if (english) "Check this after every install or update, otherwise DiLink can stop HUD while the app is in the background."
                 else "Це потрібно перевірити після кожного встановлення або оновлення, інакше DiLink може зупинити HUD у фоні.",
-                cancellable = false,
-            )
-            CommandId.CheckForUpdates -> DialogUiState(
-                DialogKind.Update,
-                if (english) "Application update" else "Оновлення застосунку",
-                if (english) "Check whether a newer BYD Extend version is available?"
-                else "Перевірити, чи доступна новіша версія BYD Extend?",
                 cancellable = false,
             )
             else -> null

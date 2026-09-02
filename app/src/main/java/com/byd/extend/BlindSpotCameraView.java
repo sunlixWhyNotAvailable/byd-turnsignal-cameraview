@@ -65,6 +65,7 @@ final class BlindSpotCameraView extends TextureView
     private int dewarpGeneration;
     private long dewarpRequestToken;
     private boolean forceDewarpPipeline;
+    private boolean preserveInputFrameTimestamp;
     private boolean externalTransform;
     private float dewarpRoiCenterX = 0.5f;
     private float dewarpRoiCenterY = 0.5f;
@@ -103,6 +104,21 @@ final class BlindSpotCameraView extends TextureView
 
     int cameraInputGeneration() {
         return cameraSurface == null ? 0 : inputGeneration.current();
+    }
+
+    void setPreserveInputFrameTimestamp(boolean value) {
+        preserveInputFrameTimestamp = value;
+        if (dewarpRenderer != null) dewarpRenderer.setPreserveInputFrameTimestamp(value);
+    }
+
+    long cameraFrameTimestampNanos() {
+        SurfaceTexture texture = getSurfaceTexture();
+        if (texture == null || !isCameraSurfaceReady()) return 0L;
+        try {
+            return texture.getTimestamp();
+        } catch (RuntimeException releasedTexture) {
+            return 0L;
+        }
     }
 
     boolean isCameraSurfaceReady() {
@@ -419,6 +435,7 @@ final class BlindSpotCameraView extends TextureView
             return;
         }
         cameraSurface = surface;
+        renderer.setPreserveInputFrameTimestamp(preserveInputFrameTimestamp);
         renderer.setRawMirror(rawMirrorTexture);
         renderer.setCorrectedMirror(correctedMirrorTexture);
         setRawFallbackActive(false);
@@ -523,8 +540,10 @@ final class BlindSpotCameraView extends TextureView
 
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture texture) {
-        if (callback != null && cameraSurface != null) {
-            callback.onCameraFrameUpdated(this, inputGeneration.frame());
+        if (texture == getSurfaceTexture() && callback != null && cameraSurface != null) {
+            // Timestamped shell output proves freshness; other hosts retain their retirement gate.
+            callback.onCameraFrameUpdated(this, preserveInputFrameTimestamp
+                    ? inputGeneration.current() : inputGeneration.frame());
         }
     }
 

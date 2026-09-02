@@ -9,6 +9,44 @@ import static org.junit.Assert.assertTrue;
 
 public final class OverlayFreshnessTest {
     @Test
+    public void firstCurrentStampedFramePassesWithoutASecondUpdate() {
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 999L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 1_000L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 8, 1_000L, 1_001L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(0, 0, 1_000L, 1_001L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 0L, 1_001L));
+        assertTrue(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 1_001L));
+        // Parking has no timestamp contract and retains its existing two-update gate.
+        assertFalse(ShellCameraOverlay.isFramePastStaleBuffer(1));
+        assertTrue(ShellCameraOverlay.isFramePastStaleBuffer(2));
+    }
+
+    @Test
+    public void stampedBufferTimeSurvivesDewarpAndDoesNotChangeTheWireProtocol() throws Exception {
+        String hub = source("DirectCameraSourceHub.java");
+        String renderer = source("CameraDewarpRenderer.java");
+        String overlay = source("ShellCameraOverlay.java");
+        String view = source("BlindSpotCameraView.java");
+        assertTrue(hub.indexOf("acquiredFrameTimestampNanos = System.nanoTime()")
+                < hub.indexOf("texture.updateTexImage()"));
+        assertTrue(hub.contains("draw(target, acquiredFrameTimestampNanos)"));
+        assertTrue(hub.contains("display, target.eglSurface, acquiredFrameTimestampNanos)"));
+        assertTrue(renderer.contains("preserveTimestamp ? inputTimestamp : 0L"));
+        assertTrue(renderer.indexOf("eglDisplay, surface, presentationTimestamp)")
+                < renderer.indexOf("EGL14.eglSwapBuffers(eglDisplay, surface)"));
+        assertTrue(overlay.contains(
+                "setPreserveInputFrameTimestamp(!CameraOverlayProfile.isParking(cameraId))"));
+        assertTrue(view.contains("texture == getSurfaceTexture() && callback != null"));
+        assertTrue(view.contains("? inputGeneration.current() : inputGeneration.frame()"));
+        assertEquals(27, CameraShellProtocol.VERSION);
+    }
+
+    private static String source(String name) throws Exception {
+        return new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
+                "src/main/java/com/byd/extend/" + name)), java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    @Test
     public void visibilityCompletionOrdersHidePauseAndRejectsStaleOrFailedCallbacks() {
         assertEquals(BlindSpotOverlayController.VISIBILITY_COMPLETION_PAUSE,
                 BlindSpotOverlayController.visibilityCompletionAction(

@@ -39,6 +39,7 @@ internal fun BlindScreen(
             onSection = {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
             },
+            profileStatus = profile.operation.status,
             profileControls = {
                 Row(Modifier.height(40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Segmented(listOf(strings.text("Задні", "Rear"), strings.text("Передні", "Front")),
@@ -139,6 +140,7 @@ internal fun ParkingScreen(
             onSection = {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
             },
+            profileStatus = viewState.profile.operation.status,
             profileControls = {
                 ChoiceField(strings.text("Вид камери", "Camera view"), strings.parkingViews, view.ordinal,
                     { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ParkingView), it)) }, colors)

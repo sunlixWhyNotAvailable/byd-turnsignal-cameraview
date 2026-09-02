@@ -2,6 +2,10 @@ package com.byd.extend;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -106,6 +110,21 @@ public final class ReverseCameraControllerCleanupTest {
         assertEquals(1, harness.coordinator.closeAttempts());
         assertEquals(0, harness.priorityReleases);
         assertEquals(0, harness.stoppedEvents);
+    }
+
+    @Test
+    public void stableReverseGearHasNoFreshnessExpiry() throws Exception {
+        String source = readMainSource("ReverseCameraController.java");
+
+        assertFalse(source.contains("GEAR_FRESHNESS_MS"));
+        assertFalse(source.contains("gearFreshnessTimeout"));
+        assertFalse(source.contains("gear_stale"));
+    }
+
+    private static String readMainSource(String name) throws Exception {
+        Path path = Paths.get("src/main/java/com/byd/extend", name);
+        if (!Files.exists(path)) path = Paths.get("app/src/main/java/com/byd/extend", name);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 
     private static final class Harness {

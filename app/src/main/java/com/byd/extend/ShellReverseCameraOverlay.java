@@ -3,6 +3,8 @@ package com.byd.extend;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Point;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Display;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -13,9 +15,11 @@ import java.util.function.BiConsumer;
 
 final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Callback {
     private static final String WINDOW_TITLE = "BYD trusted reverse cameras";
+    private static final long VISUAL_PRESS_BEFORE_ACTION_MS = 90L;
 
     private final Context context;
     private final BiConsumer<String, Object[]> eventSink;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private WindowlessOverlayHost windowless;
     private WindowlessOverlayHost frontControl;
@@ -30,6 +34,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private boolean active;
     private boolean closing;
     private boolean blockedRevealReported;
+    private long selectorActionGeneration;
+    private Runnable pendingSelectorAction;
 
     ShellReverseCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
         this.context = context;
@@ -217,6 +223,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         activeRoot.setCallback(null);
         closing = true;
         try {
+            cancelPendingSelectorAction();
             setControlsVisible(false);
             if (activeHost != null) {
                 activeHost.quiesce();
@@ -473,9 +480,13 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             if (currentRoot != null) {
                 int action = event.getActionMasked();
                 if (action == MotionEvent.ACTION_DOWN) {
+                    cancelPendingSelectorAction();
                     currentRoot.setSelectorPressed(mode, true);
-                } else if (action == MotionEvent.ACTION_UP
-                        || action == MotionEvent.ACTION_CANCEL) {
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    cancelPendingSelectorAction();
+                    currentRoot.setSelectorPressed(mode, false);
+                } else if (action == MotionEvent.ACTION_UP) {
+                    // Android may suppress the click after a drag-out; only OnClick re-latches it.
                     currentRoot.setSelectorPressed(mode, false);
                 }
             }
@@ -483,9 +494,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         });
         button.setOnClickListener(view -> {
             if (root == null) return;
-            root.setSideMode(mode);
-            emit("reverse_overlay_selector", "request_id", requestId,
-                    "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
+            scheduleSelectorAction(mode);
         });
         WindowlessOverlayHost host = new WindowlessOverlayHost(
                 windowContext, display, WindowlessOverlayHost.REVERSE_CONTROL_LAYER,
@@ -498,6 +507,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     private void setControlsVisible(boolean nextVisible) {
         if (!nextVisible && root != null) {
+            cancelPendingSelectorAction();
             root.setSelectorPressed(ReverseSideSelectorView.MODE_FRONT, false);
             root.setSelectorPressed(ReverseSideSelectorView.MODE_REAR, false);
         }
@@ -517,7 +527,36 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "request_id", requestId, "error", summary(error));
     }
 
+    private void scheduleSelectorAction(int mode) {
+        cancelPendingSelectorAction();
+        // Cancellation clears stale overlays; re-latch the button that generated this click
+        // until its delayed backend action runs so a rebuild cannot erase the press frame.
+        if (root != null) root.setSelectorPressed(mode, true);
+        final long generation = ++selectorActionGeneration;
+        pendingSelectorAction = () -> {
+            if (generation != selectorActionGeneration || root == null || !active || closing) return;
+            pendingSelectorAction = null;
+            root.setSelectorPressed(mode, false);
+            root.setSideMode(mode);
+            emit("reverse_overlay_selector", "request_id", requestId,
+                    "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
+        };
+        mainHandler.postDelayed(pendingSelectorAction, VISUAL_PRESS_BEFORE_ACTION_MS);
+    }
+
+    private void cancelPendingSelectorAction() {
+        ++selectorActionGeneration;
+        if (pendingSelectorAction != null) mainHandler.removeCallbacks(pendingSelectorAction);
+        pendingSelectorAction = null;
+        if (root != null) {
+            root.setSelectorPressed(ReverseSideSelectorView.MODE_FRONT, false);
+            root.setSelectorPressed(ReverseSideSelectorView.MODE_REAR, false);
+            root.cancelPendingSelectorPress();
+        }
+    }
+
     private void releaseControls() {
+        cancelPendingSelectorAction();
         WindowlessOverlayHost activeFront = frontControl;
         WindowlessOverlayHost activeRear = rearControl;
         quiesceHost(activeFront);

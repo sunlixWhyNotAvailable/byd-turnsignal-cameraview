@@ -6,6 +6,12 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.byd.extend.ui.CameraHostKind;
+import com.byd.extend.ui.CameraHostSlot;
+import com.byd.extend.ui.CameraProfileId;
+import com.byd.extend.ui.CameraGroup;
+import com.byd.extend.ui.CameraSide;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
@@ -13,6 +19,44 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
+    @Test
+    public void calibrationHostOwnershipFollowsTheActualProfileRootTab() {
+        CameraHostSlot blind = new CameraHostSlot(CameraHostKind.CalibrationOriginal,
+                new CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left), null, null, null, false);
+        CameraHostSlot parking = new CameraHostSlot(CameraHostKind.CalibrationCorrected,
+                new CameraProfileId.Parking(com.byd.extend.ui.ParkingView.FrontLeft), null, null, null, false);
+        CameraHostSlot reverse = new CameraHostSlot(CameraHostKind.CalibrationOutput,
+                new CameraProfileId.Reverse(com.byd.extend.ui.ReverseElement.RearLeft,
+                        com.byd.extend.ui.ReverseSource.Rear), null, null, null, false);
+        assertTrue(CameraProbeActivity.slotBelongsToTab(blind, 1));
+        assertFalse(CameraProbeActivity.slotBelongsToTab(blind, 4));
+        assertTrue(CameraProbeActivity.slotBelongsToTab(parking, 8));
+        assertFalse(CameraProbeActivity.slotBelongsToTab(parking, 4));
+        assertTrue(CameraProbeActivity.slotBelongsToTab(reverse, 5));
+        assertFalse(CameraProbeActivity.slotBelongsToTab(reverse, 4));
+    }
+
+    @Test
+    public void diagnosticStageTerminalEventsClearPending() {
+        assertTrue(CameraProbeActivity.isTerminalDiagnosticStage("closed"));
+        assertTrue(CameraProbeActivity.isTerminalDiagnosticStage("open_error"));
+        assertTrue(CameraProbeActivity.isTerminalDiagnosticStage("request_completed"));
+        assertFalse(CameraProbeActivity.isTerminalDiagnosticStage("set_viewpoint"));
+    }
+
+    @Test
+    public void lateUnkeyedOrRetiredAvmStageCannotAffectTheCurrentRequest() {
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 0, 123, 0));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 0, 123, 123));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 6, 123, 123));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(0, 0, 123, 123));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 7, 123, 122));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 7, 0, 123));
+        assertFalse(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 7, 123, -1));
+        assertTrue(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 7, 123, 0));
+        assertTrue(CameraProbeActivity.isDiagnosticStageIdentityMatch(7, 7, 123, 123));
+    }
+
     @Test
     public void reverseRotationPreviewKeepsBothStageGeometriesWithoutWrites() {
         for (boolean front : new boolean[]{false, true}) {
