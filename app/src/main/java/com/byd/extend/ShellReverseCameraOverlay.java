@@ -70,11 +70,29 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 quiesce("camera_geometry_changed");
                 throw new CameraShellProtocol.PrepareRestartRequired(
                         "camera_geometry_changed");
-            } else if (!root.usesPaneBoundedBuffers(
-                    spec.layout, size.x, size.y, spec.bufferQuality)) {
-                quiesce("camera_buffer_size_changed");
-                throw new CameraShellProtocol.PrepareRestartRequired(
-                        "camera_buffer_size_changed");
+            } else {
+                // Capture the compared values once, before quiesce clears the central-front
+                // role; otherwise a central-front-only mismatch would lose its diagnostics.
+                ReverseCameraCompositionView.PaneBufferMismatch mismatch =
+                        root.firstPaneBufferMismatch(
+                                spec.layout, size.x, size.y, spec.bufferQuality);
+                if (mismatch != null) {
+                    quiesce("camera_buffer_size_changed");
+                    throw new CameraShellProtocol.PrepareRestartRequired(
+                            "camera_buffer_size_changed",
+                            "source_index", mismatch.sourceIndex,
+                            "quality", mismatch.quality,
+                            "viewport_width", mismatch.viewportWidth,
+                            "viewport_height", mismatch.viewportHeight,
+                            "retained_viewport_width", mismatch.retainedViewportWidth,
+                            "retained_viewport_height", mismatch.retainedViewportHeight,
+                            "pane_width", mismatch.paneWidth,
+                            "pane_height", mismatch.paneHeight,
+                            "expected_buffer_width", mismatch.expectedBufferWidth,
+                            "expected_buffer_height", mismatch.expectedBufferHeight,
+                            "actual_buffer_width", mismatch.actualBufferWidth,
+                            "actual_buffer_height", mismatch.actualBufferHeight);
+                }
             }
         }
         requestId = spec.requestId;
@@ -529,17 +547,19 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     private void scheduleSelectorAction(int mode) {
         cancelPendingSelectorAction();
-        // Cancellation clears stale overlays; re-latch the button that generated this click
-        // until its delayed backend action runs so a rebuild cannot erase the press frame.
-        if (root != null) root.setSelectorPressed(mode, true);
+        ReverseCameraCompositionView currentRoot = root;
+        if (currentRoot == null || !active || closing) return;
+        // Dispatch the actual selector change immediately.  Only the visual press state is held
+        // for the BYD-HUD 90 ms feedback window; cancellation/hide still clears it below.
+        currentRoot.setSideMode(mode);
+        emit("reverse_overlay_selector", "request_id", requestId,
+                "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
+        currentRoot.setSelectorPressed(mode, true);
         final long generation = ++selectorActionGeneration;
         pendingSelectorAction = () -> {
             if (generation != selectorActionGeneration || root == null || !active || closing) return;
             pendingSelectorAction = null;
             root.setSelectorPressed(mode, false);
-            root.setSideMode(mode);
-            emit("reverse_overlay_selector", "request_id", requestId,
-                    "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
         };
         mainHandler.postDelayed(pendingSelectorAction, VISUAL_PRESS_BEFORE_ACTION_MS);
     }

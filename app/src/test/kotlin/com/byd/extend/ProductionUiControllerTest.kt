@@ -28,12 +28,88 @@ import com.byd.extend.ui.GuardNumber
 import com.byd.extend.ui.NumberTarget
 import com.byd.extend.ui.NumericDraftPolicy
 import com.byd.extend.ui.ProfileNumber
+import com.byd.extend.ui.SettingsOperation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProductionUiControllerTest {
+    @Test
+    fun exportFeedbackTracksOwnedProgressAndEveryTerminalOutcomeAcrossReload() {
+        for (operation in listOf(SettingsOperation.Logs, SettingsOperation.Compatibility)) {
+            for (terminal in listOf(
+                StatusUiState("Ready", StatusTone.Ok, true),
+                StatusUiState("Canceled", StatusTone.Warning, true),
+                StatusUiState("No archive", StatusTone.Warning, true),
+                StatusUiState("Export failed", StatusTone.Error, true),
+                StatusUiState("Share failed", StatusTone.Error, true),
+                StatusUiState("Activity inactive", StatusTone.Warning, true),
+            )) {
+                val preferences = TestSharedPreferences()
+                val controller = ProductionUiController(preferences, FakeBackend(preferences))
+                val profile = CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left)
+                val cameraStatus = StatusUiState("Opening", StatusTone.Warning, true)
+                controller.setProfileStatus(profile, cameraStatus, pending = true)
+                val header = controller.state.header
+                controller.setSettingsOperation(operation,
+                    StatusUiState("Preparing", StatusTone.Warning, true), true, claimFeedback = true)
+                controller.reload()
+                assertEquals(operation, controller.state.settings.feedbackOperation)
+                val progress = StatusUiState("Packing", StatusTone.Warning, true)
+                controller.setSettingsOperation(operation, progress, true)
+                assertEquals(progress, controller.state.settings.feedback)
+                controller.setSettingsOperation(operation, terminal, false)
+                assertEquals(terminal, controller.state.settings.feedback)
+                val actual = if (operation == SettingsOperation.Logs) controller.state.settings.logOperation
+                    else controller.state.settings.compatibilityOperation
+                assertFalse(actual.pending)
+                assertTrue(actual.enabled)
+                assertEquals(terminal, actual.status)
+                assertEquals(cameraStatus, controller.state.blind.profiles.getValue(profile).operation.status)
+                assertEquals(header, controller.state.header)
+            }
+        }
+    }
+
+    @Test
+    fun exportCompletionCannotOverwriteNewerFeedbackOrAnotherOwner() {
+        val preferences = TestSharedPreferences()
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+        val preparing = StatusUiState("Preparing", StatusTone.Warning, true)
+        val done = StatusUiState("Ready", StatusTone.Ok, true)
+        val other = StatusUiState("New settings feedback", StatusTone.Warning, true)
+        controller.setSettingsOperation(SettingsOperation.Logs, preparing, true, claimFeedback = true)
+        controller.setSettingsFeedback(other)
+        controller.setSettingsOperation(SettingsOperation.Logs, done, false)
+        assertEquals(other, controller.state.settings.feedback)
+        assertEquals(null, controller.state.settings.feedbackOperation)
+        assertEquals(done, controller.state.settings.logOperation.status)
+
+        controller.setSettingsOperation(SettingsOperation.Compatibility, preparing, true, claimFeedback = true)
+        controller.setSettingsOperation(SettingsOperation.Logs, done, false)
+        assertEquals(preparing, controller.state.settings.feedback)
+        assertEquals(SettingsOperation.Compatibility, controller.state.settings.feedbackOperation)
+        controller.setLegacyRuntimeBlocked(true)
+        val blocked = controller.state.settings.feedback
+        controller.setSettingsOperation(SettingsOperation.Compatibility, done, false)
+        assertEquals(blocked, controller.state.settings.feedback)
+        assertEquals(null, controller.state.settings.feedbackOperation)
+    }
+
+    @Test
+    fun reverseLayoutResetCarriesExactlyTheSelectedElementToBackend() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        for (element in ReverseElement.entries) {
+            val action = BydExtendUiAction.Run(CommandId.ReverseResetLayout, reverseElement = element)
+            controller.dispatch(action)
+            assertEquals(action, backend.actions.last())
+            assertEquals(element, (backend.actions.last() as BydExtendUiAction.Run).reverseElement)
+        }
+    }
+
     @Test
     fun blockedRuntimeActionIsRejectedAndForcesSettings() {
         val preferences = TestSharedPreferences().apply {

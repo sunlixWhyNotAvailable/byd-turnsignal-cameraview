@@ -123,7 +123,8 @@ class ProductionUiController(
                     settings = if (state.legacyRuntimeBlocked &&
                         state.settings.feedback.text == handoverReason(state.language)) {
                         state.settings.copy(feedback = StatusUiState(
-                            handoverReason(action.language), StatusTone.Warning, true))
+                            handoverReason(action.language), StatusTone.Warning, true),
+                            feedbackOperation = null)
                     } else state.settings,
                 )
             }
@@ -279,6 +280,8 @@ class ProductionUiController(
                 importOperation = old.settings.importOperation,
                 feedback = if (fresh.legacyRuntimeBlocked) fresh.settings.feedback
                     else old.settings.feedback,
+                feedbackOperation = if (fresh.legacyRuntimeBlocked) null
+                    else old.settings.feedbackOperation,
             ),
             debug = fresh.debug.copy(
                 mode = old.debug.mode,
@@ -319,7 +322,9 @@ class ProductionUiController(
                 StatusUiState()
             } else feedback
             state = state.copy(legacyRuntimeBlocked = false,
-                settings = state.settings.copy(feedback = cleared))
+                settings = state.settings.copy(feedback = cleared,
+                    feedbackOperation = if (cleared === feedback)
+                        state.settings.feedbackOperation else null))
             return
         }
         if (wasBlocked && state.activeTab == RootTab.Settings) return
@@ -329,7 +334,8 @@ class ProductionUiController(
             legacyRuntimeBlocked = true,
             activeTab = RootTab.Settings,
             settings = state.settings.copy(
-                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true)),
+                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true),
+                feedbackOperation = null),
         )
         preferences.edit().putInt("selected_tab", RootTab.Settings.legacyTab()).apply()
         if (previousTab != RootTab.Settings) {
@@ -355,16 +361,20 @@ class ProductionUiController(
     }
 
     fun setSettingsFeedback(status: StatusUiState) {
-        state = state.copy(settings = state.settings.copy(feedback = status))
+        state = state.copy(settings = state.settings.copy(
+            feedback = status, feedbackOperation = null))
     }
 
+    @JvmOverloads
     fun setSettingsOperation(
         operation: SettingsOperation,
         status: StatusUiState,
         pending: Boolean,
+        claimFeedback: Boolean = false,
     ) {
+        val updateFeedback = claimFeedback || state.settings.feedbackOperation == operation
         fun next() = OperationUiState(enabled = !pending, pending = pending, status = status)
-        state = state.copy(settings = when (operation) {
+        val settings = when (operation) {
             SettingsOperation.AutoStart -> state.settings.copy(automaticStartOperation = next())
             SettingsOperation.Adb -> state.settings.copy(adbOperation = next())
             SettingsOperation.Update -> state.settings.copy(updateOperation = next())
@@ -372,7 +382,9 @@ class ProductionUiController(
             SettingsOperation.Compatibility -> state.settings.copy(compatibilityOperation = next())
             SettingsOperation.Preset -> state.settings.copy(presetOperation = next())
             SettingsOperation.Import -> state.settings.copy(importOperation = next())
-        })
+        }
+        state = state.copy(settings = if (updateFeedback) settings.copy(
+            feedback = status, feedbackOperation = operation) else settings)
     }
 
     fun showDialog(dialog: DialogUiState?) { state = state.copy(dialog = dialog) }
@@ -556,7 +568,8 @@ class ProductionUiController(
         }
         if (state.legacyRuntimeBlocked) {
             state = state.copy(settings = state.settings.copy(
-                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true)))
+                feedback = StatusUiState(handoverReason(state.language), StatusTone.Warning, true),
+                feedbackOperation = null))
         }
     }
 

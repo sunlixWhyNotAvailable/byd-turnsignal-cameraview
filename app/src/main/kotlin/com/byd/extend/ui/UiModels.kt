@@ -399,6 +399,7 @@ data class SettingsUiState(
     val importOperation: OperationUiState = OperationUiState(),
     val restoreLegacyAccessVisible: Boolean = false,
     val feedback: StatusUiState = StatusUiState(),
+    val feedbackOperation: SettingsOperation? = null,
 )
 
 @Immutable
@@ -484,7 +485,11 @@ sealed interface BydExtendUiAction {
     ) : BydExtendUiAction
     @Immutable data class Select(val target: SelectionTarget, val index: Int) : BydExtendUiAction
     @Immutable data class MoveProfile(val profile: CameraProfileId, val x: Float, val y: Float) : BydExtendUiAction
-    @Immutable data class Run(val command: CommandId, val profile: CameraProfileId? = null) : BydExtendUiAction
+    @Immutable data class Run @JvmOverloads constructor(
+        val command: CommandId,
+        val profile: CameraProfileId? = null,
+        val reverseElement: ReverseElement? = null,
+    ) : BydExtendUiAction
 }
 
 enum class CameraHostKind { Placement, CalibrationOriginal, CalibrationCorrected, CalibrationOutput, ReverseComposition, Direct, Avm }

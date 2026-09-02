@@ -239,9 +239,15 @@ public final class CameraShellMain {
                         prepareResult = CameraShellProtocol.PREPARE_OK;
                     } catch (CameraShellProtocol.PrepareRestartRequired restart) {
                         prepareResult = CameraShellProtocol.PREPARE_RESTART_REQUIRED;
-                        emit("camera_shell_reverse_prepare_restart_required",
-                                "request_id", spec.requestId,
-                                "reason", restart.reason);
+                        Object[] fields = new Object[4 + restart.diagnosticFields.length];
+                        fields[0] = "request_id";
+                        fields[1] = spec.requestId;
+                        fields[2] = "reason";
+                        fields[3] = restart.reason;
+                        System.arraycopy(
+                                restart.diagnosticFields, 0, fields, 4,
+                                restart.diagnosticFields.length);
+                        emit("camera_shell_reverse_prepare_restart_required", fields);
                     }
                     reply.writeNoException();
                     reply.writeInt(prepareResult);

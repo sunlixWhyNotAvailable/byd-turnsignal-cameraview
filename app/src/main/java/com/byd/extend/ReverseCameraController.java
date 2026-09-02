@@ -854,6 +854,54 @@ final class ReverseCameraController {
         editor.apply();
     }
 
+    /** Resets only the selected composition element's geometry and (for cameras) layer order. */
+    static void resetSelectedLayout(SharedPreferences settings, String element) {
+        if (settings == null) throw new IllegalArgumentException("settings are required");
+        if (element == null) throw new IllegalArgumentException("composition element is required");
+        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
+        SharedPreferences.Editor editor = settings.edit();
+        if ("Background".equals(element)) {
+            putRect(editor, PREF_PREFIX + "background_", defaults.background);
+        } else if ("Widget".equals(element)) {
+            putRect(editor, PREF_PREFIX + "widget_", defaults.widget);
+        } else {
+            int cameraIndex;
+            if ("Rear".equals(element)) cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+            else if ("RearLeft".equals(element)) {
+                cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
+            } else if ("RearRight".equals(element)) {
+                cameraIndex = ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+            } else {
+                throw new IllegalArgumentException("unsupported composition element: " + element);
+            }
+            ReverseCameraLayout current = loadLayout(settings);
+            ReverseCameraLayout next = ReverseCameraLayout.withPane(
+                    current, cameraIndex, defaults.pane(cameraIndex).destination,
+                    current.pane(cameraIndex).sourceCrop);
+            int targetZ = defaults.pane(cameraIndex).zOrder;
+            while (next.pane(cameraIndex).zOrder < targetZ) {
+                next = ReverseCameraLayout.raise(next, cameraIndex);
+            }
+            while (next.pane(cameraIndex).zOrder > targetZ) {
+                next = ReverseCameraLayout.lower(next, cameraIndex);
+            }
+            ReverseCameraLayout.Pane selected = next.pane(cameraIndex);
+            putRect(editor, PREF_PREFIX + cameraIndex + "_", selected.destination);
+            for (ReverseCameraLayout.Pane pane : next.panes()) {
+                editor.putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
+            }
+        }
+        editor.apply();
+    }
+
+    private static void putRect(
+            SharedPreferences.Editor editor, String prefix, ReverseCameraLayout.Rect rect) {
+        editor.putFloat(prefix + "left", rect.left)
+                .putFloat(prefix + "top", rect.top)
+                .putFloat(prefix + "width", rect.width)
+                .putFloat(prefix + "height", rect.height);
+    }
+
     static ReverseCameraLayout.Rect defaultCorrectedSourceCrop(int cameraIndex) {
         switch (cameraIndex) {
             case ReverseCameraLayout.REAR_CAMERA_INDEX:

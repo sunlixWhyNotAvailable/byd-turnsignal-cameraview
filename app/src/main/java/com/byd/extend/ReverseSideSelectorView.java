@@ -48,7 +48,6 @@ final class ReverseSideSelectorView extends View {
     private boolean rightVisible;
     private boolean centerVisible;
     private int pressedMode = -1;
-    private int pendingMode = -1;
     private long pendingGeneration;
     private Runnable pendingAction;
 
@@ -169,7 +168,7 @@ final class ReverseSideSelectorView extends View {
             case MotionEvent.ACTION_UP:
                 int selected = pressedMode;
                 if (selected >= 0 && modeAtNormalized(x, y) == selected) {
-                    scheduleModeChange(selected);
+                    dispatchModeChange(selected);
                     performClick();
                 } else {
                     pressedMode = -1;
@@ -268,17 +267,20 @@ final class ReverseSideSelectorView extends View {
         return value * getResources().getDisplayMetrics().density;
     }
 
-    private void scheduleModeChange(int next) {
+    private void dispatchModeChange(int next) {
         cancelPendingModeChange();
-        pendingMode = next;
+        if (mode != next) {
+            mode = next;
+            if (listener != null) listener.onModeChanged(mode);
+        }
+        // Keep the visible BYD-HUD press state for 90 ms after the immediate callback.
+        pressedMode = next;
         long generation = ++pendingGeneration;
         pendingAction = () -> {
-            if (generation != pendingGeneration || pendingMode != next) return;
+            if (generation != pendingGeneration || pressedMode != next) return;
             pendingAction = null;
-            pendingMode = -1;
             pressedMode = -1;
             invalidate();
-            if (listener != null) setMode(next);
         };
         mainHandler.postDelayed(pendingAction, VISUAL_PRESS_BEFORE_ACTION_MS);
     }
@@ -287,7 +289,6 @@ final class ReverseSideSelectorView extends View {
         ++pendingGeneration;
         if (pendingAction != null) mainHandler.removeCallbacks(pendingAction);
         pendingAction = null;
-        if (pendingMode >= 0) pendingMode = -1;
     }
 
     private static boolean contains(float[] rect, float x, float y) {

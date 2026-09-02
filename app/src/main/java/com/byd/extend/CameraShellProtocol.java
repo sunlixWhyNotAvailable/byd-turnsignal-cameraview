@@ -42,10 +42,17 @@ final class CameraShellProtocol {
 
     static final class PrepareRestartRequired extends IllegalStateException {
         final String reason;
+        final Object[] diagnosticFields;
 
         PrepareRestartRequired(String reason) {
+            this(reason, new Object[0]);
+        }
+
+        PrepareRestartRequired(String reason, Object... diagnosticFields) {
             super("camera host restart required: " + reason);
             this.reason = reason == null || reason.isEmpty() ? "incompatible" : reason;
+            this.diagnosticFields = diagnosticFields == null
+                    ? new Object[0] : diagnosticFields.clone();
         }
     }
 

@@ -9,7 +9,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -56,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -227,34 +228,64 @@ internal data class PressFeedback(
     val modifier: Modifier,
 )
 
-private const val VISUAL_PRESS_BEFORE_ACTION_MS = 90L
+private const val VISUAL_PRESS_HOLD_MS = 90L
 
 @Composable
 internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
     val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
+    var visualPressed by remember { mutableStateOf(false) }
+    LaunchedEffect(interactionSource) {
+        val activePresses = mutableSetOf<PressInteraction.Press>()
+        var releaseGeneration = 0
+        visualPressed = false
+        interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is PressInteraction.Press -> {
+                    activePresses += interaction
+                    releaseGeneration++
+                    visualPressed = true
+                }
+                is PressInteraction.Release -> {
+                    activePresses -= interaction.press
+                    if (activePresses.isEmpty()) {
+                        visualPressed = true
+                        val generation = ++releaseGeneration
+                        launch {
+                            delay(VISUAL_PRESS_HOLD_MS)
+                            if (generation == releaseGeneration) visualPressed = false
+                        }
+                    }
+                }
+                is PressInteraction.Cancel -> {
+                    activePresses -= interaction.press
+                    if (activePresses.isEmpty()) {
+                        visualPressed = true
+                        val generation = ++releaseGeneration
+                        launch {
+                            delay(VISUAL_PRESS_HOLD_MS)
+                            if (generation == releaseGeneration) visualPressed = false
+                        }
+                    }
+                }
+            }
+        }
+    }
     val scale by animateFloatAsState(
-        targetValue = if (enabled && pressed) .97f else 1f,
+        targetValue = if (visualPressed) .97f else 1f,
         label = "pressScale",
     )
-    return PressFeedback(interactionSource, enabled && pressed, Modifier.graphicsLayer {
+    return PressFeedback(interactionSource, visualPressed, Modifier.graphicsLayer {
         scaleX = scale
         scaleY = scale
     })
 }
 
-/** Gives the pressed frame one render opportunity before synchronous navigation/dialog work. */
+/** Keeps the visible press frame while actions dispatch immediately. */
 @Composable
 internal fun rememberVisualFirstClick(onClick: () -> Unit): () -> Unit {
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val latestOnClick by rememberUpdatedState(onClick)
     return remember {
-        {
-            scope.launch {
-                delay(VISUAL_PRESS_BEFORE_ACTION_MS)
-                latestOnClick()
-            }
-        }
+        { latestOnClick() }
     }
 }
 
@@ -426,6 +457,9 @@ internal fun ChoiceField(
                     choices.forEachIndexed { index, option ->
                         val optionPress = rememberPressFeedback(enabled)
                         val choose = rememberVisualFirstClick {
+                            val selectionPress = PressInteraction.Press(Offset.Zero)
+                            fieldPress.interactionSource.tryEmit(selectionPress)
+                            fieldPress.interactionSource.tryEmit(PressInteraction.Release(selectionPress))
                             onSelect(index)
                             expanded = false
                         }

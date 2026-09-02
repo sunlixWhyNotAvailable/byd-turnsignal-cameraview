@@ -297,11 +297,6 @@ final class CameraHelperMain {
                     }
                     int requestId = data.readInt();
                     requireActivityRequestId(requestId);
-                    if (activeReverseControllerRequestId > 0
-                            && activeReverseControllerRequestId != requestId) {
-                        throw new IllegalStateException(
-                                "reverse visibility request is stale");
-                    }
                     int count = data.readInt();
                     if (count != 3 && count != 4) {
                         throw new IllegalArgumentException(
@@ -318,6 +313,34 @@ final class CameraHelperMain {
                     int visibilityMask = data.readInt();
                     boolean widgetVisible = data.readInt() != 0;
                     ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+                    // Activity Reverse owns the combined stock-base + direct group.  Route its
+                    // mask to those attached fan-out targets instead of sending the Activity
+                    // request through the automatic shell owner.  The optional central Front
+                    // target shares the center visibility bit with Rear and is intentionally
+                    // left to the local selector state.
+                    if (updateActivityReverseVisibility(
+                            requestId, generations, visibilityMask, widgetVisible)) {
+                        reply.writeNoException();
+                        reply.writeString(result("reverse_visibility_update_queued", null));
+                        return true;
+                    }
+                    synchronized (this) {
+                        if (activityGroup.has()) {
+                            throw new IllegalStateException(
+                                    "reverse visibility request is stale");
+                        }
+                        if (activeReverseControllerRequestId > 0
+                                && activeReverseControllerRequestId != requestId) {
+                            throw new IllegalStateException(
+                                    "reverse visibility request is stale");
+                        }
+                        if (!reverseGroup.attached || reverseGroup.requestId != requestId) {
+                            throw new IllegalStateException(
+                                    "reverse visibility request is stale");
+                        }
+                    }
+                    // Automatic Reverse remains shell-owned; its existing exact request and
+                    // generation checks run unchanged in TurnSignalController/CameraShellMain.
                     turnController.updateReverseOverlayVisibility(
                             requestId, generations, visibilityMask, widgetVisible, null);
                     reply.writeNoException();
@@ -952,6 +975,41 @@ final class CameraHelperMain {
 
         synchronized void setReverseTargetActive(Surface target, boolean active) throws Exception {
             persistentSession.setActive(reverseGroup, target, active);
+        }
+
+        /** Applies an Activity-owned Reverse visibility mask to its currently attached group. */
+        private synchronized boolean updateActivityReverseVisibility(
+                int requestId, int[] generations, int visibilityMask,
+                boolean widgetVisible) throws Exception {
+            if (!activityGroup.attached || !activityGroup.has()) return false;
+            if (activityGroup.requestId != requestId
+                    || !"reverse_preview_with_stock_base".equals(activityGroup.view)
+                    || !activityGroup.firstSurfaceDirect
+                    || activityGroup.surfaces.length != generations.length + 1
+                    || activityGroup.indexes.length != activityGroup.surfaces.length) {
+                throw new IllegalStateException("reverse visibility request is stale");
+            }
+            for (int i = 0; i < activityGroup.indexes.length; i++) {
+                if (activityGroup.indexes[i] != i
+                        || activityGroup.surfaces[i] == null
+                        || !activityGroup.surfaces[i].isValid()) {
+                    throw new IllegalStateException("reverse visibility request is stale");
+                }
+            }
+            // The stock AVM base (slot 0) is not a Reverse pane.  Only the three mask-backed
+            // direct targets are changed here; an optional central Front slot (slot 4) remains
+            // under the selector's existing local state because the mask has no Front bit.
+            for (int sourceIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    sourceIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
+                            && sourceIndex < activityGroup.surfaces.length;
+                    sourceIndex++) {
+                persistentSession.setActive(
+                        activityGroup, activityGroup.surfaces[sourceIndex],
+                        ReverseCameraLayout.isVisible(visibilityMask, sourceIndex));
+            }
+            // `widgetVisible` is intentionally consumed by the Activity's local view; the
+            // persistent fan-out has no widget target to toggle.
+            return true;
         }
 
         synchronized String openParkingCameras(

@@ -33,6 +33,7 @@ import java.util.function.BiConsumer;
 final class MusicMetadataRuntime {
     static final long PUBLISH_DEBOUNCE_MS = 750;
     static final long SESSION_REPAIR_DEBOUNCE_MS = PUBLISH_DEBOUNCE_MS;
+    static final long PROGRESS_REFRESH_INTERVAL_MS = 1_000;
     static final int SOURCE_THIRD_PARTY = 26;
     static final int DEVICE_AUDIO = 1002;
     static final int DEVICE_INSTRUMENT = 1007;
@@ -83,6 +84,7 @@ final class MusicMetadataRuntime {
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionListener =
             controllers -> runOnHandler(() -> replaceSessions(controllers, "sessions_callback"));
     private final Runnable publishRunnable = this::publishSelectedSession;
+    private final Runnable progressRunnable = this::refreshPlayingProgress;
 
     private MediaSessionManager sessionManager;
     private Method currentFocusPackage;
@@ -96,10 +98,15 @@ final class MusicMetadataRuntime {
     private boolean writeInFlight;
     private boolean terminalStop;
     private int lifecycleGeneration;
+    private int progressGeneration;
+    private SessionBinding progressSession;
+    private final ProgressCache progressCache = new ProgressCache();
+    private MediaSession.Token selectedToken;
     private String pendingReason = "";
     private String lastFocusPackage = "";
     private String lastPublishedPackage = "";
     private String lastFingerprint = "";
+    private String lastMetadataFingerprint = "";
     private String error = "";
     private WriteRequest queuedWrite;
 
@@ -134,6 +141,8 @@ final class MusicMetadataRuntime {
     void audioPlaybackChanged(String reason) {
         runOnHandler(() -> {
             if (!observersStarted) return;
+            cancelProgressRefresh();
+            selectedToken = null;
             boolean force = false;
             try {
                 force = !currentAudioFocusPackage().equals(lastFocusPackage);
@@ -193,6 +202,7 @@ final class MusicMetadataRuntime {
     private void stopObservers(String reason, boolean clearCard) {
         lifecycleGeneration++;
         handler.removeCallbacks(publishRunnable);
+        cancelProgressRefresh();
         publishPending = false;
         forcePending = false;
         pendingReason = "";
@@ -214,6 +224,8 @@ final class MusicMetadataRuntime {
         lastFocusPackage = "";
         lastPublishedPackage = "";
         lastFingerprint = "";
+        lastMetadataFingerprint = "";
+        selectedToken = null;
         if (clearCard && (published || writeInFlight)) {
             enqueueWrite(WriteRequest.cleanup(lifecycleGeneration, reason));
         } else {
@@ -223,6 +235,8 @@ final class MusicMetadataRuntime {
 
     private void replaceSessions(List<MediaController> controllers, String reason) {
         if (!observersStarted) return;
+        cancelProgressRefresh();
+        selectedToken = null;
         Map<MediaSession.Token, MediaController> next = new HashMap<>();
         if (controllers != null) {
             for (MediaController controller : controllers) {
@@ -239,6 +253,7 @@ final class MusicMetadataRuntime {
             if (next.containsKey(token)) continue;
             SessionBinding removed = sessions.remove(token);
             if (removed != null) removed.unregister();
+            if (progressSession == removed) cancelProgressRefresh();
         }
         schedulePublish(reason, false);
     }
@@ -287,6 +302,8 @@ final class MusicMetadataRuntime {
         }
         SessionBinding selected = selectSession(sessions.values(), selectionPackage);
         if (selected == null) {
+            cancelProgressRefresh();
+            selectedToken = null;
             if (shouldRetainPublishedCard(false,
                     isPackageProcessAlive(focusPackage),
                     isPackageProcessAlive(lastPublishedPackage))) return;
@@ -301,29 +318,47 @@ final class MusicMetadataRuntime {
             return;
         }
         if (snapshot == null || snapshot.title.isEmpty() && snapshot.artist.isEmpty()) {
+            cancelProgressRefresh();
+            selectedToken = null;
             if (shouldRetainPublishedCard(true, true,
                     isPackageProcessAlive(lastPublishedPackage))) return;
             cleanupOwnedCard(reason + "_empty_metadata");
             return;
         }
+        selectedToken = selected.token;
+        if (progressSession != null && progressSession != selected) {
+            cancelProgressRefresh();
+        }
+        if (!snapshot.playing) cancelProgressRefresh();
         boolean claimSource = shouldClaimSource(
                 force, published, lastPublishedPackage, snapshot.packageName);
         boolean repair = shouldRepairPublishedSource(
                 reason, published, lastPublishedPackage, snapshot.packageName);
         claimSource |= repair;
         if (!shouldPublish(force || repair, published,
-                lastFingerprint, snapshot.fingerprint)) return;
+                lastFingerprint, snapshot.fingerprint)) {
+            if (snapshot.playing && published
+                    && snapshot.metadataFingerprint.equals(lastMetadataFingerprint)) {
+                progressSession = selected;
+                scheduleProgressRefresh(selected);
+            }
+            return;
+        }
         enqueueWrite(WriteRequest.publish(
-                lifecycleGeneration, reason, snapshot, claimSource));
+                lifecycleGeneration, reason, snapshot, claimSource, selected.token));
     }
 
     private void relinquishToOem(String reason) {
+        cancelProgressRefresh();
         boolean owned = published || writeInFlight || queuedWrite != null;
         if (owned) lifecycleGeneration++;
         queuedWrite = null;
         published = false;
         lastPublishedPackage = "";
         lastFingerprint = "";
+        lastMetadataFingerprint = "";
+        selectedToken = null;
+        progressCache.clear();
         if (owned) {
             emit("music_metadata_relinquished", "focus_package", lastFocusPackage,
                     "source_event", reason);
@@ -337,6 +372,8 @@ final class MusicMetadataRuntime {
     }
 
     private void enqueueWrite(WriteRequest request) {
+        if (queuedWrite != null
+                && shouldDropQueuedProgress(queuedWrite.progressOnly, request.progressOnly)) return;
         queuedWrite = request;
         startNextWrite();
     }
@@ -345,29 +382,105 @@ final class MusicMetadataRuntime {
         if (writeInFlight || queuedWrite == null) return;
         WriteRequest request = queuedWrite;
         queuedWrite = null;
+        if (request.progressOnly) {
+            boolean ownerMatches = progressSession != null
+                    && request.token != null
+                    && request.token.equals(progressSession.token)
+                    && sessions.get(request.token) == progressSession
+                    && isCurrentBindingSnapshot(request.token, request.snapshot);
+            if (request.generation != lifecycleGeneration
+                    || !isCurrentProgressGeneration(
+                    request.progressGeneration, progressGeneration, ownerMatches)) {
+                return;
+            }
+            Snapshot snapshot;
+            try {
+                snapshot = progressSession.snapshot();
+            } catch (Throwable failure) {
+                setError("session_snapshot: " + summary(failure), request.reason);
+                scheduleProgressRefresh(progressSession);
+                return;
+            }
+            if (!snapshot.playing
+                    || !snapshot.metadataFingerprint.equals(lastMetadataFingerprint)) {
+                cancelProgressRefresh();
+                schedulePublish("progress_state_change", false);
+                return;
+            }
+            ProgressDelta delta = progressDelta(snapshot);
+            if (delta.isEmpty()) {
+                scheduleProgressRefresh(progressSession);
+                return;
+            }
+            request = WriteRequest.progress(
+                    lifecycleGeneration, progressGeneration, request.reason,
+                    request.token, snapshot, delta);
+        }
+        WriteRequest requestToRun = request;
         writeInFlight = true;
         writerExecutor.execute(() -> {
             String failure = "";
+            ProgressWriteResult progressResult = null;
             try {
                 if (writer == null) writer = new BydMediaWriter(context, eventSink);
-                if (request.cleanup) writer.cleanup();
-                else writer.publish(request.snapshot, request.claimSource);
+                if (requestToRun.cleanup) writer.cleanup();
+                else if (requestToRun.progressOnly) {
+                    progressResult = writer.publishProgress(requestToRun);
+                } else {
+                    writer.publish(requestToRun.snapshot, requestToRun.claimSource);
+                }
             } catch (Throwable error) {
                 failure = summary(error);
             }
             String result = failure;
-            handler.post(() -> finishWrite(request, result));
+            ProgressWriteResult resultProgress = progressResult;
+            handler.post(() -> finishWrite(requestToRun, result, resultProgress));
         });
     }
 
-    private void finishWrite(WriteRequest request, String failure) {
+    private void finishWrite(
+            WriteRequest request, String failure, ProgressWriteResult progressResult) {
         writeInFlight = false;
-        boolean current = request.generation == lifecycleGeneration;
+        boolean requestOwner = request.token == null
+                || request.token.equals(selectedToken) && sessions.get(request.token) != null
+                && isCurrentBindingSnapshot(request.token, request.snapshot);
+        boolean current = request.generation == lifecycleGeneration && requestOwner;
+        if (request.progressOnly) {
+            boolean progressOwner = progressSession != null
+                    && request.token != null
+                    && request.token.equals(progressSession.token)
+                    && sessions.get(request.token) == progressSession
+                    && isCurrentBindingSnapshot(request.token, request.snapshot);
+            current = current && isCurrentProgressGeneration(
+                    request.progressGeneration, progressGeneration, progressOwner);
+            if (current && progressResult != null) {
+                if (progressResult.timelineSuccess) {
+                    progressCache.markTimelineSuccess(request.timeline);
+                }
+                if (progressResult.progressSuccess) {
+                    progressCache.markProgressSuccess(request.progress);
+                }
+            }
+            if (current && progressResult != null && !progressResult.failure.isEmpty()) {
+                setError("metadata_write: " + progressResult.failure, request.reason);
+            } else if (current && failure.isEmpty()) {
+                clearError();
+            } else if (current && !failure.isEmpty()) {
+                setError("metadata_write: " + failure, request.reason);
+            }
+            if (queuedWrite != null) startNextWrite();
+            else if (current) scheduleProgressRefresh(progressSession);
+            else if (terminalStop) writerExecutor.shutdown();
+            return;
+        }
         if (failure.isEmpty()) {
             if (current) {
                 published = !request.cleanup;
                 lastPublishedPackage = request.cleanup ? "" : request.snapshot.packageName;
                 lastFingerprint = request.cleanup ? "" : request.snapshot.fingerprint;
+                lastMetadataFingerprint = request.cleanup ? "" : request.snapshot.metadataFingerprint;
+                if (request.cleanup) progressCache.clear();
+                else progressCache.markSnapshotSuccess(request.snapshot);
                 clearError();
             }
             if (request.cleanup) {
@@ -393,11 +506,94 @@ final class MusicMetadataRuntime {
                         "source_claimed", request.claimSource,
                         "stale", !current);
             }
-        } else {
+        } else if (current) {
             setError("metadata_write: " + failure, request.reason);
         }
-        if (queuedWrite != null) startNextWrite();
-        else if (terminalStop) writerExecutor.shutdown();
+        if (queuedWrite != null) {
+            startNextWrite();
+        } else if (terminalStop) {
+            writerExecutor.shutdown();
+        } else if (failure.isEmpty() && current && !request.cleanup && request.snapshot.playing
+                && request.token != null) {
+            SessionBinding binding = sessions.get(request.token);
+            if (binding != null) {
+                progressSession = binding;
+                scheduleProgressRefresh(binding);
+            }
+        }
+    }
+
+    private void refreshPlayingProgress() {
+        if (!shouldRefreshProgress(
+                enabled, awake, observersStarted, true, progressSession != null)) return;
+        SessionBinding binding = progressSession;
+        int generation = progressGeneration;
+        if (sessions.get(binding.token) != binding) {
+            cancelProgressRefresh();
+            return;
+        }
+        Snapshot snapshot;
+        try {
+            snapshot = binding.snapshot();
+        } catch (Throwable failure) {
+            setError("session_snapshot: " + summary(failure), "progress_refresh");
+            scheduleProgressRefresh(binding);
+            return;
+        }
+        if (!snapshot.playing) {
+            cancelProgressRefresh();
+            schedulePublish("progress_state_change", false);
+            return;
+        }
+        if (!snapshot.metadataFingerprint.equals(lastMetadataFingerprint)) {
+            cancelProgressRefresh();
+            schedulePublish("progress_metadata_change", true);
+            return;
+        }
+        ProgressDelta delta = progressDelta(snapshot);
+        if (delta.isEmpty()) {
+            if (generation == progressGeneration) scheduleProgressRefresh(binding);
+            return;
+        }
+        enqueueWrite(WriteRequest.progress(
+                lifecycleGeneration, generation, "progress_refresh", binding.token,
+                snapshot, delta));
+    }
+
+    private ProgressDelta progressDelta(Snapshot snapshot) {
+        return new ProgressDelta(
+                progressCache.timelineDiffers(snapshot.timeline),
+                progressCache.progressDiffers(snapshot.progress),
+                snapshot.timeline, snapshot.progress);
+    }
+
+    private void scheduleProgressRefresh(SessionBinding binding) {
+        if (!shouldRefreshProgress(
+                enabled, awake, observersStarted, true,
+                binding != null && binding == progressSession
+                        && sessions.get(binding.token) == binding)) return;
+        handler.removeCallbacks(progressRunnable);
+        handler.postDelayed(progressRunnable, PROGRESS_REFRESH_INTERVAL_MS);
+    }
+
+    private void cancelProgressRefresh() {
+        handler.removeCallbacks(progressRunnable);
+        progressGeneration++;
+        progressSession = null;
+    }
+
+    private boolean isCurrentBindingSnapshot(
+            MediaSession.Token token, Snapshot expected) {
+        if (token == null || expected == null) return false;
+        SessionBinding binding = sessions.get(token);
+        if (binding == null) return false;
+        try {
+            Snapshot actual = binding.snapshot();
+            return expected.metadataFingerprint.equals(actual.metadataFingerprint)
+                    && expected.playing == actual.playing;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private String currentAudioFocusPackage() throws Exception {
@@ -483,6 +679,21 @@ final class MusicMetadataRuntime {
 
     static boolean coalesceForce(boolean pending, boolean requested) {
         return pending || requested;
+    }
+
+    static boolean shouldDropQueuedProgress(boolean queuedProgressOnly, boolean nextProgressOnly) {
+        return !queuedProgressOnly && nextProgressOnly;
+    }
+
+    static boolean shouldRefreshProgress(
+            boolean enabled, boolean awake, boolean observersStarted,
+            boolean playing, boolean ownerMatches) {
+        return enabled && awake && observersStarted && playing && ownerMatches;
+    }
+
+    static boolean isCurrentProgressGeneration(
+            int requestGeneration, int currentGeneration, boolean ownerMatches) {
+        return requestGeneration == currentGeneration && ownerMatches;
     }
 
     static long publishDelayMs(String reason) {
@@ -587,6 +798,8 @@ final class MusicMetadataRuntime {
         final MediaController controller;
         final MediaSession.Token token;
         final String packageName;
+        private MediaMetadata metadata;
+        private PlaybackState playbackState;
 
         SessionBinding(MediaController controller) {
             this.controller = controller;
@@ -597,6 +810,11 @@ final class MusicMetadataRuntime {
 
         void register() {
             controller.registerCallback(this, handler);
+            try {
+                metadata = controller.getMetadata();
+                playbackState = controller.getPlaybackState();
+            } catch (Throwable ignored) {
+            }
         }
 
         void unregister() {
@@ -607,8 +825,8 @@ final class MusicMetadataRuntime {
         }
 
         int score() {
-            PlaybackState state = controller.getPlaybackState();
-            int value = controller.getMetadata() == null ? 0 : 1;
+            PlaybackState state = playbackState;
+            int value = metadata == null ? 0 : 1;
             if (state == null) return value;
             if (state.getState() == PlaybackState.STATE_PLAYING) return value + 4;
             if (state.getState() == PlaybackState.STATE_BUFFERING
@@ -618,8 +836,8 @@ final class MusicMetadataRuntime {
         }
 
         Snapshot snapshot() {
-            MediaMetadata metadata = controller.getMetadata();
-            PlaybackState state = controller.getPlaybackState();
+            MediaMetadata metadata = this.metadata;
+            PlaybackState state = playbackState;
             MediaDescription description = metadata == null ? null : metadata.getDescription();
             String title = firstText(metadata,
                     MediaMetadata.METADATA_KEY_TITLE,
@@ -643,11 +861,16 @@ final class MusicMetadataRuntime {
 
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
+            this.metadata = metadata;
             schedulePublish("metadata_callback", false);
         }
 
         @Override
         public void onPlaybackStateChanged(PlaybackState state) {
+            playbackState = state;
+            if (state == null || state.getState() != PlaybackState.STATE_PLAYING) {
+                cancelProgressRefresh();
+            }
             schedulePublish("playback_callback", false);
         }
 
@@ -655,6 +878,7 @@ final class MusicMetadataRuntime {
         public void onSessionDestroyed() {
             SessionBinding removed = sessions.remove(token);
             if (removed != null) removed.unregister();
+            if (removed == progressSession) cancelProgressRefresh();
             schedulePublish("session_destroyed", false);
         }
     }
@@ -668,6 +892,7 @@ final class MusicMetadataRuntime {
         final boolean playing;
         final int progress;
         final int[] timeline;
+        final String metadataFingerprint;
         final String fingerprint;
         final boolean titleNormalizationChanged;
         final boolean artistNormalizationChanged;
@@ -695,36 +920,138 @@ final class MusicMetadataRuntime {
             this.playing = playing;
             progress = progressPercent(this.positionMs, this.durationMs);
             timeline = timeline(this.positionMs, this.durationMs);
-            fingerprint = this.packageName + '\u0000' + this.title + '\u0000' + this.artist
-                    + '\u0000' + this.durationMs + '\u0000' + this.positionMs / 1_000L
+            metadataFingerprint = this.packageName + '\u0000' + this.title + '\u0000' + this.artist
+                    + '\u0000' + this.durationMs;
+            fingerprint = metadataFingerprint + '\u0000' + this.positionMs / 1_000L
                     + '\u0000' + this.playing;
+        }
+    }
+
+    static final class ProgressCache {
+        private int[] timeline;
+        private int progress;
+        private boolean timelineValid;
+        private boolean progressValid;
+
+        boolean timelineDiffers(int[] value) {
+            return !timelineValid || !Arrays.equals(timeline, value);
+        }
+
+        boolean progressDiffers(int value) {
+            return !progressValid || progress != value;
+        }
+
+        void markTimelineSuccess(int[] value) {
+            timeline = value == null ? null : Arrays.copyOf(value, value.length);
+            timelineValid = value != null;
+        }
+
+        void markProgressSuccess(int value) {
+            progress = value;
+            progressValid = true;
+        }
+
+        void markSnapshotSuccess(Snapshot snapshot) {
+            if (snapshot == null) {
+                clear();
+                return;
+            }
+            markTimelineSuccess(snapshot.timeline);
+            markProgressSuccess(snapshot.progress);
+        }
+
+        void clear() {
+            timeline = null;
+            progress = 0;
+            timelineValid = false;
+            progressValid = false;
+        }
+    }
+
+    private static final class ProgressDelta {
+        final boolean timelineChanged;
+        final boolean progressChanged;
+        final int[] timeline;
+        final int progress;
+
+        ProgressDelta(
+                boolean timelineChanged, boolean progressChanged,
+                int[] timeline, int progress) {
+            this.timelineChanged = timelineChanged;
+            this.progressChanged = progressChanged;
+            this.timeline = timeline == null ? null : Arrays.copyOf(timeline, timeline.length);
+            this.progress = progress;
+        }
+
+        boolean isEmpty() {
+            return !timelineChanged && !progressChanged;
+        }
+    }
+
+    static final class ProgressWriteResult {
+        final boolean timelineSuccess;
+        final boolean progressSuccess;
+        final String failure;
+
+        ProgressWriteResult(boolean timelineSuccess, boolean progressSuccess, String failure) {
+            this.timelineSuccess = timelineSuccess;
+            this.progressSuccess = progressSuccess;
+            this.failure = failure == null ? "" : failure;
         }
     }
 
     private static final class WriteRequest {
         final int generation;
+        final int progressGeneration;
         final String reason;
         final Snapshot snapshot;
         final boolean cleanup;
         final boolean claimSource;
+        final boolean progressOnly;
+        final MediaSession.Token token;
+        final int[] timeline;
+        final boolean timelineChanged;
+        final int progress;
+        final boolean progressChanged;
 
         private WriteRequest(
-                int generation, String reason, Snapshot snapshot,
-                boolean cleanup, boolean claimSource) {
+                int generation, int progressGeneration, String reason, Snapshot snapshot,
+                boolean cleanup, boolean claimSource, boolean progressOnly,
+                MediaSession.Token token, int[] timeline, boolean timelineChanged,
+                int progress, boolean progressChanged) {
             this.generation = generation;
+            this.progressGeneration = progressGeneration;
             this.reason = reason;
             this.snapshot = snapshot;
             this.cleanup = cleanup;
             this.claimSource = claimSource;
+            this.progressOnly = progressOnly;
+            this.token = token;
+            this.timeline = timeline == null ? null : Arrays.copyOf(timeline, timeline.length);
+            this.timelineChanged = timelineChanged;
+            this.progress = progress;
+            this.progressChanged = progressChanged;
         }
 
         static WriteRequest publish(
-                int generation, String reason, Snapshot snapshot, boolean claimSource) {
-            return new WriteRequest(generation, reason, snapshot, false, claimSource);
+                int generation, String reason, Snapshot snapshot,
+                boolean claimSource, MediaSession.Token token) {
+            return new WriteRequest(generation, -1, reason, snapshot,
+                    false, claimSource, false, token,
+                    null, false, 0, false);
+        }
+
+        static WriteRequest progress(
+                int generation, int progressGeneration, String reason,
+                MediaSession.Token token, Snapshot snapshot, ProgressDelta delta) {
+            return new WriteRequest(generation, progressGeneration, reason, snapshot,
+                    false, false, true, token, delta.timeline, delta.timelineChanged,
+                    delta.progress, delta.progressChanged);
         }
 
         static WriteRequest cleanup(int generation, String reason) {
-            return new WriteRequest(generation, reason, null, true, false);
+            return new WriteRequest(generation, -1, reason, null,
+                    true, false, false, null, null, false, 0, false);
         }
     }
 
@@ -779,6 +1106,36 @@ final class MusicMetadataRuntime {
             writeInt(DEVICE_INSTRUMENT, progressFid, snapshot.progress, "progress");
             writeInt(DEVICE_INSTRUMENT, musicStateFid,
                     snapshot.playing ? MUSIC_PLAYING : MUSIC_PAUSED, "music_state");
+        }
+
+        ProgressWriteResult publishProgress(WriteRequest request) {
+            boolean timelineSuccess = !request.timelineChanged;
+            boolean progressSuccess = !request.progressChanged;
+            StringBuilder failures = new StringBuilder();
+            if (request.timelineChanged) {
+                try {
+                    writeIntArray(DEVICE_AUDIO, timeFids, request.timeline, "timeline");
+                    timelineSuccess = true;
+                } catch (Throwable failure) {
+                    appendFailure(failures, "timeline", failure);
+                }
+            }
+            if (request.progressChanged) {
+                try {
+                    writeInt(DEVICE_INSTRUMENT, progressFid, request.progress, "progress");
+                    progressSuccess = true;
+                } catch (Throwable failure) {
+                    appendFailure(failures, "progress", failure);
+                }
+            }
+            return new ProgressWriteResult(
+                    timelineSuccess, progressSuccess, failures.toString());
+        }
+
+        private static void appendFailure(
+                StringBuilder failures, String field, Throwable failure) {
+            if (failures.length() > 0) failures.append("; ");
+            failures.append(field).append(": ").append(summary(failure));
         }
 
         void cleanup() throws Exception {

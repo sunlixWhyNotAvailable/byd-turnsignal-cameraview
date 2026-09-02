@@ -31,6 +31,12 @@ internal fun ReverseScreen(
     val cameraElement = selected in listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)
     val profileId = CameraProfileId.Reverse(selected, state.selectedSource)
     val profile = state.profiles[profileId] ?: CameraProfileUiState()
+    // Reverse composition owns one frame lifecycle even when the selected control is the
+    // background/widget or a different camera pane.  Keep the display status on the canonical
+    // Rear profile; calibration remains selected-profile scoped below.
+    val compositionStatusProfile = CameraProfileId.Reverse(ReverseElement.Rear, state.selectedSource)
+    val compositionStatus = state.profiles[compositionStatusProfile]?.operation?.status
+        ?: StatusUiState()
     val sourceIndex = reverseSourceIndex(selected, state.selectedSource)
     val profileControls: @Composable ColumnScope.() -> Unit = {
         ChoiceField(strings.text("Елемент", "Element"), strings.reverseElements, selected.ordinal,
@@ -57,10 +63,9 @@ internal fun ReverseScreen(
         }
     }
     ScreenSurface(colors, scroll = false, compact = true) {
-        CameraPageHeader(3, strings, colors)
         if (state.section == CameraSection.Calibration && cameraElement) {
             CameraWorkspace(
-                state.section, reverse = true, calibrationEnabled = true,
+                pageTab = 3, section = state.section, reverse = true, calibrationEnabled = true,
                 previewTitle = strings.text("Калібрування", "Calibration"), strings = strings, colors = colors,
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
@@ -77,13 +82,16 @@ internal fun ReverseScreen(
             )
         } else {
             CameraWorkspace(
-                state.section, reverse = true, calibrationEnabled = cameraElement,
-                previewTitle = strings.text("Композиція заднього ходу", "Reverse composition"),
+                pageTab = 3, section = state.section, reverse = true, calibrationEnabled = cameraElement,
+                previewTitle = strings.text(
+                    "Композиція заднього ходу • ${strings.reverseElements[selected.ordinal]}",
+                    "Reverse composition • ${strings.reverseElements[selected.ordinal]}",
+                ),
                 strings = strings, colors = colors,
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
                 },
-                profileStatus = profile.operation.status,
+                profileStatus = compositionStatus,
                 profileControls = profileControls,
                 controls = {
                     if (state.section == CameraSection.Parameters) {
@@ -148,8 +156,8 @@ private fun ReverseCompositionControls(
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-        ActionButton(strings.text("Скинути вигляд", "Reset layout"), colors, Modifier.width(260.dp), mainBackground = true) {
-            onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout))
+        ActionButton(strings.text("Скинути композицію", "Reset layout"), colors, Modifier.width(260.dp), mainBackground = true) {
+            onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout, reverseElement = selected))
         }
     }
 }

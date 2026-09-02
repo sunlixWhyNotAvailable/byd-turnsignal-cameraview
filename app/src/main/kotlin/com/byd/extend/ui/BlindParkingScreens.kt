@@ -28,9 +28,9 @@ internal fun BlindScreen(
         "${state.selectedGroup.name} ${state.selectedSide.name}",
     )
     ScreenSurface(colors, scroll = false, compact = true) {
-        CameraPageHeader(1, strings, colors)
         CameraWorkspace(
-            state.section,
+            pageTab = 1,
+            section = state.section,
             reverse = false,
             calibrationEnabled = true,
             previewTitle = strings.text("Попередній перегляд • $label", "Preview • $label"),
@@ -129,9 +129,9 @@ internal fun ParkingScreen(
     val profileId = CameraProfileId.Parking(view)
     val label = strings.parkingViews[view.ordinal]
     ScreenSurface(colors, scroll = false, compact = true) {
-        CameraPageHeader(2, strings, colors)
         CameraWorkspace(
-            state.section,
+            pageTab = 2,
+            section = state.section,
             reverse = false,
             calibrationEnabled = true,
             previewTitle = strings.text("Попередній перегляд • $label", "Preview • $label"),

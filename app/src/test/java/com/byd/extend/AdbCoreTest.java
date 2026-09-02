@@ -672,6 +672,57 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void musicProgressUsesCachedStateAndOnlyRetriesFailedFields() {
+        assertEquals(1_000, MusicMetadataRuntime.PROGRESS_REFRESH_INTERVAL_MS);
+        MusicMetadataRuntime.Snapshot firstSnapshot =
+                new MusicMetadataRuntime.Snapshot(
+                        "player", "title", "artist", 45_000, 2_000, true);
+        MusicMetadataRuntime.Snapshot nextSnapshot =
+                new MusicMetadataRuntime.Snapshot(
+                        "player", "title", "artist", 45_000, 3_000, true);
+        assertEquals(firstSnapshot.metadataFingerprint, nextSnapshot.metadataFingerprint);
+        assertFalse(firstSnapshot.fingerprint.equals(nextSnapshot.fingerprint));
+
+        MusicMetadataRuntime.ProgressCache cache = new MusicMetadataRuntime.ProgressCache();
+        int[] firstTimeline = new int[]{0, 0, 2, 0, 45, 33};
+        int[] nextTimeline = new int[]{0, 0, 3, 0, 45, 33};
+        assertTrue(cache.timelineDiffers(firstTimeline));
+        assertTrue(cache.progressDiffers(6));
+        cache.markTimelineSuccess(firstTimeline);
+        cache.markProgressSuccess(6);
+        assertFalse(cache.timelineDiffers(firstTimeline));
+        assertFalse(cache.progressDiffers(6));
+        assertTrue(cache.timelineDiffers(nextTimeline));
+        assertTrue(cache.progressDiffers(7));
+        MusicMetadataRuntime.ProgressWriteResult partial =
+                new MusicMetadataRuntime.ProgressWriteResult(false, true, "timeline failed");
+        assertFalse(partial.timelineSuccess);
+        assertTrue(partial.progressSuccess);
+        assertEquals("timeline failed", partial.failure);
+        cache.markProgressSuccess(7);
+        assertTrue(cache.timelineDiffers(nextTimeline));
+        assertFalse(cache.progressDiffers(7));
+        cache.markTimelineSuccess(nextTimeline);
+        assertFalse(cache.timelineDiffers(nextTimeline));
+    }
+
+    @Test
+    public void musicProgressQueueAndGenerationKeepFullUpdatesAuthoritative() {
+        assertTrue(MusicMetadataRuntime.shouldDropQueuedProgress(false, true));
+        assertFalse(MusicMetadataRuntime.shouldDropQueuedProgress(true, true));
+        assertFalse(MusicMetadataRuntime.shouldDropQueuedProgress(false, false));
+        assertTrue(MusicMetadataRuntime.shouldRefreshProgress(
+                true, true, true, true, true));
+        assertFalse(MusicMetadataRuntime.shouldRefreshProgress(
+                true, true, true, false, true));
+        assertFalse(MusicMetadataRuntime.shouldRefreshProgress(
+                true, false, true, true, true));
+        assertFalse(MusicMetadataRuntime.isCurrentProgressGeneration(4, 5, true));
+        assertFalse(MusicMetadataRuntime.isCurrentProgressGeneration(5, 5, false));
+        assertTrue(MusicMetadataRuntime.isCurrentProgressGeneration(5, 5, true));
+    }
+
+    @Test
     public void foregroundAuthorizationWaitsForPermissionAndWindowFocus() {
         assertFalse(CameraProbeActivity.shouldStartForegroundAdbAuthorization(
                 true, false, true, true, false, false));

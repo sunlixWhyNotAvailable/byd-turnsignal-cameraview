@@ -78,6 +78,61 @@ public final class ReverseCameraLayoutTest {
     }
 
     @Test
+    public void selectedCompositionResetKeepsNonGeometryStateAndRejectsUnknownNames() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
+        ReverseCameraLayout moved = ReverseCameraLayout.move(
+                defaults, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.08f, -0.04f);
+        moved = ReverseCameraLayout.bringToFront(
+                moved, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        ReverseCameraController.saveLayout(settings, moved);
+        ReverseCameraController.saveSourceCrop(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.sourceCrop(0.1f, 0.2f, 0.5f, 0.4f), false);
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, false);
+
+        ReverseCameraController.resetSelectedLayout(settings, "RearLeft");
+
+        ReverseCameraLayout actual = ReverseCameraController.loadLayout(settings);
+        assertEquals(defaults.rearLeft.destination.left, actual.rearLeft.destination.left, 0.0f);
+        assertEquals(defaults.rearLeft.destination.top, actual.rearLeft.destination.top, 0.0f);
+        assertEquals(defaults.rearLeft.destination.width, actual.rearLeft.destination.width, 0.0f);
+        assertEquals(defaults.rearLeft.destination.height, actual.rearLeft.destination.height, 0.0f);
+        assertEquals(defaults.rearLeft.zOrder, actual.rearLeft.zOrder);
+        assertEquals(moved.rear.destination.left, actual.rear.destination.left, 0.0f);
+        assertEquals(moved.rearRight.destination.left, actual.rearRight.destination.left, 0.0f);
+        assertEquals(0.1f, ReverseCameraController.loadRawLayout(settings)
+                .pane(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX).sourceCrop.left, 0.0f);
+        assertFalse(ReverseCameraController.loadVisibility(
+                settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraController.resetSelectedLayout(settings, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> ReverseCameraController.resetSelectedLayout(settings, "rearLeft"));
+    }
+
+    @Test
+    public void backgroundAndWidgetResetsDoNotTouchVisibility() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
+        ReverseCameraController.saveLayout(settings, ReverseCameraLayout.move(
+                defaults, ReverseCameraLayout.WIDGET_PANE_ID, -0.2f, -0.2f));
+        ReverseCameraController.saveVisibility(
+                settings, ReverseCameraLayout.REAR_CAMERA_INDEX, false);
+        ReverseCameraController.saveWidgetVisible(settings, true);
+
+        ReverseCameraController.resetSelectedLayout(settings, "Widget");
+
+        ReverseCameraLayout actual = ReverseCameraController.loadLayout(settings);
+        assertEquals(defaults.widget.left, actual.widget.left, 0.0f);
+        assertEquals(defaults.widget.top, actual.widget.top, 0.0f);
+        assertFalse(ReverseCameraController.loadVisibility(
+                settings, ReverseCameraLayout.REAR_CAMERA_INDEX));
+        assertTrue(ReverseCameraController.loadWidgetVisible(settings));
+    }
+
+    @Test
     public void frontCalibrationKeepsItsTransformWhileFollowingSharedLayout() {
         ReverseCameraLayout shared = ReverseCameraLayout.defaults();
         shared = ReverseCameraLayout.move(

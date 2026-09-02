@@ -24,7 +24,7 @@ internal class UiStrings(private val language: UiLanguage) {
     )
     val reverseSections get() = listOf(
         text("Параметри", "Parameters"),
-        text("Композиція", "Composition"),
+        text("Композиція", "Layout"),
         text("Калібрування", "Calibration"),
     )
     val calibrationStages get() = listOf(

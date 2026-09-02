@@ -39,6 +39,19 @@ public final class AsyncCameraFoundationTest {
         assertTrue(view.contains("deferredReleaseTexture"));
     }
 
+    @Test
+    public void retainedMirrorResizeUsesCurrentTextureAndRendererBufferOnGlPath()
+            throws Exception {
+        String renderer = readMainSource("CameraDewarpRenderer.java");
+        String view = readMainSource("BlindSpotCameraView.java");
+        assertTrue(renderer.contains("void refreshMirrorBuffer(SurfaceTexture texture, boolean raw)"));
+        assertTrue(renderer.contains("released.get() || activeHandler == null"));
+        assertTrue(renderer.contains("current != texture"));
+        assertTrue(renderer.contains("texture.setDefaultBufferSize(width, height)"));
+        assertTrue(view.contains("void refreshMirrorBuffer(SurfaceTexture texture, boolean raw)"));
+        assertTrue(view.contains("if (current != texture) return"));
+    }
+
     private static String readMainSource(String name) throws Exception {
         Path path = Paths.get("src/main/java/com/byd/extend", name);
         if (!Files.exists(path)) path = Paths.get("app/src/main/java/com/byd/extend", name);

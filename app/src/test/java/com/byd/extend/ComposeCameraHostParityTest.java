@@ -42,7 +42,7 @@ public final class ComposeCameraHostParityTest {
     }
 
     @Test
-    public void calibrationStagesUseStableKeysAndProfileStatusIsRendered() throws Exception {
+    public void calibrationStagesUseStableKeysAndStatusIsOnlyInCameraHeader() throws Exception {
         String ui = readMain("kotlin/com/byd/extend/ui/CameraUiCommon.kt");
         String blindParking = readMain("kotlin/com/byd/extend/ui/BlindParkingScreens.kt");
         String reverse = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
@@ -51,7 +51,10 @@ public final class ComposeCameraHostParityTest {
         assertTrue(ui.contains("key(CameraHostKind.CalibrationCorrected)"));
         assertTrue(ui.contains("key(CameraHostKind.CalibrationOutput)"));
         assertTrue(ui.contains("profileStatus: StatusUiState = StatusUiState()"));
-        assertTrue(ui.contains("StatusPill(profileStatus, strings.text(\"Статус\", \"Status\"), colors)"));
+        assertTrue(ui.contains("trailing = { CameraStatusPill(profileStatus, strings, colors) }"));
+        assertTrue(ui.contains("with(LocalDensity.current) { 18.sp.toDp() } + 12.dp"));
+        assertFalse(ui.contains("StatusPill(profileStatus, strings.text(\"Статус\", \"Status\"), colors)"));
+        assertTrue(activity.contains("owner.refreshMirrorBuffer(texture, raw);"));
         assertTrue(blindParking.contains("profileStatus = profile.operation.status"));
         assertTrue(blindParking.contains("profileStatus = viewState.profile.operation.status"));
         assertTrue(reverse.contains("profileStatus = profile.operation.status"));

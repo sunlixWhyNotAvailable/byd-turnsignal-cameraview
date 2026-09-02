@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,17 +52,36 @@ internal fun DebugScreen(
     cameraHost: @Composable (CameraHostSlot) -> Unit,
 ) {
     ScreenSurface(colors, scroll = false) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            PageTitle(strings.tabs[5], strings.text("Ручні перевірки поворотників та камер",
-                "Manual turn-signal and camera checks"), colors, Modifier.weight(1f))
-            Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.width(540.dp)) {
-                onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.DiagnosticMode), it))
-            }
-        }
         when (state.mode) {
-            DiagnosticMode.Signals -> SignalDiagnostics(state, guardEnabled, strings, colors, onAction)
+            DiagnosticMode.Signals -> Row(
+                Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                DebugHeader(state, strings, colors, onAction)
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopEnd) {
+                    SignalDiagnostics(state, guardEnabled, strings, colors, onAction,
+                        Modifier.widthIn(max = 460.dp).fillMaxWidth())
+                }
+            }
             DiagnosticMode.Direct -> CameraDiagnostics(true, state, strings, colors, onAction, cameraHost)
             DiagnosticMode.Avm -> CameraDiagnostics(false, state, strings, colors, onAction, cameraHost)
+        }
+    }
+}
+
+@Composable
+private fun DebugHeader(
+    state: DebugUiState,
+    strings: UiStrings,
+    colors: UiPalette,
+    onAction: (BydExtendUiAction) -> Unit,
+) {
+    Column(Modifier.width(400.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        PageTitle(strings.tabs[5], strings.text("Ручні перевірки поворотників та камер",
+            "Manual turn-signal and camera checks"), colors)
+        Panel(colors, Modifier.fillMaxWidth()) {
+            Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.fillMaxWidth()) {
+                onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.DiagnosticMode), it))
+            }
         }
     }
 }
@@ -73,9 +93,10 @@ private fun SignalDiagnostics(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    modifier: Modifier,
 ) {
     Section(strings.text("Ручне керування • тільки P", "Manual control • P only"), colors,
-        Modifier.fillMaxWidth().fillMaxHeight().padding(top = 10.dp)) {
+        modifier) {
         Text(strings.text("Доступно із вимкненим захистом поворотників та селектором у P.",
             "Available with the turn-signal guard disabled and the selector in P."), color = colors.muted, fontSize = 13.sp)
         val commands = listOf(
@@ -84,11 +105,13 @@ private fun SignalDiagnostics(
             strings.text("Аварійка", "Hazard") to CommandId.SignalHazard,
             strings.text("Скинути", "Reset") to CommandId.SignalReset,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            commands.forEach { (label, command) ->
-                ActionButton(label, colors, Modifier.weight(1f),
-                    enabled = state.manualSignalsAllowed && !guardEnabled) {
-                    onAction(BydExtendUiAction.Run(command))
+        commands.chunked(2).forEach { rowCommands ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowCommands.forEach { (label, command) ->
+                    ActionButton(label, colors, Modifier.weight(1f),
+                        enabled = state.manualSignalsAllowed && !guardEnabled) {
+                        onAction(BydExtendUiAction.Run(command))
+                    }
                 }
             }
         }
@@ -112,20 +135,17 @@ private fun CameraDiagnostics(
     } else AvmModeNames.mapIndexed { index, name ->
         "${(index + 1).toString().padStart(2, '0')} • $name"
     }
-    Row(Modifier.fillMaxSize().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Section(diagnosticGroupTitle(direct, state.avmOrientation), colors,
-            Modifier.weight(.34f).fillMaxHeight(),
-            trailing = { StatusPill(operation.status, strings.text("Статус", "Status"), colors) }) {
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.width(400.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DebugHeader(state, strings, colors, onAction)
+            Section(diagnosticGroupTitle(direct, state.avmOrientation), colors,
+                Modifier.weight(1f).fillMaxWidth()) {
             if (!direct) {
                 Segmented(listOf(strings.text("Горизонтально", "Horizontal"),
                     strings.text("Вертикально", "Vertical")), state.avmOrientation.ordinal,
                     colors, Modifier.fillMaxWidth()) {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.AvmOrientation), it))
                 }
-                SwitchLine(strings.text("Показати RAW", "Show raw"), "", state.avmShowRaw,
-                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AvmShowRaw), it)) }, colors)
-                SwitchLine(strings.text("Корекція", "Dewarp"), "", state.avmDewarp,
-                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AvmDewarp), it)) }, colors)
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 itemsIndexed(modes, key = { index, _ -> index }) { index, label ->
@@ -141,11 +161,12 @@ private fun CameraDiagnostics(
                 enabled = selection != null && operation.enabled && !operation.pending) {
                 onAction(BydExtendUiAction.Run(CommandId.StopDiagnosticCamera))
             }
+            }
         }
         Section(if (direct) strings.text("Попередній перегляд", "Preview")
             else diagnosticGroupTitle(false, state.avmOrientation), colors,
-            Modifier.weight(.66f).fillMaxHeight(),
-            trailing = { StatusPill(operation.status, strings.text("Статус", "Status"), colors) }) {
+            Modifier.weight(1f).fillMaxHeight(),
+            trailing = { CameraStatusPill(operation.status, strings, colors) }) {
             if (selection != null) {
                 // Direct pano_h has a known 1920x1300 source. AVM's SDK output dimensions are
                 // vehicle-configured at runtime, so the resolved tablet display is the only

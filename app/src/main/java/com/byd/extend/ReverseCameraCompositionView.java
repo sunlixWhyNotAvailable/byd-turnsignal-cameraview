@@ -99,7 +99,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
         addView(sideSelector, new FrameLayout.LayoutParams(1, 1));
         sideSelector.setZ(5.0f);
         addOnLayoutChangeListener((view, left, top, right, bottom,
-                oldLeft, oldTop, oldRight, oldBottom) -> applyModel());
+                oldLeft, oldTop, oldRight, oldBottom) -> {
+            if (left != oldLeft || top != oldTop
+                    || right != oldRight || bottom != oldBottom) applyModel();
+        });
     }
 
     void setCallback(Callback value) {
@@ -450,15 +453,79 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     boolean usesPaneBoundedBuffers(
             ReverseCameraLayout layout, int viewportWidth, int viewportHeight, int quality) {
+        return firstPaneBufferMismatch(layout, viewportWidth, viewportHeight, quality) == null;
+    }
+
+    /** Returns the first retained pane-buffer comparison that does not match the requested spec. */
+    PaneBufferMismatch firstPaneBufferMismatch(
+            ReverseCameraLayout layout, int viewportWidth, int viewportHeight, int quality) {
         int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight);
         for (int i = 0; i < panes.length; i++) {
-            if (!panes[i].texture.usesPaneBoundedBuffer(
-                    bounds[i][0], bounds[i][1], quality)) return false;
+            int expectedWidth = bounds[i][0];
+            int expectedHeight = bounds[i][1];
+            int[] expected = BlindSpotCameraView.paneBoundedBufferSize(
+                    expectedWidth, expectedHeight, quality);
+            int actualWidth = panes[i].texture.cameraBufferWidth();
+            int actualHeight = panes[i].texture.cameraBufferHeight();
+            if (actualWidth != expected[0] || actualHeight != expected[1]) {
+                return new PaneBufferMismatch(
+                        panes[i].sourceIndex, viewportWidth, viewportHeight,
+                        paneBufferViewportWidth, paneBufferViewportHeight,
+                        expectedWidth, expectedHeight, expected[0], expected[1],
+                        actualWidth, actualHeight, quality);
+            }
         }
-        if (centralFrontSourceEnabled && centralFrontPane != null
-                && !centralFrontPane.texture.usesPaneBoundedBuffer(
-                        bounds[0][0], bounds[0][1], quality)) return false;
-        return true;
+        if (centralFrontSourceEnabled && centralFrontPane != null) {
+            int expectedWidth = bounds[0][0];
+            int expectedHeight = bounds[0][1];
+            int[] expected = BlindSpotCameraView.paneBoundedBufferSize(
+                    expectedWidth, expectedHeight, quality);
+            int actualWidth = centralFrontPane.texture.cameraBufferWidth();
+            int actualHeight = centralFrontPane.texture.cameraBufferHeight();
+            if (actualWidth != expected[0] || actualHeight != expected[1]) {
+                return new PaneBufferMismatch(
+                        centralFrontPane.sourceIndex, viewportWidth, viewportHeight,
+                        paneBufferViewportWidth, paneBufferViewportHeight,
+                        expectedWidth, expectedHeight, expected[0], expected[1],
+                        actualWidth, actualHeight, quality);
+            }
+        }
+        return null;
+    }
+
+    static final class PaneBufferMismatch {
+        final int sourceIndex;
+        final int viewportWidth;
+        final int viewportHeight;
+        final int retainedViewportWidth;
+        final int retainedViewportHeight;
+        final int paneWidth;
+        final int paneHeight;
+        final int expectedBufferWidth;
+        final int expectedBufferHeight;
+        final int actualBufferWidth;
+        final int actualBufferHeight;
+        final int quality;
+
+        PaneBufferMismatch(
+                int sourceIndex, int viewportWidth, int viewportHeight,
+                int retainedViewportWidth, int retainedViewportHeight,
+                int paneWidth, int paneHeight,
+                int expectedBufferWidth, int expectedBufferHeight,
+                int actualBufferWidth, int actualBufferHeight, int quality) {
+            this.sourceIndex = sourceIndex;
+            this.viewportWidth = viewportWidth;
+            this.viewportHeight = viewportHeight;
+            this.retainedViewportWidth = retainedViewportWidth;
+            this.retainedViewportHeight = retainedViewportHeight;
+            this.paneWidth = paneWidth;
+            this.paneHeight = paneHeight;
+            this.expectedBufferWidth = expectedBufferWidth;
+            this.expectedBufferHeight = expectedBufferHeight;
+            this.actualBufferWidth = actualBufferWidth;
+            this.actualBufferHeight = actualBufferHeight;
+            this.quality = quality;
+        }
     }
 
     static int[][] paneBounds(
@@ -1067,23 +1134,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (width <= 0 || height <= 0) return;
         ReverseCameraLayout.PixelRect backgroundRect =
                 ReverseCameraLayout.project(model.background, width, height);
-        FrameLayout.LayoutParams backgroundParams =
-                (FrameLayout.LayoutParams) backgroundPane.getLayoutParams();
-        backgroundParams.width = Math.max(1, backgroundRect.width);
-        backgroundParams.height = Math.max(1, backgroundRect.height);
-        backgroundParams.leftMargin = backgroundRect.left;
-        backgroundParams.topMargin = backgroundRect.top;
-        backgroundPane.setLayoutParams(backgroundParams);
+        applyFrameBounds(backgroundPane, backgroundRect);
         backgroundPane.setZ(0.0f);
         ReverseCameraLayout.PixelRect widgetRect =
                 ReverseCameraLayout.project(model.widget, width, height);
-        FrameLayout.LayoutParams widgetParams =
-                (FrameLayout.LayoutParams) sideSelector.getLayoutParams();
-        widgetParams.width = Math.max(1, widgetRect.width);
-        widgetParams.height = Math.max(1, widgetRect.height);
-        widgetParams.leftMargin = widgetRect.left;
-        widgetParams.topMargin = widgetRect.top;
-        sideSelector.setLayoutParams(widgetParams);
+        applyFrameBounds(sideSelector, widgetRect);
         sideSelector.setZ(5.0f);
         for (PaneView pane : panes) {
             ReverseCameraLayout centerFallback = pane.cameraIndex
@@ -1101,12 +1156,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     : rawCrop;
             ReverseCameraLayout.PixelRect baseRect =
                     ReverseCameraLayout.project(value.destination, width, height);
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) pane.getLayoutParams();
-            params.width = Math.max(1, baseRect.width);
-            params.height = Math.max(1, baseRect.height);
-            params.leftMargin = baseRect.left;
-            params.topMargin = baseRect.top;
-            pane.setLayoutParams(params);
+            applyFrameBounds(pane, baseRect);
             pane.setZ(1.0f + value.zOrder);
             pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
                     value.mirrorHorizontally);
@@ -1124,17 +1174,29 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     ? centerValue.sourceCrop : centerRawCrop;
             ReverseCameraLayout.PixelRect centerRect =
                     ReverseCameraLayout.project(centerValue.destination, width, height);
-            FrameLayout.LayoutParams centerParams =
-                    (FrameLayout.LayoutParams) centralFrontPane.getLayoutParams();
-            centerParams.width = Math.max(1, centerRect.width);
-            centerParams.height = Math.max(1, centerRect.height);
-            centerParams.leftMargin = centerRect.left;
-            centerParams.topMargin = centerRect.top;
-            centralFrontPane.setLayoutParams(centerParams);
+            applyFrameBounds(centralFrontPane, centerRect);
             centralFrontPane.setZ(1.1f + centerValue.zOrder);
             centralFrontPane.applyTransform(centerSourceCrop, centerValue.rotationDegrees,
                     centerValue.displayMode, centerValue.mirrorHorizontally);
         }
+    }
+
+    /** Applies projected bounds only when they differ, avoiding retained layout churn. */
+    private static boolean applyFrameBounds(View view, ReverseCameraLayout.PixelRect rect) {
+        if (view == null || rect == null) return false;
+        int width = Math.max(1, rect.width);
+        int height = Math.max(1, rect.height);
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) view.getLayoutParams();
+        if (params != null && params.width == width && params.height == height
+                && params.leftMargin == rect.left && params.topMargin == rect.top) return false;
+        if (params == null) params = new FrameLayout.LayoutParams(width, height);
+        params.width = width;
+        params.height = height;
+        params.leftMargin = rect.left;
+        params.topMargin = rect.top;
+        view.setLayoutParams(params);
+        return true;
     }
 
     private void applyActiveDewarpConfigs() {

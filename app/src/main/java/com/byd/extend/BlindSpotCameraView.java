@@ -257,6 +257,21 @@ final class BlindSpotCameraView extends TextureView
         if (dewarpRenderer != null) dewarpRenderer.setCorrectedMirror(texture);
     }
 
+    /** Restores the renderer-sized buffer after a retained mirror TextureView resize. */
+    void refreshMirrorBuffer(SurfaceTexture texture, boolean raw) {
+        if (texture == null) return;
+        SurfaceTexture current = raw ? rawMirrorTexture : correctedMirrorTexture;
+        if (current != texture) return;
+        CameraDewarpRenderer renderer = dewarpRenderer;
+        if (renderer != null) {
+            renderer.refreshMirrorBuffer(texture, raw);
+        } else {
+            // Before the renderer is ready, retain the configured camera quality rather than
+            // accepting TextureView's view-sized default.
+            texture.setDefaultBufferSize(bufferWidth, bufferHeight);
+        }
+    }
+
     void applyDirectCameraCrop(DirectCameraCrop crop) {
         if (crop == null) throw new IllegalArgumentException("camera crop is required");
         requestedCrop = crop;

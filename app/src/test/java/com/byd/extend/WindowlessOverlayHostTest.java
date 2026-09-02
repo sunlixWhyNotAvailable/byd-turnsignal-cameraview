@@ -81,6 +81,30 @@ public final class WindowlessOverlayHostTest {
     }
 
     @Test
+    public void reverseBufferRestartDiagnosticsStayOnExistingEventAndProtocol() throws Exception {
+        Path reversePath = Path.of(
+                "app/src/main/java/com/byd/extend/ShellReverseCameraOverlay.java");
+        Path shellPath = Path.of(
+                "app/src/main/java/com/byd/extend/CameraShellMain.java");
+        if (!Files.exists(reversePath)) {
+            reversePath = Path.of("src/main/java/com/byd/extend/ShellReverseCameraOverlay.java");
+            shellPath = Path.of("src/main/java/com/byd/extend/CameraShellMain.java");
+        }
+        String reverse = new String(Files.readAllBytes(reversePath), StandardCharsets.UTF_8);
+        String shell = new String(Files.readAllBytes(shellPath), StandardCharsets.UTF_8);
+        assertTrue(reverse.contains("firstPaneBufferMismatch"));
+        assertTrue(reverse.contains("expected_buffer_width"));
+        assertTrue(reverse.contains("actual_buffer_height"));
+        int firstMismatch = reverse.indexOf("firstPaneBufferMismatch");
+        assertTrue(firstMismatch >= 0);
+        assertTrue(firstMismatch < reverse.indexOf(
+                "quiesce(\"camera_buffer_size_changed\")"));
+        assertTrue(shell.contains("camera_shell_reverse_prepare_restart_required"));
+        assertTrue(shell.contains("restart.diagnosticFields"));
+        assertEquals(27, CameraShellProtocol.VERSION);
+    }
+
+    @Test
     public void tabletOverlayDoesNotCoerceStoredOutputMode() throws Exception {
         Path source = Path.of("app/src/main/java/com/byd/extend/ShellCameraOverlay.java");
         if (!Files.exists(source)) {
@@ -101,9 +125,11 @@ public final class WindowlessOverlayHostTest {
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
         int branch = text.indexOf("if (code == TX_UPDATE_REVERSE_VISIBILITY)");
         assertTrue(branch >= 0);
-        String handler = text.substring(branch, Math.min(text.length(), branch + 1_600));
+        String handler = text.substring(branch, Math.min(text.length(), branch + 3_200));
         assertTrue(handler.contains("CameraShellProtocol.isCallerAllowed"));
         assertTrue(handler.contains("requireActivityRequestId(requestId)"));
+        assertTrue(handler.contains("updateActivityReverseVisibility"));
+        assertTrue(handler.contains("activityGroup.has()"));
         assertTrue(handler.contains("activeReverseControllerRequestId"));
     }
 
@@ -150,25 +176,34 @@ public final class WindowlessOverlayHostTest {
         assertFalse(up.contains("currentRoot.setSelectorPressed(mode, true)"));
         String click = overlay.substring(overlay.indexOf("private void scheduleSelectorAction"),
                 overlay.indexOf("private void cancelPendingSelectorAction"));
-        assertTrue(click.contains("root.setSelectorPressed(mode, true)"));
+        assertTrue(click.contains("currentRoot.setSelectorPressed(mode, true)"));
+        assertTrue(click.indexOf("currentRoot.setSideMode(mode)")
+                < click.indexOf("postDelayed(pendingSelectorAction"));
         assertTrue(overlay.contains("postDelayed(pendingSelectorAction, VISUAL_PRESS_BEFORE_ACTION_MS)"));
         assertTrue(overlay.contains("cancelPendingSelectorAction()"));
-        assertTrue(overlay.contains("root.setSideMode(mode)"));
+        assertTrue(overlay.contains("currentRoot.setSideMode(mode)"));
         assertTrue(selector.contains("setExternalPressedMode"));
         assertTrue(selector.contains("canvas.scale(0.97f, 0.97f"));
         assertTrue(selector.contains("PRESSED_BUTTON_COLOR"));
+        assertTrue(selector.contains("dispatchModeChange(selected)"));
+        assertTrue(selector.contains("if (listener != null) listener.onModeChanged(mode)"));
         assertTrue(selector.contains("postDelayed(pendingAction, VISUAL_PRESS_BEFORE_ACTION_MS)"));
         assertTrue(selector.contains("onDetachedFromWindow"));
         assertTrue(selector.contains("cancelPendingPress()"));
     }
 
     @Test
-    public void composeControlsUseVisualFirstActionsButSwitchesStayImmediate() throws Exception {
+    public void composeControlsHoldOnlyFeedbackWhileActionsAndSwitchesStayImmediate() throws Exception {
         Path source = Path.of("app/src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt");
         if (!Files.exists(source)) source = Path.of("src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt");
         String ui = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
         assertTrue(ui.contains("rememberVisualFirstClick"));
-        assertTrue(ui.contains("delay(VISUAL_PRESS_BEFORE_ACTION_MS)"));
+        assertTrue(ui.contains("is PressInteraction.Press"));
+        assertTrue(ui.contains("is PressInteraction.Release"));
+        assertTrue(ui.contains("is PressInteraction.Cancel"));
+        assertTrue(ui.contains("delay(VISUAL_PRESS_HOLD_MS)"));
+        assertFalse(ui.contains("delay(VISUAL_PRESS_BEFORE_ACTION_MS)"));
+        assertTrue(ui.contains("{ latestOnClick() }"));
         assertTrue(ui.contains("onClick = visualClick"));
         assertTrue(ui.contains("onClick = { onCheckedChange(!checked) }"));
     }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
@@ -26,6 +27,7 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +46,7 @@ internal fun CameraPageHeader(tabIndex: Int, strings: UiStrings, colors: UiPalet
 
 @Composable
 internal fun CameraWorkspace(
+    pageTab: Int,
     section: CameraSection,
     reverse: Boolean,
     calibrationEnabled: Boolean,
@@ -56,11 +59,11 @@ internal fun CameraWorkspace(
     controls: @Composable ColumnScope.() -> Unit,
     preview: @Composable ColumnScope.() -> Unit,
 ) {
-    Row(Modifier.fillMaxSize().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.width(400.dp).fillMaxHeight().verticalScroll(LocalPrimaryScroll.current),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            CameraPageHeader(pageTab, strings, colors)
             Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"),
-                trailing = { StatusPill(profileStatus, strings.text("Статус", "Status"), colors) },
                 content = profileControls)
             Section("", colors, Modifier.testTag("camera-settings"), header = {
                 Segmented(if (reverse) strings.reverseSections else strings.cameraSections, section.ordinal, colors,
@@ -70,8 +73,29 @@ internal fun CameraWorkspace(
                 }
             }, content = controls)
         }
-        Section(previewTitle, colors, Modifier.weight(1f).fillMaxHeight().testTag("camera-frame"), content = preview)
+        Section(previewTitle, colors, Modifier.weight(1f).fillMaxHeight().testTag("camera-frame"),
+            trailing = { CameraStatusPill(profileStatus, strings, colors) }, content = preview)
     }
+}
+
+/** Camera lifecycle status occupies a stable header slot and exposes only Opening/Error. */
+@Composable
+internal fun CameraStatusPill(state: StatusUiState, strings: UiStrings, colors: UiPalette) {
+    val normalized = cameraStatusForDisplay(state, strings)
+    val statusSlotHeight = with(LocalDensity.current) { 18.sp.toDp() } + 12.dp
+    Box(Modifier.height(statusSlotHeight), contentAlignment = Alignment.CenterEnd) {
+        StatusPill(normalized, strings.text("Статус", "Status"), colors)
+    }
+}
+
+internal fun cameraStatusForDisplay(state: StatusUiState, strings: UiStrings): StatusUiState = when {
+    state.visible && state.tone == StatusTone.Warning &&
+        (state.text.contains("opening", ignoreCase = true) ||
+            state.text.contains("відкрит", ignoreCase = true)) ->
+        state.copy(text = strings.text("Відкриття...", "Opening..."))
+    state.visible && state.tone == StatusTone.Error ->
+        state.copy(text = strings.text("Помилка", "Error"))
+    else -> StatusUiState()
 }
 
 @Composable

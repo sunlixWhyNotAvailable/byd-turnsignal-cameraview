@@ -90,6 +90,8 @@ final class CameraDewarpRenderer {
     private EGLConfig eglConfig;
     private EGLSurface rawMirrorSurface = EGL14.EGL_NO_SURFACE;
     private EGLSurface correctedMirrorSurface = EGL14.EGL_NO_SURFACE;
+    private SurfaceTexture rawMirrorTexture;
+    private SurfaceTexture correctedMirrorTexture;
     private int program;
     private int textureId;
     private int positionLocation;
@@ -370,6 +372,28 @@ final class CameraDewarpRenderer {
         setMirror(texture, false);
     }
 
+    /**
+     * Restores the renderer-sized producer buffer after TextureView changes its retained
+     * SurfaceTexture to the view bounds.  This intentionally does not recreate the EGL window
+     * surface: the renderer's configured viewport remains the source of truth for the mirror.
+     */
+    void refreshMirrorBuffer(SurfaceTexture texture, boolean raw) {
+        Handler activeHandler = handler;
+        if (texture == null || released.get() || activeHandler == null) return;
+        activeHandler.post(() -> {
+            if (released.get()) return;
+            SurfaceTexture current = raw ? rawMirrorTexture : correctedMirrorTexture;
+            if (current != texture) return;
+            try {
+                texture.setDefaultBufferSize(width, height);
+            } catch (Throwable error) {
+                emitEvent(new Event("dewarp_mirror_failed",
+                        appliedRequest == null ? request : appliedRequest,
+                        0, -1, error));
+            }
+        });
+    }
+
     private void setMirror(SurfaceTexture texture, boolean raw) {
         Handler activeHandler = handler;
         if (released.get() || activeHandler == null) return;
@@ -602,8 +626,13 @@ final class CameraDewarpRenderer {
                                 (raw ? "raw" : "corrected") + " mirror attach failed")));
             }
         }
-        if (raw) rawMirrorSurface = next;
-        else correctedMirrorSurface = next;
+        if (raw) {
+            rawMirrorSurface = next;
+            rawMirrorTexture = texture;
+        } else {
+            correctedMirrorSurface = next;
+            correctedMirrorTexture = texture;
+        }
     }
 
     void setPreserveInputFrameTimestamp(boolean value) {
@@ -981,6 +1010,8 @@ final class CameraDewarpRenderer {
         }
         rawMirrorSurface = EGL14.EGL_NO_SURFACE;
         correctedMirrorSurface = EGL14.EGL_NO_SURFACE;
+        rawMirrorTexture = null;
+        correctedMirrorTexture = null;
         eglSurface = EGL14.EGL_NO_SURFACE;
         eglContext = EGL14.EGL_NO_CONTEXT;
         eglDisplay = EGL14.EGL_NO_DISPLAY;

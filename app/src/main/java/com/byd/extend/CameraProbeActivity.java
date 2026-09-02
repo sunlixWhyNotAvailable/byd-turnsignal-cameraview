@@ -18,6 +18,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -94,6 +95,8 @@ import com.byd.extend.ui.StatusTone;
 import com.byd.extend.ui.StatusUiState;
 import com.byd.extend.ui.ToggleId;
 import com.byd.extend.ui.ToggleTarget;
+import com.byd.extend.ui.UiLanguage;
+import com.byd.extend.ui.UiStrings;
 
 import org.json.JSONObject;
 
@@ -618,10 +621,10 @@ public final class CameraProbeActivity extends ComponentActivity
     private Bitmap calibrationResultBitmap;
     private int selectedTab = -1;
     private int selectedDebugMode;
-    private int activeActivityCameraRequestId;
+    private volatile int activeActivityCameraRequestId;
     private CameraProfileId activeActivityCameraProfile;
     private int activeActivityConsumerGeneration;
-    private int[] activeActivityInputGenerations = new int[0];
+    private volatile int[] activeActivityInputGenerations = new int[0];
     private int closingActivityCameraRequestId;
     private boolean activeActivityCameraOpened;
     private boolean activeActivityCameraFresh;
@@ -951,7 +954,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (productionUi != null) productionUi.reload();
             if (!granted) {
                 Toast.makeText(this, "Погода залишилась вимкненою без геолокації",
-                        Toast.LENGTH_SHORT).show();
+                        Toast.LENGTH_LONG).show();
             } else if (shouldRefreshWeatherAfterPermission(
                     granted, weatherRefreshAfterPermission, weatherStillEnabled)) {
                 weatherRefreshAfterPermission = false;
@@ -1399,8 +1402,7 @@ public final class CameraProbeActivity extends ComponentActivity
         logExportInProgress = true;
         if (settingsPanel != null) settingsPanel.setLogExportInProgress(true);
         publishSettingsOperation(SettingsOperation.Logs,
-                "Формування архіву логів...", StatusTone.Warning, true);
-        publishSettingsFeedback("Формування архіву логів...", StatusTone.Warning);
+                "Формування архіву логів...", StatusTone.Warning, true, true);
         record("diagnostic_log_export", "state", "flush_requested");
         try {
             CameraHelperService.flushLogs(this, new ResultReceiver(mainHandler) {
@@ -1415,8 +1417,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void exportDiagnosticLogsAfterFlush() {
-        if (!logExportInProgress || activityDestroyed) {
-            logExportInProgress = false;
+        if (!logExportInProgress) return;
+        if (activityDestroyed || shutdownRequested) {
+            finishDiagnosticLogExport(null, null);
             return;
         }
         AsyncServiceLog log = activityLog;
@@ -1458,7 +1461,6 @@ public final class CameraProbeActivity extends ComponentActivity
             record("diagnostic_log_export", "state", "failed", "error", error.toString());
             publishSettingsOperation(SettingsOperation.Logs,
                     "Не вдалося створити архів логів", StatusTone.Error, false);
-            publishSettingsFeedback("Не вдалося створити архів логів", StatusTone.Error);
             if (activityResumed && !activityDestroyed) {
                 Toast.makeText(this, "Не вдалося створити архів логів", Toast.LENGTH_LONG).show();
             }
@@ -1469,14 +1471,16 @@ public final class CameraProbeActivity extends ComponentActivity
                     "Архів логів не створено", StatusTone.Warning, false);
             return;
         }
-        publishSettingsOperation(SettingsOperation.Logs,
-                "Архів логів готовий", StatusTone.Ok, false);
         if (!activityResumed || activityDestroyed) {
             boolean deleted = archive.delete();
             record("diagnostic_log_export", "state", "chooser_skipped",
                     "reason", "activity_inactive", "archive_deleted", deleted);
+            publishSettingsOperation(SettingsOperation.Logs,
+                    "Поширення логів скасовано: застосунок неактивний", StatusTone.Warning, false);
             return;
         }
+        publishSettingsOperation(SettingsOperation.Logs,
+                "Архів логів готовий", StatusTone.Ok, false);
         try {
             Uri uri = FileProvider.getUriForFile(
                     this, getPackageName() + ".fileprovider", archive);
@@ -1861,9 +1865,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 || shutdownRequested || activityDestroyed) return;
         compatibilityExportInProgress = true;
         publishSettingsOperation(SettingsOperation.Compatibility,
-                "Формування пакета сумісності...", StatusTone.Warning, true);
+                "Формування пакета сумісності...", StatusTone.Warning, true, true);
         if (settingsPanel != null) settingsPanel.setCompatibilityExportInProgress(true);
-        publishSettingsFeedback("Формування пакета сумісності...", StatusTone.Warning);
         record("compatibility_bundle_export", "state", "started");
         final WeakReference<CameraProbeActivity> owner = new WeakReference<>(this);
         final CompatibilityBundleExporter.ExportControl control =
@@ -1873,10 +1876,10 @@ public final class CameraProbeActivity extends ComponentActivity
                     target.mainHandler.post(() -> target.updateCompatibilityExportProgress(progress));
                 });
         compatibilityExportControl = control;
-        showCompatibilityExportProgress();
         final Context appContext = getApplicationContext();
         final SharedPreferences exportPreferences = preferences;
         try {
+            showCompatibilityExportProgress();
             logExportExecutor.execute(() -> {
                 File archive = null;
                 Throwable failure = null;
@@ -1920,7 +1923,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void updateCompatibilityExportProgress(CompatibilityBundleExporter.Progress progress) {
-        if (progress == null || activityDestroyed) return;
+        if (progress == null || activityDestroyed || !compatibilityExportInProgress
+                || compatibilityExportControl == null
+                || compatibilityExportControl.isCancellationRequested()) return;
         String text = compatibilityExportProgressText(progress);
         if (compatibilityExportProgressDialog != null) {
             compatibilityExportProgressDialog.setMessage(text);
@@ -2000,15 +2005,16 @@ public final class CameraProbeActivity extends ComponentActivity
                     "Пакет сумісності не створено", StatusTone.Warning, false);
             return;
         }
-        publishSettingsOperation(SettingsOperation.Compatibility,
-                "Пакет сумісності готовий", StatusTone.Ok, false);
-        publishSettingsFeedback("Пакет сумісності готовий", StatusTone.Ok);
         if (!activityResumed || activityDestroyed) {
             boolean deleted = archive.delete();
             record("compatibility_bundle_export", "state", "chooser_skipped",
                     "reason", "activity_inactive", "archive_deleted", deleted);
+            publishSettingsOperation(SettingsOperation.Compatibility,
+                    "Поширення пакета скасовано: застосунок неактивний", StatusTone.Warning, false);
             return;
         }
+        publishSettingsOperation(SettingsOperation.Compatibility,
+                "Пакет сумісності готовий", StatusTone.Ok, false);
         try {
             Uri uri = FileProvider.getUriForFile(
                     this, getPackageName() + ".fileprovider", archive);
@@ -2338,7 +2344,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     /**
-     * Sends the typed visibility update through the helper's persistent Reverse owner.  The
+     * Sends the typed visibility update to the helper's current Activity consumer group. The
      * request/generation identity is the current activity Reverse request; if no request is open,
      * persisted state is consumed by the next prepare without an unnecessary IPC.
      */
@@ -2350,13 +2356,17 @@ public final class CameraProbeActivity extends ComponentActivity
                 && activeActivityInputGenerations.length != 5)) return;
         final IBinder current = helper;
         final int requestId = activeActivityCameraRequestId;
-        // SurfaceBundle includes the preview-base generation at index 0; the native Reverse shell
-        // identity is the direct-pane generation vector only (3 panes, or 3 + central Front).
+        // Each request publishes a new immutable generation array. Keep that bundle identity
+        // through the IPC queue; a close/rebind makes an already queued update stale.
+        final int[] bundleGenerations = activeActivityInputGenerations;
+        // The existing transaction carries direct-pane generations, without the stock base.
         final int[] generations = java.util.Arrays.copyOfRange(
-                activeActivityInputGenerations, 1, activeActivityInputGenerations.length);
+                bundleGenerations, 1, bundleGenerations.length);
         final int visibilityMask = ReverseCameraController.loadVisibilityMask(preferences);
         final boolean widgetVisible = ReverseCameraController.loadWidgetVisible(preferences);
         ipcExecutor.execute(() -> {
+            if (current != helper || !requestedOpen || requestId != activeActivityCameraRequestId
+                    || bundleGenerations != activeActivityInputGenerations) return;
             Parcel data = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
@@ -2917,6 +2927,14 @@ public final class CameraProbeActivity extends ComponentActivity
         return null;
     }
 
+    /** The combined Reverse composition has one lifecycle owner independent of selected pane. */
+    private CameraProfileId reverseCompositionStatusProfile() {
+        if (productionUi == null) return null;
+        return new CameraProfileId.Reverse(
+                ReverseElement.Rear,
+                productionUi.getState().getReverse().getSelectedSource());
+    }
+
     private void handleProductionCommand(BydExtendUiAction.Run action) {
         CommandId command = action.getCommand();
         if (command == CommandId.WeatherRefresh) requestWeatherRefresh();
@@ -2940,9 +2958,7 @@ public final class CameraProbeActivity extends ComponentActivity
         else if (command == CommandId.ReverseLower) changeProductionReverseZ(false);
         else if (command == CommandId.ReverseRaise) changeProductionReverseZ(true);
         else if (command == CommandId.ReverseResetLayout) {
-            ReverseCameraController.resetLayout(preferences);
-            applyProductionReverseState();
-            CameraHelperService.reverseCameraSettingsChanged(this);
+            resetProductionReverseLayout(action.getReverseElement());
         } else if (manualSignalPayload(command) >= 0) requestManualTurnState(manualSignalPayload(command));
         else if (command == CommandId.StopDiagnosticCamera) stopActivityCameraManually("ui_stop");
         else if (command == CommandId.OpenBackgroundSettings) openBackgroundStartSettings("settings_button");
@@ -2973,14 +2989,18 @@ public final class CameraProbeActivity extends ComponentActivity
         if (productionUi == null) return;
         StatusUiState status = new StatusUiState(text, tone, true);
         productionUi.setSettingsFeedback(status);
-        CameraProfileId profile = selectedProductionProfile();
-        if (profile != null) productionUi.setProfileStatus(profile, status, false);
     }
 
     private void publishSettingsOperation(
             SettingsOperation operation, String text, StatusTone tone, boolean pending) {
+        publishSettingsOperation(operation, text, tone, pending, false);
+    }
+
+    private void publishSettingsOperation(
+            SettingsOperation operation, String text, StatusTone tone,
+            boolean pending, boolean claimFeedback) {
         if (productionUi != null) productionUi.setSettingsOperation(
-                operation, new StatusUiState(text, tone, true), pending);
+                operation, new StatusUiState(text, tone, true), pending, claimFeedback);
     }
 
     private void publishAdbOperation(boolean pending) {
@@ -3716,44 +3736,164 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void transferProductionProfile(CameraProfileId id) {
         boolean transferred = false;
-        if (id instanceof CameraProfileId.Blind) {
-            CameraCalibrationPreset.mirrorCamera(
-                    preferences, blindProfile((CameraProfileId.Blind) id));
-            transferred = true;
-        } else if (id instanceof CameraProfileId.Parking) {
-            transferred = CameraCalibrationPreset.mirrorParking(
-                    preferences, parkingProfile((CameraProfileId.Parking) id));
-        } else if (id instanceof CameraProfileId.Reverse) {
-            CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
-            transferred = reverse.getSource() == ReverseSource.Front
-                    ? CameraCalibrationPreset.mirrorReverseFront(
-                            preferences, reverseProfileIndex(reverse))
-                    : CameraCalibrationPreset.mirrorReverse(
-                            preferences, reverseProfileIndex(reverse));
+        CameraProfileId target = oppositeProductionProfile(id);
+        try {
+            if (id instanceof CameraProfileId.Blind) {
+                CameraCalibrationPreset.mirrorCamera(
+                        preferences, blindProfile((CameraProfileId.Blind) id));
+                transferred = true;
+            } else if (id instanceof CameraProfileId.Parking) {
+                transferred = CameraCalibrationPreset.mirrorParking(
+                        preferences, parkingProfile((CameraProfileId.Parking) id));
+            } else if (id instanceof CameraProfileId.Reverse) {
+                CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+                transferred = reverse.getSource() == ReverseSource.Front
+                        ? CameraCalibrationPreset.mirrorReverseFront(
+                                preferences, reverseProfileIndex(reverse))
+                        : CameraCalibrationPreset.mirrorReverse(
+                                preferences, reverseProfileIndex(reverse));
+            }
+        } catch (RuntimeException error) {
+            record("camera_preset_error", "operation", "transfer", "error", error.toString());
         }
         showProductionPresetToast("transfer", id, transferred,
-                "Налаштування віддзеркалено", "Settings mirrored",
-                "Не вдалося віддзеркалити налаштування", "Settings mirror failed");
+                "Налаштування перенесено • " + productionProfileLabel(target, false),
+                "Settings transferred • " + productionProfileLabel(target, true),
+                "Не вдалося перенести налаштування", "Settings transfer failed");
         if (transferred) notifyProductionProfileChanged(id);
     }
 
+    static CameraProfileId oppositeProductionProfile(CameraProfileId id) {
+        if (id instanceof CameraProfileId.Blind) {
+            CameraProfileId.Blind blind = (CameraProfileId.Blind) id;
+            return new CameraProfileId.Blind(blind.getGroup(),
+                    blind.getSide() == CameraSide.Left ? CameraSide.Right : CameraSide.Left);
+        }
+        if (id instanceof CameraProfileId.Parking) {
+            int target = CameraCalibrationPreset.parkingMirrorTarget(
+                    parkingProfile((CameraProfileId.Parking) id));
+            return target < 0 ? null : new CameraProfileId.Parking(ParkingView.values()[target]);
+        }
+        if (id instanceof CameraProfileId.Reverse) {
+            CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+            if (reverse.getElement() != ReverseElement.RearLeft
+                    && reverse.getElement() != ReverseElement.RearRight) return null;
+            return new CameraProfileId.Reverse(
+                    reverse.getElement() == ReverseElement.RearLeft
+                            ? ReverseElement.RearRight : ReverseElement.RearLeft,
+                    reverse.getSource());
+        }
+        return null;
+    }
+
+    static String productionProfileLabel(CameraProfileId id, boolean english) {
+        UiStrings strings = new UiStrings(english ? UiLanguage.English : UiLanguage.Ukrainian);
+        if (id instanceof CameraProfileId.Parking) {
+            return strings.getParkingViews().get(((CameraProfileId.Parking) id).getView().ordinal());
+        }
+        if (id instanceof CameraProfileId.Blind) {
+            CameraProfileId.Blind blind = (CameraProfileId.Blind) id;
+            boolean front = blind.getGroup() == CameraGroup.Front;
+            boolean right = blind.getSide() == CameraSide.Right;
+            return english ? (front ? "Front " : "Rear ") + (right ? "right" : "left")
+                    : (front ? "Передня " : "Задня ") + (right ? "права" : "ліва");
+        }
+        if (id instanceof CameraProfileId.Reverse) {
+            CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+            if (reverse.getSource() == ReverseSource.Front) {
+                if (reverse.getElement() == ReverseElement.Rear) return english ? "Front" : "Передня";
+                boolean right = reverse.getElement() == ReverseElement.RearRight;
+                return english ? "Front " + (right ? "right" : "left")
+                        : "Передня " + (right ? "права" : "ліва");
+            }
+            return strings.getReverseElements().get(reverse.getElement().ordinal());
+        }
+        return english ? "Unknown camera" : "Невідома камера";
+    }
+
     private void showProductionPresetToast(
-            String operation, CameraProfileId profile, boolean success,
+            String operation, Object profile, boolean success,
             String successUk, String successEn,
             String failureUk, String failureEn) {
         record("camera_preset", "operation", operation,
                 "outcome", success ? "success" : "failure",
                 "profile", profile == null ? "unknown" : profile.toString());
         boolean english = productionUi != null
-                && productionUi.getState().getLanguage()
-                        == com.byd.extend.ui.UiLanguage.English;
-        Toast.makeText(this,
-                english ? (success ? successEn : failureEn)
-                        : (success ? successUk : failureUk),
-                Toast.LENGTH_SHORT).show();
+                && productionUi.getState().getLanguage() == UiLanguage.English;
+        showProductionTopToast(english ? (success ? successEn : failureEn)
+                : (success ? successUk : failureUk));
+    }
+
+    @SuppressWarnings("deprecation")
+    private void showProductionTopToast(String message) {
+        if (activityDestroyed || !activityResumed) return;
+        // Match the accepted Preview foreground toast; text-only toasts ignore TOP on Android 12+.
+        TextView label = new TextView(this);
+        label.setText(message);
+        label.setTextSize(14f);
+        label.setTextColor(Color.WHITE);
+        label.setGravity(Gravity.CENTER);
+        label.setMaxWidth(getResources().getDisplayMetrics().widthPixels - dp(48));
+        label.setPadding(dp(18), dp(12), dp(18), dp(12));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xF018212C);
+        background.setCornerRadius(dp(8));
+        label.setBackground(background);
+        Toast toast = new Toast(this);
+        toast.setDuration(Toast.LENGTH_LONG);
+        toast.setView(label);
+        toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dp(24));
+        toast.show();
+    }
+
+    private void resetProductionReverseLayout(ReverseElement element) {
+        boolean reset = false;
+        try {
+            if (element != null) {
+                ReverseCameraController.resetSelectedLayout(preferences, element.name());
+                reset = true;
+            }
+        } catch (RuntimeException error) {
+            record("camera_preset_error", "operation", "reset_layout", "error", error.toString());
+        }
+        String uk = element == null ? "" : new UiStrings(UiLanguage.Ukrainian)
+                .getReverseElements().get(element.ordinal());
+        String en = element == null ? "" : new UiStrings(UiLanguage.English)
+                .getReverseElements().get(element.ordinal());
+        showProductionPresetToast("reset_layout", element, reset,
+                "Композиція • " + uk + ": відновлено стандартні налаштування",
+                "Layout • " + en + ": defaults restored",
+                "Не вдалося скинути композицію", "Layout reset failed");
+        if (reset) {
+            applyProductionReverseState();
+            CameraHelperService.reverseCameraSettingsChanged(this);
+        }
     }
 
     private void resetProductionProfile(CameraProfileId id, CommandId command) {
+        boolean reset = false;
+        try {
+            reset = resetProductionProfileSettings(preferences, id, command);
+        } catch (RuntimeException error) {
+            record("camera_preset_error", "operation", command.name(), "error", error.toString());
+        }
+        String uk = productionResetScope(command, false) + " • " + productionProfileLabel(id, false);
+        String en = productionResetScope(command, true) + " • " + productionProfileLabel(id, true);
+        showProductionPresetToast("reset", id, reset,
+                uk + ": відновлено стандартні налаштування", en + ": defaults restored",
+                uk + ": не вдалося скинути", en + ": reset failed");
+        if (reset) notifyProductionProfileChanged(id);
+    }
+
+    static String productionResetScope(CommandId command, boolean english) {
+        if (command == CommandId.ResetProfilePlacement) return english ? "Placement" : "Розташування";
+        if (command == CommandId.ResetProfileOriginal) return english ? "Original area" : "Область оригіналу";
+        if (command == CommandId.ResetProfileCorrection) return english ? "Correction" : "Корекція";
+        return english ? "Output" : "Вивід";
+    }
+
+    static boolean resetProductionProfileSettings(
+            SharedPreferences preferences, CameraProfileId id, CommandId command) {
         if (command == CommandId.ResetProfilePlacement) {
             if (id instanceof CameraProfileId.Blind) {
                 CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
@@ -3773,11 +3913,14 @@ public final class CameraProbeActivity extends ComponentActivity
                 String prefix = parkingPlacementPrefix(profile);
                 preferences.edit().putInt(prefix + "scale", 25)
                         .putFloat(prefix + "x", x[profile.id])
-                        .putFloat(prefix + "y", y[profile.id]).apply();
-            }
-            notifyProductionProfileChanged(id);
-            return;
+                        .putFloat(prefix + "y", y[profile.id])
+                        .putBoolean(parkingScaleSyncKey(), false).apply();
+            } else return false;
+            return true;
         }
+        if (command != CommandId.ResetProfileOriginal
+                && command != CommandId.ResetProfileCorrection
+                && command != CommandId.ResetProfileOutput) return false;
         CameraCalibrationPreset.Stage stage = command == CommandId.ResetProfileOriginal
                 ? CameraCalibrationPreset.Stage.ORIGINAL
                 : command == CommandId.ResetProfileCorrection
@@ -3790,10 +3933,13 @@ public final class CameraProbeActivity extends ComponentActivity
                     preferences, parkingProfile((CameraProfileId.Parking) id), stage);
         } else if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+            if (reverse.getElement() != ReverseElement.Rear
+                    && reverse.getElement() != ReverseElement.RearLeft
+                    && reverse.getElement() != ReverseElement.RearRight) return false;
             CameraCalibrationPreset.resetReverseStage(preferences, reverseProfileIndex(reverse),
                     reverse.getSource() == ReverseSource.Front, stage);
-        }
-        notifyProductionProfileChanged(id);
+        } else return false;
+        return true;
     }
 
     private void saveProductionReverseGeometry(NumberTarget.ReverseGeometry target, float value) {
@@ -4234,7 +4380,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 else owner.setCorrectedMirrorTexture(texture);
             }
             @Override public void onSurfaceTextureSizeChanged(
-                    SurfaceTexture texture, int width, int height) {}
+                    SurfaceTexture texture, int width, int height) {
+                if (!calibrationHostBundle.acceptMirror(owner, mirror, raw)) return;
+                owner.refreshMirrorBuffer(texture, raw);
+            }
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
                 if (!calibrationHostBundle.acceptMirror(owner, mirror, raw)) return true;
                 if (raw) owner.setRawMirrorTexture(null);
@@ -7437,7 +7586,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         || calibrationPreview.usesRawFallback())) {
             cancelCalibrationCropInput();
             Toast.makeText(this, "CORRECTED зараз недоступний",
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
             return;
         }
         DirectCameraCrop current = calibrationCropInputStage == CROP_STAGE_CORRECTED
@@ -7504,7 +7653,7 @@ public final class CameraProbeActivity extends ComponentActivity
                                 reverseCalibrationCameraIndex))) {
             cancelReverseCropInput();
             Toast.makeText(this, "CORRECTED зараз недоступний",
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
             return;
         }
         try {
@@ -7543,7 +7692,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void showCropInputError(EditText[] inputs, String message) {
         inputs[0].setError(message);
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
     private static void clearCropInputErrors(EditText[] inputs) {
@@ -7893,7 +8042,7 @@ public final class CameraProbeActivity extends ComponentActivity
             String message = error.getMessage() == null
                     ? "Некоректна геометрія crop" : error.getMessage();
             calibrationStatus.setText(message);
-            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             return false;
         }
     }
@@ -8748,14 +8897,14 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraCalibrationPreset.saveParking(preferences, profile);
             updateCalibrationCropReadouts();
             notifyCalibrationSettingsChanged();
-            Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Пресет збережено", Toast.LENGTH_LONG).show();
             record("parking_calibration_preset_saved", "camera", profile.wireName);
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.saveCamera(preferences, profile);
         updateCalibrationCropReadouts();
-        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_LONG).show();
         record("camera_calibration_preset_saved", "camera", profile.wireName);
     }
 
@@ -8765,21 +8914,21 @@ public final class CameraProbeActivity extends ComponentActivity
             ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
             if (!CameraCalibrationPreset.loadParking(preferences, profile)) {
                 Toast.makeText(this, "Пресет відсутній або некоректний",
-                        Toast.LENGTH_SHORT).show();
+                        Toast.LENGTH_LONG).show();
                 return;
             }
             refreshCalibrationSettings("parking_preset_loaded");
-            Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_LONG).show();
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         if (!CameraCalibrationPreset.loadCamera(preferences, profile)) {
             Toast.makeText(this, "Пресет відсутній або некоректний",
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
             return;
         }
         refreshCalibrationSettings("camera_preset_loaded");
-        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_LONG).show();
     }
 
     private void mirrorCameraCalibration() {
@@ -8789,14 +8938,14 @@ public final class CameraProbeActivity extends ComponentActivity
             if (!CameraCalibrationPreset.mirrorParking(preferences, profile)) return;
             refreshCalibrationSettings("parking_calibration_mirrored");
             Toast.makeText(this, "Налаштування віддзеркалено",
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.mirrorCamera(preferences, profile);
         refreshCalibrationSettings("camera_calibration_mirrored");
         Toast.makeText(this, "Налаштування віддзеркалено",
-                Toast.LENGTH_SHORT).show();
+                Toast.LENGTH_LONG).show();
     }
 
     private void toggleCalibrationOutputMirror() {
@@ -8831,7 +8980,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     preferences, reverseCalibrationCameraIndex);
         }
         updateReverseCalibrationCropReadouts();
-        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Пресет збережено", Toast.LENGTH_LONG).show();
         record("reverse_calibration_preset_saved",
                 "camera_index", reverseCalibrationCameraIndex);
     }
@@ -8846,11 +8995,11 @@ public final class CameraProbeActivity extends ComponentActivity
                                 preferences, reverseCalibrationCameraIndex));
         if (!loaded) {
             Toast.makeText(this, "Пресет відсутній або некоректний",
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
             return;
         }
         refreshCalibrationSettings("reverse_preset_loaded");
-        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Пресет завантажено", Toast.LENGTH_LONG).show();
     }
 
     private void mirrorReverseCalibration() {
@@ -8864,7 +9013,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!mirrored) return;
         refreshCalibrationSettings("reverse_calibration_mirrored");
         Toast.makeText(this, "Налаштування віддзеркалено",
-                Toast.LENGTH_SHORT).show();
+                Toast.LENGTH_LONG).show();
     }
 
     private void refreshCalibrationSettings(String reason) {
@@ -10230,8 +10379,16 @@ public final class CameraProbeActivity extends ComponentActivity
             throw new IllegalArgumentException("automatic camera input required");
         }
         activeActivityCameraRequestId = requestId;
-        // Compose selects the next profile before notifying the backend; retain this request's owner.
-        activeActivityCameraProfile = automatic ? selectedProductionProfile() : null;
+        // Compose selects the next profile before notifying the backend; retain this request's
+        // owner.  Reverse composition is one combined frame, so its status remains anchored to
+        // the canonical Rear pane even when Background, Widget, or another pane is selected.
+        boolean combinedReverseComposition = selectedTab == TAB_REVERSE_CAMERAS
+                && inputGenerations != null
+                && (inputGenerations.length == 4 || inputGenerations.length == 5);
+        activeActivityCameraProfile = automatic
+                ? combinedReverseComposition
+                        ? reverseCompositionStatusProfile() : selectedProductionProfile()
+                : null;
         activeActivityConsumerGeneration = 0;
         activeActivityInputGenerations = inputGenerations == null
                 ? new int[0] : inputGenerations.clone();

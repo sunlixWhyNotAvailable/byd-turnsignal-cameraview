@@ -195,7 +195,7 @@ public final class CameraProbeWeatherPanel {
             updateWeatherControls();
             String text = message == null || message.isEmpty()
                     ? (success ? "Оновлено" : "Помилка оновлення") : message;
-            Toast.makeText(activity, text, Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, text, Toast.LENGTH_LONG).show();
         });
     }
 
@@ -222,7 +222,7 @@ public final class CameraProbeWeatherPanel {
         try {
             activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(OPEN_METEO_URL)));
         } catch (ActivityNotFoundException ignored) {
-            Toast.makeText(activity, OPEN_METEO_URL, Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, OPEN_METEO_URL, Toast.LENGTH_LONG).show();
         }
     }
 
