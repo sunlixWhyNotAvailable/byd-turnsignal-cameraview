@@ -130,6 +130,7 @@ final class BlindSpotCameraView extends TextureView
             throw new IllegalStateException("camera buffer must be sized before attach");
         }
         int[] size = paneBoundedBufferSize(paneWidth, paneHeight, quality);
+        automaticBufferQuality = -1;
         bufferWidth = size[0];
         bufferHeight = size[1];
         configureBuffer();
@@ -161,6 +162,14 @@ final class BlindSpotCameraView extends TextureView
     static int[] paneBoundedBufferSize(int paneWidth, int paneHeight, int quality) {
         return CameraBufferQuality.bufferSizeForPane(
                 paneWidth, paneHeight, BUFFER_WIDTH, BUFFER_HEIGHT, quality);
+    }
+
+    static int[] cameraBufferSizeForInput(
+            int configuredWidth, int configuredHeight,
+            int viewWidth, int viewHeight, int automaticQuality) {
+        return automaticQuality >= 0
+                ? paneBoundedBufferSize(viewWidth, viewHeight, automaticQuality)
+                : new int[]{configuredWidth, configuredHeight};
     }
 
     void retireCameraInput() {
@@ -368,11 +377,10 @@ final class BlindSpotCameraView extends TextureView
     }
 
     private void startCameraInput(SurfaceTexture texture, int width, int height) {
-        if (automaticBufferQuality >= 0) {
-            int[] size = paneBoundedBufferSize(width, height, automaticBufferQuality);
-            bufferWidth = size[0];
-            bufferHeight = size[1];
-        }
+        int[] size = cameraBufferSizeForInput(
+                bufferWidth, bufferHeight, width, height, automaticBufferQuality);
+        bufferWidth = size[0];
+        bufferHeight = size[1];
         int cameraGeneration = inputGeneration.next();
         configureBuffer();
         if (usesDewarpPipeline()) {

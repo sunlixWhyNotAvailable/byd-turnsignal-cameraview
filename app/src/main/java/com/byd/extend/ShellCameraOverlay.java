@@ -368,11 +368,6 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     public void onCameraSurfaceAvailable(
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != preview) return;
-        surfaceGeneration++;
-        if (windowless != null) {
-            windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
-        }
-        preview.setDewarpStatsContext(requestId, surfaceGeneration);
         armedFrameRequestId = 0;
         armedFrameEpoch = 0;
         armedFrameUpdates = 0;
@@ -541,6 +536,13 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emitSurfaceReady(boolean reused) {
+        int inputGeneration = preview == null ? 0 : preview.cameraInputGeneration();
+        if (inputGeneration <= 0) return;
+        surfaceGeneration = inputGeneration;
+        if (windowless != null) {
+            windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
+        }
+        preview.setDewarpStatsContext(requestId, surfaceGeneration);
         emit("camera_overlay_surface", "state", "ready",
                 "request_id", requestId, "surface_generation", surfaceGeneration,
                 "reused", reused,

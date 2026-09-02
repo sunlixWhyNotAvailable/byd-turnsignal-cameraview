@@ -14,11 +14,50 @@ public final class OverlayFreshnessTest {
         assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 1_000L));
         assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 8, 1_000L, 1_001L));
         assertFalse(ShellCameraOverlay.isFreshStampedFrame(0, 0, 1_000L, 1_001L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 0, 1_000L, 1_001L));
         assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 0L, 1_001L));
+        assertFalse(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 0L));
         assertTrue(ShellCameraOverlay.isFreshStampedFrame(9, 9, 1_000L, 1_001L));
         // Parking has no timestamp contract and retains its existing two-update gate.
+        assertFalse(ShellCameraOverlay.isFramePastStaleBuffer(0));
         assertFalse(ShellCameraOverlay.isFramePastStaleBuffer(1));
         assertTrue(ShellCameraOverlay.isFramePastStaleBuffer(2));
+    }
+
+    @Test
+    public void retainedInputKeepsGenerationAndNewInputAdvancesIt() {
+        BlindSpotCameraView.InputGeneration generation =
+                new BlindSpotCameraView.InputGeneration();
+        int first = generation.next();
+
+        // A missed callback must not change the retained input's logical generation.
+        assertEquals(first, generation.current());
+        assertEquals(first, generation.current());
+
+        int second = generation.next();
+        assertTrue(first > 0);
+        assertTrue(second > 0);
+        assertTrue(first != second);
+        assertEquals(second, generation.current());
+    }
+
+    @Test
+    public void retainedReadyUsesInputGenerationBeforeDiagnosticPublication() throws Exception {
+        String overlay = source("ShellCameraOverlay.java");
+        int ready = overlay.indexOf("private void emitSurfaceReady");
+        assertTrue(ready >= 0);
+        String boundary = overlay.substring(ready);
+        assertFalse(boundary.contains("surfaceGeneration++"));
+        int assignment = boundary.indexOf("surfaceGeneration = inputGeneration");
+        int windowlessState = boundary.indexOf("windowless.setDiagnosticState");
+        int dewarpContext = boundary.indexOf("preview.setDewarpStatsContext");
+        int event = boundary.indexOf("\"camera_overlay_surface\"");
+        assertTrue(assignment >= 0);
+        assertTrue(windowlessState > assignment);
+        assertTrue(dewarpContext > windowlessState);
+        assertTrue(event > dewarpContext);
+        assertTrue(overlay.contains(
+                "int inputGeneration = preview == null ? 0 : preview.cameraInputGeneration();"));
     }
 
     @Test

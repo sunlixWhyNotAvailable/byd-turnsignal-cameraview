@@ -2,6 +2,9 @@ package com.byd.extend;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -93,6 +96,73 @@ public final class CameraBufferSizingTest {
         assertArrayEquals(new int[]{1920, 1300},
                 BlindSpotCameraView.paneBoundedBufferSize(
                         576, 357, CameraBufferQuality.ORIGINAL));
+    }
+
+    @Test
+    public void inputBufferSelectionKeepsExplicitPaneSizeUnlessAutomaticQualityIsSet() {
+        int[][] rearBounds = ReverseCameraCompositionView.paneBounds(
+                ReverseCameraLayout.defaults(), 1920, 990);
+        for (int quality = CameraBufferQuality.PERFORMANCE;
+                quality <= CameraBufferQuality.ORIGINAL; quality++) {
+            int[] bounded = BlindSpotCameraView.paneBoundedBufferSize(
+                    rearBounds[0][0], rearBounds[0][1], quality);
+            if (quality == CameraBufferQuality.BALANCED) {
+                assertArrayEquals(new int[]{1626, 1101}, bounded);
+            }
+            assertArrayEquals(bounded,
+                    BlindSpotCameraView.cameraBufferSizeForInput(
+                            bounded[0], bounded[1], 1920, 1300, -1));
+        }
+
+        assertArrayEquals(new int[]{1920, 1300},
+                BlindSpotCameraView.cameraBufferSizeForInput(
+                        1626, 1101, 1920, 1300,
+                        CameraBufferQuality.ORIGINAL));
+    }
+
+    @Test
+    public void inputBufferSelectionUsesActivityViewportForEveryAutomaticQuality() {
+        int[] qualities = {
+                CameraBufferQuality.PERFORMANCE,
+                CameraBufferQuality.BALANCED,
+                CameraBufferQuality.QUALITY,
+                CameraBufferQuality.ORIGINAL
+        };
+        int[][] expected = {
+                {527, 357},
+                {792, 536},
+                {1055, 714},
+                {1920, 1300}
+        };
+        for (int quality : qualities) {
+            assertArrayEquals(expected[quality],
+                    BlindSpotCameraView.cameraBufferSizeForInput(
+                            1626, 1101, 576, 357, quality));
+        }
+    }
+
+    @Test
+    public void productionWiringClearsAutomaticOverrideAndUsesInputSelector() throws Exception {
+        Path source = Path.of("app/src/main/java/com/byd/extend/BlindSpotCameraView.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/BlindSpotCameraView.java");
+        }
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+
+        int setterStart = text.indexOf("void setPaneBoundedBuffer(");
+        int setterEnd = text.indexOf("\n    void setAutomaticBufferQuality(", setterStart);
+        assertTrue(setterStart >= 0 && setterEnd > setterStart);
+        String setter = text.substring(setterStart, setterEnd);
+        int sizeCalculation = setter.indexOf("int[] size = paneBoundedBufferSize(");
+        int reset = setter.indexOf("automaticBufferQuality = -1;");
+        int widthAssignment = setter.indexOf("bufferWidth = size[0];");
+        assertTrue(sizeCalculation >= 0);
+        assertTrue(reset > sizeCalculation);
+        assertTrue(widthAssignment > reset);
+
+        int start = text.indexOf("private void startCameraInput(");
+        assertTrue(start >= 0);
+        assertTrue(text.indexOf("cameraBufferSizeForInput(", start) > start);
     }
 
     @Test

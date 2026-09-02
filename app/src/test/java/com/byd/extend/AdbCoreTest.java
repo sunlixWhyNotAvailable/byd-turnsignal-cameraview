@@ -207,6 +207,68 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void adbCommandWrappersLeaveAccessStateToConnectionHandshake() throws Exception {
+        Path source = Path.of("app/src/main/java/com/byd/extend/LocalAdbClient.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/LocalAdbClient.java");
+        }
+        assertTrue("LocalAdbClient source unavailable", Files.exists(source));
+        String text = new String(Files.readAllBytes(source),
+                java.nio.charset.StandardCharsets.UTF_8).replace("\r\n", "\n");
+
+        int ordinaryStart = text.indexOf("static Result executeAuthorized(\n"
+                + "            Context context,");
+        int ordinaryEnd = text.indexOf(
+                "/** Executes a fixed shell command while streaming raw stdout without UTF-8 buffering.",
+                ordinaryStart);
+        assertTrue(ordinaryStart >= 0);
+        assertTrue(ordinaryEnd > ordinaryStart);
+        String ordinary = text.substring(ordinaryStart, ordinaryEnd);
+        assertFalse(ordinary.contains("recordAccessError("));
+        assertFalse(ordinary.contains("shouldInvalidateAccess("));
+        assertTrue(ordinary.contains("Result.failed(\"shell_exit_\" + shell.exitCode"));
+
+        int streamingStart = text.indexOf("static Result executeAuthorizedStreaming(\n"
+                + "            Context context,", ordinaryEnd);
+        int streamingEnd = text.indexOf("    static Result executeAuthorizedText(", streamingStart);
+        assertTrue(streamingStart > ordinaryEnd);
+        assertTrue(streamingEnd > streamingStart);
+        String streaming = text.substring(streamingStart, streamingEnd);
+        assertFalse(streaming.contains("recordAccessError("));
+        assertFalse(streaming.contains("shouldInvalidateAccess("));
+        assertTrue(streaming.contains("Result.failed(\"shell_exit_\" + shell.exitCode"));
+
+        int connectionStart = text.indexOf("    private static final class Connection {");
+        int shellStart = text.indexOf("        ShellResult shell(", connectionStart);
+        assertTrue(connectionStart >= 0);
+        assertTrue(shellStart > connectionStart);
+        String connection = text.substring(connectionStart, shellStart);
+        int cnxn = connection.indexOf("if (packet.command == AdbPacket.A_CNXN)");
+        int success = connection.indexOf("recordAccessSuccess(context, fingerprint);", cnxn);
+        assertTrue(cnxn >= 0);
+        assertTrue(success > cnxn);
+
+        int timeout = connection.indexOf("if (publicKeySent) {");
+        assertTrue(timeout >= 0);
+        assertTrue(connection.indexOf("recordAccessError(context, fingerprint);", timeout) > timeout);
+        int rejected = connection.indexOf("\"authorization_rejected\"");
+        assertTrue(rejected >= 0);
+        assertTrue(connection.indexOf("recordAccessError(context, fingerprint);", rejected) > rejected);
+        int required = connection.indexOf("\"authorization_required\"");
+        assertTrue(required >= 0);
+        assertTrue(connection.indexOf("recordAccessError(context, fingerprint);", required) > required);
+        int catchStart = connection.indexOf("} catch (Throwable error) {");
+        assertTrue(catchStart >= 0);
+        assertTrue(connection.indexOf("recordAccessError(context, fingerprint);", catchStart)
+                > catchStart);
+
+        LocalAdbClient.Result failure = LocalAdbClient.Result.failed(
+                "shell_exit_-1", "", -1, "key-a");
+        assertFalse(failure.ok);
+        assertEquals("shell_exit_-1", failure.error);
+    }
+
+    @Test
     public void adbAccessListenerClearUsesCallbackIdentity() {
         LocalAdbClient.AccessStateListener first = state -> { };
         LocalAdbClient.AccessStateListener second = state -> { };

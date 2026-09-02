@@ -161,12 +161,10 @@ final class LocalAdbClient {
         Result result;
         synchronized (LOCK) {
             Connection connection = null;
-            String operationFingerprint = "";
             try {
                 OpenResult open = Connection.open(
                         applicationContext, PromptMode.NEVER,
                         cancellationToken, eventSink);
-                operationFingerprint = open.fingerprint;
                 if (open.connection == null) {
                     result = Result.authorizationRequired(
                             open.authorizationError, open.publicKeySent, open.fingerprint);
@@ -183,9 +181,6 @@ final class LocalAdbClient {
                                     ? Result.ok(shell.output, shell.exitCode, open.fingerprint, false)
                                     : Result.failed("shell_exit_" + shell.exitCode, shell.output,
                                             shell.exitCode, open.fingerprint);
-                            if (shell.exitCode < 0) {
-                                recordAccessError(applicationContext, open.fingerprint);
-                            }
                         }
                     }
                 }
@@ -195,10 +190,6 @@ final class LocalAdbClient {
                 if (!isCancellationTokenCurrent(cancellationToken)) {
                     result = Result.superseded();
                 } else {
-                    if (!operationFingerprint.isEmpty()
-                            && shouldInvalidateAccess(error, false)) {
-                        recordAccessError(applicationContext, operationFingerprint);
-                    }
                     result = Result.failed(summary(error), "", -1, "unavailable");
                 }
             } finally {
@@ -262,9 +253,6 @@ final class LocalAdbClient {
                                 ? Result.ok("", shell.exitCode, open.fingerprint, false)
                                 : Result.failed("shell_exit_" + shell.exitCode, "",
                                         shell.exitCode, open.fingerprint);
-                        if (shell.exitCode < 0) {
-                            recordAccessError(applicationContext, open.fingerprint);
-                        }
                     }
                 }
             } catch (TooLargeException tooLarge) {
@@ -276,11 +264,6 @@ final class LocalAdbClient {
                 if (cancellation != null && cancellation.isCancellationRequested()) {
                     result = Result.cancelled();
                 } else {
-                    if (!operationFingerprint.isEmpty()
-                            && shouldInvalidateAccess(error,
-                            cancellation != null && cancellation.isCancellationRequested())) {
-                        recordAccessError(applicationContext, operationFingerprint);
-                    }
                     result = Result.failed(summary(error), "", -1, "unavailable");
                 }
             } finally {
