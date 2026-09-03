@@ -418,6 +418,8 @@ final class CameraHelperMain {
                 throw error;
             }
             emit("helper_connected", "uid", Process.myUid());
+            // onTransact holds this callback lock until the snapshot is sent.
+            turnController.reportCameraShellState();
             emitCounters();
             emitMusicJournalSnapshot();
             emit("reverse_camera_state",

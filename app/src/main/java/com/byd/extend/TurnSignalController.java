@@ -129,7 +129,9 @@ final class TurnSignalController {
     }
 
     void shutdown(boolean terminateShells) {
-        stopped = true;
+        synchronized (this) {
+            stopped = true;
+        }
         handler.removeCallbacks(pingRunnable);
         LocalAdbClient.cancelPendingAuthorization();
         StockAvmOpenState canceledOpen = cancelStockAvmOpen(0);
@@ -710,6 +712,27 @@ final class TurnSignalController {
         }
     }
 
+    synchronized void reportCameraShellState() {
+        if (stopped) return;
+        // Registration already owns the callback lock; serialize replay with shutdown.
+        replayCameraShellState(
+                cameraHelper, cameraHelperEpoch, avmShell, avmShellEpoch, eventSink);
+    }
+
+    static void replayCameraShellState(
+            IBinder camera, long cameraEpoch, IBinder avm, long avmEpoch,
+            BiConsumer<String, Object[]> events) {
+        // Camera attach can resume a preview, so establish its AVM epoch first.
+        if (avm != null && avmEpoch > 0 && avm.isBinderAlive()) {
+            events.accept("stock_avm_shell_attached",
+                    new Object[]{"avm_shell_epoch", avmEpoch});
+        }
+        if (camera != null && cameraEpoch > 0 && camera.isBinderAlive()) {
+            events.accept("camera_shell_attached",
+                    new Object[]{"camera_shell_epoch", cameraEpoch});
+        }
+    }
+
     void reportStatus() {
         emit("adb_auth_state", "pending", authorizationPending,
                 "mode", modeName(authorizationMode));
@@ -1037,16 +1060,20 @@ final class TurnSignalController {
     }
 
     private void helperDied(IBinder deadHelper, int deadPid) {
+        boolean stale;
         synchronized (this) {
-            if (helper != deadHelper) {
-                emit("helper_death_ignored", "pid", deadPid, "reason", "stale_binder");
-                return;
+            stale = helper != deadHelper;
+            if (!stale) {
+                helper = null;
+                helperDeathRecipient = null;
+                healthy = false;
+                primaryError = "helper_binder_died";
+                lastLaunchFailureAt = 0;
             }
-            helper = null;
-            helperDeathRecipient = null;
-            healthy = false;
-            primaryError = "helper_binder_died";
-            lastLaunchFailureAt = 0;
+        }
+        if (stale) {
+            emit("helper_death_ignored", "pid", deadPid, "reason", "stale_binder");
+            return;
         }
         emit("helper_death", "pid", deadPid, "error", primaryError);
         if (!stopped) worker.execute(() -> ensureRunning(LocalAdbClient.PromptMode.NEVER, true));
