@@ -230,6 +230,7 @@ private fun readReverse(
             ReverseSource.Rear),
         showFront = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
             ReverseSource.Rear) == ReverseSource.Front,
+        steeringKeyCode = ReverseSteeringButtonPreferences.load(preferences),
         frontIntegration = mapOf(
             ReverseElement.Rear to ReverseCameraController.loadCentralFrontIntegrated(preferences),
             ReverseElement.RearLeft to ReverseCameraController.loadFrontIntegrated(

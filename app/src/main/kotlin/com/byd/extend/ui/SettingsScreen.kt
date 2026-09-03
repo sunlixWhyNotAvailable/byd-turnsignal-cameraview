@@ -130,7 +130,8 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                 strings.text("Запускати фонову службу HUD після завантаження системи, розблокування, оновлення пакета та перевірки стану",
                     "Start foreground HUD runtime after boot and watchdog events"), state.automaticStart,
                 { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutoStart), it)) }, colors,
-                pending = state.automaticStartOperation.pending, enabled = state.automaticStartOperation.enabled)
+                pending = state.automaticStartOperation.pending, enabled = state.automaticStartOperation.enabled,
+                compactSwitch = false)
         }
         Divider(colors)
         SettingsActionRow(strings.text("Перевіряти оновлення", "Check for updates"),
@@ -143,7 +144,7 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                 }
                 AppSwitch(state.automaticUpdate,
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutomaticUpdate), it)) },
-                    colors, compact = true)
+                    colors, compact = false)
             }
         }
     }

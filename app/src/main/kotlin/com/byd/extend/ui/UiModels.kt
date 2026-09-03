@@ -15,7 +15,7 @@ enum class ReverseSource { Rear, Front }
 enum class DiagnosticMode { Signals, Direct, Avm }
 enum class SettingsCategory { Permissions, CameraOutput, Logs }
 enum class SettingsOperation { AutoStart, Adb, Update, Logs, Compatibility, Preset, Import }
-enum class DialogKind { Background, Update, Shutdown, Progress, Message }
+enum class DialogKind { Background, Update, Shutdown, Progress, Message, ReverseButtonCapture }
 enum class StatusTone { Ok, Warning, Error, Neutral }
 enum class AvmOrientation { Horizontal, Vertical }
 
@@ -178,6 +178,8 @@ enum class CommandId {
     ReverseLower,
     ReverseRaise,
     ReverseResetLayout,
+    ReverseLearnButton,
+    ReverseResetButton,
     SignalLeft,
     SignalRight,
     SignalHazard,
@@ -370,6 +372,7 @@ data class ReverseUiState(
     val selectedElement: ReverseElement = ReverseElement.RearLeft,
     val selectedSource: ReverseSource = ReverseSource.Rear,
     val showFront: Boolean = false,
+    val steeringKeyCode: Int = -1,
     val frontIntegration: Map<ReverseElement, Boolean> = emptyMap(),
     val geometry: Map<ReverseElement, ReverseGeometryUiState> = emptyMap(),
     val profiles: Map<CameraProfileId.Reverse, CameraProfileUiState> = emptyMap(),

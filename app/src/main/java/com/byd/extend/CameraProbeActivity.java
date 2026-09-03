@@ -73,6 +73,7 @@ import com.byd.extend.ui.CameraProfileId;
 import com.byd.extend.ui.CameraSide;
 import com.byd.extend.ui.CommandId;
 import com.byd.extend.ui.DiagnosticMode;
+import com.byd.extend.ui.DialogKind;
 import com.byd.extend.ui.NumberTarget;
 import com.byd.extend.ui.BlindNumber;
 import com.byd.extend.ui.GuardNumber;
@@ -193,6 +194,10 @@ public final class CameraProbeActivity extends ComponentActivity
             "com.byd.extend.extra.AVM_CLOSE";
     private static int activityCameraRequestSequence;
     private static long helperCallbackRegistrationSequence;
+    private static final Object REVERSE_OWNER_LOCK = new Object();
+    private static WeakReference<CameraProbeActivity> reverseOwner;
+    private static long reverseOwnerTokenSequence;
+    private static long reverseOwnerEpoch;
 
     static String calibrationTransferLabel(boolean rightCamera) {
         return rightCamera ? "← Перенести" : "Перенести →";
@@ -228,6 +233,133 @@ public final class CameraProbeActivity extends ComponentActivity
         return parking
                 ? "parking_" + ParkingCameraProfile.of(logicalId).wireName
                 : "overlay_" + CameraProfile.of(logicalId).wireName;
+    }
+
+    static final class ReverseOwnerSnapshot {
+        final CameraProbeActivity activity;
+        final long token;
+        final long epoch;
+
+        ReverseOwnerSnapshot(CameraProbeActivity activity, long token, long epoch) {
+            this.activity = activity;
+            this.token = token;
+            this.epoch = epoch;
+        }
+    }
+
+    /**
+     * Returns the single foreground Activity presence, including an ineligible transition
+     * sentinel.  A non-null snapshot owns the key event and therefore prevents runtime fallback.
+     */
+    static boolean dispatchReverseSteeringToggle() {
+        ReverseOwnerSnapshot snapshot;
+        synchronized (REVERSE_OWNER_LOCK) {
+            CameraProbeActivity owner = reverseOwner == null ? null : reverseOwner.get();
+            if (owner == null || !owner.reverseOwnerPresent) return false;
+            snapshot = new ReverseOwnerSnapshot(owner, owner.reverseOwnerToken,
+                    reverseOwnerEpoch);
+        }
+        snapshot.activity.dispatchReverseSteeringToggle(snapshot.token, snapshot.epoch);
+        return true;
+    }
+
+    static long reverseOwnerEpochSnapshot() {
+        synchronized (REVERSE_OWNER_LOCK) {
+            return reverseOwnerEpoch;
+        }
+    }
+
+    /** True only if no foreground owner appeared or changed since the supplied snapshot. */
+    static boolean reverseOwnerStillAbsent(long epoch) {
+        synchronized (REVERSE_OWNER_LOCK) {
+            CameraProbeActivity owner = reverseOwner == null ? null : reverseOwner.get();
+            return reverseOwnerEpoch == epoch && (owner == null || !owner.reverseOwnerPresent);
+        }
+    }
+
+    static void publishReverseSteeringButtonCaptured() {
+        ReverseOwnerSnapshot snapshot;
+        synchronized (REVERSE_OWNER_LOCK) {
+            CameraProbeActivity owner = reverseOwner == null ? null : reverseOwner.get();
+            if (owner == null || !owner.reverseOwnerPresent) return;
+            snapshot = new ReverseOwnerSnapshot(owner, owner.reverseOwnerToken,
+                    reverseOwnerEpoch);
+        }
+        snapshot.activity.mainHandler.post(() -> {
+            if (!snapshot.activity.isReverseOwnerCurrent(snapshot.token, snapshot.epoch)) return;
+            if (snapshot.activity.productionUi != null) {
+                snapshot.activity.productionUi.dismissReverseButtonCaptureDialog();
+                snapshot.activity.productionUi.reload();
+            }
+        });
+    }
+
+    private void publishReverseOwnerPresence() {
+        synchronized (REVERSE_OWNER_LOCK) {
+            if (!reverseOwnerPresent
+                    || reverseOwner == null || reverseOwner.get() != this) {
+                reverseOwnerToken = ++reverseOwnerTokenSequence;
+                reverseOwnerPresent = true;
+            }
+            reverseOwner = new WeakReference<>(this);
+            reverseOwnerEpoch++;
+        }
+    }
+
+    private void publishReverseOwnerIneligible() {
+        synchronized (REVERSE_OWNER_LOCK) {
+            if (!reverseOwnerPresent
+                    || reverseOwner == null || reverseOwner.get() != this) return;
+            reverseOwnerEpoch++;
+        }
+    }
+
+    private void clearReverseOwnerPresence() {
+        synchronized (REVERSE_OWNER_LOCK) {
+            if (!reverseOwnerPresent
+                    || reverseOwner == null || reverseOwner.get() != this) return;
+            reverseOwnerPresent = false;
+            reverseOwnerEpoch++;
+            reverseOwner = null;
+        }
+    }
+
+    private boolean isReverseOwnerCurrent(long token, long epoch) {
+        synchronized (REVERSE_OWNER_LOCK) {
+            return reverseOwnerPresent && reverseOwnerToken == token
+                    && reverseOwnerEpoch == epoch
+                    && reverseOwner != null && reverseOwner.get() == this;
+        }
+    }
+
+    private boolean isReverseToggleEligible() {
+        if (!activityResumed || activityDestroyed || shutdownRequested
+                || !requestedOpen || activePreview != reverseCameraPreview
+                || !activeActivityCameraOpened || activeActivityCameraRequestId <= 0
+                || reverseCameraPreview == null || productionUi == null
+                || selectedTab != TAB_REVERSE_CAMERAS || isProductionCalibrationSection()) return false;
+        if (!productionUi.getState().getReverse().getEnabled()) return false;
+        return ReverseCameraController.loadWidgetVisible(preferences)
+                && ReverseCameraController.hasAnyFrontIntegration(preferences);
+    }
+
+    private void dispatchReverseSteeringToggle(long token, long epoch) {
+        // Capture the camera host/request at key-dispatch time.  The owner epoch alone
+        // does not distinguish a close/open transition that reuses this Activity instance;
+        // stale work must not toggle the newly-created Reverse request.
+        final int expectedRequestId = activeActivityCameraRequestId;
+        final View expectedPreview = reverseCameraPreview;
+        mainHandler.post(() -> {
+            if (!isReverseOwnerCurrent(token, epoch) || !isReverseToggleEligible()) return;
+            if (activeActivityCameraRequestId != expectedRequestId
+                    || reverseCameraPreview != expectedPreview
+                    || activePreview != expectedPreview) return;
+            int mode = reverseCameraPreview.sideMode();
+            int next = mode == ReverseSideSelectorView.MODE_FRONT
+                    ? ReverseSideSelectorView.MODE_REAR
+                    : ReverseSideSelectorView.MODE_FRONT;
+            reverseCameraPreview.setSideMode(next);
+        });
     }
 
     static final class CalibrationEntry {
@@ -293,6 +425,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private SharedPreferences preferences;
     private ProductionUiController productionUi;
+    private long reverseOwnerToken;
+    private boolean reverseOwnerPresent;
     private final EnumMap<CameraHostKind, View> productionCameraHosts =
             new EnumMap<>(CameraHostKind.class);
     private final EnumMap<CameraHostKind, CameraHostSlot> productionCameraSlots =
@@ -843,6 +977,7 @@ public final class CameraProbeActivity extends ComponentActivity
     protected void onStart() {
         super.onStart();
         activityStarted = true;
+        publishReverseOwnerPresence();
         LocalAdbClient.setAccessStateListener(adbAccessListener);
         refreshProductionHeader();
         invalidStockSurfaceRetryUsed = false;
@@ -859,6 +994,7 @@ public final class CameraProbeActivity extends ComponentActivity
         refreshProductionHeader();
         if (!helperBound) startAndBindHelperService();
         activityResumed = true;
+        publishReverseOwnerPresence();
         ensureAutomaticPreviewInputs();
         if (!resumeTabWarmup.required()
                 && !activityCameraBufferRefreshPending
@@ -890,6 +1026,8 @@ public final class CameraProbeActivity extends ComponentActivity
             armResumeAutoPreviewIfNeeded();
         }
         activityResumed = false;
+        publishReverseOwnerIneligible();
+        cancelReverseButtonLearningIfVisible();
         stopCalibrationCopies(true);
         stopReverseCalibrationCopies(true);
         mainHandler.removeCallbacks(runStartupUpdateCheck);
@@ -971,6 +1109,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onStop() {
         activityStarted = false;
+        clearReverseOwnerPresence();
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
@@ -1001,6 +1140,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     @Override
     protected void onDestroy() {
+        cancelReverseButtonLearningIfVisible();
+        clearReverseOwnerPresence();
         activityDestroyed = true;
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingWeatherLocationPermission();
@@ -2272,6 +2413,56 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
+    /** Starts global key capture only while the Accessibility filter is connected. */
+    public boolean beginReverseButtonLearning() {
+        if (productionUi == null || activityDestroyed || shutdownRequested
+                || LegacySettingsImporter.blocksRuntime(this)) return false;
+        boolean started = WeatherRefreshAccessibilityService
+                .beginSteeringButtonLearning(this);
+        if (!started) {
+            boolean english = productionUi.getState().getLanguage() == UiLanguage.English;
+            Toast.makeText(this,
+                    english ? "Camera button is unavailable until Accessibility is connected"
+                            : "Кнопка камери недоступна, доки службу доступності не підключено",
+                    Toast.LENGTH_LONG).show();
+            return false;
+        }
+        productionUi.showReverseButtonCaptureDialog();
+        return true;
+    }
+
+    /** Cancels transient capture without changing the persisted binding. */
+    public void cancelReverseButtonLearning() {
+        WeatherRefreshAccessibilityService.cancelSteeringButtonLearning();
+        if (productionUi != null) productionUi.dismissReverseButtonCaptureDialog();
+    }
+
+    private void cancelReverseButtonLearningIfVisible() {
+        synchronized (REVERSE_OWNER_LOCK) {
+            // A destroyed Activity must not cancel a capture that a newer Activity owns.
+            if (!reverseOwnerPresent || reverseOwner == null || reverseOwner.get() != this) return;
+        }
+        if (productionUi != null && productionUi.getState().getDialog() != null
+                && productionUi.getState().getDialog().getKind()
+                == DialogKind.ReverseButtonCapture) {
+            // A successful first-down already leaves the modal while its UP tail is consumed;
+            // dismissing that stale UI must not clear the held identity before the tail arrives.
+            if (WeatherRefreshAccessibilityService.isSteeringButtonLearning()) {
+                cancelReverseButtonLearning();
+            } else {
+                productionUi.dismissReverseButtonCaptureDialog();
+            }
+        }
+    }
+
+    /** Clears only the persisted raw key binding and cancels any active capture. */
+    public void resetReverseButtonBinding() {
+        WeatherRefreshAccessibilityService.cancelSteeringButtonLearning();
+        ReverseSteeringButtonPreferences.reset(preferences);
+        if (productionUi != null) productionUi.dismissReverseButtonCaptureDialog();
+        if (productionUi != null) productionUi.reload();
+    }
+
     /**
      * Section navigation is a UI concern unless Calibration is entered or left.  Parameters and
      * Placement share the same live Reverse host; only the editor overlay changes visibility and
@@ -2937,7 +3128,10 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void handleProductionCommand(BydExtendUiAction.Run action) {
         CommandId command = action.getCommand();
-        if (command == CommandId.WeatherRefresh) requestWeatherRefresh();
+        if (command == CommandId.ReverseLearnButton) beginReverseButtonLearning();
+        else if (command == CommandId.ReverseResetButton) resetReverseButtonBinding();
+        else if (command == CommandId.DismissDialog) cancelReverseButtonLearningIfVisible();
+        else if (command == CommandId.WeatherRefresh) requestWeatherRefresh();
         else if (command == CommandId.SaveProfilePreset) saveProductionPreset(action.getProfile());
         else if (command == CommandId.LoadProfilePreset) loadProductionPreset(action.getProfile());
         else if (command == CommandId.TransferProfilePreset) transferProductionProfile(action.getProfile());

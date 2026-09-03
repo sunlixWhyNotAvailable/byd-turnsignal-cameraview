@@ -108,6 +108,30 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
+    public void learnedReverseButtonStaysOutsideCameraPresetAndLegacyImportScope() {
+        String key = ReverseSteeringButtonPreferences.KEY_CODE;
+        TestSharedPreferences source = new TestSharedPreferences();
+        source.putInt(key, 87);
+        Map<String, Object> preset = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source));
+        assertEquals(1, preset.get("version"));
+        assertFalse(((Map<?, ?>) preset.get("settings")).containsKey(key));
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putInt(key, 88);
+        CameraSettingsTransfer.applyCameraPreset(target, preset);
+        assertEquals(88, ReverseSteeringButtonPreferences.load(target));
+
+        Map<String, Object> legacy = CameraSettingsTransfer.parseLegacySettings(
+                "<map><int name=\"" + key + "\" value=\"87\"/>"
+                        + "<boolean name=\"guard_enabled\" value=\"true\"/></map>");
+        assertFalse(legacy.containsKey(key));
+        CameraSettingsTransfer.applyLegacySettings(target, legacy);
+        assertEquals(88, ReverseSteeringButtonPreferences.load(target));
+        assertTrue(target.getBoolean("guard_enabled", false));
+    }
+
+    @Test
     public void invalidJsonIsRejectedBeforeMutation() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         preferences.putInt(BlindSpotOverlayController.PREF_LEFT_SCALE, 44);

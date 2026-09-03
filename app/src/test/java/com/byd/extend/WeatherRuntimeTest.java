@@ -152,9 +152,10 @@ public final class WeatherRuntimeTest {
         assertTrue(entry.contains("START_NOT_STICKY"));
         String start = text.substring(text.indexOf("private void handleStartCommand"));
         int blockedStart = start.indexOf("if (LegacySettingsImporter.blocksRuntime(this))");
-        String blocked = start.substring(blockedStart,
-                start.indexOf("syncWeatherAccessibility(\n                shouldRecover",
-                        blockedStart));
+        int accessibilityStart = start.indexOf(
+                "syncWeatherAccessibility(shouldRecover || activityVisible)", blockedStart);
+        assertTrue(blockedStart >= 0 && accessibilityStart > blockedStart);
+        String blocked = start.substring(blockedStart, accessibilityStart);
         assertTrue(blocked.contains("stopRuntime(true)"));
         assertTrue(blocked.contains("runtimeNeedsReinit = true"));
         assertTrue(blocked.contains("syncWeatherAccessibility(false)"));

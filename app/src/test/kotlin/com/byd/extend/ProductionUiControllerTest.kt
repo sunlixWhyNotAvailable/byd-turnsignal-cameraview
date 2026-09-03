@@ -7,6 +7,7 @@ import com.byd.extend.ui.CameraProfileId
 import com.byd.extend.ui.CameraGroup
 import com.byd.extend.ui.CameraSide
 import com.byd.extend.ui.CommandId
+import com.byd.extend.ui.DialogKind
 import com.byd.extend.ui.ProductionUiBackend
 import com.byd.extend.ui.ProductionUiController
 import com.byd.extend.ui.RootTab
@@ -29,6 +30,7 @@ import com.byd.extend.ui.NumberTarget
 import com.byd.extend.ui.NumericDraftPolicy
 import com.byd.extend.ui.ProfileNumber
 import com.byd.extend.ui.SettingsOperation
+import com.byd.extend.ui.steeringButtonLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -108,6 +110,65 @@ class ProductionUiControllerTest {
             assertEquals(action, backend.actions.last())
             assertEquals(element, (backend.actions.last() as BydExtendUiAction.Run).reverseElement)
         }
+    }
+
+    @Test
+    fun reverseButtonBindingLoadsFromPreferencesAndCaptureDialogHasExplicitLifecycle() {
+        val preferences = TestSharedPreferences().apply {
+            edit().putInt(ReverseSteeringButtonPreferences.KEY_CODE, 310).apply()
+        }
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        assertEquals(310, controller.state.reverse.steeringKeyCode)
+        controller.showReverseButtonCaptureDialog()
+        assertEquals(DialogKind.ReverseButtonCapture, controller.state.dialog?.kind)
+        assertEquals("Натисніть кнопку на кермі…", controller.state.dialog?.title)
+        assertFalse(controller.state.dialog?.confirmEnabled ?: true)
+
+        controller.dispatch(BydExtendUiAction.Run(CommandId.DismissDialog))
+        assertEquals(null, controller.state.dialog)
+        assertEquals(310, controller.state.reverse.steeringKeyCode)
+        assertEquals(BydExtendUiAction.Run(CommandId.DismissDialog), backend.actions.last())
+    }
+
+    @Test
+    fun reverseButtonCommandsRemainTypedBackendActions() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Run(CommandId.ReverseLearnButton))
+        controller.dispatch(BydExtendUiAction.Run(CommandId.ReverseResetButton))
+
+        assertEquals(
+            listOf(
+                BydExtendUiAction.Run(CommandId.ReverseLearnButton),
+                BydExtendUiAction.Run(CommandId.ReverseResetButton),
+            ),
+            backend.actions.takeLast(2),
+        )
+    }
+
+    @Test
+    fun steeringButtonLabelsKeepKnownNamesAndUnknownNumericFallback() {
+        assertEquals("Круговий огляд (310)", steeringButtonLabel(310, ukrainian = true))
+        assertEquals("Button (code 999)", steeringButtonLabel(999, ukrainian = false))
+        assertEquals("", steeringButtonLabel(-1, ukrainian = true))
+    }
+
+    @Test
+    fun reverseCaptureDialogUsesLocalizedProductionPromptWithoutPreviewOnlyCopy() {
+        val preferences = TestSharedPreferences().apply {
+            edit().putString("ui_language", "en").apply()
+        }
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+
+        controller.showReverseButtonCaptureDialog()
+
+        assertEquals("Press a steering-wheel button…", controller.state.dialog?.title)
+        assertTrue(controller.state.dialog?.message?.contains("Front views require enabled integration.") == true)
+        assertFalse(controller.state.dialog?.message?.contains("Preview") == true)
     }
 
     @Test

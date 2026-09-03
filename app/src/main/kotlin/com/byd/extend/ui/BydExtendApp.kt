@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,15 +35,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
@@ -52,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
 import com.byd.extend.R
 
@@ -265,6 +272,7 @@ private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPale
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun AppDialog(
     state: DialogUiState,
@@ -272,15 +280,31 @@ private fun AppDialog(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
+    val captureDialog = state.kind == DialogKind.ReverseButtonCapture
     Dialog(onDismissRequest = {
         if (state.cancellable) onAction(BydExtendUiAction.Run(CommandId.DismissDialog))
-    }, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)) {
+    }, properties = DialogProperties(
+        usePlatformDefaultWidth = false,
+        dismissOnClickOutside = captureDialog,
+    )) {
+        val focusRequester = remember { FocusRequester() }
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        if (captureDialog) {
+            SideEffect { dialogWindow?.setDimAmount(if (colors.dark) .48f else .32f) }
+        }
+        LaunchedEffect(captureDialog) {
+            if (captureDialog) focusRequester.requestFocus()
+        }
         Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp))
-            .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp),
+            .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp)
+            .then(if (captureDialog) Modifier.semantics { testTagsAsResourceId = true }
+            .testTag("reverse-key-dialog")
+            .focusRequester(focusRequester).focusable() else Modifier),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(state.title, color = colors.text,
                 fontSize = if (state.kind == DialogKind.Background) 20.sp else 22.sp,
-                fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                fontWeight = if (captureDialog) FontWeight.SemiBold else FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.kind == DialogKind.Background) {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
@@ -293,6 +317,8 @@ private fun AppDialog(
                     }
                     Text(state.message, color = colors.muted, fontSize = 14.sp, lineHeight = 19.sp)
                 }
+            } else if (captureDialog) {
+                Text(state.message, color = colors.muted, fontSize = 13.sp, lineHeight = 19.sp)
             } else Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(colors.field)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp)).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -301,7 +327,12 @@ private fun AppDialog(
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
+            if (captureDialog) {
+                if (state.cancellable) ActionButton(
+                    strings.text("Скасувати", "Cancel"), colors,
+                    Modifier.fillMaxWidth().testTag("reverse-key-cancel"),
+                ) { onAction(BydExtendUiAction.Run(CommandId.DismissDialog)) }
+            } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
                 if (state.kind == DialogKind.Background) ActionButton(strings.text("Відкрити", "Open"), colors,
                     Modifier.width(138.dp), primary = true) {
                     onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog))

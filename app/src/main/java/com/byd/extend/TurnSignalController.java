@@ -669,6 +669,39 @@ final class TurnSignalController {
         });
     }
 
+    /** Queues one selector toggle on the already-attached camera shell; never launches/retries. */
+    void toggleReverseSideMode(int requestId, long ownerEpoch) {
+        if (requestId <= 0 || ownerEpoch < 0) {
+            throw new IllegalArgumentException("reverse toggle identity required");
+        }
+        IBinder value;
+        long epoch;
+        synchronized (this) {
+            if (stopped) return;
+            value = cameraHelper;
+            epoch = value == null ? 0L : cameraHelperEpoch;
+        }
+        if (value == null || !value.isBinderAlive()) return;
+        try {
+            worker.execute(() -> {
+                synchronized (TurnSignalController.this) {
+                    if (stopped || cameraHelper != value || cameraHelperEpoch != epoch) return;
+                }
+                if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+                try {
+                    transactReverseToggle(value, requestId);
+                } catch (Throwable error) {
+                    emit("reverse_overlay_error", "stage", "toggle_side_mode",
+                            "request_id", requestId,
+                            "camera_shell_epoch", epoch,
+                            "error", summary(error));
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // A shutdown worker consumes no further key commands.
+        }
+    }
+
     private void postCompletion(
             Consumer<Boolean> completion, boolean success, String stage, int requestId) {
         if (completion != null && !handler.post(() -> completion.accept(success))) {
@@ -1427,7 +1460,11 @@ final class TurnSignalController {
             reply.readException();
             if (reply.readInt() != CameraShellProtocol.VERSION
                     || reply.readInt() != BuildConfig.VERSION_CODE) return -1;
-            return reply.readInt();
+            int pid = reply.readInt();
+            if (reply.dataAvail() < 4) return -1;
+            int capabilities = reply.readInt();
+            if ((capabilities & CameraShellProtocol.CAP_REVERSE_TOGGLE_MODE) == 0) return -1;
+            return pid;
         } catch (Throwable error) {
             return -1;
         } finally {
@@ -1654,6 +1691,20 @@ final class TurnSignalController {
             data.writeInt(widgetVisible ? 1 : 0);
             requireTransact(
                     value, CameraShellProtocol.TX_REVERSE_UPDATE_VISIBILITY, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactReverseToggle(IBinder value, int requestId) throws Exception {
+        if (requestId <= 0) throw new IllegalArgumentException("reverse request id required");
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            requireTransact(value, CameraShellProtocol.TX_REVERSE_TOGGLE_MODE, data, reply);
         } finally {
             data.recycle();
             reply.recycle();

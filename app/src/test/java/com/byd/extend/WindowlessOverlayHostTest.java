@@ -205,6 +205,7 @@ public final class WindowlessOverlayHostTest {
         assertFalse(ui.contains("delay(VISUAL_PRESS_BEFORE_ACTION_MS)"));
         assertTrue(ui.contains("{ latestOnClick() }"));
         assertTrue(ui.contains("onClick = visualClick"));
-        assertTrue(ui.contains("onClick = { onCheckedChange(!checked) }"));
+        assertTrue(ui.contains(".toggleable(value = checked"));
+        assertTrue(ui.contains("onValueChange = onCheckedChange"));
     }
 }

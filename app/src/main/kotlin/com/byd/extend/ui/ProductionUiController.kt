@@ -298,6 +298,33 @@ class ProductionUiController(
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
 
+    /** Opens the native-focusable HUD capture prompt after the Activity starts key learning. */
+    fun showReverseButtonCaptureDialog() {
+        val english = state.language == UiLanguage.English
+        pendingDialogCommand = null
+        state = state.copy(dialog = DialogUiState(
+            kind = DialogKind.ReverseButtonCapture,
+            title = if (english) "Press a steering-wheel button…" else "Натисніть кнопку на кермі…",
+            message = if (english) {
+                "The assigned button will switch front/rear cameras instead of its original action. " +
+                    "Front views require enabled integration."
+            } else {
+                "Призначена кнопка перемикатиме передні й задні камери замість штатної дії. " +
+                    "Передні види доступні лише з увімкненою інтеграцією."
+            },
+            cancellable = true,
+            confirmEnabled = false,
+        ))
+    }
+
+    /** Closes only an active key-capture prompt; Java owns cancellation and persistence. */
+    fun dismissReverseButtonCaptureDialog() {
+        if (state.dialog?.kind == DialogKind.ReverseButtonCapture) {
+            pendingDialogCommand = null
+            state = state.copy(dialog = null)
+        }
+    }
+
     /** Canvas selection updates controls without restarting the running camera. */
     fun setReverseEditorSelection(element: ReverseElement) {
         val previous = state.reverse.selectedElement
@@ -706,6 +733,11 @@ class ProductionUiController(
             return true
         }
         if (command == CommandId.DismissDialog) {
+            if (state.dialog?.kind == DialogKind.ReverseButtonCapture) {
+                // Let the Activity cancel the in-flight accessibility capture before the dialog
+                // state disappears; ordinary dialogs retain their existing local-only behavior.
+                backend.onProductionUiAction(BydExtendUiAction.Run(command))
+            }
             pendingDialogCommand = null
             state = state.copy(dialog = null)
             return true

@@ -12,6 +12,27 @@ import org.junit.Test;
 
 public final class ComposeCameraHostParityTest {
     @Test
+    public void approvedWidgetCaptureAndSharedControlStylingArePorted() throws Exception {
+        String primitives = readMain("kotlin/com/byd/extend/ui/UiPrimitives.kt");
+        String settings = readMain("kotlin/com/byd/extend/ui/SettingsScreen.kt");
+        String reverse = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
+        String dialogs = readMain("kotlin/com/byd/extend/ui/BydExtendApp.kt");
+        assertTrue(primitives.contains("if (colors.dark) .20f else .04f"));
+        assertTrue(primitives.contains("val width = if (compact) 42.dp else 56.dp"));
+        assertTrue(primitives.contains("val height = if (compact) 27.dp else 32.dp"));
+        assertTrue(primitives.contains(".toggleable(value = checked"));
+        assertTrue(settings.contains("compactSwitch = false"));
+        assertTrue(settings.contains("colors, compact = false"));
+        assertTrue(reverse.contains("if (selected == ReverseElement.Widget)"));
+        assertTrue(reverse.contains("ReverseWidgetLearningRow(state.steeringKeyCode"));
+        assertTrue(reverse.contains("Modifier.size(44.dp).testTag(\"reverse-key-reset\")"));
+        assertTrue(reverse.contains("enabled = steeringKeyCode >= 0"));
+        assertTrue(dialogs.contains("dismissOnClickOutside = captureDialog"));
+        assertTrue(dialogs.contains("Modifier.fillMaxWidth().testTag(\"reverse-key-cancel\")"));
+        assertTrue(dialogs.contains("setDimAmount(if (colors.dark) .48f else .32f)"));
+    }
+
+    @Test
     public void calibrationBundleIsRegisteredAtomicallyWithOneOwner() throws Exception {
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
         assertTrue(activity.contains(
@@ -127,6 +148,42 @@ public final class ComposeCameraHostParityTest {
         assertFalse(blind.contains("outputCropMask.setCrop(new float[]{"));
         assertTrue(reverse.contains(
                 "float[] transformed = CameraRotation.transformedCropCornersForInput("));
+    }
+
+    @Test
+    public void reverseChildrenAreMeasuredBeforeOneShotReadyReveal() throws Exception {
+        String reverse = readMain("java/com/byd/extend/ReverseCameraCompositionView.java");
+        String measure = reverse.substring(reverse.indexOf("protected void onMeasure("),
+                reverse.indexOf("void setCallback("));
+        int firstMeasure = measure.indexOf("super.onMeasure(");
+        int applyMeasuredModel = measure.indexOf("applyModel(width, height);");
+        int secondMeasure = measure.lastIndexOf("super.onMeasure(");
+        assertTrue(firstMeasure >= 0 && firstMeasure < applyMeasuredModel);
+        assertTrue(secondMeasure > applyMeasuredModel);
+        assertTrue(reverse.contains(
+                "value.mirrorHorizontally, baseRect.width, baseRect.height);"));
+        assertTrue(reverse.contains(
+                "centerValue.displayMode, centerValue.mirrorHorizontally,"));
+        assertTrue(reverse.contains("centerRect.width, centerRect.height);"));
+
+        String report = reverse.substring(reverse.indexOf("private void maybeReportFrames()"),
+                reverse.indexOf("private void setAllCovers("));
+        int boundsGate = report.indexOf("if (!primaryRendererBoundsReady()) return;");
+        assertTrue(boundsGate >= 0 && boundsGate < report.indexOf("callback.onReverseFramesReady("));
+        assertTrue(report.contains("view.getWidth() <= 0 || view.getHeight() <= 0"));
+        assertTrue(report.contains("params.width > 0 && params.height > 0"));
+        assertTrue(report.contains(
+                "params.width == view.getWidth() && params.height == view.getHeight()"));
+        String layout = measure.substring(measure.indexOf("protected void onLayout("));
+        int childLayout = layout.indexOf("super.onLayout(changed, left, top, right, bottom);");
+        assertTrue(childLayout >= 0 && childLayout < layout.indexOf("maybeReportFrames();"));
+
+        String readiness = reverse.substring(
+                reverse.indexOf("private boolean primaryRendererBoundsReady()"),
+                reverse.indexOf("private static boolean laidOutBoundsMatch("));
+        assertTrue(readiness.contains("for (PaneView pane : panes)"));
+        assertTrue(readiness.contains("pane.texture"));
+        assertFalse(readiness.contains("centralFrontPane"));
     }
 
     @Test

@@ -35,6 +35,9 @@ final class CameraShellProtocol {
     static final int TX_UPDATE_VISUALS = IBinder.FIRST_CALL_TRANSACTION + 16;
     /** Updates one Reverse pane mask without rebuilding the host or camera inputs. */
     static final int TX_REVERSE_UPDATE_VISIBILITY = IBinder.FIRST_CALL_TRANSACTION + 17;
+    /** Toggles the active Reverse front/rear selector for one current request. */
+    static final int TX_REVERSE_TOGGLE_MODE = IBinder.FIRST_CALL_TRANSACTION + 18;
+    static final int CAP_REVERSE_TOGGLE_MODE = 1;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
     static final int PREPARE_OK = 0;

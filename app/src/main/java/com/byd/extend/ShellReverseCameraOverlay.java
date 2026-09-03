@@ -34,6 +34,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private boolean active;
     private boolean closing;
     private boolean blockedRevealReported;
+    private boolean widgetVisible;
+    private boolean widgetAvailable;
+    private boolean frontIntegrationAvailable;
     private long selectorActionGeneration;
     private Runnable pendingSelectorAction;
 
@@ -54,6 +57,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         display.getSize(size);
         spec.validate(size.x, size.y);
         centralFrontSourceEnabled = spec.requiresCentralFrontSource();
+        widgetVisible = spec.widgetVisible;
+        widgetAvailable = spec.widgetVisible;
+        frontIntegrationAvailable = spec.frontLeftIntegrated
+                || spec.frontRightIntegrated || spec.centralFrontIntegrated;
 
         if (root != null) {
             if (!root.dewarpPipelineCompatible(
@@ -217,6 +224,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         ReverseCameraLayout.requireVisibilityMask(visibilityMask);
         root.applyVisibility(visibilityMask);
         root.setWidgetVisible(widgetVisible);
+        this.widgetVisible = widgetVisible;
+        this.widgetAvailable = widgetVisible && frontControl != null && rearControl != null;
         if (!widgetVisible) {
             setControlsVisible(false);
         } else if (visible) {
@@ -232,6 +241,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         ReverseCameraCompositionView activeRoot = root;
         if (activeRoot == null || !active) return;
         quiesce(reason);
+    }
+
+    /** Handles one already-gated steering-button press without reopening or replacing the shell. */
+    void toggleSideMode(int expectedRequestId) {
+        requireRequest(expectedRequestId);
+        if (!active || !visible || closing
+                || !widgetVisible || !widgetAvailable || !frontIntegrationAvailable) return;
+        int next = root.sideMode() == ReverseSideSelectorView.MODE_FRONT
+                ? ReverseSideSelectorView.MODE_REAR : ReverseSideSelectorView.MODE_FRONT;
+        scheduleSelectorAction(next);
     }
 
     private void quiesce(String reason) {
@@ -259,6 +278,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             requestId = 0;
             completedFrameRequestId = 0;
             centralFrontSourceEnabled = false;
+            widgetVisible = false;
+            widgetAvailable = false;
+            frontIntegrationAvailable = false;
             closing = false;
             blockedRevealReported = false;
         }
@@ -539,6 +561,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     private void disableControls(String stage, Throwable error) {
+        widgetAvailable = false;
         if (root != null) root.setWidgetAvailable(false);
         releaseControlsQuietly();
         emit("reverse_overlay_error", "stage", "selector_" + stage,

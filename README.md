@@ -21,6 +21,8 @@ interfaces, dark and light themes, and a redesigned Compose UI. The canonical de
 - Reverse composition, direct camera preview, calibration, fisheye correction, mirroring, crop,
   rotation, placement, scale, transparency, corner rounding, and image-quality controls.
 - User-selectable Reverse panes with optional integrated front side and central camera profiles.
+- A learned steering-wheel button for switching the active Reverse widget and integrated cameras
+  between front and rear views.
 - Optional music metadata and local weather for the stock BYD weather UI.
 - Diagnostics and explicit log sharing.
 
@@ -38,6 +40,8 @@ integrated Reverse Front profiles, display targets, placement, scale, aspect, cr
 rotation, mirror, fill mode, camera switches, Reverse background, widget/stacking, and global
 buffer quality, transparency, and corner radius. They deliberately exclude numeric speed,
 steering-angle, and distance triggers, non-camera settings, and saved local calibration slots.
+The learned steering-button binding is also excluded and is preserved when loading camera presets
+or importing legacy settings.
 
 Full migration includes those numeric rules, guard, music, weather, auto-start, and saved
 calibration slots. It does not copy transient runtime data, logs, ADB credentials, or Android-granted
@@ -58,6 +62,27 @@ are not imported again or overwritten. Shut down BYD Extend before deliberately 
 old application. A first legacy-to-Extend installation is a manual APK install because the
 package identity changes.
 
+## Reverse Widget steering button
+
+In Reverse, select `Widget` and use `Select button…` below `Enhanced reverse view`. The first
+steering-wheel press assigns its Android key code without switching cameras. Cancel or Android
+Back leaves the previous assignment unchanged; the square reset clears only the assignment.
+
+Subsequent assigned presses switch the existing composition and its widget together, once per
+physical press. Enhanced reverse, the widget and at least one front-camera integration must be
+enabled, and the composition must already be active. Existing per-camera visibility/integration
+rules apply; the button does not open cameras, change calibration or add automatic switching in D.
+Calibration and other foreground app tabs do not redirect the button to a background composition.
+
+The assigned press, repeats and release replace the stock key action, including when no eligible
+composition is active. Reset the assignment to restore normal handling. Explicit app Shutdown
+ends interception until the app is reopened. The assignment survives app restarts.
+
+This feature uses the app's existing Accessibility service. If the key filter is unavailable,
+learning reports that condition instead of saving a simulated assignment. Some BYD firmware
+handles keys before Android Accessibility receives them; support for every physical button is
+not guaranteed.
+
 ## Sharing diagnostics
 
 Settings can share logs or create a compatibility package. Compatibility export displays the
@@ -74,8 +99,8 @@ missing or inaccessible optional files are reported in the package instead of st
 - BYD Extend has its own Android permissions and local ADB authorization. Enable local ADB on the
   tablet and accept its authorization prompt; authorization is not shared with the legacy package.
 - Camera access is required. Parking views require compatible proximity and speed telemetry.
-- Weather requires location permission and internet access. The stock weather refresh integration
-  additionally uses the app's narrowly scoped Accessibility service through local ADB.
+- Weather requires location permission and internet access. Stock weather refresh and the optional
+  learned Reverse button share the app's Accessibility service, enabled through local ADB.
 - Instrument-cluster camera and music output require compatible BYD display services.
 
 ## Installation

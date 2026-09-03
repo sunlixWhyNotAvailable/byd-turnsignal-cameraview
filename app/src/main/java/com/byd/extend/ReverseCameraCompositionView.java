@@ -105,6 +105,29 @@ final class ReverseCameraCompositionView extends FrameLayout {
         });
     }
 
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        int width = getMeasuredWidth();
+        int height = getMeasuredHeight();
+        if (width <= 0 || height <= 0) return;
+        applyModel(width, height);
+        // applyModel updates the projected child LayoutParams.  Measure once more so
+        // SurfaceTexture children are created with those bounds instead of the 1x1
+        // constructor placeholders.
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+    }
+
+    @Override
+    protected void onLayout(
+            boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        // Frames can become ready while the first native measure still has 1x1
+        // children.  Re-check after every layout pass; FrameBarrier keeps the
+        // pending readiness one-shot and no request/re-arm is performed here.
+        maybeReportFrames();
+    }
+
     void setCallback(Callback value) {
         callback = value;
     }
@@ -893,6 +916,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void maybeReportFrames() {
+        if (!primaryRendererBoundsReady()) return;
         int requestId = frameBarrier.requestId();
         int[] directGenerations = currentDirectGenerations();
         int baseGeneration = previewBase == null ? 0 : previewBaseGeneration;
@@ -905,6 +929,26 @@ final class ReverseCameraCompositionView extends FrameLayout {
                         requestId, baseGeneration, directGenerations)) return;
         setAllCovers(View.GONE);
         applyEffectiveVisibility();
+    }
+
+    /**
+     * The three primary panes are required by FrameBarrier before reveal.  Check their
+     * laid-out renderer bounds, not camera buffer dimensions; source 4 is an optional
+     * central-front identity and may intentionally remain hidden at 1x1.
+     */
+    private boolean primaryRendererBoundsReady() {
+        if (getWidth() <= 1 || getHeight() <= 1) return false;
+        for (PaneView pane : panes) {
+            if (!laidOutBoundsMatch(pane) || !laidOutBoundsMatch(pane.texture)) return false;
+        }
+        return true;
+    }
+
+    private static boolean laidOutBoundsMatch(View view) {
+        if (view == null || view.getWidth() <= 0 || view.getHeight() <= 0) return false;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+        return params != null && params.width > 0 && params.height > 0
+                && params.width == view.getWidth() && params.height == view.getHeight();
     }
 
     private void setAllCovers(int visibility) {
@@ -1112,6 +1156,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void applyModel() {
+        applyModel(getWidth(), getHeight());
+    }
+
+    private void applyModel(int width, int height) {
         applyEffectiveVisibility();
         ReverseCameraLayout activeModel = sideMode == ReverseSideSelectorView.MODE_FRONT
                 ? frontModel : model;
@@ -1120,8 +1168,6 @@ final class ReverseCameraCompositionView extends FrameLayout {
         boolean showCentralFront = sideMode == ReverseSideSelectorView.MODE_FRONT
                 && centralFrontIntegrated && centralFrontSourceEnabled
                 && centralFrontPane != null && centralFrontFrameReady;
-        int width = getWidth();
-        int height = getHeight();
         for (PaneView pane : panes) {
             ReverseCameraLayout centerRawFallback = pane.cameraIndex
                     == ReverseCameraLayout.REAR_CAMERA_INDEX && !showCentralFront
@@ -1159,7 +1205,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             applyFrameBounds(pane, baseRect);
             pane.setZ(1.0f + value.zOrder);
             pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
-                    value.mirrorHorizontally);
+                    value.mirrorHorizontally, baseRect.width, baseRect.height);
         }
         if (centralFrontPane != null) {
             ReverseCameraLayout.Pane centerValue = activeModel.pane(
@@ -1177,7 +1223,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             applyFrameBounds(centralFrontPane, centerRect);
             centralFrontPane.setZ(1.1f + centerValue.zOrder);
             centralFrontPane.applyTransform(centerSourceCrop, centerValue.rotationDegrees,
-                    centerValue.displayMode, centerValue.mirrorHorizontally);
+                    centerValue.displayMode, centerValue.mirrorHorizontally,
+                    centerRect.width, centerRect.height);
         }
     }
 
@@ -1401,12 +1448,18 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void applyTransform(
                 ReverseCameraLayout.Rect value, int degrees, int nextDisplayMode,
                 boolean mirror) {
+            applyTransform(value, degrees, nextDisplayMode, mirror, getWidth(), getHeight());
+        }
+
+        void applyTransform(
+                ReverseCameraLayout.Rect value, int degrees, int nextDisplayMode,
+                boolean mirror, int targetWidth, int targetHeight) {
             crop = value;
             rotationDegrees = CameraRotation.clamp(degrees);
             displayMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);
             mirrorHorizontally = mirror;
-            int width = getWidth();
-            int height = getHeight();
+            int width = targetWidth;
+            int height = targetHeight;
             if (width <= 0 || height <= 0) return;
 
             int safeMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);

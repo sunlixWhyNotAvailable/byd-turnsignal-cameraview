@@ -116,6 +116,7 @@ public final class CameraShellMain {
                     reply.writeInt(CameraShellProtocol.VERSION);
                     reply.writeInt(versionCode);
                     reply.writeInt(Process.myPid());
+                    reply.writeInt(CameraShellProtocol.CAP_REVERSE_TOGGLE_MODE);
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_REGISTER_CALLBACK) {
@@ -293,6 +294,18 @@ public final class CameraShellMain {
                     runOnMain(() -> {
                         reverseOverlay.updateVisibility(
                                 requestId, generations, visibilityMask, widgetVisible);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == CameraShellProtocol.TX_REVERSE_TOGGLE_MODE) {
+                    int requestId = data.readInt();
+                    if (requestId <= 0) {
+                        throw new IllegalArgumentException("invalid reverse request id");
+                    }
+                    runOnMain(() -> {
+                        reverseOverlay.toggleSideMode(requestId);
                         return null;
                     });
                     reply.writeNoException();

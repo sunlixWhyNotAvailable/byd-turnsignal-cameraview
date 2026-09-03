@@ -142,6 +142,13 @@ final class CameraHelperMain {
             turnController.setRecoveryEnabled(enabled);
         }
 
+        /** Sends one current Reverse selector toggle through the cached camera shell only. */
+        synchronized void toggleReverseSideMode(int requestId, long ownerEpoch) {
+            if (requestId <= 0 || ownerEpoch < 0
+                    || activeReverseControllerRequestId != requestId) return;
+            turnController.toggleReverseSideMode(requestId, ownerEpoch);
+        }
+
         synchronized void emitControllerEvent(String kind, Object... fields) {
             activeReverseControllerRequestId = updateReverseControllerRequestId(
                     activeReverseControllerRequestId, kind, requestId(fields));

@@ -256,6 +256,27 @@ public final class CameraBufferSizingTest {
     }
 
     @Test
+    public void reversePrimaryPaneBoundsAreNonTrivialAtProductionViewport() {
+        int[][] bounds = ReverseCameraCompositionView.paneBounds(
+                ReverseCameraLayout.defaults(), 1920, 990);
+        for (int[] bound : bounds) {
+            assertTrue(bound[0] > 1);
+            assertTrue(bound[1] > 1);
+        }
+    }
+
+    @Test
+    public void fitAllowsLegitimateOnePixelDimensionForMinimumCrop() {
+        ReverseCameraLayout.PixelRect fitted = ReverseCameraLayout.fitSourceCrop(
+                ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 1.0f, 0.01f),
+                154, 79,
+                ReverseCameraCompositionView.SOURCE_WIDTH,
+                ReverseCameraCompositionView.SOURCE_HEIGHT, 0);
+        assertEquals(154, fitted.width);
+        assertEquals(1, fitted.height);
+    }
+
+    @Test
     public void overlayPaneResizeRebuildsWhenRoundedBufferIsUnchanged() {
         assertArrayEquals(
                 BlindSpotCameraView.paneBoundedBufferSize(100, 68),

@@ -302,15 +302,16 @@ internal fun SwitchLine(
     pending: Boolean = false,
     enabled: Boolean = true,
     strikeThrough: Boolean = false,
+    compactSwitch: Boolean = true,
 ) {
     val compact = LocalCompactControls.current
     val press = rememberPressFeedback(enabled && !pending)
     Row(Modifier.fillMaxWidth()
         .background(pressBackground(Color.Transparent, colors, press.pressed))
         .then(press.modifier)
-        .clickable(interactionSource = press.interactionSource, indication = null,
+        .toggleable(value = checked, interactionSource = press.interactionSource, indication = null,
             enabled = enabled && !pending, role = Role.Switch,
-            onClick = { onCheckedChange(!checked) })
+            onValueChange = onCheckedChange)
         .padding(vertical = if (compact) 4.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
@@ -318,7 +319,7 @@ internal fun SwitchLine(
             if (hint.isNotBlank()) Text(hint, color = colors.muted, fontSize = 13.sp)
         }
         Spacer(Modifier.width(10.dp))
-        AppSwitch(checked, onCheckedChange, colors, pending, compact = true, enabled = enabled, clearSemantics = true)
+        AppSwitch(checked, onCheckedChange, colors, pending, compact = compactSwitch, enabled = enabled, clearSemantics = true)
     }
 }
 
@@ -337,18 +338,19 @@ internal fun AppSwitch(
     val height = if (compact) 27.dp else 32.dp
     val knob = if (compact) 20.dp else 25.dp
     val knobOff = if (compact) 16.dp else 19.dp
+    val knobPending = if (compact) 18.dp else 22.dp
     val press = rememberPressFeedback(enabled && !pending)
-    val size by animateDpAsState(if (pending) knob else if (checked) knob else knobOff, tween(140), label = "switchSize")
-    val offset by animateDpAsState(if (pending) (width - knob) / 2 else if (checked) width - knob - 3.dp else 3.dp,
+    val size by animateDpAsState(if (pending) knobPending else if (checked) knob else knobOff, tween(140), label = "switchSize")
+    val offset by animateDpAsState(if (pending) (width - knobPending) / 2 else if (checked) width - knob - 3.dp else 3.dp,
         tween(140), label = "switchOffset")
     Box(Modifier.size(width, height).semantics { label?.let { contentDescription = it } }
         .clip(RoundedCornerShape(100.dp))
         .background(pressBackground(if (pending) colors.yellowSoft else if (checked) colors.accent else colors.disabled,
             colors, press.pressed))
         .then(press.modifier)
-        .clickable(interactionSource = press.interactionSource, indication = null,
+        .toggleable(value = checked, interactionSource = press.interactionSource, indication = null,
             enabled = enabled && !pending, role = Role.Switch,
-            onClick = { onCheckedChange(!checked) })
+            onValueChange = onCheckedChange)
         .then(if (clearSemantics) Modifier.clearAndSetSemantics { } else Modifier), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.offset(x = offset).size(size).clip(RoundedCornerShape(100.dp))
             .background(if (pending) colors.yellow else if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
@@ -423,7 +425,7 @@ internal fun ChoiceField(
     val focusManager = LocalFocusManager.current
     val compact = LocalCompactControls.current
     val safeSelected = selected.coerceIn(0, choices.lastIndex.coerceAtLeast(0))
-    val selectedBackground = colors.accent.copy(alpha = if (colors.dark) .78f else .08f)
+    val selectedBackground = colors.accent.copy(alpha = if (colors.dark) .20f else .04f)
     val selectedContent = if (colors.dark) Color.White else colors.text
     val fieldPress = rememberPressFeedback(enabled)
     val openMenu = rememberVisualFirstClick {
@@ -725,8 +727,12 @@ internal fun ActionButton(
             enabled = enabled, role = Role.Button, onClick = visualClick)
         .padding(horizontal = if (maxLines > 1) 4.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        icon?.let { Icon(it, null, tint = foreground, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)) }
-        Text(text, color = foreground, fontSize = if (height < 40.dp || maxLines > 1) 12.sp else 14.sp,
+        icon?.let {
+            Icon(it, null, tint = foreground, modifier = Modifier.size(18.dp))
+            if (text.isNotEmpty()) Spacer(Modifier.width(7.dp))
+        }
+        if (text.isNotEmpty()) Text(text, color = foreground,
+            fontSize = if (height < 40.dp || maxLines > 1) 12.sp else 14.sp,
             fontWeight = FontWeight.SemiBold, maxLines = maxLines, textAlign = TextAlign.Center,
             overflow = TextOverflow.Ellipsis)
     }

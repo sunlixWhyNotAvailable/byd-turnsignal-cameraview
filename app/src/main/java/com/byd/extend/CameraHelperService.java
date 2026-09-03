@@ -250,6 +250,24 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
     }
 
+    /**
+     * Routes one already-filtered steering-button press.  The accessibility service is the
+     * caller's owner; this method never starts or wakes the runtime for a key event.
+     */
+    static void requestReverseSteeringToggle(Context context) {
+        if (CameraProbeActivity.dispatchReverseSteeringToggle()) return;
+        final long ownerEpoch = CameraProbeActivity.reverseOwnerEpochSnapshot();
+        CameraHelperService service = activeInstance;
+        if (service == null) return;
+        service.postRuntime(() -> {
+            // An Activity may have resumed between the initial snapshot and this queued runtime
+            // action.  Abort automatic fallback if ownership changed in that interval.
+            if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+            ReverseCameraController controller = service.reverseCameras;
+            if (controller != null) controller.requestSteeringToggle(ownerEpoch);
+        });
+    }
+
     static void musicSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_MUSIC_SETTINGS_CHANGED));
@@ -414,8 +432,12 @@ public final class CameraHelperService extends Service {
             stopServiceFromRuntime(command.startId);
             return;
         }
-        syncWeatherAccessibility(
-                shouldRecover && settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
+        // Keep the global Accessibility filter alive for every recovering runtime and for the
+        // foreground Activity, including auto-start-off sessions.  Update presence before the
+        // !shouldRecover branch so ordinary settings changes cannot disable it mid-UI.
+        if (ACTION_ACTIVITY_OPEN.equals(action)) activityVisible = true;
+        else if (ACTION_ACTIVITY_CLOSED.equals(action)) activityVisible = false;
+        syncWeatherAccessibility(shouldRecover || activityVisible);
         if (!shouldRecover) {
             if (helper != null) helper.setRecoveryEnabled(false);
             runtimeHandler.removeCallbacks(heartbeat);
@@ -592,6 +614,9 @@ public final class CameraHelperService extends Service {
         CameraHelperMain.HelperBinder boundHelper = helper;
         if (boundHelper == null) return null;
         postRuntime(() -> {
+            // A bound Activity is the foreground owner even when auto-start is disabled; keep the
+            // Accessibility key filter enabled for the lifetime of this binding.
+            syncWeatherAccessibility(true);
             ensureControllersInitialized();
             ensureHelperStarted();
             CameraHelperMain.HelperBinder activeHelper = helper;
@@ -737,8 +762,7 @@ public final class CameraHelperService extends Service {
             GuardRecovery.setAutoStartEnabled(this,
                     settings.getBoolean("auto_start_enabled", true));
             weatherRuntime.settingsChanged();
-            syncWeatherAccessibility(
-                    settings.getBoolean(WeatherRuntime.PREF_ENABLED, false));
+            syncWeatherAccessibility(GuardRecovery.shouldRecover(this) || activityVisible);
         }
         lifecycle("settings_reloaded", "full_import", fullImport);
     }

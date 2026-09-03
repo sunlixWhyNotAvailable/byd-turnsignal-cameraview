@@ -87,6 +87,36 @@ final class ReverseCameraController {
         else evaluate();
     }
 
+    /**
+     * Handles one automatic toggle with the owner epoch captured by the accessibility callback.
+     * The epoch is carried through the cached helper and checked again immediately before the
+     * shell transaction so an Activity appearing while work is queued cannot be toggled by the
+     * runtime fallback.
+     */
+    void requestSteeringToggle(long ownerEpoch) {
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (shutdown || stopping || activeRequestId <= 0 || !visible
+                || activeHelper == null || !enabled() || !gearValid || !reverse
+                || !loadWidgetVisible(settings) || !hasAnyFrontIntegration(settings)) return;
+        if (ownerEpoch < 0) return;
+        if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+        try {
+            activeHelper.toggleReverseSideMode(activeRequestId, ownerEpoch);
+            emit("reverse_steering_toggle", "request_id", activeRequestId);
+        } catch (Throwable error) {
+            // A stale/dead shell is handled by its existing death/recovery path; the key remains
+            // consumed and is never retried from the Accessibility callback.
+            emit("reverse_steering_toggle_failed", "request_id", activeRequestId,
+                    "error", summary(error));
+        }
+    }
+
+    static boolean hasAnyFrontIntegration(SharedPreferences settings) {
+        return loadCentralFrontIntegrated(settings)
+                || loadFrontIntegrated(settings, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                || loadFrontIntegrated(settings, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+    }
+
     void acceptEvent(String line) {
         if (line == null) return;
         try {

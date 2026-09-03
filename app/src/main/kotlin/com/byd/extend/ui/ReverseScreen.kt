@@ -7,16 +7,28 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material3.Text
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 internal fun ReverseScreen(
@@ -43,6 +55,9 @@ internal fun ReverseScreen(
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
         SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
+        if (selected == ReverseElement.Widget) {
+            ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
+        }
         if (cameraElement) {
             SwitchLine(
                 if (selected == ReverseElement.Rear) strings.text("Інтеграція передньої камери", "Integrate front camera")
@@ -111,6 +126,50 @@ internal fun ReverseScreen(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun ReverseWidgetLearningRow(
+    steeringKeyCode: Int,
+    strings: UiStrings,
+    colors: UiPalette,
+    onAction: (BydExtendUiAction) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().testTag("reverse-key-binding"),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ActionButton(
+            strings.text("Вибрати кнопку…", "Select button…"), colors,
+            Modifier.weight(1.15f).testTag("reverse-key-learn"), primary = true,
+        ) { onAction(BydExtendUiAction.Run(CommandId.ReverseLearnButton)) }
+        val keyLabel = steeringButtonLabel(steeringKeyCode, strings.ukrainian)
+        Box(
+            Modifier.weight(1f).height(44.dp).testTag("reverse-key-value").clip(RoundedCornerShape(7.dp))
+                .background(colors.field)
+                .border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp))
+                .semantics {
+                    contentDescription = strings.text("Вибрана кнопка: $keyLabel", "Selected button: $keyLabel")
+                }
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                keyLabel, color = colors.text, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        ActionButton(
+            "", colors,
+            Modifier.size(44.dp).testTag("reverse-key-reset").semantics {
+                contentDescription = strings.text("Скинути кнопку", "Reset button")
+            },
+            icon = Icons.Outlined.Refresh,
+            enabled = steeringKeyCode >= 0,
+            mainBackground = true,
+        ) { onAction(BydExtendUiAction.Run(CommandId.ReverseResetButton)) }
     }
 }
 

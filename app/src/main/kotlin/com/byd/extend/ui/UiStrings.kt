@@ -50,6 +50,22 @@ internal class UiStrings(private val language: UiLanguage) {
     )
 }
 
+/** HUD-compatible key labels; unknown firmware key codes remain visible for diagnostics. */
+internal fun steeringButtonLabel(keyCode: Int, ukrainian: Boolean): String {
+    if (keyCode < 0) return ""
+    val name = when (keyCode) {
+        305 -> if (ukrainian) "Ліва зірочка" else "Left star"
+        309 -> if (ukrainian) "Режими приборки / завершення виклику" else "Dashboard modes / end call"
+        310 -> if (ukrainian) "Круговий огляд" else "Surround view"
+        320 -> if (ukrainian) "Голосове керування" else "Voice control"
+        321 -> if (ukrainian) "Ліва додаткова" else "Left auxiliary"
+        351 -> if (ukrainian) "Права зірочка" else "Right star"
+        383 -> if (ukrainian) "Права додаткова" else "Right auxiliary"
+        else -> return if (ukrainian) "Кнопка (код $keyCode)" else "Button (code $keyCode)"
+    }
+    return "$name ($keyCode)"
+}
+
 internal val AvmModeNames = listOf(
     "VIEW_2D_TOP", "VIEW_2D_TOP_FULL", "VIEW_2D_FRONT", "VIEW_2D_REAR",
     "VIEW_2D_FRONT_FULL", "VIEW_2D_REAR_FULL", "VIEW_2D_LEFT_FRONT", "VIEW_2D_RIGHT_FRONT",
