@@ -32,10 +32,21 @@ public final class LegacySettingsImporterTest {
     @Test
     public void legacyCompatibilityRequiresVersionDebuggableAndMatchingSignature() {
         assertTrue(LegacySettingsImporter.isCompatibleLegacy("0.52.1", 96, true, true));
+        assertTrue(LegacySettingsImporter.isCompatibleLegacy("0.52.2", 97, true, true));
         assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.0", 96, true, true));
         assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.1", 95, true, true));
+        assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.1", 97, true, true));
+        assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.2", 96, true, true));
         assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.1", 96, false, true));
         assertFalse(LegacySettingsImporter.isCompatibleLegacy("0.52.1", 96, true, false));
+    }
+
+    @Test
+    public void startupOfferRequiresCompatibleUnhandledIncompleteImport() {
+        assertTrue(LegacySettingsImporter.shouldOfferImport(true, false, false));
+        assertFalse(LegacySettingsImporter.shouldOfferImport(false, false, false));
+        assertFalse(LegacySettingsImporter.shouldOfferImport(true, true, false));
+        assertFalse(LegacySettingsImporter.shouldOfferImport(true, false, true));
     }
 
     @Test

@@ -1072,6 +1072,46 @@ public final class CameraCalibrationPresetTest {
                 .loadRawLayout(preferences).pane(right).destination.left, EPSILON);
     }
 
+    @Test
+    public void centralReverseRearCopiesCalibrationOnlyToCentralFront() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int center = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(
+                0.17f, 0.23f, 0.61f, 0.54f);
+        ReverseCameraLayout.Rect raw = ReverseCameraLayout.sourceCrop(
+                0.13f, 0.19f, 0.47f, 0.53f);
+        ReverseCameraLayout.Rect corrected = ReverseCameraLayout.sourceCrop(
+                0.21f, 0.11f, 0.39f, 0.43f);
+        ReverseCameraLayout layout = ReverseCameraLayout.withPane(
+                ReverseCameraLayout.defaults(), center, destination, raw, 31);
+        layout = ReverseCameraLayout.withDisplayMode(
+                layout, center, ReverseCameraLayout.DISPLAY_MODE_STRETCH);
+        layout = ReverseCameraLayout.withMirrorHorizontally(layout, center, true);
+        ReverseCameraController.saveLayout(preferences, layout);
+        ReverseCameraController.saveSourceCrop(preferences, center, corrected, true);
+        CameraDewarpConfig.saveForReverse(preferences, center, CameraDewarpConfig.of(
+                CameraDewarpConfig.lensForReverseCamera(center), true, 151,
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        ReverseCameraController.saveVisibility(preferences, center, false);
+        ReverseCameraController.saveFrontIntegrated(preferences, center, false);
+
+        assertTrue(CameraCalibrationPreset.copyCentralReverseRearToFront(preferences));
+
+        ReverseCameraLayout.Pane front = ReverseCameraController
+                .loadFrontRawLayout(preferences).pane(center);
+        assertRect(raw, front.sourceCrop);
+        assertEquals(31, front.rotationDegrees);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH, front.displayMode);
+        assertTrue(front.mirrorHorizontally);
+        assertRect(corrected,
+                ReverseCameraController.loadFrontCorrectedSourceCrop(preferences, center));
+        assertConfig(CameraDewarpConfig.loadForReverseFront(preferences, center),
+                true, 151, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertRect(destination, front.destination);
+        assertFalse(ReverseCameraController.loadVisibility(preferences, center));
+        assertFalse(ReverseCameraController.loadFrontIntegrated(preferences, center));
+    }
+
     private static void assertInvalidReversePreset(String suffix, Object invalidValue) {
         int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
         TestSharedPreferences preferences = new TestSharedPreferences();

@@ -429,6 +429,19 @@ final class CameraCalibrationPreset {
         return true;
     }
 
+    static boolean copyCentralReverseRearToFront(SharedPreferences preferences) {
+        int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseValue value = activeReverse(preferences, cameraIndex);
+        applyReverseFront(preferences, cameraIndex, new ReverseFrontValue(
+                value.raw, value.corrected, value.rotationDegrees, value.displayMode,
+                CameraDewarpConfig.of(
+                        CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
+                        value.dewarp.enabled, value.dewarp.fovDegrees,
+                        value.dewarp.projection),
+                value.mirrorHorizontally));
+        return true;
+    }
+
     private static void preserveCorrectedOnAspectReset(
             SharedPreferences.Editor editor, SharedPreferences preferences, String marker,
             DirectCameraCrop raw, DirectCameraCrop resetRaw, DirectCameraCrop corrected,

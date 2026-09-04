@@ -231,7 +231,10 @@ internal data class PressFeedback(
 private const val VISUAL_PRESS_HOLD_MS = 90L
 
 @Composable
-internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
+internal fun rememberPressFeedback(
+    enabled: Boolean = true,
+    releaseHoldMillis: Long = VISUAL_PRESS_HOLD_MS,
+): PressFeedback {
     val interactionSource = remember { MutableInteractionSource() }
     var visualPressed by remember { mutableStateOf(false) }
     LaunchedEffect(interactionSource) {
@@ -248,22 +251,30 @@ internal fun rememberPressFeedback(enabled: Boolean = true): PressFeedback {
                 is PressInteraction.Release -> {
                     activePresses -= interaction.press
                     if (activePresses.isEmpty()) {
-                        visualPressed = true
                         val generation = ++releaseGeneration
-                        launch {
-                            delay(VISUAL_PRESS_HOLD_MS)
-                            if (generation == releaseGeneration) visualPressed = false
+                        if (releaseHoldMillis == 0L) {
+                            visualPressed = false
+                        } else {
+                            visualPressed = true
+                            launch {
+                                delay(releaseHoldMillis)
+                                if (generation == releaseGeneration) visualPressed = false
+                            }
                         }
                     }
                 }
                 is PressInteraction.Cancel -> {
                     activePresses -= interaction.press
                     if (activePresses.isEmpty()) {
-                        visualPressed = true
                         val generation = ++releaseGeneration
-                        launch {
-                            delay(VISUAL_PRESS_HOLD_MS)
-                            if (generation == releaseGeneration) visualPressed = false
+                        if (releaseHoldMillis == 0L) {
+                            visualPressed = false
+                        } else {
+                            visualPressed = true
+                            launch {
+                                delay(releaseHoldMillis)
+                                if (generation == releaseGeneration) visualPressed = false
+                            }
                         }
                     }
                 }
@@ -363,33 +374,44 @@ internal fun Segmented(
     selected: Int,
     colors: UiPalette,
     modifier: Modifier = Modifier,
+    indicatorPosition: Float? = null,
     enabled: (Int) -> Boolean = { true },
     onSelect: (Int) -> Unit,
 ) {
     val focus = LocalFocusManager.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
     val compact = LocalCompactControls.current
-    Row(modifier.height(if (compact) 38.dp else 42.dp).clip(RoundedCornerShape(22.dp))
+    BoxWithConstraints(modifier.height(if (compact) 38.dp else 42.dp).clip(RoundedCornerShape(22.dp))
         .border(1.dp, colors.borderStrong, RoundedCornerShape(22.dp)).background(colors.panelAlt)
         .padding(if (compact) 4.dp else 5.dp).selectableGroup()) {
-        items.forEachIndexed { index, item ->
-            val itemEnabled = enabled(index)
-            val press = rememberPressFeedback(itemEnabled)
-            val visualClick = rememberVisualFirstClick {
-                focus.clearFocus()
-                onSelect(index)
-            }
-            Box(Modifier.weight(1f).height(if (compact) 30.dp else 32.dp).clip(RoundedCornerShape(18.dp))
-                .background(pressBackground(if (index == selected) colors.accent else Color.Transparent, colors, press.pressed))
-                .then(press.modifier)
-                .clickable(interactionSource = press.interactionSource, indication = null,
-                    enabled = itemEnabled, role = Role.Tab) {
-                    visualClick()
-                },
-                contentAlignment = Alignment.Center) {
-                Text(item, color = if (!itemEnabled) colors.muted.copy(alpha = .4f)
-                    else if (index == selected) Color.White else colors.muted,
-                    fontSize = if (compact) 12.sp else 14.sp, fontWeight = FontWeight.SemiBold,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val segmentWidth = maxWidth / items.size
+        val animatedIndicatorPosition by animateFloatAsState(
+            selected.toFloat(), tween(durationMillis = 180, delayMillis = 0),
+            label = "segmentSelectionPosition",
+        )
+        val visibleIndicatorPosition = indicatorPosition ?: animatedIndicatorPosition
+        Box(Modifier.offset {
+            IntOffset(with(density) { (segmentWidth * visibleIndicatorPosition).roundToPx() }, 0)
+        }.width(segmentWidth).fillMaxHeight().clip(RoundedCornerShape(18.dp)).background(colors.accent))
+        Row(Modifier.fillMaxSize()) {
+            items.forEachIndexed { index, item ->
+                val itemEnabled = enabled(index)
+                val press = rememberPressFeedback(itemEnabled, releaseHoldMillis = 0L)
+                val visualClick = rememberVisualFirstClick {
+                    focus.clearFocus()
+                    onSelect(index)
+                }
+                Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(18.dp))
+                    .background(pressBackground(Color.Transparent, colors, press.pressed))
+                    .then(press.modifier)
+                    .selectable(selected = index == selected, interactionSource = press.interactionSource,
+                        indication = null, enabled = itemEnabled, role = Role.Tab, onClick = visualClick),
+                    contentAlignment = Alignment.Center) {
+                    Text(item, color = if (!itemEnabled) colors.muted.copy(alpha = .4f)
+                        else if (index == selected) Color.White else colors.muted,
+                        fontSize = if (compact) 12.sp else 14.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }

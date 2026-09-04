@@ -201,10 +201,12 @@ public final class WindowlessOverlayHostTest {
         assertTrue(ui.contains("is PressInteraction.Press"));
         assertTrue(ui.contains("is PressInteraction.Release"));
         assertTrue(ui.contains("is PressInteraction.Cancel"));
-        assertTrue(ui.contains("delay(VISUAL_PRESS_HOLD_MS)"));
+        assertTrue(ui.contains("delay(releaseHoldMillis)"));
         assertFalse(ui.contains("delay(VISUAL_PRESS_BEFORE_ACTION_MS)"));
         assertTrue(ui.contains("{ latestOnClick() }"));
         assertTrue(ui.contains("onClick = visualClick"));
+        assertTrue(ui.contains("releaseHoldMillis = 0L"));
+        assertTrue(ui.contains("tween(durationMillis = 180, delayMillis = 0)"));
         assertTrue(ui.contains(".toggleable(value = checked"));
         assertTrue(ui.contains("onValueChange = onCheckedChange"));
     }

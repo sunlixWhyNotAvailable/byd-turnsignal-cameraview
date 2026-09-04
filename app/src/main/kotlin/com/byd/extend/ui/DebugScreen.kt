@@ -1,5 +1,7 @@
 package com.byd.extend.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,19 +54,25 @@ internal fun DebugScreen(
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
 ) {
+    val modeIndicatorPosition by animateFloatAsState(
+        state.mode.ordinal.toFloat(), tween(durationMillis = 180, delayMillis = 0),
+        label = "debugModeIndicator",
+    )
     ScreenSurface(colors, scroll = false) {
         when (state.mode) {
             DiagnosticMode.Signals -> Row(
                 Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                DebugHeader(state, strings, colors, onAction)
+                DebugHeader(state, modeIndicatorPosition, strings, colors, onAction)
                 Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopEnd) {
                     SignalDiagnostics(state, guardEnabled, strings, colors, onAction,
                         Modifier.widthIn(max = 460.dp).fillMaxWidth())
                 }
             }
-            DiagnosticMode.Direct -> CameraDiagnostics(true, state, strings, colors, onAction, cameraHost)
-            DiagnosticMode.Avm -> CameraDiagnostics(false, state, strings, colors, onAction, cameraHost)
+            DiagnosticMode.Direct -> CameraDiagnostics(
+                true, state, modeIndicatorPosition, strings, colors, onAction, cameraHost)
+            DiagnosticMode.Avm -> CameraDiagnostics(
+                false, state, modeIndicatorPosition, strings, colors, onAction, cameraHost)
         }
     }
 }
@@ -71,6 +80,7 @@ internal fun DebugScreen(
 @Composable
 private fun DebugHeader(
     state: DebugUiState,
+    modeIndicatorPosition: Float,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
@@ -79,7 +89,7 @@ private fun DebugHeader(
         PageTitle(strings.tabs[5], strings.text("Ручні перевірки поворотників та камер",
             "Manual turn-signal and camera checks"), colors)
         Panel(colors, Modifier.fillMaxWidth()) {
-            Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.fillMaxWidth()) {
+            Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.fillMaxWidth(), modeIndicatorPosition) {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.DiagnosticMode), it))
             }
         }
@@ -123,6 +133,7 @@ private fun SignalDiagnostics(
 private fun CameraDiagnostics(
     direct: Boolean,
     state: DebugUiState,
+    modeIndicatorPosition: Float,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
@@ -137,7 +148,7 @@ private fun CameraDiagnostics(
     }
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.width(400.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            DebugHeader(state, strings, colors, onAction)
+            DebugHeader(state, modeIndicatorPosition, strings, colors, onAction)
             Section(diagnosticGroupTitle(direct, state.avmOrientation), colors,
                 Modifier.weight(1f).fillMaxWidth()) {
             if (!direct) {

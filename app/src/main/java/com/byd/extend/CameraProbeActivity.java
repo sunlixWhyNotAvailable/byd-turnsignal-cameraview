@@ -674,7 +674,10 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean activityDestroyed;
     private final LocalAdbClient.AccessStateListener adbAccessListener = state ->
             mainHandler.post(() -> {
-                if (activityStarted && !activityDestroyed) refreshProductionHeader();
+                if (activityStarted && !activityDestroyed) {
+                    refreshProductionHeader();
+                    advanceStartupAuthorizationFlow();
+                }
             });
     private boolean updateCheckInFlight;
     private boolean logExportInProgress;
@@ -686,6 +689,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean settingsReloadPending;
     private boolean legacyRuntimeBlocked;
     private AlertDialog settingsTransferDialog;
+    private AlertDialog legacyImportOfferDialog;
     private boolean debugHorizontal = true;
     private int selectedCameraId = CameraProfile.REAR_LEFT;
     private int calibrationCameraId = CameraProfile.REAR_LEFT;
@@ -1170,6 +1174,8 @@ public final class CameraProbeActivity extends ComponentActivity
         if (activityLog != null) activityLog.close();
         if (updateDialog != null) updateDialog.dismiss();
         if (updateProgressDialog != null) updateProgressDialog.dismiss();
+        if (legacyImportOfferDialog != null) legacyImportOfferDialog.dismiss();
+        legacyImportOfferDialog = null;
         dismissSettingsTransferDialog();
         super.onDestroy();
     }
@@ -1355,8 +1361,12 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void readLegacySettings() {
+        readLegacySettings(false);
+    }
+
+    private void readLegacySettings(boolean alreadyConfirmed) {
         if (!beginSettingsTransfer(SettingsOperation.Import)) return;
-        readSettingsTransfer(true, null);
+        readSettingsTransfer(true, null, alreadyConfirmed);
     }
 
     private void confirmLegacyAccessRestore() {
@@ -1425,8 +1435,12 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void readSettingsTransfer(boolean legacy, Uri uri) {
+        readSettingsTransfer(legacy, uri, false);
+    }
+
+    private void readSettingsTransfer(boolean legacy, Uri uri, boolean legacyAlreadyConfirmed) {
         showSettingsTransferProgress(legacy
-                ? "Читання налаштувань 0.52.1... Підтвердьте ADB, якщо з'явиться запит."
+                ? "Читання налаштувань BYD Turn Signal... Підтвердьте ADB, якщо з'явиться запит."
                 : "Перевірка пресету камер...");
         logExportExecutor.execute(() -> {
             try {
@@ -1439,7 +1453,10 @@ public final class CameraProbeActivity extends ComponentActivity
                         values = CameraSettingsTransfer.parseCameraPreset(CameraPresetFiles.read(input));
                     }
                 }
-                mainHandler.post(() -> confirmSettingsTransfer(legacy, values));
+                mainHandler.post(() -> {
+                    if (legacy && legacyAlreadyConfirmed) applySettingsTransfer(true, values);
+                    else confirmSettingsTransfer(legacy, values);
+                });
             } catch (Exception error) {
                 mainHandler.post(() -> reportSettingsTransferFailure(error));
             }
@@ -1452,7 +1469,7 @@ public final class CameraProbeActivity extends ComponentActivity
         settingsTransferDialog = new AlertDialog.Builder(this)
                 .setTitle(legacy ? "Імпортувати всі налаштування?" : "Завантажити пресети камер?")
                 .setMessage(legacy
-                        ? "Усі користувацькі налаштування BYD Extend буде замінено даними з 0.52.1. "
+                        ? "Усі користувацькі налаштування BYD Extend буде замінено даними з BYD Turn Signal. "
                                 + "Старий застосунок буде STOPPED (його роботу зупинено), але він "
                                 + "залишиться встановленим разом із даними та значком. Дозволи "
                                 + "Android потрібно надати новому застосунку окремо."
@@ -3941,11 +3958,16 @@ public final class CameraProbeActivity extends ComponentActivity
                         preferences, parkingProfile((CameraProfileId.Parking) id));
             } else if (id instanceof CameraProfileId.Reverse) {
                 CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
-                transferred = reverse.getSource() == ReverseSource.Front
-                        ? CameraCalibrationPreset.mirrorReverseFront(
-                                preferences, reverseProfileIndex(reverse))
-                        : CameraCalibrationPreset.mirrorReverse(
-                                preferences, reverseProfileIndex(reverse));
+                if (reverse.getElement() == ReverseElement.Rear
+                        && reverse.getSource() == ReverseSource.Rear) {
+                    transferred = CameraCalibrationPreset.copyCentralReverseRearToFront(preferences);
+                } else {
+                    transferred = reverse.getSource() == ReverseSource.Front
+                            ? CameraCalibrationPreset.mirrorReverseFront(
+                                    preferences, reverseProfileIndex(reverse))
+                            : CameraCalibrationPreset.mirrorReverse(
+                                    preferences, reverseProfileIndex(reverse));
+                }
             }
         } catch (RuntimeException error) {
             record("camera_preset_error", "operation", "transfer", "error", error.toString());
@@ -3970,6 +3992,10 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
+            if (reverse.getElement() == ReverseElement.Rear
+                    && reverse.getSource() == ReverseSource.Rear) {
+                return new CameraProfileId.Reverse(ReverseElement.Rear, ReverseSource.Front);
+            }
             if (reverse.getElement() != ReverseElement.RearLeft
                     && reverse.getElement() != ReverseElement.RearRight) return null;
             return new CameraProfileId.Reverse(
@@ -11903,6 +11929,53 @@ public final class CameraProbeActivity extends ComponentActivity
             return;
         }
         maybeStartForegroundAdbAuthorization();
+        maybeShowLegacyImportOffer();
+    }
+
+    private void maybeShowLegacyImportOffer() {
+        if (!activityResumed || !hasWindowFocus() || cameraPermissionPending
+                || backgroundStartSettingsPending() || weatherLocationPermissionPending
+                || weatherLocationPermissionInFlight || weatherLocationPermissionStartScheduled
+                || adbAuthPending || adbAuthorizationStartScheduled
+                || settingsTransferInProgress || settingsReloadPending
+                || logExportInProgress || compatibilityExportInProgress
+                || updateDialog != null || updateProgressDialog != null
+                || settingsTransferDialog != null || legacyImportOfferDialog != null
+                || shutdownRequested || activityDestroyed || isFinishing()
+                || LocalAdbClient.readAccessState(this).status
+                        != LocalAdbClient.AccessState.Status.OK) return;
+        boolean compatible = LegacySettingsImporter.hasCompatibleLegacy(this);
+        boolean handled = preferences.getBoolean(
+                LegacySettingsImporter.PREF_IMPORT_OFFER_HANDLED, false);
+        boolean complete = preferences.getBoolean(
+                LegacySettingsImporter.PREF_HANDOVER_COMPLETE, false);
+        if (!LegacySettingsImporter.shouldOfferImport(compatible, handled, complete)) return;
+        boolean english = productionUi != null
+                && productionUi.getState().getLanguage() == UiLanguage.English;
+        legacyImportOfferDialog = new AlertDialog.Builder(this)
+                .setTitle(english ? "Import settings" : "Імпорт налаштувань")
+                .setMessage(english
+                        ? "BYD Turn Signal was found. Import its settings into BYD Extend?"
+                        : "Знайдено BYD Turn Signal. Імпортувати його налаштування в BYD Extend?")
+                .setCancelable(false)
+                .setNegativeButton(english ? "Cancel" : "Скасувати", (dialog, which) -> {
+                    markLegacyImportOfferHandled("cancel");
+                    legacyImportOfferDialog = null;
+                })
+                .setPositiveButton("OK", (dialog, which) -> {
+                    markLegacyImportOfferHandled("import");
+                    legacyImportOfferDialog = null;
+                    readLegacySettings(true);
+                })
+                .create();
+        legacyImportOfferDialog.show();
+        record("legacy_import_offer", "state", "shown");
+    }
+
+    private void markLegacyImportOfferHandled(String action) {
+        boolean stored = preferences.edit().putBoolean(
+                LegacySettingsImporter.PREF_IMPORT_OFFER_HANDLED, true).commit();
+        record("legacy_import_offer", "state", action, "stored", stored);
     }
 
     void openBackgroundStartSettings(String reason) {

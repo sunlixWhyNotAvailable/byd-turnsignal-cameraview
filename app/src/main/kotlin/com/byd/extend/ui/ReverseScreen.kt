@@ -73,7 +73,8 @@ internal fun ReverseScreen(
                 }
             }
             ProfilePresetButtons(profileId, profile.presetAvailable,
-                selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight,
+                selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
+                    selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
                 strings, colors, onAction)
         }
     }

@@ -1,11 +1,14 @@
 package com.byd.extend.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -18,6 +21,14 @@ internal fun BlindScreen(
     cameraHost: @Composable (CameraHostSlot) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String?,
 ) {
+    val groupIndicatorPosition by animateFloatAsState(
+        state.selectedGroup.ordinal.toFloat(), tween(durationMillis = 180, delayMillis = 0),
+        label = "blindGroupIndicator",
+    )
+    val sideIndicatorPosition by animateFloatAsState(
+        state.selectedSide.ordinal.toFloat(), tween(durationMillis = 180, delayMillis = 0),
+        label = "blindSideIndicator",
+    )
     val profileId = CameraProfileId.Blind(state.selectedGroup, state.selectedSide)
     val profile = state.profiles[profileId] ?: CameraProfileUiState()
     val rules = state.rules[state.selectedGroup] ?: BlindRuleUiState()
@@ -43,11 +54,11 @@ internal fun BlindScreen(
             profileControls = {
                 Row(Modifier.height(40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Segmented(listOf(strings.text("Задні", "Rear"), strings.text("Передні", "Front")),
-                        state.selectedGroup.ordinal, colors, Modifier.weight(1f)) {
+                        state.selectedGroup.ordinal, colors, Modifier.weight(1f), groupIndicatorPosition) {
                         onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindGroup), it))
                     }
                     Segmented(listOf(strings.text("Ліва", "Left"), strings.text("Права", "Right")),
-                        state.selectedSide.ordinal, colors, Modifier.weight(1f)) {
+                        state.selectedSide.ordinal, colors, Modifier.weight(1f), sideIndicatorPosition) {
                         onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindSide), it))
                     }
                 }

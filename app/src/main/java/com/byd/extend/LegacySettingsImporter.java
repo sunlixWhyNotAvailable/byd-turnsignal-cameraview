@@ -11,14 +11,17 @@ import android.os.Process;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
-/** Reads the installed 0.52.1 settings once, then hands ownership to this package. */
+/** Reads compatible BYD Turn Signal settings once, then hands ownership to this package. */
 final class LegacySettingsImporter {
     static final String LEGACY_PACKAGE = "com.byd.turnsignalguard.capture";
     static final String LEGACY_VERSION_NAME = "0.52.1";
     static final int LEGACY_VERSION_CODE = 96;
+    static final String BRIDGE_VERSION_NAME = "0.52.2";
+    static final int BRIDGE_VERSION_CODE = 97;
     static final long MAX_INPUT_BYTES = CameraSettingsTransfer.MAX_INPUT_BYTES;
     static final String PREF_HANDOVER_BLOCKED = "legacy_handover_blocked";
     static final String PREF_HANDOVER_COMPLETE = "legacy_handover_complete";
+    static final String PREF_IMPORT_OFFER_HANDLED = "legacy_import_offer_handled";
 
     private static final String LEGACY_SETTINGS_FILE = "shared_prefs/settings.xml";
     private static final String LEGACY_READ_COMMAND =
@@ -263,9 +266,23 @@ final class LegacySettingsImporter {
 
     static boolean isCompatibleLegacy(
             String versionName, long versionCode, boolean debuggable, boolean signatureMatch) {
-        return LEGACY_VERSION_NAME.equals(versionName)
-                && versionCode == LEGACY_VERSION_CODE
+        return (LEGACY_VERSION_NAME.equals(versionName) && versionCode == LEGACY_VERSION_CODE
+                || BRIDGE_VERSION_NAME.equals(versionName) && versionCode == BRIDGE_VERSION_CODE)
                 && debuggable && signatureMatch;
+    }
+
+    static boolean shouldOfferImport(boolean compatible, boolean handled, boolean complete) {
+        return compatible && !handled && !complete;
+    }
+
+    static boolean hasCompatibleLegacy(Context context) {
+        if (context == null) return false;
+        try {
+            requireLegacyPackage(context, false);
+            return true;
+        } catch (RuntimeException incompatible) {
+            return false;
+        }
     }
 
     static boolean isLegacyPackageEnabled(PackageManager manager) {

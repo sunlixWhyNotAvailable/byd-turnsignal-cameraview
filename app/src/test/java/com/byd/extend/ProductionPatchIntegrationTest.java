@@ -167,6 +167,18 @@ public final class ProductionPatchIntegrationTest {
                 assertEquals("Front right", CameraProbeActivity.productionProfileLabel(reverseTarget, true));
             }
         }
+
+        CameraProfileId centralRear = new CameraProfileId.Reverse(
+                ReverseElement.Rear, ReverseSource.Rear);
+        CameraProfileId centralFront = CameraProbeActivity.oppositeProductionProfile(centralRear);
+        assertNotNull(centralFront);
+        assertEquals(ReverseElement.Rear,
+                ((CameraProfileId.Reverse) centralFront).getElement());
+        assertEquals(ReverseSource.Front,
+                ((CameraProfileId.Reverse) centralFront).getSource());
+        assertEquals("Передня", CameraProbeActivity.productionProfileLabel(centralFront, false));
+        assertEquals("Front", CameraProbeActivity.productionProfileLabel(centralFront, true));
+        assertEquals(null, CameraProbeActivity.oppositeProductionProfile(centralFront));
     }
 
     @Test
