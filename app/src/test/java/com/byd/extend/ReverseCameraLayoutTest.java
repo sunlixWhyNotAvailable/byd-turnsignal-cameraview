@@ -344,7 +344,7 @@ public final class ReverseCameraLayoutTest {
         ReverseCameraLayout layout = ReverseCameraLayout.defaults();
         ReverseCameraLayout moved = ReverseCameraLayout.move(layout,
                 ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, 0.01f, -0.01f);
-        assertEquals(0.44366212f, moved.rearLeft.destination.left, 0.0001f);
+        assertEquals(layout.rearLeft.destination.left + 0.01f, moved.rearLeft.destination.left, 0.0001f);
         assertEquals(0.7860598f, moved.rearLeft.destination.top, 0.0001f);
 
         ReverseCameraLayout clamped = ReverseCameraLayout.move(moved,

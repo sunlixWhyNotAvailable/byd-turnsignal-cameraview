@@ -13,7 +13,10 @@ final class ReverseGearRuntime {
     static final int DEVICE_TYPE = 1011;
     static final int TRANSACTION = 5;
     static final int GEAR_FID = 555745336;
-    static final int REVERSE_RAW = 2;
+    static final int PARK_RAW = ReverseGearSessionPolicy.RAW_PARK;
+    static final int REVERSE_RAW = ReverseGearSessionPolicy.RAW_REVERSE;
+    static final int NEUTRAL_RAW = ReverseGearSessionPolicy.RAW_NEUTRAL;
+    static final int DRIVE_RAW = ReverseGearSessionPolicy.RAW_DRIVE;
 
     private final Context context;
     private final Handler handler;
@@ -201,6 +204,7 @@ final class ReverseGearRuntime {
     private void emitState(String source) {
         emit("reverse_gear_state", "valid", valid, "raw", raw,
                 "reverse", reverse, "listener_ok", listenerHealthy,
+                "gear", valid ? ReverseGearSessionPolicy.gearForRaw(raw).name() : "UNKNOWN",
                 "registered", listenerRegistered, "source_event", source,
                 "device", DEVICE_TYPE, "tx", TRANSACTION, "fid", GEAR_FID);
     }
@@ -220,11 +224,11 @@ final class ReverseGearRuntime {
     }
 
     static boolean isValidRaw(int value) {
-        return value >= 1 && value <= 6;
+        return ReverseGearSessionPolicy.isValidRaw(value);
     }
 
     static boolean isReverseRaw(boolean valueValid, int value) {
-        return valueValid && value == REVERSE_RAW;
+        return valueValid && ReverseGearSessionPolicy.isReverseRaw(value);
     }
 
     private void runOnHandler(Runnable action) {

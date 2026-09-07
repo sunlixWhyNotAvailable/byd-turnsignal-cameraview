@@ -14,6 +14,8 @@ public final class ParkingCameraSettings {
     public static final int DEFAULT_MAX_SPEED_KPH = 10;
     public static final int MIN_MAX_SPEED_KPH = 0;
     public static final int MAX_MAX_SPEED_KPH = 300;
+    /** v1.1.0 production geometry baseline for a newly missing parking scale. */
+    public static final int DEFAULT_SCALE_PERCENT = 15;
 
     private final SharedPreferences preferences;
 

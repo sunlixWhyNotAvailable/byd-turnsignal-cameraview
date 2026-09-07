@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.BYDAUTO_LIGHT_SET" />
@@ -22,8 +23,8 @@
     <application
         android:allowBackup="false"
         android:hasCode="true"
-        android:icon="@drawable/byd_extend_launcher"
-        android:roundIcon="@drawable/byd_extend_launcher"
+        android:icon="@drawable/byd_extend_launcher_padded"
+        android:roundIcon="@drawable/byd_extend_launcher_padded"
         android:label="BYD Extend"
         android:name="com.byd.extend.TurnSignalGuardApplication"
         android:theme="@style/Theme.BydExtend">

@@ -680,7 +680,7 @@ public final class WeatherRuntime {
     }
 
     private City geocode(Location location) {
-        String language = preferences.getString(PREF_LANGUAGE, "uk");
+        String language = AppLanguage.read(preferences);
         String fallback = friendlyLocationFallback(language);
         double latitude = location.getLatitude();
         double longitude = location.getLongitude();
@@ -715,11 +715,11 @@ public final class WeatherRuntime {
     }
 
     static String normalizedLanguage(String language) {
-        return "en".equalsIgnoreCase(language) ? "en" : "uk";
+        return AppLanguage.normalize(language);
     }
 
-    static String friendlyLocationFallback(String language) {
-        return "en".equalsIgnoreCase(language) ? "Current location" : "Поточне місце";
+    private String friendlyLocationFallback(String language) {
+        return AppLanguage.localizedContext(context, language).getString(R.string.weather_current_location);
     }
 
     static String firstNonEmpty(String... values) {

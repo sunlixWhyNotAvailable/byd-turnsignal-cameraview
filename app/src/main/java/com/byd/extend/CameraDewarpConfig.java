@@ -82,13 +82,14 @@ final class CameraDewarpConfig {
     static CameraDewarpConfig loadForParking(
             SharedPreferences preferences, ParkingCameraProfile profile) {
         int lens = lensFor(profile);
+        CameraDewarpConfig fallback = defaultForParking(profile);
         String scopedPrefix = parkingPrefix(profile);
         try {
-            int fov = preferences.getInt(scopedPrefix + "fov", DEFAULT_FOV_DEGREES);
-            int projection = preferences.getInt(scopedPrefix + "projection", DEFAULT_PROJECTION);
+            int fov = preferences.getInt(scopedPrefix + "fov", fallback.fovDegrees);
+            int projection = preferences.getInt(scopedPrefix + "projection", fallback.projection);
             if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
                     || !isValidProjection(projection)) return disabled(lens);
-            return of(lens, preferences.getBoolean(scopedPrefix + "enabled", false),
+            return of(lens, preferences.getBoolean(scopedPrefix + "enabled", fallback.enabled),
                     fov, projection);
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
@@ -130,6 +131,12 @@ final class CameraDewarpConfig {
             default:
                 throw new IllegalArgumentException("invalid camera profile");
         }
+    }
+
+    /** Exact per-camera parking correction baseline; missing keys use this value. */
+    static CameraDewarpConfig defaultForParking(ParkingCameraProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("parking profile required");
+        return CameraDefaults.parkingDewarp(profile);
     }
 
     static CameraDewarpConfig defaultForReverse(int cameraIndex) {

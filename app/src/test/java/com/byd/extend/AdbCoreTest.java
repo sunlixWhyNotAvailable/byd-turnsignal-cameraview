@@ -102,7 +102,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(99, BuildConfig.VERSION_CODE);
+        assertEquals(100, BuildConfig.VERSION_CODE);
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
         assertEquals(7, TurnSignalShellProtocol.VERSION);
@@ -1661,7 +1661,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(27, CameraShellProtocol.VERSION);
+        assertEquals(28, CameraShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
                 CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
@@ -1974,11 +1974,11 @@ public final class AdbCoreTest {
                 layout.rear.sourceCrop, 1920, 540,
                 ReverseCameraCompositionView.SOURCE_WIDTH,
                 ReverseCameraCompositionView.SOURCE_HEIGHT, 0);
-        assertEquals(472, fitted.left);
+        assertEquals(491, fitted.left);
         assertEquals(0, fitted.top);
-        assertEquals(976, fitted.width);
+        assertEquals(938, fitted.width);
         assertEquals(540, fitted.height);
-        assertEquals(1920.0f / (1300.0f * 0.8169013f),
+        assertEquals(1920.0f / (1300.0f * 0.85f),
                 (float) fitted.width / fitted.height, 0.002f);
         ReverseCameraLayout.PixelRect partial = ReverseCameraLayout.fitSourceCrop(
                 ReverseCameraLayout.sourceCrop(0.2f, 0.1f, 0.4f, 0.7f),

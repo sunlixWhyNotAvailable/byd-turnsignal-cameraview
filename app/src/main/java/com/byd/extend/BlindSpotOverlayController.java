@@ -49,6 +49,16 @@ final class BlindSpotOverlayController {
     static final String PREF_FRONT_LEFT_Y = "camera_front_left_y";
     static final String PREF_FRONT_RIGHT_X = "camera_front_right_x";
     static final String PREF_FRONT_RIGHT_Y = "camera_front_right_y";
+    // New independent whole-display placement.  X/Y remain readable for v1
+    // migration; width/height being present is the unambiguous v2 marker.
+    static final String PREF_LEFT_WIDTH = "camera_left_width";
+    static final String PREF_LEFT_HEIGHT = "camera_left_height";
+    static final String PREF_RIGHT_WIDTH = "camera_right_width";
+    static final String PREF_RIGHT_HEIGHT = "camera_right_height";
+    static final String PREF_FRONT_LEFT_WIDTH = "camera_front_left_width";
+    static final String PREF_FRONT_LEFT_HEIGHT = "camera_front_left_height";
+    static final String PREF_FRONT_RIGHT_WIDTH = "camera_front_right_width";
+    static final String PREF_FRONT_RIGHT_HEIGHT = "camera_front_right_height";
     static final String PREF_WARNING_MODE = "camera_bsd_warning_mode";
 
     static final int DEFAULT_MIN_SPEED_KPH = 10;
@@ -221,20 +231,68 @@ final class BlindSpotOverlayController {
         return defaultPosition(profile, vertical);
     }
 
+    /**
+     * Reads a whole-display placement.  Existing v1 anchor/scale values are
+     * converted through the exact effective pixel rectangle (including the
+     * target insets), so migration does not move or resize an overlay on its
+     * first render.  New geometry is kept in normalized complete-display
+     * coordinates and is independent of the remaining-space anchor model.
+     */
+    static CameraPlacement readPlacement(
+            SharedPreferences settings, CameraProfile profile,
+            int displayWidth, int displayHeight,
+            int marginX, int topMargin, int bottomMargin) {
+        if (settings == null || profile == null) {
+            throw new IllegalArgumentException("camera placement arguments required");
+        }
+        String widthKey = placementWidthKey(profile);
+        String heightKey = placementHeightKey(profile);
+        try {
+            if (settings.contains(widthKey) && settings.contains(heightKey)
+                    && settings.contains(positionKey(profile, false))
+                    && settings.contains(positionKey(profile, true))) {
+                return CameraPlacement.of(
+                        settings.getFloat(positionKey(profile, false), 0.0f),
+                        settings.getFloat(positionKey(profile, true), 0.0f),
+                        settings.getFloat(widthKey, 0.0f),
+                        settings.getFloat(heightKey, 0.0f));
+            }
+        } catch (RuntimeException invalidPlacement) {
+            // Malformed v2 geometry falls back to the read-only v1 conversion.
+        }
+        return CameraPlacement.fromLegacy(
+                displayWidth, displayHeight, readScale(settings, profile),
+                readFrameAspect(settings, profile),
+                readPosition(settings, profile, false),
+                readPosition(settings, profile, true),
+                marginX, topMargin, bottomMargin);
+    }
+
+    /** Saves an explicit destination edit in normalized complete-display units. */
+    static void writePlacement(
+            SharedPreferences settings, CameraProfile profile, CameraPlacement placement) {
+        if (settings == null || profile == null || placement == null) {
+            throw new IllegalArgumentException("camera placement arguments required");
+        }
+        CameraPlacement safe = placement.bounded(
+                placement.x, placement.y, placement.width, placement.height);
+        settings.edit()
+                .putFloat(positionKey(profile, false), safe.x)
+                .putFloat(positionKey(profile, true), safe.y)
+                .putFloat(placementWidthKey(profile), safe.width)
+                .putFloat(placementHeightKey(profile), safe.height)
+                .apply();
+    }
+
+    static void writePlacement(
+            SharedPreferences settings, CameraProfile profile,
+            float x, float y, float width, float height) {
+        writePlacement(settings, profile, CameraPlacement.bounded(x, y, width, height));
+    }
+
     static float defaultPosition(CameraProfile profile, boolean vertical) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
-        switch (profile.id) {
-            case CameraProfile.REAR_LEFT:
-                return vertical ? 0.08281444f : 0.0f;
-            case CameraProfile.REAR_RIGHT:
-                return vertical ? 0.072115384f : 1.0f;
-            case CameraProfile.FRONT_LEFT:
-                return vertical ? 1.0f : 0.0f;
-            case CameraProfile.FRONT_RIGHT:
-                return 1.0f;
-            default:
-                throw new IllegalArgumentException("invalid camera profile");
-        }
+        return CameraDefaults.blindPosition(profile, vertical);
     }
 
     static float legacyPosition(int position, boolean vertical) {
@@ -333,13 +391,7 @@ final class BlindSpotOverlayController {
 
     static float defaultFrameAspect(CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
-        switch (profile.id) {
-            case CameraProfile.REAR_LEFT: return 1.6173527f;
-            case CameraProfile.REAR_RIGHT: return 1.6154981f;
-            case CameraProfile.FRONT_LEFT: return 1.393998f;
-            case CameraProfile.FRONT_RIGHT: return 1.3889601f;
-            default: throw new IllegalArgumentException("invalid camera profile");
-        }
+        return CameraDefaults.blindFrameAspect(profile);
     }
 
     /** One destination fallback for preview, export and production, independent of live drafts. */
@@ -1172,12 +1224,9 @@ final class BlindSpotOverlayController {
         DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop crop = dewarp.enabled
                 ? DirectCameraCrop.loadCorrected(settings, profile, rawCrop) : rawCrop;
-        float frameAspect = readFrameAspect(settings, profile);
-        int[] geometry = overlayGeometry(
-                displayWidth, displayHeight, readScale(settings, profile),
-                frameAspect, readPosition(settings, profile, false),
-                readPosition(settings, profile, true),
-                marginX, topMargin, bottomMargin);
+        CameraPlacement placement = readPlacement(settings, profile,
+                displayWidth, displayHeight, marginX, topMargin, bottomMargin);
+        int[] geometry = placement.toPixelRect(displayWidth, displayHeight);
         return new CameraShellProtocol.OverlaySpec(
                 profile.id, requestId, target,
                 geometry[2], geometry[3], geometry[0], geometry[1],
@@ -1245,6 +1294,20 @@ final class BlindSpotOverlayController {
             return vertical ? PREF_FRONT_LEFT_Y : PREF_FRONT_LEFT_X;
         }
         return vertical ? PREF_FRONT_RIGHT_Y : PREF_FRONT_RIGHT_X;
+    }
+
+    static String placementWidthKey(CameraProfile profile) {
+        if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_WIDTH;
+        if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_WIDTH;
+        if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_WIDTH;
+        return PREF_FRONT_RIGHT_WIDTH;
+    }
+
+    static String placementHeightKey(CameraProfile profile) {
+        if (profile.id == CameraProfile.REAR_LEFT) return PREF_LEFT_HEIGHT;
+        if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_HEIGHT;
+        if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_HEIGHT;
+        return PREF_FRONT_RIGHT_HEIGHT;
     }
 
     private int nextRequestId() {

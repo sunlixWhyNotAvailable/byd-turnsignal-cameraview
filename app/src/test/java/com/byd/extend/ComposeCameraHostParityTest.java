@@ -134,7 +134,8 @@ public final class ComposeCameraHostParityTest {
         assertTrue(activity.contains("&& debugSurfaceReady"));
         assertTrue(activity.contains("reverseCameraPreview.setCallback(null);"));
         assertTrue(activity.contains("productionCameraHosts.get(slot.getKind()) != view"));
-        assertTrue(activity.contains("productionCameraSlots.get(CameraHostKind.Placement)"));
+        assertTrue(activity.contains("selectedTab == TAB_REARVIEW_MIRROR"));
+        assertTrue(activity.contains("? CameraHostKind.Mirror : CameraHostKind.Placement"));
         assertTrue(activity.contains(
                 "if (!shutdownRequested && isAutoPreviewTab(selectedTab)) armResumeAutoPreview();"));
     }

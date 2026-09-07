@@ -777,7 +777,7 @@ final class ParkingCameraController {
         }
         String prefix = "parking_camera_"
                 + profile.wireName.toLowerCase(java.util.Locale.US);
-        int scalePercent = safeInt(settings, prefix + "_scale", 25,
+        int scalePercent = safeInt(settings, prefix + "_scale", ParkingCameraSettings.DEFAULT_SCALE_PERCENT,
                 BlindSpotOverlayController.MIN_SCALE_PERCENT,
                 BlindSpotOverlayController.MAX_SCALE_PERCENT);
         float anchorX = safeFloat(settings, prefix + "_x", defaultAnchorX(profile.id));

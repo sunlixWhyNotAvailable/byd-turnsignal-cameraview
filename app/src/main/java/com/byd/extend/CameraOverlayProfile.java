@@ -11,7 +11,8 @@ final class CameraOverlayProfile {
     static final int BLIND_COUNT = CameraProfile.COUNT;
     static final int PARKING_COUNT = ParkingCameraProfile.COUNT;
     static final int PARKING_OFFSET = BLIND_COUNT;
-    static final int COUNT = BLIND_COUNT + PARKING_COUNT;
+    static final int MIRROR_ID = BLIND_COUNT + PARKING_COUNT;
+    static final int COUNT = MIRROR_ID + 1;
 
     private static final CameraOverlayProfile[] VALUES = createValues();
 
@@ -39,7 +40,11 @@ final class CameraOverlayProfile {
     }
 
     static boolean isParking(int id) {
-        return id >= PARKING_OFFSET && id < COUNT;
+        return id >= PARKING_OFFSET && id < MIRROR_ID;
+    }
+
+    static boolean isMirror(int id) {
+        return id == MIRROR_ID;
     }
 
     static int parkingIdFor(int id) {
@@ -48,7 +53,7 @@ final class CameraOverlayProfile {
     }
 
     static int overlayIdForParking(int parkingId) {
-        if (parkingId < 0 || parkingId >= COUNT - PARKING_OFFSET) {
+        if (parkingId < 0 || parkingId >= PARKING_COUNT) {
             throw new IllegalArgumentException("invalid parking camera id: " + parkingId);
         }
         return PARKING_OFFSET + parkingId;
@@ -71,6 +76,8 @@ final class CameraOverlayProfile {
             values[id] = new CameraOverlayProfile(
                     id, parking.wireName, CameraDewarpConfig.lensFor(parking));
         }
+        values[MIRROR_ID] = new CameraOverlayProfile(
+                MIRROR_ID, "rearview_mirror", CameraDewarpConfig.LENS_REAR);
         return values;
     }
 }

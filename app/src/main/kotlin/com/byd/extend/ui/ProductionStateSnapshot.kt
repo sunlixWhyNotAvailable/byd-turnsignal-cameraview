@@ -15,13 +15,18 @@ fun readProductionUiState(
     displayGeometry: (DisplayTarget) -> CameraDisplayGeometry = { CameraDisplayGeometry.default(it) },
 ): BydExtendUiState = BydExtendUiState(
     activeTab = storedRootTab(preferences),
-    language = if (preferences.getString("ui_language", "uk") == "en") UiLanguage.English else UiLanguage.Ukrainian,
+    language = when (AppLanguage.read(preferences)) {
+        AppLanguage.CHINESE -> UiLanguage.Chinese
+        AppLanguage.UKRAINIAN -> UiLanguage.Ukrainian
+        else -> UiLanguage.English
+    },
     theme = if (preferences.getBoolean("ui_dark_theme", true)) UiTheme.Dark else UiTheme.Light,
     header = HeaderUiState(weatherEnabled = preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false)),
     signals = readSignals(preferences),
     blind = readBlind(preferences, displayGeometry),
     parking = readParking(preferences, displayGeometry),
     reverse = readReverse(preferences, displayGeometry),
+    mirror = readMirror(preferences, displayGeometry),
     settings = SettingsUiState(
         category = enumPreference(preferences, UiSelectionPreferences.SETTINGS_CATEGORY,
             SettingsCategory.Permissions),
@@ -73,12 +78,11 @@ private fun readBlind(
         val display = displayGeometry(
             if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet)
         val requestedAspect = BlindSpotOverlayController.readFrameAspect(preferences, profile)
-        val output = BlindSpotOverlayController.overlayGeometry(
-            display.width, display.height, BlindSpotOverlayController.readScale(preferences, profile),
-            requestedAspect, BlindSpotOverlayController.readPosition(preferences, profile, false),
-            BlindSpotOverlayController.readPosition(preferences, profile, true),
+        val placement = BlindSpotOverlayController.readPlacement(
+            preferences, profile, display.width, display.height,
             display.marginLeft.coerceAtLeast(0), display.marginTop.coerceAtLeast(0),
             display.marginBottom.coerceAtLeast(0))
+        val output = placement.toPixelRect(display.width, display.height)
         blindId(profile) to cameraProfile(
             target = target,
             size = BlindSpotOverlayController.readScale(preferences, profile),
@@ -90,6 +94,7 @@ private fun readBlind(
             preset = CameraCalibrationPreset.hasCamera(preferences, profile),
             frameAspect = output[2].toFloat() / output[3].coerceAtLeast(1),
             displayGeometry = display,
+            placement = placement,
         )
     }
     return BlindUiState(
@@ -142,7 +147,7 @@ private fun readParking(
         val raw = DirectCameraCrop.load(preferences, profile)
         val rule = ParkingCameraSettings.readRule(preferences, profile)
         val display = displayGeometry(DisplayTarget.Tablet)
-        val size = preferences.getInt(prefix + "scale", 25).coerceIn(
+        val size = preferences.getInt(prefix + "scale", ParkingCameraSettings.DEFAULT_SCALE_PERCENT).coerceIn(
             BlindSpotOverlayController.MIN_SCALE_PERCENT,
             BlindSpotOverlayController.MAX_SCALE_PERCENT)
         val x = preferences.getFloat(prefix + "x", defaultX[profile.id]).coerceIn(0f, 1f)
@@ -222,6 +227,7 @@ private fun readReverse(
     return ReverseUiState(
         enabled = preferences.getBoolean(
             ReverseCameraController.PREF_ENABLED, ReverseCameraController.DEFAULT_ENABLED),
+        switchByGear = preferences.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false),
         section = enumPreference(preferences, UiSelectionPreferences.REVERSE_SECTION,
             CameraSection.Parameters),
         selectedElement = enumPreference(preferences, UiSelectionPreferences.REVERSE_ELEMENT,
@@ -245,6 +251,70 @@ private fun readReverse(
     )
 }
 
+/** Reads only the independent Mirror namespace.  Reverse's persisted geometry is never reused. */
+private fun readMirror(
+    preferences: SharedPreferences,
+    displayGeometry: (DisplayTarget) -> CameraDisplayGeometry,
+): MirrorUiState {
+    val settings = RearviewMirrorSettings(preferences).load()
+    val target = if (settings.target == RearviewMirrorSettings.TARGET_CLUSTER)
+        DisplayTarget.Cluster else DisplayTarget.Tablet
+    val display = displayGeometry(target)
+    val placement = settings.placement
+    val width = normalizedMirrorNumber(placement.width * 100f, 5f..100f)
+    val height = normalizedMirrorNumber(placement.height * 100f, 5f..100f)
+    val x = normalizedMirrorNumber(placement.x * 100f, 0f..(100f - width.toFloat()))
+    val y = normalizedMirrorNumber(placement.y * 100f, 0f..(100f - height.toFloat()))
+    // Preserve the exact valid source rectangle in state. Numeric controls format it for display,
+    // while typed Mirror edits change only the addressed field in the persisted model.
+    fun crop(value: CameraPlacement) = CropUiState(
+        percent(value.x), percent(value.y), percent(value.width), percent(value.height))
+    val calibration = settings.calibration
+    val profile = CameraProfileUiState(
+        target = target,
+        size = width,
+        x = x,
+        y = y,
+        width = width,
+        height = height,
+        frameAspect = placement.width * display.aspect / placement.height.coerceAtLeast(.01f),
+        displayGeometry = display,
+        calibration = CalibrationUiState(
+            original = crop(calibration.raw),
+            correctionEnabled = calibration.enabled,
+            fov = calibration.fovDegrees.toString(),
+            projection = calibration.projection,
+            corrected = crop(calibration.corrected),
+            mirrored = calibration.mirrored,
+            outputMode = calibration.rotationMode,
+            rotation = calibration.rotationDegrees.toString(),
+        ),
+        presetAvailable = settings.preset != null,
+    )
+    return MirrorUiState(
+        enabled = settings.enabled,
+        hidden = settings.manualHidden,
+        section = enumPreference(preferences, UiSelectionPreferences.MIRROR_SECTION,
+            CameraSection.Parameters),
+        target = target,
+        placement = MirrorGeometryUiState(x, y, width, height),
+        displayGeometry = display,
+        borderWidth = settings.borderDp.toString(),
+        borderArgb = settings.borderArgb,
+        profile = profile,
+        presetAvailable = profile.presetAvailable,
+        // Availability is an Activity/runtime fact; the controller replaces this default from
+        // ProductionUiBackend so a synthetic display geometry cannot imply a real cluster.
+        clusterAvailable = false,
+    )
+}
+
+private fun normalizedMirrorNumber(value: Float, range: ClosedFloatingPointRange<Float>): String {
+    val bounded = value.takeIf { it.isFinite() }?.coerceIn(range) ?: range.start
+    return if (bounded == bounded.toInt().toFloat()) bounded.toInt().toString()
+    else String.format(Locale.US, "%.1f", bounded).trimEnd('0').trimEnd('.')
+}
+
 private fun cameraProfile(
     target: Int,
     size: Int,
@@ -256,10 +326,14 @@ private fun cameraProfile(
     preset: Boolean,
     frameAspect: Float,
     displayGeometry: CameraDisplayGeometry,
+    placement: CameraPlacement? = null,
 ) = CameraProfileUiState(
     target = if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet,
     size = size.toString(),
-    x = percent(x), y = percent(y),
+    x = percent(placement?.x ?: x), y = percent(placement?.y ?: y),
+    width = placement?.let { percent(it.width) } ?: size.toString(),
+    height = placement?.let { percent(it.height) }
+        ?: percent(size * displayGeometry.aspect / frameAspect.coerceAtLeast(0.01f)),
     frameAspect = frameAspect,
     displayGeometry = displayGeometry,
     calibration = calibration(raw, corrected, dewarp),
@@ -276,6 +350,7 @@ private fun reverseProfile(
     target = DisplayTarget.Tablet,
     size = percent(pane.destination.width),
     x = percent(pane.destination.left), y = percent(pane.destination.top),
+    width = percent(pane.destination.width), height = percent(pane.destination.height),
     frameAspect = ReverseCameraLayout.project(
         pane.destination, displayGeometry.width.coerceAtLeast(1),
         displayGeometry.height.coerceAtLeast(1)).let { it.width.toFloat() / it.height.coerceAtLeast(1) },
@@ -327,14 +402,7 @@ private fun reverseElement(index: Int) = when (index) {
 private fun storedRootTab(preferences: SharedPreferences): RootTab {
     val stored = if (preferences.contains("selected_tab")) preferences.getInt("selected_tab", 0)
     else if (preferences.getBoolean("camera_tab_selected", false)) 1 else 0
-    return when (stored) {
-        1, 4 -> RootTab.Blind
-        8 -> RootTab.Parking
-        5 -> RootTab.Reverse
-        7 -> RootTab.Settings
-        2, 3 -> RootTab.Debug
-        else -> RootTab.Signals
-    }
+    return RootTab.fromLegacyId(stored)
 }
 
 private fun percent(value: Float) = decimal(value * 100f)
@@ -367,6 +435,9 @@ fun productionPlacementGeometry(
         is CameraProfileId.Parking -> ParkingCameraController.overlayGeometry(
             width, height, sizePercent.toInt(), x, y)
         is CameraProfileId.Reverse -> intArrayOf(
+            0, 0, width, height,
+        )
+        CameraProfileId.Mirror -> intArrayOf(
             0, 0, width, height,
         )
     }

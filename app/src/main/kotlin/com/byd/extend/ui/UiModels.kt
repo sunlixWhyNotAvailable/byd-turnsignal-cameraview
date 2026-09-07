@@ -1,11 +1,27 @@
 package com.byd.extend.ui
 
 import androidx.compose.runtime.Immutable
+import com.byd.extend.RearviewMirrorSettings
 import java.util.concurrent.atomic.AtomicLong
 
-enum class UiLanguage { Ukrainian, English }
+enum class UiLanguage { Ukrainian, English, Chinese }
 enum class UiTheme { Dark, Light }
-enum class RootTab { Signals, Blind, Parking, Reverse, Settings, Debug }
+/** Stable persisted IDs intentionally differ from enum ordinals after Mirror was inserted. */
+enum class RootTab(val legacyId: Int) {
+    Signals(0), Blind(1), Parking(8), Reverse(5), Mirror(9), Settings(7), Debug(2);
+
+    companion object {
+        fun fromLegacyId(id: Int): RootTab = when (id) {
+            1, 4 -> Blind
+            8 -> Parking
+            5 -> Reverse
+            9 -> Mirror
+            7 -> Settings
+            2, 3 -> Debug
+            else -> Signals
+        }
+    }
+}
 enum class CameraSection { Parameters, Placement, Calibration }
 enum class CameraGroup { Rear, Front }
 enum class CameraSide { Left, Right }
@@ -56,7 +72,8 @@ enum class GuardNumber { OutwardAngle, CentreTolerance, CorrectionDelayMs, Maxim
 enum class BlindNumber { MinimumSpeed, MaximumSpeed, SteeringAngle }
 enum class ParkingNumber { TriggerDistance, MaximumSpeed }
 enum class OutputNumber { CornerRadius, Transparency }
-enum class ProfileNumber { Size, X, Y, OriginalX, OriginalY, OriginalWidth, OriginalHeight, Fov, CorrectedX, CorrectedY, CorrectedWidth, CorrectedHeight, Rotation }
+enum class ProfileNumber { Size, X, Y, Width, Height, OriginalX, OriginalY, OriginalWidth, OriginalHeight, Fov, CorrectedX, CorrectedY, CorrectedWidth, CorrectedHeight, Rotation }
+enum class MirrorNumber { X, Y, Width, Height, BorderWidth }
 enum class ReverseGeometryNumber { X, Y, Width, Height }
 
 internal data class NumericDraftResult(
@@ -130,6 +147,9 @@ enum class ToggleId {
     ReverseEnabled,
     ReverseElementVisible,
     ReverseFrontIntegration,
+    ReverseSwitchByGear,
+    MirrorEnabled,
+    MirrorHidden,
     ProfileCorrection,
     ProfileMirror,
     AvmShowRaw,
@@ -147,6 +167,7 @@ enum class SelectionId {
     ParkingView,
     ReverseElement,
     ReverseSource,
+    MirrorTarget,
     ProfileTarget,
     ProfileSourceAspect,
     ProfileProjection,
@@ -200,6 +221,13 @@ enum class CommandId {
     DismissDialog,
     ConfirmDialog,
     CancelOperation,
+    MirrorSavePreset,
+    MirrorLoadPreset,
+    MirrorResetPlacement,
+    MirrorResetOriginal,
+    MirrorResetCorrection,
+    MirrorResetOutput,
+    MirrorHide,
 }
 
 enum class ParkingView(val sourceIndex: Int) {
@@ -217,6 +245,10 @@ sealed interface CameraProfileId {
 
     @Immutable
     data class Reverse(val element: ReverseElement, val source: ReverseSource) : CameraProfileId
+
+    /** Independent rearview-mirror calibration and placement profile. */
+    @Immutable
+    data object Mirror : CameraProfileId
 }
 
 @Immutable
@@ -261,9 +293,51 @@ internal object UiSelectionPreferences {
     const val REVERSE_SECTION = "ui_reverse_section"
     const val REVERSE_ELEMENT = "ui_reverse_element"
     const val REVERSE_SOURCE = "ui_reverse_source"
+    const val MIRROR_SECTION = "ui_mirror_section"
     const val SETTINGS_CATEGORY = "ui_settings_category"
     const val DEBUG_MODE = "ui_debug_mode"
 }
+
+/** Shared key/action contract for the Java Mirror backend and the Compose editor. */
+object MirrorUiContract {
+    const val PREF_ENABLED = RearviewMirrorSettings.PREF_ENABLED
+    const val PREF_HIDDEN = RearviewMirrorSettings.PREF_MANUAL_HIDDEN
+    const val PREF_TARGET = RearviewMirrorSettings.PREF_TARGET
+    const val PREF_X = RearviewMirrorSettings.PREF_X
+    const val PREF_Y = RearviewMirrorSettings.PREF_Y
+    const val PREF_WIDTH = RearviewMirrorSettings.PREF_WIDTH
+    const val PREF_HEIGHT = RearviewMirrorSettings.PREF_HEIGHT
+    const val PREF_BORDER_WIDTH = RearviewMirrorSettings.PREF_BORDER_DP
+    const val PREF_BORDER_COLOR = RearviewMirrorSettings.PREF_BORDER_ARGB
+    const val PREF_PRESET_AVAILABLE = RearviewMirrorSettings.PREF_PRESET_PRESENT
+}
+
+enum class MirrorBackendActionKind {
+    SetEnabled, SetTarget, SetGeometry, SetBorder, SetCalibration, SavePreset, LoadPreset,
+    ResetPlacement, ResetOriginal, ResetCorrection, ResetOutput, HideUntilOpen,
+}
+
+/** Identifies a non-numeric Mirror calibration mutation while preserving untouched model fields. */
+enum class MirrorCalibrationField {
+    CorrectionEnabled, Projection, Mirrored, OutputMode,
+}
+
+/** Java-friendly typed intent emitted for Mirror operations. */
+data class MirrorBackendAction(
+    val kind: MirrorBackendActionKind,
+    val field: MirrorNumber? = null,
+    /** ProfileNumber identifies a single Mirror calibration value without replacing untouched
+     * persisted crop fields with a rounded UI snapshot. */
+    val profileField: ProfileNumber? = null,
+    val calibrationField: MirrorCalibrationField? = null,
+    val value: String? = null,
+    val target: DisplayTarget? = null,
+    val geometry: MirrorGeometryUiState? = null,
+    val calibration: CalibrationUiState? = null,
+    val enabled: Boolean? = null,
+    val borderArgb: Int? = null,
+    val profile: CameraProfileId = CameraProfileId.Mirror,
+)
 
 @Immutable
 data class CameraProfileUiState(
@@ -271,6 +345,8 @@ data class CameraProfileUiState(
     val size: String = "30",
     val x: String = "0",
     val y: String = "0",
+    val width: String = "30",
+    val height: String = "20",
     val frameAspect: Float = 16f / 9f,
     val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val calibration: CalibrationUiState = CalibrationUiState(),
@@ -368,6 +444,7 @@ data class ReverseGeometryUiState(
 @Immutable
 data class ReverseUiState(
     val enabled: Boolean = false,
+    val switchByGear: Boolean = false,
     val section: CameraSection = CameraSection.Parameters,
     val selectedElement: ReverseElement = ReverseElement.RearLeft,
     val selectedSource: ReverseSource = ReverseSource.Rear,
@@ -378,6 +455,32 @@ data class ReverseUiState(
     val profiles: Map<CameraProfileId.Reverse, CameraProfileUiState> = emptyMap(),
     val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val zOrder: List<ReverseElement> = listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight),
+)
+
+@Immutable
+data class MirrorGeometryUiState(
+    val x: String = "50",
+    val y: String = "0",
+    val width: String = "35",
+    val height: String = "35",
+)
+
+/** Independent Mirror state; no Reverse visibility or calibration field is shared. */
+@Immutable
+data class MirrorUiState(
+    val enabled: Boolean = false,
+    val hidden: Boolean = false,
+    val section: CameraSection = CameraSection.Parameters,
+    val target: DisplayTarget = DisplayTarget.Tablet,
+    val placement: MirrorGeometryUiState = MirrorGeometryUiState(),
+    val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
+    val borderWidth: String = "0",
+    val borderArgb: Int = 0xFF000000.toInt(),
+    val profile: CameraProfileUiState = CameraProfileUiState(size = "35"),
+    val operation: OperationUiState = OperationUiState(),
+    val presetAvailable: Boolean = false,
+    val overlayPermissionGranted: Boolean = false,
+    val clusterAvailable: Boolean = false,
 )
 
 @Immutable
@@ -435,13 +538,14 @@ data class DialogUiState(
 data class BydExtendUiState(
     val activeTab: RootTab = RootTab.Signals,
     val legacyRuntimeBlocked: Boolean = false,
-    val language: UiLanguage = UiLanguage.Ukrainian,
+    val language: UiLanguage = UiLanguage.English,
     val theme: UiTheme = UiTheme.Dark,
     val header: HeaderUiState = HeaderUiState(),
     val signals: SignalsUiState = SignalsUiState(),
     val blind: BlindUiState = BlindUiState(),
     val parking: ParkingUiState = ParkingUiState(),
     val reverse: ReverseUiState = ReverseUiState(),
+    val mirror: MirrorUiState = MirrorUiState(),
     val settings: SettingsUiState = SettingsUiState(),
     val debug: DebugUiState = DebugUiState(),
     val dialog: DialogUiState? = null,
@@ -452,6 +556,7 @@ sealed interface NumberTarget {
     data object WeatherInterval : NumberTarget
     @Immutable data class Blind(val group: CameraGroup, val field: BlindNumber) : NumberTarget
     @Immutable data class Parking(val view: ParkingView?, val field: ParkingNumber) : NumberTarget
+    @Immutable data class Mirror(val field: MirrorNumber) : NumberTarget
     @Immutable data class Profile(val profile: CameraProfileId, val field: ProfileNumber) : NumberTarget
     @Immutable data class ReverseGeometry(val element: ReverseElement, val field: ReverseGeometryNumber) : NumberTarget
     @Immutable data class Output(val field: OutputNumber) : NumberTarget
@@ -474,6 +579,14 @@ sealed interface BydExtendUiAction {
     @Immutable data class Navigate(val tab: RootTab) : BydExtendUiAction
     @Immutable data class SetLanguage(val language: UiLanguage) : BydExtendUiAction
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
+    @Immutable data class SetMirrorBorderColor(val argb: Int) : BydExtendUiAction
+    @Immutable data object RequestMirrorOverlayPermission : BydExtendUiAction
+    @Immutable data class SetMirrorGeometry(val geometry: MirrorGeometryUiState) : BydExtendUiAction
+    /** Atomic whole-display placement used by the four-corner Blind editor. */
+    @Immutable data class SetProfileGeometry(
+        val profile: CameraProfileId.Blind,
+        val geometry: MirrorGeometryUiState,
+    ) : BydExtendUiAction
     @Immutable data class Toggle(val target: ToggleTarget, val value: Boolean) : BydExtendUiAction
     /** Live, non-persisting numeric update emitted while a slider is dragged. */
     @Immutable data class PreviewNumber(
@@ -495,7 +608,7 @@ sealed interface BydExtendUiAction {
     ) : BydExtendUiAction
 }
 
-enum class CameraHostKind { Placement, CalibrationOriginal, CalibrationCorrected, CalibrationOutput, ReverseComposition, Direct, Avm }
+enum class CameraHostKind { Placement, CalibrationOriginal, CalibrationCorrected, CalibrationOutput, ReverseComposition, Mirror, Direct, Avm }
 
 @Immutable
 data class CameraHostSlot(

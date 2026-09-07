@@ -25,6 +25,28 @@ import org.junit.Test;
 /** Focused source and preference regressions for the 2-September Production patch. */
 public final class ProductionPatchIntegrationTest {
     @Test
+    public void blindCornerResizeWritesOneCompleteBoundedRectangle() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraProfileId.Blind id = new CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left);
+        CameraProbeActivity.saveProductionBlindGeometry(preferences, id,
+                new com.byd.extend.ui.MirrorGeometryUiState("12.3", "23.4", "34.5", "45.6"));
+        CameraPlacement actual = BlindSpotOverlayController.readPlacement(preferences,
+                CameraProfile.of(CameraProfile.REAR_LEFT), 1920, 1080, 16, 36, 88);
+        assertEquals(.123f, actual.x, .000001f);
+        assertEquals(.234f, actual.y, .000001f);
+        assertEquals(.345f, actual.width, .000001f);
+        assertEquals(.456f, actual.height, .000001f);
+        CameraProbeActivity.saveProductionBlindGeometry(preferences, id,
+                new com.byd.extend.ui.MirrorGeometryUiState("80", "90", "40", "30"));
+        actual = BlindSpotOverlayController.readPlacement(preferences,
+                CameraProfile.of(CameraProfile.REAR_LEFT), 1920, 1080, 16, 36, 88);
+        assertEquals(.6f, actual.x, .000001f);
+        assertEquals(.7f, actual.y, .000001f);
+        assertEquals(.4f, actual.width, .000001f);
+        assertEquals(.3f, actual.height, .000001f);
+    }
+
+    @Test
     public void parkingPlacementResetDisablesSyncWithoutFanout() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         ParkingCameraProfile selected = ParkingCameraProfile.of(ParkingCameraProfile.FL);
@@ -48,7 +70,8 @@ public final class ProductionPatchIntegrationTest {
         assertTrue(CameraProbeActivity.resetProductionProfileSettings(
                 preferences, id, CommandId.ResetProfilePlacement));
 
-        assertEquals(25, preferences.getInt(selectedPrefix + "scale", -1));
+        assertEquals(ParkingCameraSettings.DEFAULT_SCALE_PERCENT,
+                preferences.getInt(selectedPrefix + "scale", -1));
         assertEquals(0f, preferences.getFloat(selectedPrefix + "x", -1f), 0f);
         assertEquals(0f, preferences.getFloat(selectedPrefix + "y", -1f), 0f);
         assertFalse(preferences.getBoolean("parking_camera_scale_sync", true));
@@ -69,6 +92,9 @@ public final class ProductionPatchIntegrationTest {
         preferences.putFloat(BlindSpotOverlayController.positionKey(selected, false), .71f);
         preferences.putFloat(BlindSpotOverlayController.positionKey(selected, true), .63f);
         preferences.putInt(BlindSpotOverlayController.scaleKey(selected), 48);
+        preferences.putFloat(BlindSpotOverlayController.placementWidthKey(selected), .22f);
+        preferences.putFloat(BlindSpotOverlayController.placementHeightKey(selected), .33f);
+        preferences.putFloat(BlindSpotOverlayController.frameAspectKey(selected), 2.5f);
         preferences.putInt(BlindSpotOverlayController.targetKey(selected), CameraDisplayTarget.CLUSTER);
         preferences.putFloat(BlindSpotOverlayController.positionKey(sibling, false), .27f);
         preferences.putFloat(BlindSpotOverlayController.positionKey(sibling, true), .19f);
@@ -89,6 +115,10 @@ public final class ProductionPatchIntegrationTest {
                 preferences.getFloat(BlindSpotOverlayController.positionKey(selected, true), -1f), 0f);
         assertEquals(BlindSpotOverlayController.defaultScale(selected),
                 preferences.getInt(BlindSpotOverlayController.scaleKey(selected), -1));
+        assertFalse(preferences.contains(BlindSpotOverlayController.placementWidthKey(selected)));
+        assertFalse(preferences.contains(BlindSpotOverlayController.placementHeightKey(selected)));
+        assertEquals(BlindSpotOverlayController.defaultFrameAspect(selected),
+                preferences.getFloat(BlindSpotOverlayController.frameAspectKey(selected), -1), 0f);
         assertEquals(BlindSpotOverlayController.defaultTarget(selected),
                 preferences.getInt(BlindSpotOverlayController.targetKey(selected), -1));
         assertEquals(.27f, preferences.getFloat(BlindSpotOverlayController.positionKey(sibling, false), -1f), 0f);

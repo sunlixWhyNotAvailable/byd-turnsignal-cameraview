@@ -215,8 +215,8 @@ public final class CentralFrontIntegrationTest {
         assertEquals(148, CameraDewarpConfig.loadForReverseFront(target, CENTRAL).fovDegrees);
 
         // A preset exported before central Front existed has none of the
-        // central fields.  It must still import and materialize neutral
-        // defaults rather than failing validation or inheriting Rear state.
+        // central fields. It must still import and materialize the approved
+        // missing-key baseline rather than failing validation or inheriting Rear state.
         JSONObject legacyRoot = new JSONObject(CameraSettingsTransfer.exportCameraPreset(source));
         JSONObject legacySettings = legacyRoot.getJSONObject("settings");
         Set<String> centralKeys = new LinkedHashSet<>();
@@ -242,7 +242,7 @@ public final class CentralFrontIntegrationTest {
         assertEquals(0.0f, neutral.sourceCrop.left, EPSILON);
         assertEquals(0.0f, neutral.sourceCrop.top, EPSILON);
         assertEquals(1.0f, neutral.sourceCrop.width, EPSILON);
-        assertEquals(1.0f, neutral.sourceCrop.height, EPSILON);
+        assertEquals(0.85f, neutral.sourceCrop.height, EPSILON);
         CameraDewarpConfig neutralDewarp = CameraDewarpConfig
                 .loadForReverseFront(legacy, CENTRAL);
         assertFalse(neutralDewarp.enabled);

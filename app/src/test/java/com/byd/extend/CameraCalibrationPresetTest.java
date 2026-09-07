@@ -167,16 +167,16 @@ public final class CameraCalibrationPresetTest {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraProfile[] profiles = CameraProfile.values();
         float[][] raw = {
-                {0.07071858f, 0.1937456f, 0.6358514f, 0.61250883f},
-                {0.29343003f, 0.1937456f, 0.6358514f, 0.61250883f},
-                {0.4807051f, 0.32135904f, 0.46608025f, 0.5074271f},
-                {0.053414617f, 0.32259566f, 0.46438393f, 0.5072246f}
+                {0.08894998f, 0.21130778f, 0.59938854f, 0.5773845f},
+                {0.31166148f, 0.21130778f, 0.59938854f, 0.5773845f},
+                {0.47745365f, 0.318708f, 0.46608025f, 0.5074271f},
+                {0.056466103f, 0.318708f, 0.46608025f, 0.5074271f}
         };
         float[][] corrected = {
-                {0.10472285f, 0.17163458f, 0.53600174f, 0.54995716f},
-                {0.35927543f, 0.17163458f, 0.53600174f, 0.54995716f},
+                {0.10979915f, 0.18539657f, 0.53092563f, 0.54995716f},
+                {0.35927522f, 0.18539657f, 0.53092563f, 0.54995716f},
                 {0.29754817f, 0.29489756f, 0.41666844f, 0.4414549f},
-                {0.2795728f, 0.29326266f, 0.41497213f, 0.44125235f}
+                {0.28578338f, 0.29489756f, 0.41666844f, 0.4414549f}
         };
         int[] rawRotation = {-30, 30, 45, -45};
         int[] fov = {165, 165, 130, 130};
@@ -195,7 +195,7 @@ public final class CameraCalibrationPresetTest {
             assertConfig(CameraDewarpConfig.loadForProfile(preferences, profile),
                     true, fov[i], projection[i]);
             float[] positionX = {0.0f, 1.0f, 0.0f, 1.0f};
-            float[] positionY = {0.08281444f, 0.072115384f, 1.0f, 1.0f};
+            float[] positionY = {0.08281444f, 0.0721f, 1.0f, 1.0f};
             float[] frameAspect = {1.6173527f, 1.6154981f, 1.393998f, 1.3889601f};
             assertEquals(positionX[i],
                     BlindSpotOverlayController.readPosition(preferences, profile, false),
@@ -215,14 +215,14 @@ public final class CameraCalibrationPresetTest {
         assertRect(ReverseCameraLayout.destination(
                         0.42398763f, 0.0f, 0.5745265f, 1.0f), rawLayout.background);
         int[] indexes = {1, 2, 3};
-        int[] rotations = {0, 42, -42};
+        int[] rotations = {0, 35, -35};
         float[][] destinations = {
                 {0.43216026f, 0.0015433729f, 0.564868f, 0.7758869f},
-                {0.43366212f, 0.7960598f, 0.25351316f, 0.20394021f},
+                {0.4349628f, 0.7960598f, 0.25351316f, 0.20394021f},
                 {0.74648684f, 0.7960598f, 0.25351316f, 0.20394021f}
         };
         float[][] rawCrops = {
-                {0.0f, 0.0f, 1.0f, 0.8169013f},
+                {0.0f, 0.0f, 1.0f, 0.85f},
                 {0.0f, 0.25f, 0.384127f, 0.55f},
                 {0.615873f, 0.25f, 0.384127f, 0.55f}
         };
@@ -262,14 +262,20 @@ public final class CameraCalibrationPresetTest {
         DirectCameraCrop.saveCorrected(preferences, selected, siblingRaw);
         CameraDewarpConfig.saveForProfile(preferences, selected,
                 CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT));
+        preferences.putFloat(BlindSpotOverlayController.placementWidthKey(selected), 0.22f);
+        preferences.putFloat(BlindSpotOverlayController.placementHeightKey(selected), 0.18f);
         CameraCalibrationPreset.saveCamera(preferences, selected);
         Map<String, ?> slotBefore = new HashMap<>(preferences.getAll());
         CameraCalibrationPreset.resetCameraToDefault(preferences, selected);
 
-        assertGeometry(new float[]{0.07071858f, 0.1937456f, 0.6358514f, 0.61250883f},
+        assertGeometry(new float[]{0.08894998f, 0.21130778f, 0.59938854f, 0.5773845f},
                 DirectCameraCrop.load(preferences, selected));
         assertConfig(CameraDewarpConfig.loadForProfile(preferences, selected),
                 true, 165, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
+        assertFalse(preferences.contains(
+                BlindSpotOverlayController.placementWidthKey(selected)));
+        assertFalse(preferences.contains(
+                BlindSpotOverlayController.placementHeightKey(selected)));
         assertGeometry(new float[]{0.20f, 0.10f, 0.30f, 0.40f},
                 DirectCameraCrop.load(preferences, sibling));
         assertFalse(CameraDewarpConfig.loadForProfile(preferences, sibling).enabled);
@@ -920,16 +926,16 @@ public final class CameraCalibrationPresetTest {
         assertFalse(frontDefault.mirrorHorizontally);
         assertEquals(1.0f, rearDefault.width, EPSILON);
         assertEquals(1.0f, frontDefault.width, EPSILON);
-        assertEquals(0.35f, frontLeftDefault.left, EPSILON);
-        assertEquals(0.0f, frontRightDefault.left, EPSILON);
+        assertEquals(0.47745365f, frontLeftDefault.left, EPSILON);
+        assertEquals(0.056466103f, frontRightDefault.left, EPSILON);
         assertEquals(0.0f, leftDefault.left, EPSILON);
         assertEquals(0.0f, leftDefault.top, EPSILON);
         assertEquals(1.0f, leftDefault.width, EPSILON);
-        assertEquals(1.0f, leftDefault.height, EPSILON);
+        assertEquals(0.98f, leftDefault.height, EPSILON);
         assertEquals(0.0f, rightDefault.left, EPSILON);
         assertEquals(0.0f, rightDefault.top, EPSILON);
         assertEquals(1.0f, rightDefault.width, EPSILON);
-        assertEquals(1.0f, rightDefault.height, EPSILON);
+        assertEquals(0.98f, rightDefault.height, EPSILON);
         assertEquals(DirectCameraCrop.ASPECT_FREE, leftDefault.aspectMode);
         assertEquals(DirectCameraCrop.ASPECT_FREE, rightDefault.aspectMode);
         assertFalse(leftDefault.mirrorHorizontally);
@@ -1439,11 +1445,11 @@ public final class CameraCalibrationPresetTest {
             assertEquals(CameraRotation.MODE_FILL, raw.rotationMode);
             assertFalse(raw.mirrorHorizontally);
         } else if (stage == CameraCalibrationPreset.Stage.CORRECTION) {
-            assertGeometry(defaults.centered(),
+            assertGeometry(CameraDefaults.parkingCorrected(profile),
                     DirectCameraCrop.loadCorrected(preferences, profile, raw));
+            CameraDewarpConfig expected = CameraDewarpConfig.defaultForParking(profile);
             assertConfig(CameraDewarpConfig.loadForParking(preferences, profile),
-                    false, CameraDewarpConfig.DEFAULT_FOV_DEGREES,
-                    CameraDewarpConfig.DEFAULT_PROJECTION);
+                    expected.enabled, expected.fovDegrees, expected.projection);
         } else {
             assertEquals(defaults.rotationDegrees, raw.rotationDegrees);
             assertEquals(defaults.rotationMode, raw.rotationMode);
@@ -1523,35 +1529,23 @@ public final class CameraCalibrationPresetTest {
             ReverseCameraLayout.Pane defaults = ReverseCameraLayout.defaults().pane(cameraIndex);
             assertEquals(front ? frontDefaultRotation(cameraIndex) : defaults.rotationDegrees,
                     pane.rotationDegrees);
-            assertEquals(front ? ReverseCameraLayout.DISPLAY_MODE_STRETCH
+            assertEquals(front ? CameraDefaults.reverseFrontRaw(cameraIndex).rotationMode
                     : ReverseCameraLayout.DISPLAY_MODE_FILL, pane.displayMode);
             assertEquals(front ? false : true, pane.mirrorHorizontally);
         }
     }
 
     private static int frontDefaultRotation(int cameraIndex) {
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) return 0;
-        return DirectCameraCrop.defaultFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex)).rotationDegrees;
+        return CameraDefaults.reverseFrontRaw(cameraIndex).rotationDegrees;
     }
 
     private static ReverseCameraLayout.Rect frontDefaultRect(int cameraIndex) {
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
-            return ReverseCameraLayout.sourceCrop(0.0f, 0.0f, 1.0f, 1.0f);
-        }
-        DirectCameraCrop crop = DirectCameraCrop.defaultFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
+        DirectCameraCrop crop = CameraDefaults.reverseFrontRaw(cameraIndex);
         return ReverseCameraLayout.sourceCrop(crop.left, crop.top, crop.width, crop.height);
     }
 
     private static ReverseCameraLayout.Rect frontCorrectedRect(int cameraIndex) {
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
-            return frontDefaultRect(cameraIndex);
-        }
-        DirectCameraCrop raw = DirectCameraCrop.defaultFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
-        DirectCameraCrop crop = DirectCameraCrop.defaultCorrectedFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw);
+        DirectCameraCrop crop = CameraDefaults.reverseFrontCorrected(cameraIndex);
         return ReverseCameraLayout.sourceCrop(crop.left, crop.top, crop.width, crop.height);
     }
 

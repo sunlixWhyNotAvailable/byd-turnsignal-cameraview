@@ -24,7 +24,10 @@ public final class CameraSettingsTransferTest {
         // 4 Blind profiles (20 values each), 8 Parking profiles (20 each),
         // Three Reverse panes plus the optional central-front calibration
         // fields, and shared/background/front values.
-        assertEquals(367, settings.size());
+        // v2 adds the active independent Mirror group (22 fields) while
+        // Blind width/height remain optional when no explicit v2 placement
+        // has been saved.
+        assertEquals(389, settings.size());
         for (CameraProfile profile : CameraProfile.values()) {
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, false)));
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, true)));
@@ -114,7 +117,7 @@ public final class CameraSettingsTransferTest {
         source.putInt(key, 87);
         Map<String, Object> preset = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source));
-        assertEquals(1, preset.get("version"));
+        assertEquals(2, preset.get("version"));
         assertFalse(((Map<?, ?>) preset.get("settings")).containsKey(key));
 
         TestSharedPreferences target = new TestSharedPreferences();
@@ -132,17 +135,62 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
+    public void legacyV1WithoutMirrorPreservesIndependentMirrorState() throws Exception {
+        org.json.JSONObject preset = new org.json.JSONObject(
+                CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+        preset.put("version", 1);
+        org.json.JSONObject settings = preset.getJSONObject("settings");
+        java.util.ArrayList<String> mirrorKeys = new java.util.ArrayList<>();
+        java.util.Iterator<String> keys = settings.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (key.startsWith("mirror_")) mirrorKeys.add(key);
+        }
+        for (String key : mirrorKeys) settings.remove(key);
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putBoolean(RearviewMirrorSettings.PREF_ENABLED, true);
+        target.putString(RearviewMirrorSettings.PREF_TARGET, "Cluster");
+        target.putFloat(RearviewMirrorSettings.PREF_X, 12.0f);
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(preset.toString()));
+
+        assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_ENABLED, false));
+        assertEquals("Cluster", target.getString(RearviewMirrorSettings.PREF_TARGET, ""));
+        assertEquals(12.0f, target.getFloat(RearviewMirrorSettings.PREF_X, -1.0f), 0.0f);
+    }
+
+    @Test
+    public void importsPreserveLocalMirrorHideAndPreset() {
+        String activePreset = CameraSettingsTransfer.exportCameraPreset(
+                new TestSharedPreferences());
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, true);
+        RearviewMirrorSettings.writePreset(target, new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(0.10f, 0.10f, 0.40f, 0.40f),
+                CameraPlacement.of(0.15f, 0.15f, 0.35f, 0.35f),
+                true, 125, CameraDewarpConfig.PROJECTION_RECTILINEAR,
+                false, 0, CameraRotation.MODE_FIT));
+
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(activePreset));
+
+        assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, false));
+        assertTrue(RearviewMirrorSettings.preset(target) != null);
+    }
+
+    @Test
     public void invalidJsonIsRejectedBeforeMutation() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         preferences.putInt(BlindSpotOverlayController.PREF_LEFT_SCALE, 44);
         String valid = CameraSettingsTransfer.exportCameraPreset(preferences);
         Map<String, ?> before = new HashMap<>(preferences.getAll());
         assertThrows(IllegalArgumentException.class,
-                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":1", "\"version\":2")));
+                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":2", "\"version\":3")));
         assertThrows(IllegalArgumentException.class,
-                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":1", "\"version\":1.5")));
+                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":2", "\"version\":1.5")));
         assertThrows(IllegalArgumentException.class,
-                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":1", "\"version\":\"1\"")));
+                () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"version\":2", "\"version\":\"2\"")));
         assertThrows(IllegalArgumentException.class,
                 () -> CameraSettingsTransfer.parseCameraPreset(valid.replace("\"camera_enabled\":false", "\"camera_enabled\":NaN")));
         assertEquals(before, preferences.getAll());

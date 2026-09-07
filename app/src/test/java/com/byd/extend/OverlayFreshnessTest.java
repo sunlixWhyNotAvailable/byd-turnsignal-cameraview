@@ -74,10 +74,10 @@ public final class OverlayFreshnessTest {
         assertTrue(renderer.indexOf("eglDisplay, surface, presentationTimestamp)")
                 < renderer.indexOf("EGL14.eglSwapBuffers(eglDisplay, surface)"));
         assertTrue(overlay.contains(
-                "setPreserveInputFrameTimestamp(!CameraOverlayProfile.isParking(cameraId))"));
+                "setPreserveInputFrameTimestamp(cameraId < CameraOverlayProfile.BLIND_COUNT)"));
         assertTrue(view.contains("texture == getSurfaceTexture() && callback != null"));
         assertTrue(view.contains("? inputGeneration.current() : inputGeneration.frame()"));
-        assertEquals(27, CameraShellProtocol.VERSION);
+        assertEquals(28, CameraShellProtocol.VERSION);
     }
 
     private static String source(String name) throws Exception {

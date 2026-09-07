@@ -44,7 +44,8 @@ internal fun BlindScreen(
             section = state.section,
             reverse = false,
             calibrationEnabled = true,
-            previewTitle = strings.text("Попередній перегляд • $label", "Preview • $label"),
+            previewTitle = strings.format(
+                "Попередній перегляд • %1\$s", "Preview • %1\$s", "预览 • %1\$s", label),
             strings = strings,
             colors = colors,
             onSection = {
@@ -110,7 +111,8 @@ private fun BlindParameters(
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.SteeringAngle), it)) }, 0f..780f,
         identity = NumberTarget.Blind(group, BlindNumber.SteeringAngle))
     if (group == CameraGroup.Rear) {
-        SwitchLine(strings.text("Протилежна камера різкого повороту", "Opposite camera on sharp turns"), "",
+        SwitchLine(strings.text("Протилежна камера\nрізкого повороту",
+            "Opposite camera\non sharp turns"), "",
             rules.sharpTurnEnabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindSharpTurn, group), it)) }, colors)
         SwitchLine(strings.text("Показ лише за об’єкта у сліпій зоні", "Show only with a blind-spot object"), "",
@@ -145,7 +147,8 @@ internal fun ParkingScreen(
             section = state.section,
             reverse = false,
             calibrationEnabled = true,
-            previewTitle = strings.text("Попередній перегляд • $label", "Preview • $label"),
+            previewTitle = strings.format(
+                "Попередній перегляд • %1\$s", "Preview • %1\$s", "预览 • %1\$s", label),
             strings = strings,
             colors = colors,
             onSection = {

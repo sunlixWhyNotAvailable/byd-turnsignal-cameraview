@@ -8,6 +8,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ViewConfiguration;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewOutlineProvider;
@@ -46,6 +48,112 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private int warningEdge;
     private int activeTarget = -1;
     private int activeDisplayId = -1;
+    private int mirrorX;
+    private int mirrorY;
+    private int displayWidth;
+    private int displayHeight;
+    private int dragStartX;
+    private int dragStartY;
+    private float dragDownX;
+    private float dragDownY;
+    private boolean dragging;
+    private boolean longPressed;
+    private final Runnable hideMirrorGesture = this::hideMirrorFromGesture;
+
+    private void hideMirrorFromGesture() {
+        if (!visible || !active || dragging || !CameraOverlayProfile.isMirror(cameraId)) return;
+        longPressed = true;
+        setVisible(requestId, surfaceGeneration, false);
+        emit("mirror_hidden_by_gesture", "request_id", requestId,
+                "surface_generation", surfaceGeneration);
+    }
+
+    private void applyMirrorBorder(FrameLayout frame, CameraShellProtocol.OverlaySpec spec) {
+        GradientDrawable border = new GradientDrawable();
+        border.setColor(Color.TRANSPARENT);
+        border.setCornerRadius(dp(spec.cornerRadiusDp));
+        if (spec.mirrorBorderDp > 0) {
+            border.setStroke(dp(spec.mirrorBorderDp), spec.mirrorBorderArgb | 0xff000000);
+        }
+        frame.setForeground(border);
+    }
+
+    private boolean onMirrorTouch(MotionEvent event) {
+        if (!active || !visible || windowless == null) return true;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragDownX = event.getRawX();
+                dragDownY = event.getRawY();
+                dragStartX = mirrorX;
+                dragStartY = mirrorY;
+                dragging = false;
+                longPressed = false;
+                root.postDelayed(hideMirrorGesture, ViewConfiguration.getLongPressTimeout());
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                if (longPressed) return true;
+                float dx = event.getRawX() - dragDownX;
+                float dy = event.getRawY() - dragDownY;
+                int slop = ViewConfiguration.get(windowContext).getScaledTouchSlop();
+                if (!dragging && dx * dx + dy * dy > slop * slop) {
+                    dragging = true;
+                    root.removeCallbacks(hideMirrorGesture);
+                }
+                if (dragging) {
+                    mirrorX = Math.max(0, Math.min(displayWidth - windowless.width(),
+                            dragStartX + Math.round(dx)));
+                    mirrorY = Math.max(0, Math.min(displayHeight - windowless.height(),
+                            dragStartY + Math.round(dy)));
+                    try {
+                        windowless.setPosition(mirrorX, mirrorY);
+                    } catch (Exception error) {
+                        root.removeCallbacks(hideMirrorGesture);
+                        hideFailedRenderer();
+                        emit("camera_overlay_error", "stage", "mirror_move",
+                                "request_id", requestId, "error", summary(error));
+                    }
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                root.removeCallbacks(hideMirrorGesture);
+                if (dragging && !longPressed) {
+                    mirrorX = roundedMirrorPosition(mirrorX, displayWidth, windowless.width());
+                    mirrorY = roundedMirrorPosition(mirrorY, displayHeight, windowless.height());
+                    try {
+                        windowless.setPosition(mirrorX, mirrorY);
+                    } catch (Exception error) {
+                        hideFailedRenderer();
+                        emit("camera_overlay_error", "stage", "mirror_position_commit",
+                                "request_id", requestId, "error", summary(error));
+                        dragging = false;
+                        return true;
+                    }
+                    emit("mirror_position_committed", "request_id", requestId,
+                            "surface_generation", surfaceGeneration,
+                            "x", mirrorX, "y", mirrorY,
+                            "width", windowless.width(), "height", windowless.height(),
+                            "display_width", displayWidth, "display_height", displayHeight,
+                            "target", activeTarget);
+                }
+                dragging = false;
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private String cameraOwner() {
+        return CameraOverlayProfile.isMirror(cameraId) ? CameraHelperMain.CAMERA_OWNER_MIRROR
+                : CameraOverlayProfile.isParking(cameraId) ? CameraHelperMain.CAMERA_OWNER_PARKING
+                : CameraHelperMain.CAMERA_OWNER_OVERLAY;
+    }
+
+    static int roundedMirrorPosition(int position, int displaySize, int windowSize) {
+        int size = Math.max(1, displaySize);
+        int grid = Math.round(position * 1000.0f / size);
+        return Math.max(0, Math.min(size - windowSize, Math.round(grid * size / 1000.0f)));
+    }
 
     ShellCameraOverlay(
             Context context, int cameraId, BiConsumer<String, Object[]> eventSink) {
@@ -69,6 +177,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         DisplayMetrics metrics = new DisplayMetrics();
         display.getRealMetrics(metrics);
         spec.validate(metrics.widthPixels, metrics.heightPixels);
+        displayWidth = metrics.widthPixels;
+        displayHeight = metrics.heightPixels;
+        mirrorX = spec.x;
+        mirrorY = spec.y;
         if (root != null) {
             if (activeTarget != spec.target || activeDisplayId != display.getDisplayId()) {
                 quiesce("display_target_changed");
@@ -132,7 +244,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         armedFrameRequestId = arm.requestId;
         armedFrameEpoch = arm.frameArmEpoch;
         armedFrameUpdates = 0;
-        armedFrameAfterNanos = CameraOverlayProfile.isParking(cameraId) ? 0L : System.nanoTime();
+        armedFrameAfterNanos = cameraId < CameraOverlayProfile.BLIND_COUNT ? System.nanoTime() : 0L;
         armedInputGeneration = preview.cameraInputGeneration();
         completedFrameRequestId = 0;
         completedFrameEpoch = 0;
@@ -153,14 +265,21 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             }
         }
         try {
-            windowless.setVisible(nextVisible, 1.0f);
+            if (CameraOverlayProfile.isMirror(cameraId)) {
+                windowless.setStrictVisible(nextVisible, 1.0f);
+            } else {
+                windowless.setVisible(nextVisible, 1.0f);
+            }
         } catch (Exception error) {
             throw new IllegalStateException("overlay visibility update failed", error);
         }
         visible = nextVisible;
         emit("camera_overlay_visibility", "visible", nextVisible,
                 "request_id", requestId, "surface_generation", surfaceGeneration);
-        if (!nextVisible) clearWarning("overlay_hidden");
+        if (!nextVisible) {
+            root.removeCallbacks(hideMirrorGesture);
+            clearWarning("overlay_hidden");
+        }
     }
 
     void setWarning(
@@ -216,6 +335,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         FrameLayout activeRoot = root;
         if (activeRoot == null || !active) return;
         clearWarning("overlay_close");
+        activeRoot.removeCallbacks(hideMirrorGesture);
         BlindSpotCameraView activePreview = preview;
         if (activePreview != null) {
             activePreview.setCallback(null);
@@ -263,7 +383,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         nextRoot.setBackground(background);
 
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
-        nextPreview.setPreserveInputFrameTimestamp(!CameraOverlayProfile.isParking(cameraId));
+        nextPreview.setPreserveInputFrameTimestamp(cameraId < CameraOverlayProfile.BLIND_COUNT);
         nextPreview.setPaneBoundedBuffer(spec.width, spec.height, spec.bufferQuality);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
@@ -297,20 +417,29 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 Gravity.TOP | Gravity.START));
 
+        if (CameraOverlayProfile.isMirror(cameraId)) {
+            nextRoot.setClickable(true);
+            nextRoot.setOnTouchListener((view, event) -> onMirrorTouch(event));
+            applyMirrorBorder(nextRoot, spec);
+        }
+
         root = nextRoot;
         previewLayer = nextPreviewLayer;
         preview = nextPreview;
         warningGlow = nextWarningGlow;
         WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
                 windowContext, display,
-                WindowlessOverlayHost.cameraLayer(cameraId),
-                CameraOverlayProfile.isParking(cameraId) ? "parking" : "blind",
+                CameraOverlayProfile.isMirror(cameraId) ? WindowlessOverlayHost.mirrorLayer()
+                        : WindowlessOverlayHost.cameraLayer(cameraId),
+                CameraOverlayProfile.isMirror(cameraId) ? "mirror"
+                        : CameraOverlayProfile.isParking(cameraId) ? "parking" : "blind",
                 cameraId, eventSink);
         windowless = nextHost;
         nextHost.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
         try {
             nextHost.attach(nextRoot, spec.width, spec.height, spec.x, spec.y,
-                    WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName);
+                    WINDOW_TITLE + " " + CameraOverlayProfile.of(cameraId).wireName,
+                    CameraOverlayProfile.isMirror(cameraId), CameraOverlayProfile.isMirror(cameraId));
         } catch (Throwable error) {
             windowless = null;
             root = null;
@@ -347,9 +476,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();
         background.setCornerRadius(dp(spec.cornerRadiusDp));
+        if (CameraOverlayProfile.isMirror(cameraId)) applyMirrorBorder(root, spec);
         try {
             windowless.setPosition(spec.x, spec.y);
-            windowless.setVisible(false, 1.0f);
+            if (CameraOverlayProfile.isMirror(cameraId)) windowless.setStrictVisible(false, 1.0f);
+            else windowless.setVisible(false, 1.0f);
         } catch (Exception error) {
             throw new IllegalStateException("windowless geometry update failed", error);
         }
@@ -432,17 +563,13 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 || stats.contextGeneration != surfaceGeneration) return;
         emit("camera_dewarp_stats", CameraDewarpStatsEvent.overlay(
             cameraId, CameraOverlayProfile.of(cameraId).wireName,
-            CameraOverlayProfile.isParking(cameraId)
-                    ? CameraHelperMain.CAMERA_OWNER_PARKING
-                    : CameraHelperMain.CAMERA_OWNER_OVERLAY,
+            cameraOwner(),
             stats));
     }
 
     private void emitDewarpEvent(CameraDewarpRenderer.Event event) {
         emit(event.kind,
-                "camera_owner", CameraOverlayProfile.isParking(cameraId)
-                        ? CameraHelperMain.CAMERA_OWNER_PARKING
-                        : CameraHelperMain.CAMERA_OWNER_OVERLAY,
+                "camera_owner", cameraOwner(),
             "camera_profile", CameraOverlayProfile.of(cameraId).wireName,
                 "request_id", requestId,
                 "surface_generation", surfaceGeneration,
@@ -471,7 +598,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         clearWarning("dewarp_failed");
         if (root == null || windowless == null) return;
         try {
-            windowless.setVisible(false, 1.0f);
+            if (CameraOverlayProfile.isMirror(cameraId)) windowless.setStrictVisible(false, 1.0f);
+            else windowless.setVisible(false, 1.0f);
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "hide_failed_renderer",
                     "request_id", requestId, "error", summary(error));

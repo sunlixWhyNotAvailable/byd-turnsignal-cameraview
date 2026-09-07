@@ -2,6 +2,7 @@ package com.byd.extend.ui
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DebugCameraGeometryTest {
@@ -40,8 +41,8 @@ class DebugCameraGeometryTest {
             StatusUiState("Camera error", StatusTone.Error, true), english).text)
         assertFalse(cameraStatusForDisplay(
             StatusUiState("First frame ready", StatusTone.Ok, true), ukrainian).visible)
-        assertFalse(cameraStatusForDisplay(
-            StatusUiState("Waiting for first frame", StatusTone.Warning, true), english).visible)
+        assertEquals("Opening...", cameraStatusForDisplay(
+            StatusUiState("Waiting for first frame", StatusTone.Warning, true), english).text)
         assertFalse(cameraStatusForDisplay(
             StatusUiState("Camera closed", StatusTone.Neutral, true), english).visible)
     }
@@ -50,5 +51,14 @@ class DebugCameraGeometryTest {
     fun reverseSectionUsesLayoutInEnglish() {
         assertEquals("Композиція", UiStrings(UiLanguage.Ukrainian).reverseSections[1])
         assertEquals("Layout", UiStrings(UiLanguage.English).reverseSections[1])
+    }
+
+    @Test
+    fun debugHeadingUsesTheDebugTabAfterMirrorInsertion() {
+        val source = java.io.File("src/main/kotlin/com/byd/extend/ui/DebugScreen.kt").readText()
+        assertTrue(source.contains("PageTitle(strings.tabs[6]"))
+        assertEquals("Відладка", UiStrings(UiLanguage.Ukrainian).tabs[6])
+        assertEquals("Debug", UiStrings(UiLanguage.English).tabs[6])
+        assertEquals("调试", UiStrings(UiLanguage.Chinese).tabs[6])
     }
 }

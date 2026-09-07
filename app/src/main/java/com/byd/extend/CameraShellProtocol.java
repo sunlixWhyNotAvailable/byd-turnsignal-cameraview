@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 27;
+    static final int VERSION = 28;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -37,6 +37,8 @@ final class CameraShellProtocol {
     static final int TX_REVERSE_UPDATE_VISIBILITY = IBinder.FIRST_CALL_TRANSACTION + 17;
     /** Toggles the active Reverse front/rear selector for one current request. */
     static final int TX_REVERSE_TOGGLE_MODE = IBinder.FIRST_CALL_TRANSACTION + 18;
+    /** Selects one Reverse front/rear mode for one current request. */
+    static final int TX_REVERSE_SET_MODE = IBinder.FIRST_CALL_TRANSACTION + 19;
     static final int CAP_REVERSE_TOGGLE_MODE = 1;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
@@ -100,6 +102,9 @@ final class CameraShellProtocol {
     }
 
     static final class OverlaySpec {
+        // Only Mirror uses a touchable frame and an inner border. Ordinary overlays stay unchanged.
+        int mirrorBorderDp;
+        int mirrorBorderArgb = 0xff000000;
         final int cameraId;
         final int requestId;
         final int target;
@@ -268,6 +273,8 @@ final class CameraShellProtocol {
             parcel.writeInt(bufferQuality);
             parcel.writeInt(mirrorHorizontally ? 1 : 0);
             parcel.writeInt(transparencyPercent);
+            parcel.writeInt(mirrorBorderDp);
+            parcel.writeInt(mirrorBorderArgb);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
@@ -291,15 +298,22 @@ final class CameraShellProtocol {
             int bufferQuality = parcel.readInt();
             boolean mirrorHorizontally = readBoolean(parcel);
             int transparencyPercent = parcel.readInt();
-            return new OverlaySpec(
+            OverlaySpec result = new OverlaySpec(
                     cameraId, requestId, target, width, height, x, y,
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
                     rawFallbackCrop, bufferQuality, mirrorHorizontally, transparencyPercent);
+            result.mirrorBorderDp = parcel.readInt();
+            result.mirrorBorderArgb = parcel.readInt();
+            return result;
         }
 
         void validate(int displayWidth, int displayHeight) {
             CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
+            if (mirrorBorderDp < 0 || mirrorBorderDp > 16
+                    || (!CameraOverlayProfile.isMirror(cameraId) && mirrorBorderDp != 0)) {
+                throw new IllegalArgumentException("invalid Mirror border width");
+            }
             if (requestId <= 0) throw new IllegalArgumentException("invalid request id");
             if (!CameraDisplayTarget.isValid(target)) {
                 throw new IllegalArgumentException("invalid display target");
@@ -380,6 +394,8 @@ final class CameraShellProtocol {
         final CameraDewarpConfig centralFrontDewarp;
         final boolean centralFrontIntegrated;
         final boolean widgetVisible;
+        /** Enables automatic Front selection without making the selector widget visible. */
+        final boolean switchByGear;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
             this(requestId, layout, 8,
@@ -472,6 +488,30 @@ final class CameraShellProtocol {
                 CameraDewarpConfig centralFrontDewarp,
                 boolean centralFrontIntegrated,
                 boolean widgetVisible) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
+                    transparencyPercent, frontLayout, frontRawFallbackLayout,
+                    frontLeftDewarp, frontRightDewarp, frontLeftIntegrated,
+                    frontRightIntegrated, centralFrontDewarp, centralFrontIntegrated,
+                    widgetVisible, false);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp,
+                CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp,
+                int bufferQuality, int visibilityMask, int transparencyPercent,
+                ReverseCameraLayout frontLayout,
+                ReverseCameraLayout frontRawFallbackLayout,
+                CameraDewarpConfig frontLeftDewarp,
+                CameraDewarpConfig frontRightDewarp,
+                boolean frontLeftIntegrated, boolean frontRightIntegrated,
+                CameraDewarpConfig centralFrontDewarp,
+                boolean centralFrontIntegrated,
+                boolean widgetVisible,
+                boolean switchByGear) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
@@ -507,6 +547,7 @@ final class CameraShellProtocol {
                     : centralFrontDewarp;
             this.centralFrontIntegrated = centralFrontIntegrated;
             this.widgetVisible = widgetVisible;
+            this.switchByGear = switchByGear;
         }
 
         void writeToParcel(Parcel parcel) {
@@ -537,6 +578,7 @@ final class CameraShellProtocol {
             parcel.writeInt(frontLeftIntegrated ? 1 : 0);
             parcel.writeInt(frontRightIntegrated ? 1 : 0);
             parcel.writeInt(centralFrontIntegrated ? 1 : 0);
+            parcel.writeInt(switchByGear ? 1 : 0);
             writeDewarp(parcel, frontLeftDewarp);
             writeDewarp(parcel, frontRightDewarp);
             writeDewarp(parcel, centralFrontDewarp);
@@ -647,6 +689,7 @@ final class CameraShellProtocol {
             boolean frontLeftIntegrated = readBoolean(parcel);
             boolean frontRightIntegrated = readBoolean(parcel);
             boolean centralFrontIntegrated = readBoolean(parcel);
+            boolean switchByGear = readBoolean(parcel);
             CameraDewarpConfig frontLeftDewarp = readDewarp(parcel);
             CameraDewarpConfig frontRightDewarp = readDewarp(parcel);
             CameraDewarpConfig centralFrontDewarp = readDewarp(parcel);
@@ -690,7 +733,7 @@ final class CameraShellProtocol {
                     transparencyPercent, frontLayout, frontRawFallbackLayout,
                     frontLeftDewarp, frontRightDewarp,
                     frontLeftIntegrated, frontRightIntegrated,
-                    centralFrontDewarp, centralFrontIntegrated, widgetVisible);
+                    centralFrontDewarp, centralFrontIntegrated, widgetVisible, switchByGear);
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -748,7 +791,7 @@ final class CameraShellProtocol {
         }
 
         boolean requiresCentralFrontSource() {
-            return centralFrontIntegrated && widgetVisible;
+            return centralFrontIntegrated && (widgetVisible || switchByGear);
         }
 
         private static void validateFrontLayout(ReverseCameraLayout value) {

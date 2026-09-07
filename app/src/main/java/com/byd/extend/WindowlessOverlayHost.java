@@ -81,6 +81,10 @@ final class WindowlessOverlayHost {
         return (100 - transparencyPercent) / 100.0f;
     }
 
+    static int mirrorLayer() {
+        return REVERSE_LAYER - 1;
+    }
+
     void attach(View view, int nextWidth, int nextHeight, int x, int y, String title)
             throws Exception {
         attach(view, nextWidth, nextHeight, x, y, title, false, false);

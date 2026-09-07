@@ -89,9 +89,8 @@ internal fun CameraStatusPill(state: StatusUiState, strings: UiStrings, colors: 
 }
 
 internal fun cameraStatusForDisplay(state: StatusUiState, strings: UiStrings): StatusUiState = when {
-    state.visible && state.tone == StatusTone.Warning &&
-        (state.text.contains("opening", ignoreCase = true) ||
-            state.text.contains("відкрит", ignoreCase = true)) ->
+    // This slot is lifecycle-only: Warning means opening regardless of the localized/raw text.
+    state.visible && state.tone == StatusTone.Warning ->
         state.copy(text = strings.text("Відкриття...", "Opening..."))
     state.visible && state.tone == StatusTone.Error ->
         state.copy(text = strings.text("Помилка", "Error"))
@@ -107,12 +106,16 @@ internal fun ProfilePresetButtons(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
+    val saveCommand = if (profile == CameraProfileId.Mirror) CommandId.MirrorSavePreset
+        else CommandId.SaveProfilePreset
+    val loadCommand = if (profile == CameraProfileId.Mirror) CommandId.MirrorLoadPreset
+        else CommandId.LoadProfilePreset
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         listOf(
-            Triple(strings.text("Зберегти\nпресет", "Save\npreset"), CommandId.SaveProfilePreset, true),
-            Triple(strings.text("Завантажити\nпресет", "Load\npreset"), CommandId.LoadProfilePreset, available),
+            Triple(strings.text("Зберегти\nпресет", "Save\npreset"), saveCommand, true),
+            Triple(strings.text("Завантажити\nпресет", "Load\npreset"), loadCommand, available),
             Triple(strings.text("Перенести на\nпротилежну камеру", "Transfer to\nopposite camera"),
-                CommandId.TransferProfilePreset, canTransfer),
+                CommandId.TransferProfilePreset, canTransfer && profile != CameraProfileId.Mirror),
         ).forEach { (label, command, enabled) ->
             ActionButton(label, colors, Modifier.weight(1f), enabled = enabled, height = 44.dp, maxLines = 2) {
                 onAction(BydExtendUiAction.Run(command, profile))
@@ -142,6 +145,14 @@ internal fun ColumnScope.CameraProfileControls(
     fun profilePreview(field: ProfileNumber, value: String, sessionId: Long): String? {
         return onPreview(NumberTarget.Profile(profile, field), value, sessionId)
     }
+    fun placementTarget(field: ProfileNumber, mirrorField: MirrorNumber): NumberTarget =
+        if (profile == CameraProfileId.Mirror) NumberTarget.Mirror(mirrorField)
+        else NumberTarget.Profile(profile, field)
+    fun placementNumber(field: ProfileNumber, mirrorField: MirrorNumber, value: String) {
+        onAction(BydExtendUiAction.CommitNumber(placementTarget(field, mirrorField), value))
+    }
+    fun command(generic: CommandId, mirror: CommandId): CommandId =
+        if (profile == CameraProfileId.Mirror) mirror else generic
     when (section) {
         CameraSection.Parameters -> parameters()
         CameraSection.Placement -> {
@@ -150,19 +161,37 @@ internal fun ColumnScope.CameraProfileControls(
                 colors, Modifier.fillMaxWidth()) {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Profile(SelectionId.ProfileTarget, profile), it))
             }
-            NumericSetting(strings.text("Розмір", "Size"), state.size, "%", colors,
-                { profileNumber(ProfileNumber.Size, it) }, 5f..60f, adjustable = true, slider = true,
-                identity = NumberTarget.Profile(profile, ProfileNumber.Size),
-                onPreview = { value, session -> profilePreview(ProfileNumber.Size, value, session) },
-                onCommitSession = { value, session -> profileNumber(ProfileNumber.Size, value, session) })
+            if (profile is CameraProfileId.Blind || profile is CameraProfileId.Mirror) {
+                // Blind and Mirror use independent whole-display rectangles.  The old scalar
+                // Size remains readable for legacy Parking and Reverse only.
+                CoordinatePair(state.x, state.y, colors,
+                    { placementNumber(ProfileNumber.X, MirrorNumber.X, it) },
+                    { placementNumber(ProfileNumber.Y, MirrorNumber.Y, it) },
+                    placementTarget(ProfileNumber.X, MirrorNumber.X),
+                    placementTarget(ProfileNumber.Y, MirrorNumber.Y),
+                    maxX = (100f - (state.width.toFloatOrNull() ?: 5f)).coerceAtLeast(0f),
+                    maxY = (100f - (state.height.toFloatOrNull() ?: 5f)).coerceAtLeast(0f),
+                    horizontalTitle = strings.text("Горизонталь", "Horizontal"),
+                    verticalTitle = strings.text("Вертикаль", "Vertical"))
+                GeometryPair(strings.text("Ширина", "Width"), state.width,
+                    { placementNumber(ProfileNumber.Width, MirrorNumber.Width, it) },
+                    strings.text("Висота", "Height"), state.height,
+                    { placementNumber(ProfileNumber.Height, MirrorNumber.Height, it) },
+                    colors, 5f..100f, "size-pair",
+                    secondRange = 5f..100f,
+                    identityFirst = placementTarget(ProfileNumber.Width, MirrorNumber.Width),
+                    identitySecond = placementTarget(ProfileNumber.Height, MirrorNumber.Height))
+            } else {
+                NumericSetting(strings.text("Розмір", "Size"), state.size, "%", colors,
+                    { profileNumber(ProfileNumber.Size, it) }, 5f..60f, adjustable = true, slider = true,
+                    identity = NumberTarget.Profile(profile, ProfileNumber.Size),
+                    onPreview = { value, session -> profilePreview(ProfileNumber.Size, value, session) },
+                    onCommitSession = { value, session -> profileNumber(ProfileNumber.Size, value, session) })
+            }
             placementExtra()
-            CoordinatePair(state.x, state.y, colors,
-                { profileNumber(ProfileNumber.X, it) }, { profileNumber(ProfileNumber.Y, it) },
-                NumberTarget.Profile(profile, ProfileNumber.X), NumberTarget.Profile(profile, ProfileNumber.Y),
-                horizontalTitle = strings.text("Горизонталь", "Horizontal"),
-                verticalTitle = strings.text("Вертикаль", "Vertical"))
             ResetProfileButton(strings.text("Скинути розташування", "Reset placement"),
-                CommandId.ResetProfilePlacement, profile, colors, onAction)
+                command(CommandId.ResetProfilePlacement, CommandId.MirrorResetPlacement), profile,
+                colors, onAction)
         }
         CameraSection.Calibration -> {
             Segmented(strings.calibrationStages, stage.ordinal, colors, Modifier.fillMaxWidth()) {
@@ -173,8 +202,9 @@ internal fun ColumnScope.CameraProfileControls(
                     CropControls(profile, calibration.original, ProfileNumber.OriginalX, ProfileNumber.OriginalY,
                         ProfileNumber.OriginalWidth, ProfileNumber.OriginalHeight, strings, colors, onAction,
                         enabled = true)
-                    ResetProfileButton(strings.text("Скинути область", "Reset area"), CommandId.ResetProfileOriginal,
-                        profile, colors, onAction)
+                    ResetProfileButton(strings.text("Скинути область", "Reset area"),
+                        command(CommandId.ResetProfileOriginal, CommandId.MirrorResetOriginal), profile,
+                        colors, onAction)
                 }
                 CalibrationStage.Correction -> {
                     SwitchLine(strings.text("Корекція «риб’ячого ока»", "Fisheye correction"),
@@ -197,7 +227,8 @@ internal fun ColumnScope.CameraProfileControls(
                         ProfileNumber.CorrectedWidth, ProfileNumber.CorrectedHeight, strings, colors, onAction,
                         enabled = !calibration.rawFallback)
                     ResetProfileButton(strings.text("Скинути корекцію", "Reset correction"),
-                        CommandId.ResetProfileCorrection, profile, colors, onAction)
+                        command(CommandId.ResetProfileCorrection, CommandId.MirrorResetCorrection), profile,
+                        colors, onAction)
                 }
                 CalibrationStage.Output -> {
                     SwitchLine(strings.text("Віддзеркалити", "Mirror"), "", calibration.mirrored,
@@ -212,8 +243,9 @@ internal fun ColumnScope.CameraProfileControls(
                         identity = NumberTarget.Profile(profile, ProfileNumber.Rotation),
                         onPreview = { value, session -> profilePreview(ProfileNumber.Rotation, value, session) },
                         onCommitSession = { value, session -> profileNumber(ProfileNumber.Rotation, value, session) })
-                    ResetProfileButton(strings.text("Скинути вивід", "Reset output"), CommandId.ResetProfileOutput,
-                        profile, colors, onAction)
+                    ResetProfileButton(strings.text("Скинути вивід", "Reset output"),
+                        command(CommandId.ResetProfileOutput, CommandId.MirrorResetOutput), profile,
+                        colors, onAction)
                 }
             }
         }
@@ -232,17 +264,27 @@ internal fun CameraProfilePreview(
     cameraHost: @Composable (CameraHostSlot) -> Unit,
 ) {
     when (section) {
-        CameraSection.Parameters -> CameraStageFrame(strings.text("Перегляд", "Preview"), state.frameAspect, colors) {
+        CameraSection.Parameters -> CameraStageFrame(
+            strings.text("Попередній перегляд", "Preview"), state.frameAspect, colors) {
             cameraHost(CameraHostSlot(
-                CameraHostKind.Placement, profile, sourceIndex = sourceIndex))
+                if (profile == CameraProfileId.Mirror) CameraHostKind.Mirror else CameraHostKind.Placement,
+                profile, sourceIndex = sourceIndex))
         }
         CameraSection.Placement -> if (
-            profile is CameraProfileId.Blind || profile is CameraProfileId.Parking
-        ) CameraPlacementPreview(profile, sourceIndex, state, colors, cameraHost) { x, y ->
+            profile is CameraProfileId.Blind || profile is CameraProfileId.Parking ||
+                profile is CameraProfileId.Mirror
+        ) CameraPlacementPreview(profile, sourceIndex, state, colors, cameraHost, onMove = { x, y ->
             onAction(BydExtendUiAction.MoveProfile(profile, x, y))
-        } else CameraStageFrame(strings.text("Розташування", "Placement"), state.displayGeometry.aspect, colors) {
+        }, onResize = { x, y, width, height ->
+            if (profile is CameraProfileId.Blind) {
+                onAction(BydExtendUiAction.SetProfileGeometry(profile, MirrorGeometryUiState(
+                    placementPercent(x), placementPercent(y),
+                    placementPercent(width), placementPercent(height))))
+            }
+        }) else CameraStageFrame(strings.text("Розташування", "Placement"), state.displayGeometry.aspect, colors) {
             cameraHost(CameraHostSlot(
-                CameraHostKind.Placement, profile, sourceIndex = sourceIndex, editable = true))
+                if (profile == CameraProfileId.Mirror) CameraHostKind.Mirror else CameraHostKind.Placement,
+                profile, sourceIndex = sourceIndex, editable = true))
         }
         CameraSection.Calibration -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             key(CameraHostKind.CalibrationOriginal) {
@@ -263,6 +305,13 @@ internal fun CameraProfilePreview(
             }
         }
     }
+}
+
+private fun placementPercent(value: Float): String {
+    val bounded = (value * 100f).coerceIn(0f, 100f)
+    return if (bounded == bounded.toInt().toFloat()) bounded.toInt().toString()
+    else java.lang.String.format(java.util.Locale.US, "%.1f", bounded)
+        .trimEnd('0').trimEnd('.')
 }
 
 @Composable

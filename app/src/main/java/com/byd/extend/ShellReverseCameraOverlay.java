@@ -67,8 +67,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                     spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                     spec.frontLeftDewarp, spec.frontRightDewarp,
                     spec.centralFrontDewarp,
-                    spec.frontLeftIntegrated && spec.widgetVisible,
-                    spec.frontRightIntegrated && spec.widgetVisible,
+                    spec.frontLeftIntegrated && (spec.widgetVisible || spec.switchByGear),
+                    spec.frontRightIntegrated && (spec.widgetVisible || spec.switchByGear),
                     centralFrontSourceEnabled)) {
                 quiesce("dewarp_pipeline_changed");
                 throw new CameraShellProtocol.PrepareRestartRequired(
@@ -128,6 +128,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                     spec.widgetVisible);
             root.setCentralFrontSourceEnabled(centralFrontSourceEnabled);
             root.applyVisibility(spec.visibilityMask);
+            // A new automatic session starts from the safe Rear baseline.  The controller may
+            // immediately select Front for D/N/P when gear switching is enabled.
+            root.setSideMode(ReverseSideSelectorView.MODE_REAR);
             configureControls(display, size, spec.widgetVisible);
             windowless.setVisible(false, imageAlpha);
         }
@@ -251,6 +254,32 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         int next = root.sideMode() == ReverseSideSelectorView.MODE_FRONT
                 ? ReverseSideSelectorView.MODE_REAR : ReverseSideSelectorView.MODE_FRONT;
         scheduleSelectorAction(next);
+    }
+
+    /** Applies an automatic gear-selected mode without requiring the selector widget to exist. */
+    void setSideMode(int expectedRequestId, int mode) {
+        requireRequest(expectedRequestId);
+        if (!active || closing) return;
+        if (mode != ReverseSideSelectorView.MODE_REAR
+                && mode != ReverseSideSelectorView.MODE_FRONT) {
+            throw new IllegalArgumentException("invalid reverse side mode");
+        }
+        if (mode == ReverseSideSelectorView.MODE_FRONT && !frontIntegrationAvailable) {
+            emit("reverse_overlay_selector", "request_id", requestId,
+                    "mode", "front", "automatic", true,
+                    "state", "blocked", "reason", "front_integration_unavailable");
+            return;
+        }
+        if (root.sideMode() == mode) {
+            emit("reverse_overlay_selector", "request_id", requestId,
+                    "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear",
+                    "automatic", true, "state", "already_selected");
+            return;
+        }
+        root.setSideMode(mode);
+        emit("reverse_overlay_selector", "request_id", requestId,
+                "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear",
+                "automatic", true, "state", "changed");
     }
 
     private void quiesce(String reason) {
@@ -416,8 +445,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                 spec.frontLeftDewarp, spec.frontRightDewarp,
                 spec.centralFrontDewarp,
-                spec.frontLeftIntegrated && spec.widgetVisible,
-                spec.frontRightIntegrated && spec.widgetVisible,
+                spec.frontLeftIntegrated && (spec.widgetVisible || spec.switchByGear),
+                spec.frontRightIntegrated && (spec.widgetVisible || spec.switchByGear),
                 centralFrontSourceEnabled);
         nextRoot.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                 spec.centralFrontDewarp);

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Match HUD's 75% linear artwork span without resampling or changing the artwork. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/byd_extend_launcher"
+    android:insetLeft="12.5%"
+    android:insetTop="12.5%"
+    android:insetRight="12.5%"
+    android:insetBottom="12.5%" />

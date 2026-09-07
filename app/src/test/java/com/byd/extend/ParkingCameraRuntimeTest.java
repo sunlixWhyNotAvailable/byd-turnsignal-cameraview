@@ -13,7 +13,8 @@ import org.junit.Test;
 public final class ParkingCameraRuntimeTest {
     @Test
     public void parkingOverlayIdsAreSeparateAndOrdered() {
-        assertEquals(12, CameraOverlayProfile.COUNT);
+        assertEquals(13, CameraOverlayProfile.COUNT);
+        assertEquals(4, CameraOverlayProfile.PARKING_OFFSET);
         assertEquals(CameraOverlayProfile.PARKING_OFFSET,
                 CameraOverlayProfile.overlayIdForParking(ParkingCameraProfile.FL));
         assertEquals("FL", CameraOverlayProfile.of(4).wireName);
@@ -26,6 +27,9 @@ public final class ParkingCameraRuntimeTest {
         assertEquals(11, CameraOverlayProfile.overlayIdForParking(ParkingCameraProfile.RIGHT));
         assertEquals("Left", CameraOverlayProfile.of(10).wireName);
         assertEquals("Right", CameraOverlayProfile.of(11).wireName);
+        assertEquals(12, CameraOverlayProfile.MIRROR_ID);
+        assertEquals("rearview_mirror",
+                CameraOverlayProfile.of(CameraOverlayProfile.MIRROR_ID).wireName);
     }
 
     @Test
@@ -33,20 +37,22 @@ public final class ParkingCameraRuntimeTest {
         TestSharedPreferences preferences = new TestSharedPreferences();
         preferences.edit().putInt(CameraBufferQuality.PREF_QUALITY,
                 CameraBufferQuality.ORIGINAL).apply();
-        int[] x = {0, 720, 1440, 1440, 720, 0, 0, 1440};
-        int[] y = {0, 0, 0, 720, 720, 720, 360, 360};
+        int[] x = {0, 816, 1632, 1632, 816, 0, 0, 1632};
+        int[] y = {0, 0, 0, 864, 864, 864, 432, 432};
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             CameraShellProtocol.OverlaySpec spec = ParkingCameraController.buildOverlaySpec(
                     profile, profile.id + 1, CameraDisplayTarget.TABLET,
                     1920, 1080, preferences);
             assertEquals(CameraOverlayProfile.overlayIdForParking(profile.id), spec.cameraId);
-            assertEquals(480, spec.width);
-            assertEquals(360, spec.height);
+            assertEquals(288, spec.width);
+            assertEquals(216, spec.height);
             assertEquals(x[profile.id], spec.x);
             assertEquals(y[profile.id], spec.y);
             assertEquals(CameraDewarpConfig.lensFor(profile), spec.dewarp.lens);
             assertEquals(CameraBufferQuality.ORIGINAL, spec.bufferQuality);
-            assertEquals(profile.id == ParkingCameraProfile.REAR,
+            assertEquals(profile.id == ParkingCameraProfile.RR
+                            || profile.id == ParkingCameraProfile.REAR
+                            || profile.id == ParkingCameraProfile.RL,
                     spec.mirrorHorizontally);
             spec.validate(1920, 1080);
         }

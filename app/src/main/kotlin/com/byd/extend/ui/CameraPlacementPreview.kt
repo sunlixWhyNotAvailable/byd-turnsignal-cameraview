@@ -41,26 +41,49 @@ internal fun CameraPlacementPreview(
     colors: UiPalette,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
     onMove: (Float, Float) -> Unit,
+    onResize: (Float, Float, Float, Float) -> Unit = { _, _, _, _ -> },
+    editable: Boolean = true,
 ) {
     val storedX = state.x.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
     val storedY = state.y.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
     val dragX = remember(profile) { mutableFloatStateOf(storedX) }
     val dragY = remember(profile) { mutableFloatStateOf(storedY) }
+    // Existing users may have a persisted Blind window below the new 5% editor minimum. Keep
+    // that geometry visible on entry; the 5% floor is applied only by an explicit resize.
+    fun storedFraction(value: String, fallback: Float): Float =
+        value.toFloatOrNull()?.div(100f)?.takeIf { it.isFinite() && it > 0f }
+            ?.coerceAtMost(1f) ?: fallback
+    val fallbackWidth = storedFraction(state.size, .3f)
+    val storedWidth = storedFraction(state.width, fallbackWidth)
+    val storedHeight = storedFraction(state.height,
+        (storedWidth * state.displayGeometry.aspect / state.frameAspect.coerceAtLeast(.0001f))
+            .coerceIn(Float.MIN_VALUE, 1f))
+    val dragWidth = remember(profile) { mutableFloatStateOf(storedWidth) }
+    val dragHeight = remember(profile) { mutableFloatStateOf(storedHeight) }
     val latestOnMove by rememberUpdatedState(onMove)
     val latestStoredX by rememberUpdatedState(storedX)
     val latestStoredY by rememberUpdatedState(storedY)
-    LaunchedEffect(profile, state.x, state.y) {
+    val latestOnResize by rememberUpdatedState(onResize)
+    LaunchedEffect(profile, state.x, state.y, state.width, state.height) {
         dragX.floatValue = storedX
         dragY.floatValue = storedY
+        dragWidth.floatValue = storedWidth
+        dragHeight.floatValue = storedHeight
     }
     val display = state.displayGeometry
-    val geometry = productionPlacementGeometry(
+    val independentRectangle = profile is CameraProfileId.Blind || profile is CameraProfileId.Mirror
+    val geometry = if (independentRectangle) null else productionPlacementGeometry(
         profile, display, state.size.toFloatOrNull() ?: 30f, state.frameAspect,
         dragX.floatValue, dragY.floatValue)
-    val canvasWidth = geometry.canvasWidth.toFloat().coerceAtLeast(1f)
-    val canvasHeight = geometry.canvasHeight.toFloat().coerceAtLeast(1f)
-    val placement = PlacementFractions(
-        width = geometry.width / canvasWidth,
+    val canvasWidth = (geometry?.canvasWidth ?: display.width).toFloat().coerceAtLeast(1f)
+    val canvasHeight = (geometry?.canvasHeight ?: display.height).toFloat().coerceAtLeast(1f)
+    val placement = if (independentRectangle) PlacementFractions(
+        width = dragWidth.floatValue,
+        height = dragHeight.floatValue,
+        left = dragX.floatValue.coerceIn(0f, 1f - dragWidth.floatValue),
+        top = dragY.floatValue.coerceIn(0f, 1f - dragHeight.floatValue),
+    ) else PlacementFractions(
+        width = geometry!!.width / canvasWidth,
         height = geometry.height / canvasHeight,
         left = geometry.left / canvasWidth,
         top = geometry.top / canvasHeight,
@@ -91,8 +114,18 @@ internal fun CameraPlacementPreview(
                     canvasDpHeight * placement.height,
                 ).clip(RoundedCornerShape(8.dp))
                     .border(2.dp, colors.accent, RoundedCornerShape(8.dp))
-                    .pointerInput(profile, placement.width, placement.height, canvasWidthPx, canvasHeightPx) {
+                    .then(if (!editable) Modifier else Modifier.pointerInput(profile, "move") {
+                        var startX = 0f
+                        var startY = 0f
+                        var totalX = 0f
+                        var totalY = 0f
                         detectDragGestures(
+                            onDragStart = {
+                                startX = dragX.floatValue
+                                startY = dragY.floatValue
+                                totalX = 0f
+                                totalY = 0f
+                            },
                             onDragEnd = { latestOnMove(dragX.floatValue, dragY.floatValue) },
                             onDragCancel = {
                                 dragX.floatValue = latestStoredX
@@ -100,6 +133,15 @@ internal fun CameraPlacementPreview(
                             },
                         ) { change, amount ->
                             change.consume()
+                            totalX += amount.x
+                            totalY += amount.y
+                            if (independentRectangle) {
+                                dragX.floatValue = (startX + totalX / canvasWidthPx)
+                                    .coerceIn(0f, 1f - dragWidth.floatValue)
+                                dragY.floatValue = (startY + totalY / canvasHeightPx)
+                                    .coerceIn(0f, 1f - dragHeight.floatValue)
+                                return@detectDragGestures
+                            }
                             val displayScaleX = canvasWidthPx / display.width.coerceAtLeast(1)
                             val displayScaleY = canvasHeightPx / display.height.coerceAtLeast(1)
                             val horizontalMargin = if (profile is CameraProfileId.Blind) {
@@ -108,24 +150,106 @@ internal fun CameraPlacementPreview(
                             val verticalTop = if (profile is CameraProfileId.Blind) display.marginTop else 0
                             val verticalBottom = if (profile is CameraProfileId.Blind) display.marginBottom else 0
                             val remainingX = (display.width - horizontalMargin * 2
-                                - geometry.width).coerceAtLeast(0) * displayScaleX
+                                - geometry!!.width).coerceAtLeast(0) * displayScaleX
                             val remainingY = (display.height - verticalTop - verticalBottom
                                 - geometry.height).coerceAtLeast(0) * displayScaleY
                             dragX.floatValue = if (remainingX > 0f) {
-                                (dragX.floatValue + amount.x / remainingX).coerceIn(0f, 1f)
+                                (startX + totalX / remainingX).coerceIn(0f, 1f)
                             } else 0f
                             dragY.floatValue = if (remainingY > 0f) {
-                                (dragY.floatValue + amount.y / remainingY).coerceIn(0f, 1f)
+                                (startY + totalY / remainingY).coerceIn(0f, 1f)
                             } else 0f
                         }
-                    }.testTag("placement-frame"),
+                    }).testTag("placement-frame"),
             ) {
                 cameraHost(CameraHostSlot(
-                    CameraHostKind.Placement,
+                    if (profile == CameraProfileId.Mirror) CameraHostKind.Mirror else CameraHostKind.Placement,
                     profile,
                     sourceIndex = sourceIndex,
-                    editable = true,
+                    editable = editable,
                 ))
+                if (independentRectangle && editable) {
+                    // Four visible handles keep the opposite corner fixed.  Gesture deltas are
+                    // accumulated in the mutable fractions and only formatted on gesture end.
+                    listOf(
+                        0 to Alignment.TopStart,
+                        1 to Alignment.TopEnd,
+                        2 to Alignment.BottomStart,
+                        3 to Alignment.BottomEnd,
+                    ).forEach { (corner, alignment) ->
+                        Box(Modifier.align(alignment).size(24.dp)
+                            .clip(RoundedCornerShape(5.dp)).background(colors.accent)
+                            .border(1.dp, colors.borderStrong, RoundedCornerShape(5.dp))
+                            .pointerInput(profile, "resize", corner) {
+                                var startX = 0f
+                                var startY = 0f
+                                var startWidth = 0f
+                                var startHeight = 0f
+                                var totalX = 0f
+                                var totalY = 0f
+                                detectDragGestures(
+                                    onDragStart = {
+                                        startX = dragX.floatValue
+                                        startY = dragY.floatValue
+                                        startWidth = dragWidth.floatValue
+                                        startHeight = dragHeight.floatValue
+                                        totalX = 0f
+                                        totalY = 0f
+                                    },
+                                    onDragEnd = {
+                                        latestOnResize(
+                                            dragX.floatValue, dragY.floatValue,
+                                            dragWidth.floatValue, dragHeight.floatValue,
+                                        )
+                                    },
+                                    onDragCancel = {
+                                        dragX.floatValue = latestStoredX
+                                        dragY.floatValue = latestStoredY
+                                        dragWidth.floatValue = storedWidth
+                                        dragHeight.floatValue = storedHeight
+                                    },
+                                ) { change, amount ->
+                                    change.consume()
+                                    totalX += amount.x
+                                    totalY += amount.y
+                                    val dx = totalX / canvasWidthPx.coerceAtLeast(1f)
+                                    val dy = totalY / canvasHeightPx.coerceAtLeast(1f)
+                                    val left = corner == 0 || corner == 2
+                                    val top = corner == 0 || corner == 1
+                                    if (left) {
+                                        val right = startX + startWidth
+                                        if (right >= .05f) {
+                                            val nextWidth = (startWidth - dx).coerceIn(.05f, right)
+                                            dragWidth.floatValue = nextWidth
+                                            dragX.floatValue = right - nextWidth
+                                        }
+                                    } else {
+                                        val available = 1f - startX
+                                        if (available >= .05f) {
+                                            dragWidth.floatValue = (startWidth + dx)
+                                                .coerceIn(.05f, available)
+                                            dragX.floatValue = startX
+                                        }
+                                    }
+                                    if (top) {
+                                        val bottom = startY + startHeight
+                                        if (bottom >= .05f) {
+                                            val nextHeight = (startHeight - dy).coerceIn(.05f, bottom)
+                                            dragHeight.floatValue = nextHeight
+                                            dragY.floatValue = bottom - nextHeight
+                                        }
+                                    } else {
+                                        val available = 1f - startY
+                                        if (available >= .05f) {
+                                            dragHeight.floatValue = (startHeight + dy)
+                                                .coerceIn(.05f, available)
+                                            dragY.floatValue = startY
+                                        }
+                                    }
+                                }
+                            }.testTag("placement-resize-handle-$corner"))
+                    }
+                }
             }
         }
     }

@@ -101,6 +101,12 @@ final class CameraCalibrationPreset {
                         BlindSpotOverlayController.defaultTarget(profile))
                 .putFloat(BlindSpotOverlayController.frameAspectKey(profile),
                         BlindSpotOverlayController.defaultFrameAspect(profile))
+                // A full profile placement reset deliberately returns to the
+                // legacy anchor/scale representation.  Remove the v2
+                // independent dimensions so readPlacement() cannot continue
+                // to prefer stale width/height values over these defaults.
+                .remove(BlindSpotOverlayController.placementWidthKey(profile))
+                .remove(BlindSpotOverlayController.placementHeightKey(profile))
                 .apply();
     }
 
@@ -150,10 +156,11 @@ final class CameraCalibrationPreset {
                 break;
             }
             case CORRECTION:
-                DirectCameraCrop.writeCorrected(editor, profile, defaults.centered());
+                DirectCameraCrop.writeCorrected(editor, profile,
+                        defaults.withGeometry(CameraDefaults.parkingCorrected(profile)));
                 editor.remove(DirectCameraCrop.correctedAspectKey(profile));
                 CameraDewarpConfig.writeForParking(editor, profile,
-                        CameraDewarpConfig.disabled(CameraDewarpConfig.lensFor(profile)));
+                        CameraDewarpConfig.defaultForParking(profile));
                 break;
             case OUTPUT:
                 DirectCameraCrop.writeOutputTransform(editor, profile,
@@ -286,11 +293,7 @@ final class CameraCalibrationPreset {
                         editor, cameraIndex, rect(defaults), false);
                 break;
             case CORRECTION:
-                DirectCameraCrop corrected = cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX
-                        ? defaults
-                        : DirectCameraCrop.defaultCorrectedFor(
-                                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex),
-                                defaults);
+                DirectCameraCrop corrected = CameraDefaults.reverseFrontCorrected(cameraIndex);
                 ReverseCameraController.writeFrontSourceCrop(
                         editor, cameraIndex, rect(corrected), true);
                 CameraDewarpConfig.writeForReverseFront(
@@ -302,7 +305,7 @@ final class CameraCalibrationPreset {
                                 cameraIndex, "rotation_degrees"), defaults.rotationDegrees)
                         .putInt(ReverseCameraController.frontPaneSettingKey(
                                 cameraIndex, "display_mode"),
-                                ReverseCameraLayout.DISPLAY_MODE_STRETCH)
+                                defaults.rotationMode)
                         .putBoolean(ReverseCameraController.frontPaneSettingKey(
                                 cameraIndex, "mirror"), defaults.mirrorHorizontally);
                 break;
@@ -313,13 +316,7 @@ final class CameraCalibrationPreset {
     }
 
     private static DirectCameraCrop defaultReverseFrontCrop(int cameraIndex) {
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
-            return DirectCameraCrop.of(0.0f, 0.0f, 1.0f, 1.0f,
-                    DirectCameraCrop.ASPECT_FREE, CameraRotation.DEFAULT_DEGREES,
-                    CameraRotation.MODE_FIT);
-        }
-        return DirectCameraCrop.defaultFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
+        return CameraDefaults.reverseFrontRaw(cameraIndex);
     }
 
     private static ReverseCameraLayout.Rect rect(DirectCameraCrop crop) {

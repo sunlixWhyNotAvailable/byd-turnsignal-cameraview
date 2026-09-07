@@ -245,7 +245,7 @@ public final class CameraBufferSizingTest {
                 ReverseCameraLayout.defaults(), 1920, 990);
 
         assertArrayEquals(new int[]{1084, 768}, bounds[0]);
-        assertArrayEquals(new int[]{486, 202}, bounds[1]);
+        assertArrayEquals(new int[]{487, 202}, bounds[1]);
         assertArrayEquals(new int[]{487, 202}, bounds[2]);
         assertArrayEquals(new int[]{1084, 734},
                 BlindSpotCameraView.paneBoundedBufferSize(bounds[0][0], bounds[0][1]));

@@ -1,6 +1,7 @@
 package com.byd.extend.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.LocalParking
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -37,7 +39,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -49,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
@@ -61,12 +68,15 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
 import com.byd.extend.R
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 
 private val rootIcons: List<ImageVector> = listOf(
     Icons.AutoMirrored.Outlined.CompareArrows, Icons.Outlined.Visibility, Icons.Outlined.LocalParking,
-    Icons.Outlined.Videocam, Icons.Outlined.Settings, Icons.Outlined.BugReport,
+    Icons.Outlined.Videocam, Icons.Outlined.DirectionsCar, Icons.Outlined.Settings,
+    Icons.Outlined.BugReport,
 )
-private val rootWeights = listOf(1.25f, 1.15f, 1.15f, 1.25f, .8f, .6f)
+private val rootWeights = List(7) { 1f }
 
 /**
  * Production UI shell. Native camera content is supplied by the Activity and never enters Compose
@@ -80,9 +90,40 @@ fun BydExtendApp(
     cameraHost: @Composable (CameraHostSlot) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
 ) {
-    val strings = remember(state.language) { UiStrings(state.language) }
+    val context = LocalContext.current
+    val strings = remember(state.language, context) { UiStrings(state.language, context) }
     val colors = remember(state.theme) { palette(state.theme) }
-    val primaryScroll = rememberScrollState()
+    val scrollKey = state.scrollKey()
+    val savedScrollOffset = remember(scrollKey) { RuntimeUiSession.INSTANCE.scrollOffset(scrollKey) }
+    val primaryScroll = remember(scrollKey) {
+        // ScrollState clamps its initial value before the first real content measurement.  The
+        // saved offset is restored explicitly below once a non-empty range exists.
+        ScrollState(savedScrollOffset)
+    }
+    var scrollRestored by remember(scrollKey, savedScrollOffset) {
+        mutableStateOf(savedScrollOffset == 0)
+    }
+    LaunchedEffect(primaryScroll, scrollKey, savedScrollOffset) {
+        if (savedScrollOffset > 0) {
+            // ScrollState starts with Int.MAX_VALUE before its first layout.  It is a sentinel,
+            // not a measured scroll range; applying the saved value against it can then be
+            // clamped back to zero by the first real measurement. A zero range can also be a
+            // temporary short layout before runtime status arrives. Keep the saved offset dormant
+            // until scrolling is possible instead of arming persistence with a placeholder zero.
+            val measuredMax = primaryScroll.maxValue.takeIf { RuntimeUiSession.canRestoreScroll(it) }
+                ?: snapshotFlow { primaryScroll.maxValue }
+                    .filter { RuntimeUiSession.canRestoreScroll(it) }.first()
+            primaryScroll.scrollTo(savedScrollOffset.coerceAtMost(measuredMax))
+        }
+        scrollRestored = true
+    }
+    LaunchedEffect(primaryScroll, scrollKey) {
+        snapshotFlow { primaryScroll.value to primaryScroll.maxValue }.collect { (value, max) ->
+            if (scrollRestored && max > 0 && max != Int.MAX_VALUE) {
+                RuntimeUiSession.INSTANCE.rememberScrollOffset(scrollKey, value, max)
+            }
+        }
+    }
     CompositionLocalProvider(LocalPrimaryScroll provides primaryScroll) {
         Box(Modifier.fillMaxSize().background(colors.background).semantics { testTagsAsResourceId = true }) {
             Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
@@ -94,6 +135,7 @@ fun BydExtendApp(
                         RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost, onPreview)
+                        RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
                             strings, colors, onAction, onPreview)
                         RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, onAction, cameraHost)
@@ -104,6 +146,17 @@ fun BydExtendApp(
             state.dialog?.let { AppDialog(it, strings, colors, onAction) }
         }
     }
+}
+
+/** Semantic viewport identity; persisted selections remain separate from this process-only state. */
+private fun BydExtendUiState.scrollKey(): String = when (activeTab) {
+    RootTab.Signals -> "signals"
+    RootTab.Blind -> "blind:${blind.selectedGroup}:${blind.selectedSide}:${blind.section}"
+    RootTab.Parking -> "parking:${parking.selectedView}:${parking.section}"
+    RootTab.Reverse -> "reverse:${reverse.selectedElement}:${reverse.selectedSource}:${reverse.section}"
+    RootTab.Mirror -> "mirror:${mirror.target}:${mirror.section}"
+    RootTab.Settings -> "settings:${settings.category}"
+    RootTab.Debug -> "debug:${debug.mode}"
 }
 
 @Composable
@@ -128,9 +181,12 @@ private fun AppHeader(
                 if (state.header.location.visible || state.header.weatherEnabled) {
                     HeaderStatusPill(state.header.location, strings.text("Геолокація", "Location"), strings, colors)
                 }
-                Segmented(if (strings.ukrainian) listOf("Укр", "Англ") else listOf("UA", "ENG"),
-                    if (state.language == UiLanguage.Ukrainian) 0 else 1, colors, Modifier.width(138.dp)) {
-                    onAction(BydExtendUiAction.SetLanguage(if (it == 0) UiLanguage.Ukrainian else UiLanguage.English))
+                Segmented(when (state.language) {
+                    UiLanguage.Ukrainian -> listOf("Укр", "Англ", "中文")
+                    UiLanguage.Chinese -> listOf("У克", "英", "中文")
+                    UiLanguage.English -> listOf("UA", "ENG", "中文")
+                }, state.language.ordinal, colors, Modifier.width(190.dp)) {
+                    onAction(BydExtendUiAction.SetLanguage(UiLanguage.entries[it]))
                 }
                 Segmented(listOf(strings.text("Темна", "Dark"), strings.text("Світла", "Light")),
                     if (state.theme == UiTheme.Dark) 0 else 1, colors, Modifier.width(138.dp)) {
@@ -248,25 +304,27 @@ private fun SignalsScreen(
 
 @Composable
 private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPalette, onSelect: (RootTab) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(8.dp))
+    Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(8.dp))
         .border(1.dp, colors.border, RoundedCornerShape(8.dp)).background(colors.panel)
         .padding(6.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         RootTab.entries.forEachIndexed { index, tab ->
             val selected = active == tab
             val press = rememberPressFeedback()
             val visualClick = rememberVisualFirstClick { onSelect(tab) }
-            Row(Modifier.weight(rootWeights[index]).fillMaxHeight().clip(RoundedCornerShape(6.dp))
+            Column(Modifier.weight(rootWeights[index]).fillMaxHeight().clip(RoundedCornerShape(6.dp))
                 .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
                 .background(pressBackground(if (selected) colors.active else Color.Transparent, colors, press.pressed))
                 .then(press.modifier)
                 .clickable(interactionSource = press.interactionSource, indication = null,
                     role = Role.Tab) { visualClick() },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center) {
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center) {
                 Icon(rootIcons[index], null, tint = if (selected) colors.text else colors.muted, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(9.dp))
+                Spacer(Modifier.height(2.dp))
                 Text(strings.tabs[index], color = if (selected) colors.text else colors.muted, fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    lineHeight = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -310,8 +368,8 @@ private fun AppDialog(
                     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                         .background(colors.accent.copy(alpha = if (colors.dark) .22f else .12f))
                         .border(1.dp, colors.yellow.copy(alpha = .55f), RoundedCornerShape(8.dp)).padding(14.dp)) {
-                        Text(strings.text("Установіть Disable background Apps -> BYD HUD = OFF",
-                            "Set Disable background Apps -> BYD HUD = OFF"),
+                        Text(strings.text("Установіть Disable background Apps -> BYD Extend = OFF",
+                            "Set Disable background Apps -> BYD Extend = OFF"),
                             color = if (colors.dark) colors.yellow else colors.text,
                             fontWeight = FontWeight.Bold, fontSize = 16.sp, lineHeight = 20.sp)
                     }

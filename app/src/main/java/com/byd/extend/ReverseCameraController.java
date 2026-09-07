@@ -8,6 +8,7 @@ import android.view.Surface;
 import org.json.JSONObject;
 
 import java.util.Arrays;
+import java.util.ArrayDeque;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -19,6 +20,7 @@ final class ReverseCameraController {
     static final String PREF_WIDGET_VISIBLE = "reverse_camera_widget_visible";
     static final String PREF_CENTRAL_FRONT_INTEGRATED =
             "reverse_camera_front_1_integrated";
+    static final String PREF_SWITCH_BY_GEAR = "reverse_camera_switch_by_gear";
     static final boolean DEFAULT_ENABLED = false;
     static final boolean DEFAULT_VISIBLE = true;
     static final boolean DEFAULT_WIDGET_VISIBLE = false;
@@ -43,6 +45,11 @@ final class ReverseCameraController {
     private CameraHelperMain.HelperBinder helper;
     private boolean gearValid;
     private boolean reverse;
+    private boolean panoVisible;
+    private int pendingAutomaticMode = -1;
+    private final DirectionState direction = new DirectionState();
+    private final ReverseGearSessionPolicy.State sessionPolicy =
+            new ReverseGearSessionPolicy.State();
     private boolean stopping;
     private boolean retryScheduled;
     private boolean cleanupRetryScheduled;
@@ -80,10 +87,16 @@ final class ReverseCameraController {
 
     void settingsChanged() {
         if (!enabled()) {
+            sessionPolicy.eligible = false;
+            pendingAutomaticMode = -1;
             stop("disabled", false);
             return;
         }
-        if (activeRequestId != 0 || stopping) stop("settings_changed", false);
+        updateSessionPolicy(sessionPolicy.raw, sessionPolicy.gearValid, "settings_changed");
+        if (activeRequestId != 0 || stopping) {
+            if (switchByGear() && pendingAutomaticMode < 0) pendingAutomaticMode = direction.effectiveMode();
+            stop("settings_changed", false);
+        }
         else evaluate();
     }
 
@@ -96,7 +109,7 @@ final class ReverseCameraController {
     void requestSteeringToggle(long ownerEpoch) {
         CameraHelperMain.HelperBinder activeHelper = helper;
         if (shutdown || stopping || activeRequestId <= 0 || !visible
-                || activeHelper == null || !enabled() || !gearValid || !reverse
+                || activeHelper == null || !enabled() || !sessionPolicy.eligible
                 || !loadWidgetVisible(settings) || !hasAnyFrontIntegration(settings)) return;
         if (ownerEpoch < 0) return;
         if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
@@ -135,19 +148,42 @@ final class ReverseCameraController {
                 gearValid = event.optBoolean("valid", false)
                         && event.optBoolean("listener_ok", false);
                 reverse = gearValid && event.optBoolean("reverse", false);
-                emit("reverse_camera_decision", "gear_valid", gearValid,
-                        "reverse", reverse, "enabled", enabled(),
-                        "gear_raw", event.optInt("raw", -1));
-                evaluate();
+                applySourceState(event.optInt("raw", -1), gearValid, "gear_state");
+            } else if ("oem_camera_visibility".equals(kind)) {
+                boolean known = event.has("valid")
+                        ? event.optBoolean("valid", false)
+                        : event.has("known") && event.optBoolean("known", false);
+                if (!known) {
+                    panoVisible = false;
+                    applySourceState(sessionPolicy.raw, sessionPolicy.gearValid,
+                            event.optString("source_event", "pano_visibility_invalid"));
+                    return;
+                }
+                panoVisible = event.optBoolean("visible", false);
+                applySourceState(sessionPolicy.raw, sessionPolicy.gearValid,
+                        event.optString("source_event", "pano_visibility"));
+            } else if ("reverse_overlay_selector".equals(kind)) {
+                int requestId = event.optInt("request_id", -1);
+                if (activeRequestId > 0 && requestId == activeRequestId) {
+                    String mode = event.optString("mode", "");
+                    int selected = "front".equals(mode) ? ReverseGearSessionPolicy.MODE_FRONT
+                            : "rear".equals(mode) ? ReverseGearSessionPolicy.MODE_REAR : -1;
+                    if (selected >= 0) direction.accept(selected,
+                            event.optBoolean("automatic", false),
+                            "blocked".equals(event.optString("state", "")));
+                }
             } else if ("reverse_gear_listener".equals(kind)
                     && !event.optBoolean("listener_ok", false)) {
                 gearValid = false;
                 reverse = false;
-                stop("gear_listener_unavailable", false);
+                applySourceState(-1, false, "gear_listener_unavailable");
             } else if ("helper_death".equals(kind)
                     || "helper_ping_failed".equals(kind)) {
                 gearValid = false;
                 reverse = false;
+                panoVisible = false;
+                ReverseGearSessionPolicy.update(sessionPolicy, switchByGear(), false, -1, false);
+                pendingAutomaticMode = -1;
                 stop("gear_helper_unavailable", false);
             } else if ("camera_opened".equals(kind)
                     && "reverse".equals(event.optString("camera_owner"))) {
@@ -190,6 +226,9 @@ final class ReverseCameraController {
                         "generations", Arrays.toString(generations),
                         "reason", "camera_shell_died");
                 boolean pending = shellRecovery.onDeath(epoch, recoveryWanted());
+                if (pending && switchByGear() && pendingAutomaticMode < 0) {
+                    pendingAutomaticMode = direction.effectiveMode();
+                }
                 resetAfterShellDeath();
                 if (pending) pendingShellRecoveryRequestId = invalidatedRequestId;
                 else finishShellRecovery(invalidatedRequestId,
@@ -211,6 +250,34 @@ final class ReverseCameraController {
         }
     }
 
+    private void applySourceState(int raw, boolean valid, String source) {
+        updateSessionPolicy(raw, valid, source);
+        evaluate();
+    }
+
+    private void updateSessionPolicy(int raw, boolean valid, String source) {
+        boolean switching = switchByGear();
+        ReverseGearSessionPolicy.Decision decision = ReverseGearSessionPolicy.update(
+                sessionPolicy, switching, valid, raw, panoVisible);
+        gearValid = sessionPolicy.gearValid;
+        reverse = gearValid && sessionPolicy.gear == ReverseGearSessionPolicy.Gear.REVERSE;
+        emit("reverse_camera_decision", "gear_valid", gearValid,
+                "reverse", reverse, "pano_visible", panoVisible,
+                "switch_by_gear", switching, "eligible", decision.eligible,
+                "started", decision.started, "stopped", decision.stopped,
+                "gear_edge", decision.gearEdge, "gear", decision.gear.name(),
+                "gear_raw", sessionPolicy.raw, "source_event", source);
+        if (!enabled()) {
+            sessionPolicy.eligible = false;
+            pendingAutomaticMode = -1;
+            return;
+        }
+        if (decision.hasTarget()) {
+            pendingAutomaticMode = decision.targetMode;
+            if (switching) requestAutomaticMode(decision.targetMode, source);
+        }
+    }
+
     void shutdown() {
         shutdown = true;
         cancelTimers();
@@ -219,7 +286,15 @@ final class ReverseCameraController {
         pendingShellRecoveryRequestId = 0;
         gearValid = false;
         reverse = false;
+        panoVisible = false;
+        sessionPolicy.eligible = false;
+        sessionPolicy.panoVisible = false;
+        sessionPolicy.gearValid = false;
+        sessionPolicy.raw = -1;
+        sessionPolicy.gear = ReverseGearSessionPolicy.Gear.UNKNOWN;
+        pendingAutomaticMode = -1;
         activeRequestId = 0;
+        direction.reset();
         generations = new int[0];
         visible = false;
         stopping = false;
@@ -231,9 +306,14 @@ final class ReverseCameraController {
 
     private void evaluate() {
         if (shutdown) return;
-        if (!enabled() || !gearValid || !reverse || helper == null) {
-            stop(!enabled() ? "disabled" : !gearValid ? "invalid_gear"
-                    : !reverse ? "not_reverse" : "helper_unavailable", false);
+        if (!enabled() || !sessionPolicy.eligible || helper == null) {
+            String reason;
+            if (!enabled()) reason = "disabled";
+            else if (!switchByGear() && !gearValid) reason = "invalid_gear";
+            else if (!switchByGear() && !reverse) reason = "not_reverse";
+            else if (helper == null) reason = "helper_unavailable";
+            else reason = "session_ineligible";
+            stop(reason, false);
             return;
         }
         if (stopping || activeRequestId != 0 || retryScheduled) return;
@@ -248,11 +328,75 @@ final class ReverseCameraController {
         activeRequestId = requestId;
         generations = new int[0];
         visible = false;
+        direction.reset();
         emit("reverse_camera_start", "request_id", requestId);
         prioritySink.accept(true);
         CameraShellProtocol.ReverseOverlaySpec spec = buildOverlaySpec(settings, requestId);
         activeHelper.prepareReverseOverlayWindow(
                 spec, this::surfacesAvailable, () -> overlayPrepared(requestId));
+    }
+
+    private void requestAutomaticMode(int mode, String source) {
+        if (!switchByGear() || mode < ReverseGearSessionPolicy.MODE_REAR
+                || mode > ReverseGearSessionPolicy.MODE_FRONT) return;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeRequestId <= 0 || stopping || activeHelper == null
+                || !isValidGenerationSet(generations)) return;
+        if (!direction.shouldRequest(mode)) {
+            emit("reverse_camera_direction", "state", "already_selected",
+                    "request_id", activeRequestId, "mode", modeName(mode),
+                    "source_event", source);
+            pendingAutomaticMode = -1;
+            return;
+        }
+        try {
+            if (!activeHelper.setReverseSideMode(activeRequestId, mode)) return;
+            direction.requested(mode);
+            emit("reverse_camera_direction", "state", "requested",
+                    "request_id", activeRequestId, "mode", modeName(mode),
+                    "source_event", source);
+            pendingAutomaticMode = -1;
+        } catch (Throwable error) {
+            emit("reverse_camera_direction", "state", "failed",
+                    "request_id", activeRequestId, "mode", modeName(mode),
+                    "source_event", source, "error", summary(error));
+        }
+    }
+
+    private void applyPendingAutomaticMode(CameraHelperMain.HelperBinder activeHelper) {
+        if (pendingAutomaticMode < ReverseGearSessionPolicy.MODE_REAR
+                || pendingAutomaticMode > ReverseGearSessionPolicy.MODE_FRONT) return;
+        requestAutomaticMode(pendingAutomaticMode, "session_start");
+    }
+
+    private static String modeName(int mode) {
+        return mode == ReverseGearSessionPolicy.MODE_FRONT ? "front" : "rear";
+    }
+
+    /** One-way selector callbacks acknowledge queued automatic commands in shell order. */
+    static final class DirectionState {
+        private int confirmedMode = ReverseGearSessionPolicy.MODE_REAR;
+        private final ArrayDeque<Integer> outstanding = new ArrayDeque<>();
+
+        int effectiveMode() {
+            return outstanding.isEmpty() ? confirmedMode : outstanding.peekLast();
+        }
+
+        boolean shouldRequest(int mode) { return effectiveMode() != mode; }
+
+        void requested(int mode) { outstanding.addLast(mode); }
+
+        void accept(int mode, boolean automatic, boolean blocked) {
+            if (automatic && !outstanding.isEmpty() && outstanding.peekFirst() == mode) {
+                outstanding.removeFirst();
+            }
+            if (!blocked) confirmedMode = mode;
+        }
+
+        void reset() {
+            outstanding.clear();
+            confirmedMode = ReverseGearSessionPolicy.MODE_REAR;
+        }
     }
 
     private void cameraShellAttached(long epoch) {
@@ -274,13 +418,14 @@ final class ReverseCameraController {
     }
 
     private boolean recoveryWanted() {
-        return !shutdown && enabled() && gearValid && reverse && helper != null;
+        return !shutdown && enabled() && sessionPolicy.eligible && helper != null;
     }
 
     private void resetAfterShellDeath() {
         cancelTimers();
         clearCleanupRetry();
         activeRequestId = 0;
+        direction.reset();
         generations = new int[0];
         visible = false;
         stopping = false;
@@ -324,7 +469,8 @@ final class ReverseCameraController {
                 CameraDewarpConfig.loadForReverseFront(
                         settings, ReverseCameraLayout.REAR_CAMERA_INDEX),
                 loadCentralFrontIntegrated(settings),
-                loadWidgetVisible(settings));
+                loadWidgetVisible(settings),
+                switchByGear(settings));
     }
 
     private void overlayPrepared(int requestId) {
@@ -349,6 +495,7 @@ final class ReverseCameraController {
         try {
             activeHelper.openReverseCamera(value.surfaces, activeRequestId);
             applyInitialTargetActivity(activeHelper, value.surfaces);
+            applyPendingAutomaticMode(activeHelper);
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "open_surfaces",
                     "error", summary(error));
@@ -416,6 +563,7 @@ final class ReverseCameraController {
         int[] closingGenerations = generations;
         boolean wasVisible = visible;
         activeRequestId = 0;
+        direction.reset();
         generations = new int[0];
         visible = false;
         if (closingRequestId == 0) {
@@ -491,7 +639,7 @@ final class ReverseCameraController {
     }
 
     private void scheduleRetry(String reason) {
-        if (!enabled() || !gearValid || !reverse || helper == null || retryScheduled) return;
+        if (!enabled() || !sessionPolicy.eligible || helper == null || retryScheduled) return;
         retryScheduled = true;
         handler.postDelayed(retry, RETRY_MS);
         emit("reverse_camera_retry", "reason", reason, "delay_ms", RETRY_MS);
@@ -508,6 +656,7 @@ final class ReverseCameraController {
         cancelTimers();
         clearCleanupRetry();
         activeRequestId = 0;
+        direction.reset();
         pendingShellRecoveryRequestId = 0;
         generations = new int[0];
         visible = false;
@@ -519,6 +668,18 @@ final class ReverseCameraController {
 
     private boolean enabled() {
         return settings.getBoolean(PREF_ENABLED, DEFAULT_ENABLED);
+    }
+
+    private boolean switchByGear() {
+        return switchByGear(settings);
+    }
+
+    static boolean switchByGear(SharedPreferences settings) {
+        try {
+            return settings.getBoolean(PREF_SWITCH_BY_GEAR, false);
+        } catch (RuntimeException invalidPreference) {
+            return false;
+        }
     }
 
     private int nextRequestId() {
@@ -744,13 +905,8 @@ final class ReverseCameraController {
 
     static ReverseCameraLayout.Rect loadFrontCorrectedSourceCrop(
             SharedPreferences settings, int cameraIndex) {
-        DirectCameraCrop raw = defaultFrontCrop(cameraIndex);
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
-            return loadFrontSourceCrop(settings, cameraIndex, true, rect(raw));
-        }
         return loadFrontSourceCrop(settings, cameraIndex, true,
-                rect(DirectCameraCrop.defaultCorrectedFor(
-                        CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw)));
+                rect(CameraDefaults.reverseFrontCorrected(cameraIndex)));
     }
 
     static void saveFrontPaneTransform(
@@ -1151,7 +1307,7 @@ final class ReverseCameraController {
 
     private static int readFrontDisplayMode(
             SharedPreferences settings, int cameraIndex) {
-        int fallback = ReverseCameraLayout.DISPLAY_MODE_STRETCH;
+        int fallback = CameraDefaults.reverseFrontRaw(cameraIndex).rotationMode;
         try {
             int stored = settings.getInt(
                     frontPanePrefix(cameraIndex) + "display_mode", fallback);
@@ -1196,7 +1352,7 @@ final class ReverseCameraController {
             layout = ReverseCameraLayout.withPane(layout, cameraIndex,
                     pane.destination, rect(crop), crop.rotationDegrees);
             layout = ReverseCameraLayout.withDisplayMode(
-                    layout, cameraIndex, ReverseCameraLayout.DISPLAY_MODE_STRETCH);
+                    layout, cameraIndex, crop.rotationMode);
             layout = ReverseCameraLayout.withMirrorHorizontally(
                     layout, cameraIndex, crop.mirrorHorizontally);
         }
@@ -1213,14 +1369,12 @@ final class ReverseCameraController {
     private static void writeFrontDefaults(
             SharedPreferences.Editor editor, int cameraIndex) {
         DirectCameraCrop raw = defaultFrontCrop(cameraIndex);
-        DirectCameraCrop corrected = cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX
-                ? raw : DirectCameraCrop.defaultCorrectedFor(
-                        CameraDewarpConfig.frontProfileForReverseSide(cameraIndex), raw);
+        DirectCameraCrop corrected = CameraDefaults.reverseFrontCorrected(cameraIndex);
         String prefix = frontPanePrefix(cameraIndex);
         writeFrontSourceCrop(editor, cameraIndex, rect(raw), false);
         writeFrontSourceCrop(editor, cameraIndex, rect(corrected), true);
         editor.putInt(prefix + "rotation_degrees", raw.rotationDegrees)
-                .putInt(prefix + "display_mode", ReverseCameraLayout.DISPLAY_MODE_STRETCH)
+                .putInt(prefix + "display_mode", raw.rotationMode)
                 .putBoolean(prefix + "mirror", raw.mirrorHorizontally);
         CameraDewarpConfig.writeForReverseFront(
                 editor, cameraIndex,
@@ -1246,13 +1400,7 @@ final class ReverseCameraController {
     }
 
     private static DirectCameraCrop defaultFrontCrop(int cameraIndex) {
-        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
-            return DirectCameraCrop.of(0.0f, 0.0f, 1.0f, 1.0f,
-                    DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT)
-                    .withMirrorHorizontally(false);
-        }
-        return DirectCameraCrop.defaultFor(
-                CameraDewarpConfig.frontProfileForReverseSide(cameraIndex));
+        return CameraDefaults.reverseFrontRaw(cameraIndex);
     }
 
     private static ReverseCameraLayout.Rect rect(DirectCameraCrop crop) {

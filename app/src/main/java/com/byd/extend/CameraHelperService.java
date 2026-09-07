@@ -16,6 +16,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
+import android.provider.Settings;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -49,6 +50,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.PARKING_CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
             "com.byd.extend.action.REVERSE_SETTINGS_CHANGED";
+    private static final String ACTION_MIRROR_SETTINGS_CHANGED =
+            "com.byd.extend.action.MIRROR_SETTINGS_CHANGED";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
             "com.byd.extend.action.MUSIC_SETTINGS_CHANGED";
     private static final String ACTION_WEATHER_SETTINGS_CHANGED =
@@ -133,6 +136,9 @@ public final class CameraHelperService extends Service {
     private BlindSpotOverlayController overlay;
     private ParkingCameraController parkingCameras;
     private ReverseCameraController reverseCameras;
+    private RearviewMirrorController mirror;
+    private volatile boolean manualMirrorSession;
+    private boolean mirrorOnlyRuntime;
     private ClusterFullscreenController clusterFullscreen;
     private WeatherRuntime weatherRuntime;
     private boolean controllersInitialized;
@@ -186,6 +192,11 @@ public final class CameraHelperService extends Service {
     static void cameraSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_CAMERA_SETTINGS_CHANGED));
+    }
+
+    static void mirrorSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_MIRROR_SETTINGS_CHANGED));
     }
 
     /** Pause an already-running instance synchronously before preferences are replaced. */
@@ -284,7 +295,7 @@ public final class CameraHelperService extends Service {
         if (!settings.getBoolean(WeatherRuntime.PREF_ENABLED, false)
                 || !GuardRecovery.shouldRecover(context)) {
             sendWeatherResult(receiver, WEATHER_RESULT_FAILED,
-                    "Погода вимкнена");
+                    runtimeText(context, R.string.runtime_weather_off));
             return;
         }
         Intent intent = new Intent(context, CameraHelperService.class)
@@ -305,6 +316,11 @@ public final class CameraHelperService extends Service {
         } catch (RuntimeException ignored) {
             // The requesting UI may already be gone.
         }
+    }
+
+    private static String runtimeText(Context context, int resource) {
+        return AppLanguage.localizedContext(context, AppLanguage.read(
+                context.getSharedPreferences("settings", MODE_PRIVATE))).getString(resource);
     }
 
     static void updateAutoStart(Context context, boolean enabled) {
@@ -338,6 +354,8 @@ public final class CameraHelperService extends Service {
                     if (parkingCameras != null) parkingCameras.setReversePriority(value);
                 });
         clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
+        mirror = new RearviewMirrorController(this, runtimeHandler, this::lifecycle);
+        mirror.appVisibility(activityVisible);
         controllersInitialized = true;
     }
 
@@ -387,7 +405,12 @@ public final class CameraHelperService extends Service {
                 ? false : ACTION_SHUTDOWN.equals(action)
                 ? true : GuardRecovery.isUserShutdownActive(this);
         boolean willRecover = GuardRecovery.shouldRecover(targetAutoStart, targetUserShutdown);
-        if (willRecover && !blocked) {
+        boolean manualMirror = !targetUserShutdown
+                && (manualMirrorSession || ACTION_ACTIVITY_OPEN.equals(action)
+                || ACTION_MIRROR_SETTINGS_CHANGED.equals(action))
+                && RearviewMirrorSettings.enabled(getSharedPreferences("settings", MODE_PRIVATE))
+                && Settings.canDrawOverlays(this);
+        if ((willRecover || manualMirror) && !blocked) {
             startForegroundRuntime();
         }
         if (!postRuntime(() -> handleStartCommand(command))) {
@@ -417,6 +440,9 @@ public final class CameraHelperService extends Service {
         }
         if (ACTION_ACTIVITY_OPEN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, false);
+            manualMirrorSession = true;
+        } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
+            manualMirrorSession = true;
         }
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         boolean shouldRecover = GuardRecovery.shouldRecover(this);
@@ -427,7 +453,7 @@ public final class CameraHelperService extends Service {
             syncWeatherAccessibility(false);
             if (ACTION_WEATHER_REFRESH.equals(action)) {
                 sendWeatherResult(command.weatherReceiver, WEATHER_RESULT_FAILED,
-                        "Спочатку завершіть перехід зі старого застосунку");
+                        runtimeText(this, R.string.runtime_finish_migration));
             }
             stopServiceFromRuntime(command.startId);
             return;
@@ -439,6 +465,21 @@ public final class CameraHelperService extends Service {
         else if (ACTION_ACTIVITY_CLOSED.equals(action)) activityVisible = false;
         syncWeatherAccessibility(shouldRecover || activityVisible);
         if (!shouldRecover) {
+            if (shouldRunManualMirror()) {
+                if (!mirrorOnlyRuntime && helperRuntimeStarted) {
+                    stopRuntime(true);
+                }
+                ensureControllersInitialized();
+                if (ACTION_ACTIVITY_OPEN.equals(action) || ACTION_ACTIVITY_CLOSED.equals(action)) {
+                    mirror.appVisibility(activityVisible);
+                }
+                ensureMirrorOnlyRuntime();
+                if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)
+                        || ACTION_CAMERA_SETTINGS_CHANGED.equals(action)
+                        || ACTION_SETTINGS_RELOADED.equals(action)) mirror.settingsChanged();
+                mainHandler.post(this::startForegroundRuntime);
+                return;
+            }
             if (helper != null) helper.setRecoveryEnabled(false);
             runtimeHandler.removeCallbacks(heartbeat);
             stopServiceFromRuntime(command.startId);
@@ -450,13 +491,20 @@ public final class CameraHelperService extends Service {
         } else {
             ensureControllersInitialized();
         }
+        if (mirrorOnlyRuntime) {
+            mirrorOnlyRuntime = false;
+            helperRuntimeStarted = false;
+        }
+        mirror.setRuntimeAllowed(true);
         boolean refreshMusicAfterClose = false;
         if (ACTION_ACTIVITY_OPEN.equals(action)) {
             activityVisible = true;
+            mirror.appVisibility(true);
             overlay.setUiHidden(true);
             parkingCameras.setUiHidden(true);
         } else if (ACTION_ACTIVITY_CLOSED.equals(action)) {
             activityVisible = false;
+            mirror.appVisibility(false);
             cameraPreviewActive = false;
             overlay.setUiHidden(false);
             parkingCameras.setUiHidden(false);
@@ -482,6 +530,7 @@ public final class CameraHelperService extends Service {
             helper.configureMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
+            mirror.settingsChanged();
             overlay.applySettings();
             parkingCameras.settingsChanged();
             reverseCameras.settingsChanged();
@@ -494,6 +543,8 @@ public final class CameraHelperService extends Service {
             if (parkingCameras != null) parkingCameras.settingsChanged();
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
+        } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
+            mirror.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
             helper.configureMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
@@ -505,13 +556,14 @@ public final class CameraHelperService extends Service {
             boolean accepted = weatherRuntime.requestNow(weatherReason, (success, error) ->
                     sendWeatherResult(receiver,
                             success ? WEATHER_RESULT_OK : WEATHER_RESULT_FAILED,
-                            success ? "Погоду оновлено" : "Не вдалося оновити погоду"));
+                            runtimeText(this, success ? R.string.runtime_weather_refreshed
+                                    : R.string.runtime_weather_failed)));
             if (!accepted) {
                 sendWeatherResult(receiver,
                         weatherRuntime.isRequestInFlight()
                                 ? WEATHER_RESULT_BUSY : WEATHER_RESULT_FAILED,
-                        weatherRuntime.isRequestInFlight()
-                                ? "Оновлення вже виконується" : "Погода вимкнена");
+                        runtimeText(this, weatherRuntime.isRequestInFlight()
+                                ? R.string.runtime_weather_busy : R.string.runtime_weather_off));
             }
         } else if (ACTION_SETTINGS_RELOADED.equals(action)) {
             reloadSettings(command.fullImport);
@@ -524,6 +576,29 @@ public final class CameraHelperService extends Service {
             stopForegroundRuntime();
             stopSelf(startId);
         });
+    }
+
+    private boolean shouldRunManualMirror() {
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        return manualMirrorSession && !GuardRecovery.isUserShutdownActive(this)
+                && RearviewMirrorSettings.enabled(settings) && Settings.canDrawOverlays(this);
+    }
+
+    /** Auto-start OFF still permits an explicitly opened Mirror session, without recovery. */
+    private void ensureMirrorOnlyRuntime() {
+        ensureHelperCreated();
+        mirror.setRuntimeAllowed(true);
+        mirror.attachHelper(helper);
+        if (!helperRuntimeStarted) {
+            helperRuntimeStarted = true;
+            mirrorOnlyRuntime = true;
+            helper.discoverCamera();
+            helper.configureGuard(false, 90f, 10f, 100, 30);
+            helper.configureMusic(false);
+            helper.configureParkingRadar(false);
+            helper.setRecoveryEnabled(false);
+            helper.startGuardRuntime();
+        }
     }
 
     private void syncWeatherAccessibility(boolean enabled) {
@@ -668,6 +743,7 @@ public final class CameraHelperService extends Service {
         boolean recover = GuardRecovery.shouldRecover(this);
         lifecycle("service_destroy", "recover", recover);
         if (reverseCameras != null) reverseCameras.shutdown();
+        if (mirror != null) mirror.shutdown();
         if (overlay != null) overlay.shutdown();
         if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
@@ -676,6 +752,7 @@ public final class CameraHelperService extends Service {
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
+        mirrorOnlyRuntime = false;
         weatherAccessibilityExecutor.shutdownNow();
         if (recover) GuardRecovery.scheduleSoon(this);
         if (serviceLog != null) serviceLog.close();
@@ -696,6 +773,7 @@ public final class CameraHelperService extends Service {
         if (helperRuntimeStarted) return;
         helperRuntimeStarted = true;
         boolean cameraReady = helper.discoverCamera();
+        mirror.attachHelper(helper);
         helper.startGuardRuntime();
 
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
@@ -723,6 +801,7 @@ public final class CameraHelperService extends Service {
         runtimeHandler.removeCallbacks(resumeOverlay);
         runtimeHandler.removeCallbacks(retryCameraDiscovery);
         if (reverseCameras != null) reverseCameras.shutdown();
+        if (mirror != null) mirror.shutdown();
         if (overlay != null) overlay.shutdown();
         if (parkingCameras != null) parkingCameras.shutdown();
         if (clusterFullscreen != null) clusterFullscreen.shutdown();
@@ -731,11 +810,13 @@ public final class CameraHelperService extends Service {
         overlay = null;
         parkingCameras = null;
         reverseCameras = null;
+        mirror = null;
         clusterFullscreen = null;
         weatherRuntime = null;
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
+        mirrorOnlyRuntime = false;
         mainHandler.post(this::stopForegroundRuntime);
         GuardRecovery.schedule(this);
     }
@@ -757,6 +838,7 @@ public final class CameraHelperService extends Service {
         overlay.applyTriggerSettings();
         parkingCameras.settingsChanged();
         reverseCameras.settingsChanged();
+        if (mirror != null) mirror.settingsChanged();
         clusterFullscreen.settingsChanged();
         if (fullImport) {
             GuardRecovery.setAutoStartEnabled(this,
@@ -804,7 +886,9 @@ public final class CameraHelperService extends Service {
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setContentTitle("BYD Extend")
-                .setContentText("BYD Extend service active")
+                .setContentText(AppLanguage.localizedContext(this,
+                        AppLanguage.read(getSharedPreferences("settings", MODE_PRIVATE)))
+                        .getString(R.string.service_active))
                 .setContentIntent(pending)
                 .setOngoing(true)
                 .build();
@@ -838,6 +922,7 @@ public final class CameraHelperService extends Service {
             if (overlay != null) overlay.acceptEvent(line);
             if (parkingCameras != null) parkingCameras.acceptEvent(line);
             if (reverseCameras != null) reverseCameras.acceptEvent(line);
+            if (mirror != null) mirror.acceptEvent(line);
             if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
             serviceLog.appendRaw(line);
         });

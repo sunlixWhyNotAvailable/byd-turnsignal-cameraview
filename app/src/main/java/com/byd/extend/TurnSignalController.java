@@ -704,6 +704,43 @@ final class TurnSignalController {
         }
     }
 
+    /** Queues one automatic Reverse front/rear direction request on the current camera shell. */
+    boolean setReverseSideMode(int requestId, int mode) {
+        if (requestId <= 0 || (mode != ReverseGearSessionPolicy.MODE_REAR
+                && mode != ReverseGearSessionPolicy.MODE_FRONT)) {
+            throw new IllegalArgumentException("reverse direction identity is required");
+        }
+        IBinder value;
+        long epoch;
+        synchronized (this) {
+            if (stopped) return false;
+            value = cameraHelper;
+            epoch = value == null ? 0L : cameraHelperEpoch;
+        }
+        if (value == null || !value.isBinderAlive()) return false;
+        try {
+            worker.execute(() -> {
+                synchronized (TurnSignalController.this) {
+                    if (stopped || cameraHelper != value || cameraHelperEpoch != epoch) return;
+                }
+                try {
+                    transactReverseSetMode(value, requestId, mode);
+                } catch (Throwable error) {
+                    emit("reverse_overlay_error", "stage", "set_side_mode",
+                            "request_id", requestId,
+                            "mode", mode == ReverseGearSessionPolicy.MODE_FRONT
+                                    ? "front" : "rear",
+                            "camera_shell_epoch", epoch,
+                            "error", summary(error));
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException ignored) {
+            // A shutdown worker consumes no further direction commands.
+            return false;
+        }
+    }
+
     private void postCompletion(
             Consumer<Boolean> completion, boolean success, String stage, int requestId) {
         if (completion != null && !handler.post(() -> completion.accept(success))) {
@@ -1732,6 +1769,25 @@ final class TurnSignalController {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeInt(requestId);
             requireTransact(value, CameraShellProtocol.TX_REVERSE_TOGGLE_MODE, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactReverseSetMode(
+            IBinder value, int requestId, int mode) throws Exception {
+        if (requestId <= 0 || (mode != ReverseGearSessionPolicy.MODE_REAR
+                && mode != ReverseGearSessionPolicy.MODE_FRONT)) {
+            throw new IllegalArgumentException("reverse direction request is invalid");
+        }
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeInt(requestId);
+            data.writeInt(mode);
+            requireTransact(value, CameraShellProtocol.TX_REVERSE_SET_MODE, data, reply);
         } finally {
             data.recycle();
             reply.recycle();

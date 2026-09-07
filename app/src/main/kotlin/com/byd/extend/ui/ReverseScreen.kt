@@ -55,6 +55,10 @@ internal fun ReverseScreen(
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
         SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
+        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
+            state.switchByGear,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors)
         if (selected == ReverseElement.Widget) {
             ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
         }
@@ -99,10 +103,8 @@ internal fun ReverseScreen(
         } else {
             CameraWorkspace(
                 pageTab = 3, section = state.section, reverse = true, calibrationEnabled = cameraElement,
-                previewTitle = strings.text(
-                    "Композиція заднього ходу • ${strings.reverseElements[selected.ordinal]}",
-                    "Reverse composition • ${strings.reverseElements[selected.ordinal]}",
-                ),
+                previewTitle = strings.text("Композиція заднього ходу", "Reverse composition") +
+                    " • ${strings.reverseElements[selected.ordinal]}",
                 strings = strings, colors = colors,
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
@@ -146,13 +148,15 @@ private fun ReverseWidgetLearningRow(
             strings.text("Вибрати кнопку…", "Select button…"), colors,
             Modifier.weight(1.15f).testTag("reverse-key-learn"), primary = true,
         ) { onAction(BydExtendUiAction.Run(CommandId.ReverseLearnButton)) }
-        val keyLabel = steeringButtonLabel(steeringKeyCode, strings.ukrainian)
+        val keyLabel = steeringButtonLabel(steeringKeyCode, strings)
         Box(
             Modifier.weight(1f).height(44.dp).testTag("reverse-key-value").clip(RoundedCornerShape(7.dp))
                 .background(colors.field)
                 .border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp))
                 .semantics {
-                    contentDescription = strings.text("Вибрана кнопка: $keyLabel", "Selected button: $keyLabel")
+                    contentDescription = strings.format(
+                        "Вибрана кнопка: %1\$s", "Selected button: %1\$s",
+                        "已选按键：%1\$s", keyLabel)
                 }
                 .padding(horizontal = 8.dp),
             contentAlignment = Alignment.CenterStart,

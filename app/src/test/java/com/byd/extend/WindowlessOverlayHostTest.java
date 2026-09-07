@@ -101,7 +101,7 @@ public final class WindowlessOverlayHostTest {
                 "quiesce(\"camera_buffer_size_changed\")"));
         assertTrue(shell.contains("camera_shell_reverse_prepare_restart_required"));
         assertTrue(shell.contains("restart.diagnosticFields"));
-        assertEquals(27, CameraShellProtocol.VERSION);
+        assertEquals(28, CameraShellProtocol.VERSION);
     }
 
     @Test

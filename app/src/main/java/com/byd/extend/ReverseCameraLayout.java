@@ -51,23 +51,21 @@ final class ReverseCameraLayout {
 
     static ReverseCameraLayout defaults() {
         return new ReverseCameraLayout(
-                destination(0.42398763f, 0.0f, 0.5745265f, 1.0f),
-                widgetDestination(0.6871753f, 0.7960598f,
-                        0.05931156f, 0.20394021f),
+                CameraDefaults.reverseBackground(), CameraDefaults.reverseWidget(),
                 new Pane(REAR, REAR_CAMERA_INDEX,
                         destination(0.43216026f, 0.0015433729f,
                                 0.564868f, 0.7758869f),
-                        sourceCrop(0.0f, 0.0f, 1.0f, 0.8169013f), 0, 0,
+                        sourceCrop(0.0f, 0.0f, 1.0f, 0.85f), 0, 0,
                         DISPLAY_MODE_FILL),
                 new Pane(REAR_LEFT, REAR_LEFT_CAMERA_INDEX,
-                        destination(0.43366212f, 0.7960598f,
+                        destination(0.4349628f, 0.7960598f,
                                 0.25351316f, 0.20394021f),
-                        sourceCrop(0.0f, 0.25f, 0.384127f, 0.55f), 1, 42,
+                        sourceCrop(2.9802322e-8f, 0.25f, 0.384127f, 0.55f), 1, 35,
                         DISPLAY_MODE_FILL),
                 new Pane(REAR_RIGHT, REAR_RIGHT_CAMERA_INDEX,
                         destination(0.74648684f, 0.7960598f,
                                 0.25351316f, 0.20394021f),
-                        sourceCrop(0.615873f, 0.25f, 0.384127f, 0.55f), 2, -42,
+                        sourceCrop(0.615873f, 0.25f, 0.384127f, 0.55f), 2, -35,
                         DISPLAY_MODE_FILL));
     }
 

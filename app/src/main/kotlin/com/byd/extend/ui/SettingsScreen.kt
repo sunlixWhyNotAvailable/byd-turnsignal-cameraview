@@ -47,7 +47,7 @@ internal fun SettingsScreen(
 ) {
     val focus = LocalFocusManager.current
     ScreenSurface(colors, scroll = false) {
-        PageTitle(strings.tabs[4], strings.text("Дозволи, параметри виводу камер та логи",
+        PageTitle(strings.tabs[5], strings.text("Дозволи, параметри виводу камер та логи",
             "Permissions, camera output settings, and logs"), colors)
         Row(Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(Modifier.width(260.dp).fillMaxHeight().clip(RoundedCornerShape(12.dp))
@@ -127,8 +127,8 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
         Divider(colors)
         Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             SwitchLine(strings.text("Авто-запуск", "Boot runtime service"),
-                strings.text("Запускати фонову службу HUD після завантаження системи, розблокування, оновлення пакета та перевірки стану",
-                    "Start foreground HUD runtime after boot and watchdog events"), state.automaticStart,
+                strings.text("Запускати фонову службу BYD Extend після завантаження системи, розблокування, оновлення пакета та перевірки стану",
+                    "Start the BYD Extend foreground service after boot and watchdog events"), state.automaticStart,
                 { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutoStart), it)) }, colors,
                 pending = state.automaticStartOperation.pending, enabled = state.automaticStartOperation.enabled,
                 compactSwitch = false)

@@ -36,10 +36,21 @@ public final class WeatherRuntimeTest {
     }
 
     @Test
-    public void fallbackFollowsAppLanguage() {
-        assertEquals("Current location", WeatherRuntime.friendlyLocationFallback("en"));
-        assertEquals("Поточне місце", WeatherRuntime.friendlyLocationFallback("uk"));
-        assertEquals("Поточне місце", WeatherRuntime.friendlyLocationFallback("unknown"));
+    public void fallbackFollowsAppLanguage() throws Exception {
+        assertEquals("en", WeatherRuntime.normalizedLanguage("en"));
+        assertEquals("uk", WeatherRuntime.normalizedLanguage("uk"));
+        assertEquals("zh-CN", WeatherRuntime.normalizedLanguage("zh-CN"));
+        assertEquals("en", WeatherRuntime.normalizedLanguage("unknown"));
+        String[] locales = {"values", "values-uk", "values-zh-rCN"};
+        String[] values = {"Current location", "Поточне місце", "当前位置"};
+        for (int index = 0; index < locales.length; index++) {
+            Path file = Path.of("src/main/res", locales[index], "strings.xml");
+            if (!Files.exists(file)) file = Path.of("app").resolve(file);
+            String xml = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            assertTrue(xml.contains("name=\"weather_current_location\">" + values[index] + "</string>")
+                    || xml.contains("name=\"weather_current_location\">\""
+                            + values[index] + "\"</string>"));
+        }
     }
 
     @Test
@@ -114,6 +125,8 @@ public final class WeatherRuntimeTest {
         assertFalse(text.contains("geocoderLocale("));
         assertTrue(text.contains("new City(city, city)"));
         assertTrue(text.contains("friendlyLocationFallback(language)"));
+        assertTrue(text.contains("AppLanguage.read(preferences)"));
+        assertTrue(text.contains("AppLanguage.localizedContext(context, language).getString(R.string.weather_current_location)"));
         assertTrue(text.contains("weather_geocoder_fallback"));
         assertTrue(text.contains("\"latitude\", latitude"));
         assertTrue(text.contains("\"longitude\", longitude"));

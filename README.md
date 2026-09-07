@@ -7,9 +7,9 @@
 
 ## Project status
 
-Current source version: `1.0.0` (version code `99`). The application has Ukrainian and English
-interfaces, dark and light themes, and a redesigned Compose UI. The canonical debug APK name is
-`byd-extend-v1.0.0.apk`; published builds are listed in the
+Current source target: `1.1.0` (version code `100`), with Ukrainian, English and Simplified Chinese
+interfaces, dark and light themes, and a Compose UI. This source update has not been packaged into
+an APK. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
 ## Features
@@ -21,6 +21,8 @@ interfaces, dark and light themes, and a redesigned Compose UI. The canonical de
 - Reverse composition, direct camera preview, calibration, fisheye correction, mirroring, crop,
   rotation, placement, scale, transparency, corner rounding, and image-quality controls.
 - User-selectable Reverse panes with optional integrated front side and central camera profiles.
+- Optional gear-driven front/rear selection while Reverse gear or the stock camera UI is active.
+- An independent rearview-mirror widget on the tablet or a supported instrument cluster.
 - A learned steering-wheel button for switching the active Reverse widget and integrated cameras
   between front and rear views.
 - Optional music metadata and local weather for the stock BYD weather UI.
@@ -35,13 +37,19 @@ interfaces, dark and light themes, and a redesigned Compose UI. The canonical de
 - `Імпортувати всі налаштування` imports all user settings from the installed legacy
   `com.byd.turnsignalguard.capture` `0.52.1` / code `96` app through authorized local ADB.
 
-Camera presets include the active Blind Zone, Parking, and Reverse visual configuration, including
+Camera presets include the active Blind Zone, Parking, Reverse and Rearview Mirror visual configuration, including
 integrated Reverse Front profiles, display targets, placement, scale, aspect, crop, correction,
 rotation, mirror, fill mode, camera switches, Reverse background, widget/stacking, and global
 buffer quality, transparency, and corner radius. They deliberately exclude numeric speed,
 steering-angle, and distance triggers, non-camera settings, and saved local calibration slots.
 The learned steering-button binding is also excluded and is preserved when loading camera presets
 or importing legacy settings.
+
+Preset format v2 adds independent Blind rectangles and the active Mirror configuration. Existing
+v1 files remain supported; importing one does not reset Mirror settings that it does not contain.
+Local saved calibration slots and temporary Mirror hiding are not part of a camera preset.
+Built-in camera geometry and calibration use the approved reference baseline only for absent
+values and explicit section resets; updating the application does not replace stored user settings.
 
 Full migration includes those numeric rules, guard, music, weather, auto-start, and saved
 calibration slots. It does not copy transient runtime data, logs, ADB credentials, or Android-granted
@@ -74,6 +82,12 @@ enabled, and the composition must already be active. Existing per-camera visibil
 rules apply; the button does not open cameras, change calibration or add automatic switching in D.
 Calibration and other foreground app tabs do not redirect the button to a background composition.
 
+The separate `Switch by gear` setting is off by default. When enabled, R prepares the composition
+immediately; the session remains active while R or the stock camera UI is active. Entering D selects
+integrated front cameras, and entering R selects rear cameras. N and P retain the selected view
+during a session, or select Front on a cold opening. Repeated telemetry does not undo manual
+selection. Automatic selection does not require the selector widget to be visible.
+
 The assigned press, repeats and release replace the stock key action, including when no eligible
 composition is active. Reset the assignment to restore normal handling. Explicit app Shutdown
 ends interception until the app is reopened. The assignment survives app restarts.
@@ -82,6 +96,23 @@ This feature uses the app's existing Accessibility service. If the key filter is
 learning reports that condition instead of saving a simulated assignment. Some BYD firmware
 handles keys before Android Accessibility receives them; support for every physical button is
 not guaranteed.
+
+## Rearview mirror and UI preferences
+
+Enable the rearview mirror and grant Android overlay permission when prompted. Its independent
+placement, calibration, preset and border settings do not modify Reverse or Blind profiles.
+Drag the external widget to move it; touch and hold to hide it until BYD Extend is opened again.
+It is hidden while BYD Extend or the stock camera UI is open. A hidden widget leaves no input
+window blocking other apps, while taps inside the visible widget do not pass through.
+
+Global Auto-start controls autonomous startup and recovery; turning it off still permits manual
+Mirror use. An unavailable instrument cluster does not redirect the widget to the tablet.
+Blind and Mirror editors support bounded independent width/height and drag/resize, with 0.1%
+placement precision. Tab/subsection scroll positions are remembered within the application process
+and cleared on explicit Shutdown or process death.
+
+Fresh installations start in English regardless of the tablet language. Existing effective
+language choices are preserved, and the Chinese selector label remains `中文` in every language.
 
 ## Sharing diagnostics
 

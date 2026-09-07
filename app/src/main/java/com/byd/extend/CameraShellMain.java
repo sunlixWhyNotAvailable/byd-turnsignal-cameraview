@@ -311,6 +311,20 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_REVERSE_SET_MODE) {
+                    int requestId = data.readInt();
+                    int mode = data.readInt();
+                    if (requestId <= 0 || (mode != ReverseSideSelectorView.MODE_REAR
+                            && mode != ReverseSideSelectorView.MODE_FRONT)) {
+                        throw new IllegalArgumentException("invalid reverse direction request");
+                    }
+                    runOnMain(() -> {
+                        reverseOverlay.setSideMode(requestId, mode);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == CameraShellProtocol.TX_REVERSE_CLOSE) {
                     String reason = data.readString();
                     runOnMain(() -> {
@@ -407,7 +421,8 @@ public final class CameraShellMain {
 
         static boolean overlayAllowedWhileReverseActive(int cameraId) {
             CameraOverlayProfile.of(cameraId);
-            return CameraOverlayProfile.isParking(cameraId);
+            return CameraOverlayProfile.isParking(cameraId)
+                    || CameraOverlayProfile.isMirror(cameraId);
         }
 
         private <T> T runOnMain(java.util.concurrent.Callable<T> callable) throws Exception {

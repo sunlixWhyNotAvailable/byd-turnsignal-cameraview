@@ -25,7 +25,8 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    private static final int LEGACY_VERSION = 1;
     private static final String SETTINGS = "settings";
 
     private CameraSettingsTransfer() {}
@@ -55,10 +56,11 @@ public final class CameraSettingsTransfer {
             JSONObject root = new JSONObject(input);
             requireKeys(root, "schema", "version", SETTINGS);
             Object version = root.get("version");
+            int parsedVersion = versionInt(version);
             if (!SCHEMA.equals(root.getString("schema"))
                     || !(version instanceof Number)
                     || !Double.isFinite(((Number) version).doubleValue())
-                    || ((Number) version).doubleValue() != VERSION) {
+                    || (parsedVersion != LEGACY_VERSION && parsedVersion != VERSION)) {
                 throw new IllegalArgumentException("unsupported camera preset schema");
             }
             JSONObject settingsObject = root.getJSONObject(SETTINGS);
@@ -78,7 +80,7 @@ public final class CameraSettingsTransfer {
             for (String key : actual) settings.put(key, settingsObject.get(key));
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("schema", SCHEMA);
-            result.put("version", VERSION);
+            result.put("version", parsedVersion);
             result.put(SETTINGS, settings);
             validateCameraSettings(settings);
             return result;
@@ -130,8 +132,13 @@ public final class CameraSettingsTransfer {
         if (preferences == null || parsed == null) throw new IllegalArgumentException("null argument");
         Map<String, Object> settings = cameraSettingsMap(parsed);
         validateCameraSettings(settings);
+        // Mirror's active state is replaced only when the file carries its
+        // active group.  A v1 file, or a v2 file that omits the optional
+        // group, must leave active Mirror and its local hide/preset state
+        // untouched.
+        boolean preserveMirror = !containsMirror(settings);
         SharedPreferences.Editor editor = preferences.edit();
-        for (String key : cameraClearKeys()) if (preferences.contains(key)) editor.remove(key);
+        for (String key : cameraClearKeys(preserveMirror)) if (preferences.contains(key)) editor.remove(key);
         preserveMissingFrameAspects(editor, preferences, settings);
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
@@ -192,6 +199,7 @@ public final class CameraSettingsTransfer {
                 ReverseCameraController.loadWidgetVisible(p));
         out.put(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED,
                 ReverseCameraController.loadCentralFrontIntegrated(p));
+        addMirror(out, p);
 
         for (CameraProfile profile : CameraProfile.values()) {
             DirectCameraCrop raw = DirectCameraCrop.load(p, profile);
@@ -203,6 +211,13 @@ public final class CameraSettingsTransfer {
                     BlindSpotOverlayController.readScale(p, profile),
                     BlindSpotOverlayController.readTarget(p, profile),
                     BlindSpotOverlayController.readFrameAspect(p, profile));
+            if (p.contains(BlindSpotOverlayController.placementWidthKey(profile))
+                    && p.contains(BlindSpotOverlayController.placementHeightKey(profile))) {
+                out.put(BlindSpotOverlayController.placementWidthKey(profile),
+                        floatValue(p, BlindSpotOverlayController.placementWidthKey(profile), 0.0f));
+                out.put(BlindSpotOverlayController.placementHeightKey(profile),
+                        floatValue(p, BlindSpotOverlayController.placementHeightKey(profile), 0.0f));
+            }
             addOptionalCorrectedAspect(out, p, DirectCameraCrop.correctedAspectKey(profile));
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
@@ -264,13 +279,50 @@ public final class CameraSettingsTransfer {
         putDewarp(out, "camera_dewarp_v3_overlay_" + profile.wireName + "_", dewarp);
     }
 
+    /** v2's active independent Mirror group; local hide/preset state is never exported. */
+    private static void addMirror(Map<String, Object> out, SharedPreferences preferences) {
+        RearviewMirrorSettings.Settings value = new RearviewMirrorSettings(preferences).load();
+        out.put(RearviewMirrorSettings.PREF_ENABLED, value.enabled);
+        out.put(RearviewMirrorSettings.PREF_TARGET,
+                value.target == RearviewMirrorSettings.TARGET_CLUSTER ? "Cluster" : "Tablet");
+        out.put(RearviewMirrorSettings.PREF_X, value.placement.x * 100.0f);
+        out.put(RearviewMirrorSettings.PREF_Y, value.placement.y * 100.0f);
+        out.put(RearviewMirrorSettings.PREF_WIDTH, value.placement.width * 100.0f);
+        out.put(RearviewMirrorSettings.PREF_HEIGHT, value.placement.height * 100.0f);
+        out.put(RearviewMirrorSettings.PREF_BORDER_DP, value.borderDp);
+        out.put(RearviewMirrorSettings.PREF_BORDER_ARGB, value.borderArgb);
+        addMirrorCalibration(out, value.calibration);
+    }
+
+    private static void addMirrorCalibration(
+            Map<String, Object> out, RearviewMirrorSettings.Calibration value) {
+        out.put("mirror_original_x", value.raw.x * 100.0f);
+        out.put("mirror_original_y", value.raw.y * 100.0f);
+        out.put("mirror_original_width", value.raw.width * 100.0f);
+        out.put("mirror_original_height", value.raw.height * 100.0f);
+        out.put("mirror_correction", value.enabled);
+        out.put("mirror_fov", value.fovDegrees);
+        out.put("mirror_projection", value.projection);
+        out.put("mirror_corrected_x", value.corrected.x * 100.0f);
+        out.put("mirror_corrected_y", value.corrected.y * 100.0f);
+        out.put("mirror_corrected_width", value.corrected.width * 100.0f);
+        out.put("mirror_corrected_height", value.corrected.height * 100.0f);
+        out.put("mirror_mirrored", value.mirrored);
+        out.put("mirror_output_mode", value.rotationMode);
+        out.put("mirror_rotation", value.rotationDegrees);
+    }
+
     private static void addParking(Map<String, Object> out, SharedPreferences p,
             ParkingCameraProfile profile, DirectCameraCrop raw, DirectCameraCrop corrected,
             CameraDewarpConfig dewarp) {
         String prefix = "parking_camera_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_";
         ParkingCameraSettings.Rule rule = ParkingCameraSettings.readRule(p, profile);
         out.put(prefix + "enabled", rule.enabled); out.put(prefix + "add_central", rule.addCentral);
-        int[] defaultScale = {25, 25, 25, 25, 25, 25, 25, 25};
+        int[] defaultScale = {
+                CameraDefaults.parkingScalePercent(), CameraDefaults.parkingScalePercent(),
+                CameraDefaults.parkingScalePercent(), CameraDefaults.parkingScalePercent(),
+                CameraDefaults.parkingScalePercent(), CameraDefaults.parkingScalePercent(),
+                CameraDefaults.parkingScalePercent(), CameraDefaults.parkingScalePercent()};
         float[] defaultX = {0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f, 0.0f, 1.0f};
         float[] defaultY = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.5f, 0.5f};
         out.put(prefix + "scale", intValue(p, prefix + "scale", defaultScale[profile.id]));
@@ -347,7 +399,10 @@ public final class CameraSettingsTransfer {
     }
 
     private static Map<String, Object> cameraSettingsMap(Map<String, Object> parsed) {
-        if (!SCHEMA.equals(parsed.get("schema")) || !Integer.valueOf(VERSION).equals(parsed.get("version"))) {
+        Object version = parsed.get("version");
+        int parsedVersion = version instanceof Number ? versionInt(version) : -1;
+        if (!SCHEMA.equals(parsed.get("schema"))
+                || (parsedVersion != LEGACY_VERSION && parsedVersion != VERSION)) {
             throw new IllegalArgumentException("unsupported camera preset schema");
         }
         Object value = parsed.get(SETTINGS);
@@ -383,11 +438,13 @@ public final class CameraSettingsTransfer {
             }
         }
         for (Map.Entry<String, Object> entry : values.entrySet()) validateCameraValue(entry.getKey(), entry.getValue());
+        requireMirror(values);
         for (CameraProfile profile : CameraProfile.values()) {
             String key = DirectCameraCrop.preferenceKey(profile, 0);
             requireCrop(values, key, profile, false);
             requireCorrected(values, "direct_crop_v3_corrected_" + profile.id + "_", profile, false);
             requireDewarp(values, "camera_dewarp_v3_overlay_" + profile.wireName + "_");
+            requireBlindPlacement(values, profile);
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             String prefix = "parking_direct_crop_v1_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_";
@@ -431,6 +488,15 @@ public final class CameraSettingsTransfer {
 
     private static void validateCameraValue(String key, Object value) {
         if (value == null || value == JSONObject.NULL) throw new IllegalArgumentException("null camera value");
+        if (isStringKey(key)) {
+            if (!(value instanceof String)
+                    || (!RearviewMirrorSettings.PREF_TARGET.equals(key)
+                    || !("Tablet".equalsIgnoreCase((String) value)
+                    || "Cluster".equalsIgnoreCase((String) value)))) {
+                throw new IllegalArgumentException("string required: " + key);
+            }
+            return;
+        }
         if (isBooleanKey(key)) { if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key); return; }
         if (isIntegerKey(key)) {
             int number = intValue(value, key);
@@ -451,7 +517,17 @@ public final class CameraSettingsTransfer {
             return;
         }
         float number = floatValue(value, key);
-        if ((key.endsWith("_x") || key.endsWith("_y")) && (number < 0.0f || number > 1.0f)) throw new IllegalArgumentException("invalid position");
+        if (key.startsWith("mirror_")
+                && (key.endsWith("_x") || key.endsWith("_y") || key.endsWith("_width")
+                || key.endsWith("_height"))
+                && (number < 0.0f || number > 100.0f)) {
+            throw new IllegalArgumentException("invalid mirror geometry");
+        }
+        if (isBlindPlacementKey(key) && (number < 0.0f || number > 1.0f)) {
+            throw new IllegalArgumentException("invalid blind placement");
+        }
+        if (!key.startsWith("mirror_") && (key.endsWith("_x") || key.endsWith("_y"))
+                && (number < 0.0f || number > 1.0f)) throw new IllegalArgumentException("invalid position");
         if (key.endsWith("_frame_aspect") && (!(number > 0.0f) || number > 100.0f)) throw new IllegalArgumentException("invalid frame aspect");
     }
 
@@ -463,6 +539,91 @@ public final class CameraSettingsTransfer {
                 integer(values, prefix + "aspect"), integer(values, prefix + "rotation"),
                 integer(values, prefix + "rotation_mode"));
         if (!(values.get(prefix + "mirror") instanceof Boolean)) throw new IllegalArgumentException("crop mirror required");
+    }
+
+    private static void requireMirror(Map<String, Object> values) {
+        boolean present = false;
+        for (String key : values.keySet()) {
+            if (key.startsWith("mirror_")) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) return; // v1 presets predate the independent Mirror group.
+
+        String[] required = {
+                RearviewMirrorSettings.PREF_ENABLED,
+                RearviewMirrorSettings.PREF_TARGET,
+                RearviewMirrorSettings.PREF_X, RearviewMirrorSettings.PREF_Y,
+                RearviewMirrorSettings.PREF_WIDTH, RearviewMirrorSettings.PREF_HEIGHT,
+                RearviewMirrorSettings.PREF_BORDER_DP,
+                RearviewMirrorSettings.PREF_BORDER_ARGB,
+                "mirror_original_x", "mirror_original_y", "mirror_original_width",
+                "mirror_original_height", "mirror_correction", "mirror_fov",
+                "mirror_projection", "mirror_corrected_x", "mirror_corrected_y",
+                "mirror_corrected_width", "mirror_corrected_height", "mirror_mirrored",
+                "mirror_output_mode", "mirror_rotation"};
+        for (String key : required) {
+            if (!values.containsKey(key)) throw new IllegalArgumentException("incomplete mirror group");
+        }
+        String target = (String) values.get(RearviewMirrorSettings.PREF_TARGET);
+        if (!"Tablet".equalsIgnoreCase(target) && !"Cluster".equalsIgnoreCase(target)) {
+            throw new IllegalArgumentException("invalid mirror target");
+        }
+        float x = number(values, RearviewMirrorSettings.PREF_X) / 100.0f;
+        float y = number(values, RearviewMirrorSettings.PREF_Y) / 100.0f;
+        float width = number(values, RearviewMirrorSettings.PREF_WIDTH) / 100.0f;
+        float height = number(values, RearviewMirrorSettings.PREF_HEIGHT) / 100.0f;
+        if (width < CameraPlacement.MIN_SIZE || height < CameraPlacement.MIN_SIZE) {
+            throw new IllegalArgumentException("mirror placement below minimum");
+        }
+        CameraPlacement.of(x, y, width, height);
+        if (integer(values, RearviewMirrorSettings.PREF_BORDER_DP)
+                < RearviewMirrorSettings.MIN_BORDER_DP
+                || integer(values, RearviewMirrorSettings.PREF_BORDER_DP)
+                > RearviewMirrorSettings.MAX_BORDER_DP) {
+            throw new IllegalArgumentException("invalid mirror border");
+        }
+        requireMirrorCalibration(values, "mirror_original_", "mirror_corrected_", "mirror_");
+    }
+
+    private static void requireMirrorCalibration(
+            Map<String, Object> values, String rawPrefix, String correctedPrefix,
+            String valuePrefix) {
+        CameraPlacement.source(number(values, rawPrefix + "x") / 100.0f,
+                number(values, rawPrefix + "y") / 100.0f,
+                number(values, rawPrefix + "width") / 100.0f,
+                number(values, rawPrefix + "height") / 100.0f);
+        CameraPlacement.source(number(values, correctedPrefix + "x") / 100.0f,
+                number(values, correctedPrefix + "y") / 100.0f,
+                number(values, correctedPrefix + "width") / 100.0f,
+                number(values, correctedPrefix + "height") / 100.0f);
+        int fov = integer(values, valuePrefix + "fov");
+        int projection = integer(values, valuePrefix + "projection");
+        if (fov < CameraDewarpConfig.MIN_FOV_DEGREES || fov > CameraDewarpConfig.MAX_FOV_DEGREES
+                || !CameraDewarpConfig.isValidProjection(projection)) {
+            throw new IllegalArgumentException("invalid mirror calibration");
+        }
+        int mode = integer(values, valuePrefix + "output_mode");
+        int rotation = integer(values, valuePrefix + "rotation");
+        if (!CameraRotation.isValidMode(mode) || !CameraRotation.isValid(rotation)) {
+            throw new IllegalArgumentException("invalid mirror output");
+        }
+    }
+
+    private static void requireBlindPlacement(Map<String, Object> values, CameraProfile profile) {
+        String widthKey = BlindSpotOverlayController.placementWidthKey(profile);
+        String heightKey = BlindSpotOverlayController.placementHeightKey(profile);
+        boolean hasWidth = values.containsKey(widthKey);
+        boolean hasHeight = values.containsKey(heightKey);
+        if (!hasWidth && !hasHeight) return; // v1 anchor/scale representation
+        if (!hasWidth || !hasHeight) {
+            throw new IllegalArgumentException("incomplete blind placement");
+        }
+        CameraPlacement.of(
+                number(values, BlindSpotOverlayController.positionKey(profile, false)),
+                number(values, BlindSpotOverlayController.positionKey(profile, true)),
+                number(values, widthKey), number(values, heightKey));
     }
 
     private static void requireCorrected(Map<String, Object> values, String prefix,
@@ -544,12 +705,25 @@ public final class CameraSettingsTransfer {
         keys.add("parking_camera_scale_sync"); keys.add(ReverseCameraController.PREF_ENABLED);
         keys.add(ReverseCameraController.PREF_BACKGROUND_VISIBLE); keys.add(ReverseCameraController.PREF_WIDGET_VISIBLE);
         keys.add(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED);
+        keys.add(RearviewMirrorSettings.PREF_ENABLED);
+        keys.add(RearviewMirrorSettings.PREF_TARGET);
+        keys.add(RearviewMirrorSettings.PREF_X); keys.add(RearviewMirrorSettings.PREF_Y);
+        keys.add(RearviewMirrorSettings.PREF_WIDTH); keys.add(RearviewMirrorSettings.PREF_HEIGHT);
+        keys.add(RearviewMirrorSettings.PREF_BORDER_DP);
+        keys.add(RearviewMirrorSettings.PREF_BORDER_ARGB);
+        for (String key : new String[]{"mirror_original_x", "mirror_original_y",
+                "mirror_original_width", "mirror_original_height", "mirror_correction",
+                "mirror_fov", "mirror_projection", "mirror_corrected_x",
+                "mirror_corrected_y", "mirror_corrected_width", "mirror_corrected_height",
+                "mirror_mirrored", "mirror_output_mode", "mirror_rotation"}) keys.add(key);
         for (CameraProfile profile : CameraProfile.values()) {
             for (int field = 0; field < 8; field++) keys.add(DirectCameraCrop.preferenceKey(profile, field));
             String corrected = "direct_crop_v3_corrected_" + profile.id + "_";
             keys.add(corrected + "left"); keys.add(corrected + "top"); keys.add(corrected + "width"); keys.add(corrected + "height");
             keys.add(corrected + "aspect");
             keys.add(BlindSpotOverlayController.positionKey(profile, false)); keys.add(BlindSpotOverlayController.positionKey(profile, true));
+            keys.add(BlindSpotOverlayController.placementWidthKey(profile));
+            keys.add(BlindSpotOverlayController.placementHeightKey(profile));
             keys.add(BlindSpotOverlayController.scaleKey(profile)); keys.add(BlindSpotOverlayController.targetKey(profile));
             keys.add(BlindSpotOverlayController.frameAspectKey(profile));
             addDewarpKeys(keys, "camera_dewarp_v3_overlay_" + profile.wireName + "_");
@@ -591,17 +765,36 @@ public final class CameraSettingsTransfer {
     private static boolean isOptionalCameraPresetKey(String key) {
         return key != null && (key.startsWith("reverse_camera_front_1_")
                 || key.endsWith("_frame_aspect")
+                || isBlindPlacementKey(key)
                 || key.startsWith("camera_dewarp_v3_reverse_front_1_")
+                || key.startsWith("mirror_")
                 || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
                 || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
+    }
+
+    private static boolean isBlindPlacementKey(String key) {
+        return BlindSpotOverlayController.PREF_LEFT_WIDTH.equals(key)
+                || BlindSpotOverlayController.PREF_LEFT_HEIGHT.equals(key)
+                || BlindSpotOverlayController.PREF_RIGHT_WIDTH.equals(key)
+                || BlindSpotOverlayController.PREF_RIGHT_HEIGHT.equals(key)
+                || BlindSpotOverlayController.PREF_FRONT_LEFT_WIDTH.equals(key)
+                || BlindSpotOverlayController.PREF_FRONT_LEFT_HEIGHT.equals(key)
+                || BlindSpotOverlayController.PREF_FRONT_RIGHT_WIDTH.equals(key)
+                || BlindSpotOverlayController.PREF_FRONT_RIGHT_HEIGHT.equals(key);
     }
 
     private static void addDewarpKeys(Set<String> keys, String prefix) {
         keys.add(prefix + "enabled"); keys.add(prefix + "fov"); keys.add(prefix + "projection");
     }
 
-    private static Set<String> cameraClearKeys() {
+    private static Set<String> cameraClearKeys(boolean preserveMirror) {
         LinkedHashSet<String> keys = new LinkedHashSet<>(cameraPresetKeys());
+        if (preserveMirror) {
+            // An omitted optional Mirror group must not reset active Mirror.
+            // Local hidden/preset keys are not in the transfer allowlist and
+            // therefore remain untouched for every import.
+            keys.removeIf(key -> key.startsWith("mirror_"));
+        }
         keys.add(BlindSpotOverlayController.PREF_SCALE);
         // Remove the pre-profile grid positions so they cannot reappear if a
         // later reader falls back before the imported x/y values are materialized.
@@ -614,12 +807,20 @@ public final class CameraSettingsTransfer {
         return keys;
     }
 
+    private static boolean containsMirror(Map<String, Object> values) {
+        for (String key : values.keySet()) if (key.startsWith("mirror_")) return true;
+        return false;
+    }
+
     private static boolean isBooleanKey(String key) {
         return key.endsWith("_enabled") || key.endsWith("_turn_required") || key.endsWith("_bsd_only")
                 || key.endsWith("_mirror") || key.endsWith("_visible") || key.endsWith("_integrated")
                 || key.endsWith("_add_central") || key.endsWith("_correction")
+                || key.endsWith("_mirrored")
                 || key.equals(ParkingCameraSettings.PREF_ALLOW_DURING_REVERSE)
-                || key.equals("parking_camera_scale_sync");
+                || key.equals("parking_camera_scale_sync")
+                || key.equals(RearviewMirrorSettings.PREF_ENABLED)
+                || key.equals("mirror_correction") || key.equals("mirror_mirrored");
     }
 
     private static boolean isIntegerKey(String key) {
@@ -633,6 +834,10 @@ public final class CameraSettingsTransfer {
                 || key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)
                 || key.equals(CameraBufferQuality.PREF_QUALITY)
                 || key.contains("_speed") || key.endsWith("_distance_cm")
+                || key.equals(RearviewMirrorSettings.PREF_BORDER_DP)
+                || key.equals(RearviewMirrorSettings.PREF_BORDER_ARGB)
+                || key.equals("mirror_fov") || key.equals("mirror_projection")
+                || key.equals("mirror_output_mode") || key.equals("mirror_rotation")
                 || (key.startsWith("camera_dewarp_")
                     && (key.endsWith("_zoom") || key.endsWith("_strength")
                         || key.endsWith("_center_x") || key.endsWith("_center_y")));
@@ -868,7 +1073,10 @@ public final class CameraSettingsTransfer {
     /** Writes JSON numbers using the declared preference type, not JSONObject's inferred type. */
     private static void putCameraValue(
             SharedPreferences.Editor editor, String key, Object value) {
-        if (isBooleanKey(key)) {
+        if (isStringKey(key)) {
+            if (!(value instanceof String)) throw new IllegalArgumentException("string required: " + key);
+            editor.putString(key, (String) value);
+        } else if (isBooleanKey(key)) {
             if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key);
             editor.putBoolean(key, (Boolean) value);
         } else if (isIntegerKey(key)) {
@@ -876,5 +1084,17 @@ public final class CameraSettingsTransfer {
         } else {
             editor.putFloat(key, floatValue(value, key));
         }
+    }
+
+    private static boolean isStringKey(String key) {
+        return RearviewMirrorSettings.PREF_TARGET.equals(key);
+    }
+
+    private static int versionInt(Object value) {
+        if (!(value instanceof Number)) return -1;
+        double number = ((Number) value).doubleValue();
+        if (!Double.isFinite(number) || number != Math.rint(number)
+                || number < Integer.MIN_VALUE || number > Integer.MAX_VALUE) return -1;
+        return (int) number;
     }
 }

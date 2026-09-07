@@ -68,6 +68,25 @@ public final class CameraShellProtocolValidationTest {
     }
 
     @Test
+    public void reverseGearFlagKeepsCentralFrontSourceWithoutWidget() {
+        CameraDewarpConfig left = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_LEFT);
+        CameraDewarpConfig right = CameraDewarpConfig.disabled(
+                CameraDewarpConfig.LENS_RIGHT);
+        CameraShellProtocol.ReverseOverlaySpec spec =
+                new CameraShellProtocol.ReverseOverlaySpec(
+                        1, ReverseCameraLayout.defaults(), ReverseCameraLayout.defaults(), 8,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_REAR), left, right,
+                        CameraBufferQuality.DEFAULT, ReverseCameraLayout.VISIBILITY_ALL, 0,
+                        ReverseCameraLayout.defaults(), ReverseCameraLayout.defaults(),
+                        left, right, false, false,
+                        CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_FRONT),
+                        true, false, true);
+        assertTrue(spec.switchByGear);
+        assertTrue(spec.requiresCentralFrontSource());
+    }
+
+    @Test
     public void parcelRoundTripCarriesOutputMirrorState() {
         DirectCameraCrop crop = DirectCameraCrop.defaultFor(false)
                 .withMirrorHorizontally(true);

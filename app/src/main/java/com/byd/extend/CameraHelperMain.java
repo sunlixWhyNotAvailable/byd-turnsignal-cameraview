@@ -52,6 +52,7 @@ final class CameraHelperMain {
     static final String CAMERA_OWNER_ACTIVITY = "activity";
     static final String CAMERA_OWNER_OVERLAY = "overlay";
     static final String CAMERA_OWNER_PARKING = "parking";
+    static final String CAMERA_OWNER_MIRROR = "mirror";
     static final String CAMERA_OWNER_REVERSE = "reverse";
     static final String ACTIVITY_RESUME_COLD_RESET = "activity_resume_cold_reset";
     static final String COLD_RESET_DEFERRED_REVERSE = "camera_close_deferred_reverse";
@@ -93,6 +94,7 @@ final class CameraHelperMain {
         private final ConsumerGroup activityGroup = persistentSession.activityGroup;
         private final ConsumerGroup overlayGroup = persistentSession.overlayGroup;
         private final ConsumerGroup parkingGroup = persistentSession.parkingGroup;
+        private final ConsumerGroup mirrorGroup = persistentSession.mirrorGroup;
         private final ConsumerGroup reverseGroup = persistentSession.reverseGroup;
         private String viewName;
         private int activeCameraId = -1;
@@ -147,6 +149,12 @@ final class CameraHelperMain {
             if (requestId <= 0 || ownerEpoch < 0
                     || activeReverseControllerRequestId != requestId) return;
             turnController.toggleReverseSideMode(requestId, ownerEpoch);
+        }
+
+        /** Sends one automatic Reverse direction request through the current camera shell. */
+        synchronized boolean setReverseSideMode(int requestId, int mode) {
+            if (requestId <= 0 || activeReverseControllerRequestId != requestId) return false;
+            return turnController.setReverseSideMode(requestId, mode);
         }
 
         synchronized void emitControllerEvent(String kind, Object... fields) {
@@ -1038,6 +1046,20 @@ final class CameraHelperMain {
             return closeCameraForOwner(CAMERA_OWNER_PARKING, reason, expectedRequestId);
         }
 
+        synchronized String openMirrorCamera(Surface surface, int requestId) {
+            return attachPersistentGroup(mirrorGroup, new Surface[]{surface},
+                    new int[]{ReverseCameraLayout.REAR_CAMERA_INDEX}, requestId,
+                    "rearview_mirror", false, false, null, "mirror_open");
+        }
+
+        synchronized String closeMirrorCamera(String reason, int expectedRequestId) {
+            return closeCameraForOwner(CAMERA_OWNER_MIRROR, reason, expectedRequestId);
+        }
+
+        synchronized void setMirrorTargetActive(Surface target, boolean active) throws Exception {
+            persistentSession.setActive(mirrorGroup, target, active);
+        }
+
         void prepareReverseOverlayWindow(
                 CameraShellProtocol.ReverseOverlaySpec spec,
                 Consumer<TurnSignalController.ReverseSurfaces> surfaceSink,
@@ -1208,7 +1230,8 @@ final class CameraHelperMain {
             if (persistentPanoProducer) {
                 ConsumerGroup active = reverseGroup.has()
                         ? reverseGroup : activityGroup.has() ? activityGroup
-                        : overlayGroup.has() ? overlayGroup : parkingGroup;
+                        : overlayGroup.has() ? overlayGroup
+                        : parkingGroup.has() ? parkingGroup : mirrorGroup;
                 return active.has()
                         ? closePersistentGroup(active, reason, active.requestId)
                         : result("already_closed", null);
@@ -1411,13 +1434,14 @@ final class CameraHelperMain {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException(validation);
             }
-            if ((target == activityGroup || target == reverseGroup || target == parkingGroup)
+            if ((target == activityGroup || target == reverseGroup || target == parkingGroup
+                    || target == mirrorGroup)
                     && requestId <= 0) {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("camera request id required");
             }
             if (persistentAttachBlocked(
-                    target == overlayGroup, target == parkingGroup,
+                    target == overlayGroup, target == parkingGroup || target == mirrorGroup,
                     reverseGroup.has(), activityGroup.has() && activityGroup.exclusive)) {
                 releaseSurfaces(requestedSurfaces);
                 return persistentBusy(target.owner, requestId, errorStage);
@@ -1902,7 +1926,8 @@ final class CameraHelperMain {
             activeCameraTag = "pano_h";
             ConsumerGroup active = reverseGroup.has()
                     ? reverseGroup : activityGroup.has() ? activityGroup
-                    : overlayGroup.has() ? overlayGroup : parkingGroup;
+                    : overlayGroup.has() ? overlayGroup
+                    : parkingGroup.has() ? parkingGroup : mirrorGroup;
             activeCameraOwner = active.has() ? active.owner : "none";
             activeCameraRequestId = active.has() ? active.requestId : 0;
             viewName = active.has() ? active.view : null;
@@ -1951,6 +1976,7 @@ final class CameraHelperMain {
             if (CAMERA_OWNER_ACTIVITY.equals(owner)) return activityGroup;
             if (CAMERA_OWNER_OVERLAY.equals(owner)) return overlayGroup;
             if (CAMERA_OWNER_PARKING.equals(owner)) return parkingGroup;
+            if (CAMERA_OWNER_MIRROR.equals(owner)) return mirrorGroup;
             if (CAMERA_OWNER_REVERSE.equals(owner)) return reverseGroup;
             return null;
         }
@@ -2296,6 +2322,7 @@ final class CameraHelperMain {
             final ConsumerGroup activityGroup = new ConsumerGroup(CAMERA_OWNER_ACTIVITY);
             final ConsumerGroup overlayGroup = new ConsumerGroup(CAMERA_OWNER_OVERLAY);
             final ConsumerGroup parkingGroup = new ConsumerGroup(CAMERA_OWNER_PARKING);
+            final ConsumerGroup mirrorGroup = new ConsumerGroup(CAMERA_OWNER_MIRROR);
             final ConsumerGroup reverseGroup = new ConsumerGroup(CAMERA_OWNER_REVERSE);
             private final IdentityHashMap<Surface, DetachedConsumerIdentity>
                     detachedConsumerIdentities = new IdentityHashMap<>();
@@ -2480,7 +2507,7 @@ final class CameraHelperMain {
                     PersistentEventSink events, int cameraId, int epoch)
                     throws PersistentSessionFailure {
                 for (ConsumerGroup group : new ConsumerGroup[]{
-                        activityGroup, overlayGroup, parkingGroup, reverseGroup}) {
+                        activityGroup, overlayGroup, parkingGroup, reverseGroup, mirrorGroup}) {
                     if (!group.has() || group == activityGroup && !group.shellOwned) continue;
                     ConsumerGroup.Snapshot invalid = group.snapshot();
                     try {
@@ -2595,6 +2622,7 @@ final class CameraHelperMain {
                 releaseAndClear(activityGroup);
                 releaseAndClear(overlayGroup);
                 releaseAndClear(parkingGroup);
+                releaseAndClear(mirrorGroup);
                 releaseAndClear(reverseGroup);
                 fanout = null;
                 clearSources();
@@ -2654,6 +2682,7 @@ final class CameraHelperMain {
                 if (activityGroup.has()) result.add(activityGroup.snapshot());
                 if (overlayGroup.has()) result.add(overlayGroup.snapshot());
                 if (parkingGroup.has()) result.add(parkingGroup.snapshot());
+                if (mirrorGroup.has()) result.add(mirrorGroup.snapshot());
                 if (reverseGroup.has()) result.add(reverseGroup.snapshot());
                 return result.toArray(new ConsumerGroup.Snapshot[0]);
             }
@@ -2686,6 +2715,8 @@ final class CameraHelperMain {
                     if (overlayGroup != target && overlayGroup.attached) groups.add(overlayGroup);
                     if (parkingGroup != target && parkingGroup.attached
                             && target != reverseGroup) groups.add(parkingGroup);
+                    if (mirrorGroup != target && mirrorGroup.attached
+                            && target != reverseGroup) groups.add(mirrorGroup);
                     if (activityGroup != target && activityGroup.attached) groups.add(activityGroup);
                     if (reverseGroup != target && reverseGroup.attached) groups.add(reverseGroup);
                 }
@@ -2703,11 +2734,11 @@ final class CameraHelperMain {
                 }
                 if (reverseGroup.has()) {
                     return restoreGroups(
-                            port, new ConsumerGroup[]{parkingGroup},
+                            port, new ConsumerGroup[]{parkingGroup, mirrorGroup},
                             events, shellClose, cameraId, epoch);
                 }
                 return restoreGroups(
-                        port, new ConsumerGroup[]{overlayGroup, parkingGroup, activityGroup},
+                        port, new ConsumerGroup[]{overlayGroup, parkingGroup, activityGroup, mirrorGroup},
                         events, shellClose, cameraId, epoch);
             }
 
@@ -2930,6 +2961,7 @@ final class CameraHelperMain {
                 if (contains(activityGroup.surfaces, target)) return activityGroup;
                 if (contains(overlayGroup.surfaces, target)) return overlayGroup;
                 if (contains(parkingGroup.surfaces, target)) return parkingGroup;
+                if (contains(mirrorGroup.surfaces, target)) return mirrorGroup;
                 if (contains(reverseGroup.surfaces, target)) return reverseGroup;
                 return null;
             }
@@ -3029,7 +3061,7 @@ final class CameraHelperMain {
             private Throwable detachDirectInputs(PersistentCameraPort port) {
                 Throwable first = null;
                 for (ConsumerGroup group : new ConsumerGroup[]{
-                        activityGroup, overlayGroup, parkingGroup, reverseGroup}) {
+                        activityGroup, overlayGroup, parkingGroup, reverseGroup, mirrorGroup}) {
                     if (!group.directSurfaceAttached) continue;
                     try {
                         if (!port.remove(group.surfaces[0], group.indexes[0])) {

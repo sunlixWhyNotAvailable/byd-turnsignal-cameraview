@@ -152,9 +152,14 @@ class ProductionUiControllerTest {
 
     @Test
     fun steeringButtonLabelsKeepKnownNamesAndUnknownNumericFallback() {
-        assertEquals("Круговий огляд (310)", steeringButtonLabel(310, ukrainian = true))
-        assertEquals("Button (code 999)", steeringButtonLabel(999, ukrainian = false))
-        assertEquals("", steeringButtonLabel(-1, ukrainian = true))
+        val ukrainian = com.byd.extend.ui.UiStrings(com.byd.extend.ui.UiLanguage.Ukrainian)
+        val english = com.byd.extend.ui.UiStrings(com.byd.extend.ui.UiLanguage.English)
+        val chinese = com.byd.extend.ui.UiStrings(com.byd.extend.ui.UiLanguage.Chinese)
+        assertEquals("Круговий огляд (310)", steeringButtonLabel(310, ukrainian))
+        assertEquals("Button (code 999)", steeringButtonLabel(999, english))
+        assertEquals("全景影像 (310)", steeringButtonLabel(310, chinese))
+        assertEquals("按键（代码 999）", steeringButtonLabel(999, chinese))
+        assertEquals("", steeringButtonLabel(-1, ukrainian))
     }
 
     @Test
@@ -216,13 +221,16 @@ class ProductionUiControllerTest {
 
     @Test
     fun backgroundDialogUsesTheAcceptedPreviewCopyInBothLanguages() {
-        val ukrainianPreferences = TestSharedPreferences()
+        val ukrainianPreferences = TestSharedPreferences().apply {
+            // A pre-existing install with no language key migrates to Ukrainian.
+            edit().putBoolean("guard_enabled", false).apply()
+        }
         val ukrainian = ProductionUiController(
             ukrainianPreferences, FakeBackend(ukrainianPreferences))
         ukrainian.dispatch(BydExtendUiAction.Run(CommandId.OpenBackgroundSettings))
         assertEquals("Робота у фоні", ukrainian.state.dialog?.title)
         assertEquals(
-            "Це потрібно перевірити після кожного встановлення або оновлення, інакше DiLink може зупинити HUD у фоні.",
+            "Це потрібно перевірити після кожного встановлення або оновлення, інакше DiLink може зупинити BYD Extend у фоні.",
             ukrainian.state.dialog?.message)
 
         val englishPreferences = TestSharedPreferences().apply {
@@ -233,7 +241,7 @@ class ProductionUiControllerTest {
         english.dispatch(BydExtendUiAction.Run(CommandId.OpenBackgroundSettings))
         assertEquals("Background work", english.state.dialog?.title)
         assertEquals(
-            "Check this after every install or update, otherwise DiLink can stop HUD while the app is in the background.",
+            "Check this after every install or update, otherwise DiLink can stop BYD Extend while the app is in the background.",
             english.state.dialog?.message)
     }
 
@@ -251,7 +259,7 @@ class ProductionUiControllerTest {
         controller.dispatch(BydExtendUiAction.Run(CommandId.LoadProfilePreset, profile))
 
         assertEquals(RootTab.Settings, controller.state.activeTab)
-        assertEquals("80", controller.state.blind.profiles[profile]?.x)
+        assertEquals(55.52f, controller.state.blind.profiles[profile]?.x?.toFloat() ?: 0f, .01f)
         assertEquals(live, controller.state.blind.profiles[profile]?.operation?.status)
     }
 
@@ -307,7 +315,11 @@ class ProductionUiControllerTest {
             controller.dispatch(BydExtendUiAction.Run(command, profile))
             val actual = if (profile == blind) controller.state.blind.profiles[blind]
                 else controller.state.parking.views[ParkingView.FrontLeft]?.profile
-            assertEquals("$command $profile", "80", actual?.x)
+            if (profile == blind) {
+                assertEquals("$command $profile", 55.52f, actual?.x?.toFloat() ?: 0f, .01f)
+            } else {
+                assertEquals("$command $profile", "80", actual?.x)
+            }
             assertEquals(live, actual?.operation?.status)
         }
     }
@@ -442,11 +454,13 @@ class ProductionUiControllerTest {
             CameraProfileId.Parking(ParkingView.FrontLeft),
             CameraProfileId.Reverse(ReverseElement.RearLeft, ReverseSource.Rear),
             CameraProfileId.Reverse(ReverseElement.RearLeft, ReverseSource.Front),
+            CameraProfileId.Mirror,
         )
         fun profileState(profile: CameraProfileId): CameraProfileUiState = when (profile) {
             is CameraProfileId.Blind -> controller.state.blind.profiles.getValue(profile)
             is CameraProfileId.Parking -> controller.state.parking.views.getValue(profile.view).profile
             is CameraProfileId.Reverse -> controller.state.reverse.profiles.getValue(profile)
+            CameraProfileId.Mirror -> controller.state.mirror.profile
         }
         val stored = HashMap(preferences.all)
         val correctionSettings = profiles.associateWith { profileState(it).calibration.correctionEnabled }

@@ -86,7 +86,7 @@ private fun DebugHeader(
     onAction: (BydExtendUiAction) -> Unit,
 ) {
     Column(Modifier.width(400.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        PageTitle(strings.tabs[5], strings.text("Ручні перевірки поворотників та камер",
+        PageTitle(strings.tabs[6], strings.text("Ручні перевірки поворотників та камер",
             "Manual turn-signal and camera checks"), colors)
         Panel(colors, Modifier.fillMaxWidth()) {
             Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.fillMaxWidth(), modeIndicatorPosition) {
@@ -167,7 +167,7 @@ private fun CameraDiagnostics(
                     }
                 }
             }
-            ActionButton(strings.text("Стоп", "Stop"), colors, Modifier.fillMaxWidth(),
+            ActionButton(strings.text("Зупинити", "Stop"), colors, Modifier.fillMaxWidth(),
                 icon = Icons.Outlined.Stop,
                 enabled = selection != null && operation.enabled && !operation.pending) {
                 onAction(BydExtendUiAction.Run(CommandId.StopDiagnosticCamera))
