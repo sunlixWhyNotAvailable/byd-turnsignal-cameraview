@@ -175,11 +175,13 @@ public final class CameraTransitionTest {
         assertTrue(CameraProbeActivity.shouldRenewIdleTabInput(
                 false, false, false, false, 0));
         assertTrue(CameraProbeActivity.shouldWaitForStockShellClose(
-                "reverse_preview_with_stock_base", ""));
+                "reverse_preview_with_stock_base", "", true));
         assertFalse(CameraProbeActivity.shouldWaitForStockShellClose(
-                "reverse_preview_with_stock_base", "stock_avm_shell"));
+                "reverse_preview_with_stock_base", "stock_avm_shell", true));
         assertFalse(CameraProbeActivity.shouldWaitForStockShellClose(
-                "direct_pano_h_index_2", ""));
+                "direct_pano_h_index_2", "", true));
+        assertFalse(CameraProbeActivity.shouldWaitForStockShellClose(
+                "reverse_preview_with_stock_base", "", false));
     }
 
     @Test

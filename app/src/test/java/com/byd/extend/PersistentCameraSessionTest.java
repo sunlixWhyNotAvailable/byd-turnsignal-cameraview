@@ -886,6 +886,183 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void reverseStockInputAttachesOnlyIndexZeroAndKeepsDirectState() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface[] direct = testSurfaces(3);
+        session.startProducer(camera, fanout, session.activityGroup,
+                direct, new int[]{1, 2, 3}, 90,
+                "reverse_preview_with_stock_base", false, false);
+        session.activityGroup.active[1] = false;
+        int addCalls = camera.addCalls;
+        int fanoutAttachCalls = fanout.attachCalls;
+        int fanoutDetachCalls = fanout.detachCalls;
+        Surface stock = new TestSurface();
+
+        assertTrue(session.attachStockInput(camera, session.activityGroup, stock, 90,
+                events, 7, 8));
+
+        assertEquals(addCalls + 1, camera.addCalls);
+        assertEquals(fanoutAttachCalls, fanout.attachCalls);
+        assertEquals(fanoutDetachCalls, fanout.detachCalls);
+        assertTrue(session.activityGroup.firstSurfaceDirect);
+        assertEquals(4, session.activityGroup.surfaces.length);
+        assertEquals(0, session.activityGroup.indexes[0]);
+        assertTrue(session.activityGroup.active[0]);
+        assertTrue(session.activityGroup.active[1]);
+        assertFalse(session.activityGroup.active[2]);
+
+        session.invalidateStockAvmGroup(camera, "stock_avm_shell_died", events, 7, 8);
+
+        assertTrue(session.activityGroup.has());
+        assertFalse(session.activityGroup.firstSurfaceDirect);
+        assertEquals(3, session.activityGroup.surfaces.length);
+        assertEquals(1, session.activityGroup.indexes[0]);
+        assertTrue(session.activityGroup.active[0]);
+        assertFalse(session.activityGroup.active[1]);
+        assertEquals(1, count(trace.values, "add:0"));
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertEquals(0, count(trace.values, "remove:1"));
+        assertEquals("reverse_preview_background",
+                events.byKind("stock_avm_input_detached").field("component"));
+    }
+
+    @Test
+    public void reverseStockFallbackCloseRequiresKnownRequestAndProducerIdentity() {
+        assertTrue(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                101, 17, true, 101, 17, false, 0, 0, 0, 0));
+        assertFalse(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                102, 17, true, 101, 17, false, 0, 0, 0, 0));
+        assertFalse(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                101, 18, true, 101, 17, false, 0, 0, 0, 0));
+
+        assertTrue(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                202, 23, false, 0, 0, true, 202, 23, 0, 0));
+        assertTrue(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                303, 0, false, 0, 0, false, 0, 0, 303, 29));
+        assertFalse(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                303, 30, false, 0, 0, false, 0, 0, 303, 29));
+        assertFalse(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                0, 0, true, 0, 17, false, 0, 0, 0, 0));
+    }
+
+    @Test
+    public void reverseStockShellDeathRetiresQueuedCloseBeforeFallbackClose() {
+        // Model the real cleanup order: the queued close is cleared by shell death, then
+        // TurnSignalController reports its request-scoped fallback camera_closed.
+        int[] retired = CameraHelperMain.HelperBinder.reverseStockRetiredIdentityAfterShellDeath(
+                true, 303, 29, true, 404, 31);
+
+        assertEquals(404, retired[0]);
+        assertEquals(31, retired[1]);
+        assertTrue(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                404, 31, false, 0, 0, false, 0, 0, retired[0], retired[1]));
+        assertFalse(CameraHelperMain.HelperBinder.reverseStockCloseIdentityMatches(
+                303, 29, false, 0, 0, false, 0, 0, retired[0], retired[1]));
+    }
+
+    @Test
+    public void reverseStockInputAddFailureLeavesDirectGroupUntouched() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface[] direct = testSurfaces(3);
+        session.startProducer(camera, fanout, session.activityGroup,
+                direct, new int[]{1, 2, 3}, 92,
+                "reverse_preview_with_stock_base", false, false);
+        camera.addResult = false;
+        session.activityGroup.active[1] = false;
+        int addCalls = camera.addCalls;
+        int fanoutAttachCalls = fanout.attachCalls;
+        int fanoutDetachCalls = fanout.detachCalls;
+
+        assertFalse(session.attachStockInput(camera, session.activityGroup, new TestSurface(), 92,
+                events, 7, 8));
+
+        assertEquals(addCalls + 1, camera.addCalls);
+        assertEquals(fanoutAttachCalls, fanout.attachCalls);
+        assertEquals(fanoutDetachCalls, fanout.detachCalls);
+        assertEquals(3, session.activityGroup.surfaces.length);
+        assertEquals(1, session.activityGroup.indexes[0]);
+        assertFalse(session.activityGroup.firstSurfaceDirect);
+        assertFalse(session.activityGroup.active[1]);
+        assertEquals(0, count(trace.values, "remove:0"));
+    }
+
+    @Test
+    public void reverseStockClosePendingQueuesExactlyOneShellClose() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        session.startProducer(camera, fanout, session.activityGroup,
+                testSurfaces(3), new int[]{1, 2, 3}, 94,
+                "reverse_preview_with_stock_base", false, false);
+        assertTrue(session.attachStockInput(camera, session.activityGroup, new TestSurface(), 94,
+                events, 7, 8));
+
+        CameraHelperMain.HelperBinder.CloseOutcome outcome = session.close(
+                camera, session.activityGroup, "tab_closed", 94,
+                events, shell, 7, 8, true);
+
+        assertTrue(outcome.shellCloseQueued);
+        assertEquals(1, countPrefix(trace.values, "shell:"));
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertTrue(session.producerOpen);
+        assertFalse(session.activityGroup.has());
+    }
+
+    @Test
+    public void reverseVisibilitySourceLookupWorksBeforeAndAfterStockInput() {
+        CameraHelperMain.HelperBinder.ConsumerGroup group =
+                new CameraHelperMain.HelperBinder.ConsumerGroup(
+                        CameraHelperMain.CAMERA_OWNER_ACTIVITY);
+        group.set(testSurfaces(3), new int[]{1, 2, 3}, 95,
+                "reverse_preview_with_stock_base", false, false, true);
+        assertEquals(0, group.indexOfIndex(1));
+        assertEquals(2, group.indexOfIndex(3));
+        assertEquals(-1, group.indexOfIndex(0));
+
+        group.set(testSurfaces(4), new int[]{0, 1, 2, 3}, 95,
+                "reverse_preview_with_stock_base", false, true, true, true);
+        assertEquals(0, group.indexOfIndex(0));
+        assertEquals(1, group.indexOfIndex(1));
+        assertEquals(3, group.indexOfIndex(3));
+    }
+
+    @Test
+    public void staleStockAttachRequestDoesNotMutateDirectGroup() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.startProducer(camera, fanout, session.activityGroup,
+                testSurfaces(3), new int[]{1, 2, 3}, 96,
+                "reverse_preview_with_stock_base", false, false);
+        int addCalls = camera.addCalls;
+
+        try {
+            session.attachStockInput(camera, session.activityGroup, new TestSurface(), 97,
+                    new FakeEventSink(trace, session), 7, 8);
+            fail("stale stock callback should be rejected");
+        } catch (CameraHelperMain.HelperBinder.PersistentSessionFailure expected) {
+            assertEquals("stock_input_request_stale", expected.reason);
+        }
+
+        assertEquals(addCalls, camera.addCalls);
+        assertEquals(3, session.activityGroup.surfaces.length);
+        assertEquals(1, session.activityGroup.indexes[0]);
+        assertFalse(session.activityGroup.firstSurfaceDirect);
+    }
+
+    @Test
     public void finalTeardownRemovesEachIngressExactlyOnce() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
@@ -1325,6 +1502,12 @@ public final class PersistentCameraSessionTest {
         return new Surface[count];
     }
 
+    private static Surface[] testSurfaces(int count) {
+        Surface[] result = new Surface[count];
+        for (int i = 0; i < count; i++) result[i] = new TestSurface();
+        return result;
+    }
+
     private static List<Boolean> list(Boolean... values) {
         List<Boolean> result = new ArrayList<>();
         for (Boolean value : values) result.add(value);
@@ -1367,6 +1550,7 @@ public final class PersistentCameraSessionTest {
         final Trace trace;
         int addCalls;
         int failAddCall;
+        boolean addResult = true;
         boolean removeResult = true;
 
         FakeCameraPort(Trace trace) {
@@ -1378,7 +1562,7 @@ public final class PersistentCameraSessionTest {
             trace.values.add("add:" + index);
             addCalls++;
             if (addCalls == failAddCall) throw new IllegalStateException("attach failed");
-            return true;
+            return addResult;
         }
 
         @Override

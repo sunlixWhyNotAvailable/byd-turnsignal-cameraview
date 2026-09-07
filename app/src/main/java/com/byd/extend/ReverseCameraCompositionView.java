@@ -719,8 +719,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
         // composition.  Its first frame is tracked independently and only
         // enables the central pane once it arrives.
         frameBarrier.arm(requestId, expectedGenerations[0], directGenerations,
-                centralFrontSourceEnabled ? panes.length : directCount);
+                centralFrontSourceEnabled ? panes.length : directCount, false);
         applyEffectiveVisibility();
+    }
+
+    /** Keeps the stock background covered for this preview request after a scoped failure. */
+    void markPreviewBackgroundUnavailable(int requestId) {
+        if (!frameBarrier.markBaseUnavailable(requestId)) return;
+        if (previewBaseCover != null) previewBaseCover.setVisibility(View.VISIBLE);
     }
 
     void armFrames(int requestId, int[] expectedGenerations) {
@@ -912,6 +918,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
         }
         if (result == FrameBarrier.FrameResult.READY) maybeReportFrames();
+        if (source == FrameBarrier.SOURCE_BASE
+                && (result == FrameBarrier.FrameResult.ACCEPTED
+                || result == FrameBarrier.FrameResult.READY)
+                && previewBaseCover != null) {
+            previewBaseCover.setVisibility(View.GONE);
+        }
         return result;
     }
 
@@ -927,7 +939,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (!frameBarrier.recordReadyEvent(requestId, baseGeneration, directGenerations)
                 || !frameBarrier.reveal(
                         requestId, baseGeneration, directGenerations)) return;
-        setAllCovers(View.GONE);
+        setDirectCovers(View.GONE);
         applyEffectiveVisibility();
     }
 
@@ -952,9 +964,13 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void setAllCovers(int visibility) {
+        setDirectCovers(visibility);
+        if (previewBaseCover != null) previewBaseCover.setVisibility(visibility);
+    }
+
+    private void setDirectCovers(int visibility) {
         for (PaneView pane : panes) pane.cover.setVisibility(visibility);
         if (centralFrontPane != null) centralFrontPane.cover.setVisibility(visibility);
-        if (previewBaseCover != null) previewBaseCover.setVisibility(visibility);
     }
 
     private int[] currentGenerations() {
@@ -1010,6 +1026,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         private boolean readyPending;
         private boolean readyEventRecorded;
         private boolean revealed;
+        private boolean requireBase;
+        private boolean baseUnavailable;
         private boolean guardDiagnosticReported;
         private boolean staleDiagnosticReported;
         private int directCount = SOURCE_COUNT - 1;
@@ -1023,6 +1041,13 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void arm(
                 int nextRequestId, int baseGeneration, int[] directGenerations,
                 int nextRequiredDirectCount) {
+            arm(nextRequestId, baseGeneration, directGenerations,
+                    nextRequiredDirectCount, true);
+        }
+
+        void arm(
+                int nextRequestId, int baseGeneration, int[] directGenerations,
+                int nextRequiredDirectCount, boolean nextRequireBase) {
             if (nextRequestId <= 0 || baseGeneration < 0 || directGenerations == null
                     || (directGenerations.length != SOURCE_COUNT - 2
                     && directGenerations.length != SOURCE_COUNT - 1)
@@ -1034,6 +1059,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             directCount = directGenerations.length;
             requiredDirectCount = nextRequiredDirectCount;
             generations[SOURCE_BASE] = baseGeneration;
+            requireBase = nextRequireBase && baseGeneration != 0;
+            baseUnavailable = false;
             fresh[SOURCE_BASE] = baseGeneration == 0;
             discardNext[SOURCE_BASE] = baseGeneration != 0;
             for (int i = 0; i < directGenerations.length; i++) {
@@ -1071,6 +1098,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
             directCount = SOURCE_COUNT - 1;
             requiredDirectCount = SOURCE_COUNT - 1;
+            requireBase = true;
+            baseUnavailable = false;
         }
 
         int requestId() {
@@ -1081,6 +1110,16 @@ final class ReverseCameraCompositionView extends FrameLayout {
             return validSource(source) ? generations[source] : 0;
         }
 
+        boolean markBaseUnavailable(int expectedRequestId) {
+            if (expectedRequestId <= 0 || expectedRequestId != requestId || requireBase) {
+                return false;
+            }
+            baseUnavailable = true;
+            fresh[SOURCE_BASE] = generations[SOURCE_BASE] == 0;
+            discardNext[SOURCE_BASE] = generations[SOURCE_BASE] != 0;
+            return true;
+        }
+
         FrameResult frame(int frameRequestId, int source, int generation) {
             if (requestId <= 0 || !validSource(source)) return FrameResult.IGNORED;
             if (frameRequestId != requestId || generations[source] <= 0
@@ -1089,7 +1128,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 staleDiagnosticReported = true;
                 return FrameResult.BLOCKED_STALE;
             }
-            if (readyPending) return FrameResult.IGNORED;
+            if (source == SOURCE_BASE && baseUnavailable) return FrameResult.IGNORED;
+            if (readyPending && (requireBase || source != SOURCE_BASE || fresh[SOURCE_BASE])) {
+                return FrameResult.IGNORED;
+            }
             if (discardNext[source]) {
                 discardNext[source] = false;
                 if (guardDiagnosticReported) return FrameResult.IGNORED;
@@ -1097,6 +1139,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 return FrameResult.BLOCKED_GUARD;
             }
             fresh[source] = true;
+            if (readyPending) return FrameResult.ACCEPTED;
             if (!allFresh()) return FrameResult.ACCEPTED;
             readyPending = true;
             return FrameResult.READY;
@@ -1132,7 +1175,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
 
         private boolean allFresh() {
-            if (!fresh[SOURCE_BASE]) return false;
+            if (requireBase && !fresh[SOURCE_BASE]) return false;
             for (int i = 1; i <= requiredDirectCount; i++) {
                 if (!fresh[i]) return false;
             }

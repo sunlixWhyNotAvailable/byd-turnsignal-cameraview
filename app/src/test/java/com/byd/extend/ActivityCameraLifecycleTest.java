@@ -20,6 +20,37 @@ import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
+    public void optionalReverseBackgroundAcceptsOnlyItsCurrentRequestAndShells() throws Exception {
+        org.json.JSONObject event = new org.json.JSONObject()
+                .put("source", "helper").put("request_id", 31)
+                .put("component", "reverse_preview_background")
+                .put("kind", "camera_error")
+                .put("stage", "config_init_panorama_db_state");
+        // Config can fail before the stock shell exists; request identity is still required.
+        assertTrue(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 32, 7, 8, event));
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                false, true, 31, 7, 8, event));
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, false, 31, 7, 8, event));
+        event.put("source", "stock_avm_shell").put("camera_shell_epoch", 7)
+                .put("avm_shell_epoch", 8);
+        assertTrue(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+        event.put("camera_shell_epoch", 6);
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+        event.put("camera_shell_epoch", 7).put("avm_shell_epoch", 9);
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+        event.put("avm_shell_epoch", 8).put("source", "camera_shell_helper");
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+    }
+
+    @Test
     public void calibrationHostOwnershipFollowsTheActualProfileRootTab() {
         CameraHostSlot blind = new CameraHostSlot(CameraHostKind.CalibrationOriginal,
                 new CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left), null, null, null, false);

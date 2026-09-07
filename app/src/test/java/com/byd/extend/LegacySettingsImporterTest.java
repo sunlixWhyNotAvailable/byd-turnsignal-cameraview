@@ -1,5 +1,10 @@
 package com.byd.extend;
 
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -50,19 +55,20 @@ public final class LegacySettingsImporterTest {
     }
 
     @Test
-    public void runtimeGateAllowsAbsentDisabledAndStoppedButBlocksRunningUnknownOrStaged() {
-        assertFalse(LegacySettingsImporter.blocksRuntimeForState(
-                false, LegacySettingsImporter.LegacyPackageState.MISSING));
-        assertFalse(LegacySettingsImporter.blocksRuntimeForState(
-                false, LegacySettingsImporter.LegacyPackageState.DISABLED));
-        assertFalse(LegacySettingsImporter.blocksRuntimeForState(
-                false, LegacySettingsImporter.LegacyPackageState.ENABLED_STOPPED));
-        assertTrue(LegacySettingsImporter.blocksRuntimeForState(
-                false, LegacySettingsImporter.LegacyPackageState.ENABLED_RUNNING));
-        assertTrue(LegacySettingsImporter.blocksRuntimeForState(
-                false, LegacySettingsImporter.LegacyPackageState.UNKNOWN));
-        assertTrue(LegacySettingsImporter.blocksRuntimeForState(
-                true, LegacySettingsImporter.LegacyPackageState.ENABLED_STOPPED));
+    public void runtimeGateUsesOnlyTheStagedPreferenceMarkerAndNeverReadsPackageState() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        Context context = contextWithPreferences(settings);
+        assertFalse(LegacySettingsImporter.blocksRuntime(context));
+        settings.putBoolean(LegacySettingsImporter.PREF_HANDOVER_COMPLETE, true);
+        settings.putBoolean(LegacySettingsImporter.PREF_IMPORT_OFFER_HANDLED, true);
+        assertFalse(LegacySettingsImporter.blocksRuntime(context));
+        settings.putBoolean(LegacySettingsImporter.PREF_HANDOVER_BLOCKED, true);
+        assertTrue(LegacySettingsImporter.blocksRuntime(context));
+        settings.putBoolean(LegacySettingsImporter.PREF_HANDOVER_COMPLETE, false);
+        settings.putBoolean(LegacySettingsImporter.PREF_IMPORT_OFFER_HANDLED, false);
+        assertTrue(LegacySettingsImporter.blocksRuntime(context));
+        settings.putBoolean(LegacySettingsImporter.PREF_HANDOVER_BLOCKED, false);
+        assertFalse(LegacySettingsImporter.blocksRuntime(context));
     }
 
     @Test
@@ -250,5 +256,19 @@ public final class LegacySettingsImporterTest {
         assertTrue(settings.getBoolean(LegacySettingsImporter.PREF_HANDOVER_BLOCKED, false));
         assertTrue(settings.getBoolean(LegacySettingsImporter.PREF_HANDOVER_COMPLETE, false));
         assertTrue(settings.getBoolean("guard_enabled", false));
+    }
+
+    private static Context contextWithPreferences(SharedPreferences settings) {
+        return new ContextWrapper(null) {
+            @Override
+            public SharedPreferences getSharedPreferences(String name, int mode) {
+                return settings;
+            }
+
+            @Override
+            public PackageManager getPackageManager() {
+                throw new AssertionError("runtime gate must not inspect legacy package state");
+            }
+        };
     }
 }

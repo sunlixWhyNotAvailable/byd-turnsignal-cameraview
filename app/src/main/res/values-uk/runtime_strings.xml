@@ -140,6 +140,7 @@
     <string name="runtime_status_stock_avm_failed">Помилка Stock AVM: %1$s</string>
     <string name="runtime_status_camera_closed">Камера закрита</string>
     <string name="runtime_status_waiting_frames">Очікування перших кадрів…</string>
+    <string name="runtime_status_reverse_background_unavailable">Штатне тло камер недоступне</string>
     <string name="runtime_status_stock_avm">Stock AVM: %1$s</string>
     <string name="runtime_status_avm_surface_retry">Поверхня AVM некоректна; повторна спроба…</string>
     <string name="runtime_status_guard_ipc_error">Помилка Guard IPC</string>

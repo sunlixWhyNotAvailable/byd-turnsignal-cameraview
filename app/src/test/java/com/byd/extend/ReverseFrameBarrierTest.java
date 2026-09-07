@@ -142,6 +142,71 @@ public final class ReverseFrameBarrierTest {
         assertTrue(barrier.reveal(REQUEST, BASE, direct));
     }
 
+    @Test
+    public void previewCanRevealDirectSourcesWithoutBaseAndAcceptLateBase() {
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, BASE, DIRECT, DIRECT.length, false);
+
+        for (int source = 1; source <= DIRECT.length; source++) {
+            assertEquals(source == 1
+                            ? ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD
+                            : ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                    barrier.frame(REQUEST, source, DIRECT[source - 1]));
+            assertEquals(source == DIRECT.length
+                            ? ReverseCameraCompositionView.FrameBarrier.FrameResult.READY
+                            : ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                    barrier.frame(REQUEST, source, DIRECT[source - 1]));
+        }
+        assertTrue(barrier.readyPending(REQUEST, BASE, DIRECT));
+        assertTrue(barrier.recordReadyEvent(REQUEST, BASE, DIRECT));
+        assertTrue(barrier.reveal(REQUEST, BASE, DIRECT));
+
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertTrue(barrier.revealed());
+        assertTrue(barrier.markBaseUnavailable(REQUEST));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.IGNORED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        barrier.arm(REQUEST + 1, BASE, DIRECT, DIRECT.length, false);
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD,
+                barrier.frame(REQUEST + 1, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST + 1, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+    }
+
+    @Test
+    public void previewAcceptsBaseBeforeDirectSourcesWithoutMakingItRequired() {
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, BASE, DIRECT, DIRECT.length, false);
+
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                barrier.frame(REQUEST, ReverseCameraCompositionView.FrameBarrier.SOURCE_BASE,
+                        BASE));
+        for (int source = 1; source <= DIRECT.length; source++) {
+            barrier.frame(REQUEST, source, DIRECT[source - 1]);
+            assertEquals(source == DIRECT.length
+                            ? ReverseCameraCompositionView.FrameBarrier.FrameResult.READY
+                            : ReverseCameraCompositionView.FrameBarrier.FrameResult.ACCEPTED,
+                    barrier.frame(REQUEST, source, DIRECT[source - 1]));
+        }
+        assertTrue(barrier.readyPending(REQUEST, BASE, DIRECT));
+    }
+
     private static ReverseCameraCompositionView.FrameBarrier armed() {
         ReverseCameraCompositionView.FrameBarrier barrier =
                 new ReverseCameraCompositionView.FrameBarrier();

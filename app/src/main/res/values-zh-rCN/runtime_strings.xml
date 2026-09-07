@@ -140,6 +140,7 @@
     <string name="runtime_status_stock_avm_failed">原厂 AVM 失败：%1$s</string>
     <string name="runtime_status_camera_closed">摄像头已关闭</string>
     <string name="runtime_status_waiting_frames">正在等待首帧…</string>
+    <string name="runtime_status_reverse_background_unavailable">原厂摄像头背景不可用</string>
     <string name="runtime_status_stock_avm">原厂 AVM：%1$s</string>
     <string name="runtime_status_avm_surface_retry">AVM 界面无效；正在重试…</string>
     <string name="runtime_status_guard_ipc_error">Guard IPC 错误</string>

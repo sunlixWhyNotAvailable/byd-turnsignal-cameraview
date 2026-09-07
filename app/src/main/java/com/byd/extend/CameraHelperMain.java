@@ -104,6 +104,16 @@ final class CameraHelperMain {
         private int activeReverseControllerRequestId;
         private boolean stockCameraRequested;
         private int pendingStockCameraRequestId;
+        private boolean reverseStockActive;
+        private boolean reverseStockInputAttached;
+        private int reverseStockRequestId;
+        private int reverseStockProducerEpoch;
+        private long reverseStockAvmShellEpoch;
+        private int reverseStockRetiredRequestId;
+        private int reverseStockRetiredProducerEpoch;
+        private boolean reverseStockClosePending;
+        private int reverseStockCloseRequestId;
+        private int reverseStockCloseProducerEpoch;
         private Surface[] pendingReversePreviewSurfaces = new Surface[0];
         private int pendingReversePreviewRequestId;
 
@@ -634,7 +644,7 @@ final class CameraHelperMain {
             return openReverseCamera(requestedSurfaces, CAMERA_OWNER_REVERSE, requestId);
         }
 
-        private String openReversePreview(Surface[] requestedSurfaces, int requestId) {
+        private synchronized String openReversePreview(Surface[] requestedSurfaces, int requestId) {
             if (requestedSurfaces == null
                     || (requestedSurfaces.length != 4 && requestedSurfaces.length != 5)) {
                 releaseSurfaces(requestedSurfaces);
@@ -655,71 +665,103 @@ final class CameraHelperMain {
                         "error", "reverse camera owns AVM");
                 return result("camera_busy", "reverse camera owns AVM", -1, "pano_h");
             }
-            releaseSurfaces(pendingReversePreviewSurfaces);
-            pendingReversePreviewSurfaces = directSurfaces;
-            pendingReversePreviewRequestId = requestId;
-            pendingStockCameraRequestId = requestId;
+            // A prior stock shell failure is terminal for that request only.  Do not let a
+            // delayed error from it be mistaken for a newly opened background request.
+            reverseStockRetiredRequestId = 0;
+            reverseStockRetiredProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
+            // The direct panes own the persistent producer.  The stock background is an
+            // optional second consumer and must not gate these panes on its config callback.
+            String directResult;
+            try {
+                directResult = attachPersistentGroup(
+                        activityGroup, directSurfaces,
+                        reverseIndexes(directCount), requestId,
+                        "reverse_preview_with_stock_base", false, false,
+                        null, "reverse_preview_direct_open");
+            } catch (RuntimeException | Error error) {
+                // attachPersistentGroup owns the direct array on validation/open failure;
+                // panoOutput is intentionally separate until the stock request is queued.
+                panoOutput.release();
+                throw error;
+            }
+            if (isCameraErrorResult(directResult) || isCameraBusyResult(directResult)) {
+                panoOutput.release();
+                return directResult;
+            }
+            reverseStockActive = true;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = requestId;
+            reverseStockProducerEpoch = producerEpoch;
             stockCameraRequested = true;
+            pendingStockCameraRequestId = requestId;
+            pendingReversePreviewRequestId = requestId;
+            pendingReversePreviewSurfaces = new Surface[0];
             viewName = "reverse_preview_with_stock_base";
+            final int callbackProducerEpoch = producerEpoch;
             turnController.openStockAvm(panoOutput, StockAvmPreview.horizontalViewpoint(3), true,
                     false, requestId,
-                    inputSurface -> attachReversePreviewInputSurface(inputSurface, requestId));
+                    inputSurface -> attachReversePreviewInputSurface(
+                            inputSurface, requestId, callbackProducerEpoch));
             emit("camera_shell_request", "action", "open_reverse_preview_base",
                     "view", "VIEW_2D_REAR", "request_id", requestId,
-                    "preview_indexes", previewIndexes(directCount));
+                    "preview_indexes", previewIndexes(directCount),
+                    "component", "reverse_preview_background",
+                    "producer_epoch", callbackProducerEpoch);
             return result("reverse_preview_shell_open_queued", null);
         }
 
         private synchronized void attachReversePreviewInputSurface(
-                Surface inputSurface, int callbackRequestId) {
-            if (!matchesPendingCameraRequest(
-                    pendingReversePreviewRequestId, callbackRequestId)
-                    || !matchesPendingCameraRequest(
-                            pendingStockCameraRequestId, callbackRequestId)) {
+                Surface inputSurface, int callbackRequestId, int callbackProducerEpoch) {
+            if (!isCurrentReverseStockCallback(callbackRequestId, callbackProducerEpoch)) {
                 inputSurface.release();
-                emit("camera_input_surface_ignored", "view", "reverse_preview_with_stock_base",
+                emit("camera_input_surface_ignored", "component",
+                        "reverse_preview_background", "view", "reverse_preview_with_stock_base",
                         "request_id", callbackRequestId,
-                        "pending_request_id", pendingReversePreviewRequestId);
+                        "pending_request_id", reverseStockRequestId,
+                        "producer_epoch", callbackProducerEpoch,
+                        "active_producer_epoch", producerEpoch);
                 return;
             }
-            Surface[] direct = pendingReversePreviewSurfaces;
-            pendingReversePreviewSurfaces = new Surface[0];
             int requestId = callbackRequestId;
+            int producerEpoch = callbackProducerEpoch;
             pendingReversePreviewRequestId = 0;
             pendingStockCameraRequestId = 0;
-            if (!stockCameraRequested || (direct.length != 3 && direct.length != 4)) {
-                inputSurface.release();
-                releaseSurfaces(direct);
-                return;
-            }
-            Surface[] combined = new Surface[direct.length + 1];
-            combined[0] = inputSurface;
-            System.arraycopy(direct, 0, combined, 1, direct.length);
-            int[] indexes = new int[combined.length];
-            for (int i = 0; i < indexes.length; i++) indexes[i] = i;
-            String openResult;
+            String attachResult;
             try {
-                openResult = attachPersistentGroup(
-                        activityGroup, combined, indexes, requestId,
-                        "reverse_preview_with_stock_base", false, true,
-                        null, "reverse_preview_open", true);
-            } catch (Throwable error) {
-                // attachPersistentGroup owns and releases the combined Surfaces on
-                // validation failure. Consume the callback here so its wrapper
-                // cannot release the stock input a second time.
-                stockCameraRequested = false;
-                emit("camera_error", "stage", "reverse_preview_open",
-                        "camera_tag", "pano_h", "camera_owner", CAMERA_OWNER_ACTIVITY,
-                        "request_id", requestId, "error", summary(error));
-                turnController.closeStockAvm("reverse_preview_direct_open_failed", requestId);
+                boolean attached = persistentSession.attachStockInput(
+                        new ReflectivePersistentCameraPort(camera), activityGroup, inputSurface,
+                        requestId, this::emit, producerCameraId, producerEpoch);
+                if (!attached) {
+                    inputSurface.release();
+                    reverseStockFailed(
+                            "reverse_preview_stock_attach", requestId, producerEpoch,
+                            "stock input addPreviewSurface returned false");
+                    return;
+                }
+                reverseStockInputAttached = true;
+                attachResult = result("camera_opened", null, activeCameraId, "pano_h");
+                emit("stock_avm_input_attached", "component", "reverse_preview_background",
+                        "camera_owner", CAMERA_OWNER_ACTIVITY,
+                        "request_id", requestId, "producer_epoch", producerEpoch,
+                        "preview_index", 0, "view", activityGroup.view,
+                        "preview_indexes", Arrays.toString(activityGroup.indexes));
+            } catch (PersistentSessionFailure failure) {
+                inputSurface.release();
+                if (failure.fatal) {
+                    tearDownPersistentProducer(
+                            failure.reason, failure.getCause(), failure.shellCloseQueued);
+                    return;
+                }
+                reverseStockFailed(
+                        failure.reason, requestId, producerEpoch,
+                        failure.getCause() == null ? failure.reason : summary(failure.getCause()));
                 return;
             }
-            emit("camera_input_surface_attached", "view", viewName,
-                    "result", openResult, "preview_indexes", previewIndexes(direct.length));
-            if (openResult.contains("camera_error") || openResult.contains("camera_busy")) {
-                stockCameraRequested = false;
-                turnController.closeStockAvm("reverse_preview_direct_open_failed", requestId);
-            }
+            emit("camera_input_surface_attached", "component", "reverse_preview_background",
+                    "view", viewName, "result", attachResult,
+                    "request_id", requestId, "producer_epoch", producerEpoch,
+                    "preview_indexes", Arrays.toString(activityGroup.indexes));
         }
 
         private synchronized String openReverseCamera(
@@ -1001,27 +1043,42 @@ final class CameraHelperMain {
             if (!activityGroup.attached || !activityGroup.has()) return false;
             if (activityGroup.requestId != requestId
                     || !"reverse_preview_with_stock_base".equals(activityGroup.view)
-                    || !activityGroup.firstSurfaceDirect
-                    || activityGroup.surfaces.length != generations.length + 1
-                    || activityGroup.indexes.length != activityGroup.surfaces.length) {
+                    || activityGroup.indexes.length != activityGroup.surfaces.length
+                    || generations.length < 3 || generations.length > 4) {
                 throw new IllegalStateException("reverse visibility request is stale");
             }
-            for (int i = 0; i < activityGroup.indexes.length; i++) {
-                if (activityGroup.indexes[i] != i
-                        || activityGroup.surfaces[i] == null
-                        || !activityGroup.surfaces[i].isValid()) {
+            boolean[] seen = new boolean[generations.length + 1];
+            boolean stockInput = false;
+            for (int sourceIndex : activityGroup.indexes) {
+                if (sourceIndex == 0) {
+                    if (stockInput) throw new IllegalStateException(
+                            "reverse visibility request is stale");
+                    stockInput = true;
+                    continue;
+                }
+                if (sourceIndex < 1 || sourceIndex > generations.length
+                        || seen[sourceIndex]) {
+                    throw new IllegalStateException("reverse visibility request is stale");
+                }
+                seen[sourceIndex] = true;
+            }
+            for (int i = 0; i < generations.length; i++) {
+                int sourceIndex = i + 1;
+                int position = activityGroup.indexOfIndex(sourceIndex);
+                if (!seen[sourceIndex] || position < 0 || activityGroup.surfaces[position] == null
+                        || !activityGroup.surfaces[position].isValid()) {
                     throw new IllegalStateException("reverse visibility request is stale");
                 }
             }
-            // The stock AVM base (slot 0) is not a Reverse pane.  Only the three mask-backed
-            // direct targets are changed here; an optional central Front slot (slot 4) remains
-            // under the selector's existing local state because the mask has no Front bit.
+            // Source indexes are stable whether the optional stock input 0 is attached.  Only
+            // the three mask-backed direct targets change here; optional Front (index 4) keeps
+            // its selector-owned state.
             for (int sourceIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
-                    sourceIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
-                            && sourceIndex < activityGroup.surfaces.length;
+                    sourceIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
                     sourceIndex++) {
+                int position = activityGroup.indexOfIndex(sourceIndex);
                 persistentSession.setActive(
-                        activityGroup, activityGroup.surfaces[sourceIndex],
+                        activityGroup, activityGroup.surfaces[position],
                         ReverseCameraLayout.isVisible(visibilityMask, sourceIndex));
             }
             // `widgetVisible` is intentionally consumed by the Activity's local view; the
@@ -1762,12 +1819,19 @@ final class CameraHelperMain {
         private synchronized String closePersistentGroup(
                 ConsumerGroup group, String reason, int expectedRequestId) {
             CloseOutcome outcome;
+            boolean stockClosePending = group == activityGroup
+                    && ((reverseStockActive
+                    && reverseStockRequestMatches(group.requestId)
+                    && reverseStockProducerEpoch == producerEpoch)
+                    || (reverseStockClosePending
+                    && reverseStockCloseRequestId == group.requestId
+                    && reverseStockCloseProducerEpoch == producerEpoch));
             try {
                 outcome = persistentSession.close(
                         new ReflectivePersistentCameraPort(camera), group,
                         reason, expectedRequestId,
                         this::emit, this::cancelPendingStock,
-                        producerCameraId, producerEpoch);
+                        producerCameraId, producerEpoch, stockClosePending);
             } catch (PersistentSessionFailure error) {
                 if (error.fatal) {
                     return tearDownPersistentProducer(
@@ -1810,7 +1874,13 @@ final class CameraHelperMain {
             int closedEpoch = producerEpoch;
             boolean closeStock = stockCameraRequested || activityGroup.shellOwned;
             int stockRequestId = pendingStockCameraRequestId > 0
-                    ? pendingStockCameraRequestId : activityGroup.requestId;
+                    ? pendingStockCameraRequestId
+                    : reverseStockRequestId > 0 ? reverseStockRequestId : activityGroup.requestId;
+            if (reverseStockActive && closeStock) {
+                reverseStockClosePending = true;
+                reverseStockCloseRequestId = stockRequestId;
+                reverseStockCloseProducerEpoch = reverseStockProducerEpoch;
+            }
             camera = null;
             eventCallback = null;
             persistentPanoProducer = false;
@@ -1818,6 +1888,11 @@ final class CameraHelperMain {
             rawSourceHub = null;
             stockCameraRequested = false;
             pendingStockCameraRequestId = 0;
+            reverseStockActive = false;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = 0;
+            reverseStockProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
@@ -1904,6 +1979,14 @@ final class CameraHelperMain {
                 PersistentEventSink sink, String owner, int requestId,
                 String view, int[] indexes, String reason,
                 int cameraId, int epoch) {
+            emitConsumerClosed(sink, owner, requestId, view, indexes, reason,
+                    cameraId, epoch, false);
+        }
+
+        static void emitConsumerClosed(
+                PersistentEventSink sink, String owner, int requestId,
+                String view, int[] indexes, String reason,
+                int cameraId, int epoch, boolean stockClosePending) {
             String closeReason = reason == null ? "unknown" : reason;
             sink.emit("camera_consumer_detached", "camera_owner", owner,
                     "request_id", requestId,
@@ -1918,6 +2001,7 @@ final class CameraHelperMain {
                     "camera_owner", owner,
                     "request_id", requestId,
                     "producer_epoch", epoch,
+                    "stock_close_pending", stockClosePending,
                     "error", "");
         }
 
@@ -1948,21 +2032,101 @@ final class CameraHelperMain {
         }
 
         private boolean cancelPendingStock(String reason, int requestId) {
-            boolean closeStock = stockCameraRequested;
+            boolean closeStock = stockCameraRequested
+                    && (requestId <= 0 || pendingStockRequestMatches(requestId)
+                    || reverseStockRequestMatches(requestId));
+            boolean queuedClose = reverseStockClosePending
+                    && requestId > 0 && reverseStockCloseRequestId == requestId;
+            // A late close/failure for another request must not cancel the current stock
+            // callback or mark its direct group as closed.
+            if (!closeStock && !queuedClose) return false;
+            if (!closeStock) {
+                // The stock close was already queued by a background failure. Re-issue it
+                // with this overall transition's reason so the Activity can settle this close.
+                queueStockClose(reason, requestId);
+                return true;
+            }
+            boolean reverseClose = reverseStockActive
+                    && (requestId <= 0 || reverseStockRequestMatches(requestId));
+            int closeRequestId = requestId > 0 ? requestId
+                    : pendingStockCameraRequestId > 0 ? pendingStockCameraRequestId
+                    : reverseStockRequestId;
+            int closeEpoch = reverseStockProducerEpoch;
             stockCameraRequested = false;
             pendingStockCameraRequestId = 0;
+            reverseStockActive = false;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = 0;
+            reverseStockProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
+            if (reverseClose) {
+                reverseStockClosePending = true;
+                reverseStockCloseRequestId = closeRequestId;
+                reverseStockCloseProducerEpoch = closeEpoch;
+            }
+            // Direct Reverse surfaces are attached immediately; this array is retained only
+            // for a stale pre-direct-first callback and is empty for the current path.
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
-            if (closeStock) queueStockClose(reason, requestId);
+            if (closeStock) queueStockClose(reason, closeRequestId);
             return closeStock;
+        }
+
+        private boolean pendingStockRequestMatches(int requestId) {
+            return requestId > 0 && pendingStockCameraRequestId == requestId;
+        }
+
+        private boolean reverseStockRequestMatches(int requestId) {
+            return requestId > 0 && reverseStockRequestId == requestId;
+        }
+
+        private boolean isCurrentReverseStockCallback(int requestId, int epoch) {
+            return reverseStockActive && stockCameraRequested
+                    && requestId > 0 && requestId == reverseStockRequestId
+                    && requestId == pendingStockCameraRequestId
+                    && epoch > 0 && epoch == reverseStockProducerEpoch
+                    && epoch == producerEpoch && persistentPanoProducer
+                    && activityGroup.has() && activityGroup.attached
+                    && activityGroup.requestId == requestId;
+        }
+
+        private void reverseStockFailed(
+                String stage, int requestId, int epoch, String error) {
+            // This helper is called after the stock shell handed us its input Surface, so the
+            // shell is live even if attaching input 0 to AVMCamera itself failed.
+            boolean live = true;
+            emit("camera_error", "component", "reverse_preview_background",
+                    "renderer", "stock_avm_shell", "stage", stage,
+                    "camera_owner", CAMERA_OWNER_ACTIVITY,
+                    "request_id", requestId, "producer_epoch", epoch,
+                    "stock_close_pending", live,
+                    "error", error == null ? "stock background failed" : error);
+            if (reverseStockActive && reverseStockRequestMatches(requestId)) {
+                // A callback proves a live stock shell; a config/open failure before callback
+                // has no shell to close and is settled by the controller's failure event.
+                if (live) cancelPendingStock("reverse_preview_stock_failed", requestId);
+                else {
+                    stockCameraRequested = false;
+                    pendingStockCameraRequestId = 0;
+                    reverseStockActive = false;
+                    reverseStockInputAttached = false;
+                    reverseStockRequestId = 0;
+                    reverseStockProducerEpoch = 0;
+                    reverseStockAvmShellEpoch = 0L;
+                    pendingReversePreviewRequestId = 0;
+                }
+            }
         }
 
         private boolean queueStockClose(String reason, int requestId) {
             turnController.closeStockAvm(reason, requestId);
             emit("camera_shell_request", "action", "close",
                     "reason", reason == null ? "unknown" : reason,
-                    "request_id", requestId);
+                    "request_id", requestId,
+                    "component", reverseStockClosePending
+                            && reverseStockCloseRequestId == requestId
+                            ? "reverse_preview_background" : "stock_avm");
             return true;
         }
 
@@ -2472,11 +2636,79 @@ final class CameraHelperMain {
                 previous.releaseExcept(surfaces);
             }
 
+            /** Adds optional stock input 0 without detaching or restarting direct targets. */
+            boolean attachStockInput(
+                    PersistentCameraPort port, ConsumerGroup target, Surface stockInput,
+                    int requestId, PersistentEventSink events,
+                    int cameraId, int epoch) throws PersistentSessionFailure {
+                if (target != activityGroup || !target.has() || !target.attached
+                        || target.requestId != requestId || target.firstSurfaceDirect) {
+                    throw new PersistentSessionFailure(
+                            "stock_input_request_stale", null, false, false, false);
+                }
+                if (stockInput == null || !stockInput.isValid()) {
+                    throw new PersistentSessionFailure(
+                            "stock_input_invalid", null, false, false, false);
+                }
+                for (int index : target.indexes) {
+                    if (index == 0) {
+                        throw new PersistentSessionFailure(
+                                "stock_input_already_attached", null, false, false, false);
+                    }
+                }
+                boolean added;
+                try {
+                    added = port.add(stockInput, 0);
+                } catch (Throwable error) {
+                    Throwable cleanup = null;
+                    try {
+                        if (!port.remove(stockInput, 0)) {
+                            cleanup = new IllegalStateException(
+                                    "rmPreviewSurface returned false for stock input 0");
+                        }
+                    } catch (Throwable removeError) {
+                        cleanup = root(removeError);
+                    }
+                    if (cleanup != null) error.addSuppressed(cleanup);
+                    throw new PersistentSessionFailure(
+                            "stock_input_attach_failed", root(error), cleanup != null,
+                            false, false);
+                }
+                if (!added) return false;
+
+                Surface[] directSurfaces = target.surfaces;
+                int[] directIndexes = target.indexes;
+                boolean[] directActive = target.active;
+                Surface[] combinedSurfaces = new Surface[directSurfaces.length + 1];
+                int[] combinedIndexes = new int[directIndexes.length + 1];
+                boolean[] combinedActive = new boolean[directActive.length + 1];
+                combinedSurfaces[0] = stockInput;
+                combinedIndexes[0] = 0;
+                combinedActive[0] = true;
+                System.arraycopy(directSurfaces, 0, combinedSurfaces, 1, directSurfaces.length);
+                System.arraycopy(directIndexes, 0, combinedIndexes, 1, directIndexes.length);
+                System.arraycopy(directActive, 0, combinedActive, 1, directActive.length);
+                target.set(combinedSurfaces, combinedIndexes, requestId,
+                        target.view, target.exclusive, true, true, true);
+                target.restoreActive(combinedActive);
+                return true;
+            }
+
             CloseOutcome close(
                     PersistentCameraPort port, ConsumerGroup group,
                     String reason, int expectedRequestId,
                     PersistentEventSink events, PersistentShellCloseSink shellClose,
                     int cameraId, int epoch) throws PersistentSessionFailure {
+                return close(port, group, reason, expectedRequestId,
+                        events, shellClose, cameraId, epoch, false);
+            }
+
+            CloseOutcome close(
+                    PersistentCameraPort port, ConsumerGroup group,
+                    String reason, int expectedRequestId,
+                    PersistentEventSink events, PersistentShellCloseSink shellClose,
+                    int cameraId, int epoch, boolean stockClosePending)
+                    throws PersistentSessionFailure {
                 PersistentCloseDecision decision = persistentCloseDecision(
                         group.has(), group.requestId, expectedRequestId);
                 if (decision != PersistentCloseDecision.CLOSE) {
@@ -2496,9 +2728,13 @@ final class CameraHelperMain {
                 closed.release();
                 boolean shellCloseQueued = closed.shellOwned
                         && shellClose.close(reason, closed.requestId);
+                if (stockClosePending && !shellCloseQueued) {
+                    shellCloseQueued = shellClose.close(reason, closed.requestId);
+                }
                 restoreCompatibleGroups(port, events, shellClose, cameraId, epoch);
                 emitConsumerClosed(events, closed.owner, closed.requestId,
-                        closed.view, closed.indexes, reason, cameraId, epoch);
+                        closed.view, closed.indexes, reason, cameraId, epoch,
+                        stockClosePending && shellCloseQueued);
                 return new CloseOutcome(decision, shellCloseQueued);
             }
 
@@ -2546,7 +2782,7 @@ final class CameraHelperMain {
                     int[] remainingIndexes = Arrays.copyOfRange(
                             invalid.indexes, 1, invalid.indexes.length);
                     activityGroup.set(remainingSurfaces, remainingIndexes, invalid.requestId,
-                            invalid.view, invalid.exclusive, invalid.shellOwned,
+                            invalid.view, invalid.exclusive, false,
                             invalid.attached, false);
                     activityGroup.restoreActive(Arrays.copyOfRange(
                             invalid.active, 1, invalid.active.length));
@@ -2555,9 +2791,11 @@ final class CameraHelperMain {
                                 invalid.requestId, epoch);
                         invalid.surfaces[0].release();
                     }
-                    events.emit("stock_avm_input_detached", "camera_owner", invalid.owner,
+                    events.emit("stock_avm_input_detached", "component",
+                            "reverse_preview_background", "camera_owner", invalid.owner,
                             "request_id", invalid.requestId, "view", invalid.view,
-                            "reason", reason, "producer_epoch", epoch);
+                            "reason", reason, "producer_epoch", epoch,
+                            "preview_index", 0);
                     return;
                 }
                 try {
@@ -3288,6 +3526,13 @@ final class CameraHelperMain {
                 return -1;
             }
 
+            int indexOfIndex(int sourceIndex) {
+                for (int i = 0; i < indexes.length; i++) {
+                    if (indexes[i] == sourceIndex) return i;
+                }
+                return -1;
+            }
+
             void restoreActive(boolean[] values) {
                 if (values == null || values.length != surfaces.length) {
                     active = new boolean[surfaces.length];
@@ -3438,6 +3683,30 @@ final class CameraHelperMain {
             return directCount == 4 ? "[0, 1, 2, 3, 4]" : "[0, 1, 2, 3]";
         }
 
+        private static int[] reverseIndexes(int directCount) {
+            int[] indexes = new int[directCount];
+            for (int i = 0; i < directCount; i++) indexes[i] = i + 1;
+            return indexes;
+        }
+
+        private static boolean isCameraErrorResult(String value) {
+            try {
+                return value != null
+                        && "camera_error".equals(new JSONObject(value).optString("kind"));
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        private static boolean isCameraBusyResult(String value) {
+            try {
+                return value != null
+                        && "camera_busy".equals(new JSONObject(value).optString("kind"));
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
         private static void releaseSurfaces(Surface[] values) {
             if (values == null) return;
             for (Surface value : values) {
@@ -3478,12 +3747,260 @@ final class CameraHelperMain {
         }
 
         private void acceptControllerEvent(String kind, Object[] fields) {
-            emit(kind, fields);
+            Object[] forwarded = reverseStockControllerFields(kind, fields);
+            emit(kind, forwarded);
             if ("camera_shell_died".equals(kind)) {
                 cameraShellDiedCleanup();
                 turnController.recoverCameraHelper();
             } else if ("stock_avm_shell_died".equals(kind)) {
+                if (!hasReverseStockContext() || isCurrentReverseStockDeath(forwarded)) {
+                    stockAvmShellDiedCleanup();
+                }
+            } else if ("camera_closed".equals(kind)
+                    && hasReverseStockComponent(forwarded)) {
+                settleReverseStockBackgroundClosed(
+                        requestId(forwarded), fieldInt(forwarded, "producer_epoch", 0));
+            } else if ("camera_error".equals(kind)
+                    && hasReverseStockComponent(forwarded)) {
+                settleReverseStockBackgroundError(
+                        requestId(forwarded), fieldInt(forwarded, "producer_epoch", 0));
+            }
+        }
+
+        private synchronized boolean hasReverseStockContext() {
+            return reverseStockActive || reverseStockClosePending
+                    || reverseStockRetiredRequestId > 0 && activityGroup.has()
+                    && "reverse_preview_with_stock_base".equals(activityGroup.view);
+        }
+
+        private synchronized boolean isCurrentReverseStockDeath(Object[] fields) {
+            return isCurrentReverseStockDeath(
+                    requestId(fields), fieldLong(fields, "avm_shell_epoch", 0L));
+        }
+
+        private synchronized boolean isCurrentReverseStockDeath(JSONObject event) {
+            return isCurrentReverseStockDeath(
+                    event.optInt("request_id", 0), event.optLong("avm_shell_epoch", 0L));
+        }
+
+        private synchronized boolean isCurrentReverseStockDeath(
+                int eventRequestId, long eventEpoch) {
+            if (reverseStockActive) {
+                return (eventRequestId <= 0 || eventRequestId == reverseStockRequestId)
+                        && (reverseStockAvmShellEpoch <= 0
+                        || eventEpoch > 0 && eventEpoch == reverseStockAvmShellEpoch);
+            }
+            if (reverseStockClosePending) {
+                return (eventRequestId <= 0 || eventRequestId == reverseStockCloseRequestId)
+                        && (reverseStockAvmShellEpoch <= 0
+                        || eventEpoch > 0 && eventEpoch == reverseStockAvmShellEpoch);
+            }
+            return false;
+        }
+
+        private synchronized Object[] reverseStockControllerFields(
+                String kind, Object[] fields) {
+            if (!isReverseStockControllerEvent(kind, fields)) return fields;
+            int requestId = requestId(fields);
+            boolean active = reverseStockActive
+                    && (requestId <= 0 || requestId == reverseStockRequestId);
+            boolean closing = reverseStockClosePending
+                    && (requestId > 0 && requestId == reverseStockCloseRequestId
+                    || requestId <= 0 && "stock_avm_shell_died".equals(kind));
+            boolean stale = requestId > 0 && !active && !closing
+                    && (reverseStockActive || reverseStockClosePending);
+            if (requestId <= 0) {
+                requestId = active ? reverseStockRequestId
+                        : closing ? reverseStockCloseRequestId : reverseStockRetiredRequestId;
+            }
+            int epoch = active ? reverseStockProducerEpoch
+                    : closing ? reverseStockCloseProducerEpoch
+                    : stale ? (reverseStockActive
+                            ? reverseStockProducerEpoch : reverseStockCloseProducerEpoch)
+                    : reverseStockRetiredProducerEpoch;
+            Object[] scoped = Arrays.copyOf(fields, fields.length + 8);
+            int at = fields.length;
+            scoped[at++] = "component";
+            scoped[at++] = "reverse_preview_background";
+            scoped[at++] = "camera_owner";
+            scoped[at++] = CAMERA_OWNER_ACTIVITY;
+            scoped[at++] = "request_id";
+            scoped[at++] = requestId;
+            scoped[at++] = "producer_epoch";
+            scoped[at] = epoch;
+            return scoped;
+        }
+
+        private synchronized boolean isReverseStockControllerEvent(
+                String kind, Object[] fields) {
+            if (fields == null) return false;
+            if (!"camera_error".equals(kind)
+                    && !"stock_avm_shell_died".equals(kind)
+                    && !"stock_avm_config_stage".equals(kind)
+                    && !"camera_closed".equals(kind)) return false;
+            String renderer = fieldString(fields, "renderer");
+            // Generic controller errors are not stock-background errors.  Only an explicit
+            // stock renderer (or a stock-specific event kind) may be scoped here.
+            if (("camera_error".equals(kind) || "camera_closed".equals(kind))
+                    && !renderer.startsWith("stock_avm")) {
+                return false;
+            }
+            int eventRequestId = requestId(fields);
+            int eventEpoch = fieldInt(fields, "producer_epoch", 0);
+            if ("camera_closed".equals(kind)) {
+                return reverseStockCloseIdentityMatches(
+                        eventRequestId, eventEpoch,
+                        reverseStockActive, reverseStockRequestId, reverseStockProducerEpoch,
+                        reverseStockClosePending, reverseStockCloseRequestId,
+                        reverseStockCloseProducerEpoch,
+                        reverseStockRetiredRequestId, reverseStockRetiredProducerEpoch);
+            }
+            long shellEpoch = fieldLong(fields, "avm_shell_epoch", 0L);
+            boolean shellDeath = "stock_avm_shell_died".equals(kind);
+            boolean activeRequestMatch = "camera_closed".equals(kind)
+                    ? eventRequestId > 0 && eventRequestId == reverseStockRequestId
+                    : eventRequestId <= 0 || eventRequestId == reverseStockRequestId;
+            boolean shellEpochMatch = !shellDeath || reverseStockAvmShellEpoch <= 0
+                    || shellEpoch > 0 && shellEpoch == reverseStockAvmShellEpoch;
+            if (reverseStockActive
+                    && activeRequestMatch
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockProducerEpoch)
+                    && shellEpochMatch) {
+                return true;
+            }
+            if (reverseStockClosePending
+                    && (eventRequestId > 0 && eventRequestId == reverseStockCloseRequestId
+                    || eventRequestId <= 0 && "stock_avm_shell_died".equals(kind))
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockCloseProducerEpoch)
+                    && shellEpochMatch) {
+                return true;
+            }
+            // A request-scoped stock callback from an older Reverse request must remain
+            // background-scoped, even though it cannot settle the current request.
+            if (eventRequestId > 0 && !"camera_closed".equals(kind)
+                    && (reverseStockActive || reverseStockClosePending)) {
+                return true;
+            }
+            // TurnSignalController reports shell death without request_id, then emits the
+            // request-scoped camera_error.  Keep only that retired identity for the pair.
+            return eventRequestId > 0
+                    && eventRequestId == reverseStockRetiredRequestId
+                    && (fieldInt(fields, "producer_epoch", 0) <= 0
+                    || fieldInt(fields, "producer_epoch", 0) == reverseStockRetiredProducerEpoch);
+        }
+
+        static boolean reverseStockCloseIdentityMatches(
+                int eventRequestId, int eventProducerEpoch,
+                boolean active, int activeRequestId, int activeProducerEpoch,
+                boolean closing, int closeRequestId, int closeProducerEpoch,
+                int retiredRequestId, int retiredProducerEpoch) {
+            if (eventRequestId <= 0) return false;
+            return (active && eventRequestId == activeRequestId
+                    && producerEpochMatches(eventProducerEpoch, activeProducerEpoch)
+                    || closing && eventRequestId == closeRequestId
+                    && producerEpochMatches(eventProducerEpoch, closeProducerEpoch)
+                    || eventRequestId == retiredRequestId
+                    && producerEpochMatches(eventProducerEpoch, retiredProducerEpoch));
+        }
+
+        static int[] reverseStockRetiredIdentityAfterShellDeath(
+                boolean active, int activeRequestId, int activeProducerEpoch,
+                boolean closing, int closeRequestId, int closeProducerEpoch) {
+            if (closing && closeRequestId > 0 && closeProducerEpoch > 0) {
+                return new int[]{closeRequestId, closeProducerEpoch};
+            }
+            if (active && activeRequestId > 0 && activeProducerEpoch > 0) {
+                return new int[]{activeRequestId, activeProducerEpoch};
+            }
+            return new int[]{0, 0};
+        }
+
+        private static boolean producerEpochMatches(int eventEpoch, int expectedEpoch) {
+            return expectedEpoch > 0 && (eventEpoch <= 0 || eventEpoch == expectedEpoch);
+        }
+
+        private static String fieldString(Object[] fields, String name) {
+            if (fields == null) return "";
+            for (int i = 0; i + 1 < fields.length; i += 2) {
+                if (name.equals(String.valueOf(fields[i]))) {
+                    return String.valueOf(fields[i + 1]);
+                }
+            }
+            return "";
+        }
+
+        private static int fieldInt(Object[] fields, String name, int fallback) {
+            String value = fieldString(fields, name);
+            if (value.isEmpty()) return fallback;
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+
+        private static long fieldLong(Object[] fields, String name, long fallback) {
+            String value = fieldString(fields, name);
+            if (value.isEmpty()) return fallback;
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+
+        private synchronized boolean hasReverseStockComponent(Object[] fields) {
+            return "reverse_preview_background".equals(
+                    fieldString(fields, "component"));
+        }
+
+        private synchronized void settleReverseStockBackgroundError(
+                int eventRequestId, int eventEpoch) {
+            if (!reverseStockActive) return;
+            int requestId = eventRequestId > 0 ? eventRequestId : reverseStockRequestId;
+            if (!reverseStockRequestMatches(requestId)
+                    || eventEpoch > 0 && reverseStockProducerEpoch != eventEpoch) return;
+            if (reverseStockInputAttached) {
+                cancelPendingStock("reverse_preview_stock_error", requestId);
                 stockAvmShellDiedCleanup();
+                return;
+            }
+            stockCameraRequested = false;
+            pendingStockCameraRequestId = 0;
+            pendingReversePreviewRequestId = 0;
+            reverseStockRetiredRequestId = requestId;
+            reverseStockRetiredProducerEpoch = reverseStockProducerEpoch;
+            reverseStockActive = false;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = 0;
+            reverseStockProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
+        }
+
+        private synchronized void settleReverseStockBackgroundClosed(
+                int eventRequestId, int eventEpoch) {
+            if (eventRequestId <= 0) return;
+            boolean active = reverseStockActive
+                    && reverseStockRequestId == eventRequestId
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockProducerEpoch);
+            boolean closing = reverseStockClosePending
+                    && reverseStockCloseRequestId == eventRequestId
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockCloseProducerEpoch);
+            boolean retired = reverseStockRetiredRequestId == eventRequestId
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockRetiredProducerEpoch);
+            if (active) {
+                if (reverseStockInputAttached) {
+                    detachReverseStockInput("stock_avm_shell_closed");
+                }
+                reverseStockRetiredRequestId = eventRequestId;
+                reverseStockRetiredProducerEpoch = reverseStockProducerEpoch;
+                clearReverseStockState();
+                return;
+            }
+            if (closing) clearReverseStockCloseState();
+            if (retired) {
+                reverseStockRetiredRequestId = 0;
+                reverseStockRetiredProducerEpoch = 0;
             }
         }
 
@@ -3493,6 +4010,27 @@ final class CameraHelperMain {
                     && viewName != null && !viewName.startsWith("direct_"));
             stockCameraRequested = false;
             pendingStockCameraRequestId = 0;
+            boolean reverseStock = reverseStockActive
+                    || reverseStockInputAttached
+                    || reverseStockClosePending;
+            if (reverseStockActive || reverseStockClosePending) {
+                int[] retired = reverseStockRetiredIdentityAfterShellDeath(
+                        reverseStockActive, reverseStockRequestId, reverseStockProducerEpoch,
+                        reverseStockClosePending, reverseStockCloseRequestId,
+                        reverseStockCloseProducerEpoch);
+                if (retired[0] > 0) {
+                    reverseStockRetiredRequestId = retired[0];
+                    reverseStockRetiredProducerEpoch = retired[1];
+                }
+            }
+            reverseStockActive = false;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = 0;
+            reverseStockProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
+            reverseStockClosePending = false;
+            reverseStockCloseRequestId = 0;
+            reverseStockCloseProducerEpoch = 0;
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
@@ -3503,6 +4041,7 @@ final class CameraHelperMain {
                     emit("camera_closed", "renderer", "stock_avm_shell",
                             "view", viewName == null ? "unknown" : viewName,
                             "reason", "stock_avm_shell_died", "request_id", activeCameraRequestId,
+                            "component", reverseStock ? "reverse_preview_background" : "stock_avm",
                             "error", "");
                 }
                 return;
@@ -3535,17 +4074,21 @@ final class CameraHelperMain {
                     tearDownPersistentProducer(
                             failure.reason, failure.getCause(), true);
                 }
-            } else {
-                closeCamera("camera_shell_died");
+                return;
             }
+            closeCamera("camera_shell_died");
         }
 
         private void acceptShellEvent(String line) {
             if (line == null) return;
             String key = null;
+            String forwardedLine = line;
+            boolean reverseStockDeath = false;
             try {
                 JSONObject event = new JSONObject(line);
                 String kind = event.optString("kind");
+                forwardedLine = scopeReverseStockEvent(event);
+                event = new JSONObject(forwardedLine);
                 key = lifetimeCounterKey(kind);
                 if ("reverse_overlay_target".equals(kind)) {
                     applyReverseTargetEvent(event);
@@ -3560,13 +4103,15 @@ final class CameraHelperMain {
                         || "camera_closed".equals(kind);
                 boolean pendingPreviewError;
                 synchronized (this) {
+                    boolean reverseStockEvent = isReverseStockEvent(event);
                     boolean stockTerminal = terminal && matchesCurrentStockRequest(
                             stockCameraRequested, pendingStockCameraRequestId,
                             activeCameraRequestId, requestId);
                     pendingPreviewError = "camera_error".equals(kind)
+                            && !reverseStockEvent
                             && matchesPendingCameraRequest(
                                     pendingReversePreviewRequestId, requestId);
-                    if (stockTerminal || pendingPreviewError) {
+                    if (!reverseStockEvent && (stockTerminal || pendingPreviewError)) {
                         stockCameraRequested = false;
                         if (pendingStockCameraRequestId == requestId) {
                             pendingStockCameraRequestId = 0;
@@ -3577,6 +4122,35 @@ final class CameraHelperMain {
                             pendingReversePreviewRequestId = 0;
                         }
                     }
+                    if (reverseStockEvent) {
+                        int reverseRequest = requestId > 0
+                                ? requestId : reverseStockRequestId;
+                        if ("stock_avm_shell_died".equals(kind)) {
+                            reverseStockDeath = !hasReverseStockContext()
+                                    || isCurrentReverseStockDeath(event);
+                        } else if ("camera_error".equals(kind)
+                                && reverseStockRequestMatches(reverseRequest)) {
+                            if (reverseStockInputAttached) {
+                                cancelPendingStock(
+                                        "reverse_preview_stock_error", reverseRequest);
+                                detachReverseStockInput(
+                                        "reverse_preview_stock_error");
+                            } else {
+                                settleReverseStockBackgroundError(
+                                        reverseRequest, reverseStockProducerEpoch);
+                            }
+                        } else if ("camera_closed".equals(kind)
+                                && reverseStockRequestMatches(reverseRequest)) {
+                            if (reverseStockInputAttached) {
+                                detachReverseStockInput("stock_avm_shell_closed");
+                            }
+                            clearReverseStockState();
+                        } else if ("camera_closed".equals(kind)
+                                && reverseStockClosePending
+                                && reverseStockCloseRequestId == reverseRequest) {
+                            clearReverseStockCloseState();
+                        }
+                    }
                 }
                 if (pendingPreviewError) {
                     turnController.closeStockAvm("reverse_preview_base_failed", requestId);
@@ -3584,9 +4158,100 @@ final class CameraHelperMain {
             } catch (Throwable error) {
                 Log.w(TAG, "Counter event parse failed", error);
             }
+            if (reverseStockDeath) stockAvmShellDiedCleanup();
             if (key != null) incrementCounter(key);
-            forwardLine(line);
+            forwardLine(forwardedLine);
             if (key != null) emitCounters();
+        }
+
+        private synchronized String scopeReverseStockEvent(JSONObject event) {
+            if (event == null || !isStockShellEvent(event)) return event.toString();
+            int eventRequestId = event.optInt("request_id", 0);
+            int eventEpoch = event.optInt("producer_epoch", 0);
+            boolean activeMatch = reverseStockActive
+                    && (eventRequestId <= 0 || eventRequestId == reverseStockRequestId)
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockProducerEpoch);
+            boolean closeMatch = reverseStockClosePending
+                    && (eventRequestId <= 0 || eventRequestId == reverseStockCloseRequestId)
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockCloseProducerEpoch);
+            boolean retiredMatch = eventRequestId > 0
+                    && eventRequestId == reverseStockRetiredRequestId
+                    && (eventEpoch <= 0 || eventEpoch == reverseStockRetiredProducerEpoch);
+            boolean staleMatch = eventRequestId > 0
+                    && !activeMatch && !closeMatch && !retiredMatch
+                    && (reverseStockActive || reverseStockClosePending);
+            if (!activeMatch && !closeMatch && !retiredMatch && !staleMatch) {
+                return event.toString();
+            }
+            int requestId = eventRequestId > 0 ? eventRequestId
+                    : activeMatch ? reverseStockRequestId : reverseStockCloseRequestId;
+            int epoch = activeMatch ? reverseStockProducerEpoch
+                    : closeMatch ? reverseStockCloseProducerEpoch : reverseStockRetiredProducerEpoch;
+            long avmEpoch = event.optLong("avm_shell_epoch", 0L);
+            if (activeMatch && avmEpoch > 0L
+                    && ("stock_avm_shell_attached".equals(event.optString("kind"))
+                    || "camera_shell_opened".equals(event.optString("kind")))) {
+                reverseStockAvmShellEpoch = avmEpoch;
+            }
+            try {
+                event.put("component", "reverse_preview_background");
+                event.put("camera_owner", CAMERA_OWNER_ACTIVITY);
+                event.put("request_id", requestId);
+                if (epoch > 0 && !event.has("producer_epoch")) {
+                    event.put("producer_epoch", epoch);
+                }
+                event.put("stock_close_pending", closeMatch);
+                return event.toString();
+            } catch (Throwable ignored) {
+                return event.toString();
+            }
+        }
+
+        private static boolean isStockShellEvent(JSONObject event) {
+            String kind = event.optString("kind");
+            String renderer = event.optString("renderer");
+            return renderer.startsWith("stock_avm")
+                    || kind.startsWith("stock_avm_")
+                    || "camera_config_read".equals(kind)
+                    || "camera_shell_opened".equals(kind);
+        }
+
+        private static boolean isReverseStockEvent(JSONObject event) {
+            return event != null
+                    && "reverse_preview_background".equals(
+                            event.optString("component"));
+        }
+
+        private synchronized void detachReverseStockInput(String reason) {
+            if (!persistentPanoProducer || !activityGroup.has()
+                    || !PersistentSession.isReverseStockAvmGroup(activityGroup)) return;
+            try {
+                persistentSession.invalidateStockAvmGroup(
+                        new ReflectivePersistentCameraPort(camera), reason, this::emit,
+                        producerCameraId, producerEpoch);
+                refreshPersistentLegacyState();
+            } catch (PersistentSessionFailure failure) {
+                tearDownPersistentProducer(failure.reason, failure.getCause(), true);
+            }
+        }
+
+        private synchronized void clearReverseStockState() {
+            stockCameraRequested = false;
+            if (pendingStockCameraRequestId == reverseStockRequestId) {
+                pendingStockCameraRequestId = 0;
+            }
+            pendingReversePreviewRequestId = 0;
+            reverseStockActive = false;
+            reverseStockInputAttached = false;
+            reverseStockRequestId = 0;
+            reverseStockProducerEpoch = 0;
+            reverseStockAvmShellEpoch = 0L;
+        }
+
+        private synchronized void clearReverseStockCloseState() {
+            reverseStockClosePending = false;
+            reverseStockCloseRequestId = 0;
+            reverseStockCloseProducerEpoch = 0;
         }
 
         private synchronized void applyReverseTargetEvent(JSONObject event) {

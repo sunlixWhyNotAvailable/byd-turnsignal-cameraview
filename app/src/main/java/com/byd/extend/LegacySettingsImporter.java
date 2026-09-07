@@ -67,11 +67,9 @@ final class LegacySettingsImporter {
         if (context == null) return true;
         SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         try {
-            return blocksRuntimeForState(
-                    settings.getBoolean(PREF_HANDOVER_BLOCKED, false),
-                    legacyPackageState(context.getPackageManager()));
+            return settings.getBoolean(PREF_HANDOVER_BLOCKED, false);
         } catch (Throwable ignored) {
-            // Unknown package state is unsafe: do not start a competing singleton runtime.
+            // A preference read failure remains fail-closed; package state is not a runtime gate.
             return true;
         }
     }
@@ -462,23 +460,6 @@ final class LegacySettingsImporter {
         ENABLED_STOPPED,
         ENABLED_RUNNING,
         UNKNOWN
-    }
-
-    static boolean blocksRuntimeForState(boolean handoverBlocked, LegacyPackageState state) {
-        if (handoverBlocked || state == null) return true;
-        switch (state) {
-            case MISSING:
-            case DISABLED:
-            case ENABLED_STOPPED:
-                // Force-stopped legacy is not an active owner; a staged/failed handover was
-                // handled by the block marker above.
-                return false;
-            case ENABLED_RUNNING:
-            case UNKNOWN:
-            default:
-                // Unknown/running state is unsafe: do not start a competing singleton.
-                return true;
-        }
     }
 
     private static boolean enableLegacyPackageIfNeeded(

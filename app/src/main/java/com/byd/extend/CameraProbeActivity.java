@@ -761,6 +761,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private int productionPreviewFrameRequest;
     private int pendingReversePreviewRequestId;
     private int[] pendingReversePreviewGenerations;
+    private int reversePreviewBackgroundFailureRequestId;
     private Bitmap calibrationCaptureBitmap;
     private Bitmap calibrationResultBitmap;
     private int selectedTab = -1;
@@ -2359,8 +2360,12 @@ public final class CameraProbeActivity extends ComponentActivity
                 reverseCalibrationCameraIndex,
                 reverseCalibrationFront,
                 reverseCalibrationCopiesRaw());
-        publishCameraStatus(activeActivityCameraProfile, null,
-                "First frame ready", StatusTone.Ok, false);
+        if (reversePreviewBackgroundFailureRequestId == requestId) {
+            publishReversePreviewBackgroundUnavailable();
+        } else {
+            publishCameraStatus(activeActivityCameraProfile, null,
+                    "First frame ready", StatusTone.Ok, false);
+        }
         record("camera_status", "profile", "reverse", "text", "Live preview",
                 "tone", StatusTone.Ok.name(), "pending", false);
         record("reverse_preview_frames", "request_id", requestId,
@@ -11001,6 +11006,7 @@ public final class CameraProbeActivity extends ComponentActivity
         try {
             bundle = reverseCameraPreview.acquirePreviewSurfaces(requestId);
             beginActivityCameraRequest(true, requestId, bundle.generations);
+            reversePreviewBackgroundFailureRequestId = 0;
             reverseCameraPreview.setDewarpStatsContext(
                     requestId, java.util.Arrays.copyOfRange(
                             bundle.generations, 1, bundle.generations.length));
@@ -11748,6 +11754,70 @@ public final class CameraProbeActivity extends ComponentActivity
             else if (renderer.startsWith("stock_avm")) diagnostic = DiagnosticMode.Avm;
         }
         publishCameraStatus(activeActivityCameraProfile, diagnostic, text, tone, pending);
+    }
+
+    private void publishReversePreviewBackgroundUnavailable() {
+        publishCameraStatus(activeActivityCameraProfile, null,
+                runtimeText(R.string.runtime_status_reverse_background_unavailable),
+                StatusTone.Warning, false);
+    }
+
+    /** A failed optional background is not a failed direct-camera composition. */
+    private boolean handleReversePreviewBackgroundEvent(JSONObject event) {
+        if (!"reverse_preview_background".equals(event.optString("component"))) return false;
+        String kind = event.optString("kind");
+        String renderer = event.optString("renderer");
+        int requestId = event.optInt("request_id", 0);
+        if ("stock_avm_shell_died".equals(kind)
+                && (activityClosePending || cameraTransition.pending())
+                && isCurrentReverseBackgroundEvent(true, true,
+                        closingActivityCameraRequestId, activityCameraShellEpoch,
+                        activityAvmShellEpoch, event)) {
+            String error = event.optString("error", "stock background closed unexpectedly");
+            String token = cameraTransition.pendingToken();
+            if (activityColdResetInFlight) failActivityColdReset(requestId, error);
+            else if (token != null) failCameraTransition(token, error);
+            else finishActivityStoppedClose(requestId, error);
+            return true;
+        }
+        // A requested whole-composition close still needs its matching shell acknowledgement.
+        if (isMatchingStockShellCloseError(renderer, event.optString("stage"),
+                closingActivityCameraRequestId, requestId)
+                || "camera_closed".equals(kind)
+                && closingActivityCameraRequestId > 0
+                && closingActivityCameraRequestId == requestId
+                && (activityClosePending || cameraTransition.pending())) return false;
+        if (!isCurrentReverseBackgroundEvent(activePreview == reverseCameraPreview
+                        && reverseCameraPreview != null, requestedOpen,
+                activeActivityCameraRequestId, activityCameraShellEpoch,
+                activityAvmShellEpoch, event)) {
+            recordIgnoredActivityCameraEvent(kind, event);
+            return true;
+        }
+        if ("camera_error".equals(kind) || "camera_closed".equals(kind)
+                || "stock_avm_shell_died".equals(kind)
+                || "stock_avm_input_detached".equals(kind)) {
+            reversePreviewBackgroundFailureRequestId = requestId;
+            reverseCameraPreview.markPreviewBackgroundUnavailable(requestId);
+            publishReversePreviewBackgroundUnavailable();
+        } else if ("camera_opened".equals(kind)) {
+            rememberActivityAvmShellEpoch(event, true);
+        }
+        return true;
+    }
+
+    static boolean isCurrentReverseBackgroundEvent(
+            boolean reversePreview, boolean requested, int requestId,
+            long cameraEpoch, long avmEpoch, JSONObject event) {
+        String source = event.optString("source");
+        return reversePreview && requested && requestId > 0
+                && requestId == event.optInt("request_id", 0)
+                && ("helper".equals(source) || "stock_avm_shell".equals(source))
+                && isMatchingActivityCameraShellEpoch(cameraEpoch,
+                        event.optLong("camera_shell_epoch", 0))
+                && (event.optLong("avm_shell_epoch", 0) <= 0
+                        || isMatchingActivityAvmShellEpoch(avmEpoch,
+                                event.optLong("avm_shell_epoch", 0)));
     }
 
     /** Stage callbacks are advisory; accept them only while the current AVM request owns Debug. */
@@ -12854,7 +12924,10 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 JSONObject json = parsed;
                 String kind = json.optString("kind");
+                // Validate a stock death against the live epoch before retiring that epoch.
+                boolean backgroundHandled = handleReversePreviewBackgroundEvent(json);
                 rememberActivityAvmShellEpoch(json, false);
+                if (backgroundHandled) return;
                 if (musicPanel != null) musicPanel.acceptEvent(json);
                 handleCameraLaneEvent(json);
                 if ("reverse_camera_start".equals(kind)) {
@@ -12943,8 +13016,12 @@ public final class CameraProbeActivity extends ComponentActivity
                         if (activePreview == reverseCameraPreview
                                 && "reverse_preview_with_stock_base".equals(
                                         json.optString("view"))) {
-                            publishCameraEventStatus(json, "Очікування перших кадрів...",
-                                    StatusTone.Warning, false);
+                            if (reversePreviewBackgroundFailureRequestId == requestId) {
+                                publishReversePreviewBackgroundUnavailable();
+                            } else {
+                                publishCameraEventStatus(json, "Очікування перших кадрів...",
+                                        StatusTone.Warning, false);
+                            }
                         } else publishCameraEventStatus(json,
                                 json.optString("renderer").startsWith("stock_avm")
                                 || json.optInt("preview_index", -1) < 0
@@ -13130,7 +13207,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         }
                     } else if (!isIntermediateCameraClose(reason)) {
                         if (shouldWaitForStockShellClose(
-                                json.optString("view"), renderer)) {
+                                json.optString("view"), renderer,
+                                json.optBoolean("stock_close_pending", false))) {
                             record("activity_camera_close", "state", "waiting_shell_close",
                                     "reason", reason, "request_id", requestId);
                             return;
@@ -13597,9 +13675,10 @@ public final class CameraProbeActivity extends ComponentActivity
         return !activityResumed && hasAutoPreviewIntent();
     }
 
-    static boolean shouldWaitForStockShellClose(String view, String renderer) {
+    static boolean shouldWaitForStockShellClose(
+            String view, String renderer, boolean stockClosePending) {
         return "reverse_preview_with_stock_base".equals(view)
-                && !"stock_avm_shell".equals(renderer);
+                && !"stock_avm_shell".equals(renderer) && stockClosePending;
     }
 
     private boolean shouldArmAutoPreviewAfterCameraClose(String reason) {
@@ -13850,6 +13929,9 @@ public final class CameraProbeActivity extends ComponentActivity
         int[] generations = pendingReversePreviewGenerations;
         reversePreviewFreshness.arm(requestId, generations);
         reverseCameraPreview.armPreviewFrames(requestId, generations);
+        if (reversePreviewBackgroundFailureRequestId == requestId) {
+            reverseCameraPreview.markPreviewBackgroundUnavailable(requestId);
+        }
         pendingReversePreviewRequestId = 0;
         pendingReversePreviewGenerations = null;
     }
