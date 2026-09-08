@@ -129,8 +129,7 @@ private fun ColumnScope.MirrorProfileHeader(
         strings.text("Окремий віджет задньої камери", "Independent rear-camera widget"),
         state.enabled,
         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorEnabled), it)) },
-        colors, pending = state.operation.pending, enabled = state.operation.enabled,
-        compactSwitch = false)
+        colors, pending = state.operation.pending, enabled = state.operation.enabled)
     SwitchLine(
         strings.text(
             "Не показувати під час панорамного виду",

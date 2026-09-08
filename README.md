@@ -52,6 +52,10 @@ Local saved calibration slots and temporary Mirror hiding are not part of a came
 Built-in camera geometry and calibration use the approved reference baseline only for absent
 values and explicit section resets; updating the application does not replace stored user settings.
 
+Reverse output rotation, display mode and mirroring are saved for the selected camera only.
+Moving, resizing or reordering composition elements does not change RAW or corrected calibration
+areas. Existing presets remain available; an update does not automatically restore earlier values.
+
 Full migration includes those numeric rules, guard, music, weather, auto-start, and saved
 calibration slots. It does not copy transient runtime data, logs, ADB credentials, or Android-granted
 permissions. When imported weather is enabled, BYD Extend requests its own location permission
@@ -83,8 +87,9 @@ enabled, and the composition must already be active. Existing per-camera visibil
 rules apply; the button does not open cameras, change calibration or add automatic switching in D.
 Calibration and other foreground app tabs do not redirect the button to a background composition.
 
-The separate `Switch by gear` setting is off by default. Its row follows front-camera Integration
-and is available only while at least one camera is integrated; disabling every integration does
+The separate global `Switch by gear` setting is off by default. Its row appears immediately below
+`Enhanced reverse view` for every element, including Background and Widget, and is available only
+while at least one camera is integrated; disabling every integration does
 not erase the saved preference. R activation never waits for the stock camera UI. With gear
 selection enabled, the session remains active while R or the stock camera UI is active. Entering D selects
 integrated front cameras, and entering R selects rear cameras. N and P retain the selected view
@@ -123,6 +128,11 @@ and cleared on explicit Shutdown or process death.
 
 Fresh installations start in English regardless of the tablet language. Existing effective
 language choices are preserved, and the Chinese selector label remains `中文` in every language.
+
+Switches retain their ON/OFF appearance while an operation is pending, without a yellow or centered
+intermediate state; normal toggle and press feedback remain. Mirror uses the standard compact
+enable switch. Bottom navigation gives Signals and integrations more room and uses a square,
+bug-icon-only Debug button with a localized accessibility label.
 
 ## Sharing diagnostics
 

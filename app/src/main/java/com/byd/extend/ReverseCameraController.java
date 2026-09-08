@@ -917,6 +917,18 @@ final class ReverseCameraController {
                 .apply();
     }
 
+    static void saveRearPaneTransform(
+            SharedPreferences settings, int cameraIndex,
+            int rotationDegrees, int displayMode, boolean mirror) {
+        settings.edit()
+                .putInt(PREF_PREFIX + cameraIndex + "_rotation_degrees",
+                        CameraRotation.clamp(rotationDegrees))
+                .putInt(displayModeKey(cameraIndex),
+                        ReverseCameraLayout.normalizeDisplayMode(displayMode))
+                .putBoolean(mirrorKey(cameraIndex), mirror)
+                .apply();
+    }
+
     private static ReverseCameraLayout readLayout(SharedPreferences settings) {
         try {
             ReverseCameraLayout layout = ReverseCameraLayout.defaults();
@@ -1032,6 +1044,18 @@ final class ReverseCameraController {
         for (int cameraIndex : frontCameraIndexes()) {
             writeFrontDefaults(editor, cameraIndex);
             editor.putBoolean(frontIntegratedKey(cameraIndex), DEFAULT_FRONT_INTEGRATED);
+        }
+        editor.apply();
+    }
+
+    static void saveCompositionLayout(
+            SharedPreferences settings, ReverseCameraLayout layout) {
+        SharedPreferences.Editor editor = settings.edit();
+        putRect(editor, PREF_PREFIX + "background_", layout.background);
+        putRect(editor, PREF_PREFIX + "widget_", layout.widget);
+        for (ReverseCameraLayout.Pane pane : layout.panes()) {
+            putRect(editor, PREF_PREFIX + pane.cameraIndex + "_", pane.destination);
+            editor.putInt(PREF_PREFIX + "z_" + pane.zOrder, pane.cameraIndex);
         }
         editor.apply();
     }

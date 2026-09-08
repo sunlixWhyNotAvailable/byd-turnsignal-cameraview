@@ -12,12 +12,115 @@ import com.byd.extend.ui.hasAnyFrontIntegration
 import com.byd.extend.ui.panoramaStatusForDisplay
 import com.byd.extend.ui.NumericDraftPolicy
 import com.byd.extend.ui.ParkingView
+import com.byd.extend.ui.RootTab
+import com.byd.extend.ui.UiLanguage
+import com.byd.extend.ui.UiStrings
+import com.byd.extend.ui.bottomNavigationEqualWidth
+import androidx.compose.ui.unit.dp
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ComposeHotfixUiPolicyTest {
+    @Test
+    fun reverseGearSwitchIsTheSingleGlobalRowImmediatelyAfterEnable() {
+        val source = File("src/main/kotlin/com/byd/extend/ui/ReverseScreen.kt").readText()
+        val controls = source.substring(
+            source.indexOf("val profileControls:"),
+            source.indexOf("ScreenSurface(colors"),
+        )
+        val enhanced = controls.indexOf("Enhanced reverse view")
+        val gear = controls.indexOf("Switch cameras by gear")
+        val widget = controls.indexOf("selected == ReverseElement.Widget")
+        val integration = controls.indexOf("Integrate front camera")
+        assertTrue(enhanced >= 0)
+        assertTrue(gear > enhanced)
+        assertTrue(widget > gear)
+        assertTrue(integration > gear)
+        assertEquals(1, Regex("ToggleId\\.ReverseSwitchByGear").findAll(controls).count())
+        assertTrue(controls.contains("enabled = gearSwitchEnabled"))
+        assertEquals(2, Regex("profileControls = profileControls").findAll(source).count())
+    }
+
+    @Test
+    fun mirrorEnableUsesTheSharedCompactSwitchDefault() {
+        val source = File("src/main/kotlin/com/byd/extend/ui/MirrorScreen.kt").readText()
+        val header = source.substring(
+            source.indexOf("private fun ColumnScope.MirrorProfileHeader"),
+            source.indexOf("private fun ColumnScope.MirrorParameters"),
+        )
+        assertTrue(header.contains("pending = state.operation.pending"))
+        assertTrue(header.contains("enabled = state.operation.enabled"))
+        assertFalse(header.contains("compactSwitch = false"))
+
+        val primitives = File("src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt").readText()
+        val switch = primitives.substring(
+            primitives.indexOf("internal fun AppSwitch("),
+            primitives.indexOf("internal fun Segmented("),
+        )
+        assertTrue(switch.contains("val width = if (compact) 42.dp else 56.dp"))
+        assertTrue(switch.contains("val height = if (compact) 27.dp else 32.dp"))
+    }
+
+    @Test
+    fun sharedSwitchPendingStateOnlyGatesInputAndNeverChangesVisuals() {
+        val primitives = File("src/main/kotlin/com/byd/extend/ui/UiPrimitives.kt").readText()
+        val switch = primitives.substring(
+            primitives.indexOf("internal fun AppSwitch("),
+            primitives.indexOf("internal fun Segmented("),
+        )
+        assertTrue(switch.contains("rememberPressFeedback(enabled && !pending)"))
+        assertTrue(switch.contains("enabled = enabled && !pending"))
+        assertTrue(switch.contains("if (checked) knob else knobOff"))
+        assertTrue(switch.contains("if (checked) colors.accent else colors.disabled"))
+        assertFalse(switch.contains("if (pending)"))
+        assertFalse(switch.contains("knobPending"))
+        assertFalse(switch.contains("colors.yellow"))
+        assertFalse(switch.contains("colors.yellowSoft"))
+    }
+
+    @Test
+    fun bottomNavigationGivesDebugWidthToSignalsAndFitsAllLocalizedTitles() {
+        // 1920 px at the conservative 320 dpi viewport is 960 dp; the app shell removes 36 dp.
+        val barWidth = 924.dp
+        val equalWidth = bottomNavigationEqualWidth(barWidth)
+        val signalsWidth = equalWidth * 2f - 48.dp
+        val debugWidth = 48.dp
+        assertEquals(48f, debugWidth.value, 0f)
+        assertEquals(equalWidth.value * 2f - 48f, signalsWidth.value, .001f)
+        assertEquals(barWidth.value - 12f - 6f * 8f,
+            signalsWidth.value + debugWidth.value + equalWidth.value * 5f, .001f)
+
+        val labels = UiLanguage.entries.map { UiStrings(it).tabs[0] }
+        assertEquals(listOf("Поворотники та інтеграції", "Signals & integrations", "转向灯与集成"), labels)
+        labels.forEach { label ->
+            val longestLineToken = label.split(' ').maxOf { it.length }
+            assertTrue(label, longestLineToken * 14f <= signalsWidth.value)
+        }
+
+        val source = File("src/main/kotlin/com/byd/extend/ui/BydExtendApp.kt").readText()
+        val navigation = source.substring(
+            source.indexOf("private fun BottomNavigation"),
+            source.indexOf("private fun AppDialog"),
+        )
+        assertTrue(navigation.contains("height(60.dp)"))
+        assertTrue(navigation.contains("padding(6.dp)"))
+        assertTrue(navigation.contains("Arrangement.spacedBy(8.dp)"))
+        assertTrue(navigation.contains("val equalWidth = bottomNavigationEqualWidth(maxWidth)"))
+        assertTrue(navigation.contains("RootTab.Signals -> Modifier.weight(1f)"))
+        assertTrue(navigation.contains("RootTab.Debug -> Modifier.width(48.dp)"))
+        assertTrue(navigation.contains("else -> Modifier.width(equalWidth)"))
+        assertTrue(navigation.contains("if (tab != RootTab.Debug)"))
+        assertTrue(navigation.contains("contentDescription = strings.tabs[index]"))
+        assertTrue(navigation.contains("selected = selected"))
+        assertTrue(navigation.contains("role = Role.Tab"))
+        assertTrue(navigation.contains("Modifier.size(20.dp)"))
+        assertTrue(navigation.contains("fontSize = 14.sp"))
+        assertTrue(navigation.contains("maxLines = 2"))
+    }
+
     @Test
     fun reverseGearSwitchNeedsAnIntegratedCameraPane() {
         assertFalse(ReverseUiState().hasAnyFrontIntegration())

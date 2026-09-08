@@ -56,6 +56,11 @@ internal fun ReverseScreen(
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
         SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
+        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
+            state.switchByGear,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
+            enabled = gearSwitchEnabled)
         if (selected == ReverseElement.Widget) {
             ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
         }
@@ -74,11 +79,6 @@ internal fun ReverseScreen(
                 }
             }
         }
-        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
-            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
-            state.switchByGear,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
-            enabled = gearSwitchEnabled)
         if (cameraElement) ProfilePresetButtons(profileId, profile.presetAvailable,
             selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
                 selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,

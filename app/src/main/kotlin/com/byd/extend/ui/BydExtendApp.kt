@@ -4,10 +4,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -58,6 +58,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
@@ -76,7 +77,9 @@ private val rootIcons: List<ImageVector> = listOf(
     Icons.Outlined.Videocam, Icons.Outlined.DirectionsCar, Icons.Outlined.Settings,
     Icons.Outlined.BugReport,
 )
-private val rootWeights = List(7) { 1f }
+
+internal fun bottomNavigationEqualWidth(barWidth: androidx.compose.ui.unit.Dp): androidx.compose.ui.unit.Dp =
+    (barWidth - 12.dp - 8.dp * (RootTab.entries.size - 1)) / RootTab.entries.size
 
 /**
  * Production UI shell. Native camera content is supplied by the Activity and never enters Compose
@@ -304,27 +307,39 @@ private fun SignalsScreen(
 
 @Composable
 private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPalette, onSelect: (RootTab) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(8.dp))
-        .border(1.dp, colors.border, RoundedCornerShape(8.dp)).background(colors.panel)
-        .padding(6.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RootTab.entries.forEachIndexed { index, tab ->
-            val selected = active == tab
-            val press = rememberPressFeedback()
-            val visualClick = rememberVisualFirstClick { onSelect(tab) }
-            Column(Modifier.weight(rootWeights[index]).fillMaxHeight().clip(RoundedCornerShape(6.dp))
-                .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
-                .background(pressBackground(if (selected) colors.active else Color.Transparent, colors, press.pressed))
-                .then(press.modifier)
-                .clickable(interactionSource = press.interactionSource, indication = null,
-                    role = Role.Tab) { visualClick() },
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center) {
-                Icon(rootIcons[index], null, tint = if (selected) colors.text else colors.muted, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.height(2.dp))
-                Text(strings.tabs[index], color = if (selected) colors.text else colors.muted, fontSize = 14.sp,
-                    lineHeight = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    overflow = TextOverflow.Ellipsis)
+    BoxWithConstraints(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(8.dp))
+        .border(1.dp, colors.border, RoundedCornerShape(8.dp)).background(colors.panel)) {
+        val equalWidth = bottomNavigationEqualWidth(maxWidth)
+        Row(Modifier.fillMaxSize().padding(6.dp).selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RootTab.entries.forEachIndexed { index, tab ->
+                val selected = active == tab
+                val press = rememberPressFeedback()
+                val visualClick = rememberVisualFirstClick { onSelect(tab) }
+                val width = when (tab) {
+                    RootTab.Signals -> Modifier.weight(1f)
+                    RootTab.Debug -> Modifier.width(48.dp)
+                    else -> Modifier.width(equalWidth)
+                }
+                Column(width.fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
+                    .background(pressBackground(if (selected) colors.active else Color.Transparent, colors, press.pressed))
+                    .then(press.modifier)
+                    .semantics { if (tab == RootTab.Debug) contentDescription = strings.tabs[index] }
+                    .selectable(selected = selected, interactionSource = press.interactionSource,
+                        indication = null, role = Role.Tab, onClick = visualClick),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center) {
+                    Icon(rootIcons[index], null, tint = if (selected) colors.text else colors.muted,
+                        modifier = Modifier.size(20.dp))
+                    if (tab != RootTab.Debug) {
+                        Text(strings.tabs[index], color = if (selected) colors.text else colors.muted,
+                            fontSize = 14.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold,
+                            maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
     }

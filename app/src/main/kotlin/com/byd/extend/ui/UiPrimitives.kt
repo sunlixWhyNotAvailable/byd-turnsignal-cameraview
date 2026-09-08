@@ -356,14 +356,13 @@ internal fun AppSwitch(
     val height = if (compact) 27.dp else 32.dp
     val knob = if (compact) 20.dp else 25.dp
     val knobOff = if (compact) 16.dp else 19.dp
-    val knobPending = if (compact) 18.dp else 22.dp
     val press = rememberPressFeedback(enabled && !pending)
-    val size by animateDpAsState(if (pending) knobPending else if (checked) knob else knobOff, tween(140), label = "switchSize")
-    val offset by animateDpAsState(if (pending) (width - knobPending) / 2 else if (checked) width - knob - 3.dp else 3.dp,
+    val size by animateDpAsState(if (checked) knob else knobOff, tween(140), label = "switchSize")
+    val offset by animateDpAsState(if (checked) width - knob - 3.dp else 3.dp,
         tween(140), label = "switchOffset")
     Box(Modifier.size(width, height).semantics { label?.let { contentDescription = it } }
         .clip(RoundedCornerShape(100.dp))
-        .background(pressBackground(if (pending) colors.yellowSoft else if (checked) colors.accent else colors.disabled,
+        .background(pressBackground(if (checked) colors.accent else colors.disabled,
             colors, press.pressed))
         .then(press.modifier)
         .toggleable(value = checked, interactionSource = press.interactionSource, indication = null,
@@ -371,7 +370,7 @@ internal fun AppSwitch(
             onValueChange = onCheckedChange)
         .then(if (clearSemantics) Modifier.clearAndSetSemantics { } else Modifier), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.offset(x = offset).size(size).clip(RoundedCornerShape(100.dp))
-            .background(if (pending) colors.yellow else if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
+            .background(if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
     }
 }
 

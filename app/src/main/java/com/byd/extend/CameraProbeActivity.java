@@ -3968,8 +3968,9 @@ public final class CameraProbeActivity extends ComponentActivity
                         pane.rotationDegrees, pane.displayMode, mirror);
             } else {
                 ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
-                layout = ReverseCameraLayout.withMirrorHorizontally(layout, index, mirror);
-                ReverseCameraController.saveLayout(preferences, layout);
+                ReverseCameraLayout.Pane pane = layout.pane(index);
+                ReverseCameraController.saveRearPaneTransform(preferences, index,
+                        pane.rotationDegrees, pane.displayMode, mirror);
             }
         }
         notifyProductionProfileChanged(id);
@@ -4185,11 +4186,12 @@ public final class CameraProbeActivity extends ComponentActivity
                         pane.mirrorHorizontally);
             } else {
                 ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
-                requireReverseOutputTransform(layout.pane(index), rotation, mode);
-                layout = rotation == null
-                        ? ReverseCameraLayout.withDisplayMode(layout, index, mode)
-                        : ReverseCameraLayout.withRotation(layout, index, rotation);
-                ReverseCameraController.saveLayout(preferences, layout);
+                ReverseCameraLayout.Pane pane = layout.pane(index);
+                requireReverseOutputTransform(pane, rotation, mode);
+                ReverseCameraController.saveRearPaneTransform(preferences, index,
+                        rotation == null ? pane.rotationDegrees : rotation,
+                        mode == null ? pane.displayMode : mode,
+                        pane.mirrorHorizontally);
             }
         }
         notifyProductionProfileChanged(id);
@@ -4750,7 +4752,7 @@ public final class CameraProbeActivity extends ComponentActivity
             layout = ReverseCameraLayout.withWidget(layout, next);
         } else layout = ReverseCameraLayout.withPane(
                 layout, pane, next, layout.pane(pane).sourceCrop);
-        ReverseCameraController.saveLayout(preferences, layout);
+        ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
@@ -4759,7 +4761,7 @@ public final class CameraProbeActivity extends ComponentActivity
         int pane = reverseElementIndex(productionUi.getState().getReverse().getSelectedElement());
         ReverseCameraLayout layout = ReverseCameraLayout.move(
                 ReverseCameraController.loadRawLayout(preferences), pane, x, y);
-        ReverseCameraController.saveLayout(preferences, layout);
+        ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
@@ -4770,7 +4772,7 @@ public final class CameraProbeActivity extends ComponentActivity
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
         layout = raise ? ReverseCameraLayout.raise(layout, pane)
                 : ReverseCameraLayout.lower(layout, pane);
-        ReverseCameraController.saveLayout(preferences, layout);
+        ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
@@ -5384,12 +5386,9 @@ public final class CameraProbeActivity extends ComponentActivity
                         preferences, index, crop.rotationDegrees,
                         displayMode, crop.mirrorHorizontally);
             } else {
-                ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
-                layout = ReverseCameraLayout.withRotation(layout, index, crop.rotationDegrees);
-                layout = ReverseCameraLayout.withDisplayMode(layout, index, displayMode);
-                layout = ReverseCameraLayout.withMirrorHorizontally(
-                        layout, index, crop.mirrorHorizontally);
-                ReverseCameraController.saveLayout(preferences, layout);
+                ReverseCameraController.saveRearPaneTransform(
+                        preferences, index, crop.rotationDegrees,
+                        displayMode, crop.mirrorHorizontally);
             }
         }
         notifyProductionProfileChanged(profile);
@@ -5584,7 +5583,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     }
                 }
                 if (finished) {
-                    ReverseCameraController.saveLayout(preferences, layout);
+                    ReverseCameraController.saveCompositionLayout(preferences, layout);
                     CameraHelperService.reverseCameraSettingsChanged(this);
                     record("reverse_layout_changed", "camera_index", selectedCamera);
                     if (productionUi != null) productionUi.reload();
@@ -6439,7 +6438,7 @@ public final class CameraProbeActivity extends ComponentActivity
             ReverseCameraController.saveEditorSelection(preferences, selectedCamera);
             updateReversePaneControls(selectedCamera);
             if (finished) {
-                ReverseCameraController.saveLayout(preferences, layout);
+                ReverseCameraController.saveCompositionLayout(preferences, layout);
                 CameraHelperService.reverseCameraSettingsChanged(this);
                 record("reverse_layout_changed", "camera_index", selectedCamera);
             }
@@ -7481,7 +7480,10 @@ public final class CameraProbeActivity extends ComponentActivity
                     preferences, cameraIndex, pane.rotationDegrees,
                     pane.displayMode, pane.mirrorHorizontally);
         } else {
-            ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
+            ReverseCameraLayout.Pane pane = reverseCameraLayout.pane(cameraIndex);
+            ReverseCameraController.saveRearPaneTransform(
+                    preferences, cameraIndex, pane.rotationDegrees,
+                    pane.displayMode, pane.mirrorHorizontally);
         }
     }
 
@@ -7491,7 +7493,7 @@ public final class CameraProbeActivity extends ComponentActivity
         reverseCameraLayout = raise
                 ? ReverseCameraLayout.raise(reverseCameraLayout, cameraIndex)
                 : ReverseCameraLayout.lower(reverseCameraLayout, cameraIndex);
-        ReverseCameraController.saveLayout(preferences, reverseCameraLayout);
+        ReverseCameraController.saveCompositionLayout(preferences, reverseCameraLayout);
         reverseCameraEditor.setLayoutModel(reverseCameraLayout);
         reverseCameraPreview.applyLayout(reverseCameraLayout);
         updateReversePaneControls(cameraIndex);
