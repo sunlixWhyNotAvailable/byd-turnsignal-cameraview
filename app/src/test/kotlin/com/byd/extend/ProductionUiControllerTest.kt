@@ -30,6 +30,8 @@ import com.byd.extend.ui.NumberTarget
 import com.byd.extend.ui.NumericDraftPolicy
 import com.byd.extend.ui.ProfileNumber
 import com.byd.extend.ui.SettingsOperation
+import com.byd.extend.ui.MirrorBackendAction
+import com.byd.extend.ui.MirrorBackendActionKind
 import com.byd.extend.ui.steeringButtonLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +39,108 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProductionUiControllerTest {
+    @Test
+    fun panoramaSuppressionDefaultsOnAndRetainsExplicitFalsePerOwner() {
+        val preferences = TestSharedPreferences()
+        val defaults = readProductionUiState(preferences, false, false)
+        assertTrue(defaults.blind.rules.getValue(CameraGroup.Rear).suppressWhilePanorama)
+        assertTrue(defaults.blind.rules.getValue(CameraGroup.Front).suppressWhilePanorama)
+        assertTrue(defaults.mirror.suppressWhilePanorama)
+
+        preferences.edit()
+            .putBoolean(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, false)
+            .putBoolean(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, false)
+            .putBoolean(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, false)
+            .apply()
+        val disabled = readProductionUiState(preferences, false, false)
+        assertFalse(disabled.blind.rules.getValue(CameraGroup.Rear).suppressWhilePanorama)
+        assertFalse(disabled.blind.rules.getValue(CameraGroup.Front).suppressWhilePanorama)
+        assertFalse(disabled.mirror.suppressWhilePanorama)
+    }
+
+    @Test
+    fun blindPanoramaSuppressionActionsStayIndependentPerGroup() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences).apply {
+            effect = { action ->
+                val toggle = action as? BydExtendUiAction.Toggle
+                val blind = toggle?.target as? ToggleTarget.Blind
+                if (toggle != null && blind?.id == ToggleId.BlindSuppressWhilePanorama) {
+                    preferences.edit().putBoolean(
+                        if (blind.group == CameraGroup.Rear) {
+                            BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA
+                        } else BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA,
+                        toggle.value,
+                    ).apply()
+                }
+            }
+        }
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Blind(ToggleId.BlindSuppressWhilePanorama, CameraGroup.Rear), false))
+
+        assertFalse(controller.state.blind.rules.getValue(CameraGroup.Rear).suppressWhilePanorama)
+        assertTrue(controller.state.blind.rules.getValue(CameraGroup.Front).suppressWhilePanorama)
+        assertEquals(CameraGroup.Rear,
+            ((backend.actions.single() as BydExtendUiAction.Toggle).target as ToggleTarget.Blind).group)
+    }
+
+    @Test
+    fun disabledGearSwitchActionPreservesSavedPreferenceAndNeverReachesBackend() {
+        val preferences = TestSharedPreferences().apply {
+            edit().putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, true).apply()
+        }
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        assertTrue(controller.state.reverse.switchByGear)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), false))
+
+        assertTrue(controller.state.reverse.switchByGear)
+        assertTrue(preferences.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false))
+        assertTrue(backend.actions.isEmpty())
+    }
+
+    @Test
+    fun enabledGearSwitchActionUsesExistingBackendPath() {
+        val preferences = TestSharedPreferences().apply {
+            ReverseCameraController.saveCentralFrontIntegrated(this, true)
+        }
+        val backend = FakeBackend(preferences).apply {
+            effect = { action ->
+                if (action == BydExtendUiAction.Toggle(
+                        ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), true)) {
+                    preferences.edit().putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, true).apply()
+                }
+            }
+        }
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), true))
+
+        assertTrue(controller.state.reverse.switchByGear)
+        assertEquals(1, backend.actions.size)
+    }
+
+    @Test
+    fun mirrorPanoramaSuppressionUsesDedicatedTypedAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama), false))
+
+        assertFalse(controller.state.mirror.suppressWhilePanorama)
+        assertEquals(MirrorBackendActionKind.SetSuppressWhilePanorama,
+            backend.mirrorActions.single().kind)
+        assertFalse(backend.mirrorActions.single().enabled ?: true)
+        assertTrue(backend.actions.isEmpty())
+    }
+
     @Test
     fun exportFeedbackTracksOwnedProgressAndEveryTerminalOutcomeAcrossReload() {
         for (operation in listOf(SettingsOperation.Logs, SettingsOperation.Compatibility)) {
@@ -648,6 +752,11 @@ class ProductionUiControllerTest {
         val sectionChanges = mutableListOf<Pair<CameraSection, CameraSection>>()
         val focusChanges = mutableListOf<Pair<ReverseElement, ReverseElement>>()
         val visibilityChanges = mutableListOf<Pair<ReverseElement, Boolean>>()
+        val mirrorActions = mutableListOf<MirrorBackendAction>()
+
+        override fun onProductionMirrorAction(action: MirrorBackendAction) {
+            mirrorActions += action
+        }
 
         override fun onProductionCameraSectionChanged(
             tab: RootTab, previous: CameraSection, next: CameraSection,

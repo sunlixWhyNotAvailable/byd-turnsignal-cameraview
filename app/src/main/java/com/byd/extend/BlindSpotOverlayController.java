@@ -14,9 +14,13 @@ import java.util.function.BiConsumer;
 
 final class BlindSpotOverlayController {
     static final String PREF_ENABLED = "camera_enabled";
+    static final String PREF_REAR_SUPPRESS_WHILE_PANORAMA =
+            "camera_rear_suppress_while_panorama";
     static final String PREF_MIN_SPEED = "camera_min_speed_kph";
     static final String PREF_MAX_SPEED = "camera_max_speed_kph";
     static final String PREF_FRONT_ENABLED = "camera_front_enabled";
+    static final String PREF_FRONT_SUPPRESS_WHILE_PANORAMA =
+            "camera_front_suppress_while_panorama";
     static final String PREF_FRONT_MIN_SPEED = "camera_front_min_speed_kph";
     static final String PREF_FRONT_MAX_SPEED = "camera_front_max_speed_kph";
     static final String PREF_FRONT_MIN_ANGLE = "camera_front_min_angle_deg";
@@ -130,6 +134,8 @@ final class BlindSpotOverlayController {
     private boolean uiHidden;
     private boolean shutdown;
     private boolean stateValid;
+    private boolean oemPanoramaKnown;
+    private boolean oemPanoramaVisible;
     private boolean cameraOpenPending;
     private boolean cameraSessionOpen;
     private int cameraOpenRequestId;
@@ -320,6 +326,14 @@ final class BlindSpotOverlayController {
         }
         if (!settings.contains(PREF_FRONT_ENABLED)) {
             editor.putBoolean(PREF_FRONT_ENABLED, false);
+            changed = true;
+        }
+        if (!settings.contains(PREF_REAR_SUPPRESS_WHILE_PANORAMA)) {
+            editor.putBoolean(PREF_REAR_SUPPRESS_WHILE_PANORAMA, true);
+            changed = true;
+        }
+        if (!settings.contains(PREF_FRONT_SUPPRESS_WHILE_PANORAMA)) {
+            editor.putBoolean(PREF_FRONT_SUPPRESS_WHILE_PANORAMA, true);
             changed = true;
         }
         if (!settings.contains(PREF_FRONT_MIN_SPEED)) {
@@ -539,6 +553,30 @@ final class BlindSpotOverlayController {
 
     void applyTriggerSettings() {
         handler.post(this::evaluate);
+    }
+
+    void oemVisibility(boolean known, boolean visible) {
+        handler.post(() -> {
+            oemPanoramaKnown = known;
+            oemPanoramaVisible = known && visible;
+            evaluate();
+        });
+    }
+
+    static boolean panoramaSuppresses(
+            boolean known, boolean visible, boolean suppressWhilePanorama) {
+        return suppressWhilePanorama && known && visible;
+    }
+
+    static boolean readPanoramaSuppression(
+            SharedPreferences settings, boolean front) {
+        try {
+            return settings.getBoolean(front
+                    ? PREF_FRONT_SUPPRESS_WHILE_PANORAMA
+                    : PREF_REAR_SUPPRESS_WHILE_PANORAMA, true);
+        } catch (RuntimeException invalidPreference) {
+            return true;
+        }
     }
 
     void acceptEvent(String line) {
@@ -935,12 +973,18 @@ final class BlindSpotOverlayController {
     }
 
     private void evaluate() {
+        boolean rearSuppressed = panoramaSuppresses(
+                oemPanoramaKnown, oemPanoramaVisible,
+                readPanoramaSuppression(settings, false));
+        boolean frontSuppressed = panoramaSuppresses(
+                oemPanoramaKnown, oemPanoramaVisible,
+                readPanoramaSuppression(settings, true));
         int desired = desiredCameraMask(
                 stateValid, blink, speedKph, steeringAngle,
-                settings.getBoolean(PREF_ENABLED, false),
+                settings.getBoolean(PREF_ENABLED, false) && !rearSuppressed,
                 settings.getInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH),
                 settings.getInt(PREF_MAX_SPEED, DEFAULT_MAX_SPEED_KPH),
-                settings.getBoolean(PREF_FRONT_ENABLED, false),
+                settings.getBoolean(PREF_FRONT_ENABLED, false) && !frontSuppressed,
                 settings.getInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH),
                 settings.getInt(PREF_FRONT_MAX_SPEED, DEFAULT_FRONT_MAX_SPEED_KPH),
                 settings.getBoolean(PREF_FRONT_TURN_REQUIRED, true),

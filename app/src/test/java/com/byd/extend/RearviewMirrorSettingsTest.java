@@ -63,6 +63,7 @@ public class RearviewMirrorSettingsTest {
 
     @Test
     public void defaultsMatchPreviewMirrorState() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
         RearviewMirrorSettings.Settings settings = RearviewMirrorSettings.defaults();
         assertFalse(settings.enabled);
         assertEquals(RearviewMirrorSettings.TARGET_TABLET, settings.target);
@@ -71,6 +72,9 @@ public class RearviewMirrorSettingsTest {
         assertEquals(CameraRotation.MODE_FIT, settings.calibration.rotationMode);
         assertEquals(0, settings.borderDp);
         assertEquals(RearviewMirrorSettings.DEFAULT_BORDER_ARGB, settings.borderArgb);
+        assertTrue(RearviewMirrorSettings.suppressWhilePanorama(preferences));
+        preferences.putBoolean(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, false);
+        assertFalse(RearviewMirrorSettings.suppressWhilePanorama(preferences));
     }
 
     @Test

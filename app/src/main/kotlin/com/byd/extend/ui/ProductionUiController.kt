@@ -258,8 +258,21 @@ class ProductionUiController @JvmOverloads constructor(
                         enabled = action.value))
                     if (action.value) backend.requestProductionMirrorOverlayPermission()
                 }
+                action.target == ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama) -> {
+                    typedBackendHandled = true
+                    state = state.copy(mirror = state.mirror.copy(
+                        suppressWhilePanorama = action.value))
+                    backend.onProductionMirrorAction(MirrorBackendAction(
+                        MirrorBackendActionKind.SetSuppressWhilePanorama,
+                        value = action.value.toString(), enabled = action.value))
+                }
                 action.target == ToggleTarget.Simple(ToggleId.ReverseSwitchByGear) -> {
-                    state = state.copy(reverse = state.reverse.copy(switchByGear = action.value))
+                    if (state.reverse.hasAnyFrontIntegration()) {
+                        state = state.copy(reverse = state.reverse.copy(switchByGear = action.value))
+                    } else {
+                        // Programmatic actions match the disabled row and preserve the saved value.
+                        typedBackendHandled = true
+                    }
                 }
                 action.target is ToggleTarget.Profile &&
                     (action.target as ToggleTarget.Profile).profile == CameraProfileId.Mirror -> {

@@ -75,6 +75,15 @@ internal fun BlindScreen(
                             state.selectedGroup), it))
                     }, colors,
                 )
+                SwitchLine(
+                    strings.text(
+                        "Не показувати під час панорамного виду",
+                        "Do not show while panorama is open",
+                        "全景视图开启时不显示",
+                    ), "", rules.suppressWhilePanorama,
+                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
+                        ToggleId.BlindSuppressWhilePanorama, state.selectedGroup), it)) }, colors,
+                )
                 ProfilePresetButtons(profileId, profile.presetAvailable, true, strings, colors, onAction)
             },
             controls = {

@@ -4,6 +4,12 @@ import com.byd.extend.ui.CameraDisplayGeometry
 import com.byd.extend.ui.CameraGroup
 import com.byd.extend.ui.CameraProfileId
 import com.byd.extend.ui.CameraSide
+import com.byd.extend.ui.ReverseElement
+import com.byd.extend.ui.ReverseUiState
+import com.byd.extend.ui.StatusTone
+import com.byd.extend.ui.StatusUiState
+import com.byd.extend.ui.hasAnyFrontIntegration
+import com.byd.extend.ui.panoramaStatusForDisplay
 import com.byd.extend.ui.NumericDraftPolicy
 import com.byd.extend.ui.ParkingView
 import org.junit.Assert.assertEquals
@@ -12,6 +18,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ComposeHotfixUiPolicyTest {
+    @Test
+    fun reverseGearSwitchNeedsAnIntegratedCameraPane() {
+        assertFalse(ReverseUiState().hasAnyFrontIntegration())
+        assertFalse(ReverseUiState(frontIntegration = mapOf(
+            ReverseElement.Background to true)).hasAnyFrontIntegration())
+        for (pane in listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)) {
+            assertTrue(ReverseUiState(frontIntegration = mapOf(pane to true)).hasAnyFrontIntegration())
+        }
+    }
+
+    @Test
+    fun panoramaHeaderShowsOnlyOpeningAndErrorStates() {
+        val opening = StatusUiState("Opening panorama…", StatusTone.Warning, true)
+        val error = StatusUiState("Stock camera background unavailable", StatusTone.Error, true)
+        assertEquals(opening, panoramaStatusForDisplay(opening))
+        assertEquals(error, panoramaStatusForDisplay(error))
+        assertFalse(panoramaStatusForDisplay(StatusUiState("Ready", StatusTone.Ok, true)).visible)
+        assertFalse(panoramaStatusForDisplay(StatusUiState()).visible)
+    }
+
     @Test
     fun numericDraftRejectsAndResetsBothFields() {
         val rejected = NumericDraftPolicy.resolve("999", "12", 0f..100f)

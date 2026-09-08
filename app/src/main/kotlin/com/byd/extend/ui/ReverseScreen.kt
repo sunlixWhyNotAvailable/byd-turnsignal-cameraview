@@ -49,16 +49,13 @@ internal fun ReverseScreen(
     val compositionStatusProfile = CameraProfileId.Reverse(ReverseElement.Rear, state.selectedSource)
     val compositionStatus = state.profiles[compositionStatusProfile]?.operation?.status
         ?: StatusUiState()
+    val gearSwitchEnabled = state.hasAnyFrontIntegration()
     val sourceIndex = reverseSourceIndex(selected, state.selectedSource)
     val profileControls: @Composable ColumnScope.() -> Unit = {
         ChoiceField(strings.text("Елемент", "Element"), strings.reverseElements, selected.ordinal,
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
         SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
-        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
-            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
-            state.switchByGear,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors)
         if (selected == ReverseElement.Widget) {
             ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
         }
@@ -76,11 +73,16 @@ internal fun ReverseScreen(
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
                 }
             }
-            ProfilePresetButtons(profileId, profile.presetAvailable,
-                selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
-                    selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
-                strings, colors, onAction)
         }
+        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
+            state.switchByGear,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
+            enabled = gearSwitchEnabled)
+        if (cameraElement) ProfilePresetButtons(profileId, profile.presetAvailable,
+            selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
+                selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
+            strings, colors, onAction)
     }
     ScreenSurface(colors, scroll = false, compact = true) {
         if (state.section == CameraSection.Calibration && cameraElement) {
@@ -91,7 +93,7 @@ internal fun ReverseScreen(
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
                 },
                 profileStatus = profile.operation.status,
-                profileHeaderStatus = state.panoramaOperation.status,
+                panoramaStatus = state.panoramaOperation.status,
                 profileControls = profileControls,
                 controls = {
                     CameraProfileControls(profileId, profile, state.section, false, strings, colors, onAction,
@@ -111,7 +113,7 @@ internal fun ReverseScreen(
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
                 },
                 profileStatus = compositionStatus,
-                profileHeaderStatus = state.panoramaOperation.status,
+                panoramaStatus = state.panoramaOperation.status,
                 profileControls = profileControls,
                 controls = {
                     if (state.section == CameraSection.Parameters) {

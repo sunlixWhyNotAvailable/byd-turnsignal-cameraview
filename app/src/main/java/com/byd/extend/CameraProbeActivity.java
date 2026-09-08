@@ -758,7 +758,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean productionPreviewAwaitingFrame;
     private boolean productionPreviewRetryUsed;
     private int productionPreviewFrameUpdates;
-    private int productionPreviewFrameRequest;
     private int pendingReversePreviewRequestId;
     private int[] pendingReversePreviewGenerations;
     private int reversePreviewBackgroundFailureRequestId;
@@ -2018,10 +2017,9 @@ public final class CameraProbeActivity extends ComponentActivity
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.INVISIBLE);
         publishCameraStatus(activeActivityCameraProfile, null,
                 runtimeText(R.string.runtime_status_first_frame), StatusTone.Ok, false);
-        record("camera_preview_first_frame", "request_id", productionPreviewFrameRequest,
-                "frame_updates", productionPreviewFrameUpdates,
-                "camera_id", selectedCameraId,
-                "status", "Showing " + CameraProfile.of(selectedCameraId).wireName);
+        record("camera_preview_first_frame", productionPreviewFrameFields(
+                activeActivityCameraRequestId, activeActivityCameraProfile,
+                activeDirectCameraIndex, productionPreviewFrameUpdates, false, false));
     }
 
     private void confirmCompatibilityBundleShare() {
@@ -2511,6 +2509,15 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onProductionMirrorAction(MirrorBackendAction action) {
         if (productionUi == null || action == null || shutdownRequested) return;
+        if (action.getKind() == MirrorBackendActionKind.SetSuppressWhilePanorama) {
+            boolean suppress = action.getEnabled() != null ? action.getEnabled()
+                    : productionUi.getState().getMirror().getSuppressWhilePanorama();
+            preferences.edit().putBoolean(
+                    RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, suppress).apply();
+            CameraHelperService.mirrorSettingsChanged(this);
+            productionUi.reload();
+            return;
+        }
         RearviewMirrorSettings model = new RearviewMirrorSettings(preferences);
         RearviewMirrorSettings.Settings before = model.load();
         MirrorUiState ui = productionUi.getState().getMirror();
@@ -3227,6 +3234,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 preferences.edit().putBoolean(ReverseCameraController.PREF_ENABLED, value).apply();
                 CameraHelperService.reverseCameraSettingsChanged(this);
             } else if (id == ToggleId.ReverseSwitchByGear) {
+                if (!ReverseCameraController.hasAnyFrontIntegration(preferences)) return;
                 preferences.edit().putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, value).apply();
                 CameraHelperService.reverseCameraSettingsChanged(this);
             } else if (id == ToggleId.AvmShowRaw) {
@@ -3242,6 +3250,14 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (target instanceof ToggleTarget.Blind) {
             ToggleTarget.Blind blind = (ToggleTarget.Blind) target;
+            if (blind.getId() == ToggleId.BlindSuppressWhilePanorama) {
+                String key = blind.getGroup() == CameraGroup.Front
+                        ? BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA
+                        : BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA;
+                preferences.edit().putBoolean(key, value).apply();
+                CameraHelperService.cameraTriggerSettingsChanged(this);
+                return;
+            }
             String key = blind.getId() == ToggleId.BlindRear
                     ? BlindSpotOverlayController.PREF_ENABLED
                     : blind.getId() == ToggleId.BlindFront
@@ -13932,7 +13948,6 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void armProductionPreviewFirstFrame(int requestId) {
         productionPreviewFreshness.arm(requestId, activeActivityInputGenerations);
-        productionPreviewFrameRequest++;
         productionPreviewFrameUpdates = 0;
         productionPreviewAwaitingFrame = true;
         if (cameraPreviewCover != null) cameraPreviewCover.setVisibility(View.VISIBLE);
@@ -13967,11 +13982,10 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!shouldRetryProductionPreviewFrame(
                 selectedTab == TAB_CAMERAS, activePreview == cameraPreview,
                 requestedOpen, productionPreviewAwaitingFrame)) return;
-        record("camera_preview_first_frame_timeout",
-                "request_id", productionPreviewFrameRequest,
-                "camera_id", selectedCameraId,
-                "status", "Кадр не отримано; повторне відкриття...",
-                "retry", !productionPreviewRetryUsed);
+        record("camera_preview_first_frame_timeout", productionPreviewFrameFields(
+                activeActivityCameraRequestId, activeActivityCameraProfile,
+                activeDirectCameraIndex, productionPreviewFrameUpdates,
+                true, !productionPreviewRetryUsed));
         if (!productionPreviewRetryUsed) {
             productionPreviewRetryUsed = true;
             closeCameraForTransition("production_first_frame_timeout");
@@ -13988,6 +14002,25 @@ public final class CameraProbeActivity extends ComponentActivity
             boolean camerasTab, boolean activePreview, boolean requestedOpen,
             boolean awaitingFrame) {
         return camerasTab && activePreview && requestedOpen && awaitingFrame;
+    }
+
+    /** Diagnostic identity follows the opened request, never the currently selected Blind tab. */
+    static Object[] productionPreviewFrameFields(
+            int requestId, CameraProfileId profile, int directIndex, int frameUpdates,
+            boolean timeout, boolean retry) {
+        CameraProfile blind = profile instanceof CameraProfileId.Blind
+                ? blindProfile((CameraProfileId.Blind) profile) : null;
+        String profileName = profile == null ? "unknown" : profile.toString();
+        String name = blind == null ? profileName : blind.wireName;
+        Integer index = blind != null ? Integer.valueOf(blind.previewIndex)
+                : directIndex >= 0 ? Integer.valueOf(directIndex) : null;
+        // record() omits null values through JSONObject.put, retaining camera_id only for Blind.
+        return new Object[]{
+                "request_id", requestId, "profile", profileName,
+                "preview_index", index, "camera_id", blind == null ? null : blind.id,
+                "frame_updates", timeout ? null : frameUpdates,
+                "status", timeout ? "No frame received for " + name : "Showing " + name,
+                "retry", timeout ? retry : null};
     }
 
     private static void showCameraPolicyStatus(TextView view, String message) {
@@ -14183,6 +14216,7 @@ public final class CameraProbeActivity extends ComponentActivity
     static boolean isOverlayCameraEvent(String kind, String owner) {
         return (CameraHelperMain.CAMERA_OWNER_OVERLAY.equals(owner)
                 || CameraHelperMain.CAMERA_OWNER_PARKING.equals(owner)
+                || CameraHelperMain.CAMERA_OWNER_MIRROR.equals(owner)
                 || CameraHelperMain.CAMERA_OWNER_REVERSE.equals(owner))
                 && ("camera_opened".equals(kind)
                         || "camera_error".equals(kind)

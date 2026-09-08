@@ -671,7 +671,8 @@ final class ReverseCameraController {
 
     static boolean switchByGear(SharedPreferences settings) {
         try {
-            return settings.getBoolean(PREF_SWITCH_BY_GEAR, false);
+            return settings.getBoolean(PREF_SWITCH_BY_GEAR, false)
+                    && hasAnyFrontIntegration(settings);
         } catch (RuntimeException invalidPreference) {
             return false;
         }

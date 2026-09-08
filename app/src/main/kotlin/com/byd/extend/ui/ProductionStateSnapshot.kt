@@ -113,6 +113,8 @@ private fun readBlind(
                 steeringAngle = decimal(preferences.getFloat(
                     BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ANGLE,
                     BlindSpotOverlayController.DEFAULT_REAR_SHARP_TURN_ANGLE_DEG)),
+                suppressWhilePanorama = preferences.getBoolean(
+                    BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, true),
                 sharpTurnEnabled = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false),
                 blindSpotOnly = preferences.getBoolean(
@@ -127,6 +129,8 @@ private fun readBlind(
                 steeringAngle = decimal(preferences.getFloat(
                     BlindSpotOverlayController.PREF_FRONT_MIN_ANGLE,
                     BlindSpotOverlayController.DEFAULT_FRONT_MIN_ANGLE_DEG)),
+                suppressWhilePanorama = preferences.getBoolean(
+                    BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, true),
                 turnRequired = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, true),
             ),
@@ -293,6 +297,8 @@ private fun readMirror(
     )
     return MirrorUiState(
         enabled = settings.enabled,
+        suppressWhilePanorama = preferences.getBoolean(
+            MirrorUiContract.PREF_SUPPRESS_WHILE_PANORAMA, true),
         hidden = settings.manualHidden,
         section = enumPreference(preferences, UiSelectionPreferences.MIRROR_SECTION,
             CameraSection.Parameters),

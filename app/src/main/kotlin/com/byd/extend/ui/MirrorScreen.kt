@@ -131,6 +131,15 @@ private fun ColumnScope.MirrorProfileHeader(
         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorEnabled), it)) },
         colors, pending = state.operation.pending, enabled = state.operation.enabled,
         compactSwitch = false)
+    SwitchLine(
+        strings.text(
+            "Не показувати під час панорамного виду",
+            "Do not show while panorama is open",
+            "全景视图开启时不显示",
+        ), "", state.suppressWhilePanorama,
+        { onAction(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama), it)) }, colors,
+    )
     ProfilePresetButtons(CameraProfileId.Mirror, state.presetAvailable, true, strings, colors, onAction)
 }
 

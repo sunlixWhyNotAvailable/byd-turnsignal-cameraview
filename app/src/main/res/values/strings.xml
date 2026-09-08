@@ -137,6 +137,7 @@
     <string name="element">"Element"</string>
     <string name="enhanced_reverse_view">"Enhanced reverse view"</string>
     <string name="switch_cameras_by_gear">"Switch cameras by gear"</string>
+    <string name="do_not_show_while_panorama_is_open">"Do not show while panorama is open"</string>
     <string name="select_button">"Select button…"</string>
     <string name="selected_button_value">"Selected button: %1$s"</string>
     <string name="reset_button">"Reset button"</string>

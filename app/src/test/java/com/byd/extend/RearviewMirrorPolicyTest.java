@@ -33,6 +33,19 @@ public final class RearviewMirrorPolicyTest {
         assertFalse(RearviewMirrorController.matchesFrameEvent(frame, 17, 4));
     }
 
+    @Test public void disabledPanoramaSuppressionBypassesOnlyThePanoramaGate() {
+        assertTrue(RearviewMirrorController.shouldShow(
+                true, false, false, false, true, false, true, true, false));
+        assertFalse(RearviewMirrorController.shouldShow(
+                true, true, false, false, true, false, true, true, false));
+        assertFalse(RearviewMirrorController.shouldShow(
+                true, false, true, false, true, false, true, true, false));
+        assertFalse(RearviewMirrorController.shouldShow(
+                true, false, false, false, true, false, false, true, false));
+        assertFalse(RearviewMirrorController.shouldShow(
+                true, false, false, false, true, false, true, false, false));
+    }
+
     @Test public void mirrorDoesNotRenumberExistingOverlayProfiles() {
         assertEquals(4, CameraOverlayProfile.BLIND_COUNT);
         assertEquals(8, CameraOverlayProfile.PARKING_COUNT);

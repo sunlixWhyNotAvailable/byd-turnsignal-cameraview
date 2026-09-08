@@ -941,6 +941,7 @@ public final class CameraHelperService extends Service {
     }
 
     private void oemVisibilityChanged(boolean known, boolean visible, String source) {
+        if (overlay != null) overlay.oemVisibility(known, visible);
         if (reverseCameras != null) reverseCameras.oemVisibility(known, visible, source);
         if (mirror != null) mirror.oemVisibility(known, visible);
     }

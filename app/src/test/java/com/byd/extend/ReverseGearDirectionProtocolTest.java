@@ -100,6 +100,27 @@ public final class ReverseGearDirectionProtocolTest {
         assertTrue(source.contains("direction.accept(selected,"));
     }
 
+    @Test
+    public void frontModeChangesOnlyIntegratedPanesAndNoneDisablesGearSwitching() {
+        int front = ReverseSideSelectorView.MODE_FRONT;
+        assertFalse(ReverseCameraCompositionView.effectiveSourceIsFront(1, front, true, true));
+        assertTrue(ReverseCameraCompositionView.effectiveSourceIsFront(2, front, true, false));
+        assertFalse(ReverseCameraCompositionView.effectiveSourceIsFront(3, front, true, false));
+        assertTrue(ReverseCameraCompositionView.effectiveSourceIsFront(4, front, false, false));
+        assertFalse(ReverseCameraCompositionView.effectiveSourceIsFront(
+                2, ReverseSideSelectorView.MODE_REAR, true, true));
+
+        TestSharedPreferences settings = new TestSharedPreferences();
+        settings.putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, true);
+        assertFalse(ReverseCameraController.switchByGear(settings));
+        assertTrue(settings.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false));
+        ReverseCameraController.saveFrontIntegrated(settings, 2, true);
+        assertTrue(ReverseCameraController.switchByGear(settings));
+        ReverseCameraController.saveFrontIntegrated(settings, 2, false);
+        assertFalse(ReverseCameraController.switchByGear(settings));
+        assertTrue(settings.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false));
+    }
+
     private static String read(String name) throws Exception {
         Path path = Path.of("app/src/main/java/com/byd/extend", name);
         if (!Files.exists(path)) path = Path.of("src/main/java/com/byd/extend", name);

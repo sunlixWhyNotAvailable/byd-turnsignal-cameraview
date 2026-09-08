@@ -1204,17 +1204,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private void applyModel(int width, int height) {
         applyEffectiveVisibility();
-        ReverseCameraLayout activeModel = sideMode == ReverseSideSelectorView.MODE_FRONT
-                ? frontModel : model;
-        ReverseCameraLayout activeRawFallback = sideMode == ReverseSideSelectorView.MODE_FRONT
-                ? frontRawFallbackModel : rawFallbackModel;
-        boolean showCentralFront = sideMode == ReverseSideSelectorView.MODE_FRONT
-                && centralFrontIntegrated && centralFrontSourceEnabled
-                && centralFrontPane != null && centralFrontFrameReady;
         for (PaneView pane : panes) {
-            ReverseCameraLayout centerRawFallback = pane.cameraIndex
-                    == ReverseCameraLayout.REAR_CAMERA_INDEX && !showCentralFront
-                    ? rawFallbackModel : activeRawFallback;
+            boolean frontSource = effectiveSourceIsFront(pane.sourceIndex, sideMode,
+                    frontLeftIntegrated, frontRightIntegrated);
+            ReverseCameraLayout centerRawFallback = frontSource
+                    ? frontRawFallbackModel : rawFallbackModel;
             ReverseCameraLayout.Rect rawCrop =
                     centerRawFallback.pane(pane.cameraIndex).sourceCrop;
             pane.texture.applyDewarpSourceRoi(
@@ -1230,12 +1224,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyFrameBounds(sideSelector, widgetRect);
         sideSelector.setZ(5.0f);
         for (PaneView pane : panes) {
-            ReverseCameraLayout centerFallback = pane.cameraIndex
-                    == ReverseCameraLayout.REAR_CAMERA_INDEX && !showCentralFront
-                    ? model : activeModel;
-            ReverseCameraLayout centerRawFallback = pane.cameraIndex
-                    == ReverseCameraLayout.REAR_CAMERA_INDEX && !showCentralFront
-                    ? rawFallbackModel : activeRawFallback;
+            boolean frontSource = effectiveSourceIsFront(pane.sourceIndex, sideMode,
+                    frontLeftIntegrated, frontRightIntegrated);
+            ReverseCameraLayout centerFallback = frontSource ? frontModel : model;
+            ReverseCameraLayout centerRawFallback = frontSource
+                    ? frontRawFallbackModel : rawFallbackModel;
             ReverseCameraLayout.Pane value = centerFallback.pane(pane.cameraIndex);
             ReverseCameraLayout.Rect rawCrop =
                     centerRawFallback.pane(pane.cameraIndex).sourceCrop;
@@ -1251,9 +1244,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     value.mirrorHorizontally, baseRect.width, baseRect.height);
         }
         if (centralFrontPane != null) {
-            ReverseCameraLayout.Pane centerValue = activeModel.pane(
+            ReverseCameraLayout.Pane centerValue = frontModel.pane(
                     ReverseCameraLayout.REAR_CAMERA_INDEX);
-            ReverseCameraLayout.Rect centerRawCrop = activeRawFallback.pane(
+            ReverseCameraLayout.Rect centerRawCrop = frontRawFallbackModel.pane(
                     ReverseCameraLayout.REAR_CAMERA_INDEX).sourceCrop;
             centralFrontPane.texture.applyDewarpSourceRoi(
                     centerRawCrop.left, centerRawCrop.top,
@@ -1292,8 +1285,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private void applyActiveDewarpConfigs() {
         applyPaneDewarpConfig(panes[0], rearDewarp);
         applyPaneDewarpConfig(panes[1], sideMode == ReverseSideSelectorView.MODE_FRONT
+                && frontLeftIntegrated
                 ? frontLeftDewarp : leftDewarp);
         applyPaneDewarpConfig(panes[2], sideMode == ReverseSideSelectorView.MODE_FRONT
+                && frontRightIntegrated
                 ? frontRightDewarp : rightDewarp);
         if (centralFrontPane != null) {
             applyPaneDewarpConfig(centralFrontPane, centralFrontDewarp);
@@ -1306,9 +1301,22 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 || sourceIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
     }
 
+    static boolean effectiveSourceIsFront(int sourceIndex, int sideMode,
+            boolean frontLeftIntegrated, boolean frontRightIntegrated) {
+        if (!fallbackSourceIsFront(sourceIndex, sideMode)) return false;
+        if (sourceIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) {
+            return frontLeftIntegrated;
+        }
+        if (sourceIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
+            return frontRightIntegrated;
+        }
+        return true;
+    }
+
     private void applyPaneDewarpConfig(PaneView pane, CameraDewarpConfig value) {
         boolean previousFront = pane.frontCalibration;
-        pane.frontCalibration = fallbackSourceIsFront(pane.sourceIndex, sideMode);
+        pane.frontCalibration = effectiveSourceIsFront(pane.sourceIndex, sideMode,
+                frontLeftIntegrated, frontRightIntegrated);
         boolean sourceChanged = previousFront != pane.frontCalibration;
         if (sourceChanged && callback != null) {
             callback.onReverseDewarpFallbackChanged(pane.cameraIndex, previousFront, false);
@@ -1334,11 +1342,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 && centralFrontFrameReady && centralFrontPane.frameFresh;
         boolean front = sideMode == ReverseSideSelectorView.MODE_FRONT;
         boolean leftEligible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
-                && (!front || frontLeftIntegrated);
+                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
         boolean rightEligible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)
-                && (!front || frontRightIntegrated);
+                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
         boolean preReveal = frameBarrier.requestId() > 0 && !frameBarrier.revealed();
         setPaneTargetActive(panes[0], preReveal || centerVisible && !centralFrontVisible);
         setPaneTargetActive(panes[1], preReveal || leftEligible);

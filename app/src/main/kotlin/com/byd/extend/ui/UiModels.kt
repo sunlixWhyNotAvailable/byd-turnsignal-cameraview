@@ -137,6 +137,7 @@ enum class ToggleId {
     AutomaticUpdate,
     BlindRear,
     BlindFront,
+    BlindSuppressWhilePanorama,
     BlindSharpTurn,
     BlindObjectOnly,
     BlindTurnRequired,
@@ -149,6 +150,7 @@ enum class ToggleId {
     ReverseFrontIntegration,
     ReverseSwitchByGear,
     MirrorEnabled,
+    MirrorSuppressWhilePanorama,
     MirrorHidden,
     ProfileCorrection,
     ProfileMirror,
@@ -310,10 +312,11 @@ object MirrorUiContract {
     const val PREF_BORDER_WIDTH = RearviewMirrorSettings.PREF_BORDER_DP
     const val PREF_BORDER_COLOR = RearviewMirrorSettings.PREF_BORDER_ARGB
     const val PREF_PRESET_AVAILABLE = RearviewMirrorSettings.PREF_PRESET_PRESENT
+    const val PREF_SUPPRESS_WHILE_PANORAMA = RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA
 }
 
 enum class MirrorBackendActionKind {
-    SetEnabled, SetTarget, SetGeometry, SetBorder, SetCalibration, SavePreset, LoadPreset,
+    SetEnabled, SetSuppressWhilePanorama, SetTarget, SetGeometry, SetBorder, SetCalibration, SavePreset, LoadPreset,
     ResetPlacement, ResetOriginal, ResetCorrection, ResetOutput, HideUntilOpen,
 }
 
@@ -397,6 +400,7 @@ data class BlindRuleUiState(
     val minimumSpeed: String = "0",
     val maximumSpeed: String = "10",
     val steeringAngle: String = "10",
+    val suppressWhilePanorama: Boolean = true,
     val sharpTurnEnabled: Boolean = false,
     val blindSpotOnly: Boolean = false,
     val turnRequired: Boolean = true,
@@ -470,6 +474,7 @@ data class MirrorGeometryUiState(
 @Immutable
 data class MirrorUiState(
     val enabled: Boolean = false,
+    val suppressWhilePanorama: Boolean = true,
     val hidden: Boolean = false,
     val section: CameraSection = CameraSection.Parameters,
     val target: DisplayTarget = DisplayTarget.Tablet,
@@ -483,6 +488,10 @@ data class MirrorUiState(
     val overlayPermissionGranted: Boolean = false,
     val clusterAvailable: Boolean = false,
 )
+
+internal fun ReverseUiState.hasAnyFrontIntegration(): Boolean =
+    listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)
+        .any { frontIntegration[it] == true }
 
 @Immutable
 data class CameraOutputUiState(

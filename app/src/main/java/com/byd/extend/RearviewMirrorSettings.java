@@ -18,6 +18,8 @@ public final class RearviewMirrorSettings {
     // are percentages on disk for UI compatibility; the Java model exposes
     // fractions of the complete target display.
     public static final String PREF_ENABLED = "mirror_enabled";
+    public static final String PREF_SUPPRESS_WHILE_PANORAMA =
+            "mirror_suppress_while_panorama";
     public static final String PREF_TARGET = "mirror_target";
     public static final String PREF_X = "mirror_x";
     public static final String PREF_Y = "mirror_y";
@@ -117,6 +119,15 @@ public final class RearviewMirrorSettings {
     /** Small static seam for runtime owners that already hold shared preferences. */
     public static boolean enabled(SharedPreferences preferences) {
         return new RearviewMirrorSettings(preferences).load().enabled;
+    }
+
+    public static boolean suppressWhilePanorama(SharedPreferences preferences) {
+        if (preferences == null) throw new IllegalArgumentException("preferences is null");
+        try {
+            return preferences.getBoolean(PREF_SUPPRESS_WHILE_PANORAMA, true);
+        } catch (RuntimeException invalidPreference) {
+            return true;
+        }
     }
 
     public static boolean hidden(SharedPreferences preferences) {

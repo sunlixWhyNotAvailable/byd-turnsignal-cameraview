@@ -24,10 +24,10 @@ public final class CameraSettingsTransferTest {
         // 4 Blind profiles (20 values each), 8 Parking profiles (20 each),
         // Three Reverse panes plus the optional central-front calibration
         // fields, and shared/background/front values.
-        // v2 adds the active independent Mirror group (22 fields) while
+        // v2 adds the active independent Mirror group (23 fields) while
         // Blind width/height remain optional when no explicit v2 placement
         // has been saved.
-        assertEquals(389, settings.size());
+        assertEquals(392, settings.size());
         for (CameraProfile profile : CameraProfile.values()) {
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, false)));
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, true)));
@@ -158,6 +158,43 @@ public final class CameraSettingsTransferTest {
         assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_ENABLED, false));
         assertEquals("Cluster", target.getString(RearviewMirrorSettings.PREF_TARGET, ""));
         assertEquals(12.0f, target.getFloat(RearviewMirrorSettings.PREF_X, -1.0f), 0.0f);
+    }
+
+    @Test
+    public void olderPresetWithoutPanoramaOptionsPreservesCurrentValues() throws Exception {
+        org.json.JSONObject preset = new org.json.JSONObject(
+                CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+        org.json.JSONObject values = preset.getJSONObject("settings");
+        values.remove(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA);
+        values.remove(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA);
+        values.remove(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA);
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putBoolean(
+                BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, false);
+        target.putBoolean(
+                BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, false);
+        target.putBoolean(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, false);
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(preset.toString()));
+
+        assertFalse(BlindSpotOverlayController.readPanoramaSuppression(target, false));
+        assertFalse(BlindSpotOverlayController.readPanoramaSuppression(target, true));
+        assertFalse(RearviewMirrorSettings.suppressWhilePanorama(target));
+
+        TestSharedPreferences explicit = new TestSharedPreferences();
+        explicit.putBoolean(
+                BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, false);
+        explicit.putBoolean(
+                BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, false);
+        explicit.putBoolean(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, false);
+        TestSharedPreferences replaced = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(replaced,
+                CameraSettingsTransfer.parseCameraPreset(
+                        CameraSettingsTransfer.exportCameraPreset(explicit)));
+        assertFalse(BlindSpotOverlayController.readPanoramaSuppression(replaced, false));
+        assertFalse(BlindSpotOverlayController.readPanoramaSuppression(replaced, true));
+        assertFalse(RearviewMirrorSettings.suppressWhilePanorama(replaced));
     }
 
     @Test

@@ -177,6 +177,7 @@ internal fun Section(
     trailing: (@Composable () -> Unit)? = null,
     bodyPadding: Dp = 14.dp,
     header: (@Composable () -> Unit)? = null,
+    titleTrailing: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val compact = LocalCompactControls.current
@@ -188,8 +189,14 @@ internal fun Section(
                 .padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(title.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f))
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(title.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false))
+                if (titleTrailing != null) {
+                    Spacer(Modifier.width(8.dp))
+                    titleTrailing()
+                }
+            }
             trailing?.invoke()
         }
         Column(Modifier.fillMaxWidth().padding(inset),

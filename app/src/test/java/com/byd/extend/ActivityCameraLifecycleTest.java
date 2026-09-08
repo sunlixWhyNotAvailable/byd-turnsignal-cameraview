@@ -23,6 +23,88 @@ import static org.junit.Assert.assertArrayEquals;
 
 public final class ActivityCameraLifecycleTest {
     @Test
+    public void panoramaOptionsNotifyOnlyTheirOwningController() throws Exception {
+        Path file = Path.of("app/src/main/java/com/byd/extend/CameraProbeActivity.java");
+        if (!Files.exists(file)) file = Path.of("src/main/java/com/byd/extend/CameraProbeActivity.java");
+        String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        for (String[] target : new String[][]{
+                {"action.getKind() == MirrorBackendActionKind.SetSuppressWhilePanorama",
+                        "CameraHelperService.mirrorSettingsChanged(this)"},
+                {"blind.getId() == ToggleId.BlindSuppressWhilePanorama",
+                        "CameraHelperService.cameraTriggerSettingsChanged(this)"}}) {
+            int start = source.indexOf(target[0]);
+            assertTrue(start >= 0);
+            String branch = source.substring(start, source.indexOf("return;", start));
+            assertTrue(branch.contains(target[1]));
+            assertFalse(branch.contains("CameraHelperService.cameraSettingsChanged(this)"));
+        }
+    }
+
+    @Test
+    public void mirrorTerminalEventsCannotCollideWithActivityRequestIds() {
+        for (String kind : new String[]{"camera_opened", "camera_error", "camera_closed"}) {
+            assertTrue(CameraProbeActivity.isOverlayCameraEvent(kind, "mirror"));
+            assertTrue(CameraProbeActivity.isOverlayCameraEvent(kind, "overlay"));
+            assertTrue(CameraProbeActivity.isOverlayCameraEvent(kind, "parking"));
+            assertTrue(CameraProbeActivity.isOverlayCameraEvent(kind, "reverse"));
+            assertFalse(CameraProbeActivity.isOverlayCameraEvent(kind, "activity"));
+            assertFalse(CameraProbeActivity.isOverlayCameraEvent(kind, ""));
+        }
+        assertFalse(CameraProbeActivity.isOverlayCameraEvent("camera_source_hub_stats", "mirror"));
+    }
+
+    @Test
+    public void frameDiagnosticsUseOpenedProfileAndRequestForBothSides() throws Exception {
+        int request = 40;
+        for (CameraGroup group : CameraGroup.values()) {
+            for (CameraSide side : CameraSide.values()) {
+                CameraProfileId.Blind profile = new CameraProfileId.Blind(group, side);
+                for (boolean timeout : new boolean[]{false, true}) {
+                    org.json.JSONObject event = frameFields(++request, profile, -1, timeout);
+                    assertEquals(request, event.getInt("request_id"));
+                    assertEquals(profile.toString(), event.getString("profile"));
+                    assertEquals(side == CameraSide.Left ? 2 : 3, event.getInt("preview_index"));
+                    int id = (group == CameraGroup.Front ? 2 : 0)
+                            + (side == CameraSide.Right ? 1 : 0);
+                    assertEquals(id, event.getInt("camera_id"));
+                    assertTrue(event.getString("status").contains(CameraProfile.of(id).wireName));
+                    assertEquals(timeout, event.has("retry"));
+                    assertEquals(!timeout, event.has("frame_updates"));
+                }
+            }
+        }
+    }
+
+    @Test
+    public void parkingAndMirrorFramesNeverInheritBlindCameraIdentity() throws Exception {
+        for (com.byd.extend.ui.ParkingView view : com.byd.extend.ui.ParkingView.values()) {
+            CameraProfileId.Parking profile = new CameraProfileId.Parking(view);
+            int index = ParkingCameraProfile.of(view.ordinal()).physicalCameraIndex;
+            for (boolean timeout : new boolean[]{false, true}) {
+                org.json.JSONObject event = frameFields(53, profile, index, timeout);
+                assertEquals(53, event.getInt("request_id"));
+                assertEquals(index, event.getInt("preview_index"));
+                assertEquals(profile.toString(), event.getString("profile"));
+                assertTrue(event.getString("status").contains(profile.toString()));
+                assertFalse(event.has("camera_id"));
+            }
+        }
+        org.json.JSONObject mirror = frameFields(54, CameraProfileId.Mirror.INSTANCE, 1, false);
+        assertEquals("Mirror", mirror.getString("profile"));
+        assertEquals(1, mirror.getInt("preview_index"));
+        assertFalse(mirror.has("camera_id"));
+    }
+
+    private static org.json.JSONObject frameFields(
+            int request, CameraProfileId profile, int index, boolean timeout) throws Exception {
+        Object[] fields = CameraProbeActivity.productionPreviewFrameFields(
+                request, profile, index, 2, timeout, true);
+        org.json.JSONObject event = new org.json.JSONObject();
+        for (int i = 0; i < fields.length; i += 2) event.put((String) fields[i], fields[i + 1]);
+        return event;
+    }
+
+    @Test
     public void optionalReverseBackgroundAcceptsOnlyItsCurrentRequestAndShells() throws Exception {
         org.json.JSONObject event = new org.json.JSONObject()
                 .put("source", "helper").put("request_id", 31)

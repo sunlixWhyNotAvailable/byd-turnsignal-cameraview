@@ -137,6 +137,7 @@
     <string name="element">"Елемент"</string>
     <string name="enhanced_reverse_view">"Покращений задній вид"</string>
     <string name="switch_cameras_by_gear">"Перемикати за передачею"</string>
+    <string name="do_not_show_while_panorama_is_open">"Не показувати під час панорамного виду"</string>
     <string name="select_button">"Вибрати кнопку…"</string>
     <string name="selected_button_value">"Вибрана кнопка: %1$s"</string>
     <string name="reset_button">"Скинути кнопку"</string>

@@ -3,6 +3,8 @@ package com.byd.extend;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public final class CameraProfileTest {
     @Test
@@ -19,6 +21,27 @@ public final class CameraProfileTest {
         assertEquals(0, CameraProfile.desiredMask(
                 true, 2, Float.NaN, 0.0f,
                 true, 10, 300, true, 0, 10, false, 10.0f));
+    }
+
+    @Test
+    public void panoramaSuppressionIsIndependentAndRequiresKnownVisibleState() {
+        assertFalse(BlindSpotOverlayController.panoramaSuppresses(false, true, true));
+        assertFalse(BlindSpotOverlayController.panoramaSuppresses(true, false, true));
+        assertFalse(BlindSpotOverlayController.panoramaSuppresses(true, true, false));
+        assertTrue(BlindSpotOverlayController.panoramaSuppresses(true, true, true));
+
+        TestSharedPreferences settings = new TestSharedPreferences();
+        assertTrue(BlindSpotOverlayController.readPanoramaSuppression(settings, false));
+        assertTrue(BlindSpotOverlayController.readPanoramaSuppression(settings, true));
+        BlindSpotOverlayController.migrateOverlayPreferences(settings);
+        assertTrue(settings.getBoolean(
+                BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, false));
+        assertTrue(settings.getBoolean(
+                BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, false));
+        settings.putBoolean(
+                BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, false);
+        assertFalse(BlindSpotOverlayController.readPanoramaSuppression(settings, false));
+        assertTrue(BlindSpotOverlayController.readPanoramaSuppression(settings, true));
     }
 
     @Test

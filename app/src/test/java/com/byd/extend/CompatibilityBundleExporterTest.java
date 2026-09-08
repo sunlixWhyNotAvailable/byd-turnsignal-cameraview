@@ -28,8 +28,27 @@ public final class CompatibilityBundleExporterTest {
 
     @Test
     public void budgetGateEnforcesPerFileAndAggregateLimits() {
-        assertEquals(512L * 1024L * 1024L, CompatibilityBundleExporter.MAX_FILE_BYTES);
-        assertEquals(1024L * 1024L * 1024L, CompatibilityBundleExporter.MAX_TOTAL_BYTES);
+        assertEquals(2L * 1024L * 1024L * 1024L,
+                CompatibilityBundleExporter.MAX_FILE_BYTES);
+        assertEquals(4L * 1024L * 1024L * 1024L,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES);
+        assertEquals(16L * 1024L * 1024L, CompatibilityBundleExporter.MAX_TEXT_BYTES);
+        assertTrue(CompatibilityBundleExporter.fitsBudget(
+                CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES
+                        - CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES));
+        assertFalse(CompatibilityBundleExporter.fitsBudget(
+                CompatibilityBundleExporter.MAX_FILE_BYTES + 1L, 0L,
+                CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES));
+        assertFalse(CompatibilityBundleExporter.fitsBudget(
+                CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES
+                        - CompatibilityBundleExporter.MAX_FILE_BYTES + 1L,
+                CompatibilityBundleExporter.MAX_FILE_BYTES,
+                CompatibilityBundleExporter.MAX_TOTAL_BYTES));
         assertTrue(CompatibilityBundleExporter.fitsBudget(4, 6, 4, 10));
         assertFalse(CompatibilityBundleExporter.fitsBudget(5, 0, 4, 10));
         assertFalse(CompatibilityBundleExporter.fitsBudget(4, 7, 4, 10));
@@ -51,13 +70,22 @@ public final class CompatibilityBundleExporterTest {
         File previousCompatibility = new File(shared, "byd-turnsignal-compatibility-previous.zip");
         Files.write(previousCompatibility.toPath(), new byte[]{2});
 
+        String jarFindCommand =
+                "find /system/framework /system_ext/framework /vendor/framework /odm/framework "
+                        + "/product/framework -maxdepth 1 -type f \\( "
+                        + "-iname '*byd*.jar' -o -iname '*dilink*.jar' "
+                        + "-o -iname '*avm*.jar' -o -iname '*pano*.jar' "
+                        + "-o -name 'framework.jar' -o -name 'services.jar' "
+                        + "\\) -print 2>/dev/null";
+        List<String> textCommands = new ArrayList<>();
         CompatibilityBundleExporter.TextCommandRunner text = (command, limit) -> {
+            textCommands.add(command);
             if (command.startsWith("pm path")) {
                 return CompatibilityBundleExporter.CommandResult.success(
                         "package:/data/app/~~abc/com.byd.avc-1/base.apk\n"
                                 + "package:/data/app/~~abc/com.byd.avc-1/split_config.arm64_v8a.apk\n");
             }
-            if (command.startsWith("find /system/framework")) {
+            if (command.equals(jarFindCommand)) {
                 return CompatibilityBundleExporter.CommandResult.success(
                         "/vendor/framework/byd-camera.jar\n");
             }
@@ -67,7 +95,9 @@ public final class CompatibilityBundleExporterTest {
             }
             return CompatibilityBundleExporter.CommandResult.success("property=value\n");
         };
+        List<Long> streamLimits = new ArrayList<>();
         CompatibilityBundleExporter.StreamCommandRunner stream = (command, output, limit) -> {
+            streamLimits.add(limit);
             try {
                 output.write("binary\n".getBytes(StandardCharsets.UTF_8));
             } catch (IOException error) {
@@ -85,6 +115,12 @@ public final class CompatibilityBundleExporterTest {
         assertNotNull(readEntry(archive, "manifest.json"));
         assertNotNull(readEntry(archive, "app/sanitized-camera-preferences.json"));
         assertNotNull(readEntry(archive, "remote/data/app/~~abc/com.byd.avc-1/base.apk"));
+        assertNotNull(readEntry(archive, "remote/vendor/framework/byd-camera.jar"));
+        assertTrue(textCommands.contains(jarFindCommand));
+        assertFalse(streamLimits.isEmpty());
+        assertTrue(streamLimits.stream().allMatch(limit ->
+                limit == CompatibilityBundleExporter.MAX_FILE_BYTES
+                        && limit > Integer.MAX_VALUE));
         String prefs = readEntry(archive, "app/sanitized-camera-preferences.json");
         assertTrue(prefs.contains("camera_rear_left_scale"));
         assertTrue(prefs.contains("reverse_dewarp_enabled"));

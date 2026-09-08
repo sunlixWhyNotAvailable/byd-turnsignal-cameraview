@@ -46,6 +46,8 @@ or importing legacy settings.
 
 Preset format v2 adds independent Blind rectangles and the active Mirror configuration. Existing
 v1 files remain supported; importing one does not reset Mirror settings that it does not contain.
+Panorama-suppression preferences are included when present; older presets without these fields
+preserve the current values, with suppression enabled by default on fresh settings.
 Local saved calibration slots and temporary Mirror hiding are not part of a camera preset.
 Built-in camera geometry and calibration use the approved reference baseline only for absent
 values and explicit section resets; updating the application does not replace stored user settings.
@@ -81,11 +83,14 @@ enabled, and the composition must already be active. Existing per-camera visibil
 rules apply; the button does not open cameras, change calibration or add automatic switching in D.
 Calibration and other foreground app tabs do not redirect the button to a background composition.
 
-The separate `Switch by gear` setting is off by default. When enabled, R prepares the composition
-immediately; the session remains active while R or the stock camera UI is active. Entering D selects
+The separate `Switch by gear` setting is off by default. Its row follows front-camera Integration
+and is available only while at least one camera is integrated; disabling every integration does
+not erase the saved preference. R activation never waits for the stock camera UI. With gear
+selection enabled, the session remains active while R or the stock camera UI is active. Entering D selects
 integrated front cameras, and entering R selects rear cameras. N and P retain the selected view
 during a session, or select Front on a cold opening. Repeated telemetry does not undo manual
-selection. Automatic selection does not require the selector widget to be visible.
+selection. Nonintegrated panes keep their rear view in either mode. Automatic selection does not
+require the selector widget to be visible.
 
 The assigned press, repeats and release replace the stock key action, including when no eligible
 composition is active. Reset the assignment to restore normal handling. Explicit app Shutdown
@@ -101,8 +106,14 @@ not guaranteed.
 Enable the rearview mirror and grant Android overlay permission when prompted. Its independent
 placement, calibration, preset and border settings do not modify Reverse or Blind profiles.
 Drag the external widget to move it; touch and hold to hide it until BYD Extend is opened again.
-It is hidden while BYD Extend or the stock camera UI is open. A hidden widget leaves no input
-window blocking other apps, while taps inside the visible widget do not pass through.
+It is hidden while BYD Extend is open. The default-enabled `Do not show while panorama is open`
+option also hides it during the stock camera UI; switching that option off does not disable
+app-foreground or long-press hiding. A hidden widget leaves no input window blocking other apps,
+while taps inside the visible widget do not pass through.
+
+Blind cameras have the same default-enabled panorama option independently for the rear and front
+groups, directly below each group's enable switch. Panorama opening/error status appears next
+to the Reverse camera-section title; direct-camera readiness remains a separate status.
 
 Global Auto-start controls autonomous startup and recovery; turning it off still permits manual
 Mirror use. An unavailable instrument cluster does not redirect the widget to the tablet.
@@ -117,8 +128,10 @@ language choices are preserved, and the Chinese selector label remains `中文` 
 
 Settings can share logs or create a compatibility package. Compatibility export displays the
 current phase, file, file count, and transferred bytes, and can be cancelled without sharing a
-partial archive. It supports individual files up to 512 MiB and a total payload up to 1 GiB;
+partial archive. It supports individual files up to 2 GiB and a total source payload up to 4 GiB;
 missing or inaccessible optional files are reported in the package instead of stopping the export.
+Individual text captures remain limited to 16 MiB. Data is streamed rather than held in RAM;
+temporary files and ZIP overhead can require additional disk space beyond the source-data budget.
 
 ## Compatibility and requirements
 

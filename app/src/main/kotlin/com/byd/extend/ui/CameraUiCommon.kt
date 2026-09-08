@@ -55,7 +55,7 @@ internal fun CameraWorkspace(
     colors: UiPalette,
     onSection: (CameraSection) -> Unit,
     profileStatus: StatusUiState = StatusUiState(),
-    profileHeaderStatus: StatusUiState? = null,
+    panoramaStatus: StatusUiState? = null,
     profileControls: @Composable ColumnScope.() -> Unit,
     controls: @Composable ColumnScope.() -> Unit,
     preview: @Composable ColumnScope.() -> Unit,
@@ -65,11 +65,6 @@ internal fun CameraWorkspace(
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CameraPageHeader(pageTab, strings, colors)
             Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"),
-                trailing = {
-                    if (profileHeaderStatus != null) {
-                        StatusPillSlot(profileHeaderStatus, strings.text("Статус", "Status"), colors)
-                    }
-                },
                 content = profileControls)
             Section("", colors, Modifier.testTag("camera-settings"), header = {
                 Segmented(if (reverse) strings.reverseSections else strings.cameraSections, section.ordinal, colors,
@@ -80,6 +75,9 @@ internal fun CameraWorkspace(
             }, content = controls)
         }
         Section(previewTitle, colors, Modifier.weight(1f).fillMaxHeight().testTag("camera-frame"),
+            titleTrailing = if (panoramaStatus != null) {
+                { PanoramaStatusPill(panoramaStatus, strings, colors) }
+            } else null,
             trailing = { CameraStatusPill(profileStatus, strings, colors) }, content = preview)
     }
 }
@@ -89,6 +87,11 @@ internal fun CameraWorkspace(
 internal fun CameraStatusPill(state: StatusUiState, strings: UiStrings, colors: UiPalette) {
     val normalized = cameraStatusForDisplay(state, strings)
     StatusPillSlot(normalized, strings.text("Статус", "Status"), colors)
+}
+
+@Composable
+internal fun PanoramaStatusPill(state: StatusUiState, strings: UiStrings, colors: UiPalette) {
+    StatusPillSlot(panoramaStatusForDisplay(state), strings.text("Статус", "Status"), colors)
 }
 
 @Composable
@@ -105,6 +108,11 @@ internal fun cameraStatusForDisplay(state: StatusUiState, strings: UiStrings): S
         state.copy(text = strings.text("Відкриття...", "Opening..."))
     state.visible && state.tone == StatusTone.Error ->
         state.copy(text = strings.text("Помилка", "Error"))
+    else -> StatusUiState()
+}
+
+internal fun panoramaStatusForDisplay(state: StatusUiState): StatusUiState = when {
+    state.visible && (state.tone == StatusTone.Warning || state.tone == StatusTone.Error) -> state
     else -> StatusUiState()
 }
 

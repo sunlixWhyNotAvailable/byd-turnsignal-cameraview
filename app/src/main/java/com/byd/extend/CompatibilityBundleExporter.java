@@ -33,8 +33,8 @@ import java.util.zip.ZipOutputStream;
 
 /** Best-effort, separate compatibility evidence bundle. No vehicle writes or camera opens. */
 final class CompatibilityBundleExporter {
-    static final long MAX_FILE_BYTES = 512L * 1024L * 1024L;
-    static final long MAX_TOTAL_BYTES = 1024L * 1024L * 1024L;
+    static final long MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L;
+    static final long MAX_TOTAL_BYTES = 4L * 1024L * 1024L * 1024L;
     static final long MAX_TEXT_BYTES = 16L * 1024L * 1024L;
     static final int MANIFEST_SCHEMA_VERSION = 1;
     private static final int BUFFER_SIZE = 64 * 1024;
@@ -71,10 +71,10 @@ final class CompatibilityBundleExporter {
     private static final String PACKAGE_COMMAND = "pm path " + PACKAGE_NAME + " 2>/dev/null";
     private static final String JAR_FIND_COMMAND =
             "find /system/framework /system_ext/framework /vendor/framework /odm/framework "
-            + "/product/framework -maxdepth 1 -type f \\("
+            + "/product/framework -maxdepth 1 -type f \\( "
                     + "-iname '*byd*.jar' -o -iname '*dilink*.jar' -o -iname '*avm*.jar' "
                     + "-o -iname '*pano*.jar' -o -name 'framework.jar' -o -name 'services.jar'"
-            + "\\) -print 2>/dev/null";
+            + " \\) -print 2>/dev/null";
     private static final String CONFIG_FIND_COMMAND =
             "find /vendor/etc /odm/etc /system/etc /system_ext/etc /data/vendor/camera "
                     + "/data/misc/camera -maxdepth 4 -type f -print 2>/dev/null";

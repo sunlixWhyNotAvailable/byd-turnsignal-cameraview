@@ -79,13 +79,22 @@ final class RearviewMirrorController {
     static boolean shouldShow(boolean enabled, boolean manuallyHidden, boolean appVisible,
             boolean oemKnown, boolean oemVisible, boolean runtimeAllowed,
             boolean permission, boolean shutdown) {
-        return enabled && !manuallyHidden && !appVisible && oemKnown && !oemVisible
+        return shouldShow(enabled, manuallyHidden, appVisible, oemKnown, oemVisible,
+                true, runtimeAllowed, permission, shutdown);
+    }
+
+    static boolean shouldShow(boolean enabled, boolean manuallyHidden, boolean appVisible,
+            boolean oemKnown, boolean oemVisible, boolean suppressWhilePanorama,
+            boolean runtimeAllowed, boolean permission, boolean shutdown) {
+        return enabled && !manuallyHidden && !appVisible
+                && (!suppressWhilePanorama || oemKnown && !oemVisible)
                 && runtimeAllowed && permission && !shutdown;
     }
 
     private boolean wanted() {
         return shouldShow(RearviewMirrorSettings.enabled(preferences),
                 RearviewMirrorSettings.hidden(preferences), appVisible, oemKnown, oemVisible,
+                RearviewMirrorSettings.suppressWhilePanorama(preferences),
                 runtimeAllowed, Settings.canDrawOverlays(context), shutdown)
                 && !GuardRecovery.isUserShutdownActive(context)
                 && !LegacySettingsImporter.blocksRuntime(context)

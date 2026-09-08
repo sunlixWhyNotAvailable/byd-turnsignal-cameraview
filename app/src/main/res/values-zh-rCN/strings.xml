@@ -137,6 +137,7 @@
     <string name="element">"元素"</string>
     <string name="enhanced_reverse_view">"增强倒车视图"</string>
     <string name="switch_cameras_by_gear">"根据挡位切换摄像头"</string>
+    <string name="do_not_show_while_panorama_is_open">"全景视图开启时不显示"</string>
     <string name="select_button">"选择按键…"</string>
     <string name="selected_button_value">"已选按键：%1$s"</string>
     <string name="reset_button">"重置按键"</string>
