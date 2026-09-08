@@ -296,6 +296,36 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun reversePanoramaStatusIsIndependentFromDirectFramesAndSurvivesReload() {
+        val preferences = TestSharedPreferences()
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+        val directProfile = CameraProfileId.Reverse(ReverseElement.Rear, ReverseSource.Rear)
+        val opening = StatusUiState("Opening panorama…", StatusTone.Warning, true)
+        val directReady = StatusUiState("First frame ready", StatusTone.Ok, true)
+        val failed = StatusUiState("Stock camera background unavailable", StatusTone.Error, true)
+
+        controller.setReversePanoramaStatus(opening, pending = true)
+        controller.setProfileStatus(directProfile, directReady)
+        controller.reload()
+
+        assertTrue(controller.state.reverse.panoramaOperation.pending)
+        assertEquals(opening, controller.state.reverse.panoramaOperation.status)
+        assertEquals(directReady,
+            controller.state.reverse.profiles.getValue(directProfile).operation.status)
+
+        controller.setReversePanoramaStatus(failed)
+        assertFalse(controller.state.reverse.panoramaOperation.pending)
+        assertEquals(failed, controller.state.reverse.panoramaOperation.status)
+        assertEquals(directReady,
+            controller.state.reverse.profiles.getValue(directProfile).operation.status)
+
+        controller.setReversePanoramaStatus(StatusUiState())
+        assertFalse(controller.state.reverse.panoramaOperation.status.visible)
+        assertEquals(directReady,
+            controller.state.reverse.profiles.getValue(directProfile).operation.status)
+    }
+
+    @Test
     fun everyProfileRunMutatorReloadsBlindAndParkingValues() {
         val commands = listOf(CommandId.LoadProfilePreset, CommandId.TransferProfilePreset,
             CommandId.ResetProfilePlacement, CommandId.ResetProfileOriginal,

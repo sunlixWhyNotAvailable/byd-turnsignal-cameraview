@@ -444,6 +444,7 @@ class ProductionUiController @JvmOverloads constructor(
                 selectedElement = old.reverse.selectedElement,
                 selectedSource = old.reverse.selectedSource,
                 showFront = old.reverse.showFront,
+                panoramaOperation = old.reverse.panoramaOperation,
                 profiles = mergeProfileOperations(fresh.reverse.profiles, old.reverse.profiles),
             ),
             mirror = fresh.mirror.copy(
@@ -639,6 +640,11 @@ class ProductionUiController @JvmOverloads constructor(
             CameraProfileId.Mirror -> state.copy(mirror = state.mirror.copy(
                 profile = state.mirror.profile.copy(operation = operation), operation = operation))
         }
+    }
+
+    fun setReversePanoramaStatus(status: StatusUiState, pending: Boolean = false) {
+        state = state.copy(reverse = state.reverse.copy(panoramaOperation = OperationUiState(
+            enabled = !pending, pending = pending, status = status)))
     }
 
     /** Publishes the transient RAW fallback without changing persisted correction settings. */

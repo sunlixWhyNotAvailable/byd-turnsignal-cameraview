@@ -2,6 +2,9 @@ package com.byd.extend;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,6 +38,12 @@ public final class ActivityCameraLifecycleTest {
                 false, true, 31, 7, 8, event));
         assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
                 true, false, 31, 7, 8, event));
+        event.put("camera_shell_epoch", 6);
+        assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
+        event.remove("camera_shell_epoch");
+        assertTrue(CameraProbeActivity.isCurrentReverseBackgroundEvent(
+                true, true, 31, 7, 8, event));
         event.put("source", "stock_avm_shell").put("camera_shell_epoch", 7)
                 .put("avm_shell_epoch", 8);
         assertTrue(CameraProbeActivity.isCurrentReverseBackgroundEvent(
@@ -48,6 +57,83 @@ public final class ActivityCameraLifecycleTest {
         event.put("avm_shell_epoch", 8).put("source", "camera_shell_helper");
         assertFalse(CameraProbeActivity.isCurrentReverseBackgroundEvent(
                 true, true, 31, 7, 8, event));
+    }
+
+    @Test
+    public void reversePanoramaStatusCopyIsCompleteInEveryLocale() throws Exception {
+        String[] locales = {"values", "values-uk", "values-zh-rCN"};
+        String[] opening = {
+                "Opening panorama…", "Відкриття панорами…", "正在打开全景影像…"};
+        String[] failed = {
+                "Stock camera background unavailable", "Штатне тло камер недоступне", "原厂摄像头背景不可用"};
+        for (int index = 0; index < locales.length; index++) {
+            Path file = Path.of("app/src/main/res", locales[index], "runtime_strings.xml");
+            if (!Files.exists(file)) {
+                file = Path.of("src/main/res", locales[index], "runtime_strings.xml");
+            }
+            String xml = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            assertTrue(xml.contains("name=\"runtime_status_opening_panorama\">"
+                    + opening[index] + "</string>"));
+            assertTrue(xml.contains("name=\"runtime_status_reverse_background_unavailable\">"
+                    + failed[index] + "</string>"));
+        }
+    }
+
+    @Test
+    public void reverseDirectFramesAndPanoramaLifecycleUseIndependentStatusChannels()
+            throws Exception {
+        Path file = Path.of("app/src/main/java/com/byd/extend/CameraProbeActivity.java");
+        if (!Files.exists(file)) {
+            file = Path.of("src/main/java/com/byd/extend/CameraProbeActivity.java");
+        }
+        String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        String open = source.substring(source.indexOf("private void maybeOpenReversePreview()"),
+                source.indexOf("private void maybeOpenProductionPreview()"));
+        assertTrue(open.indexOf("runtime_status_opening_panorama")
+                < open.indexOf("transactOpenReversePreview("));
+
+        String frames = source.substring(source.indexOf("public void onReverseFramesReady("),
+                source.indexOf("public void onReverseSurfaceLost("));
+        assertTrue(frames.contains("\"First frame ready\", StatusTone.Ok, false"));
+        assertTrue(frames.contains("publishReversePreviewBackgroundUnavailable();"));
+        assertFalse(frames.contains("clearReversePanoramaStatus();"));
+
+        String background = source.substring(
+                source.indexOf("private boolean handleReversePreviewBackgroundEvent("),
+                source.indexOf("static boolean isCurrentReverseBackgroundEvent("));
+        assertTrue(background.contains("publishReversePreviewBackgroundUnavailable();"));
+        assertTrue(background.contains("clearReversePanoramaStatus();"));
+        assertTrue(background.indexOf("publishReversePreviewBackgroundUnavailable();")
+                < background.indexOf("} else if (\"camera_opened\".equals(kind))"));
+        assertTrue(background.indexOf("clearReversePanoramaStatus();")
+                > background.indexOf("} else if (\"camera_opened\".equals(kind))"));
+        assertTrue(source.contains("StatusTone.Error, false);"));
+    }
+
+    @Test
+    public void everyTerminalReversePreviewResetClearsThePanoramaStatus() throws Exception {
+        Path file = Path.of("app/src/main/java/com/byd/extend/CameraProbeActivity.java");
+        if (!Files.exists(file)) {
+            file = Path.of("src/main/java/com/byd/extend/CameraProbeActivity.java");
+        }
+        String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        String reset = source.substring(source.indexOf("private void clearPreview(String reason)"),
+                source.indexOf("private void armProductionPreviewFirstFrame("));
+        String reverseReset = reset.substring(
+                reset.indexOf("if (activePreview == reverseCameraPreview"),
+                reset.indexOf("calibrationPreviewFreshness.clear();"));
+        assertTrue(reverseReset.contains("reverseCameraPreview.clearFrames();"));
+        assertTrue(reverseReset.contains("clearReversePanoramaStatus();"));
+
+        String events = source.substring(source.indexOf("} else if (\"camera_error\".equals(kind))"),
+                source.indexOf("} else if (\"telemetry_ready\".equals(kind))"));
+        assertTrue(events.contains("clearPreview(\"camera_error\");"));
+        assertTrue(events.contains("clearPreview(\"camera_closed\");"));
+
+        String shellDeath = source.substring(
+                source.indexOf("private void handleActivityCameraShellDied("),
+                source.indexOf("private void rememberActivityAvmShellEpoch("));
+        assertTrue(shellDeath.contains("clearPreview(\"camera_shell_died\");"));
     }
 
     @Test

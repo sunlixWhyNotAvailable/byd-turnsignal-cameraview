@@ -96,6 +96,16 @@ public final class ReverseGearSessionPolicyTest {
     }
 
     @Test
+    public void reverseRemainsImmediateWhenPanoStateIsUnknown() {
+        ReverseGearSessionPolicy.State state = new ReverseGearSessionPolicy.State();
+        ReverseGearSessionPolicy.Decision decision = ReverseGearSessionPolicy.update(
+                state, true, true, ReverseGearSessionPolicy.RAW_REVERSE, false);
+        assertTrue(decision.started);
+        assertTrue(decision.eligible);
+        assertEquals(ReverseGearSessionPolicy.MODE_REAR, decision.targetMode);
+    }
+
+    @Test
     public void duplicatePanoEdgesNeverUndoManualModeSelection() {
         ReverseGearSessionPolicy.State state = new ReverseGearSessionPolicy.State();
         ReverseGearSessionPolicy.Decision d = ReverseGearSessionPolicy.update(

@@ -905,6 +905,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         serviceStopped, StatusTone.Error, true);
                 productionUi.setDiagnosticStatus(true, unavailable, false);
                 productionUi.setDiagnosticStatus(false, unavailable, false);
+                productionUi.setReversePanoramaStatus(
+                        new StatusUiState("", StatusTone.Neutral, false), false);
             }
             stopCalibrationCopies(true);
             clearPreview("helper_service_disconnected");
@@ -2360,11 +2362,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 reverseCalibrationCameraIndex,
                 reverseCalibrationFront,
                 reverseCalibrationCopiesRaw());
+        publishCameraStatus(activeActivityCameraProfile, null,
+                "First frame ready", StatusTone.Ok, false);
         if (reversePreviewBackgroundFailureRequestId == requestId) {
             publishReversePreviewBackgroundUnavailable();
-        } else {
-            publishCameraStatus(activeActivityCameraProfile, null,
-                    "First frame ready", StatusTone.Ok, false);
         }
         record("camera_status", "profile", "reverse", "text", "Live preview",
                 "tone", StatusTone.Ok.name(), "pending", false);
@@ -11032,6 +11033,9 @@ public final class CameraProbeActivity extends ComponentActivity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         requestedOpen = true;
+        publishReversePanoramaStatus(
+                runtimeText(R.string.runtime_status_opening_panorama),
+                StatusTone.Warning, true);
         publishCameraStatus(activeActivityCameraProfile, null,
                 "Відкриття камер заднього ходу...", StatusTone.Warning, true);
         record("camera_status", "profile", "reverse", "text",
@@ -11399,6 +11403,9 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private boolean closeCamera(String reason) {
         int closingRequestId = activeActivityCameraRequestId;
+        if (activePreview == reverseCameraPreview || selectedTab == TAB_REVERSE_CAMERAS) {
+            clearReversePanoramaStatus();
+        }
         if (!requestedOpen && !cameraHandoffPending) {
             if (!shouldPreserveAutoPreviewAfterClose(reason)) {
                 clearResumeAutoPreview();
@@ -11757,9 +11764,24 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void publishReversePreviewBackgroundUnavailable() {
-        publishCameraStatus(activeActivityCameraProfile, null,
+        publishReversePanoramaStatus(
                 runtimeText(R.string.runtime_status_reverse_background_unavailable),
-                StatusTone.Warning, false);
+                StatusTone.Error, false);
+    }
+
+    private void publishReversePanoramaStatus(
+            String text, StatusTone tone, boolean pending) {
+        if (productionUi != null) {
+            productionUi.setReversePanoramaStatus(
+                    new StatusUiState(text, tone, true), pending);
+        }
+    }
+
+    private void clearReversePanoramaStatus() {
+        if (productionUi != null) {
+            productionUi.setReversePanoramaStatus(
+                    new StatusUiState("", StatusTone.Neutral, false), false);
+        }
     }
 
     /** A failed optional background is not a failed direct-camera composition. */
@@ -11802,6 +11824,9 @@ public final class CameraProbeActivity extends ComponentActivity
             publishReversePreviewBackgroundUnavailable();
         } else if ("camera_opened".equals(kind)) {
             rememberActivityAvmShellEpoch(event, true);
+            if (reversePreviewBackgroundFailureRequestId != requestId) {
+                clearReversePanoramaStatus();
+            }
         }
         return true;
     }
@@ -12203,6 +12228,7 @@ public final class CameraProbeActivity extends ComponentActivity
             runOnUiThread(() -> {
                 if (!failClosedReversePreviewRequest(requestId)) return;
                 CameraHelperService.cameraPreviewStopped(this);
+                clearReversePanoramaStatus();
                 publishCameraStatus(activeActivityCameraProfile, null,
                         "Open failed: " + error.getClass().getSimpleName(),
                         StatusTone.Error, false);
@@ -13881,6 +13907,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (activePreview == reverseCameraPreview && reverseCameraPreview != null) {
             stopReverseCalibrationCopies(true);
             reverseCameraPreview.clearFrames();
+            clearReversePanoramaStatus();
         }
         calibrationPreviewFreshness.clear();
         reversePreviewFreshness.clear();

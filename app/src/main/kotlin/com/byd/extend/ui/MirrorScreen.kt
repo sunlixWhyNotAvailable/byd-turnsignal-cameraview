@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -67,42 +68,44 @@ internal fun MirrorScreen(
 ) {
     val profile = CameraProfileId.Mirror
     var pickingBorderColor by rememberSaveable { mutableStateOf(false) }
-    CameraWorkspace(
-        pageTab = RootTab.Mirror.pageIndex(),
-        section = state.section,
-        reverse = false,
-        calibrationEnabled = true,
-        previewTitle = strings.text("ПЕРЕГЛЯД • ДЗЕРКАЛО ЗАДНЬОГО ВИДУ", "PREVIEW • REARVIEW MIRROR"),
-        strings = strings,
-        colors = colors,
-        onSection = { onAction(BydExtendUiAction.Select(
-            SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal)) },
-        profileStatus = state.profile.operation.status,
-        profileControls = {
-            MirrorProfileHeader(state, strings, colors, onAction)
-        },
-        controls = {
-            CameraProfileControls(profile, state.profile, state.section, true, strings, colors, onAction,
-                onPreview = onPreview,
-                parameters = {
-                    MirrorParameters(state, strings, colors, onAction,
-                        onPickBorderColor = { pickingBorderColor = true })
-                })
-        },
-        preview = {
-            if (state.section != CameraSection.Calibration) {
-                CameraPlacementPreview(profile, 1, state.profile, colors, cameraHost,
-                    onMove = { x, y -> onAction(BydExtendUiAction.MoveProfile(profile, x, y)) },
-                    onResize = { x, y, width, height ->
-                        onAction(BydExtendUiAction.SetMirrorGeometry(MirrorGeometryUiState(
-                            x = percent(x), y = percent(y), width = percent(width), height = percent(height))))
-                    },
-                    editable = state.section == CameraSection.Placement)
-            } else {
-                CameraProfilePreview(profile, 1, state.profile, state.section, strings, colors, onAction, cameraHost)
-            }
-        },
-    )
+    ScreenSurface(colors, scroll = false, compact = true) {
+        CameraWorkspace(
+            pageTab = RootTab.Mirror.pageIndex(),
+            section = state.section,
+            reverse = false,
+            calibrationEnabled = true,
+            previewTitle = strings.text("ПЕРЕГЛЯД • ДЗЕРКАЛО ЗАДНЬОГО ВИДУ", "PREVIEW • REARVIEW MIRROR"),
+            strings = strings,
+            colors = colors,
+            onSection = { onAction(BydExtendUiAction.Select(
+                SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal)) },
+            profileStatus = state.profile.operation.status,
+            profileControls = {
+                MirrorProfileHeader(state, strings, colors, onAction)
+            },
+            controls = {
+                CameraProfileControls(profile, state.profile, state.section, true, strings, colors, onAction,
+                    onPreview = onPreview,
+                    parameters = {
+                        MirrorParameters(state, strings, colors, onAction,
+                            onPickBorderColor = { pickingBorderColor = true })
+                    })
+            },
+            preview = {
+                if (state.section != CameraSection.Calibration) {
+                    CameraPlacementPreview(profile, 1, state.profile, colors, cameraHost,
+                        onMove = { x, y -> onAction(BydExtendUiAction.MoveProfile(profile, x, y)) },
+                        onResize = { x, y, width, height ->
+                            onAction(BydExtendUiAction.SetMirrorGeometry(MirrorGeometryUiState(
+                                x = percent(x), y = percent(y), width = percent(width), height = percent(height))))
+                        },
+                        editable = state.section == CameraSection.Placement)
+                } else {
+                    CameraProfilePreview(profile, 1, state.profile, state.section, strings, colors, onAction, cameraHost)
+                }
+            },
+        )
+    }
     if (pickingBorderColor) MirrorBorderColorPicker(
         colors = colors,
         strings = strings,
@@ -251,12 +254,14 @@ private fun MirrorBorderColorPicker(
                             role = Role.Button, onClick = click))
                 }
             }
-            listOf(16 to "R", 8 to "G", 0 to "B").forEach { (shift, label) ->
-                NumericSetting(label, ((picked ushr shift) and 255).toString(), "", colors,
-                    { value -> update((picked and (255 shl shift).inv()) or
-                        (value.toFloat().toInt().coerceIn(0, 255) shl shift)) },
-                    range = 0f..255f, adjustable = true, slider = true,
-                    identity = "mirror-color-$label-${initial}")
+            CompositionLocalProvider(LocalCompactControls provides true) {
+                listOf(16 to "R", 8 to "G", 0 to "B").forEach { (shift, label) ->
+                    NumericSetting(label, ((picked ushr shift) and 255).toString(), "", colors,
+                        { value -> update((picked and (255 shl shift).inv()) or
+                            (value.toFloat().toInt().coerceIn(0, 255) shl shift)) },
+                        range = 0f..255f, adjustable = true, slider = true,
+                        identity = "mirror-color-$label-${initial}")
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 ActionButton(strings.text("Обрати", "Select", "选择"), colors,

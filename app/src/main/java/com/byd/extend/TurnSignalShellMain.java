@@ -83,7 +83,6 @@ public final class TurnSignalShellMain {
         private final TurnSignalGuardRuntime runtime;
         private final BlindSpotWarningRuntime warningRuntime;
         private final ReverseGearRuntime reverseGearRuntime;
-        private final OemCameraVisibilityRuntime oemCameraVisibilityRuntime;
         private final MusicVisualizerRuntime musicRuntime;
         private final ParkingRadarRuntime parkingRadarRuntime;
         private final PowerManager powerManager;
@@ -132,8 +131,6 @@ public final class TurnSignalShellMain {
                     context, handler, this::emit, this::markStartupCleanupAttempted);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
-            oemCameraVisibilityRuntime = new OemCameraVisibilityRuntime(
-                    context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
             parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
         }
@@ -143,7 +140,6 @@ public final class TurnSignalShellMain {
             runtime.start();
             warningRuntime.start();
             reverseGearRuntime.start();
-            oemCameraVisibilityRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
             parkingRadarRuntime.start();
         }
@@ -155,7 +151,6 @@ public final class TurnSignalShellMain {
             recoveryWorker.shutdownNow();
             musicRuntime.stop();
             parkingRadarRuntime.stop();
-            oemCameraVisibilityRuntime.stop();
             reverseGearRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
@@ -226,7 +221,6 @@ public final class TurnSignalShellMain {
                     runtime.reportStatus();
                     warningRuntime.reportStatus();
                     reverseGearRuntime.reportStatus();
-                    oemCameraVisibilityRuntime.reportStatus();
                     musicRuntime.reportStatus();
                     parkingRadarRuntime.reportStatus();
                     emitPowerState("status_report", false);
@@ -245,7 +239,6 @@ public final class TurnSignalShellMain {
                     handler.post(() -> {
                         musicRuntime.stop();
                         parkingRadarRuntime.stop();
-                        oemCameraVisibilityRuntime.stop();
                         reverseGearRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
@@ -270,7 +263,6 @@ public final class TurnSignalShellMain {
             runtime.reportStatus();
             warningRuntime.reportStatus();
             reverseGearRuntime.reportStatus();
-            oemCameraVisibilityRuntime.reportStatus();
             musicRuntime.reportStatus();
             emitPowerState("callback_registered", false);
         }

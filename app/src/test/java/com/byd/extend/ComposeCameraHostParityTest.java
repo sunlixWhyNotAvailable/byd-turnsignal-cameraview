@@ -72,6 +72,8 @@ public final class ComposeCameraHostParityTest {
         assertTrue(ui.contains("key(CameraHostKind.CalibrationCorrected)"));
         assertTrue(ui.contains("key(CameraHostKind.CalibrationOutput)"));
         assertTrue(ui.contains("profileStatus: StatusUiState = StatusUiState()"));
+        assertTrue(ui.contains("profileHeaderStatus: StatusUiState? = null"));
+        assertTrue(ui.contains("StatusPillSlot(profileHeaderStatus, strings.text(\"\u0421\u0442\u0430\u0442\u0443\u0441\", \"Status\"), colors)"));
         assertTrue(ui.contains("trailing = { CameraStatusPill(profileStatus, strings, colors) }"));
         assertTrue(ui.contains("with(LocalDensity.current) { 18.sp.toDp() } + 12.dp"));
         assertFalse(ui.contains("StatusPill(profileStatus, strings.text(\"Статус\", \"Status\"), colors)"));
@@ -79,6 +81,7 @@ public final class ComposeCameraHostParityTest {
         assertTrue(blindParking.contains("profileStatus = profile.operation.status"));
         assertTrue(blindParking.contains("profileStatus = viewState.profile.operation.status"));
         assertTrue(reverse.contains("profileStatus = profile.operation.status"));
+        assertTrue(reverse.contains("profileHeaderStatus = state.panoramaOperation.status"));
         assertTrue(activity.contains("if (profile instanceof CameraProfileId.Blind) return tab == TAB_CAMERAS;"));
         assertTrue(activity.contains("if (profile instanceof CameraProfileId.Parking) return tab == TAB_PARKING_CAMERAS;"));
         assertTrue(activity.contains("if (profile instanceof CameraProfileId.Reverse) return tab == TAB_REVERSE_CAMERAS;"));

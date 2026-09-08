@@ -21,31 +21,61 @@ final class OemCameraVisibilityRuntime {
     static final String EXTRA_PANO_STATE = "pano_state";
     static final String STARTUP_PROPERTY = "sys.byd.pano_start";
 
+    interface Listener {
+        void onVisibility(boolean known, boolean visible, String source);
+    }
+
+    static final class State {
+        private volatile int panoState = -1;
+
+        boolean accept(String raw) {
+            panoState = parseState(raw);
+            return panoState >= 0;
+        }
+
+        void invalidate() {
+            panoState = -1;
+        }
+
+        boolean known() {
+            return panoState >= 0;
+        }
+
+        boolean visible() {
+            return panoState == 1;
+        }
+
+        int panoState() {
+            return panoState;
+        }
+    }
+
     private final Context context;
     private final Handler handler;
+    private final Listener listener;
     private final BiConsumer<String, Object[]> eventSink;
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context receiverContext, Intent intent) {
             String action = intent == null ? "" : String.valueOf(intent.getAction());
             String value = readStateExtra(intent);
-            handler.post(() -> acceptState(value, "broadcast", action));
+            runOnHandler(() -> acceptState(value, "broadcast", action));
         }
     };
 
-    private boolean started;
-    private boolean receiverRegistered;
-    private boolean known;
-    private boolean visible;
-    private int panoState = -1;
+    private volatile boolean started;
+    private volatile boolean receiverRegistered;
+    private final State state = new State();
 
     OemCameraVisibilityRuntime(
-            Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
-        if (context == null || handler == null || eventSink == null) {
+            Context context, Handler handler, Listener listener,
+            BiConsumer<String, Object[]> eventSink) {
+        if (context == null || handler == null || listener == null || eventSink == null) {
             throw new IllegalArgumentException("OEM visibility runtime dependencies are required");
         }
         this.context = context;
         this.handler = handler;
+        this.listener = listener;
         this.eventSink = eventSink;
     }
 
@@ -53,8 +83,9 @@ final class OemCameraVisibilityRuntime {
         runOnHandler(this::startOnHandler);
     }
 
-    void stop() {
-        runOnHandler(this::stopOnHandler);
+    /** Called only after the service has sealed its runtime queue. */
+    void stopForTeardown() {
+        stopOnHandler();
     }
 
     /** Replays the cached edge for a newly attached controller callback. */
@@ -67,26 +98,27 @@ final class OemCameraVisibilityRuntime {
         started = true;
         IntentFilter filter = new IntentFilter(ACTION_PANO);
         try {
-            context.registerReceiver(receiver, filter);
+            context.registerReceiver(receiver, filter, null, handler);
             receiverRegistered = true;
             emit("oem_camera_visibility_listener", "action", "registered", "ok", true,
                     "registered", true, "source_event", "startup");
         } catch (Throwable error) {
             receiverRegistered = false;
+            state.invalidate();
             emit("oem_camera_visibility_listener", "action", "registered", "ok", false,
                     "registered", false, "source_event", "startup",
                     "error", summary(error));
+            emitVisibility("registration_failed", ACTION_PANO, summary(error));
+            return;
         }
-        // Exactly one property snapshot per shell start/reconnect.  Later status requests replay
+        // Exactly one property snapshot per service lifetime.  Later status requests replay
         // the cached value instead of querying SystemProperties again.
         String snapshot;
         try {
             snapshot = readSystemProperty(STARTUP_PROPERTY);
         } catch (Throwable error) {
-            invalidateState();
-            emit("oem_camera_visibility", "valid", false, "known", false, "visible", false,
-                    "pano_state", -1, "source_event", "startup_snapshot",
-                    "action", ACTION_PANO, "error", summary(error));
+            state.invalidate();
+            emitVisibility("startup_snapshot", ACTION_PANO, summary(error));
             return;
         }
         acceptState(snapshot, "startup_snapshot", ACTION_PANO);
@@ -105,38 +137,39 @@ final class OemCameraVisibilityRuntime {
                         "error", summary(error));
             }
         }
+        state.invalidate();
         emit("oem_camera_visibility_listener", "action", "stopped", "ok", true,
                 "registered", false, "source_event", "stop");
     }
 
     private void acceptState(String raw, String source, String action) {
         if (!started && !"status".equals(source)) return;
-        int parsed = parseState(raw);
-        if (parsed < 0) {
-            invalidateState();
-            emit("oem_camera_visibility", "valid", false, "known", false, "visible", false,
-                    "pano_state", -1, "source_event", source,
-                    "action", action, "registered", receiverRegistered,
-                    "error", "invalid_pano_state");
+        if (!state.accept(raw)) {
+            emitVisibility(source, action, "invalid_pano_state");
             return;
         }
-        known = true;
-        panoState = parsed;
-        visible = parsed == 1;
         emitVisibility(source, action);
     }
 
-    private void invalidateState() {
-        known = false;
-        visible = false;
-        panoState = -1;
+    private void emitVisibility(String source, String action) {
+        emitVisibility(source, action, null);
     }
 
-    private void emitVisibility(String source, String action) {
-        emit("oem_camera_visibility", "valid", known, "known", known,
-                "visible", known && visible,
-                "pano_state", known ? panoState : -1, "source_event", source,
-                "action", action, "registered", receiverRegistered);
+    private void emitVisibility(String source, String action, String error) {
+        boolean known = state.known();
+        boolean visible = known && state.visible();
+        if (error != null) {
+            emit("oem_camera_visibility", "valid", known, "known", known,
+                    "visible", visible, "pano_state", state.panoState(),
+                    "source_event", source, "action", action,
+                    "registered", receiverRegistered, "error", error);
+        } else {
+            emit("oem_camera_visibility", "valid", known, "known", known,
+                    "visible", visible,
+                    "pano_state", state.panoState(), "source_event", source,
+                    "action", action, "registered", receiverRegistered);
+        }
+        listener.onVisibility(known, visible, source);
     }
 
     private static String readStateExtra(Intent intent) {

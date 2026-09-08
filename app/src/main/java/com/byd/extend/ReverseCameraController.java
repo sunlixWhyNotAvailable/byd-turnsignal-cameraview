@@ -141,6 +141,12 @@ final class ReverseCameraController {
         }
     }
 
+    void oemVisibility(boolean known, boolean visible, String source) {
+        if (shutdown) return;
+        panoVisible = known && visible;
+        applySourceState(sessionPolicy.raw, sessionPolicy.gearValid, source);
+    }
+
     private void acceptEventOnMain(JSONObject event) {
         try {
             String kind = event.optString("kind");
@@ -149,19 +155,6 @@ final class ReverseCameraController {
                         && event.optBoolean("listener_ok", false);
                 reverse = gearValid && event.optBoolean("reverse", false);
                 applySourceState(event.optInt("raw", -1), gearValid, "gear_state");
-            } else if ("oem_camera_visibility".equals(kind)) {
-                boolean known = event.has("valid")
-                        ? event.optBoolean("valid", false)
-                        : event.has("known") && event.optBoolean("known", false);
-                if (!known) {
-                    panoVisible = false;
-                    applySourceState(sessionPolicy.raw, sessionPolicy.gearValid,
-                            event.optString("source_event", "pano_visibility_invalid"));
-                    return;
-                }
-                panoVisible = event.optBoolean("visible", false);
-                applySourceState(sessionPolicy.raw, sessionPolicy.gearValid,
-                        event.optString("source_event", "pano_visibility"));
             } else if ("reverse_overlay_selector".equals(kind)) {
                 int requestId = event.optInt("request_id", -1);
                 if (activeRequestId > 0 && requestId == activeRequestId) {
@@ -179,11 +172,13 @@ final class ReverseCameraController {
                 applySourceState(-1, false, "gear_listener_unavailable");
             } else if ("helper_death".equals(kind)
                     || "helper_ping_failed".equals(kind)) {
+                if (switchByGear() && sessionPolicy.eligible && pendingAutomaticMode < 0) {
+                    pendingAutomaticMode = direction.effectiveMode();
+                }
                 gearValid = false;
                 reverse = false;
-                panoVisible = false;
-                ReverseGearSessionPolicy.update(sessionPolicy, switchByGear(), false, -1, false);
-                pendingAutomaticMode = -1;
+                ReverseGearSessionPolicy.update(
+                        sessionPolicy, switchByGear(), false, -1, panoVisible);
                 stop("gear_helper_unavailable", false);
             } else if ("camera_opened".equals(kind)
                     && "reverse".equals(event.optString("camera_owner"))) {

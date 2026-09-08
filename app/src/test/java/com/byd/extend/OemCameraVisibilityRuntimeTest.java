@@ -24,4 +24,39 @@ public final class OemCameraVisibilityRuntimeTest {
         assertTrue(OemCameraVisibilityRuntime.ACTION_PANO.startsWith("byd.intent"));
         assertFalse(OemCameraVisibilityRuntime.EXTRA_PANO_STATE.isEmpty());
     }
+
+    @Test
+    public void invalidStateClearsRatherThanReplayingOldClosedValue() {
+        OemCameraVisibilityRuntime.State state = new OemCameraVisibilityRuntime.State();
+        assertTrue(state.accept("0"));
+        assertTrue(state.known());
+        assertFalse(state.visible());
+        assertEquals(0, state.panoState());
+
+        assertFalse(state.accept("bad"));
+        assertFalse(state.known());
+        assertFalse(state.visible());
+        assertEquals(-1, state.panoState());
+    }
+
+    @Test
+    public void currentValidStateCanBeReplayedWithoutAnotherRead() {
+        OemCameraVisibilityRuntime.State state = new OemCameraVisibilityRuntime.State();
+        assertTrue(state.accept("1"));
+        assertTrue(state.known());
+        assertTrue(state.visible());
+        assertEquals(1, state.panoState());
+        assertTrue(state.known());
+        assertTrue(state.visible());
+        assertEquals(1, state.panoState());
+    }
+
+    @Test
+    public void stoppedStateCannotBeReplayedAsKnown() {
+        OemCameraVisibilityRuntime.State state = new OemCameraVisibilityRuntime.State();
+        assertTrue(state.accept("0"));
+        state.invalidate();
+        assertFalse(state.known());
+        assertEquals(-1, state.panoState());
+    }
 }

@@ -55,6 +55,7 @@ internal fun CameraWorkspace(
     colors: UiPalette,
     onSection: (CameraSection) -> Unit,
     profileStatus: StatusUiState = StatusUiState(),
+    profileHeaderStatus: StatusUiState? = null,
     profileControls: @Composable ColumnScope.() -> Unit,
     controls: @Composable ColumnScope.() -> Unit,
     preview: @Composable ColumnScope.() -> Unit,
@@ -64,6 +65,11 @@ internal fun CameraWorkspace(
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CameraPageHeader(pageTab, strings, colors)
             Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"),
+                trailing = {
+                    if (profileHeaderStatus != null) {
+                        StatusPillSlot(profileHeaderStatus, strings.text("Статус", "Status"), colors)
+                    }
+                },
                 content = profileControls)
             Section("", colors, Modifier.testTag("camera-settings"), header = {
                 Segmented(if (reverse) strings.reverseSections else strings.cameraSections, section.ordinal, colors,
@@ -82,9 +88,14 @@ internal fun CameraWorkspace(
 @Composable
 internal fun CameraStatusPill(state: StatusUiState, strings: UiStrings, colors: UiPalette) {
     val normalized = cameraStatusForDisplay(state, strings)
+    StatusPillSlot(normalized, strings.text("Статус", "Status"), colors)
+}
+
+@Composable
+private fun StatusPillSlot(state: StatusUiState, fallback: String, colors: UiPalette) {
     val statusSlotHeight = with(LocalDensity.current) { 18.sp.toDp() } + 12.dp
     Box(Modifier.height(statusSlotHeight), contentAlignment = Alignment.CenterEnd) {
-        StatusPill(normalized, strings.text("Статус", "Status"), colors)
+        StatusPill(state, fallback, colors)
     }
 }
 

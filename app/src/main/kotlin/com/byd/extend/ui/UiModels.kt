@@ -445,6 +445,7 @@ data class ReverseGeometryUiState(
 data class ReverseUiState(
     val enabled: Boolean = false,
     val switchByGear: Boolean = false,
+    val panoramaOperation: OperationUiState = OperationUiState(),
     val section: CameraSection = CameraSection.Parameters,
     val selectedElement: ReverseElement = ReverseElement.RearLeft,
     val selectedSource: ReverseSource = ReverseSource.Rear,

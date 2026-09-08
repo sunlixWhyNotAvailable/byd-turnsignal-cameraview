@@ -130,6 +130,7 @@ public final class CameraHelperService extends Service {
     private HandlerThread runtimeThread;
     private Handler runtimeHandler;
     private RuntimeLifecycleGate.Queue runtimeQueue;
+    private OemCameraVisibilityRuntime oemCameraVisibility;
     private AsyncServiceLog serviceLog;
     private volatile CameraHelperMain.HelperBinder helper;
     private boolean helperRuntimeStarted;
@@ -357,6 +358,7 @@ public final class CameraHelperService extends Service {
         mirror = new RearviewMirrorController(this, runtimeHandler, this::lifecycle);
         mirror.appVisibility(activityVisible);
         controllersInitialized = true;
+        oemCameraVisibility.reportStatus();
     }
 
     private void ensureControllersInitialized() {
@@ -381,6 +383,10 @@ public final class CameraHelperService extends Service {
             }
         };
         serviceLog = new AsyncServiceLog(this::createLogFile, LOG_FLUSH_DELAY_MS);
+        oemCameraVisibility = new OemCameraVisibilityRuntime(
+                getApplicationContext(), runtimeHandler, this::oemVisibilityChanged,
+                this::lifecycle);
+        oemCameraVisibility.start();
         activeInstance = this;
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
@@ -742,6 +748,7 @@ public final class CameraHelperService extends Service {
         runtimeHandler.removeCallbacksAndMessages(null);
         boolean recover = GuardRecovery.shouldRecover(this);
         lifecycle("service_destroy", "recover", recover);
+        if (oemCameraVisibility != null) oemCameraVisibility.stopForTeardown();
         if (reverseCameras != null) reverseCameras.shutdown();
         if (mirror != null) mirror.shutdown();
         if (overlay != null) overlay.shutdown();
@@ -753,6 +760,7 @@ public final class CameraHelperService extends Service {
         helper = null;
         helperRuntimeStarted = false;
         mirrorOnlyRuntime = false;
+        oemCameraVisibility = null;
         weatherAccessibilityExecutor.shutdownNow();
         if (recover) GuardRecovery.scheduleSoon(this);
         if (serviceLog != null) serviceLog.close();
@@ -919,6 +927,10 @@ public final class CameraHelperService extends Service {
     private void acceptHelperLine(String line) {
         if (line == null) return;
         postRuntime(() -> {
+            if (isShellOemVisibilityEvent(line)) {
+                lifecycle("oem_camera_visibility_upstream_ignored");
+                return;
+            }
             if (overlay != null) overlay.acceptEvent(line);
             if (parkingCameras != null) parkingCameras.acceptEvent(line);
             if (reverseCameras != null) reverseCameras.acceptEvent(line);
@@ -926,6 +938,22 @@ public final class CameraHelperService extends Service {
             if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
             serviceLog.appendRaw(line);
         });
+    }
+
+    private void oemVisibilityChanged(boolean known, boolean visible, String source) {
+        if (reverseCameras != null) reverseCameras.oemVisibility(known, visible, source);
+        if (mirror != null) mirror.oemVisibility(known, visible);
+    }
+
+    static boolean isShellOemVisibilityEvent(String line) {
+        if (line == null || !line.contains("oem_camera_visibility")) return false;
+        try {
+            String kind = new org.json.JSONObject(line).optString("kind");
+            return "oem_camera_visibility".equals(kind)
+                    || "oem_camera_visibility_listener".equals(kind);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private void parkingEvent(String kind, Object... fields) {

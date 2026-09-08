@@ -13,6 +13,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.json.JSONObject;
+
 public final class CameraHelperServiceThreadingTest {
     @Test
     public void teardownClearsQueueRejectsLateWorkAndIsPerInstance() {
@@ -157,6 +159,41 @@ public final class CameraHelperServiceThreadingTest {
         int waitSetup = pause.indexOf("new CountDownLatch");
         assertTrue(mainRefusal >= 0);
         assertTrue(waitSetup > mainRefusal);
+    }
+
+    @Test
+    public void serviceOwnsVisibilityReplayAndRejectsRetainedShellCache() throws Exception {
+        assertTrue(CameraHelperService.isShellOemVisibilityEvent(
+                new JSONObject().put("kind", "oem_camera_visibility").toString()));
+        assertTrue(CameraHelperService.isShellOemVisibilityEvent(
+                new JSONObject().put("kind", "oem_camera_visibility_listener").toString()));
+        assertFalse(CameraHelperService.isShellOemVisibilityEvent(
+                new JSONObject().put("kind", "reverse_gear_state").toString()));
+        assertFalse(CameraHelperService.isShellOemVisibilityEvent(
+                new JSONObject().put("kind", "reverse_gear_state")
+                        .put("error", "oem_camera_visibility").toString()));
+
+        Path source = Path.of("app/src/main/java/com/byd/extend/CameraHelperService.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/CameraHelperService.java");
+        }
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        assertTrue(text.contains("oemCameraVisibility = new OemCameraVisibilityRuntime("));
+        String controllers = text.substring(
+                text.indexOf("private void initializeControllers"),
+                text.indexOf("private void ensureControllersInitialized"));
+        assertTrue(controllers.contains("oemCameraVisibility.reportStatus()"));
+        String teardown = text.substring(
+                text.indexOf("private void destroyRuntime"),
+                text.indexOf("private synchronized void ensureHelperCreated"));
+        assertTrue(teardown.contains("oemCameraVisibility.stopForTeardown()"));
+
+        Path shellSource = Path.of("app/src/main/java/com/byd/extend/TurnSignalShellMain.java");
+        if (!Files.exists(shellSource)) {
+            shellSource = Path.of("src/main/java/com/byd/extend/TurnSignalShellMain.java");
+        }
+        String shellText = new String(Files.readAllBytes(shellSource), StandardCharsets.UTF_8);
+        assertFalse(shellText.contains("OemCameraVisibilityRuntime"));
     }
 
     private static final class FakeQueue implements CameraHelperService.RuntimeLifecycleGate.Queue {

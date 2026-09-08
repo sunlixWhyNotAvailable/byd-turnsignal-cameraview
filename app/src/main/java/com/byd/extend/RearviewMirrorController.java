@@ -70,6 +70,12 @@ final class RearviewMirrorController {
         else evaluate();
     }
 
+    void oemVisibility(boolean known, boolean visible) {
+        oemKnown = known;
+        oemVisible = known && visible;
+        evaluate();
+    }
+
     static boolean shouldShow(boolean enabled, boolean manuallyHidden, boolean appVisible,
             boolean oemKnown, boolean oemVisible, boolean runtimeAllowed,
             boolean permission, boolean shutdown) {
@@ -160,14 +166,7 @@ final class RearviewMirrorController {
         try {
             JSONObject event = new JSONObject(line);
             String kind = event.optString("kind");
-            if ("oem_camera_visibility".equals(kind)) {
-                oemKnown = event.optBoolean("valid", true);
-                oemVisible = event.optBoolean("visible", false);
-                evaluate();
-            } else if ("helper_death".equals(kind) || "helper_ping_failed".equals(kind)) {
-                oemKnown = false;
-                stop("oem_state_unavailable", false);
-            } else if ("camera_shell_died".equals(kind)) {
+            if ("camera_shell_died".equals(kind)) {
                 long epoch = event.optLong("camera_shell_epoch", 0);
                 if (!TurnSignalController.isCurrentCameraShellEpoch(shellEpoch, epoch)
                         || !recovery.isNewDeath(epoch)) return;
