@@ -88,10 +88,11 @@ rules apply; the button does not open cameras, change calibration or add automat
 Calibration and other foreground app tabs do not redirect the button to a background composition.
 
 The separate global `Switch by gear` setting is off by default. Its row appears immediately below
-`Enhanced reverse view` for every element, including Background and Widget, and is available only
-while at least one camera is integrated; disabling every integration does
-not erase the saved preference. R activation never waits for the stock camera UI. With gear
-selection enabled, the session remains active while R or the stock camera UI is active. Entering D selects
+front-camera integration for Rear, Left and Right, and below `Enhanced reverse view` for Background
+and Widget. It is available only while at least one camera is integrated; disabling every integration
+does not erase the saved preference. Unavailable switches use a neutral track and dimmed thumb/text
+while retaining their saved ON/OFF position, in both themes. R activation never waits for the stock
+camera UI. With gear selection enabled, the session remains active while R or the stock camera UI is active. Entering D selects
 integrated front cameras, and entering R selects rear cameras. N and P retain the selected view
 during a session, or select Front on a cold opening. Repeated telemetry does not undo manual
 selection. Nonintegrated panes keep their rear view in either mode. Automatic selection does not

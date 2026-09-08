@@ -25,8 +25,8 @@ import org.junit.Test
 
 class ComposeHotfixUiPolicyTest {
     @Test
-    fun reverseGearSwitchIsTheSingleGlobalRowImmediatelyAfterEnable() {
-        val source = File("src/main/kotlin/com/byd/extend/ui/ReverseScreen.kt").readText()
+    fun reverseGearSwitchIsGlobalAndFollowsOptionalCameraIntegration() {
+        val source = File("src/main/kotlin/com/byd/extend/ui/ReverseScreen.kt").readText().replace("\r\n", "\n")
         val controls = source.substring(
             source.indexOf("val profileControls:"),
             source.indexOf("ScreenSurface(colors"),
@@ -35,10 +35,18 @@ class ComposeHotfixUiPolicyTest {
         val gear = controls.indexOf("Switch cameras by gear")
         val widget = controls.indexOf("selected == ReverseElement.Widget")
         val integration = controls.indexOf("Integrate front camera")
+        val cameraOnly = controls.indexOf("if (cameraElement)")
+        val calibration = controls.indexOf("if (cameraElement && state.section == CameraSection.Calibration)")
+        val presets = controls.indexOf("ProfilePresetButtons")
         assertTrue(enhanced >= 0)
-        assertTrue(gear > enhanced)
+        assertTrue(cameraOnly > enhanced)
+        assertTrue(integration > cameraOnly)
+        assertTrue(gear > integration)
+        // The optional integration block closes before the one unconditional gear row.
+        assertTrue(controls.substring(integration, gear).contains("\n        }\n        SwitchLine("))
         assertTrue(widget > gear)
-        assertTrue(integration > gear)
+        assertTrue(calibration > widget)
+        assertTrue(presets > calibration)
         assertEquals(1, Regex("ToggleId\\.ReverseSwitchByGear").findAll(controls).count())
         assertTrue(controls.contains("enabled = gearSwitchEnabled"))
         assertEquals(2, Regex("profileControls = profileControls").findAll(source).count())
@@ -74,7 +82,7 @@ class ComposeHotfixUiPolicyTest {
         assertTrue(switch.contains("rememberPressFeedback(enabled && !pending)"))
         assertTrue(switch.contains("enabled = enabled && !pending"))
         assertTrue(switch.contains("if (checked) knob else knobOff"))
-        assertTrue(switch.contains("if (checked) colors.accent else colors.disabled"))
+        assertTrue(switch.contains("if (enabled && checked) colors.accent else colors.disabled"))
         assertFalse(switch.contains("if (pending)"))
         assertFalse(switch.contains("knobPending"))
         assertFalse(switch.contains("colors.yellow"))
@@ -123,11 +131,17 @@ class ComposeHotfixUiPolicyTest {
 
     @Test
     fun reverseGearSwitchNeedsAnIntegratedCameraPane() {
-        assertFalse(ReverseUiState().hasAnyFrontIntegration())
-        assertFalse(ReverseUiState(frontIntegration = mapOf(
-            ReverseElement.Background to true)).hasAnyFrontIntegration())
-        for (pane in listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)) {
-            assertTrue(ReverseUiState(frontIntegration = mapOf(pane to true)).hasAnyFrontIntegration())
+        for (selected in ReverseElement.entries) {
+            for (checked in listOf(false, true)) {
+                val state = ReverseUiState(selectedElement = selected, switchByGear = checked)
+                assertFalse(state.hasAnyFrontIntegration())
+                assertFalse(state.copy(frontIntegration = mapOf(
+                    ReverseElement.Background to true, ReverseElement.Widget to true)).hasAnyFrontIntegration())
+                for (pane in listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)) {
+                    assertTrue(state.copy(frontIntegration = mapOf(pane to true)).hasAnyFrontIntegration())
+                    assertFalse(state.copy(frontIntegration = mapOf(pane to false)).hasAnyFrontIntegration())
+                }
+            }
         }
     }
 

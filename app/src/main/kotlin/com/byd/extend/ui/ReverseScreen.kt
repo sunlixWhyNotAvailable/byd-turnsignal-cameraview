@@ -56,14 +56,6 @@ internal fun ReverseScreen(
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
         SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
-        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
-            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
-            state.switchByGear,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
-            enabled = gearSwitchEnabled)
-        if (selected == ReverseElement.Widget) {
-            ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
-        }
         if (cameraElement) {
             SwitchLine(
                 if (selected == ReverseElement.Rear) strings.text("Інтеграція передньої камери", "Integrate front camera")
@@ -72,11 +64,19 @@ internal fun ReverseScreen(
                 { onAction(BydExtendUiAction.Toggle(
                     ToggleTarget.Reverse(ToggleId.ReverseFrontIntegration, selected), it)) }, colors,
             )
-            if (state.section == CameraSection.Calibration) {
-                Segmented(listOf(strings.text("Задня", "Rear"), strings.text("Передня", "Front")),
-                    state.selectedSource.ordinal, colors, Modifier.fillMaxWidth()) {
-                    onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
-                }
+        }
+        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
+            state.switchByGear,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
+            enabled = gearSwitchEnabled)
+        if (selected == ReverseElement.Widget) {
+            ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
+        }
+        if (cameraElement && state.section == CameraSection.Calibration) {
+            Segmented(listOf(strings.text("Задня", "Rear"), strings.text("Передня", "Front")),
+                state.selectedSource.ordinal, colors, Modifier.fillMaxWidth()) {
+                onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
             }
         }
         if (cameraElement) ProfilePresetButtons(profileId, profile.presetAvailable,

@@ -332,9 +332,11 @@ internal fun SwitchLine(
             onValueChange = onCheckedChange)
         .padding(vertical = if (compact) 4.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
+            Text(title, color = if (enabled) colors.text else colors.muted.copy(alpha = .62f),
+                fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
                 textDecoration = if (strikeThrough) TextDecoration.LineThrough else TextDecoration.None)
-            if (hint.isNotBlank()) Text(hint, color = colors.muted, fontSize = 13.sp)
+            if (hint.isNotBlank()) Text(hint,
+                color = if (enabled) colors.muted else colors.muted.copy(alpha = .52f), fontSize = 13.sp)
         }
         Spacer(Modifier.width(10.dp))
         AppSwitch(checked, onCheckedChange, colors, pending, compact = compactSwitch, enabled = enabled, clearSemantics = true)
@@ -362,7 +364,7 @@ internal fun AppSwitch(
         tween(140), label = "switchOffset")
     Box(Modifier.size(width, height).semantics { label?.let { contentDescription = it } }
         .clip(RoundedCornerShape(100.dp))
-        .background(pressBackground(if (checked) colors.accent else colors.disabled,
+        .background(pressBackground(if (enabled && checked) colors.accent else colors.disabled,
             colors, press.pressed))
         .then(press.modifier)
         .toggleable(value = checked, interactionSource = press.interactionSource, indication = null,
@@ -370,7 +372,8 @@ internal fun AppSwitch(
             onValueChange = onCheckedChange)
         .then(if (clearSemantics) Modifier.clearAndSetSemantics { } else Modifier), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.offset(x = offset).size(size).clip(RoundedCornerShape(100.dp))
-            .background(if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
+            .background(if (!enabled) colors.muted.copy(alpha = .45f)
+                else if (checked) Color(0xFFD9ECFF) else Color(0xFFD8E3EE)))
     }
 }
 
