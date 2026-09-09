@@ -162,6 +162,42 @@ public final class CameraHelperServiceThreadingTest {
     }
 
     @Test
+    public void manualMirrorSettingsActionsNotifyClusterWithAwakeSessionDedup() {
+        List<String> notifications = new ArrayList<>();
+        int[] preparationAttempts = {0};
+        int[] attemptedSession = {6};
+        boolean mirrorOnlyCluster = ClusterFullscreenController.hasEnabledClusterTarget(
+                false, CameraDisplayTarget.TABLET, CameraDisplayTarget.TABLET,
+                false, CameraDisplayTarget.TABLET, CameraDisplayTarget.TABLET,
+                true, CameraDisplayTarget.CLUSTER);
+        Runnable clusterSettingsChanged = () -> {
+            notifications.add("cluster");
+            if (ClusterFullscreenController.shouldAttempt(
+                    mirrorOnlyCluster, true, 7, attemptedSession[0])) {
+                preparationAttempts[0]++;
+                attemptedSession[0] = 7;
+            }
+        };
+
+        for (String action : new String[]{
+                "com.byd.extend.action.MIRROR_SETTINGS_CHANGED",
+                "com.byd.extend.action.CAMERA_SETTINGS_CHANGED",
+                "com.byd.extend.action.SETTINGS_RELOADED"}) {
+            CameraHelperService.routeManualMirrorSettingsChange(
+                    action, () -> notifications.add("mirror"), clusterSettingsChanged);
+        }
+        CameraHelperService.routeManualMirrorSettingsChange(
+                "com.byd.extend.action.CAMERA_WARNING_SETTINGS_CHANGED",
+                () -> notifications.add("mirror"), clusterSettingsChanged);
+        CameraHelperService.routeManualMirrorSettingsChange(
+                null, () -> notifications.add("mirror"), clusterSettingsChanged);
+
+        assertEquals(List.of("mirror", "cluster", "mirror", "cluster",
+                "mirror", "cluster"), notifications);
+        assertEquals(1, preparationAttempts[0]);
+    }
+
+    @Test
     public void serviceOwnsVisibilityReplayAndRejectsRetainedShellCache() throws Exception {
         assertTrue(CameraHelperService.isShellOemVisibilityEvent(
                 new JSONObject().put("kind", "oem_camera_visibility").toString()));

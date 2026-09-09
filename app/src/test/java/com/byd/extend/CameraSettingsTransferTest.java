@@ -12,6 +12,11 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public final class CameraSettingsTransferTest {
+    private static final CameraSettingsTransfer.GeometryResolver GEOMETRY = target ->
+            target == CameraDisplayTarget.CLUSTER
+                    ? new CameraSettingsTransfer.DisplayGeometry(1920, 720, 0, 0, 0)
+                    : new CameraSettingsTransfer.DisplayGeometry(1280, 800, 12, 30, 70);
+
     @Test
     public void defaultsRoundTripMaterializesEveryCameraScope() {
         TestSharedPreferences source = new TestSharedPreferences();
@@ -152,12 +157,20 @@ public final class CameraSettingsTransferTest {
         target.putBoolean(RearviewMirrorSettings.PREF_ENABLED, true);
         target.putString(RearviewMirrorSettings.PREF_TARGET, "Cluster");
         target.putFloat(RearviewMirrorSettings.PREF_X, 12.0f);
+        CameraPlacement tablet = CameraPlacement.of(0.11f, 0.12f, 0.23f, 0.24f);
+        CameraPlacement cluster = CameraPlacement.of(0.31f, 0.32f, 0.25f, 0.26f);
+        seedMirrorPlacement(target, CameraDisplayTarget.TABLET, tablet);
+        seedMirrorPlacement(target, CameraDisplayTarget.CLUSTER, cluster);
         CameraSettingsTransfer.applyCameraPreset(target,
                 CameraSettingsTransfer.parseCameraPreset(preset.toString()));
 
         assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_ENABLED, false));
         assertEquals("Cluster", target.getString(RearviewMirrorSettings.PREF_TARGET, ""));
         assertEquals(12.0f, target.getFloat(RearviewMirrorSettings.PREF_X, -1.0f), 0.0f);
+        assertPlacement(tablet,
+                RearviewMirrorSettings.placement(target, CameraDisplayTarget.TABLET));
+        assertPlacement(cluster,
+                RearviewMirrorSettings.placement(target, CameraDisplayTarget.CLUSTER));
     }
 
     @Test
@@ -398,5 +411,253 @@ public final class CameraSettingsTransferTest {
             assertEquals(before, target.getAll());
             assertEquals(0, target.transactions);
         }
+    }
+
+    @Test
+    public void v3ExportsBothDisplayPlacementsForMirrorAndEveryBlindProfile() {
+        TestSharedPreferences source = new TestSharedPreferences();
+        for (CameraProfile profile : CameraProfile.values()) {
+            seedBlindPlacement(source, profile, CameraDisplayTarget.TABLET,
+                    CameraPlacement.of(0.10f, 0.11f, 0.20f, 0.21f));
+            seedBlindPlacement(source, profile, CameraDisplayTarget.CLUSTER,
+                    CameraPlacement.of(0.50f, 0.51f, 0.22f, 0.23f));
+        }
+        seedMirrorPlacement(source, CameraDisplayTarget.TABLET,
+                CameraPlacement.of(0.12f, 0.13f, 0.24f, 0.25f));
+        seedMirrorPlacement(source, CameraDisplayTarget.CLUSTER,
+                CameraPlacement.of(0.52f, 0.53f, 0.26f, 0.27f));
+
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
+        assertEquals(3, parsed.get("version"));
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        for (CameraProfile profile : CameraProfile.values()) {
+            assertEquals(0.10f, number(values, BlindSpotOverlayController.placementKey(
+                    profile, CameraDisplayTarget.TABLET,
+                    BlindSpotOverlayController.PLACEMENT_X)), 0.0f);
+            assertEquals(0.50f, number(values, BlindSpotOverlayController.placementKey(
+                    profile, CameraDisplayTarget.CLUSTER,
+                    BlindSpotOverlayController.PLACEMENT_X)), 0.0f);
+        }
+        assertEquals(12.0f, number(values, RearviewMirrorSettings.placementKey(
+                CameraDisplayTarget.TABLET, RearviewMirrorSettings.PLACEMENT_X)), 0.0f);
+        assertEquals(52.0f, number(values, RearviewMirrorSettings.placementKey(
+                CameraDisplayTarget.CLUSTER, RearviewMirrorSettings.PLACEMENT_X)), 0.0f);
+
+        TestSharedPreferences destination = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(destination, parsed, GEOMETRY);
+        for (CameraProfile profile : CameraProfile.values()) {
+            assertPlacement(CameraPlacement.of(0.10f, 0.11f, 0.20f, 0.21f),
+                    BlindSpotOverlayController.readPlacement(destination, profile,
+                            CameraDisplayTarget.TABLET, 1280, 800, 12, 30, 70));
+            assertPlacement(CameraPlacement.of(0.50f, 0.51f, 0.22f, 0.23f),
+                    BlindSpotOverlayController.readPlacement(destination, profile,
+                            CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
+        }
+        assertPlacement(CameraPlacement.of(0.12f, 0.13f, 0.24f, 0.25f),
+                RearviewMirrorSettings.placement(destination, CameraDisplayTarget.TABLET));
+        assertPlacement(CameraPlacement.of(0.52f, 0.53f, 0.26f, 0.27f),
+                RearviewMirrorSettings.placement(destination, CameraDisplayTarget.CLUSTER));
+        assertEquals(1, destination.transactions);
+    }
+
+    @Test
+    public void contextlessV2ExportUsesTheSelectedExplicitBlindSlot() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_RIGHT);
+        TestSharedPreferences source = new TestSharedPreferences();
+        source.putInt(BlindSpotOverlayController.targetKey(profile),
+                CameraDisplayTarget.CLUSTER);
+        seedBlindPlacement(source, profile, CameraDisplayTarget.CLUSTER,
+                CameraPlacement.of(0.41f, 0.42f, 0.23f, 0.24f));
+
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source));
+        assertEquals(2, parsed.get("version"));
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        assertEquals(0.41f, number(values,
+                BlindSpotOverlayController.positionKey(profile, false)), 0.0f);
+        assertEquals(0.42f, number(values,
+                BlindSpotOverlayController.positionKey(profile, true)), 0.0f);
+        assertEquals(0.23f, number(values,
+                BlindSpotOverlayController.placementWidthKey(profile)), 0.0f);
+        assertEquals(0.24f, number(values,
+                BlindSpotOverlayController.placementHeightKey(profile)), 0.0f);
+    }
+
+    @Test
+    public void v1AndV2ImportWriteOnlyDeclaredTargetAndPreserveInactivePlacement()
+            throws Exception {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        org.json.JSONObject template = new org.json.JSONObject(
+                CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+        org.json.JSONObject values = template.getJSONObject("settings");
+        values.put(BlindSpotOverlayController.targetKey(profile), CameraDisplayTarget.CLUSTER);
+        values.put(BlindSpotOverlayController.positionKey(profile, false), 0.61f);
+        values.put(BlindSpotOverlayController.positionKey(profile, true), 0.62f);
+        values.put(BlindSpotOverlayController.placementWidthKey(profile), 0.21f);
+        values.put(BlindSpotOverlayController.placementHeightKey(profile), 0.22f);
+        values.put(RearviewMirrorSettings.PREF_TARGET, "Cluster");
+        values.put(RearviewMirrorSettings.PREF_X, 63.0f);
+        values.put(RearviewMirrorSettings.PREF_Y, 64.0f);
+        values.put(RearviewMirrorSettings.PREF_WIDTH, 20.0f);
+        values.put(RearviewMirrorSettings.PREF_HEIGHT, 21.0f);
+
+        CameraPlacement blindTablet = CameraPlacement.of(0.11f, 0.12f, 0.23f, 0.24f);
+        CameraPlacement mirrorTablet = CameraPlacement.of(0.13f, 0.14f, 0.22f, 0.23f);
+        for (int version : new int[]{1, 2}) {
+            org.json.JSONObject preset = new org.json.JSONObject(template.toString());
+            preset.put("version", version);
+            TestSharedPreferences target = new TestSharedPreferences();
+            seedBlindPlacement(target, profile, CameraDisplayTarget.TABLET, blindTablet);
+            seedBlindPlacement(target, profile, CameraDisplayTarget.CLUSTER,
+                    CameraPlacement.of(0.31f, 0.32f, 0.25f, 0.26f));
+            seedMirrorPlacement(target, CameraDisplayTarget.TABLET, mirrorTablet);
+            seedMirrorPlacement(target, CameraDisplayTarget.CLUSTER,
+                    CameraPlacement.of(0.33f, 0.34f, 0.24f, 0.25f));
+
+            CameraSettingsTransfer.applyCameraPreset(target,
+                    CameraSettingsTransfer.parseCameraPreset(preset.toString()), GEOMETRY);
+
+            assertPlacement(blindTablet, BlindSpotOverlayController.readPlacement(
+                    target, profile, CameraDisplayTarget.TABLET,
+                    1280, 800, 12, 30, 70));
+            assertPlacement(CameraPlacement.of(0.61f, 0.62f, 0.21f, 0.22f),
+                    BlindSpotOverlayController.readPlacement(
+                            target, profile, CameraDisplayTarget.CLUSTER,
+                            1920, 720, 0, 0, 0));
+            assertPlacement(mirrorTablet,
+                    RearviewMirrorSettings.placement(target, CameraDisplayTarget.TABLET));
+            assertPlacement(CameraPlacement.of(0.63f, 0.64f, 0.20f, 0.21f),
+                    RearviewMirrorSettings.placement(target, CameraDisplayTarget.CLUSTER));
+            assertEquals(1, target.transactions);
+        }
+    }
+
+    @Test
+    public void v2MissingTargetUsesCurrentTargetAndMissingMirrorStaysUntouched() throws Exception {
+        CameraProfile profile = CameraProfile.of(CameraProfile.FRONT_RIGHT);
+        org.json.JSONObject preset = new org.json.JSONObject(
+                CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences()));
+        org.json.JSONObject values = preset.getJSONObject("settings");
+        values.remove(BlindSpotOverlayController.targetKey(profile));
+        values.put(BlindSpotOverlayController.positionKey(profile, false), 0.55f);
+        values.put(BlindSpotOverlayController.positionKey(profile, true), 0.56f);
+        values.put(BlindSpotOverlayController.placementWidthKey(profile), 0.20f);
+        values.put(BlindSpotOverlayController.placementHeightKey(profile), 0.21f);
+        values.remove(RearviewMirrorSettings.PREF_TARGET);
+        values.put(RearviewMirrorSettings.PREF_X, 21.0f);
+        values.put(RearviewMirrorSettings.PREF_Y, 22.0f);
+        values.put(RearviewMirrorSettings.PREF_WIDTH, 23.0f);
+        values.put(RearviewMirrorSettings.PREF_HEIGHT, 24.0f);
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putInt(BlindSpotOverlayController.targetKey(profile),
+                CameraDisplayTarget.CLUSTER);
+        target.putString(RearviewMirrorSettings.PREF_TARGET, "Tablet");
+        CameraPlacement tablet = CameraPlacement.of(0.10f, 0.10f, 0.20f, 0.20f);
+        CameraPlacement mirrorTablet = CameraPlacement.of(0.20f, 0.20f, 0.25f, 0.25f);
+        CameraPlacement mirrorCluster = CameraPlacement.of(0.40f, 0.40f, 0.25f, 0.25f);
+        seedBlindPlacement(target, profile, CameraDisplayTarget.TABLET, tablet);
+        seedMirrorPlacement(target, CameraDisplayTarget.TABLET, mirrorTablet);
+        seedMirrorPlacement(target, CameraDisplayTarget.CLUSTER, mirrorCluster);
+
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(preset.toString()), GEOMETRY);
+
+        assertEquals(CameraDisplayTarget.CLUSTER,
+                BlindSpotOverlayController.readTarget(target, profile));
+        assertPlacement(tablet, BlindSpotOverlayController.readPlacement(
+                target, profile, CameraDisplayTarget.TABLET, 1280, 800, 12, 30, 70));
+        assertPlacement(CameraPlacement.of(0.55f, 0.56f, 0.20f, 0.21f),
+                BlindSpotOverlayController.readPlacement(
+                        target, profile, CameraDisplayTarget.CLUSTER,
+                        1920, 720, 0, 0, 0));
+        assertPlacement(CameraPlacement.of(0.21f, 0.22f, 0.23f, 0.24f),
+                RearviewMirrorSettings.placement(target, CameraDisplayTarget.TABLET));
+        assertPlacement(mirrorCluster,
+                RearviewMirrorSettings.placement(target, CameraDisplayTarget.CLUSTER));
+    }
+
+    @Test
+    public void legacyXmlImportPreservesInactiveBlindPlacementInOneCommit() {
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        Map<String, Object> imported = CameraSettingsTransfer.parseLegacySettings(
+                "<map><int name=\"camera_left_display_target\" value=\"1\"/>"
+                        + "<float name=\"camera_left_x\" value=\"0.60\"/>"
+                        + "<float name=\"camera_left_y\" value=\"0.61\"/>"
+                        + "<float name=\"camera_left_width\" value=\"0.20\"/>"
+                        + "<float name=\"camera_left_height\" value=\"0.21\"/></map>");
+        TestSharedPreferences target = new TestSharedPreferences();
+        CameraPlacement tablet = CameraPlacement.of(0.12f, 0.13f, 0.24f, 0.25f);
+        seedBlindPlacement(target, profile, CameraDisplayTarget.TABLET, tablet);
+
+        CameraSettingsTransfer.applyLegacySettings(target, imported, GEOMETRY);
+
+        assertPlacement(tablet, BlindSpotOverlayController.readPlacement(
+                target, profile, CameraDisplayTarget.TABLET, 1280, 800, 12, 30, 70));
+        assertPlacement(CameraPlacement.of(0.60f, 0.61f, 0.20f, 0.21f),
+                BlindSpotOverlayController.readPlacement(
+                        target, profile, CameraDisplayTarget.CLUSTER,
+                        1920, 720, 0, 0, 0));
+        assertEquals(1, target.transactions);
+    }
+
+    @Test
+    public void invalidV3PlacementIsRejectedBeforeEditorMutation() throws Exception {
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(
+                        new TestSharedPreferences(), GEOMETRY));
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        values.put(BlindSpotOverlayController.placementKey(
+                profile, CameraDisplayTarget.CLUSTER,
+                BlindSpotOverlayController.PLACEMENT_WIDTH), 2.0f);
+        TestSharedPreferences target = new TestSharedPreferences();
+        target.putString("unrelated", "keep");
+        Map<String, ?> before = target.getAll();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraSettingsTransfer.applyCameraPreset(target, parsed, GEOMETRY));
+        assertEquals(before, target.getAll());
+        assertEquals(0, target.transactions);
+    }
+
+    private static void seedBlindPlacement(
+            TestSharedPreferences preferences, CameraProfile profile,
+            int target, CameraPlacement placement) {
+        preferences.putFloat(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_X), placement.x);
+        preferences.putFloat(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_Y), placement.y);
+        preferences.putFloat(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_WIDTH), placement.width);
+        preferences.putFloat(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_HEIGHT), placement.height);
+    }
+
+    private static void seedMirrorPlacement(
+            TestSharedPreferences preferences, int target, CameraPlacement placement) {
+        preferences.putFloat(RearviewMirrorSettings.placementKey(
+                target, RearviewMirrorSettings.PLACEMENT_X), placement.x * 100.0f);
+        preferences.putFloat(RearviewMirrorSettings.placementKey(
+                target, RearviewMirrorSettings.PLACEMENT_Y), placement.y * 100.0f);
+        preferences.putFloat(RearviewMirrorSettings.placementKey(
+                target, RearviewMirrorSettings.PLACEMENT_WIDTH), placement.width * 100.0f);
+        preferences.putFloat(RearviewMirrorSettings.placementKey(
+                target, RearviewMirrorSettings.PLACEMENT_HEIGHT), placement.height * 100.0f);
+    }
+
+    private static float number(Map<String, Object> values, String key) {
+        return ((Number) values.get(key)).floatValue();
+    }
+
+    private static void assertPlacement(CameraPlacement expected, CameraPlacement actual) {
+        assertEquals(expected.x, actual.x, 0.000001f);
+        assertEquals(expected.y, actual.y, 0.000001f);
+        assertEquals(expected.width, actual.width, 0.000001f);
+        assertEquals(expected.height, actual.height, 0.000001f);
     }
 }

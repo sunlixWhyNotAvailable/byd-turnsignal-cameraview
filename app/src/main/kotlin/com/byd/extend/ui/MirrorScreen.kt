@@ -94,10 +94,10 @@ internal fun MirrorScreen(
             preview = {
                 if (state.section != CameraSection.Calibration) {
                     CameraPlacementPreview(profile, 1, state.profile, colors, cameraHost,
-                        onMove = { x, y -> onAction(BydExtendUiAction.MoveProfile(profile, x, y)) },
+                        onMove = { x, y -> onAction(BydExtendUiAction.MoveProfile(profile, x, y, state.target)) },
                         onResize = { x, y, width, height ->
                             onAction(BydExtendUiAction.SetMirrorGeometry(MirrorGeometryUiState(
-                                x = percent(x), y = percent(y), width = percent(width), height = percent(height))))
+                                x = percent(x), y = percent(y), width = percent(width), height = percent(height)), state.target))
                         },
                         editable = state.section == CameraSection.Placement)
                 } else {

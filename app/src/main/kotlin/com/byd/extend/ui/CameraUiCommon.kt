@@ -165,8 +165,8 @@ internal fun ColumnScope.CameraProfileControls(
         return onPreview(NumberTarget.Profile(profile, field), value, sessionId)
     }
     fun placementTarget(field: ProfileNumber, mirrorField: MirrorNumber): NumberTarget =
-        if (profile == CameraProfileId.Mirror) NumberTarget.Mirror(mirrorField)
-        else NumberTarget.Profile(profile, field)
+        if (profile == CameraProfileId.Mirror) NumberTarget.Mirror(mirrorField, state.target)
+        else NumberTarget.Profile(profile, field, state.target)
     fun placementNumber(field: ProfileNumber, mirrorField: MirrorNumber, value: String) {
         onAction(BydExtendUiAction.CommitNumber(placementTarget(field, mirrorField), value))
     }
@@ -293,12 +293,12 @@ internal fun CameraProfilePreview(
             profile is CameraProfileId.Blind || profile is CameraProfileId.Parking ||
                 profile is CameraProfileId.Mirror
         ) CameraPlacementPreview(profile, sourceIndex, state, colors, cameraHost, onMove = { x, y ->
-            onAction(BydExtendUiAction.MoveProfile(profile, x, y))
+            onAction(BydExtendUiAction.MoveProfile(profile, x, y, state.target))
         }, onResize = { x, y, width, height ->
             if (profile is CameraProfileId.Blind) {
                 onAction(BydExtendUiAction.SetProfileGeometry(profile, MirrorGeometryUiState(
                     placementPercent(x), placementPercent(y),
-                    placementPercent(width), placementPercent(height))))
+                    placementPercent(width), placementPercent(height)), state.target))
             }
         }) else CameraStageFrame(strings.text("Розташування", "Placement"), state.displayGeometry.aspect, colors) {
             cameraHost(CameraHostSlot(

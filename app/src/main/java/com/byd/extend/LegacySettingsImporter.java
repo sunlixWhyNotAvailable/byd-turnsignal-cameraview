@@ -124,7 +124,7 @@ final class LegacySettingsImporter {
                     "error", message(error));
         }
         SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        applyAndHandover(settings, values, new HandoverOps() {
+        applyAndHandover(context, settings, values, new HandoverOps() {
             @Override
             public boolean pause() {
                 return CameraHelperService.pauseActiveRuntime();
@@ -193,6 +193,15 @@ final class LegacySettingsImporter {
             Map<String, Object> values,
             HandoverOps ops,
             BiConsumer<String, Object[]> events) {
+        applyAndHandover(null, settings, values, ops, events);
+    }
+
+    private static void applyAndHandover(
+            Context context,
+            SharedPreferences settings,
+            Map<String, Object> values,
+            HandoverOps ops,
+            BiConsumer<String, Object[]> events) {
         if (settings == null || values == null || ops == null) {
             throw fail(events, "legacy_handover_failed", "stage", "input",
                     "error", "settings, values and operations are required");
@@ -207,7 +216,8 @@ final class LegacySettingsImporter {
                     "error", "active runtime did not pause");
         }
         try {
-            CameraSettingsTransfer.applyLegacySettings(settings, values);
+            if (context == null) CameraSettingsTransfer.applyLegacySettings(settings, values);
+            else CameraSettingsTransfer.applyLegacySettings(context, settings, values);
         } catch (Throwable error) {
             throw fail(events, "legacy_handover_failed", "stage", "apply",
                     "error", message(error));

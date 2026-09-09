@@ -89,6 +89,16 @@ class ProductionUiController @JvmOverloads constructor(
 
     fun dispatch(action: BydExtendUiAction) {
         syncLegacyRuntimeBlock()
+        // A disposed editor may finish after a display selection. Never retarget that write.
+        val stalePlacement = when (action) {
+            is BydExtendUiAction.SetMirrorGeometry -> !matchesPlacementTarget(CameraProfileId.Mirror, action.displayTarget)
+            is BydExtendUiAction.SetProfileGeometry -> !matchesPlacementTarget(action.profile, action.displayTarget)
+            is BydExtendUiAction.MoveProfile -> !matchesPlacementTarget(action.profile, action.displayTarget)
+            is BydExtendUiAction.CommitNumber -> !matchesNumberTarget(action.target)
+            is BydExtendUiAction.PreviewNumber -> !matchesNumberTarget(action.target)
+            else -> false
+        }
+        if (stalePlacement) return
         if (state.legacyRuntimeBlocked && !allowedWhileLegacyBlocked(action)) {
             showLegacyHandoverBlock()
             return
@@ -170,7 +180,8 @@ class ProductionUiController @JvmOverloads constructor(
                         width = geometry.width, height = geometry.height),
                 ))
                 backend.onProductionMirrorAction(MirrorBackendAction(
-                    MirrorBackendActionKind.SetGeometry, geometry = geometry))
+                    MirrorBackendActionKind.SetGeometry, geometry = geometry,
+                    target = action.displayTarget ?: state.mirror.target))
             }
             is BydExtendUiAction.SetProfileGeometry -> {
                 val profile = state.blind.profiles[action.profile] ?: CameraProfileUiState()
@@ -325,7 +336,8 @@ class ProductionUiController @JvmOverloads constructor(
                         backend.onProductionMirrorAction(MirrorBackendAction(
                             MirrorBackendActionKind.SetGeometry,
                             field = target.field, value = action.value,
-                            geometry = state.mirror.placement))
+                            geometry = state.mirror.placement,
+                            target = target.displayTarget ?: state.mirror.target))
                     }
                     is NumberTarget.Profile -> if (target.profile == CameraProfileId.Mirror) {
                         typedBackendHandled = true
@@ -345,7 +357,8 @@ class ProductionUiController @JvmOverloads constructor(
                     profile = state.mirror.profile.copy(x = geometry.x, y = geometry.y)))
                 backend.onProductionMirrorAction(MirrorBackendAction(
                     MirrorBackendActionKind.SetGeometry,
-                    value = "${action.x},${action.y}", geometry = geometry))
+                    value = "${action.x},${action.y}", geometry = geometry,
+                    target = action.displayTarget ?: state.mirror.target))
             }
             is BydExtendUiAction.Run -> {
                 val mirrorKind = when (action.command) {
@@ -378,6 +391,7 @@ class ProductionUiController @JvmOverloads constructor(
     /** Synchronous preview entry point used by slider controls to restore rejected values locally. */
     fun preview(target: NumberTarget, value: String, sessionId: Long? = null): String? {
         syncLegacyRuntimeBlock()
+        if (!matchesNumberTarget(target)) return null
         if (state.legacyRuntimeBlocked) return null
         if (sessionId != null && sessionId <= 0L) return null
         val closedSession = flushedPreviewSessions[target]
@@ -408,7 +422,8 @@ class ProductionUiController @JvmOverloads constructor(
         val accepted = when (target) {
             is NumberTarget.Mirror -> backend.onProductionMirrorPreview(MirrorBackendAction(
                 MirrorBackendActionKind.SetGeometry, field = target.field, value = value,
-                geometry = desired.mirror.placement))
+                geometry = desired.mirror.placement,
+                target = target.displayTarget ?: state.mirror.target))
             is NumberTarget.Profile -> if (target.profile == CameraProfileId.Mirror) {
                 backend.onProductionMirrorPreview(MirrorBackendAction(
                     MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value))
@@ -695,11 +710,13 @@ class ProductionUiController @JvmOverloads constructor(
 
     /** Finalizes a preview through the same typed seam as an explicit Mirror commit. */
     private fun commitPreviewValue(target: NumberTarget, value: String, sessionId: Long?) {
+        if (!matchesNumberTarget(target)) return
         state = applyNumberValue(state, target, value)
         when (target) {
             is NumberTarget.Mirror -> backend.onProductionMirrorAction(MirrorBackendAction(
                 MirrorBackendActionKind.SetGeometry, field = target.field, value = value,
-                geometry = state.mirror.placement))
+                geometry = state.mirror.placement,
+                target = target.displayTarget ?: state.mirror.target))
             is NumberTarget.Profile -> if (target.profile == CameraProfileId.Mirror) {
                 backend.onProductionMirrorAction(MirrorBackendAction(
                     MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value))
@@ -712,8 +729,22 @@ class ProductionUiController @JvmOverloads constructor(
 
     private fun applyPreviewValues(base: BydExtendUiState): BydExtendUiState =
         previewValues.entries.fold(base) { current, (target, value) ->
-            applyNumberValue(current, target, value)
+            if (matchesNumberTarget(target, current)) applyNumberValue(current, target, value) else current
         }
+
+    private fun matchesPlacementTarget(
+        profile: CameraProfileId, target: DisplayTarget?, source: BydExtendUiState = state,
+    ): Boolean = target == null || target == when (profile) {
+        CameraProfileId.Mirror -> source.mirror.target
+        is CameraProfileId.Blind -> source.blind.profiles[profile]?.target
+        else -> target
+    }
+
+    private fun matchesNumberTarget(target: NumberTarget, source: BydExtendUiState = state): Boolean = when (target) {
+        is NumberTarget.Mirror -> matchesPlacementTarget(CameraProfileId.Mirror, target.displayTarget, source)
+        is NumberTarget.Profile -> matchesPlacementTarget(target.profile, target.displayTarget, source)
+        else -> true
+    }
 
     /** Updates only the in-memory state used by Compose; persistence remains CommitNumber-owned. */
     private fun applyNumberValue(

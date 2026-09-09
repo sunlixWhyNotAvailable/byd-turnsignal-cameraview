@@ -79,7 +79,7 @@ private fun readBlind(
             if (target == CameraDisplayTarget.CLUSTER) DisplayTarget.Cluster else DisplayTarget.Tablet)
         val requestedAspect = BlindSpotOverlayController.readFrameAspect(preferences, profile)
         val placement = BlindSpotOverlayController.readPlacement(
-            preferences, profile, display.width, display.height,
+            preferences, profile, target, display.width, display.height,
             display.marginLeft.coerceAtLeast(0), display.marginTop.coerceAtLeast(0),
             display.marginBottom.coerceAtLeast(0))
         val output = placement.toPixelRect(display.width, display.height)

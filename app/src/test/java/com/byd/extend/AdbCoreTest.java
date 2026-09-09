@@ -102,7 +102,7 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(100, BuildConfig.VERSION_CODE);
+        assertEquals(101, BuildConfig.VERSION_CODE);
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
         assertEquals(7, TurnSignalShellProtocol.VERSION);

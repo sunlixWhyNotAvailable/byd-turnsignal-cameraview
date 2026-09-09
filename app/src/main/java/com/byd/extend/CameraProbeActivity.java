@@ -739,6 +739,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private float dragStartRawY;
     private float dragStartX;
     private float dragStartY;
+    private int placementGestureProfile = -1;
+    private int placementGestureTarget = -1;
+    private boolean legacyPlacementSizing;
     private int pendingCameraViewpoint = -1;
     private int activeCameraViewpoint = -1;
     private int activeDirectCameraIndex = -1;
@@ -1309,7 +1312,7 @@ public final class CameraProbeActivity extends ComponentActivity
         logExportExecutor.execute(() -> {
             try {
                 File file = CameraPresetFiles.write(getCacheDir(),
-                        CameraSettingsTransfer.exportCameraPreset(preferences));
+                        CameraSettingsTransfer.exportCameraPreset(this, preferences));
                 mainHandler.post(() -> {
                     finishSettingsTransfer();
                     if (activityDestroyed || isFinishing()) return;
@@ -1514,7 +1517,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     LegacySettingsImporter.applyAndHandover(
                             getApplicationContext(), values, this::record);
                 } else {
-                    CameraSettingsTransfer.applyCameraPreset(preferences, values);
+                    CameraSettingsTransfer.applyCameraPreset(this, preferences, values);
                 }
                 if (legacy) {
                     // Full import is the only settings-transfer path that may schedule
@@ -2479,11 +2482,12 @@ public final class CameraProbeActivity extends ComponentActivity
             handleProductionSelection((BydExtendUiAction.Select) action);
         } else if (action instanceof BydExtendUiAction.SetProfileGeometry) {
             BydExtendUiAction.SetProfileGeometry resize = (BydExtendUiAction.SetProfileGeometry) action;
-            saveProductionBlindGeometry(preferences, resize.getProfile(), resize.getGeometry());
+            saveProductionBlindGeometry(preferences, resize.getProfile(), resize.getGeometry(),
+                    resize.getDisplayTarget());
             CameraHelperService.cameraSettingsChanged(this);
         } else if (action instanceof BydExtendUiAction.MoveProfile) {
             BydExtendUiAction.MoveProfile move = (BydExtendUiAction.MoveProfile) action;
-            saveProductionProfilePosition(move.getProfile(), move.getX(), move.getY());
+            saveProductionProfilePosition(move.getProfile(), move.getX(), move.getY(), move.getDisplayTarget());
         } else if (action instanceof BydExtendUiAction.Run) {
             handleProductionCommand((BydExtendUiAction.Run) action);
         }
@@ -2539,8 +2543,10 @@ public final class CameraProbeActivity extends ComponentActivity
                             ? action.getTarget() : ui.getTarget();
                     target = selected == DisplayTarget.Cluster
                             ? RearviewMirrorSettings.TARGET_CLUSTER : RearviewMirrorSettings.TARGET_TABLET;
+                    placement = RearviewMirrorSettings.placement(preferences, target);
                     break;
                 case SetGeometry:
+                    if (action.getTarget() != null && displayTargetValue(action.getTarget()) != target) return;
                     if (action.getField() == com.byd.extend.ui.MirrorNumber.BorderWidth) {
                         border = Math.round(mirrorNumber(action.getValue() != null
                                 ? action.getValue() : ui.getBorderWidth()));
@@ -2575,7 +2581,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     calibration = preset;
                     break;
                 case ResetPlacement:
-                    placement = RearviewMirrorSettings.defaults().placement;
+                    placement = RearviewMirrorSettings.defaultPlacement(target);
                     break;
                 case ResetOriginal:
                     calibration = mirrorCalibrationWithCrop(calibration, false,
@@ -3889,28 +3895,45 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private CameraPlacement loadProductionBlindPlacement(CameraProfile profile) {
-        int target = BlindSpotOverlayController.readTarget(preferences, profile);
+        return loadProductionBlindPlacement(profile, BlindSpotOverlayController.readTarget(preferences, profile));
+    }
+
+    private CameraPlacement loadProductionBlindPlacement(CameraProfile profile, int target) {
         int[] display = CameraDisplayTarget.displaySize(this, target);
         boolean tablet = target == CameraDisplayTarget.TABLET;
-        return BlindSpotOverlayController.readPlacement(preferences, profile, display[0], display[1],
+        return BlindSpotOverlayController.readPlacement(preferences, profile, target, display[0], display[1],
                 tablet ? dp(16) : 0, tablet ? dp(36) : 0, tablet ? dp(88) : 0);
     }
 
     static void saveProductionBlindGeometry(SharedPreferences preferences, CameraProfileId.Blind id,
             MirrorGeometryUiState geometry) {
+        saveProductionBlindGeometry(preferences, id, geometry, null);
+    }
+
+    static void saveProductionBlindGeometry(SharedPreferences preferences, CameraProfileId.Blind id,
+            MirrorGeometryUiState geometry, DisplayTarget origin) {
+        CameraProfile profile = blindProfile(id);
+        int target = BlindSpotOverlayController.readTarget(preferences, profile);
+        if (origin != null && displayTargetValue(origin) != target) return;
         CameraPlacement placement = CameraPlacement.bounded(mirrorFraction(geometry.getX()),
                 mirrorFraction(geometry.getY()), mirrorFraction(geometry.getWidth()),
                 mirrorFraction(geometry.getHeight())).roundedTenths();
-        BlindSpotOverlayController.writePlacement(preferences, blindProfile(id), placement);
+        BlindSpotOverlayController.writePlacement(preferences, profile, target, placement);
     }
 
-    private void saveProductionProfilePosition(CameraProfileId id, float x, float y) {
+    private static int displayTargetValue(DisplayTarget target) {
+        return target == DisplayTarget.Cluster ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
+    }
+
+    private void saveProductionProfilePosition(CameraProfileId id, float x, float y, DisplayTarget origin) {
         float safeX = clamp(x, 0.0f, 1.0f);
         float safeY = clamp(y, 0.0f, 1.0f);
         if (id instanceof CameraProfileId.Blind) {
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
-            CameraPlacement before = loadProductionBlindPlacement(profile);
-            BlindSpotOverlayController.writePlacement(preferences, profile,
+            int target = BlindSpotOverlayController.readTarget(preferences, profile);
+            if (origin != null && displayTargetValue(origin) != target) return;
+            CameraPlacement before = loadProductionBlindPlacement(profile, target);
+            BlindSpotOverlayController.writePlacement(preferences, profile, target,
                     before.positionTenths(safeX, safeY));
             CameraHelperService.cameraSettingsChanged(this);
         } else if (id instanceof CameraProfileId.Parking) {
@@ -3981,7 +4004,7 @@ public final class CameraProbeActivity extends ComponentActivity
         ProfileNumber field = target.getField();
         if (field == ProfileNumber.Size || field == ProfileNumber.X || field == ProfileNumber.Y
                 || field == ProfileNumber.Width || field == ProfileNumber.Height) {
-            saveProductionPlacementNumber(id, field, value);
+            saveProductionPlacementNumber(id, field, value, target.getDisplayTarget());
             return;
         }
         try {
@@ -4001,15 +4024,17 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void saveProductionPlacementNumber(
-            CameraProfileId id, ProfileNumber field, float value) {
+            CameraProfileId id, ProfileNumber field, float value, DisplayTarget origin) {
         if (id instanceof CameraProfileId.Blind) {
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
+            int target = BlindSpotOverlayController.readTarget(preferences, profile);
+            if (origin != null && displayTargetValue(origin) != target) return;
             if (field == ProfileNumber.Size) {
                 int size = clamp(Math.round(value), BlindSpotOverlayController.MIN_SCALE_PERCENT,
                         BlindSpotOverlayController.MAX_SCALE_PERCENT);
                 preferences.edit().putInt(BlindSpotOverlayController.scaleKey(profile), size).apply();
             } else {
-                CameraPlacement before = loadProductionBlindPlacement(profile);
+                CameraPlacement before = loadProductionBlindPlacement(profile, target);
                 CameraPlacement next;
                 if (field == ProfileNumber.X || field == ProfileNumber.Y) {
                     CameraPlacement moved = before.positionTenths(field == ProfileNumber.X ? value / 100 : before.x,
@@ -4023,7 +4048,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     next = CameraPlacement.of(Math.min(before.x, 1 - width),
                             Math.min(before.y, 1 - height), width, height);
                 }
-                BlindSpotOverlayController.writePlacement(preferences, profile, next);
+                BlindSpotOverlayController.writePlacement(preferences, profile, target, next);
             }
             CameraHelperService.cameraSettingsChanged(this);
             return;
@@ -4634,7 +4659,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private void resetProductionProfile(CameraProfileId id, CommandId command) {
         boolean reset = false;
         try {
-            reset = resetProductionProfileSettings(preferences, id, command);
+            reset = resetProductionProfileSettings(preferences, id, command,
+                    productionDisplayGeometry(DisplayTarget.Tablet));
         } catch (RuntimeException error) {
             record("camera_preset_error", "operation", command.name(), "error", error.toString());
         }
@@ -4680,22 +4706,20 @@ public final class CameraProbeActivity extends ComponentActivity
 
     static boolean resetProductionProfileSettings(
             SharedPreferences preferences, CameraProfileId id, CommandId command) {
+        return resetProductionProfileSettings(preferences, id, command, null);
+    }
+
+    static boolean resetProductionProfileSettings(
+            SharedPreferences preferences, CameraProfileId id, CommandId command,
+            CameraDisplayGeometry tablet) {
         if (command == CommandId.ResetProfilePlacement) {
             if (id instanceof CameraProfileId.Blind) {
+                if (tablet == null) return false;
                 CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
-                preferences.edit()
-                        .remove(BlindSpotOverlayController.placementWidthKey(profile))
-                        .remove(BlindSpotOverlayController.placementHeightKey(profile))
-                        .putFloat(BlindSpotOverlayController.frameAspectKey(profile),
-                                BlindSpotOverlayController.defaultFrameAspect(profile))
-                        .putFloat(BlindSpotOverlayController.positionKey(profile, false),
-                                BlindSpotOverlayController.defaultPosition(profile, false))
-                        .putFloat(BlindSpotOverlayController.positionKey(profile, true),
-                                BlindSpotOverlayController.defaultPosition(profile, true))
-                        .putInt(BlindSpotOverlayController.scaleKey(profile),
-                                BlindSpotOverlayController.defaultScale(profile))
-                        .putInt(BlindSpotOverlayController.targetKey(profile),
-                                BlindSpotOverlayController.defaultTarget(profile)).apply();
+                CameraCalibrationPreset.resetCameraPlacement(preferences, profile,
+                        BlindSpotOverlayController.readTarget(preferences, profile),
+                        tablet.getWidth(), tablet.getHeight(), tablet.getMarginLeft(),
+                        tablet.getMarginTop(), tablet.getMarginBottom());
             } else if (id instanceof CameraProfileId.Parking) {
                 ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
                 float[] x = {0f, .5f, 1f, 1f, .5f, 0f, 0f, 1f};
@@ -7847,15 +7871,22 @@ public final class CameraProbeActivity extends ComponentActivity
                 int scale = BlindSpotOverlayController.MIN_SCALE_PERCENT + progress;
                 cameraScale[selectedCameraId] = scale;
                 cameraScaleValue.setText(scale + "%");
+                legacyPlacementSizing = fromUser;
                 updateCameraPositionHandle();
+                legacyPlacementSizing = false;
                 updateProductionPreviewSize();
             }
 
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {
+                placementGestureProfile = selectedCameraId;
+                placementGestureTarget = cameraTarget[selectedCameraId];
+            }
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                saveOverlayPlacement();
+                if (placementGestureProfile == selectedCameraId
+                        && placementGestureTarget == cameraTarget[selectedCameraId]) saveOverlayPlacement();
+                placementGestureProfile = -1;
             }
         });
         cameraRearGroupButton.setOnClickListener(
@@ -7875,6 +7906,8 @@ public final class CameraProbeActivity extends ComponentActivity
         cameraPreviewFrame.setOnTouchListener((view, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    placementGestureProfile = selectedCameraId;
+                    placementGestureTarget = cameraTarget[selectedCameraId];
                     view.getParent().requestDisallowInterceptTouchEvent(true);
                     dragStartRawX = event.getRawX();
                     dragStartRawY = event.getRawY();
@@ -7882,17 +7915,24 @@ public final class CameraProbeActivity extends ComponentActivity
                     dragStartY = view.getY();
                     return true;
                 case MotionEvent.ACTION_MOVE:
+                    if (placementGestureProfile != selectedCameraId
+                            || placementGestureTarget != cameraTarget[selectedCameraId]) return true;
                     moveCameraPositionHandle(
                             dragStartX + event.getRawX() - dragStartRawX,
                             dragStartY + event.getRawY() - dragStartRawY);
                     captureCameraPositionHandle();
                     return true;
                 case MotionEvent.ACTION_UP:
+                    if (placementGestureProfile == selectedCameraId
+                            && placementGestureTarget == cameraTarget[selectedCameraId]) {
+                        captureCameraPositionHandle();
+                        saveOverlayPlacement();
+                        view.performClick();
+                    }
+                    // A cancelled/disposed gesture does not persist its transient rectangle.
                 case MotionEvent.ACTION_CANCEL:
-                    captureCameraPositionHandle();
-                    saveOverlayPlacement();
+                    placementGestureProfile = -1;
                     view.getParent().requestDisallowInterceptTouchEvent(false);
-                    view.performClick();
                     return true;
                 default:
                     return false;
@@ -10011,8 +10051,12 @@ public final class CameraProbeActivity extends ComponentActivity
     private void resetCalibrationCrop() {
         cancelCalibrationCropInput();
         if (!calibrationParkingMode) {
-            CameraCalibrationPreset.resetCameraToDefault(
-                    preferences, CameraProfile.of(calibrationCameraId));
+            CameraProfile profile = CameraProfile.of(calibrationCameraId);
+            CameraDisplayGeometry tablet = productionDisplayGeometry(DisplayTarget.Tablet);
+            CameraCalibrationPreset.resetCameraToDefault(preferences, profile,
+                    BlindSpotOverlayController.readTarget(preferences, profile),
+                    tablet.getWidth(), tablet.getHeight(), tablet.getMarginLeft(),
+                    tablet.getMarginTop(), tablet.getMarginBottom());
             loadCameraProfiles();
             refreshCalibrationSettings("camera_calibration_reset");
             return;
@@ -10630,12 +10674,13 @@ public final class CameraProbeActivity extends ComponentActivity
         int scale = BlindSpotOverlayController.MIN_SCALE_PERCENT
                 + cameraScaleInput.getProgress();
         cameraScale[selectedCameraId] = scale;
-        preferences.edit()
-                .putInt(cameraScaleKey(profile), cameraScale[selectedCameraId])
-                .putInt(cameraTargetKey(profile), cameraTarget[selectedCameraId])
-                .putFloat(cameraXKey(profile), cameraX[selectedCameraId])
-                .putFloat(cameraYKey(profile), cameraY[selectedCameraId])
-                .apply();
+        int target = cameraTarget[selectedCameraId];
+        if (cameraPositionWidget.getWidth() <= 0 || cameraPositionWidget.getHeight() <= 0) return;
+        CameraPlacement placement = CameraPlacement.fromPixelRect(
+                Math.round(cameraPreviewFrame.getX()), Math.round(cameraPreviewFrame.getY()),
+                cameraPreviewFrame.getWidth(), cameraPreviewFrame.getHeight(),
+                cameraPositionWidget.getWidth(), cameraPositionWidget.getHeight()).roundedTenths();
+        BlindSpotOverlayController.writePlacement(preferences, profile, target, placement);
         record("camera_overlay_settings",
                 "camera_id", profile.id, "camera", profile.wireName,
                 "scale_percent", cameraScale[selectedCameraId],
@@ -10700,10 +10745,12 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void selectCameraTarget(int target) {
         if (!CameraDisplayTarget.isValid(target)) return;
+        CameraProfile profile = CameraProfile.of(selectedCameraId);
+        preferences.edit().putInt(cameraTargetKey(profile), target).apply();
         cameraTarget[selectedCameraId] = target;
         updateCameraTargetButtons();
         updateCameraPositionCanvasSize();
-        saveOverlayPlacement();
+        CameraHelperService.cameraSettingsChanged(this);
     }
 
     private void updateCameraTargetButtons() {
@@ -10747,6 +10794,17 @@ public final class CameraProbeActivity extends ComponentActivity
     private void updateCameraPositionHandle() {
         if (cameraPositionWidget == null || cameraPreviewFrame == null
                 || cameraScaleInput == null || cameraPositionWidget.getWidth() == 0) return;
+        if (!legacyPlacementSizing) {
+            CameraPlacement placement = loadProductionBlindPlacement(CameraProfile.of(selectedCameraId));
+            int[] rect = placement.toPixelRect(cameraPositionWidget.getWidth(), cameraPositionWidget.getHeight());
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) cameraPreviewFrame.getLayoutParams();
+            params.width = rect[2];
+            params.height = rect[3];
+            cameraPreviewFrame.setLayoutParams(params);
+            cameraPreviewFrame.setX(rect[0]);
+            cameraPreviewFrame.setY(rect[1]);
+            return;
+        }
         int scale = cameraScale[selectedCameraId];
         DirectCameraCrop crop = loadCalibrationCrop(selectedCameraId);
         CameraProfile profile = CameraProfile.of(selectedCameraId);

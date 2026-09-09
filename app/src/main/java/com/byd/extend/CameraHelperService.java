@@ -480,9 +480,8 @@ public final class CameraHelperService extends Service {
                     mirror.appVisibility(activityVisible);
                 }
                 ensureMirrorOnlyRuntime();
-                if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)
-                        || ACTION_CAMERA_SETTINGS_CHANGED.equals(action)
-                        || ACTION_SETTINGS_RELOADED.equals(action)) mirror.settingsChanged();
+                routeManualMirrorSettingsChange(action, mirror::settingsChanged,
+                        clusterFullscreen::settingsChanged);
                 mainHandler.post(this::startForegroundRuntime);
                 return;
             }
@@ -551,6 +550,7 @@ public final class CameraHelperService extends Service {
             reverseCameras.settingsChanged();
         } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
             mirror.settingsChanged();
+            clusterFullscreen.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
             helper.configureMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
@@ -588,6 +588,15 @@ public final class CameraHelperService extends Service {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         return manualMirrorSession && !GuardRecovery.isUserShutdownActive(this)
                 && RearviewMirrorSettings.enabled(settings) && Settings.canDrawOverlays(this);
+    }
+
+    static void routeManualMirrorSettingsChange(
+            String action, Runnable mirrorSettingsChanged, Runnable clusterSettingsChanged) {
+        if (!ACTION_MIRROR_SETTINGS_CHANGED.equals(action)
+                && !ACTION_CAMERA_SETTINGS_CHANGED.equals(action)
+                && !ACTION_SETTINGS_RELOADED.equals(action)) return;
+        mirrorSettingsChanged.run();
+        clusterSettingsChanged.run();
     }
 
     /** Auto-start OFF still permits an explicitly opened Mirror session, without recovery. */

@@ -63,6 +63,10 @@ final class BlindSpotOverlayController {
     static final String PREF_FRONT_LEFT_HEIGHT = "camera_front_left_height";
     static final String PREF_FRONT_RIGHT_WIDTH = "camera_front_right_width";
     static final String PREF_FRONT_RIGHT_HEIGHT = "camera_front_right_height";
+    static final int PLACEMENT_X = 0;
+    static final int PLACEMENT_Y = 1;
+    static final int PLACEMENT_WIDTH = 2;
+    static final int PLACEMENT_HEIGHT = 3;
     static final String PREF_WARNING_MODE = "camera_bsd_warning_mode";
 
     static final int DEFAULT_MIN_SPEED_KPH = 10;
@@ -248,52 +252,126 @@ final class BlindSpotOverlayController {
             SharedPreferences settings, CameraProfile profile,
             int displayWidth, int displayHeight,
             int marginX, int topMargin, int bottomMargin) {
+        return readPlacement(settings, profile, readTarget(settings, profile),
+                displayWidth, displayHeight, marginX, topMargin, bottomMargin);
+    }
+
+    static CameraPlacement readPlacement(
+            SharedPreferences settings, CameraProfile profile, int target,
+            int displayWidth, int displayHeight,
+            int marginX, int topMargin, int bottomMargin) {
         if (settings == null || profile == null) {
             throw new IllegalArgumentException("camera placement arguments required");
         }
-        String widthKey = placementWidthKey(profile);
-        String heightKey = placementHeightKey(profile);
+        String xKey = placementKey(profile, target, PLACEMENT_X);
+        String yKey = placementKey(profile, target, PLACEMENT_Y);
+        String widthKey = placementKey(profile, target, PLACEMENT_WIDTH);
+        String heightKey = placementKey(profile, target, PLACEMENT_HEIGHT);
         try {
             if (settings.contains(widthKey) && settings.contains(heightKey)
-                    && settings.contains(positionKey(profile, false))
-                    && settings.contains(positionKey(profile, true))) {
+                    && settings.contains(xKey) && settings.contains(yKey)) {
                 return CameraPlacement.of(
-                        settings.getFloat(positionKey(profile, false), 0.0f),
-                        settings.getFloat(positionKey(profile, true), 0.0f),
+                        settings.getFloat(xKey, 0.0f),
+                        settings.getFloat(yKey, 0.0f),
                         settings.getFloat(widthKey, 0.0f),
                         settings.getFloat(heightKey, 0.0f));
             }
         } catch (RuntimeException invalidPlacement) {
             // Malformed v2 geometry falls back to the read-only v1 conversion.
         }
-        return CameraPlacement.fromLegacy(
-                displayWidth, displayHeight, readScale(settings, profile),
+        Float legacyWidth = null;
+        Float legacyHeight = null;
+        try {
+            if (settings.contains(placementWidthKey(profile))
+                    && settings.contains(placementHeightKey(profile))
+                    && settings.contains(positionKey(profile, false))
+                    && settings.contains(positionKey(profile, true))) {
+                legacyWidth = settings.getFloat(placementWidthKey(profile), 0.0f);
+                legacyHeight = settings.getFloat(placementHeightKey(profile), 0.0f);
+            }
+        } catch (RuntimeException invalidLegacyPlacement) {
+            // Malformed shared v2 geometry retains its historical anchor/scale fallback.
+        }
+        return legacyPlacement(profile, displayWidth, displayHeight,
+                marginX, topMargin, bottomMargin, readScale(settings, profile),
                 readFrameAspect(settings, profile),
                 readPosition(settings, profile, false),
-                readPosition(settings, profile, true),
-                marginX, topMargin, bottomMargin);
+                readPosition(settings, profile, true), legacyWidth, legacyHeight);
     }
 
     /** Saves an explicit destination edit in normalized complete-display units. */
     static void writePlacement(
             SharedPreferences settings, CameraProfile profile, CameraPlacement placement) {
+        writePlacement(settings, profile, readTarget(settings, profile), placement);
+    }
+
+    static void writePlacement(SharedPreferences settings, CameraProfile profile, int target,
+            CameraPlacement placement) {
         if (settings == null || profile == null || placement == null) {
             throw new IllegalArgumentException("camera placement arguments required");
         }
-        CameraPlacement safe = placement.bounded(
+        SharedPreferences.Editor editor = settings.edit();
+        writePlacement(editor, profile, target, placement);
+        editor.apply();
+    }
+
+    static void writePlacement(SharedPreferences.Editor editor, CameraProfile profile, int target,
+            CameraPlacement placement) {
+        if (editor == null || profile == null || placement == null) {
+            throw new IllegalArgumentException("camera placement arguments required");
+        }
+        CameraPlacement safe = CameraPlacement.of(
                 placement.x, placement.y, placement.width, placement.height);
-        settings.edit()
-                .putFloat(positionKey(profile, false), safe.x)
-                .putFloat(positionKey(profile, true), safe.y)
-                .putFloat(placementWidthKey(profile), safe.width)
-                .putFloat(placementHeightKey(profile), safe.height)
-                .apply();
+        editor.putFloat(placementKey(profile, target, PLACEMENT_X), safe.x)
+                .putFloat(placementKey(profile, target, PLACEMENT_Y), safe.y)
+                .putFloat(placementKey(profile, target, PLACEMENT_WIDTH), safe.width)
+                .putFloat(placementKey(profile, target, PLACEMENT_HEIGHT), safe.height);
     }
 
     static void writePlacement(
             SharedPreferences settings, CameraProfile profile,
             float x, float y, float width, float height) {
         writePlacement(settings, profile, CameraPlacement.bounded(x, y, width, height));
+    }
+
+    static void writePlacement(
+            SharedPreferences settings, CameraProfile profile, int target,
+            float x, float y, float width, float height) {
+        writePlacement(settings, profile, target, CameraPlacement.bounded(x, y, width, height));
+    }
+
+    static CameraPlacement defaultPlacement(
+            CameraProfile profile, int target,
+            int tabletWidth, int tabletHeight,
+            int tabletMarginX, int tabletTopMargin, int tabletBottomMargin) {
+        CameraPlacement tablet = CameraPlacement.fromLegacy(
+                tabletWidth, tabletHeight, defaultScale(profile), defaultFrameAspect(profile),
+                defaultPosition(profile, false), defaultPosition(profile, true),
+                tabletMarginX, tabletTopMargin, tabletBottomMargin);
+        if (target != CameraDisplayTarget.CLUSTER) return tablet;
+        return CameraPlacement.of((1.0f - tablet.width) / 2.0f,
+                (1.0f - tablet.height) / 2.0f, tablet.width, tablet.height);
+    }
+
+    /** Pure v1/v2 import seam matching readPlacement's explicit-rect then anchor fallback. */
+    static CameraPlacement legacyPlacement(
+            CameraProfile profile, int displayWidth, int displayHeight,
+            int marginX, int topMargin, int bottomMargin,
+            int scale, float frameAspect, float x, float y,
+            Float width, Float height) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        if (width != null && height != null) {
+            try {
+                return CameraPlacement.of(x, y, width, height);
+            } catch (RuntimeException invalidExplicitPlacement) {
+                // Old malformed explicit geometry had the same anchor/scale fallback at runtime.
+            }
+        }
+        float aspect = isValidFrameAspect(frameAspect)
+                ? frameAspect : defaultFrameAspect(profile);
+        return CameraPlacement.fromLegacy(displayWidth, displayHeight, scale, aspect,
+                clamp(x, 0.0f, 1.0f), clamp(y, 0.0f, 1.0f),
+                marginX, topMargin, bottomMargin);
     }
 
     static float defaultPosition(CameraProfile profile, boolean vertical) {
@@ -1268,7 +1346,7 @@ final class BlindSpotOverlayController {
         DirectCameraCrop rawCrop = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop crop = dewarp.enabled
                 ? DirectCameraCrop.loadCorrected(settings, profile, rawCrop) : rawCrop;
-        CameraPlacement placement = readPlacement(settings, profile,
+        CameraPlacement placement = readPlacement(settings, profile, target,
                 displayWidth, displayHeight, marginX, topMargin, bottomMargin);
         int[] geometry = placement.toPixelRect(displayWidth, displayHeight);
         return new CameraShellProtocol.OverlaySpec(
@@ -1352,6 +1430,21 @@ final class BlindSpotOverlayController {
         if (profile.id == CameraProfile.REAR_RIGHT) return PREF_RIGHT_HEIGHT;
         if (profile.id == CameraProfile.FRONT_LEFT) return PREF_FRONT_LEFT_HEIGHT;
         return PREF_FRONT_RIGHT_HEIGHT;
+    }
+
+    static String placementKey(CameraProfile profile, int target, int field) {
+        if (profile == null) throw new IllegalArgumentException("camera profile required");
+        String legacy;
+        switch (field) {
+            case PLACEMENT_X: legacy = positionKey(profile, false); break;
+            case PLACEMENT_Y: legacy = positionKey(profile, true); break;
+            case PLACEMENT_WIDTH: legacy = placementWidthKey(profile); break;
+            case PLACEMENT_HEIGHT: legacy = placementHeightKey(profile); break;
+            default: throw new IllegalArgumentException("invalid placement field");
+        }
+        int separator = legacy.lastIndexOf('_');
+        String display = target == CameraDisplayTarget.CLUSTER ? "cluster" : "tablet";
+        return legacy.substring(0, separator + 1) + display + legacy.substring(separator);
     }
 
     private int nextRequestId() {

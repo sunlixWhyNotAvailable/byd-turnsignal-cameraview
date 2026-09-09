@@ -80,34 +80,40 @@ final class CameraCalibrationPreset {
         editor.apply();
     }
 
+    /** Resets only the active Blind placement slot; calibration and the other display stay intact. */
+    static void resetCameraPlacement(SharedPreferences preferences, CameraProfile profile,
+            int target, int tabletWidth, int tabletHeight,
+            int tabletMarginX, int tabletTopMargin, int tabletBottomMargin) {
+        BlindSpotOverlayController.writePlacement(preferences, profile, target,
+                BlindSpotOverlayController.defaultPlacement(profile, target,
+                        tabletWidth, tabletHeight, tabletMarginX,
+                        tabletTopMargin, tabletBottomMargin));
+    }
+
     static void resetCameraToDefault(
+            SharedPreferences preferences, CameraProfile profile, int target,
+            int tabletWidth, int tabletHeight,
+            int tabletMarginX, int tabletTopMargin, int tabletBottomMargin) {
+        CameraPlacement placement = BlindSpotOverlayController.defaultPlacement(profile, target,
+                tabletWidth, tabletHeight, tabletMarginX,
+                tabletTopMargin, tabletBottomMargin);
+        resetCameraCalibrationToDefault(preferences, profile);
+        BlindSpotOverlayController.writePlacement(preferences, profile, target, placement);
+    }
+
+    private static void resetCameraCalibrationToDefault(
             SharedPreferences preferences, CameraProfile profile) {
         if (profile == null) throw new IllegalArgumentException("camera profile required");
         DirectCameraCrop raw = DirectCameraCrop.defaultFor(profile);
         SharedPreferences.Editor editor = preferences.edit();
+        BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
         DirectCameraCrop.write(editor, profile, raw);
         DirectCameraCrop.writeCorrected(editor, profile,
                 DirectCameraCrop.defaultCorrectedFor(profile, raw));
         editor.remove(DirectCameraCrop.correctedAspectKey(profile));
         CameraDewarpConfig.writeForProfile(
                 editor, profile, CameraDewarpConfig.defaultForProfile(profile));
-        editor.putFloat(BlindSpotOverlayController.positionKey(profile, false),
-                        BlindSpotOverlayController.defaultPosition(profile, false))
-                .putFloat(BlindSpotOverlayController.positionKey(profile, true),
-                        BlindSpotOverlayController.defaultPosition(profile, true))
-                .putInt(BlindSpotOverlayController.scaleKey(profile),
-                        BlindSpotOverlayController.defaultScale(profile))
-                .putInt(BlindSpotOverlayController.targetKey(profile),
-                        BlindSpotOverlayController.defaultTarget(profile))
-                .putFloat(BlindSpotOverlayController.frameAspectKey(profile),
-                        BlindSpotOverlayController.defaultFrameAspect(profile))
-                // A full profile placement reset deliberately returns to the
-                // legacy anchor/scale representation.  Remove the v2
-                // independent dimensions so readPlacement() cannot continue
-                // to prefer stale width/height values over these defaults.
-                .remove(BlindSpotOverlayController.placementWidthKey(profile))
-                .remove(BlindSpotOverlayController.placementHeightKey(profile))
-                .apply();
+        editor.apply();
     }
 
     static boolean hasParking(SharedPreferences preferences, ParkingCameraProfile profile) {

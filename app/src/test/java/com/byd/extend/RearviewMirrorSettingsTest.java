@@ -118,4 +118,60 @@ public class RearviewMirrorSettingsTest {
         assertEquals(1, RearviewMirrorSettings.dewarp(preferences).projection);
         assertTrue(RearviewMirrorSettings.preset(preferences) != null);
     }
+
+    @Test
+    public void displaySlotsFallBackToLegacyAndOnlyExplicitTargetChanges() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.edit()
+                .putFloat(RearviewMirrorSettings.PREF_X, 10f)
+                .putFloat(RearviewMirrorSettings.PREF_Y, 20f)
+                .putFloat(RearviewMirrorSettings.PREF_WIDTH, 30f)
+                .putFloat(RearviewMirrorSettings.PREF_HEIGHT, 40f).apply();
+        assertEquals(RearviewMirrorSettings.placement(preferences,
+                RearviewMirrorSettings.TARGET_TABLET),
+                RearviewMirrorSettings.placement(preferences,
+                        RearviewMirrorSettings.TARGET_CLUSTER));
+
+        RearviewMirrorSettings.writePlacement(preferences,
+                RearviewMirrorSettings.TARGET_CLUSTER, .2f, .3f, .4f, .5f);
+        assertEquals(CameraPlacement.of(.1f, .2f, .3f, .4f),
+                RearviewMirrorSettings.placement(preferences,
+                        RearviewMirrorSettings.TARGET_TABLET));
+        assertEquals(CameraPlacement.of(.2f, .3f, .4f, .5f),
+                RearviewMirrorSettings.placement(preferences,
+                        RearviewMirrorSettings.TARGET_CLUSTER));
+        assertEquals(10f, preferences.getFloat(RearviewMirrorSettings.PREF_X, -1f), 0f);
+    }
+
+    @Test
+    public void clusterFactoryPlacementCentersWholeTabletFactoryRectangle() {
+        CameraPlacement tablet = RearviewMirrorSettings.defaultPlacement(
+                RearviewMirrorSettings.TARGET_TABLET);
+        CameraPlacement cluster = RearviewMirrorSettings.defaultPlacement(
+                RearviewMirrorSettings.TARGET_CLUSTER);
+        assertEquals(tablet.width, cluster.width, 0f);
+        assertEquals(tablet.height, cluster.height, 0f);
+        assertEquals((1f - cluster.width) / 2f, cluster.x, 0f);
+        assertEquals((1f - cluster.height) / 2f, cluster.y, 0f);
+    }
+
+    @Test
+    public void fullSaveWritesPlacementOnlyToValueTarget() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        RearviewMirrorSettings.Settings base = RearviewMirrorSettings.defaults();
+        CameraPlacement cluster = CameraPlacement.of(.2f, .3f, .4f, .5f);
+        RearviewMirrorSettings.Settings value = new RearviewMirrorSettings.Settings(
+                base.enabled, RearviewMirrorSettings.TARGET_CLUSTER, cluster,
+                base.calibration, base.preset, base.borderDp, base.borderArgb,
+                base.manualHidden);
+        new RearviewMirrorSettings(preferences).save(value);
+
+        assertEquals(cluster, RearviewMirrorSettings.placement(preferences,
+                RearviewMirrorSettings.TARGET_CLUSTER));
+        assertEquals(CameraPlacement.mirrorDemo(), RearviewMirrorSettings.placement(preferences,
+                RearviewMirrorSettings.TARGET_TABLET));
+        assertFalse(preferences.contains(RearviewMirrorSettings.placementKey(
+                RearviewMirrorSettings.TARGET_TABLET,
+                RearviewMirrorSettings.PLACEMENT_X)));
+    }
 }

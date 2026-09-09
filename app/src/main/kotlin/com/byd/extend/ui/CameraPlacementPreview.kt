@@ -46,8 +46,8 @@ internal fun CameraPlacementPreview(
 ) {
     val storedX = state.x.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
     val storedY = state.y.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
-    val dragX = remember(profile) { mutableFloatStateOf(storedX) }
-    val dragY = remember(profile) { mutableFloatStateOf(storedY) }
+    val dragX = remember(profile, state.target) { mutableFloatStateOf(storedX) }
+    val dragY = remember(profile, state.target) { mutableFloatStateOf(storedY) }
     // Existing users may have a persisted Blind window below the new 5% editor minimum. Keep
     // that geometry visible on entry; the 5% floor is applied only by an explicit resize.
     fun storedFraction(value: String, fallback: Float): Float =
@@ -58,13 +58,13 @@ internal fun CameraPlacementPreview(
     val storedHeight = storedFraction(state.height,
         (storedWidth * state.displayGeometry.aspect / state.frameAspect.coerceAtLeast(.0001f))
             .coerceIn(Float.MIN_VALUE, 1f))
-    val dragWidth = remember(profile) { mutableFloatStateOf(storedWidth) }
-    val dragHeight = remember(profile) { mutableFloatStateOf(storedHeight) }
+    val dragWidth = remember(profile, state.target) { mutableFloatStateOf(storedWidth) }
+    val dragHeight = remember(profile, state.target) { mutableFloatStateOf(storedHeight) }
     val latestOnMove by rememberUpdatedState(onMove)
     val latestStoredX by rememberUpdatedState(storedX)
     val latestStoredY by rememberUpdatedState(storedY)
     val latestOnResize by rememberUpdatedState(onResize)
-    LaunchedEffect(profile, state.x, state.y, state.width, state.height) {
+    LaunchedEffect(profile, state.target, state.x, state.y, state.width, state.height) {
         dragX.floatValue = storedX
         dragY.floatValue = storedY
         dragWidth.floatValue = storedWidth
@@ -114,19 +114,21 @@ internal fun CameraPlacementPreview(
                     canvasDpHeight * placement.height,
                 ).clip(RoundedCornerShape(8.dp))
                     .border(2.dp, colors.accent, RoundedCornerShape(8.dp))
-                    .then(if (!editable) Modifier else Modifier.pointerInput(profile, "move") {
+                    .then(if (!editable) Modifier else Modifier.pointerInput(profile, state.target, display, "move") {
+                        var commitMove = latestOnMove
                         var startX = 0f
                         var startY = 0f
                         var totalX = 0f
                         var totalY = 0f
                         detectDragGestures(
                             onDragStart = {
+                                commitMove = latestOnMove
                                 startX = dragX.floatValue
                                 startY = dragY.floatValue
                                 totalX = 0f
                                 totalY = 0f
                             },
-                            onDragEnd = { latestOnMove(dragX.floatValue, dragY.floatValue) },
+                            onDragEnd = { commitMove(dragX.floatValue, dragY.floatValue) },
                             onDragCancel = {
                                 dragX.floatValue = latestStoredX
                                 dragY.floatValue = latestStoredY
@@ -180,7 +182,8 @@ internal fun CameraPlacementPreview(
                         Box(Modifier.align(alignment).size(24.dp)
                             .clip(RoundedCornerShape(5.dp)).background(colors.accent)
                             .border(1.dp, colors.borderStrong, RoundedCornerShape(5.dp))
-                            .pointerInput(profile, "resize", corner) {
+                            .pointerInput(profile, state.target, display, "resize", corner) {
+                                var commitResize = latestOnResize
                                 var startX = 0f
                                 var startY = 0f
                                 var startWidth = 0f
@@ -189,6 +192,7 @@ internal fun CameraPlacementPreview(
                                 var totalY = 0f
                                 detectDragGestures(
                                     onDragStart = {
+                                        commitResize = latestOnResize
                                         startX = dragX.floatValue
                                         startY = dragY.floatValue
                                         startWidth = dragWidth.floatValue
@@ -197,7 +201,7 @@ internal fun CameraPlacementPreview(
                                         totalY = 0f
                                     },
                                     onDragEnd = {
-                                        latestOnResize(
+                                        commitResize(
                                             dragX.floatValue, dragY.floatValue,
                                             dragWidth.floatValue, dragHeight.floatValue,
                                         )

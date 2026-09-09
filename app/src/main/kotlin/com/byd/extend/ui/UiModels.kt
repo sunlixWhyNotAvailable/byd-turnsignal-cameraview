@@ -566,8 +566,13 @@ sealed interface NumberTarget {
     data object WeatherInterval : NumberTarget
     @Immutable data class Blind(val group: CameraGroup, val field: BlindNumber) : NumberTarget
     @Immutable data class Parking(val view: ParkingView?, val field: ParkingNumber) : NumberTarget
-    @Immutable data class Mirror(val field: MirrorNumber) : NumberTarget
-    @Immutable data class Profile(val profile: CameraProfileId, val field: ProfileNumber) : NumberTarget
+    @Immutable data class Mirror @JvmOverloads constructor(
+        val field: MirrorNumber, val displayTarget: DisplayTarget? = null,
+    ) : NumberTarget
+    @Immutable data class Profile @JvmOverloads constructor(
+        val profile: CameraProfileId, val field: ProfileNumber,
+        val displayTarget: DisplayTarget? = null,
+    ) : NumberTarget
     @Immutable data class ReverseGeometry(val element: ReverseElement, val field: ReverseGeometryNumber) : NumberTarget
     @Immutable data class Output(val field: OutputNumber) : NumberTarget
 }
@@ -591,11 +596,14 @@ sealed interface BydExtendUiAction {
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
     @Immutable data class SetMirrorBorderColor(val argb: Int) : BydExtendUiAction
     @Immutable data object RequestMirrorOverlayPermission : BydExtendUiAction
-    @Immutable data class SetMirrorGeometry(val geometry: MirrorGeometryUiState) : BydExtendUiAction
+    @Immutable data class SetMirrorGeometry @JvmOverloads constructor(
+        val geometry: MirrorGeometryUiState, val displayTarget: DisplayTarget? = null,
+    ) : BydExtendUiAction
     /** Atomic whole-display placement used by the four-corner Blind editor. */
-    @Immutable data class SetProfileGeometry(
+    @Immutable data class SetProfileGeometry @JvmOverloads constructor(
         val profile: CameraProfileId.Blind,
         val geometry: MirrorGeometryUiState,
+        val displayTarget: DisplayTarget? = null,
     ) : BydExtendUiAction
     @Immutable data class Toggle(val target: ToggleTarget, val value: Boolean) : BydExtendUiAction
     /** Live, non-persisting numeric update emitted while a slider is dragged. */
@@ -610,7 +618,10 @@ sealed interface BydExtendUiAction {
         val sessionId: Long? = null,
     ) : BydExtendUiAction
     @Immutable data class Select(val target: SelectionTarget, val index: Int) : BydExtendUiAction
-    @Immutable data class MoveProfile(val profile: CameraProfileId, val x: Float, val y: Float) : BydExtendUiAction
+    @Immutable data class MoveProfile @JvmOverloads constructor(
+        val profile: CameraProfileId, val x: Float, val y: Float,
+        val displayTarget: DisplayTarget? = null,
+    ) : BydExtendUiAction
     @Immutable data class Run @JvmOverloads constructor(
         val command: CommandId,
         val profile: CameraProfileId? = null,

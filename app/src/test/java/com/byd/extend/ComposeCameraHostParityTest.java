@@ -112,9 +112,12 @@ public final class ComposeCameraHostParityTest {
         String ui = readMain("kotlin/com/byd/extend/ui/CameraPlacementPreview.kt");
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
         assertTrue(ui.contains("detectDragGestures("));
-        assertTrue(ui.contains("remember(profile) { mutableFloatStateOf(storedX) }"));
+        assertTrue(ui.contains("remember(profile, state.target) { mutableFloatStateOf(storedX) }"));
         assertTrue(ui.contains("rememberUpdatedState(onMove)"));
-        assertTrue(ui.contains("latestOnMove(dragX.floatValue, dragY.floatValue)"));
+        assertTrue(ui.contains("commitMove = latestOnMove"));
+        assertTrue(ui.contains("commitMove(dragX.floatValue, dragY.floatValue)"));
+        assertTrue(ui.contains("pointerInput(profile, state.target, display, \"move\")"));
+        assertTrue(ui.contains("pointerInput(profile, state.target, display, \"resize\", corner)"));
         assertTrue(ui.contains("state.frameAspect"));
         assertTrue(ui.contains("val display = state.displayGeometry"));
         assertTrue(ui.contains("display.marginLeft"));

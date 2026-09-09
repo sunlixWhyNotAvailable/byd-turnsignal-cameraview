@@ -7,7 +7,7 @@
 
 ## Project status
 
-Current source target: `1.1.0` (version code `100`), with Ukrainian, English and Simplified Chinese
+Current source target: `1.1.1` (version code `101`), with Ukrainian, English and Simplified Chinese
 interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
@@ -44,13 +44,17 @@ steering-angle, and distance triggers, non-camera settings, and saved local cali
 The learned steering-button binding is also excluded and is preserved when loading camera presets
 or importing legacy settings.
 
-Preset format v2 adds independent Blind rectangles and the active Mirror configuration. Existing
-v1 files remain supported; importing one does not reset Mirror settings that it does not contain.
+Preset format v3 stores both tablet and instrument-cluster rectangles for Mirror and all four
+Blind profiles. Existing v1/v2 files remain supported: their placement is applied only to the
+declared display (the current display when omitted), preserving the other display. Importing
+a file without Mirror leaves its settings unchanged.
 Panorama-suppression preferences are included when present; older presets without these fields
 preserve the current values, with suppression enabled by default on fresh settings.
 Local saved calibration slots and temporary Mirror hiding are not part of a camera preset.
 Built-in camera geometry and calibration use the approved reference baseline only for absent
-values and explicit section resets; updating the application does not replace stored user settings.
+values and explicit section resets; updating the application preserves existing effective settings,
+including never-edited values. New cluster placements and placement resets are centered using the
+corresponding factory tablet width/height. Editing or resetting one display does not change the other.
 
 Reverse output rotation, display mode and mirroring are saved for the selected camera only.
 Moving, resizing or reordering composition elements does not change RAW or corrected calibration
@@ -77,12 +81,16 @@ package identity changes.
 
 ## Reverse Widget steering button
 
-In Reverse, select `Widget` and use `Select button…` below `Enhanced reverse view`. The first
-steering-wheel press assigns its Android key code without switching cameras. Cancel or Android
+In Reverse, select `Widget` and use `Select button…` below `Enhanced reverse view`. A confirmed
+single short steering-wheel press assigns its Android key code without switching cameras. Cancel or Android
 Back leaves the previous assignment unchanged; the square reset clears only the assignment.
 
-Subsequent assigned presses switch the existing composition and its widget together, once per
-physical press. Enhanced reverse, the widget and at least one front-camera integration must be
+Subsequent single short presses switch the existing composition and its widget together after
+Android's inclusive multi-press window expires. Double presses and holds do not switch cameras
+or fall back to single presses. After their release, the next press starts a new gesture: three
+quick short presses are Double + Single; four are two Doubles. Known OEM long-code feedback is
+consumed without changing the ordinary key's gesture state. Learning uses the same gesture rules.
+Enhanced reverse, the widget and at least one front-camera integration must be
 enabled, and the composition must already be active. Existing per-camera visibility/integration
 rules apply; the button does not open cameras, change calibration or add automatic switching in D.
 Calibration and other foreground app tabs do not redirect the button to a background composition.
@@ -98,8 +106,11 @@ during a session, or select Front on a cold opening. Repeated telemetry does not
 selection. Nonintegrated panes keep their rear view in either mode. Automatic selection does not
 require the selector widget to be visible.
 
-The assigned press, repeats and release replace the stock key action, including when no eligible
-composition is active. Reset the assignment to restore normal handling. Explicit app Shutdown
+All assigned-button gestures, repeats and releases are consumed immediately, including when no
+eligible composition is active. Only our single-press action is delayed; consumed events are not
+forwarded or replayed. Other eligible Accessibility key filters receive their own event copies,
+but arbitrary apps and downstream stock handlers are not guaranteed delivery.
+Reset the assignment to restore normal handling. Explicit app Shutdown
 ends interception until the app is reopened. The assignment survives app restarts.
 
 This feature uses the app's existing Accessibility service. If the key filter is unavailable,

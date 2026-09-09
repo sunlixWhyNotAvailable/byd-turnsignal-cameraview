@@ -25,6 +25,10 @@ public final class RearviewMirrorSettings {
     public static final String PREF_Y = "mirror_y";
     public static final String PREF_WIDTH = "mirror_width";
     public static final String PREF_HEIGHT = "mirror_height";
+    public static final int PLACEMENT_X = 0;
+    public static final int PLACEMENT_Y = 1;
+    public static final int PLACEMENT_WIDTH = 2;
+    public static final int PLACEMENT_HEIGHT = 3;
     public static final String PREF_BORDER_DP = "mirror_border_width";
     public static final String PREF_BORDER_ARGB = "mirror_border_color";
     public static final String PREF_MANUAL_HIDDEN = "mirror_hidden";
@@ -63,7 +67,7 @@ public final class RearviewMirrorSettings {
         Settings fallback = Settings.defaults();
         boolean enabled = readBoolean(PREF_ENABLED, fallback.enabled);
         int target = readTarget(fallback.target);
-        CameraPlacement placement = readPlacement(fallback.placement);
+        CameraPlacement placement = readPlacement(target, fallback.placement);
         Calibration calibration = readCalibration(fallback.calibration, ORIGINAL_PREFIX);
         Calibration preset = preferences.getBoolean(PREF_PRESET_PRESENT, false)
                 ? readCalibration(null, PRESET_PREFIX) : null;
@@ -82,14 +86,11 @@ public final class RearviewMirrorSettings {
         SharedPreferences.Editor editor = preferences.edit()
                 .putBoolean(PREF_ENABLED, safe.enabled)
                 .putString(PREF_TARGET, safe.target == TARGET_CLUSTER ? "Cluster" : "Tablet")
-                .putFloat(PREF_X, safe.placement.x * 100.0f)
-                .putFloat(PREF_Y, safe.placement.y * 100.0f)
-                .putFloat(PREF_WIDTH, safe.placement.width * 100.0f)
-                .putFloat(PREF_HEIGHT, safe.placement.height * 100.0f)
                 .putInt(PREF_BORDER_DP, safe.borderDp)
                 .putInt(PREF_BORDER_ARGB, safe.borderArgb)
                 .putBoolean(PREF_MANUAL_HIDDEN, safe.manualHidden)
                 .putBoolean(PREF_PRESET_PRESENT, safe.preset != null);
+        writePlacement(editor, safe.target, safe.placement);
         writeCalibration(editor, ORIGINAL_PREFIX, safe.calibration);
         if (safe.preset == null) removeCalibration(editor, PRESET_PREFIX);
         else writeCalibration(editor, PRESET_PREFIX, safe.preset);
@@ -147,6 +148,17 @@ public final class RearviewMirrorSettings {
         return new RearviewMirrorSettings(preferences).load().placement;
     }
 
+    public static CameraPlacement placement(SharedPreferences preferences, int target) {
+        RearviewMirrorSettings value = new RearviewMirrorSettings(preferences);
+        return value.readPlacement(normalizeTarget(target), Settings.defaults().placement);
+    }
+
+    /** Factory placement for an explicit display slot; tablet behavior is unchanged. */
+    public static CameraPlacement defaultPlacement(int target) {
+        CameraPlacement tablet = CameraPlacement.mirrorDemo();
+        return normalizeTarget(target) == TARGET_CLUSTER ? centered(tablet) : tablet;
+    }
+
     public static DirectCameraCrop raw(SharedPreferences preferences) {
         Settings value = new RearviewMirrorSettings(preferences).load();
         return toCrop(value.calibration.raw, value.calibration.mirrored,
@@ -177,11 +189,41 @@ public final class RearviewMirrorSettings {
     public static void writePlacement(
             SharedPreferences preferences, float x, float y, float width, float height) {
         if (preferences == null) throw new IllegalArgumentException("preferences is null");
-        CameraPlacement value = CameraPlacement.bounded(x, y, width, height);
-        preferences.edit().putFloat(PREF_X, value.x * 100.0f)
-                .putFloat(PREF_Y, value.y * 100.0f)
-                .putFloat(PREF_WIDTH, value.width * 100.0f)
-                .putFloat(PREF_HEIGHT, value.height * 100.0f).apply();
+        writePlacement(preferences, target(preferences), x, y, width, height);
+    }
+
+    public static void writePlacement(SharedPreferences preferences, int target,
+            float x, float y, float width, float height) {
+        if (preferences == null) throw new IllegalArgumentException("preferences is null");
+        SharedPreferences.Editor editor = preferences.edit();
+        writePlacement(editor, target, CameraPlacement.bounded(x, y, width, height));
+        editor.apply();
+    }
+
+    public static void writePlacement(SharedPreferences.Editor editor, int target,
+            CameraPlacement placement) {
+        if (editor == null || placement == null) {
+            throw new IllegalArgumentException("mirror placement arguments required");
+        }
+        CameraPlacement value = CameraPlacement.bounded(
+                placement.x, placement.y, placement.width, placement.height);
+        editor.putFloat(placementKey(target, PLACEMENT_X), value.x * 100.0f)
+                .putFloat(placementKey(target, PLACEMENT_Y), value.y * 100.0f)
+                .putFloat(placementKey(target, PLACEMENT_WIDTH), value.width * 100.0f)
+                .putFloat(placementKey(target, PLACEMENT_HEIGHT), value.height * 100.0f);
+    }
+
+    public static String placementKey(int target, int field) {
+        String suffix;
+        switch (field) {
+            case PLACEMENT_X: suffix = "x"; break;
+            case PLACEMENT_Y: suffix = "y"; break;
+            case PLACEMENT_WIDTH: suffix = "width"; break;
+            case PLACEMENT_HEIGHT: suffix = "height"; break;
+            default: throw new IllegalArgumentException("invalid placement field");
+        }
+        return "mirror_" + (normalizeTarget(target) == TARGET_CLUSTER ? "cluster_" : "tablet_")
+                + suffix;
     }
 
     public static Calibration preset(SharedPreferences preferences) {
@@ -205,17 +247,37 @@ public final class RearviewMirrorSettings {
                 .withMirrorHorizontally(mirror);
     }
 
-    private CameraPlacement readPlacement(CameraPlacement fallback) {
+    private CameraPlacement readPlacement(int target, CameraPlacement fallback) {
         try {
-            if (!preferences.contains(PREF_WIDTH) || !preferences.contains(PREF_HEIGHT)) {
-                return fallback;
+            String x = placementKey(target, PLACEMENT_X);
+            String y = placementKey(target, PLACEMENT_Y);
+            String width = placementKey(target, PLACEMENT_WIDTH);
+            String height = placementKey(target, PLACEMENT_HEIGHT);
+            if (preferences.contains(x) && preferences.contains(y)
+                    && preferences.contains(width) && preferences.contains(height)) {
+                return CameraPlacement.bounded(
+                        preferences.getFloat(x, fallback.x * 100.0f) / 100.0f,
+                        preferences.getFloat(y, fallback.y * 100.0f) / 100.0f,
+                        preferences.getFloat(width, fallback.width * 100.0f) / 100.0f,
+                        preferences.getFloat(height, fallback.height * 100.0f) / 100.0f);
             }
+            // Shared v1 values are a read-only fallback until this display is explicitly edited.
+            if (!preferences.contains(PREF_WIDTH) || !preferences.contains(PREF_HEIGHT)) return fallback;
             return CameraPlacement.bounded(
                     preferences.getFloat(PREF_X, fallback.x * 100.0f) / 100.0f,
                     preferences.getFloat(PREF_Y, fallback.y * 100.0f) / 100.0f,
                     preferences.getFloat(PREF_WIDTH, fallback.width * 100.0f) / 100.0f,
                     preferences.getFloat(PREF_HEIGHT, fallback.height * 100.0f) / 100.0f);
         } catch (RuntimeException invalid) { return fallback; }
+    }
+
+    private static int normalizeTarget(int target) {
+        return target == TARGET_CLUSTER ? TARGET_CLUSTER : TARGET_TABLET;
+    }
+
+    private static CameraPlacement centered(CameraPlacement value) {
+        return CameraPlacement.of((1.0f - value.width) / 2.0f,
+                (1.0f - value.height) / 2.0f, value.width, value.height);
     }
 
     private Calibration readCalibration(Calibration fallback, String prefix) {

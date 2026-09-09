@@ -6,11 +6,13 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.byd.extend.ui.CameraGroup;
+import com.byd.extend.ui.CameraDisplayGeometry;
 import com.byd.extend.ui.CameraProfileId;
 import com.byd.extend.ui.CameraSide;
 import com.byd.extend.ui.CommandId;
 import com.byd.extend.ui.ReverseElement;
 import com.byd.extend.ui.ReverseSource;
+import com.byd.extend.ui.DisplayTarget;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -100,32 +102,49 @@ public final class ProductionPatchIntegrationTest {
         preferences.putFloat(BlindSpotOverlayController.positionKey(sibling, true), .19f);
         preferences.putInt(BlindSpotOverlayController.scaleKey(sibling), 34);
         preferences.putInt(BlindSpotOverlayController.targetKey(sibling), CameraDisplayTarget.CLUSTER);
+        CameraPlacement inactiveTablet = CameraPlacement.of(.11f, .12f, .31f, .32f);
+        CameraPlacement siblingCluster = CameraPlacement.of(.21f, .22f, .33f, .34f);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, selected,
+                CameraDisplayTarget.TABLET, inactiveTablet);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, sibling,
+                CameraDisplayTarget.CLUSTER, siblingCluster);
         preferences.putFloat("direct_crop_left_x", .42f);
         preferences.putInt("direct_crop_left_rotation", 90);
         preferences.putBoolean(BlindSpotOverlayController.PREF_ENABLED, true);
         preferences.putInt("camera_calibration_preset_v1_rear_left_version", 1);
 
         CameraProfileId id = new CameraProfileId.Blind(CameraGroup.Rear, CameraSide.Left);
+        CameraDisplayGeometry tablet = new CameraDisplayGeometry(
+                1920, 1080, 16, 36, 16, 88, DisplayTarget.Tablet);
         assertTrue(CameraProbeActivity.resetProductionProfileSettings(
-                preferences, id, CommandId.ResetProfilePlacement));
+                preferences, id, CommandId.ResetProfilePlacement, tablet));
 
-        assertEquals(BlindSpotOverlayController.defaultPosition(selected, false),
+        assertEquals(BlindSpotOverlayController.defaultPlacement(selected,
+                        CameraDisplayTarget.CLUSTER, 1920, 1080, 16, 36, 88),
+                BlindSpotOverlayController.readPlacement(preferences, selected,
+                        CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
+        assertEquals(inactiveTablet, BlindSpotOverlayController.readPlacement(preferences, selected,
+                CameraDisplayTarget.TABLET, 1920, 1080, 16, 36, 88));
+        assertEquals(.71f,
                 preferences.getFloat(BlindSpotOverlayController.positionKey(selected, false), -1f), 0f);
-        assertEquals(BlindSpotOverlayController.defaultPosition(selected, true),
+        assertEquals(.63f,
                 preferences.getFloat(BlindSpotOverlayController.positionKey(selected, true), -1f), 0f);
-        assertEquals(BlindSpotOverlayController.defaultScale(selected),
-                preferences.getInt(BlindSpotOverlayController.scaleKey(selected), -1));
-        assertFalse(preferences.contains(BlindSpotOverlayController.placementWidthKey(selected)));
-        assertFalse(preferences.contains(BlindSpotOverlayController.placementHeightKey(selected)));
-        assertEquals(BlindSpotOverlayController.defaultFrameAspect(selected),
-                preferences.getFloat(BlindSpotOverlayController.frameAspectKey(selected), -1), 0f);
-        assertEquals(BlindSpotOverlayController.defaultTarget(selected),
+        assertEquals(48, preferences.getInt(BlindSpotOverlayController.scaleKey(selected), -1));
+        assertEquals(.22f, preferences.getFloat(
+                BlindSpotOverlayController.placementWidthKey(selected), -1f), 0f);
+        assertEquals(.33f, preferences.getFloat(
+                BlindSpotOverlayController.placementHeightKey(selected), -1f), 0f);
+        assertEquals(2.5f, preferences.getFloat(
+                BlindSpotOverlayController.frameAspectKey(selected), -1f), 0f);
+        assertEquals(CameraDisplayTarget.CLUSTER,
                 preferences.getInt(BlindSpotOverlayController.targetKey(selected), -1));
         assertEquals(.27f, preferences.getFloat(BlindSpotOverlayController.positionKey(sibling, false), -1f), 0f);
         assertEquals(.19f, preferences.getFloat(BlindSpotOverlayController.positionKey(sibling, true), -1f), 0f);
         assertEquals(34, preferences.getInt(BlindSpotOverlayController.scaleKey(sibling), -1));
         assertEquals(CameraDisplayTarget.CLUSTER,
                 preferences.getInt(BlindSpotOverlayController.targetKey(sibling), -1));
+        assertEquals(siblingCluster, BlindSpotOverlayController.readPlacement(preferences, sibling,
+                CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
         assertEquals(.42f, preferences.getFloat("direct_crop_left_x", -1f), 0f);
         assertEquals(90, preferences.getInt("direct_crop_left_rotation", -1));
         assertTrue(preferences.getBoolean(BlindSpotOverlayController.PREF_ENABLED, false));

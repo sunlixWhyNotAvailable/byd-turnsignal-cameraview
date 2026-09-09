@@ -53,11 +53,24 @@ final class ClusterFullscreenController {
     }
 
     private void evaluate(String trigger) {
-        boolean enabled = settings.getBoolean(BlindSpotOverlayController.PREF_ENABLED, false);
-        int leftTarget = BlindSpotOverlayController.readTarget(settings, false);
-        int rightTarget = BlindSpotOverlayController.readTarget(settings, true);
+        boolean rearEnabled = settings.getBoolean(
+                BlindSpotOverlayController.PREF_ENABLED, false);
+        boolean frontEnabled = settings.getBoolean(
+                BlindSpotOverlayController.PREF_FRONT_ENABLED, false);
+        int rearLeftTarget = BlindSpotOverlayController.readTarget(
+                settings, CameraProfile.of(CameraProfile.REAR_LEFT));
+        int rearRightTarget = BlindSpotOverlayController.readTarget(
+                settings, CameraProfile.of(CameraProfile.REAR_RIGHT));
+        int frontLeftTarget = BlindSpotOverlayController.readTarget(
+                settings, CameraProfile.of(CameraProfile.FRONT_LEFT));
+        int frontRightTarget = BlindSpotOverlayController.readTarget(
+                settings, CameraProfile.of(CameraProfile.FRONT_RIGHT));
+        RearviewMirrorSettings.Settings mirror = new RearviewMirrorSettings(settings).load();
         long attempted = settings.getLong(PREF_ATTEMPTED_SESSION, 0);
-        if (!shouldAttempt(enabled, leftTarget, rightTarget,
+        if (!shouldAttempt(hasEnabledClusterTarget(
+                        rearEnabled, rearLeftTarget, rearRightTarget,
+                        frontEnabled, frontLeftTarget, frontRightTarget,
+                        mirror.enabled, mirror.target),
                 interactive, awakeSessionId, attempted)) {
             return;
         }
@@ -79,9 +92,26 @@ final class ClusterFullscreenController {
     static boolean shouldAttempt(
             boolean enabled, int leftTarget, int rightTarget,
             boolean interactive, long sessionId, long attemptedSessionId) {
-        return enabled && interactive && sessionId > 0 && sessionId != attemptedSessionId
-                && (leftTarget == CameraDisplayTarget.CLUSTER
-                        || rightTarget == CameraDisplayTarget.CLUSTER);
+        return shouldAttempt(enabled && (leftTarget == CameraDisplayTarget.CLUSTER
+                        || rightTarget == CameraDisplayTarget.CLUSTER),
+                interactive, sessionId, attemptedSessionId);
+    }
+
+    static boolean hasEnabledClusterTarget(
+            boolean rearEnabled, int rearLeftTarget, int rearRightTarget,
+            boolean frontEnabled, int frontLeftTarget, int frontRightTarget,
+            boolean mirrorEnabled, int mirrorTarget) {
+        return rearEnabled && (rearLeftTarget == CameraDisplayTarget.CLUSTER
+                        || rearRightTarget == CameraDisplayTarget.CLUSTER)
+                || frontEnabled && (frontLeftTarget == CameraDisplayTarget.CLUSTER
+                        || frontRightTarget == CameraDisplayTarget.CLUSTER)
+                || mirrorEnabled && mirrorTarget == CameraDisplayTarget.CLUSTER;
+    }
+
+    static boolean shouldAttempt(
+            boolean eligible, boolean interactive,
+            long sessionId, long attemptedSessionId) {
+        return eligible && interactive && sessionId > 0 && sessionId != attemptedSessionId;
     }
 
     static String outcome(String error) {

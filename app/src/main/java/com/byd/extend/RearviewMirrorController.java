@@ -33,6 +33,7 @@ final class RearviewMirrorController {
     private boolean reconcileAfterStop;
     private int sequence;
     private int requestId;
+    private int requestTarget;
     private int generation;
     private Surface target;
     private long shellEpoch;
@@ -116,6 +117,7 @@ final class RearviewMirrorController {
         int expected = requestId;
         try {
             CameraShellProtocol.OverlaySpec spec = buildSpec(expected);
+            requestTarget = spec.target;
             handler.postDelayed(timeout, 8_000);
             helper.prepareOverlayWindow(spec,
                     surface -> handler.post(() -> acceptSurface(expected, surface)), () -> {});
@@ -129,7 +131,7 @@ final class RearviewMirrorController {
     private CameraShellProtocol.OverlaySpec buildSpec(int id) {
         int displayTarget = RearviewMirrorSettings.target(preferences);
         int[] size = CameraDisplayTarget.displaySize(context, displayTarget);
-        int[] rect = RearviewMirrorSettings.placement(preferences).toPixelRect(size[0], size[1]);
+        int[] rect = RearviewMirrorSettings.placement(preferences, displayTarget).toPixelRect(size[0], size[1]);
         DirectCameraCrop raw = RearviewMirrorSettings.raw(preferences);
         CameraDewarpConfig dewarp = RearviewMirrorSettings.dewarp(preferences);
         DirectCameraCrop crop = dewarp.enabled ? RearviewMirrorSettings.corrected(preferences) : raw;
@@ -198,11 +200,12 @@ final class RearviewMirrorController {
                     RearviewMirrorSettings.setHidden(preferences, true);
                     stop("manual_hide", false);
                 } else if ("mirror_position_committed".equals(kind)) {
+                    if (event.optInt("target", requestTarget) != requestTarget) return;
                     CameraPlacement placement = CameraPlacement.fromPixelRect(
                             event.getInt("x"), event.getInt("y"), event.getInt("width"),
                             event.getInt("height"), event.getInt("display_width"),
                             event.getInt("display_height")).roundedTenths();
-                    RearviewMirrorSettings.writePlacement(preferences,
+                    RearviewMirrorSettings.writePlacement(preferences, requestTarget,
                             placement.x, placement.y, placement.width, placement.height);
                 } else if ("camera_overlay_surface".equals(kind)
                         && "destroyed".equals(event.optString("state"))) fail("surface_destroyed");

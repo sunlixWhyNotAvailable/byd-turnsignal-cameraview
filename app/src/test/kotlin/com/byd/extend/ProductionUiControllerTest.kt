@@ -40,6 +40,55 @@ import org.junit.Test
 
 class ProductionUiControllerTest {
     @Test
+    fun staleMirrorPlacementCallbacksCannotWriteNewDisplay() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        val tablet = com.byd.extend.ui.DisplayTarget.Tablet
+        val cluster = com.byd.extend.ui.DisplayTarget.Cluster
+        val staleNumber = NumberTarget.Mirror(com.byd.extend.ui.MirrorNumber.X, tablet)
+        preferences.edit().putInt(RearviewMirrorSettings.PREF_TARGET, CameraDisplayTarget.CLUSTER).apply()
+        controller.reload()
+        val before = controller.state.mirror.placement
+
+        controller.dispatch(BydExtendUiAction.CommitNumber(staleNumber, "50"))
+        controller.dispatch(BydExtendUiAction.MoveProfile(CameraProfileId.Mirror, .5f, .5f, tablet))
+        controller.dispatch(BydExtendUiAction.SetMirrorGeometry(before.copy(width = "60"), tablet))
+        assertEquals(null, controller.preview(staleNumber, "50", 10L))
+        assertTrue(backend.mirrorActions.isEmpty())
+        assertEquals(before, controller.state.mirror.placement)
+
+        controller.dispatch(BydExtendUiAction.SetMirrorGeometry(before.copy(width = "60"), cluster))
+        assertEquals(cluster, backend.mirrorActions.single().target)
+    }
+
+    @Test
+    fun staleBlindPlacementCallbacksAreRejectedForEveryProfile() {
+        for (group in CameraGroup.entries) for (side in CameraSide.entries) {
+            val preferences = TestSharedPreferences()
+            val backend = FakeBackend(preferences)
+            val controller = ProductionUiController(preferences, backend)
+            val profile = CameraProfileId.Blind(group, side)
+            val native = CameraProfile.of(if (group == CameraGroup.Front) {
+                if (side == CameraSide.Left) CameraProfile.FRONT_LEFT else CameraProfile.FRONT_RIGHT
+            } else if (side == CameraSide.Left) CameraProfile.REAR_LEFT else CameraProfile.REAR_RIGHT)
+            val oldTarget = controller.state.blind.profiles.getValue(profile).target
+            val next = if (oldTarget == com.byd.extend.ui.DisplayTarget.Tablet)
+                CameraDisplayTarget.CLUSTER else CameraDisplayTarget.TABLET
+            preferences.edit().putInt(BlindSpotOverlayController.targetKey(native), next).apply()
+            controller.reload()
+            val before = controller.state.blind.profiles.getValue(profile)
+            controller.dispatch(BydExtendUiAction.MoveProfile(profile, .1f, .1f, oldTarget))
+            controller.dispatch(BydExtendUiAction.SetProfileGeometry(profile,
+                com.byd.extend.ui.MirrorGeometryUiState("10", "10", "50", "50"), oldTarget))
+            controller.dispatch(BydExtendUiAction.CommitNumber(
+                NumberTarget.Profile(profile, ProfileNumber.Width, oldTarget), "50"))
+            assertTrue(backend.actions.isEmpty())
+            assertEquals(before, controller.state.blind.profiles.getValue(profile))
+        }
+    }
+
+    @Test
     fun panoramaSuppressionDefaultsOnAndRetainsExplicitFalsePerOwner() {
         val preferences = TestSharedPreferences()
         val defaults = readProductionUiState(preferences, false, false)

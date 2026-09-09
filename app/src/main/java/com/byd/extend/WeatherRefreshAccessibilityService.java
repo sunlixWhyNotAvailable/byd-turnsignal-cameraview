@@ -2,7 +2,13 @@ package com.byd.extend;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.KeyEvent;
+import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -14,11 +20,21 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     private static volatile WeatherRefreshAccessibilityService activeService;
     private final ReverseSteeringButtonPolicy.State steeringState =
             new ReverseSteeringButtonPolicy.State();
+    private final Handler steeringHandler = new Handler(Looper.getMainLooper());
+    private final Runnable steeringTimeout = this::handleSteeringTimeout;
+    private SharedPreferences steeringPreferences;
+    private final SharedPreferences.OnSharedPreferenceChangeListener steeringPreferenceListener =
+            (preferences, key) -> {
+                if (!ReverseSteeringButtonPreferences.KEY_CODE.equals(key)) return;
+                steeringState.bindingChanged();
+                steeringHandler.removeCallbacks(steeringTimeout);
+            };
 
     static boolean beginSteeringButtonLearning(Context context) {
         WeatherRefreshAccessibilityService service = activeService;
         if (service == null || GuardRecovery.isUserShutdownActive(service)
                 || LegacySettingsImporter.blocksRuntime(service)) return false;
+        service.steeringHandler.removeCallbacks(service.steeringTimeout);
         service.steeringState.beginLearning();
         return true;
     }
@@ -26,6 +42,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     static void cancelSteeringButtonLearning() {
         WeatherRefreshAccessibilityService service = activeService;
         if (service == null) return;
+        service.steeringHandler.removeCallbacks(service.steeringTimeout);
         service.steeringState.cancel();
     }
 
@@ -36,12 +53,25 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     }
 
     private void clearSteeringState() {
+        steeringHandler.removeCallbacks(steeringTimeout);
         steeringState.cancel();
+    }
+
+    private void resetSteeringState() {
+        steeringHandler.removeCallbacks(steeringTimeout);
+        steeringState.reset();
     }
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        resetSteeringState();
+        if (steeringPreferences != null) {
+            steeringPreferences.unregisterOnSharedPreferenceChangeListener(
+                    steeringPreferenceListener);
+        }
+        steeringPreferences = getSharedPreferences("settings", MODE_PRIVATE);
+        steeringPreferences.registerOnSharedPreferenceChangeListener(steeringPreferenceListener);
         activeService = this;
     }
 
@@ -70,27 +100,64 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (event == null) return false;
         if (GuardRecovery.isUserShutdownActive(this)
                 || LegacySettingsImporter.blocksRuntime(this)) {
-            // Explicit shutdown/legacy handover ends interception entirely.  Clear both capture
-            // and held-tail state so a later reconnect cannot replay a stale physical press.
+            // Stop accepting new cycles, but finish consuming any cycle this filter already owns.
             clearSteeringState();
-            return false;
+            return steeringState.consumeOwnedTail(
+                    event.getAction(), event.getKeyCode(), event.getDownTime());
         }
-        int configured = ReverseSteeringButtonPreferences.load(
-                getSharedPreferences("settings", MODE_PRIVATE));
+        SharedPreferences preferences = steeringPreferences != null
+                ? steeringPreferences : getSharedPreferences("settings", MODE_PRIVATE);
+        int configured = ReverseSteeringButtonPreferences.load(preferences);
+        long contextToken = CameraProbeActivity.reverseOwnerEpochSnapshot();
+        dispatchSteeringDecision(
+                steeringState.advanceTime(event.getEventTime(), configured, contextToken),
+                preferences);
+        configured = ReverseSteeringButtonPreferences.load(preferences);
         ReverseSteeringButtonPolicy.Decision decision = steeringState.apply(
                 event.getAction(), event.getKeyCode(), event.getRepeatCount(),
-                event.getDownTime(), configured);
+                event.getDownTime(), event.getEventTime(), event.getFlags(), configured,
+                contextToken, ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
+        syncSteeringTimeout();
+        dispatchSteeringDecision(decision, preferences);
+        return decision != ReverseSteeringButtonPolicy.Decision.PASS;
+    }
+
+    private void handleSteeringTimeout() {
+        if (GuardRecovery.isUserShutdownActive(this)
+                || LegacySettingsImporter.blocksRuntime(this)) {
+            clearSteeringState();
+            return;
+        }
+        SharedPreferences preferences = steeringPreferences != null
+                ? steeringPreferences : getSharedPreferences("settings", MODE_PRIVATE);
+        int configured = ReverseSteeringButtonPreferences.load(preferences);
+        dispatchSteeringDecision(steeringState.advanceTime(SystemClock.uptimeMillis(), configured,
+                CameraProbeActivity.reverseOwnerEpochSnapshot()), preferences);
+        syncSteeringTimeout();
+    }
+
+    private void dispatchSteeringDecision(ReverseSteeringButtonPolicy.Decision decision,
+            SharedPreferences preferences) {
         if (decision == ReverseSteeringButtonPolicy.Decision.LEARNED) {
             ReverseSteeringButtonPreferences.save(
-                    getSharedPreferences("settings", MODE_PRIVATE), event.getKeyCode());
+                    preferences, steeringState.getConfirmedKeyCode());
             CameraProbeActivity.publishReverseSteeringButtonCaptured();
-            return true;
-        }
-        if (decision == ReverseSteeringButtonPolicy.Decision.TOGGLE) {
+        } else if (decision == ReverseSteeringButtonPolicy.Decision.TOGGLE) {
             CameraHelperService.requestReverseSteeringToggle(this);
-            return true;
         }
-        return decision == ReverseSteeringButtonPolicy.Decision.CONSUME;
+    }
+
+    private void syncSteeringTimeout() {
+        steeringHandler.removeCallbacks(steeringTimeout);
+        long deadline = steeringState.getDeadline();
+        if (deadline >= 0L) steeringHandler.postAtTime(steeringTimeout, deadline);
+    }
+
+    private static int getMultiPressTimeout() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ViewConfiguration.getMultiPressTimeout();
+        }
+        return ViewConfiguration.getDoubleTapTimeout();
     }
 
     @Override
@@ -100,7 +167,12 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     @Override
     public void onDestroy() {
-        clearSteeringState();
+        resetSteeringState();
+        if (steeringPreferences != null) {
+            steeringPreferences.unregisterOnSharedPreferenceChangeListener(
+                    steeringPreferenceListener);
+            steeringPreferences = null;
+        }
         if (activeService == this) activeService = null;
         super.onDestroy();
     }

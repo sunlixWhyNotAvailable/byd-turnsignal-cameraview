@@ -264,18 +264,34 @@ public final class CameraCalibrationPresetTest {
                 CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT));
         preferences.putFloat(BlindSpotOverlayController.placementWidthKey(selected), 0.22f);
         preferences.putFloat(BlindSpotOverlayController.placementHeightKey(selected), 0.18f);
+        CameraPlacement tabletPlacement = CameraPlacement.of(.1f, .2f, .3f, .4f);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, selected,
+                CameraDisplayTarget.TABLET, tabletPlacement);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, selected,
+                CameraDisplayTarget.CLUSTER, CameraPlacement.of(.2f, .3f, .4f, .5f));
+        preferences.putInt(BlindSpotOverlayController.targetKey(selected),
+                CameraDisplayTarget.CLUSTER);
         CameraCalibrationPreset.saveCamera(preferences, selected);
         Map<String, ?> slotBefore = new HashMap<>(preferences.getAll());
-        CameraCalibrationPreset.resetCameraToDefault(preferences, selected);
+        CameraCalibrationPreset.resetCameraToDefault(preferences, selected,
+                CameraDisplayTarget.CLUSTER, 1920, 1080, 16, 36, 88);
 
         assertGeometry(new float[]{0.08894998f, 0.21130778f, 0.59938854f, 0.5773845f},
                 DirectCameraCrop.load(preferences, selected));
         assertConfig(CameraDewarpConfig.loadForProfile(preferences, selected),
                 true, 165, CameraDewarpConfig.PROJECTION_CYLINDRICAL);
-        assertFalse(preferences.contains(
-                BlindSpotOverlayController.placementWidthKey(selected)));
-        assertFalse(preferences.contains(
-                BlindSpotOverlayController.placementHeightKey(selected)));
+        assertEquals(BlindSpotOverlayController.defaultPlacement(selected,
+                        CameraDisplayTarget.CLUSTER, 1920, 1080, 16, 36, 88),
+                BlindSpotOverlayController.readPlacement(preferences, selected,
+                        CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
+        assertEquals(tabletPlacement, BlindSpotOverlayController.readPlacement(preferences, selected,
+                CameraDisplayTarget.TABLET, 1920, 1080, 16, 36, 88));
+        assertEquals(CameraDisplayTarget.CLUSTER,
+                preferences.getInt(BlindSpotOverlayController.targetKey(selected), -1));
+        assertEquals(.22f, preferences.getFloat(
+                BlindSpotOverlayController.placementWidthKey(selected), -1f), 0f);
+        assertEquals(.18f, preferences.getFloat(
+                BlindSpotOverlayController.placementHeightKey(selected), -1f), 0f);
         assertGeometry(new float[]{0.20f, 0.10f, 0.30f, 0.40f},
                 DirectCameraCrop.load(preferences, sibling));
         assertFalse(CameraDewarpConfig.loadForProfile(preferences, sibling).enabled);
@@ -1532,6 +1548,82 @@ public final class CameraCalibrationPresetTest {
             assertEquals(front ? CameraDefaults.reverseFrontRaw(cameraIndex).rotationMode
                     : ReverseCameraLayout.DISPLAY_MODE_FILL, pane.displayMode);
             assertEquals(front ? false : true, pane.mirrorHorizontally);
+        }
+    }
+
+    @Test
+    public void blindPlacementResetChangesOnlyRequestedDisplaySlot() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_RIGHT);
+        CameraPlacement tablet = CameraPlacement.of(.1f, .2f, .3f, .4f);
+        CameraPlacement cluster = CameraPlacement.of(.2f, .3f, .4f, .5f);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, profile,
+                CameraDisplayTarget.TABLET, tablet);
+        BlindSpotOverlayController.writePlacement((android.content.SharedPreferences) preferences, profile,
+                CameraDisplayTarget.CLUSTER, cluster);
+
+        CameraCalibrationPreset.resetCameraPlacement(preferences, profile,
+                CameraDisplayTarget.CLUSTER, 1920, 1080, 16, 36, 88);
+
+        assertEquals(tablet, BlindSpotOverlayController.readPlacement(preferences, profile,
+                CameraDisplayTarget.TABLET, 1920, 1080, 16, 36, 88));
+        assertEquals(BlindSpotOverlayController.defaultPlacement(profile,
+                        CameraDisplayTarget.CLUSTER, 1920, 1080, 16, 36, 88),
+                BlindSpotOverlayController.readPlacement(preferences, profile,
+                        CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
+    }
+
+    @Test
+    public void fullBlindResetPinsImplicitInactivePlacementBeforeCalibrationChanges() {
+        CameraProfile[] profiles = {
+                CameraProfile.of(CameraProfile.REAR_LEFT),
+                CameraProfile.of(CameraProfile.FRONT_RIGHT)
+        };
+        int[] activeTargets = {CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER};
+        for (CameraProfile profile : profiles) {
+            for (int activeTarget : activeTargets) {
+                TestSharedPreferences preferences = new TestSharedPreferences();
+                DirectCameraCrop custom = DirectCameraCrop.of(.1f, .1f, .7f, .2f,
+                        DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT);
+                DirectCameraCrop corrected = DirectCameraCrop.of(.2f, .1f, .2f, .6f,
+                        DirectCameraCrop.ASPECT_FREE, 0, CameraRotation.MODE_FIT);
+                android.content.SharedPreferences.Editor editor = preferences.edit();
+                DirectCameraCrop.write(editor, profile, custom);
+                DirectCameraCrop.writeCorrected(editor, profile, corrected);
+                CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
+                        CameraDewarpConfig.lensFor(profile), profile.front(), 120));
+                editor.putInt(BlindSpotOverlayController.targetKey(profile), activeTarget).apply();
+                int inactiveTarget = activeTarget == CameraDisplayTarget.TABLET
+                        ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
+                boolean tablet = inactiveTarget == CameraDisplayTarget.TABLET;
+                int width = 1920;
+                int height = tablet ? 1080 : 720;
+                int marginX = tablet ? 16 : 0;
+                int topMargin = tablet ? 36 : 0;
+                int bottomMargin = tablet ? 88 : 0;
+                CameraPlacement before = BlindSpotOverlayController.readPlacement(
+                        preferences, profile, inactiveTarget, width, height,
+                        marginX, topMargin, bottomMargin);
+                float beforeAspect = BlindSpotOverlayController.readFrameAspect(
+                        preferences, profile);
+                assertFalse(preferences.contains(
+                        BlindSpotOverlayController.frameAspectKey(profile)));
+                assertFalse(preferences.contains(BlindSpotOverlayController.placementKey(
+                        profile, inactiveTarget, BlindSpotOverlayController.PLACEMENT_X)));
+
+                CameraCalibrationPreset.resetCameraToDefault(preferences, profile, activeTarget,
+                        1920, 1080, 16, 36, 88);
+
+                assertEquals(before, BlindSpotOverlayController.readPlacement(
+                        preferences, profile, inactiveTarget, width, height,
+                        marginX, topMargin, bottomMargin));
+                assertEquals(beforeAspect, preferences.getFloat(
+                        BlindSpotOverlayController.frameAspectKey(profile), -1f), EPSILON);
+                assertFalse(preferences.contains(BlindSpotOverlayController.placementKey(
+                        profile, inactiveTarget, BlindSpotOverlayController.PLACEMENT_X)));
+                assertEquals(activeTarget,
+                        BlindSpotOverlayController.readTarget(preferences, profile));
+            }
         }
     }
 
