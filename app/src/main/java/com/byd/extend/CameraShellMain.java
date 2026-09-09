@@ -1,6 +1,7 @@
 package com.byd.extend;
 
 import android.content.Context;
+import android.hardware.display.DisplayManager;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -78,6 +79,19 @@ public final class CameraShellMain {
                 new ShellCameraOverlay[CameraOverlayProfile.COUNT];
         private final ShellReverseCameraOverlay reverseOverlay;
         private final Runnable processTerminator;
+        private final DisplayManager displayManager;
+        private final DisplayManager.DisplayListener displayListener =
+                new DisplayManager.DisplayListener() {
+                    @Override public void onDisplayAdded(int displayId) {
+                        clusterDisplayChanged(displayId, false);
+                    }
+                    @Override public void onDisplayChanged(int displayId) {
+                        clusterDisplayChanged(displayId, false);
+                    }
+                    @Override public void onDisplayRemoved(int displayId) {
+                        clusterDisplayChanged(displayId, true);
+                    }
+                };
         private IBinder callback;
         private boolean stdoutFlushScheduled;
         private boolean processTerminationRequested;
@@ -100,6 +114,14 @@ public final class CameraShellMain {
                 overlays[profile.id] = new ShellCameraOverlay(context, profile.id, this::emit);
             }
             reverseOverlay = new ShellReverseCameraOverlay(context, this::emit);
+            displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            if (displayManager != null) displayManager.registerDisplayListener(displayListener, handler);
+        }
+
+        private void clusterDisplayChanged(int displayId, boolean removed) {
+            for (ShellCameraOverlay overlay : overlays) {
+                overlay.onClusterDisplayChanged(displayId, removed);
+            }
         }
 
         @Override
@@ -369,6 +391,7 @@ public final class CameraShellMain {
         }
 
         private void closeAll(String reason) {
+            if (displayManager != null) displayManager.unregisterDisplayListener(displayListener);
             Throwable failure = null;
             try {
                 closeOverlays(reason);

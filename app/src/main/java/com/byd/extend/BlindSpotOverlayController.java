@@ -2,7 +2,9 @@ package com.byd.extend;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.hardware.display.DisplayManager;
 import android.os.Handler;
+import android.view.Display;
 import android.view.Surface;
 import android.view.WindowManager;
 
@@ -109,10 +111,25 @@ final class BlindSpotOverlayController {
     private final Handler handler;
     private final SharedPreferences settings;
     private final WindowManager windows;
+    private final DisplayManager displays;
     private final BiConsumer<String, Object[]> eventSink;
     private final PaneState[] panes = new PaneState[CameraProfile.COUNT];
     private final CameraRetryState cameraRetry = new CameraRetryState();
     private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
+    private final DisplayManager.DisplayListener displayListener =
+            new DisplayManager.DisplayListener() {
+                @Override public void onDisplayAdded(int id) {
+                    displayEvent(ClusterDisplayLifecycle.EVENT_ADDED, id);
+                }
+
+                @Override public void onDisplayRemoved(int id) {
+                    displayEvent(ClusterDisplayLifecycle.EVENT_REMOVED, id);
+                }
+
+                @Override public void onDisplayChanged(int id) {
+                    displayEvent(ClusterDisplayLifecycle.EVENT_CHANGED, id);
+                }
+            };
     private final Runnable staleState = () -> {
         stateValid = false;
         evaluate();
@@ -147,6 +164,8 @@ final class BlindSpotOverlayController {
     private float speedKph = Float.NaN;
     private float steeringAngle = Float.NaN;
     private int requestSequence;
+    private int clusterDisplayId = -1;
+    private boolean clusterChangePending;
     private boolean leftBsdValid;
     private boolean rightBsdValid;
     private int leftBsdRaw = -1;
@@ -160,9 +179,11 @@ final class BlindSpotOverlayController {
         settings = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         migrateOverlayPreferences(settings);
         windows = (WindowManager) this.context.getSystemService(Context.WINDOW_SERVICE);
+        displays = this.context.getSystemService(DisplayManager.class);
         for (CameraProfile profile : CameraProfile.values()) {
             panes[profile.id] = new PaneState(profile);
         }
+        if (displays != null) displays.registerDisplayListener(displayListener, handler);
     }
 
     static int desiredCameraMask(
@@ -716,6 +737,12 @@ final class BlindSpotOverlayController {
                 int cameraId = event.optInt("camera_id", -1);
                 int requestId = event.optInt("request_id", -1);
                 handler.post(() -> paneSurfaceDestroyed(cameraId, requestId));
+            } else if (ClusterDisplayLifecycle.isUnavailableError(event)) {
+                int cameraId = event.optInt("camera_id", -1);
+                int requestId = event.optInt("request_id", -1);
+                int generation = event.optInt("surface_generation", -1);
+                handler.post(() -> clusterDestinationUnavailable(
+                        event, cameraId, requestId, generation));
             } else if ("camera_overlay_error".equals(kind)) {
                 String stage = event.optString("stage", kind);
                 if ("arm_first_frame".equals(stage)) {
@@ -755,6 +782,7 @@ final class BlindSpotOverlayController {
         handler.removeCallbacks(staleState);
         cancelCameraRetry("overlay_shutdown");
         shellRecovery.clear();
+        if (displays != null) displays.unregisterDisplayListener(displayListener);
         destroyAll("overlay_shutdown");
         helper = null;
     }
@@ -783,11 +811,49 @@ final class BlindSpotOverlayController {
                 || settings.getBoolean(PREF_FRONT_ENABLED, false);
     }
 
+    private boolean clusterTargetRequired() {
+        boolean rearEnabled = settings.getBoolean(PREF_ENABLED, false);
+        boolean frontEnabled = settings.getBoolean(PREF_FRONT_ENABLED, false);
+        for (PaneState pane : panes) {
+            if ((pane.profile.rear() ? rearEnabled : frontEnabled)
+                    && readTarget(settings, pane.profile) == CameraDisplayTarget.CLUSTER) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void displayEvent(int event, int displayId) {
+        boolean clusterRequired = clusterTargetRequired();
+        if (!clusterRequired) return;
+        Display selected = CameraDisplayTarget.resolve(context, CameraDisplayTarget.CLUSTER);
+        int action = ClusterDisplayLifecycle.action(CameraDisplayTarget.CLUSTER,
+                clusterDisplayId, selected == null ? -1 : selected.getDisplayId(),
+                displayId, event,
+                cameraUnavailableReason() == null && !shellRecovery.pending());
+        if (action == ClusterDisplayLifecycle.INVALIDATE) {
+            rebuild("cluster_display_removed");
+        } else if (action == ClusterDisplayLifecycle.WAKE) {
+            applySettingsOnMain();
+        } else if (action == ClusterDisplayLifecycle.NOTE_CHANGE) {
+            clusterChangePending = true;
+        }
+    }
+
     private void rebuild(String reason) {
-        if (isHardBlocked()) return;
         cancelCameraRetry(reason);
         destroyAll(reason);
         if (cameraUnavailableReason() != null) return;
+        if (clusterTargetRequired()) {
+            Display cluster = CameraDisplayTarget.resolve(
+                    context, CameraDisplayTarget.CLUSTER);
+            if (cluster == null) {
+                emit("overlay_camera_output_unavailable",
+                        "reason", ClusterDisplayLifecycle.UNAVAILABLE_STAGE);
+                return;
+            }
+            clusterDisplayId = cluster.getDisplayId();
+        }
         boolean rearEnabled = settings.getBoolean(PREF_ENABLED, false);
         boolean frontEnabled = settings.getBoolean(PREF_FRONT_ENABLED, false);
         for (PaneState pane : panes) {
@@ -965,6 +1031,25 @@ final class BlindSpotOverlayController {
         maybeOpenCamera();
     }
 
+    private void clusterDestinationUnavailable(JSONObject event, int cameraId,
+            int requestId, int generation) {
+        PaneState pane = pane(cameraId);
+        if (pane == null || !ClusterDisplayLifecycle.matchesUnavailableError(event,
+                cameraId, pane.requestId, pane.generation)
+                || pane.requestId != requestId || pane.generation != generation) return;
+        boolean reconcile = clusterChangePending;
+        emit("overlay_camera_output_invalidated", "camera_id", cameraId,
+                "camera_profile", pane.profile.wireName, "request_id", requestId,
+                "surface_generation", generation,
+                "reason", ClusterDisplayLifecycle.UNAVAILABLE_STAGE);
+        cancelCameraRetry(ClusterDisplayLifecycle.UNAVAILABLE_STAGE);
+        destroyAll(ClusterDisplayLifecycle.UNAVAILABLE_STAGE);
+        if (reconcile && cameraUnavailableReason() == null
+                && CameraDisplayTarget.resolve(context, CameraDisplayTarget.CLUSTER) != null) {
+            rebuild("cluster_display_changed");
+        }
+    }
+
     static int preparationDecision(int expected, int resolved, int failed) {
         if (failed > 0 || expected <= 0) return PREPARATION_RETRY;
         return resolved < expected ? PREPARATION_WAIT : PREPARATION_OPEN;
@@ -1019,6 +1104,8 @@ final class BlindSpotOverlayController {
         cameraOpenPending = false;
         cameraSessionOpen = false;
         cameraOpenRequestId = 0;
+        clusterDisplayId = -1;
+        clusterChangePending = false;
         for (PaneState pane : panes) pane.reset();
         emit("overlay_camera_epoch_recovery",
                 "camera_shell_epoch", epoch,
@@ -1217,6 +1304,8 @@ final class BlindSpotOverlayController {
         cameraOpenPending = false;
         cameraSessionOpen = false;
         cameraOpenRequestId = 0;
+        clusterDisplayId = -1;
+        clusterChangePending = false;
         for (PaneState pane : panes) pane.reset();
     }
 

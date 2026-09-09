@@ -220,6 +220,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         }
         if (root == null) createWindow(spec, display);
         else {
+            ensureClusterDestination();
             preview.setCallback(this);
             updateWindow(spec);
         }
@@ -228,10 +229,11 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         if (preview.isCameraSurfaceReady()) emitSurfaceReady(true);
     }
 
-    SurfaceSnapshot acquireSurface(int expectedRequestId) {
-        if (expectedRequestId != requestId) {
+    SurfaceSnapshot acquireSurface(int expectedRequestId) throws Exception {
+        if (!active || expectedRequestId != requestId) {
             throw new IllegalStateException("overlay request changed");
         }
+        ensureClusterDestination();
         Surface surface = preview == null ? null : preview.getCameraSurface();
         if (surface == null || !surface.isValid()) {
             throw new IllegalStateException("overlay Surface unavailable");
@@ -258,6 +260,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     void setVisible(
             int expectedRequestId, int expectedSurfaceGeneration, boolean nextVisible) {
         if (root == null) throw new IllegalStateException("overlay window unavailable");
+        if (!nextVisible && !matchesSurfaceRequest(active, requestId, surfaceGeneration,
+                expectedRequestId, expectedSurfaceGeneration)) return;
         if (nextVisible) {
             requireCurrent(expectedRequestId, expectedSurfaceGeneration);
             if (completedFrameRequestId != expectedRequestId
@@ -266,12 +270,14 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
             }
         }
         try {
+            if (nextVisible) requireCurrentClusterDisplay();
             if (CameraOverlayProfile.isMirror(cameraId)) {
                 windowless.setStrictVisible(nextVisible, 1.0f);
             } else {
                 windowless.setVisible(nextVisible, 1.0f);
             }
         } catch (Exception error) {
+            hideFailedRenderer();
             throw new IllegalStateException("overlay visibility update failed", error);
         }
         visible = nextVisible;
@@ -369,6 +375,52 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
 
     boolean isOpen() {
         return root != null && active;
+    }
+
+    void onClusterDisplayChanged(int displayId, boolean removed) {
+        if (!isCurrentClusterDisplayEvent(active, activeTarget, activeDisplayId, displayId)) {
+            return;
+        }
+        try {
+            if (removed) throw new IllegalStateException("cluster display removed");
+            ensureClusterDestination();
+        } catch (Exception error) {
+            failClusterDestination(error);
+        }
+    }
+
+    private void requireCurrentClusterDisplay() {
+        if (activeTarget != CameraDisplayTarget.CLUSTER) return;
+        Display display = CameraDisplayTarget.resolve(context, CameraDisplayTarget.CLUSTER);
+        if (display == null || display.getDisplayId() != activeDisplayId) {
+            throw new IllegalStateException("cluster display unavailable or replaced");
+        }
+    }
+
+    private void ensureClusterDestination() throws Exception {
+        if (activeTarget != CameraDisplayTarget.CLUSTER) return;
+        requireCurrentClusterDisplay();
+        if (windowless == null) throw new IllegalStateException("cluster host unavailable");
+        windowless.ensureClusterAttachment();
+    }
+
+    private void failClusterDestination(Exception error) {
+        hideFailedRenderer();
+        emit("camera_overlay_error", "stage", "cluster_destination_unavailable",
+                "request_id", requestId, "surface_generation", surfaceGeneration,
+                "display_id", activeDisplayId, "error", summary(error));
+    }
+
+    static boolean isCurrentClusterDisplayEvent(
+            boolean active, int target, int currentDisplayId, int eventDisplayId) {
+        return active && target == CameraDisplayTarget.CLUSTER
+                && currentDisplayId >= 0 && currentDisplayId == eventDisplayId;
+    }
+
+    static boolean matchesSurfaceRequest(boolean active, int requestId, int generation,
+            int expectedRequestId, int expectedGeneration) {
+        return active && requestId > 0 && generation > 0
+                && requestId == expectedRequestId && generation == expectedGeneration;
     }
 
     private void createWindow(CameraShellProtocol.OverlaySpec spec, Display display)
@@ -665,8 +717,15 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emitSurfaceReady(boolean reused) {
+        if (!active || requestId <= 0 || preview == null || !preview.isCameraSurfaceReady()) return;
         int inputGeneration = preview == null ? 0 : preview.cameraInputGeneration();
         if (inputGeneration <= 0) return;
+        try {
+            ensureClusterDestination();
+        } catch (Exception error) {
+            failClusterDestination(error);
+            return;
+        }
         surfaceGeneration = inputGeneration;
         if (windowless != null) {
             windowless.setDiagnosticState(requestId, Integer.toString(surfaceGeneration));
@@ -680,8 +739,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void requireCurrent(int expectedRequestId, int expectedSurfaceGeneration) {
-        if (expectedRequestId != requestId
-                || expectedSurfaceGeneration != surfaceGeneration
+        if (!matchesSurfaceRequest(active, requestId, surfaceGeneration,
+                expectedRequestId, expectedSurfaceGeneration)
                 || preview == null || !preview.isCameraSurfaceReady()) {
             throw new IllegalStateException("stale overlay Surface");
         }

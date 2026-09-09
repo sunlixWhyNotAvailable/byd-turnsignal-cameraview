@@ -12,8 +12,58 @@ import android.view.WindowManager;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class WindowlessOverlayHostTest {
+    private static final class FakeSurface {
+        final int nativeId;
+        final boolean valid;
+
+        FakeSurface(int nativeId, boolean valid) {
+            this.nativeId = nativeId;
+            this.valid = valid;
+        }
+    }
+
+    private static final class FakeClusterBackend
+            implements WindowlessOverlayHost.ClusterAttachmentBackend<FakeSurface> {
+        final ArrayDeque<FakeSurface> roots = new ArrayDeque<>();
+        final List<FakeSurface> reparentedTo = new ArrayList<>();
+        final List<FakeSurface> released = new ArrayList<>();
+        int acquisitions;
+        boolean failReparent;
+
+        @Override
+        public FakeSurface acquireRoot(int displayId) {
+            acquisitions++;
+            assertEquals(4, displayId);
+            return roots.removeFirst();
+        }
+
+        @Override
+        public boolean isValid(FakeSurface surface) {
+            return surface != null && surface.valid;
+        }
+
+        @Override
+        public boolean isSameSurface(FakeSurface first, FakeSurface second) {
+            return first.nativeId == second.nativeId;
+        }
+
+        @Override
+        public void reparent(FakeSurface child, FakeSurface parent) {
+            if (failReparent) throw new IllegalStateException("reparent failed");
+            reparentedTo.add(parent);
+        }
+
+        @Override
+        public void release(FakeSurface surface) {
+            released.add(surface);
+        }
+    }
+
     @Test
     public void transparencyMapsToOpaqueAlpha() {
         assertEquals(1.0f, WindowlessOverlayHost.alphaForTransparency(0), 0.0f);
@@ -55,6 +105,80 @@ public final class WindowlessOverlayHostTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> WindowlessOverlayHost.cameraLayer(12));
+    }
+
+    @Test
+    public void clusterAttachmentReusesNativeParentAndReparentsOnlyWhenItChanges()
+            throws Exception {
+        FakeSurface child = new FakeSurface(99, true);
+        FakeSurface firstRoot = new FakeSurface(1, true);
+        FakeSurface sameRootWrapper = new FakeSurface(1, true);
+        FakeSurface replacementRoot = new FakeSurface(2, true);
+        FakeClusterBackend backend = new FakeClusterBackend();
+        backend.roots.add(firstRoot);
+        backend.roots.add(sameRootWrapper);
+        backend.roots.add(replacementRoot);
+        WindowlessOverlayHost.ClusterAttachmentCore<FakeSurface> attachment =
+                new WindowlessOverlayHost.ClusterAttachmentCore<>(4, child, backend);
+
+        assertTrue(attachment.ensure());
+        assertFalse(attachment.ensure());
+        assertTrue(attachment.ensure());
+
+        assertEquals(List.of(firstRoot, replacementRoot), backend.reparentedTo);
+        assertEquals(List.of(sameRootWrapper, firstRoot), backend.released);
+        assertFalse(backend.released.contains(replacementRoot));
+        assertEquals("ready", attachment.stage());
+    }
+
+    @Test
+    public void clusterAttachmentFailsClosedAndReleasesBorrowedRoot() {
+        FakeSurface child = new FakeSurface(99, true);
+        FakeSurface invalidRoot = new FakeSurface(1, false);
+        FakeClusterBackend invalidBackend = new FakeClusterBackend();
+        invalidBackend.roots.add(invalidRoot);
+        WindowlessOverlayHost.ClusterAttachmentCore<FakeSurface> invalidAttachment =
+                new WindowlessOverlayHost.ClusterAttachmentCore<>(4, child, invalidBackend);
+
+        assertThrows(IllegalStateException.class, invalidAttachment::ensure);
+        assertEquals(List.of(invalidRoot), invalidBackend.released);
+        assertTrue(invalidBackend.reparentedTo.isEmpty());
+        assertEquals("validate_root", invalidAttachment.stage());
+
+        FakeSurface candidate = new FakeSurface(2, true);
+        FakeClusterBackend failedReparentBackend = new FakeClusterBackend();
+        failedReparentBackend.roots.add(candidate);
+        failedReparentBackend.failReparent = true;
+        WindowlessOverlayHost.ClusterAttachmentCore<FakeSurface> failedReparent =
+                new WindowlessOverlayHost.ClusterAttachmentCore<>(
+                        4, child, failedReparentBackend);
+        assertThrows(IllegalStateException.class, failedReparent::ensure);
+        assertEquals(List.of(candidate), failedReparentBackend.released);
+        assertEquals("reparent_child", failedReparent.stage());
+
+        FakeClusterBackend invalidChildBackend = new FakeClusterBackend();
+        WindowlessOverlayHost.ClusterAttachmentCore<FakeSurface> invalidChild =
+                new WindowlessOverlayHost.ClusterAttachmentCore<>(
+                        4, new FakeSurface(100, false), invalidChildBackend);
+        assertThrows(IllegalStateException.class, invalidChild::ensure);
+        assertEquals(0, invalidChildBackend.acquisitions);
+        assertEquals("validate_child", invalidChild.stage());
+    }
+
+    @Test
+    public void clusterBackendReleasesLocalRootWhenMirrorAcquisitionThrows() throws Exception {
+        Path source = Path.of("app/src/main/java/com/byd/extend/WindowlessOverlayHost.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/WindowlessOverlayHost.java");
+        }
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        int backend = text.indexOf("class AndroidClusterBackend");
+        int validity = text.indexOf("public boolean isValid", backend);
+        String acquisition = text.substring(backend, validity);
+        assertTrue(acquisition.contains("mirrorDisplay.invoke(service, -displayId, result)"));
+        assertTrue(acquisition.contains("result.release()"));
+        assertFalse(acquisition.contains("transaction.reparent(result"));
+        assertFalse(acquisition.contains("transaction.remove"));
     }
 
     @Test

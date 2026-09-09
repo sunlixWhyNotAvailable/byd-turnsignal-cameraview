@@ -11,7 +11,9 @@ import android.view.SurfaceControlViewHost;
 import android.view.View;
 import android.view.WindowManager;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -43,6 +45,7 @@ final class WindowlessOverlayHost {
     private String trustedApi;
     private int diagnosticRequestId;
     private String diagnosticSurfaceGeneration = "";
+    private ClusterAttachmentCore<SurfaceControl> clusterAttachment;
 
     WindowlessOverlayHost(
             Context context, Display display, int layer,
@@ -126,8 +129,28 @@ final class WindowlessOverlayHost {
             if (nextRoot == null || !nextRoot.isValid()) {
                 throw new IllegalStateException("root surface unavailable");
             }
+            ClusterAttachmentCore<SurfaceControl> nextClusterAttachment = null;
+            if (isClusterDisplay(display)) {
+                nextClusterAttachment = new ClusterAttachmentCore<>(
+                        display.getDisplayId(), nextRoot, new AndroidClusterBackend());
+                long clusterStart = SystemClock.elapsedRealtimeNanos();
+                emitLifecycle("cluster_attachment_start", clusterStart, view, nextRoot,
+                        nextPackage, nextHost);
+                try {
+                    boolean changed = nextClusterAttachment.ensure();
+                    emitLifecycle("cluster_attachment_complete", clusterStart, view, nextRoot,
+                            nextPackage, nextHost, null, "changed", changed);
+                } catch (Throwable error) {
+                    emitLifecycle("cluster_attachment_error", clusterStart, view, nextRoot,
+                            nextPackage, nextHost, error, "acquisition_stage",
+                            nextClusterAttachment.stage());
+                    throw asException(error);
+                }
+            }
             try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
-                setLayerStack(transaction, nextRoot, displayLayerStack(display));
+                if (nextClusterAttachment == null) {
+                    setLayerStack(transaction, nextRoot, displayLayerStack(display));
+                }
                 transaction.setLayer(nextRoot, layer);
                 setPosition(transaction, nextRoot, x, y);
                 transaction.setAlpha(nextRoot, 0.0f);
@@ -137,6 +160,7 @@ final class WindowlessOverlayHost {
             host = nextHost;
             surfacePackage = nextPackage;
             root = nextRoot;
+            clusterAttachment = nextClusterAttachment;
             attachedView = view;
             width = nextWidth;
             height = nextHeight;
@@ -163,6 +187,7 @@ final class WindowlessOverlayHost {
         if (!Float.isFinite(visibleAlpha) || visibleAlpha < 0.0f || visibleAlpha > 1.0f) {
             throw new IllegalArgumentException("visible alpha must be 0..1");
         }
+        if (visible) ensureClusterAttachment();
         long visibilityStart = SystemClock.elapsedRealtimeNanos();
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
             transaction.setVisibility(root, true);
@@ -178,6 +203,7 @@ final class WindowlessOverlayHost {
         if (!Float.isFinite(visibleAlpha) || visibleAlpha < 0.0f || visibleAlpha > 1.0f) {
             throw new IllegalArgumentException("visible alpha must be 0..1");
         }
+        if (visible) ensureClusterAttachment();
         long visibilityStart = SystemClock.elapsedRealtimeNanos();
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
             transaction.setVisibility(root, visible);
@@ -236,6 +262,26 @@ final class WindowlessOverlayHost {
 
     String trustedApi() {
         return trustedApi;
+    }
+
+    /** Ensures this cluster host is below the current OEM-forwarded WMS display root. */
+    boolean ensureClusterAttachment() throws Exception {
+        requireAttached();
+        if (clusterAttachment == null) return false;
+        long start = SystemClock.elapsedRealtimeNanos();
+        emitLifecycle("cluster_attachment_start", start, attachedView, root,
+                surfacePackage, host);
+        try {
+            boolean changed = clusterAttachment.ensure();
+            emitLifecycle("cluster_attachment_complete", start, attachedView, root,
+                    surfacePackage, host, null, "changed", changed);
+            return changed;
+        } catch (Throwable error) {
+            emitLifecycle("cluster_attachment_error", start, attachedView, root,
+                    surfacePackage, host, error, "acquisition_stage",
+                    clusterAttachment.stage());
+            throw asException(error);
+        }
     }
 
     private void requireAttached() {
@@ -339,6 +385,130 @@ final class WindowlessOverlayHost {
         }
     }
 
+    private static boolean isClusterDisplay(Display display) {
+        return display.getDisplayId() > 0
+                && CameraDisplayTarget.clusterNameRank(display.getName()) != Integer.MAX_VALUE;
+    }
+
+    interface ClusterAttachmentBackend<S> {
+        S acquireRoot(int displayId) throws Exception;
+        boolean isValid(S surface);
+        boolean isSameSurface(S first, S second) throws Exception;
+        void reparent(S child, S parent) throws Exception;
+        void release(S surface);
+    }
+
+    static final class ClusterAttachmentCore<S> {
+        private final int displayId;
+        private final S child;
+        private final ClusterAttachmentBackend<S> backend;
+        private S parent;
+        private String stage = "idle";
+
+        ClusterAttachmentCore(int displayId, S child, ClusterAttachmentBackend<S> backend) {
+            if (displayId <= 0 || child == null || backend == null) {
+                throw new IllegalArgumentException("positive display, child, and backend required");
+            }
+            this.displayId = displayId;
+            this.child = child;
+            this.backend = backend;
+        }
+
+        boolean ensure() throws Exception {
+            if (!backend.isValid(child)) {
+                stage = "validate_child";
+                throw new IllegalStateException("cluster child surface unavailable");
+            }
+            stage = "acquire_root";
+            S candidate = null;
+            try {
+                candidate = backend.acquireRoot(displayId);
+                stage = "validate_root";
+                if (candidate == null || !backend.isValid(candidate)) {
+                    throw new IllegalStateException("cluster WMS root unavailable");
+                }
+                stage = "compare_root";
+                if (parent != null && backend.isSameSurface(candidate, parent)) {
+                    S redundant = candidate;
+                    candidate = null;
+                    backend.release(redundant);
+                    stage = "ready";
+                    return false;
+                }
+                stage = "reparent_child";
+                backend.reparent(child, candidate);
+                S previous = parent;
+                parent = candidate;
+                candidate = null;
+                if (previous != null) backend.release(previous);
+                stage = "ready";
+                return true;
+            } finally {
+                if (candidate != null) backend.release(candidate);
+            }
+        }
+
+        String stage() {
+            return stage;
+        }
+    }
+
+    private static final class AndroidClusterBackend
+            implements ClusterAttachmentBackend<SurfaceControl> {
+        @Override
+        public SurfaceControl acquireRoot(int displayId) throws Exception {
+            Constructor<SurfaceControl> constructor = SurfaceControl.class.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            SurfaceControl result = constructor.newInstance();
+            try {
+                Class<?> global = Class.forName("android.view.WindowManagerGlobal");
+                Method getService = global.getDeclaredMethod("getWindowManagerService");
+                getService.setAccessible(true);
+                Object service = getService.invoke(null);
+                Class<?> windowManager = Class.forName("android.view.IWindowManager");
+                Method mirrorDisplay = windowManager.getDeclaredMethod(
+                        "mirrorDisplay", int.class, SurfaceControl.class);
+                mirrorDisplay.setAccessible(true);
+                Object success = mirrorDisplay.invoke(service, -displayId, result);
+                if (!(success instanceof Boolean) || !((Boolean) success)) {
+                    throw new IllegalStateException("mirrorDisplay rejected cluster display "
+                            + displayId);
+                }
+                return result;
+            } catch (Throwable error) {
+                result.release();
+                throw asException(unwrapInvocation(error));
+            }
+        }
+
+        @Override
+        public boolean isValid(SurfaceControl surface) {
+            return surface != null && surface.isValid();
+        }
+
+        @Override
+        public boolean isSameSurface(SurfaceControl first, SurfaceControl second)
+                throws Exception {
+            Method method = SurfaceControl.class.getDeclaredMethod(
+                    "isSameSurface", SurfaceControl.class);
+            method.setAccessible(true);
+            return (Boolean) method.invoke(first, second);
+        }
+
+        @Override
+        public void reparent(SurfaceControl child, SurfaceControl parent) {
+            try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
+                transaction.reparent(child, parent);
+                transaction.apply();
+            }
+        }
+
+        @Override
+        public void release(SurfaceControl surface) {
+            if (surface != null) surface.release();
+        }
+    }
+
     private static void setLayerStack(
             SurfaceControl.Transaction transaction, SurfaceControl surface, int layerStack)
             throws Exception {
@@ -372,6 +542,12 @@ final class WindowlessOverlayHost {
     private static Exception asException(Throwable error) {
         if (error instanceof Exception) return (Exception) error;
         return new RuntimeException(error);
+    }
+
+    private static Throwable unwrapInvocation(Throwable error) {
+        return error instanceof InvocationTargetException
+                && ((InvocationTargetException) error).getCause() != null
+                ? ((InvocationTargetException) error).getCause() : error;
     }
 
 }
