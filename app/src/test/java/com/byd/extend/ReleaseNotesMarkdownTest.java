@@ -60,4 +60,15 @@ public final class ReleaseNotesMarkdownTest {
         assertFalse(parts.get(4).text().isEmpty());
         assertTrue(ReleaseNotesMarkdown.parseInline(null).isEmpty());
     }
+
+    @Test
+    public void publicComposeSeamExposesBlockAndInlineModels() {
+        ReleaseNotesMarkdown.Block block = ReleaseNotesMarkdown.parseBlocks("## **Title**").get(0);
+        ReleaseNotesMarkdown.Inline inline = ReleaseNotesMarkdown.parseInline(block.text()).get(0);
+
+        assertEquals(ReleaseNotesMarkdown.BlockType.HEADING, block.type());
+        assertEquals(2, block.level());
+        assertEquals(ReleaseNotesMarkdown.InlineType.BOLD, inline.type());
+        assertEquals("Title", inline.text());
+    }
 }

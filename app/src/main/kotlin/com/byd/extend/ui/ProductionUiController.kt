@@ -643,6 +643,13 @@ class ProductionUiController @JvmOverloads constructor(
 
     fun showDialog(dialog: DialogUiState?) { state = state.copy(dialog = dialog) }
 
+    /** Initial navigation only; retain each camera/editor's independent saved state. */
+    fun selectInstallationSettings() {
+        state = state.copy(activeTab = RootTab.Settings,
+            settings = state.settings.copy(category = SettingsCategory.Permissions))
+        preferences.edit().putInt("selected_tab", RootTab.Settings.legacyTab()).apply()
+    }
+
     fun setDiagnosticStatus(direct: Boolean, status: StatusUiState, pending: Boolean = false) {
         val operation = OperationUiState(enabled = !pending, pending = pending, status = status)
         state = state.copy(debug = if (direct) state.debug.copy(
@@ -1026,6 +1033,14 @@ class ProductionUiController @JvmOverloads constructor(
     }
 
     private fun interceptDialogCommand(command: CommandId): Boolean {
+        if (state.dialog?.managed == true) {
+            if (command == CommandId.ConfirmDialog || command == CommandId.DismissDialog ||
+                command == CommandId.CancelOperation) {
+                backend.onProductionUiAction(BydExtendUiAction.Run(command))
+            }
+            // An active modal owns its commands, including late duplicate taps underneath it.
+            return true
+        }
         // Update availability/results already provide the meaningful confirmation surface.
         // Dispatch the check directly and keep the explanatory background dialog below.
         if (command == CommandId.CheckForUpdates) {

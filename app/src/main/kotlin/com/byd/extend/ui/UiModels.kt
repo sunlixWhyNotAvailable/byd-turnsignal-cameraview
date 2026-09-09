@@ -535,13 +535,18 @@ data class DebugUiState(
 )
 
 @Immutable
-data class DialogUiState(
+data class DialogUiState @JvmOverloads constructor(
     val kind: DialogKind,
     val title: String,
     val message: String,
     val progress: Float? = null,
     val cancellable: Boolean = true,
     val confirmEnabled: Boolean = true,
+    val managed: Boolean = false,
+    val confirmLabel: String? = null,
+    val dismissLabel: String? = null,
+    val confirmVisible: Boolean = true,
+    val markdown: String = "",
 )
 
 @Immutable

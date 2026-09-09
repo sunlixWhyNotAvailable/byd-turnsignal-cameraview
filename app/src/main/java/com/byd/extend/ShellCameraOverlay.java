@@ -21,6 +21,7 @@ import java.util.function.BiConsumer;
 final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     private static final int WARNING_WIDTH_PERCENT = 20;
     private static final long WARNING_PULSE_HALF_CYCLE_MS = 800;
+    static final long MIRROR_HIDE_HOLD_MS = 1_000L;
     private static final String WINDOW_TITLE = "BYD trusted blind-spot camera";
 
     private final Context context;
@@ -88,7 +89,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 dragStartY = mirrorY;
                 dragging = false;
                 longPressed = false;
-                root.postDelayed(hideMirrorGesture, ViewConfiguration.getLongPressTimeout());
+                root.postDelayed(hideMirrorGesture, MIRROR_HIDE_HOLD_MS);
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (longPressed) return true;

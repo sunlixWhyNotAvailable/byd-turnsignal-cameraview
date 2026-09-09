@@ -241,7 +241,7 @@
     <string name="mirror_permission">"允许显示在其他应用上层"</string>
     <string name="mirror_cluster_unavailable">"无可用的第二显示屏。这里只模拟仪表屏布局，悬浮窗不会改在中控屏显示。"</string>
     <string name="mirror_size_hint">"宽度和高度独立决定悬浮窗大小，也可拖动角标调整。"</string>
-    <string name="mirror_hidden">"后视镜已隐藏，打开 BYD Extend Preview 可恢复。"</string>
+    <string name="mirror_hidden">"后视镜已隐藏，打开 BYD Extend 可恢复。"</string>
     <string name="mirror_hide_action">"隐藏至下次打开应用"</string>
     <string name="mirror_notification">"点击打开 BYD Extend Preview"</string>
     <string name="mirror_overlay_error">"无法显示后视镜悬浮窗"</string>

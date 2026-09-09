@@ -20,7 +20,7 @@ import java.util.List;
  * the only method that creates Android spans, so local JVM tests can exercise
  * all syntax without loading an Android framework implementation.</p>
  */
-final class ReleaseNotesMarkdown {
+public final class ReleaseNotesMarkdown {
     private static final String DIVIDER = "────────";
 
     private ReleaseNotesMarkdown() {}
@@ -40,12 +40,12 @@ final class ReleaseNotesMarkdown {
     }
 
     /** Alias kept explicit at call sites that want to document the block seam. */
-    static List<Block> parseBlocks(String markdown) {
+    public static List<Block> parseBlocks(String markdown) {
         return parse(markdown);
     }
 
     /** Parses supported inline syntax without touching Android framework classes. */
-    static List<Inline> parseInline(String text) {
+    public static List<Inline> parseInline(String text) {
         if (text == null || text.isEmpty()) {
             return Collections.emptyList();
         }
@@ -289,9 +289,9 @@ final class ReleaseNotesMarkdown {
         }
     }
 
-    enum BlockType { HEADING, BULLET, ORDERED, DIVIDER, PARAGRAPH, BLANK }
+    public enum BlockType { HEADING, BULLET, ORDERED, DIVIDER, PARAGRAPH, BLANK }
 
-    static final class Block {
+    public static final class Block {
         final BlockType type;
         final int level;
         final String text;
@@ -304,15 +304,15 @@ final class ReleaseNotesMarkdown {
             this.marker = marker;
         }
 
-        BlockType type() { return type; }
-        int level() { return level; }
-        String text() { return text; }
-        String marker() { return marker; }
+        public BlockType type() { return type; }
+        public int level() { return level; }
+        public String text() { return text; }
+        public String marker() { return marker; }
     }
 
-    enum InlineType { TEXT, BOLD, CODE }
+    public enum InlineType { TEXT, BOLD, CODE }
 
-    static final class Inline {
+    public static final class Inline {
         final InlineType type;
         final String text;
 
@@ -321,8 +321,8 @@ final class ReleaseNotesMarkdown {
             this.text = text;
         }
 
-        InlineType type() { return type; }
-        String text() { return text; }
+        public InlineType type() { return type; }
+        public String text() { return text; }
     }
 
 }

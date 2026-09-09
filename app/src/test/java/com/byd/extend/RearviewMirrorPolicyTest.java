@@ -2,6 +2,8 @@ package com.byd.extend;
 
 import org.json.JSONObject;
 import org.junit.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import static org.junit.Assert.*;
 
 public final class RearviewMirrorPolicyTest {
@@ -31,6 +33,65 @@ public final class RearviewMirrorPolicyTest {
         assertFalse(RearviewMirrorController.matchesFrameEvent(frame, 17, 5));
         frame.put("camera_id", 1);
         assertFalse(RearviewMirrorController.matchesFrameEvent(frame, 17, 4));
+    }
+
+    @Test public void manualHideRequiresTheCurrentGestureEvent() throws Exception {
+        JSONObject event = new JSONObject().put("kind", "mirror_hidden_by_gesture")
+                .put("camera_id", CameraOverlayProfile.MIRROR_ID)
+                .put("request_id", 17).put("surface_generation", 4);
+        assertTrue(RearviewMirrorController.matchesManualHideEvent(event, 17, 4));
+        assertFalse(RearviewMirrorController.matchesManualHideEvent(event, 18, 4));
+        assertFalse(RearviewMirrorController.matchesManualHideEvent(event, 17, 5));
+        event.put("kind", "camera_overlay_visibility");
+        assertFalse(RearviewMirrorController.matchesManualHideEvent(event, 17, 4));
+    }
+
+    @Test public void mirrorHoldAndToastKeepTheRequiredBoundaries() throws Exception {
+        assertEquals(1_000L, ShellCameraOverlay.MIRROR_HIDE_HOLD_MS);
+        String overlay = sourceText("java/com/byd/extend/ShellCameraOverlay.java");
+        assertTrue(overlay.contains("postDelayed(hideMirrorGesture, MIRROR_HIDE_HOLD_MS)"));
+        assertTrue(overlay.contains("case MotionEvent.ACTION_UP:\n"
+                + "            case MotionEvent.ACTION_CANCEL:\n"
+                + "                root.removeCallbacks(hideMirrorGesture);"));
+        assertTrue(overlay.contains("dragging = true;\n"
+                + "                    root.removeCallbacks(hideMirrorGesture);"));
+        assertTrue(overlay.contains("if (!nextVisible) {\n"
+                + "            root.removeCallbacks(hideMirrorGesture);"));
+
+        String controller = sourceText("java/com/byd/extend/RearviewMirrorController.java");
+        int accepted = controller.indexOf("matchesManualHideEvent(event, requestId, generation)");
+        int stopped = controller.indexOf("stop(\"manual_hide\", false);", accepted);
+        int toast = controller.indexOf("Toast.makeText(localized", stopped);
+        assertTrue(accepted >= 0 && stopped > accepted && toast > stopped);
+        assertTrue(controller.substring(toast).contains("Toast.LENGTH_LONG).show()"));
+        assertTrue(controller.substring(accepted, toast).contains("AppLanguage.localizedContext("));
+    }
+
+    @Test public void manualHideTextIsLocalizedWithoutPreviewBranding() throws Exception {
+        String[] folders = {"values", "values-uk", "values-zh-rCN"};
+        String[] messages = {
+                "Mirror hidden — open BYD Extend to restore it.",
+                "Дзеркало приховано — відкрийте BYD Extend, щоб повернути.",
+                "后视镜已隐藏，打开 BYD Extend 可恢复。"
+        };
+        for (int index = 0; index < folders.length; index++) {
+            String resources = sourceText("res/" + folders[index] + "/strings.xml");
+            int start = resources.indexOf("<string name=\"mirror_hidden\">");
+            int end = resources.indexOf("</string>", start);
+            String entry = resources.substring(start, end);
+            assertTrue(entry.contains(messages[index]));
+            assertFalse(entry.contains("Preview"));
+        }
+    }
+
+    private static Path sourcePath(String relative) {
+        Path path = Path.of("src/main", relative);
+        return Files.exists(path) ? path : Path.of("app").resolve(path);
+    }
+
+    private static String sourceText(String relative) throws java.io.IOException {
+        return new String(Files.readAllBytes(sourcePath(relative)),
+                java.nio.charset.StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     @Test public void disabledPanoramaSuppressionBypassesOnlyThePanoramaGate() {

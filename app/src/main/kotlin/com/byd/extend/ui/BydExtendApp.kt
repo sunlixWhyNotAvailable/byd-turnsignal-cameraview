@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.BugReport
@@ -61,14 +63,20 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
 import com.byd.extend.R
+import com.byd.extend.ReleaseNotesMarkdown
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 
@@ -354,8 +362,11 @@ private fun AppDialog(
     onAction: (BydExtendUiAction) -> Unit,
 ) {
     val captureDialog = state.kind == DialogKind.ReverseButtonCapture
+    val dismissCommand = if (state.kind == DialogKind.Progress) CommandId.CancelOperation
+        else CommandId.DismissDialog
+    val markdownText = remember(state.markdown) { releaseNotesText(state.markdown) }
     Dialog(onDismissRequest = {
-        if (state.cancellable) onAction(BydExtendUiAction.Run(CommandId.DismissDialog))
+        if (state.cancellable) onAction(BydExtendUiAction.Run(dismissCommand))
     }, properties = DialogProperties(
         usePlatformDefaultWidth = false,
         dismissOnClickOutside = captureDialog,
@@ -368,7 +379,7 @@ private fun AppDialog(
         LaunchedEffect(captureDialog) {
             if (captureDialog) focusRequester.requestFocus()
         }
-        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp))
+        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 530.dp).clip(RoundedCornerShape(8.dp))
             .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp)
             .then(if (captureDialog) Modifier.semantics { testTagsAsResourceId = true }
             .testTag("reverse-key-dialog")
@@ -392,10 +403,16 @@ private fun AppDialog(
                 }
             } else if (captureDialog) {
                 Text(state.message, color = colors.muted, fontSize = 13.sp, lineHeight = 19.sp)
-            } else Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(colors.field)
-                .border(1.dp, colors.border, RoundedCornerShape(8.dp)).padding(14.dp),
+            } else Column(Modifier.fillMaxWidth().weight(1f, fill = false)
+                .clip(RoundedCornerShape(8.dp)).background(colors.field)
+                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                .verticalScroll(rememberScrollState()).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                if (state.markdown.isNotEmpty()) {
+                    Text(markdownText, color = colors.text,
+                        fontSize = 14.sp, lineHeight = 21.sp)
+                }
                 state.progress?.let { progress ->
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }
@@ -405,7 +422,7 @@ private fun AppDialog(
                     strings.text("Скасувати", "Cancel"), colors,
                     Modifier.fillMaxWidth().testTag("reverse-key-cancel"),
                 ) { onAction(BydExtendUiAction.Run(CommandId.DismissDialog)) }
-            } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
+            } else if (!state.managed) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
                 if (state.kind == DialogKind.Background) ActionButton(strings.text("Відкрити", "Open"), colors,
                     Modifier.width(138.dp), primary = true) {
                     onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog))
@@ -427,7 +444,57 @@ private fun AppDialog(
                     destructive = state.kind == DialogKind.Shutdown,
                     enabled = state.confirmEnabled,
                 ) { onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog)) }
+            } else if ((state.cancellable && state.dismissLabel != null) ||
+                (state.confirmVisible && state.confirmLabel != null)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
+                    if (state.cancellable && state.dismissLabel != null) ActionButton(
+                        state.dismissLabel, colors, Modifier.width(138.dp),
+                    ) { onAction(BydExtendUiAction.Run(dismissCommand)) }
+                    if (state.confirmVisible && state.confirmLabel != null) ActionButton(
+                        state.confirmLabel,
+                        colors,
+                        Modifier.width(138.dp),
+                        primary = state.kind != DialogKind.Shutdown,
+                        destructive = state.kind == DialogKind.Shutdown,
+                        enabled = state.confirmEnabled,
+                    ) { onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog)) }
+                }
             }
+        }
+    }
+}
+
+private fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotatedString {
+    ReleaseNotesMarkdown.parseBlocks(markdown).forEachIndexed { index, block ->
+        if (index > 0) append('\n')
+        val headingStyle = when (block.level()) {
+            1 -> SpanStyle(fontWeight = FontWeight.Bold, fontSize = 19.sp)
+            2 -> SpanStyle(fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            3 -> SpanStyle(fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            else -> null
+        }
+        val marker = when (block.type()) {
+            ReleaseNotesMarkdown.BlockType.BULLET -> "• "
+            ReleaseNotesMarkdown.BlockType.ORDERED -> "${block.marker()} "
+            ReleaseNotesMarkdown.BlockType.DIVIDER -> "────────"
+            else -> ""
+        }
+        append(marker)
+        if (block.type() != ReleaseNotesMarkdown.BlockType.DIVIDER) {
+            if (headingStyle == null) appendMarkdownInline(block.text())
+            else withStyle(headingStyle) { appendMarkdownInline(block.text()) }
+        }
+    }
+}
+
+private fun AnnotatedString.Builder.appendMarkdownInline(text: String) {
+    ReleaseNotesMarkdown.parseInline(text).forEach { inline ->
+        when (inline.type()) {
+            ReleaseNotesMarkdown.InlineType.BOLD ->
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline.text()) }
+            ReleaseNotesMarkdown.InlineType.CODE ->
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(inline.text()) }
+            else -> append(inline.text())
         }
     }
 }

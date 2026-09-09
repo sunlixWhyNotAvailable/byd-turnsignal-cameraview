@@ -40,6 +40,51 @@ import org.junit.Test
 
 class ProductionUiControllerTest {
     @Test
+    fun installationNavigationPreservesCameraEditorsAndOnlyChangesSelectedTabPreference() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.SettingsCategory),
+            com.byd.extend.ui.SettingsCategory.Logs.ordinal))
+        val previous = controller.state
+        val before = preferences.all.toMutableMap()
+        controller.selectInstallationSettings()
+        assertEquals(RootTab.Settings, controller.state.activeTab)
+        assertEquals(com.byd.extend.ui.SettingsCategory.Permissions, controller.state.settings.category)
+        assertEquals(previous.reverse, controller.state.reverse)
+        assertEquals(previous.blind, controller.state.blind)
+        assertEquals(previous.mirror, controller.state.mirror)
+        before["selected_tab"] = RootTab.Settings.legacyId
+        assertEquals(before, preferences.all)
+    }
+
+    @Test
+    fun managedDialogActionsAreOwnedByBackendAndNeverStartAnotherUnderlyingCommand() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        for (kind in listOf(DialogKind.Background, DialogKind.Message, DialogKind.Progress, DialogKind.Update)) {
+            val dialog = com.byd.extend.ui.DialogUiState(kind, "Title", "Message", managed = true,
+                confirmLabel = "Create", dismissLabel = "Cancel")
+            controller.showDialog(dialog)
+            backend.actions.clear()
+            controller.dispatch(BydExtendUiAction.Run(CommandId.ShareLogs))
+            controller.dispatch(BydExtendUiAction.Run(CommandId.CheckForUpdates))
+            assertTrue(backend.actions.isEmpty())
+            for (command in listOf(CommandId.ConfirmDialog, CommandId.DismissDialog, CommandId.CancelOperation)) {
+                controller.dispatch(BydExtendUiAction.Run(command))
+                assertEquals(BydExtendUiAction.Run(command), backend.actions.last())
+                assertEquals(dialog, controller.state.dialog)
+            }
+            controller.reload()
+            assertEquals(dialog, controller.state.dialog)
+            controller.showDialog(null)
+        }
+    }
+
+    @Test
     fun staleMirrorPlacementCallbacksCannotWriteNewDisplay() {
         val preferences = TestSharedPreferences()
         val backend = FakeBackend(preferences)

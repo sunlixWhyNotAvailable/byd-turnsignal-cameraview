@@ -807,7 +807,8 @@ public final class AdbCoreTest {
                 true, true, true, true, false, false));
         assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
                 true, false, false, true, false, false));
-        assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
+        // Installation reminder is independent of the user's autostart setting.
+        assertTrue(CameraProbeActivity.shouldOpenBackgroundStartSettings(
                 false, false, true, true, false, false));
         assertFalse(CameraProbeActivity.shouldOpenBackgroundStartSettings(
                 true, false, true, true, true, false));

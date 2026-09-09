@@ -6,6 +6,7 @@ import android.hardware.display.DisplayManager;
 import android.os.Handler;
 import android.provider.Settings;
 import android.view.Surface;
+import android.widget.Toast;
 import org.json.JSONObject;
 import java.util.function.BiConsumer;
 
@@ -189,6 +190,16 @@ final class RearviewMirrorController {
             } else if ("camera_shell_recovery_failed".equals(kind)) {
                 recovery.clear();
                 stop("camera_shell_recovery_failed", false);
+            } else if (matchesManualHideEvent(event, requestId, generation)) {
+                String language = AppLanguage.read(preferences);
+                RearviewMirrorSettings.setHidden(preferences, true);
+                try {
+                    stop("manual_hide", false);
+                } finally {
+                    Context localized = AppLanguage.localizedContext(context, language);
+                    Toast.makeText(localized, localized.getString(R.string.mirror_hidden),
+                            Toast.LENGTH_LONG).show();
+                }
             } else if (matchesFrameEvent(event, requestId, generation)) {
                 if ("camera_overlay_first_frame".equals(kind) && event.optInt("frame_arm_epoch") == 1) {
                     handler.removeCallbacks(timeout);
@@ -196,9 +207,6 @@ final class RearviewMirrorController {
                         helper.setOverlayWindowVisible(CameraOverlayProfile.MIRROR_ID,
                                 requestId, generation, true);
                     }
-                } else if ("mirror_hidden_by_gesture".equals(kind)) {
-                    RearviewMirrorSettings.setHidden(preferences, true);
-                    stop("manual_hide", false);
                 } else if ("mirror_position_committed".equals(kind)) {
                     if (event.optInt("target", requestTarget) != requestTarget) return;
                     CameraPlacement placement = CameraPlacement.fromPixelRect(
@@ -227,6 +235,11 @@ final class RearviewMirrorController {
                 && event.optInt("camera_id", -1) == CameraOverlayProfile.MIRROR_ID
                 && event.optInt("request_id", -1) == request
                 && event.optInt("surface_generation", -1) == generation;
+    }
+
+    static boolean matchesManualHideEvent(JSONObject event, int request, int generation) {
+        return "mirror_hidden_by_gesture".equals(event.optString("kind"))
+                && matchesFrameEvent(event, request, generation);
     }
 
     private void fail(String reason) {

@@ -74,6 +74,7 @@ import com.byd.extend.ui.CameraSide;
 import com.byd.extend.ui.CommandId;
 import com.byd.extend.ui.DiagnosticMode;
 import com.byd.extend.ui.DialogKind;
+import com.byd.extend.ui.DialogUiState;
 import com.byd.extend.ui.NumberTarget;
 import com.byd.extend.ui.BlindNumber;
 import com.byd.extend.ui.GuardNumber;
@@ -671,6 +672,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean weatherEnableRequestedForPermission;
     private long weatherRefreshUiGeneration;
     private boolean backgroundStartSettingsRequired;
+    private InstallationReminder installationReminder;
     private boolean backgroundStartSettingsActive;
     private boolean backgroundStartSettingsStartScheduled;
     private boolean helperBound;
@@ -689,7 +691,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
     private volatile CompatibilityBundleExporter.ExportControl compatibilityExportControl;
-    private AlertDialog compatibilityExportProgressDialog;
     private boolean settingsTransferInProgress;
     private SettingsOperation activeSettingsOperation;
     private boolean settingsReloadPending;
@@ -786,8 +787,15 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean activityColdResetInFlight;
     private boolean activityColdResetFailed;
     private int activeReverseControllerRequestId;
-    private AlertDialog updateDialog;
-    private AlertDialog updateProgressDialog;
+    private boolean updateDownloadInFlight;
+    private enum RuntimeDialogOwner { NONE, BACKGROUND, LOGS, COMPATIBILITY, UPDATE }
+    private RuntimeDialogOwner runtimeDialogOwner = RuntimeDialogOwner.NONE;
+    private Runnable runtimeDialogConfirm;
+    private Runnable runtimeDialogDismiss;
+    private String pendingUpdateTitle;
+    private String pendingUpdateMessage;
+    private File pendingUpdateFile;
+    private AppUpdateManager.UpdateInfo pendingUpdateInstall;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
     private final Runnable productionPreviewFirstFrameTimeout =
             this::handleProductionPreviewFirstFrameTimeout;
@@ -800,7 +808,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 GuardRecovery.isAutoStartEnabled(this), cameraPermissionPending,
                 hasWindowFocus(), backgroundStartSettingsRequired,
                 backgroundStartSettingsActive, adbAuthPending)) {
-            openBackgroundStartSettings("first_run");
+            showInstallationReminder();
         }
     };
     private final Runnable startForegroundAdbAuthorization = () -> {
@@ -827,7 +835,8 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!weatherLocationPermissionPending || weatherLocationPermissionInFlight
                 || cameraPermissionPending || !activityResumed || !hasWindowFocus()
                 || settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress || adbAuthPending) {
+                || logExportInProgress || compatibilityExportInProgress || adbAuthPending
+                || productionUi != null && productionUi.getState().getDialog() != null) {
             advanceStartupAuthorizationFlow();
             return;
         }
@@ -939,14 +948,15 @@ public final class CameraProbeActivity extends ComponentActivity
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
         legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
         migrateCameraFrameAspects();
-        backgroundStartSettingsRequired = GuardRecovery.isAutoStartEnabled(this)
-                && !preferences.getBoolean(PREF_BACKGROUND_START_SETTINGS_SHOWN, false);
+        installationReminder = new InstallationReminder(this);
+        backgroundStartSettingsRequired = installationReminder.pending();
         lifetimeActivations = preferences.getLong("activation_count", 0);
         lifetimeCorrections = preferences.getLong("correction_count", 0);
         createLogFile();
         activityLog = new AsyncServiceLog(() -> logFile, 250L);
         boolean clearedShutdown = GuardRecovery.isUserShutdownActive(this);
         productionUi = new ProductionUiController(preferences, this, this);
+        if (backgroundStartSettingsRequired) productionUi.selectInstallationSettings();
         selectedTab = rootTabToLegacy(productionUi.getState().getActiveTab());
         ProductionUiInstaller.install(this, productionUi);
         // Restore the persisted camera tab once its Compose mapping is known.  The intent is
@@ -1168,10 +1178,7 @@ public final class CameraProbeActivity extends ComponentActivity
         CompatibilityBundleExporter.ExportControl exportControl =
                 compatibilityExportControl;
         if (exportControl != null) exportControl.cancel();
-        if (compatibilityExportProgressDialog != null) {
-            compatibilityExportProgressDialog.dismiss();
-            compatibilityExportProgressDialog = null;
-        }
+        clearRuntimeDialog();
         resumeTabWarmup.clear();
         if (requestedOpen || cameraHandoffPending) closeCamera("activity_destroyed");
         releaseAllProductionCameraHosts();
@@ -1188,8 +1195,6 @@ public final class CameraProbeActivity extends ComponentActivity
         updateExecutor.shutdownNow();
         logExportExecutor.shutdownNow();
         if (activityLog != null) activityLog.close();
-        if (updateDialog != null) updateDialog.dismiss();
-        if (updateProgressDialog != null) updateProgressDialog.dismiss();
         if (legacyImportOfferDialog != null) legacyImportOfferDialog.dismiss();
         legacyImportOfferDialog = null;
         dismissSettingsTransferDialog();
@@ -1555,22 +1560,100 @@ public final class CameraProbeActivity extends ComponentActivity
         if (parkingMaxSpeedInput != null) saveParkingMaxSpeed();
     }
 
+    private boolean showRuntimeDialog(RuntimeDialogOwner owner, DialogKind kind,
+            String title, String message, boolean cancellable, String confirmLabel,
+            String dismissLabel, String markdown, Runnable confirm, Runnable dismiss) {
+        if (activityDestroyed || isFinishing() || shutdownRequested || !activityResumed
+                || cameraPermissionPending || weatherLocationPermissionInFlight || adbAuthPending
+                || settingsTransferDialog != null || legacyImportOfferDialog != null
+                || productionUi == null || productionUi.getState().getDialog() != null) return false;
+        runtimeDialogOwner = owner;
+        cancelPendingBackgroundStartSettings();
+        cancelPendingForegroundAdbAuthorization();
+        cancelPendingWeatherLocationPermission();
+        runtimeDialogConfirm = confirm;
+        runtimeDialogDismiss = dismiss;
+        productionUi.showDialog(new DialogUiState(kind, title, message, null, cancellable, true,
+                true, confirmLabel, dismissLabel, confirm != null, markdown));
+        return true;
+    }
+
+    private void clearRuntimeDialog() {
+        runtimeDialogOwner = RuntimeDialogOwner.NONE;
+        runtimeDialogConfirm = null;
+        runtimeDialogDismiss = null;
+        if (productionUi != null && productionUi.getState().getDialog() != null
+                && productionUi.getState().getDialog().getManaged()) productionUi.showDialog(null);
+    }
+
+    private void updateRuntimeProgress(RuntimeDialogOwner owner, String message, boolean cancellable) {
+        if (activityDestroyed || productionUi == null || runtimeDialogOwner != owner) return;
+        DialogUiState current = productionUi.getState().getDialog();
+        if (current == null || !current.getManaged() || current.getKind() != DialogKind.Progress) return;
+        productionUi.showDialog(new DialogUiState(current.getKind(), current.getTitle(), message,
+                null, cancellable, false, true, null,
+                cancellable ? runtimeText(R.string.runtime_cancel) : null, false, ""));
+    }
+
+    private boolean handleRuntimeDialogCommand(CommandId command) {
+        if (productionUi == null || runtimeDialogOwner == RuntimeDialogOwner.NONE) return false;
+        DialogUiState dialog = productionUi.getState().getDialog();
+        if (dialog == null || !dialog.getManaged()) return false;
+        boolean confirm = command == CommandId.ConfirmDialog;
+        if (!confirm && command != CommandId.DismissDialog && command != CommandId.CancelOperation) {
+            return false;
+        }
+        if (confirm && (!dialog.getConfirmVisible() || !dialog.getConfirmEnabled())
+                || !confirm && !dialog.getCancellable() && dialog.getKind() != DialogKind.Background) {
+            return true;
+        }
+        Runnable action = confirm ? runtimeDialogConfirm : runtimeDialogDismiss;
+        boolean cancellingExport = !confirm && runtimeDialogOwner == RuntimeDialogOwner.COMPATIBILITY
+                && dialog.getKind() == DialogKind.Progress;
+        if (!cancellingExport) clearRuntimeDialog();
+        if (action != null) action.run();
+        advanceStartupAuthorizationFlow();
+        return true;
+    }
+
+    private void showInstallationReminder() {
+        if (!backgroundStartSettingsRequired || backgroundStartSettingsActive
+                || cameraPermissionPending || weatherLocationPermissionInFlight || adbAuthPending) return;
+        UiStrings strings = new UiStrings(productionUi.getState().getLanguage());
+        showRuntimeDialog(RuntimeDialogOwner.BACKGROUND, DialogKind.Background,
+                runtimeText(R.string.background_work),
+                strings.text("Перевірте після встановлення або оновлення, інакше DiLink може зупинити BYD Extend у фоні.",
+                        "Check after installing or updating; otherwise DiLink may stop BYD Extend in the background.",
+                        "安装或更新后请检查此设置，否则 DiLink 可能会停止后台运行的 BYD Extend。"),
+                true, strings.text("Відкрити", "Open", "打开"),
+                strings.text("Зрозуміло", "Got it", "知道了"), "",
+                () -> openBackgroundStartSettings("installation_reminder"),
+                this::acknowledgeInstallationReminder);
+    }
+
+    private void acknowledgeInstallationReminder() {
+        installationReminder.acknowledge();
+        backgroundStartSettingsRequired = false;
+        cancelPendingBackgroundStartSettings();
+    }
+
     private void confirmDiagnosticLogShare() {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
-        new AlertDialog.Builder(this)
-                .setTitle(runtimeText(R.string.runtime_logs_share_title))
-                .setMessage(runtimeText(R.string.runtime_logs_share_message))
-                .setNegativeButton(runtimeText(R.string.runtime_cancel), null)
-                .setPositiveButton(runtimeText(R.string.runtime_create),
-                        (dialog, which) -> startDiagnosticLogExport())
-                .show();
+        showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Message,
+                runtimeText(R.string.runtime_logs_share_title),
+                runtimeText(R.string.runtime_logs_share_message), true,
+                runtimeText(R.string.runtime_create), runtimeText(R.string.runtime_cancel), "",
+                this::startDiagnosticLogExport, () -> {});
     }
 
     private void startDiagnosticLogExport() {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         logExportInProgress = true;
+        showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Progress,
+                runtimeText(R.string.runtime_logs_share_title),
+                runtimeText(R.string.runtime_logs_progress), false, null, null, "", null, null);
         if (settingsPanel != null) settingsPanel.setLogExportInProgress(true);
         publishSettingsOperation(SettingsOperation.Logs,
                 runtimeText(R.string.runtime_logs_progress), StatusTone.Warning, true, true);
@@ -1624,6 +1707,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void finishDiagnosticLogExport(File archive, Throwable error) {
         logExportInProgress = false;
+        if (runtimeDialogOwner == RuntimeDialogOwner.LOGS) clearRuntimeDialog();
         if (!activityDestroyed && settingsPanel != null) {
             settingsPanel.setLogExportInProgress(false);
         }
@@ -1674,7 +1758,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void runUpdateCheck(boolean force) {
-        if (updateCheckInFlight || activityDestroyed) return;
+        if (updateCheckInFlight || updateDownloadInFlight || activityDestroyed) return;
         updateCheckInFlight = true;
         publishSettingsOperation(SettingsOperation.Update,
                 runtimeText(R.string.runtime_update_checking), StatusTone.Warning, true);
@@ -1687,6 +1771,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         getApplicationContext(), force);
                 runOnUiThread(() -> {
                     updateCheckInFlight = false;
+                    if (activityDestroyed || isFinishing()) return;
                     restoreUpdateButton();
                     if (available == null) {
                         publishSettingsOperation(SettingsOperation.Update,
@@ -1708,6 +1793,7 @@ public final class CameraProbeActivity extends ComponentActivity
             } catch (Throwable error) {
                 runOnUiThread(() -> {
                     updateCheckInFlight = false;
+                    if (activityDestroyed || isFinishing()) return;
                     restoreUpdateButton();
                     record("update_check_finished", "result", "error",
                             "error", error.toString());
@@ -1723,81 +1809,44 @@ public final class CameraProbeActivity extends ComponentActivity
         if (settingsPanel == null) return;
         settingsPanel.setUpdateButton(
                 runtimeText(R.string.runtime_update),
-                !activityDestroyed && updateProgressDialog == null);
+                !activityDestroyed && !updateDownloadInFlight && !updateCheckInFlight);
     }
 
     private void showCachedUpdateIfAvailable() {
         AppUpdateManager.UpdateInfo available = AppUpdateManager.cachedAvailable();
-        if (!activityResumed || activityDestroyed || available == null
-                || updateDialog != null || updateProgressDialog != null) return;
-
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(20), dp(12), dp(20), dp(12));
-        TextView versions = label(runtimeText(R.string.runtime_installed_version,
-                BuildConfig.VERSION_NAME) + "\n"
-                + runtimeText(R.string.runtime_available_version, available.version));
-        versions.setTextSize(16);
-        body.addView(versions, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        String notes = available.releaseNotes == null ? "" : available.releaseNotes.trim();
-        if (!notes.isEmpty()) {
-            TextView releaseNotes = label("");
-            releaseNotes.setTextSize(16);
-            releaseNotes.setLineSpacing(0.0f, 1.15f);
-            releaseNotes.setPadding(0, dp(16), 0, 0);
-            releaseNotes.setText(ReleaseNotesMarkdown.render(notes));
-            body.addView(releaseNotes, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
-        }
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.addView(body, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT));
-        updateDialog = new AlertDialog.Builder(this)
-                .setTitle(runtimeText(R.string.runtime_update_available))
-                .setView(scroll)
-                .setPositiveButton(runtimeText(R.string.runtime_update), (dialog, which) -> {
+        if (!canPresentUpdateResult() || available == null || updateDownloadInFlight) return;
+        showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Update,
+                runtimeText(R.string.runtime_update_available),
+                runtimeText(R.string.runtime_installed_version, BuildConfig.VERSION_NAME) + "\n"
+                        + runtimeText(R.string.runtime_available_version, available.version),
+                true, runtimeText(R.string.runtime_update), runtimeText(R.string.runtime_update_later),
+                ReleaseNotesSelector.select(available.releaseNotes, AppLanguage.read(preferences)),
+                () -> {
                     AppUpdateManager.clearCachedAvailable();
                     startUpdateDownload(available);
-                })
-                .setNegativeButton(runtimeText(R.string.runtime_update_later), (dialog, which) ->
-                        AppUpdateManager.clearCachedAvailable())
-                .setOnCancelListener(dialog -> AppUpdateManager.clearCachedAvailable())
-                .create();
-        updateDialog.setOnDismissListener(dialog -> updateDialog = null);
-        updateDialog.show();
+                }, AppUpdateManager::clearCachedAvailable);
     }
 
     private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
-        if (activityDestroyed || updateProgressDialog != null) return;
+        if (activityDestroyed || updateDownloadInFlight) return;
+        updateDownloadInFlight = true;
         record("update_download_started", "version", info.version);
-        updateProgressDialog = new AlertDialog.Builder(this)
-                .setTitle(runtimeText(R.string.runtime_update_download_title, info.version))
-                .setMessage(runtimeText(R.string.runtime_update_download, 0))
-                .setCancelable(false)
-                .create();
-        updateProgressDialog.show();
+        showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Progress,
+                runtimeText(R.string.runtime_update_download_title, info.version),
+                runtimeText(R.string.runtime_update_download, 0), false, null, null, "", null, null);
         updateExecutor.execute(() -> {
             try {
                 File file = updateManager.downloadAndVerify(
                         getApplicationContext(), info, progress -> runOnUiThread(() -> {
-                            if (updateProgressDialog != null) {
-                                updateProgressDialog.setMessage(
-                                        runtimeText(R.string.runtime_update_download, progress));
-                            }
+                            if (!activityDestroyed) updateRuntimeProgress(RuntimeDialogOwner.UPDATE,
+                                    runtimeText(R.string.runtime_update_download, progress), false);
                         }));
                 runOnUiThread(() -> {
                     dismissUpdateProgress();
-                    try {
-                        updateManager.install(CameraProbeActivity.this, info, file);
-                        record("update_install_opened", "version", info.version);
-                    } catch (Throwable error) {
-                        showUpdateError(error);
-                    }
+                    if (activityDestroyed || isFinishing()) return;
+                    pendingUpdateFile = file;
+                    pendingUpdateInstall = info;
+                    presentPendingUpdateResult();
                 });
             } catch (Throwable error) {
                 runOnUiThread(() -> {
@@ -1809,9 +1858,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void dismissUpdateProgress() {
-        if (updateProgressDialog == null) return;
-        updateProgressDialog.dismiss();
-        updateProgressDialog = null;
+        updateDownloadInFlight = false;
+        if (runtimeDialogOwner == RuntimeDialogOwner.UPDATE) clearRuntimeDialog();
+        restoreUpdateButton();
     }
 
     private void showUpdateError(Throwable error) {
@@ -1824,11 +1873,41 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void showUpdateMessage(String title, String message) {
         if (activityDestroyed || isFinishing()) return;
-        new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage(message)
-                .setPositiveButton(runtimeText(R.string.runtime_ok), null)
-                .show();
+        pendingUpdateTitle = title;
+        pendingUpdateMessage = message;
+        presentPendingUpdateResult();
+    }
+
+    private boolean canPresentUpdateResult() {
+        return activityResumed && !activityDestroyed && !isFinishing() && !shutdownRequested
+                && !cameraPermissionPending && !backgroundStartSettingsPending()
+                && !weatherLocationPermissionPending && !weatherLocationPermissionInFlight
+                && !adbAuthPending && !adbAuthorizationStartScheduled
+                && !settingsTransferInProgress && !settingsReloadPending
+                && legacyImportOfferDialog == null && settingsTransferDialog == null
+                && !logExportInProgress && !compatibilityExportInProgress
+                && productionUi != null && productionUi.getState().getDialog() == null;
+    }
+
+    private void presentPendingUpdateResult() {
+        if (!canPresentUpdateResult()) return;
+        if (pendingUpdateInstall != null && pendingUpdateFile != null) {
+            AppUpdateManager.UpdateInfo info = pendingUpdateInstall;
+            File file = pendingUpdateFile;
+            pendingUpdateInstall = null;
+            pendingUpdateFile = null;
+            try {
+                updateManager.install(this, info, file);
+                record("update_install_opened", "version", info.version);
+            } catch (Throwable error) { showUpdateError(error); }
+        } else if (pendingUpdateTitle != null) {
+            String title = pendingUpdateTitle;
+            String message = pendingUpdateMessage;
+            pendingUpdateTitle = null;
+            pendingUpdateMessage = null;
+            showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Message, title, message,
+                    true, runtimeText(R.string.runtime_ok), null, "", () -> {}, () -> {});
+        } else showCachedUpdateIfAvailable();
     }
 
     private void startAndBindHelperService() {
@@ -2028,13 +2107,11 @@ public final class CameraProbeActivity extends ComponentActivity
     private void confirmCompatibilityBundleShare() {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
-        new AlertDialog.Builder(this)
-                .setTitle(runtimeText(R.string.runtime_car_compat_title))
-                .setMessage(runtimeText(R.string.runtime_car_compat_message))
-                .setNegativeButton(runtimeText(R.string.runtime_cancel), null)
-                .setPositiveButton(runtimeText(R.string.runtime_create),
-                        (dialog, which) -> startCompatibilityBundleExport())
-                .show();
+        showRuntimeDialog(RuntimeDialogOwner.COMPATIBILITY, DialogKind.Message,
+                runtimeText(R.string.runtime_car_compat_title),
+                runtimeText(R.string.runtime_car_compat_message), true,
+                runtimeText(R.string.runtime_create), runtimeText(R.string.runtime_cancel), "",
+                this::startCompatibilityBundleExport, () -> {});
     }
 
     private void startCompatibilityBundleExport() {
@@ -2076,26 +2153,18 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void showCompatibilityExportProgress() {
-        compatibilityExportProgressDialog = new AlertDialog.Builder(this)
-                .setTitle(runtimeText(R.string.runtime_car_compat_title))
-                .setMessage(runtimeText(R.string.runtime_car_compat_prepare))
-                .setNegativeButton(runtimeText(R.string.runtime_cancel),
-                        (dialog, which) -> cancelCompatibilityBundleExport())
-                .setCancelable(false)
-                .create();
-        compatibilityExportProgressDialog.show();
+        showRuntimeDialog(RuntimeDialogOwner.COMPATIBILITY, DialogKind.Progress,
+                runtimeText(R.string.runtime_car_compat_title),
+                runtimeText(R.string.runtime_car_compat_prepare), true, null,
+                runtimeText(R.string.runtime_cancel), "", null, this::cancelCompatibilityBundleExport);
     }
 
     private void cancelCompatibilityBundleExport() {
         CompatibilityBundleExporter.ExportControl control = compatibilityExportControl;
         if (control == null || control.isCancellationRequested()) return;
         control.cancel();
-        if (compatibilityExportProgressDialog != null) {
-            compatibilityExportProgressDialog.setMessage(
-                    runtimeText(R.string.runtime_car_compat_canceling));
-            Button cancel = compatibilityExportProgressDialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-            if (cancel != null) cancel.setEnabled(false);
-        }
+        updateRuntimeProgress(RuntimeDialogOwner.COMPATIBILITY,
+                runtimeText(R.string.runtime_car_compat_canceling), false);
         if (settingsPanel != null) settingsPanel.setTransferStatus(
                 runtimeText(R.string.runtime_car_compat_canceling));
         publishSettingsOperation(SettingsOperation.Compatibility,
@@ -2108,9 +2177,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 || compatibilityExportControl == null
                 || compatibilityExportControl.isCancellationRequested()) return;
         String text = localizedCompatibilityExportProgressText(progress);
-        if (compatibilityExportProgressDialog != null) {
-            compatibilityExportProgressDialog.setMessage(text);
-        }
+        updateRuntimeProgress(RuntimeDialogOwner.COMPATIBILITY, text, true);
         if (settingsPanel != null) settingsPanel.setTransferStatus(text);
         publishSettingsOperation(SettingsOperation.Compatibility,
                 text, StatusTone.Warning, true);
@@ -2177,10 +2244,7 @@ public final class CameraProbeActivity extends ComponentActivity
             CompatibilityBundleExporter.ExportControl control, File archive, Throwable error) {
         compatibilityExportInProgress = false;
         if (compatibilityExportControl == control) compatibilityExportControl = null;
-        if (compatibilityExportProgressDialog != null) {
-            compatibilityExportProgressDialog.dismiss();
-            compatibilityExportProgressDialog = null;
-        }
+        if (runtimeDialogOwner == RuntimeDialogOwner.COMPATIBILITY) clearRuntimeDialog();
         if (!activityDestroyed && settingsPanel != null) {
             settingsPanel.setCompatibilityExportInProgress(false);
         }
@@ -3521,6 +3585,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void handleProductionCommand(BydExtendUiAction.Run action) {
         CommandId command = action.getCommand();
+        if (handleRuntimeDialogCommand(command)) return;
         if (command == CommandId.ReverseLearnButton) beginReverseButtonLearning();
         else if (command == CommandId.ReverseResetButton) resetReverseButtonBinding();
         else if (command == CommandId.DismissDialog) cancelReverseButtonLearningIfVisible();
@@ -6091,12 +6156,6 @@ public final class CameraProbeActivity extends ComponentActivity
     void onSettingsAutoStartChanged(boolean checked) {
         record("auto_start_toggle", "enabled", checked);
         CameraHelperService.updateAutoStart(this, checked);
-        if (checked) {
-            backgroundStartSettingsRequired = true;
-        } else {
-            backgroundStartSettingsRequired = false;
-            cancelPendingBackgroundStartSettings();
-        }
         advanceStartupAuthorizationFlow();
         updateControls();
     }
@@ -12720,6 +12779,11 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void advanceStartupAuthorizationFlow() {
         if (settingsTransferInProgress || settingsReloadPending) return;
+        if (productionUi != null && productionUi.getState().getDialog() != null) {
+            cancelPendingBackgroundStartSettings();
+            cancelPendingForegroundAdbAuthorization();
+            return;
+        }
         if (shouldOpenBackgroundStartSettings(
                 GuardRecovery.isAutoStartEnabled(this), cameraPermissionPending,
                 hasWindowFocus(), backgroundStartSettingsRequired,
@@ -12755,6 +12819,7 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         maybeStartForegroundAdbAuthorization();
         maybeShowLegacyImportOffer();
+        presentPendingUpdateResult();
     }
 
     private void maybeShowLegacyImportOffer() {
@@ -12764,7 +12829,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 || adbAuthPending || adbAuthorizationStartScheduled
                 || settingsTransferInProgress || settingsReloadPending
                 || logExportInProgress || compatibilityExportInProgress
-                || updateDialog != null || updateProgressDialog != null
+                || updateDownloadInFlight
+                || productionUi != null && productionUi.getState().getDialog() != null
                 || settingsTransferDialog != null || legacyImportOfferDialog != null
                 || shutdownRequested || activityDestroyed || isFinishing()
                 || LocalAdbClient.readAccessState(this).status
@@ -12803,7 +12869,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (cameraPermissionPending || backgroundStartSettingsActive || adbAuthPending) return;
         cancelPendingBackgroundStartSettings();
         cancelPendingForegroundAdbAuthorization();
-        backgroundStartSettingsRequired = false;
+        acknowledgeInstallationReminder();
         backgroundStartSettingsActive = true;
         record("background_start_settings_open_requested", "reason", reason);
         try {
@@ -12930,7 +12996,7 @@ public final class CameraProbeActivity extends ComponentActivity
     static boolean shouldOpenBackgroundStartSettings(boolean autoStartEnabled,
             boolean permissionPending, boolean hasFocus, boolean settingsRequired,
             boolean settingsActive, boolean authorizationPending) {
-        return autoStartEnabled && !permissionPending && hasFocus && settingsRequired
+        return !permissionPending && hasFocus && settingsRequired
                 && !settingsActive && !authorizationPending;
     }
 
