@@ -1,5 +1,6 @@
 package com.byd.extend;
 
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
@@ -124,8 +125,11 @@ final class StockAvmPreview {
             stageSink.accept(currentStage, "ok");
 
             currentStage = "config_init_panorama_db_state";
-            invokeStatic(loader, "com.byd.avc.util.devicestates.CarSetting",
-                    "initPanoramaDBState", new Class<?>[]{Context.class}, stockContext);
+            int panoramaState = (Integer) invokeStatic(loader,
+                    "android.provider.CarSettings$Config", "getInt",
+                    new Class<?>[]{ContentResolver.class, String.class},
+                    stockContext.getContentResolver(), "panorama_type");
+            applyPanoramaState(loader, panoramaState);
             stageSink.accept(currentStage, "ok");
 
             currentStage = "config_init_car_body_type";
@@ -134,8 +138,6 @@ final class StockAvmPreview {
             stageSink.accept(currentStage, "ok");
 
             currentStage = "config_read_values";
-            int panoramaState = (Integer) invokeStatic(loader,
-                    "com.byd.avc.util.devicestates.CarSetting", "getPanoramaState");
             int panoWidth = (Integer) invokeStatic(loader,
                     "com.byd.avc.util.devicestates.CarSetting", "getPanoWidth");
             int panoHeight = (Integer) invokeStatic(loader,
@@ -143,8 +145,6 @@ final class StockAvmPreview {
             int modelValue = (Integer) invokeStatic(loader,
                     "com.byd.avc.util.devicestates.CarStatus", "getCarBodyTypeValue",
                     new Class<?>[]{Context.class}, stockContext);
-            int modelValueOrigin = (Integer) getStaticField(loader,
-                    "com.byd.avc.util.devicestates.CarStatus", "modelValueOrigin");
             String carSeries = (String) invokeStatic(loader,
                     "com.byd.avc.util.devicestates.CarStatus", "getCarSeries");
             String carType = (String) invokeStatic(loader,
@@ -153,8 +153,8 @@ final class StockAvmPreview {
             String subCarType = (String) invokeStatic(loader,
                     "com.byd.avc.util.devicestates.CarStatus", "getSubCarType",
                     new Class<?>[]{Context.class}, stockContext);
-            Config config = new Config(panoramaState, modelValue, modelValueOrigin,
-                    panoWidth, panoHeight, carSeries, carType, subCarType);
+            Config config = new Config(panoramaState, modelValue, panoWidth, panoHeight,
+                    carSeries, carType, subCarType);
             stageSink.accept(currentStage, config.detail());
             return config;
         } catch (Throwable error) {
@@ -494,14 +494,9 @@ final class StockAvmPreview {
     private static void applyConfig(ClassLoader loader, Context stockContext, Config config)
             throws Exception {
         config.validate();
-        setStaticField(loader, "com.byd.avc.util.devicestates.CarSetting",
-                "panoramaState", config.panoramaState);
-        invokeStatic(loader, "com.byd.avc.BYDAutoPanoService.PanoramaDevices",
-                "setPanoramaState", new Class<?>[]{int.class}, config.panoramaState);
+        applyPanoramaState(loader, config.panoramaState);
         setStaticField(loader, "com.byd.avc.util.devicestates.CarStatus",
                 "modelValue", config.modelValue);
-        setStaticField(loader, "com.byd.avc.util.devicestates.CarStatus",
-                "modelValueOrigin", config.modelValueOrigin);
         setStaticField(loader, "com.byd.avc.util.devicestates.CarStatus",
                 "mCarSeries", config.carSeries);
 
@@ -521,6 +516,22 @@ final class StockAvmPreview {
         if (!config.carType.equals(carType) || !config.subCarType.equals(subCarType)) {
             throw new IllegalStateException("vehicle config mismatch: "
                     + carType + "/" + subCarType);
+        }
+    }
+
+    private static void applyPanoramaState(ClassLoader loader, int panoramaState)
+            throws Exception {
+        validatePanoramaState(panoramaState);
+        setStaticField(loader, "com.byd.avc.util.devicestates.CarSetting",
+                "panoramaState", panoramaState);
+        invokeStatic(loader, "com.byd.avc.BYDAutoPanoService.PanoramaDevices",
+                "setPanoramaState", new Class<?>[]{int.class}, panoramaState);
+    }
+
+    private static void validatePanoramaState(int panoramaState) {
+        if (panoramaState != 1 && panoramaState != 4 && panoramaState != 5) {
+            throw new IllegalArgumentException("unsupported panorama state: "
+                    + panoramaState);
         }
     }
 
@@ -981,7 +992,6 @@ final class StockAvmPreview {
     static final class Config {
         final int panoramaState;
         final int modelValue;
-        final int modelValueOrigin;
         final int panoWidth;
         final int panoHeight;
         final String carSeries;
@@ -991,7 +1001,6 @@ final class StockAvmPreview {
         Config(
                 int panoramaState,
                 int modelValue,
-                int modelValueOrigin,
                 int panoWidth,
                 int panoHeight,
                 String carSeries,
@@ -999,7 +1008,6 @@ final class StockAvmPreview {
                 String subCarType) {
             this.panoramaState = panoramaState;
             this.modelValue = modelValue;
-            this.modelValueOrigin = modelValueOrigin;
             this.panoWidth = panoWidth;
             this.panoHeight = panoHeight;
             this.carSeries = carSeries;
@@ -1011,7 +1019,6 @@ final class StockAvmPreview {
         void writeToParcel(Parcel parcel) {
             parcel.writeInt(panoramaState);
             parcel.writeInt(modelValue);
-            parcel.writeInt(modelValueOrigin);
             parcel.writeInt(panoWidth);
             parcel.writeInt(panoHeight);
             parcel.writeString(carSeries);
@@ -1021,17 +1028,13 @@ final class StockAvmPreview {
 
         static Config readFromParcel(Parcel parcel) {
             return new Config(parcel.readInt(), parcel.readInt(), parcel.readInt(),
-                    parcel.readInt(), parcel.readInt(), parcel.readString(),
-                    parcel.readString(), parcel.readString());
+                    parcel.readInt(), parcel.readString(), parcel.readString(),
+                    parcel.readString());
         }
 
         void validate() {
-            if (panoramaState != 1 && panoramaState != 4 && panoramaState != 5) {
-                throw new IllegalArgumentException("unsupported panorama state: "
-                        + panoramaState);
-            }
-            if (modelValue < 0 || modelValue > 10_000
-                    || modelValueOrigin < 0 || modelValueOrigin > 10_000) {
+            validatePanoramaState(panoramaState);
+            if (modelValue < 0 || modelValue > 10_000) {
                 throw new IllegalArgumentException("invalid model values");
             }
             if (panoWidth < 320 || panoWidth > 4096 || panoHeight < 240 || panoHeight > 2160) {
@@ -1048,7 +1051,6 @@ final class StockAvmPreview {
         String detail() {
             return "panorama=" + panoramaState
                     + ";model=" + modelValue
-                    + ";origin=" + modelValueOrigin
                     + ";series=" + carSeries
                     + ";car=" + carType
                     + ";sub=" + subCarType

@@ -102,7 +102,8 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(101, BuildConfig.VERSION_CODE);
+        assertEquals(102, BuildConfig.VERSION_CODE);
+        assertEquals("1.2.0", BuildConfig.VERSION_NAME);
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
         assertEquals(7, TurnSignalShellProtocol.VERSION);
@@ -1798,19 +1799,116 @@ public final class AdbCoreTest {
                 1, 9, 640, 480, 16, 36,
                 0.0f, 0.04f, 0.65f, 0.72f,
                 DirectCameraCrop.ASPECT_FREE).validate(1920, 1080));
-        StockAvmPreview.Config config = new StockAvmPreview.Config(
-                1, 250, 250, 1920, 1300, "ocean", "car", "sub");
-        assertEquals(1, config.panoramaState);
-        assertThrows(IllegalArgumentException.class, () -> new StockAvmPreview.Config(
-                0, 250, 250, 1920, 1300, "ocean", "car", "sub"));
-        assertThrows(IllegalArgumentException.class, () -> new StockAvmPreview.Config(
-                1, 250, 250, 1920, 1300, "unknown", "car", "sub"));
+        for (int panoramaState : new int[]{1, 4, 5}) {
+            StockAvmPreview.Config config = stockAvmConfig(
+                    panoramaState, 250, 1920, 1300, "ocean", "car", "sub");
+            assertEquals(panoramaState, config.panoramaState);
+        }
+        for (int panoramaState : new int[]{0, 2, Integer.MIN_VALUE}) {
+            assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                    panoramaState, 250, 1920, 1300, "ocean", "car", "sub"));
+        }
+        for (int modelValue : new int[]{-1, 10_001, Integer.MIN_VALUE}) {
+            assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                    1, modelValue, 1920, 1300, "ocean", "car", "sub"));
+        }
+        stockAvmConfig(1, 0, 320, 240, "denza", "x".repeat(64), "x".repeat(64));
+        stockAvmConfig(5, 10_000, 4096, 2160, "F", "car", "sub");
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 319, 1300, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 4097, 1300, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, Integer.MIN_VALUE, 1300, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 1920, 239, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 1920, 2161, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 1920, Integer.MIN_VALUE, "ocean", "car", "sub"));
+        assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                1, 250, 1920, 1300, "unknown", "car", "sub"));
+        for (String invalidText : new String[]{null, "", "x".repeat(65)}) {
+            assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                    1, 250, 1920, 1300, "ocean", invalidText, "sub"));
+            assertThrows(IllegalArgumentException.class, () -> stockAvmConfig(
+                    1, 250, 1920, 1300, "ocean", "car", invalidText));
+        }
         assertEquals(4, StockAvmPreview.resolution(1, 1300));
         assertEquals(3, StockAvmPreview.resolution(1, 1200));
         assertEquals(2, StockAvmPreview.resolution(4, 960));
         assertEquals("1300P", StockAvmPreview.resolutionDirectory(4));
         assertThrows(IllegalArgumentException.class,
                 () -> StockAvmPreview.resolutionDirectory(5));
+    }
+
+    @Test
+    public void stockAvmConfigUsesNarrowPanoramaReaderAndStableWireOrder() throws Exception {
+        Path source = Path.of("app/src/main/java/com/byd/extend/StockAvmPreview.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/StockAvmPreview.java");
+        }
+        assertTrue("StockAvmPreview source unavailable", Files.exists(source));
+        String text = new String(Files.readAllBytes(source),
+                java.nio.charset.StandardCharsets.UTF_8).replace("\r\n", "\n");
+
+        assertFalse(text.contains("initPanoramaDBState"));
+        assertFalse(text.contains("modelValueOrigin"));
+
+        int readStart = text.indexOf("    static Config readConfig(");
+        int readEnd = text.indexOf("    synchronized boolean open(", readStart);
+        assertTrue(readStart >= 0);
+        assertTrue(readEnd > readStart);
+        String read = text.substring(readStart, readEnd);
+        assertTrue(read.contains("config_init_panorama_db_state"));
+        assertOrdered(read,
+                "android.provider.CarSettings$Config",
+                "getInt",
+                "new Class<?>[]{ContentResolver.class, String.class}",
+                "getContentResolver()",
+                "panorama_type",
+                "applyPanoramaState(loader, panoramaState)",
+                "initCarBodyTypeValue");
+
+        int helperStart = text.indexOf(
+                "    private static void applyPanoramaState(ClassLoader loader, int panoramaState)");
+        int helperEnd = text.indexOf("    private static ", helperStart + 1);
+        assertTrue(helperStart >= 0);
+        assertTrue(helperEnd > helperStart);
+        assertOrdered(text.substring(helperStart, helperEnd),
+                "validatePanoramaState(panoramaState)",
+                "panoramaState\", panoramaState",
+                "setPanoramaState\", new Class<?>[]{int.class}, panoramaState");
+
+        int applyStart = text.indexOf("    private static void applyConfig(");
+        int applyEnd = text.indexOf("    private static SdkConfig resolveSdkConfig(", applyStart);
+        assertTrue(applyStart >= 0);
+        assertTrue(applyEnd > applyStart);
+        assertOrdered(text.substring(applyStart, applyEnd),
+                "applyPanoramaState(loader, config.panoramaState)",
+                "modelValue\", config.modelValue");
+
+        int writeStart = text.indexOf("        void writeToParcel(Parcel parcel) {");
+        int writeEnd = text.indexOf("        static Config readFromParcel", writeStart);
+        int parcelReadEnd = text.indexOf("        void validate()", writeEnd);
+        assertTrue(writeStart >= 0);
+        assertTrue(writeEnd > writeStart);
+        assertTrue(parcelReadEnd > writeEnd);
+        String write = text.substring(writeStart, writeEnd);
+        String readParcel = text.substring(writeEnd, parcelReadEnd);
+        assertEquals(4, occurrences(write, "parcel.writeInt("));
+        assertEquals(3, occurrences(write, "parcel.writeString("));
+        assertEquals(4, occurrences(readParcel, "parcel.readInt()"));
+        assertEquals(3, occurrences(readParcel, "parcel.readString()"));
+        assertOrdered(write,
+                "writeInt(panoramaState)", "writeInt(modelValue)",
+                "writeInt(panoWidth)", "writeInt(panoHeight)",
+                "writeString(carSeries)", "writeString(carType)",
+                "writeString(subCarType)");
+        assertOrdered(readParcel,
+                "new Config(",
+                "parcel.readInt()", "parcel.readInt()", "parcel.readInt()", "parcel.readInt()",
+                "parcel.readString()", "parcel.readString()", "parcel.readString()");
     }
 
     @Test
@@ -2072,5 +2170,29 @@ public final class AdbCoreTest {
         }
         output.putInt(key.getPublicExponent().intValue());
         return output.array();
+    }
+
+    private static StockAvmPreview.Config stockAvmConfig(
+            int panoramaState, int modelValue, int panoWidth, int panoHeight,
+            String carSeries, String carType, String subCarType) {
+        return new StockAvmPreview.Config(
+                panoramaState, modelValue, panoWidth, panoHeight,
+                carSeries, carType, subCarType);
+    }
+
+    private static void assertOrdered(String text, String... needles) {
+        int index = -1;
+        for (String needle : needles) {
+            index = text.indexOf(needle, index + 1);
+            assertTrue("Missing or out-of-order source fragment: " + needle, index >= 0);
+        }
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int index = 0; (index = text.indexOf(needle, index)) >= 0; index += needle.length()) {
+            count++;
+        }
+        return count;
     }
 }

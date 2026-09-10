@@ -11,7 +11,7 @@ final class StockAvmShellProtocol {
     static final String CALLBACK_DESCRIPTOR = "com.byd.extend.IStockAvmShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_avm.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_avm.log";
-    static final int VERSION = 1;
+    static final int VERSION = 2;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
