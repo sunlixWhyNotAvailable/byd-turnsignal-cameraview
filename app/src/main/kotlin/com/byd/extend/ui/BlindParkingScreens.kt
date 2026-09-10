@@ -80,7 +80,7 @@ internal fun BlindScreen(
                         "Не показувати під час панорамного виду",
                         "Do not show while panorama is open",
                         "全景视图开启时不显示",
-                    ), "", rules.suppressWhilePanorama,
+                    ), strings.text("Тільки для планшету", "Tablet only", "仅限平板"), rules.suppressWhilePanorama,
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
                         ToggleId.BlindSuppressWhilePanorama, state.selectedGroup), it)) }, colors,
                 )

@@ -135,7 +135,7 @@ private fun ColumnScope.MirrorProfileHeader(
             "Не показувати під час панорамного виду",
             "Do not show while panorama is open",
             "全景视图开启时不显示",
-        ), "", state.suppressWhilePanorama,
+        ), strings.text("Тільки для планшету", "Tablet only", "仅限平板"), state.suppressWhilePanorama,
         { onAction(BydExtendUiAction.Toggle(
             ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama), it)) }, colors,
     )

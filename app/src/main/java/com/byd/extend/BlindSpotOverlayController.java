@@ -663,8 +663,9 @@ final class BlindSpotOverlayController {
     }
 
     static boolean panoramaSuppresses(
-            boolean known, boolean visible, boolean suppressWhilePanorama) {
-        return suppressWhilePanorama && known && visible;
+            int target, boolean known, boolean visible, boolean suppressWhilePanorama) {
+        return target == CameraDisplayTarget.TABLET
+                && suppressWhilePanorama && known && visible;
     }
 
     static boolean readPanoramaSuppression(
@@ -1138,18 +1139,12 @@ final class BlindSpotOverlayController {
     }
 
     private void evaluate() {
-        boolean rearSuppressed = panoramaSuppresses(
-                oemPanoramaKnown, oemPanoramaVisible,
-                readPanoramaSuppression(settings, false));
-        boolean frontSuppressed = panoramaSuppresses(
-                oemPanoramaKnown, oemPanoramaVisible,
-                readPanoramaSuppression(settings, true));
         int desired = desiredCameraMask(
                 stateValid, blink, speedKph, steeringAngle,
-                settings.getBoolean(PREF_ENABLED, false) && !rearSuppressed,
+                settings.getBoolean(PREF_ENABLED, false),
                 settings.getInt(PREF_MIN_SPEED, DEFAULT_MIN_SPEED_KPH),
                 settings.getInt(PREF_MAX_SPEED, DEFAULT_MAX_SPEED_KPH),
-                settings.getBoolean(PREF_FRONT_ENABLED, false) && !frontSuppressed,
+                settings.getBoolean(PREF_FRONT_ENABLED, false),
                 settings.getInt(PREF_FRONT_MIN_SPEED, DEFAULT_FRONT_MIN_SPEED_KPH),
                 settings.getInt(PREF_FRONT_MAX_SPEED, DEFAULT_FRONT_MAX_SPEED_KPH),
                 settings.getBoolean(PREF_FRONT_TURN_REQUIRED, true),
@@ -1160,9 +1155,15 @@ final class BlindSpotOverlayController {
                 settings.getBoolean(PREF_REAR_BSD_ONLY, false),
                 leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
         if (isHardBlocked()) desired = 0;
+        boolean rearPanoramaSuppression = readPanoramaSuppression(settings, false);
+        boolean frontPanoramaSuppression = readPanoramaSuppression(settings, true);
         for (PaneState pane : panes) {
             boolean requested = (desired & pane.profile.bit()) != 0
-                    && pane.expected && !pane.failed;
+                    && pane.expected && !pane.failed
+                    && !panoramaSuppresses(pane.target,
+                            oemPanoramaKnown, oemPanoramaVisible,
+                            pane.profile.rear()
+                                    ? rearPanoramaSuppression : frontPanoramaSuppression);
             setVisible(pane, requested,
                     requested ? "trigger_active" : "trigger_inactive");
         }

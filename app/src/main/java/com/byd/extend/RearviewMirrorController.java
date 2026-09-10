@@ -91,14 +91,15 @@ final class RearviewMirrorController {
             boolean oemKnown, boolean oemVisible, boolean runtimeAllowed,
             boolean permission, boolean shutdown) {
         return shouldShow(enabled, manuallyHidden, appVisible, oemKnown, oemVisible,
-                true, runtimeAllowed, permission, shutdown);
+                true, CameraDisplayTarget.TABLET, runtimeAllowed, permission, shutdown);
     }
 
     static boolean shouldShow(boolean enabled, boolean manuallyHidden, boolean appVisible,
             boolean oemKnown, boolean oemVisible, boolean suppressWhilePanorama,
-            boolean runtimeAllowed, boolean permission, boolean shutdown) {
+            int target, boolean runtimeAllowed, boolean permission, boolean shutdown) {
         return enabled && !manuallyHidden && !appVisible
-                && (!suppressWhilePanorama || oemKnown && !oemVisible)
+                && (target == CameraDisplayTarget.CLUSTER
+                        || !suppressWhilePanorama || oemKnown && !oemVisible)
                 && runtimeAllowed && permission && !shutdown;
     }
 
@@ -106,6 +107,7 @@ final class RearviewMirrorController {
         return shouldShow(RearviewMirrorSettings.enabled(preferences),
                 RearviewMirrorSettings.hidden(preferences), appVisible, oemKnown, oemVisible,
                 RearviewMirrorSettings.suppressWhilePanorama(preferences),
+                RearviewMirrorSettings.target(preferences),
                 runtimeAllowed, Settings.canDrawOverlays(context), shutdown)
                 && !GuardRecovery.isUserShutdownActive(context)
                 && !LegacySettingsImporter.blocksRuntime(context);

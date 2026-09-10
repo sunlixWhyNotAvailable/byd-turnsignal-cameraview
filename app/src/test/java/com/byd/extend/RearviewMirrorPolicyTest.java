@@ -94,17 +94,60 @@ public final class RearviewMirrorPolicyTest {
                 java.nio.charset.StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
-    @Test public void disabledPanoramaSuppressionBypassesOnlyThePanoramaGate() {
-        assertTrue(RearviewMirrorController.shouldShow(
-                true, false, false, false, true, false, true, true, false));
-        assertFalse(RearviewMirrorController.shouldShow(
-                true, true, false, false, true, false, true, true, false));
-        assertFalse(RearviewMirrorController.shouldShow(
-                true, false, true, false, true, false, true, true, false));
-        assertFalse(RearviewMirrorController.shouldShow(
-                true, false, false, false, true, false, false, true, false));
-        assertFalse(RearviewMirrorController.shouldShow(
-                true, false, false, false, true, false, true, false, false));
+    @Test public void destinationAwarePanoramaPolicyPreservesEveryOtherVisibilityGate() {
+        for (int target : new int[]{CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER}) {
+            for (int panorama = 0; panorama < 8; panorama++) {
+                boolean suppress = (panorama & 1) != 0;
+                boolean known = (panorama & 2) != 0;
+                boolean visible = (panorama & 4) != 0;
+                for (int gates = 0; gates < 64; gates++) {
+                    boolean enabled = (gates & 1) != 0;
+                    boolean manuallyHidden = (gates & 2) != 0;
+                    boolean foreground = (gates & 4) != 0;
+                    boolean allowed = (gates & 8) != 0;
+                    boolean permission = (gates & 16) != 0;
+                    boolean shutdown = (gates & 32) != 0;
+                    boolean panoramaAllows = target == CameraDisplayTarget.CLUSTER
+                            || !suppress || known && !visible;
+                    boolean expected = enabled && !manuallyHidden && !foreground
+                            && allowed && permission && !shutdown && panoramaAllows;
+                    assertEquals("target=" + target + " panorama=" + panorama
+                                    + " gates=" + gates, expected,
+                            RearviewMirrorController.shouldShow(
+                                    enabled, manuallyHidden, foreground, known, visible,
+                                    suppress, target, allowed, permission, shutdown));
+                }
+            }
+        }
+    }
+
+    @Test public void savedMirrorOptionSurvivesTargetChangesWhilePanoramaIsOpen() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        settings.putBoolean(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA, true);
+        settings.putInt(RearviewMirrorSettings.PREF_TARGET, CameraDisplayTarget.TABLET);
+        assertFalse(mirrorVisibleDuringPanorama(settings));
+
+        settings.putInt(RearviewMirrorSettings.PREF_TARGET, CameraDisplayTarget.CLUSTER);
+        assertTrue(mirrorVisibleDuringPanorama(settings));
+        settings.putInt(RearviewMirrorSettings.PREF_TARGET, CameraDisplayTarget.TABLET);
+        assertFalse(mirrorVisibleDuringPanorama(settings));
+        assertTrue(RearviewMirrorSettings.suppressWhilePanorama(settings));
+    }
+
+    @Test public void tabletOnlyHintIsPackagedAndUsedByBothPanoramaSwitches() throws Exception {
+        String[] folders = {"values-uk", "values", "values-zh-rCN"};
+        String[] hints = {"Тільки для планшету", "Tablet only", "仅限平板"};
+        for (int index = 0; index < folders.length; index++) {
+            String resources = sourceText("res/" + folders[index] + "/strings.xml");
+            assertTrue(resources.contains("<string name=\"tablet_only\">\""
+                    + hints[index] + "\"</string>"));
+        }
+
+        String blind = sourceText("kotlin/com/byd/extend/ui/BlindParkingScreens.kt");
+        String mirror = sourceText("kotlin/com/byd/extend/ui/MirrorScreen.kt");
+        String localizedHint = "strings.text(\"Тільки для планшету\", \"Tablet only\", \"仅限平板\")";
+        assertTrue(blind.contains(localizedHint + ", rules.suppressWhilePanorama"));
+        assertTrue(mirror.contains(localizedHint + ", state.suppressWhilePanorama"));
     }
 
     @Test public void mirrorDoesNotRenumberExistingOverlayProfiles() {
@@ -127,5 +170,12 @@ public final class RearviewMirrorPolicyTest {
             assertTrue(rounded >= 0 && rounded + 672 <= 1920);
             assertEquals(rounded, ShellCameraOverlay.roundedMirrorPosition(rounded, 1920, 672));
         }
+    }
+
+    private static boolean mirrorVisibleDuringPanorama(TestSharedPreferences settings) {
+        return RearviewMirrorController.shouldShow(
+                true, false, false, true, true,
+                RearviewMirrorSettings.suppressWhilePanorama(settings),
+                RearviewMirrorSettings.target(settings), true, true, false);
     }
 }
