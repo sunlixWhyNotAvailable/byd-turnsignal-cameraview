@@ -451,6 +451,7 @@ internal fun ChoiceField(
     colors: UiPalette,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    hudCompact: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -465,23 +466,25 @@ internal fun ChoiceField(
     }
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
+        if (!hudCompact) Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.SemiBold,
             maxLines = 2, modifier = Modifier.weight(1f))
-        BoxWithConstraints(Modifier.width(if (compact) 190.dp else 220.dp)) {
+        BoxWithConstraints(if (hudCompact) Modifier.fillMaxWidth() else Modifier.width(if (compact) 190.dp else 220.dp)) {
             val menuWidth = maxWidth
             Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(6.dp))
-                .border(1.dp, colors.accent, RoundedCornerShape(6.dp))
-                .background(pressBackground(selectedBackground, colors, fieldPress.pressed))
+                .border(1.dp, if (hudCompact && !enabled) colors.borderStrong else colors.accent, RoundedCornerShape(6.dp))
+                .background(pressBackground(if (hudCompact && !enabled) colors.field else selectedBackground, colors, fieldPress.pressed))
                 .then(fieldPress.modifier)
                 .clickable(interactionSource = fieldPress.interactionSource, indication = null,
                     enabled = enabled && choices.isNotEmpty(), role = Role.Button) {
                     openMenu()
                 }.padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center) {
-                Text(choices.getOrElse(safeSelected) { "—" }, color = selectedContent, fontSize = 14.sp,
+                Text(choices.getOrElse(safeSelected) { "—" }, color = if (hudCompact && !enabled) colors.muted.copy(alpha = .62f) else selectedContent, fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                Icon(Icons.Outlined.ExpandMore, null, tint = selectedContent.copy(alpha = .78f),
+                if (hudCompact) Text("▾", color = if (enabled) selectedContent else colors.muted.copy(alpha = .62f),
+                    fontSize = 18.sp, modifier = Modifier.align(Alignment.CenterEnd))
+                else Icon(Icons.Outlined.ExpandMore, null, tint = selectedContent.copy(alpha = .78f),
                     modifier = Modifier.align(Alignment.CenterEnd).size(20.dp))
             }
             if (expanded) Popup(DropdownPosition, { expanded = false }, PopupProperties(focusable = true)) {

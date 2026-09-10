@@ -40,6 +40,93 @@ import org.junit.Test
 
 class ProductionUiControllerTest {
     @Test
+    fun retainedReverseNativeCodesArePresentedAsBaseWithoutWritingPreferences() {
+        for ((base, native) in listOf(305 to 306, 304 to 312, 88 to 303, 87 to 302)) {
+            val preferences = TestSharedPreferences()
+            preferences.edit().putInt(ReverseSteeringButtonPreferences.KEY_CODE, native).apply()
+            val before = preferences.all.toMap()
+            val transactions = preferences.transactions
+            val snapshot = readProductionUiState(preferences, false, false)
+            assertEquals(base, snapshot.reverse.steeringKeyCode)
+            assertEquals(before, preferences.all)
+            assertEquals(transactions, preferences.transactions)
+        }
+    }
+
+    @Test
+    fun mirrorSnapshotUsesActiveCalibrationAndLocalBindingsWithoutWritingPreferences() {
+        val preferences = TestSharedPreferences()
+        val settings = RearviewMirrorSettings(preferences)
+        settings.save(settings.load().withFrontIntegrated(true).withSource(true))
+        val binding = CameraButtonBindings.Binding(88, CameraButtonBindings.Press.Double)
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.MirrorSource, binding)
+        val before = preferences.all.toMap()
+        val state = readProductionUiState(preferences, false, false).mirror
+        assertTrue(state.activeFront)
+        assertEquals("85", state.profile.calibration.original.height)
+        assertEquals(1, state.profile.calibration.outputMode)
+        assertEquals(binding, state.sourceBinding)
+        assertEquals(before, preferences.all)
+    }
+
+    @Test
+    fun mirrorCommandsCarrySourceAndRejectCallbacksFromDisposedSource() {
+        val preferences = TestSharedPreferences()
+        RearviewMirrorSettings.writeSourceState(preferences as android.content.SharedPreferences, true, true)
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        val stale = NumberTarget.Profile(CameraProfileId.Mirror, ProfileNumber.Fov, mirrorFront = false)
+        controller.dispatch(BydExtendUiAction.CommitNumber(stale, "101"))
+        controller.dispatch(BydExtendUiAction.Toggle(ToggleTarget.Profile(ToggleId.ProfileMirror,
+            CameraProfileId.Mirror, false), true))
+        controller.dispatch(BydExtendUiAction.Select(SelectionTarget.Profile(SelectionId.ProfileOutputMode,
+            CameraProfileId.Mirror, false), 2))
+        controller.dispatch(BydExtendUiAction.Run(CommandId.MirrorResetOutput, CameraProfileId.Mirror,
+            mirrorFront = false))
+        assertEquals(null, controller.preview(stale, "102", 1L))
+        assertTrue(backend.mirrorActions.isEmpty())
+        controller.dispatch(BydExtendUiAction.CommitNumber(stale.copy(mirrorFront = true), "101"))
+        assertEquals(true, backend.mirrorActions.last().front)
+        assertEquals(MirrorBackendActionKind.SetCalibration, backend.mirrorActions.last().kind)
+        controller.dispatch(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.MirrorSource), 0))
+        assertEquals(MirrorBackendActionKind.SetSource, backend.mirrorActions.last().kind)
+        assertEquals(false, backend.mirrorActions.last().front)
+    }
+
+    @Test
+    fun mirrorLearningDialogIsDismissedOnlyByItsOwnTarget() {
+        val controller = ProductionUiController(TestSharedPreferences(), FakeBackend(TestSharedPreferences()))
+        controller.showCameraButtonCaptureDialog(CameraButtonBindings.Action.MirrorVisibility)
+        assertEquals(CameraButtonBindings.Action.MirrorVisibility, controller.state.dialog?.captureAction)
+        assertTrue(controller.state.dialog!!.message.contains("show or hide"))
+        controller.dismissCameraButtonCaptureDialog(CameraButtonBindings.Action.ReverseSource)
+        assertTrue(controller.state.dialog != null)
+        controller.dismissCameraButtonCaptureDialog(CameraButtonBindings.Action.MirrorVisibility)
+        assertEquals(null, controller.state.dialog)
+    }
+
+    @Test
+    fun updateProgressKeepsReleaseNotesTitleAndPresentationThroughoutDownload() {
+        var dialog = com.byd.extend.ui.DialogUiState(DialogKind.Progress, "Download 1.2.0", "0%",
+            managed = true, markdown = "# Зміни\nНовий віджет", updatePresentation = true)
+        for (percent in listOf(0, 25, 100)) {
+            dialog = dialog.withRuntimeProgress("$percent%", percent / 100f, false, null)
+            assertEquals("Download 1.2.0", dialog.title)
+            assertEquals("# Зміни\nНовий віджет", dialog.markdown)
+            assertTrue(dialog.updatePresentation)
+            assertTrue(dialog.managed)
+            assertEquals(percent / 100f, dialog.progress)
+            assertFalse(dialog.confirmVisible)
+            assertFalse(dialog.cancellable)
+        }
+        val export = com.byd.extend.ui.DialogUiState(DialogKind.Progress, "Logs", "Working", managed = true)
+            .withRuntimeProgress("Still working", null, true, "Cancel")
+        assertFalse(export.updatePresentation)
+        assertEquals("", export.markdown)
+        assertTrue(export.cancellable)
+    }
+
+    @Test
     fun installationNavigationPreservesCameraEditorsAndOnlyChangesSelectedTabPreference() {
         val preferences = TestSharedPreferences()
         val backend = FakeBackend(preferences)
@@ -354,6 +441,11 @@ class ProductionUiControllerTest {
         val english = com.byd.extend.ui.UiStrings(com.byd.extend.ui.UiLanguage.English)
         val chinese = com.byd.extend.ui.UiStrings(com.byd.extend.ui.UiLanguage.Chinese)
         assertEquals("Круговий огляд (310)", steeringButtonLabel(310, ukrainian))
+        assertEquals("Панорама (294)", steeringButtonLabel(294, ukrainian))
+        assertEquals("Microphone (304)", steeringButtonLabel(304, english))
+        assertEquals("上一曲 (88)", steeringButtonLabel(88, chinese))
+        assertEquals("Next track (87)", steeringButtonLabel(87, english))
+        assertEquals("Коліщатко — натискання (353)", steeringButtonLabel(353, ukrainian))
         assertEquals("Button (code 999)", steeringButtonLabel(999, english))
         assertEquals("全景影像 (310)", steeringButtonLabel(310, chinese))
         assertEquals("按键（代码 999）", steeringButtonLabel(999, chinese))

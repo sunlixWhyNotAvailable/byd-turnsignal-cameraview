@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -365,6 +366,7 @@ private fun AppDialog(
     val dismissCommand = if (state.kind == DialogKind.Progress) CommandId.CancelOperation
         else CommandId.DismissDialog
     val markdownText = remember(state.markdown) { releaseNotesText(state.markdown) }
+    val notesScroll = rememberScrollState()
     Dialog(onDismissRequest = {
         if (state.cancellable) onAction(BydExtendUiAction.Run(dismissCommand))
     }, properties = DialogProperties(
@@ -379,7 +381,9 @@ private fun AppDialog(
         LaunchedEffect(captureDialog) {
             if (captureDialog) focusRequester.requestFocus()
         }
-        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 530.dp).clip(RoundedCornerShape(8.dp))
+        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth()
+            .then(if (state.updatePresentation) Modifier.height(430.dp) else Modifier.heightIn(max = 530.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp)
             .then(if (captureDialog) Modifier.semantics { testTagsAsResourceId = true }
             .testTag("reverse-key-dialog")
@@ -403,19 +407,25 @@ private fun AppDialog(
                 }
             } else if (captureDialog) {
                 Text(state.message, color = colors.muted, fontSize = 13.sp, lineHeight = 19.sp)
-            } else Column(Modifier.fillMaxWidth().weight(1f, fill = false)
+            } else Column(Modifier.fillMaxWidth().weight(1f, fill = state.updatePresentation)
                 .clip(RoundedCornerShape(8.dp)).background(colors.field)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                .verticalScroll(rememberScrollState()).padding(14.dp),
+                .verticalScroll(notesScroll).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                if (!state.updatePresentation || state.kind != DialogKind.Progress)
+                    Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 if (state.markdown.isNotEmpty()) {
                     Text(markdownText, color = colors.text,
                         fontSize = 14.sp, lineHeight = 21.sp)
                 }
-                state.progress?.let { progress ->
+                if (!state.updatePresentation) state.progress?.let { progress ->
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }
+            }
+            if (state.updatePresentation && state.kind == DialogKind.Progress) {
+                Text(state.message, color = colors.muted, fontSize = 13.sp)
+                LinearProgressIndicator(progress = { state.progress ?: 0f }, Modifier.fillMaxWidth(),
+                    color = colors.accent, trackColor = colors.field)
             }
             if (captureDialog) {
                 if (state.cancellable) ActionButton(

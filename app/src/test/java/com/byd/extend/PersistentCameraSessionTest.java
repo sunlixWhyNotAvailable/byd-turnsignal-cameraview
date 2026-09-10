@@ -243,6 +243,39 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void mirrorSourceSwitchReplacesOnlyMirrorConsumer() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shellClose = new FakeShellClose(trace);
+
+        session.startProducer(camera, fanout, session.overlayGroup,
+                surfaces(1), new int[]{2}, 31, "blind", false, false);
+        Surface blindTarget = session.overlayGroup.surfaces[0];
+        session.attach(camera, session.mirrorGroup,
+                surfaces(1), new int[]{RearviewMirrorSettings.REAR_CAMERA_INDEX},
+                32, "rearview_mirror", false, false,
+                events, shellClose, 7, 2);
+        session.attach(camera, session.mirrorGroup,
+                surfaces(1), new int[]{RearviewMirrorSettings.FRONT_CAMERA_INDEX},
+                33, "rearview_mirror", false, false,
+                events, shellClose, 7, 2);
+
+        assertTrue(session.overlayGroup.attached);
+        assertTrue(session.mirrorGroup.attached);
+        assertEquals(31, session.overlayGroup.requestId);
+        assertSame(blindTarget, session.overlayGroup.surfaces[0]);
+        assertEquals(RearviewMirrorSettings.FRONT_CAMERA_INDEX,
+                session.mirrorGroup.indexes[0]);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(0, count(trace.values, "target-remove:2"));
+    }
+
+    @Test
     public void reversePreemptsBlindAndKeepsParkingGroup() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);

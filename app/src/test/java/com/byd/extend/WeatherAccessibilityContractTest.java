@@ -19,10 +19,13 @@ public final class WeatherAccessibilityContractTest {
 
         String service = readProjectFile(
                 "app/src/main/java/com/byd/extend/WeatherRefreshAccessibilityService.java");
-        assertTrue(service.contains("steeringState.apply("));
+        assertTrue(service.contains("steeringGestures.onKey("));
         assertTrue(service.contains("event.getDownTime()"));
-        assertTrue(service.contains("Decision.LEARNED"));
-        assertTrue(service.contains("Decision.TOGGLE"));
+        assertTrue(service.contains("publishCameraSteeringButtonCaptured"));
+        assertTrue(service.contains("requestReverseSteeringToggle"));
+        assertTrue(service.contains("requestMirrorButtonAction"));
+        assertTrue(service.contains("mirrorEnabled && RearviewMirrorSettings.frontIntegrated"));
+        assertTrue(service.contains("CameraButtonBindings.Action.MirrorVisibility, 1L"));
     }
 
     @Test
@@ -38,7 +41,7 @@ public final class WeatherAccessibilityContractTest {
         assertTrue(pauseBody.contains("cancelReverseButtonLearningIfVisible()"));
         assertTrue(destroyBody.contains("cancelReverseButtonLearningIfVisible()"));
         assertTrue(activity.contains("reverseOwner.get() != this) return"));
-        assertTrue(activity.contains("isSteeringButtonLearning()"));
+        assertTrue(activity.contains("isCameraButtonLearning()"));
     }
 
     @Test

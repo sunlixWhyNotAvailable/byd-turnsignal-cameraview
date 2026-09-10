@@ -2,6 +2,7 @@ package com.byd.extend.ui
 
 import androidx.compose.runtime.Immutable
 import com.byd.extend.RearviewMirrorSettings
+import com.byd.extend.CameraButtonBindings
 import java.util.concurrent.atomic.AtomicLong
 
 enum class UiLanguage { Ukrainian, English, Chinese }
@@ -150,6 +151,7 @@ enum class ToggleId {
     ReverseFrontIntegration,
     ReverseSwitchByGear,
     MirrorEnabled,
+    MirrorFrontIntegration,
     MirrorSuppressWhilePanorama,
     MirrorHidden,
     ProfileCorrection,
@@ -170,6 +172,7 @@ enum class SelectionId {
     ReverseElement,
     ReverseSource,
     MirrorTarget,
+    MirrorSource,
     ProfileTarget,
     ProfileSourceAspect,
     ProfileProjection,
@@ -225,6 +228,7 @@ enum class CommandId {
     CancelOperation,
     MirrorSavePreset,
     MirrorLoadPreset,
+    MirrorCopyRearToFront,
     MirrorResetPlacement,
     MirrorResetOriginal,
     MirrorResetCorrection,
@@ -318,6 +322,7 @@ object MirrorUiContract {
 enum class MirrorBackendActionKind {
     SetEnabled, SetSuppressWhilePanorama, SetTarget, SetGeometry, SetBorder, SetCalibration, SavePreset, LoadPreset,
     ResetPlacement, ResetOriginal, ResetCorrection, ResetOutput, HideUntilOpen,
+    SetFrontIntegration, SetSource, CopyRearToFront,
 }
 
 /** Identifies a non-numeric Mirror calibration mutation while preserving untouched model fields. */
@@ -340,6 +345,7 @@ data class MirrorBackendAction(
     val enabled: Boolean? = null,
     val borderArgb: Int? = null,
     val profile: CameraProfileId = CameraProfileId.Mirror,
+    val front: Boolean? = null,
 )
 
 @Immutable
@@ -474,6 +480,10 @@ data class MirrorGeometryUiState(
 @Immutable
 data class MirrorUiState(
     val enabled: Boolean = false,
+    val frontIntegrated: Boolean = false,
+    val showFront: Boolean = false,
+    val sourceBinding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
+    val visibilityBinding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
     val suppressWhilePanorama: Boolean = true,
     val hidden: Boolean = false,
     val section: CameraSection = CameraSection.Parameters,
@@ -487,7 +497,9 @@ data class MirrorUiState(
     val presetAvailable: Boolean = false,
     val overlayPermissionGranted: Boolean = false,
     val clusterAvailable: Boolean = false,
-)
+) {
+    val activeFront: Boolean get() = frontIntegrated && showFront
+}
 
 internal fun ReverseUiState.hasAnyFrontIntegration(): Boolean =
     listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)
@@ -547,7 +559,14 @@ data class DialogUiState @JvmOverloads constructor(
     val dismissLabel: String? = null,
     val confirmVisible: Boolean = true,
     val markdown: String = "",
-)
+    val updatePresentation: Boolean = false,
+    val captureAction: CameraButtonBindings.Action? = null,
+) {
+    fun withRuntimeProgress(message: String, progress: Float?, cancellable: Boolean,
+        dismissLabel: String?): DialogUiState = copy(message = message, progress = progress,
+        cancellable = cancellable, confirmEnabled = false, confirmVisible = false,
+        confirmLabel = null, dismissLabel = dismissLabel)
+}
 
 @Immutable
 data class BydExtendUiState(
@@ -577,6 +596,7 @@ sealed interface NumberTarget {
     @Immutable data class Profile @JvmOverloads constructor(
         val profile: CameraProfileId, val field: ProfileNumber,
         val displayTarget: DisplayTarget? = null,
+        val mirrorFront: Boolean? = null,
     ) : NumberTarget
     @Immutable data class ReverseGeometry(val element: ReverseElement, val field: ReverseGeometryNumber) : NumberTarget
     @Immutable data class Output(val field: OutputNumber) : NumberTarget
@@ -587,15 +607,24 @@ sealed interface ToggleTarget {
     @Immutable data class Blind(val id: ToggleId, val group: CameraGroup) : ToggleTarget
     @Immutable data class Parking(val id: ToggleId, val view: ParkingView? = null) : ToggleTarget
     @Immutable data class Reverse(val id: ToggleId, val element: ReverseElement? = null) : ToggleTarget
-    @Immutable data class Profile(val id: ToggleId, val profile: CameraProfileId) : ToggleTarget
+    @Immutable data class Profile @JvmOverloads constructor(
+        val id: ToggleId, val profile: CameraProfileId, val mirrorFront: Boolean? = null,
+    ) : ToggleTarget
 }
 
 sealed interface SelectionTarget {
     @Immutable data class Simple(val id: SelectionId) : SelectionTarget
-    @Immutable data class Profile(val id: SelectionId, val profile: CameraProfileId) : SelectionTarget
+    @Immutable data class Profile @JvmOverloads constructor(
+        val id: SelectionId, val profile: CameraProfileId, val mirrorFront: Boolean? = null,
+    ) : SelectionTarget
 }
 
 sealed interface BydExtendUiAction {
+    @Immutable data class LearnCameraButton(val action: CameraButtonBindings.Action) : BydExtendUiAction
+    @Immutable data class ResetCameraButton(val action: CameraButtonBindings.Action) : BydExtendUiAction
+    @Immutable data class SetCameraButtonPress(
+        val action: CameraButtonBindings.Action, val press: CameraButtonBindings.Press,
+    ) : BydExtendUiAction
     @Immutable data class Navigate(val tab: RootTab) : BydExtendUiAction
     @Immutable data class SetLanguage(val language: UiLanguage) : BydExtendUiAction
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
@@ -631,7 +660,23 @@ sealed interface BydExtendUiAction {
         val command: CommandId,
         val profile: CameraProfileId? = null,
         val reverseElement: ReverseElement? = null,
+        val mirrorFront: Boolean? = null,
     ) : BydExtendUiAction
+}
+
+/** Bind callbacks to the source that created them, not whichever source is selected later. */
+internal fun NumberTarget.forMirrorSource(front: Boolean): NumberTarget =
+    if (this is NumberTarget.Profile && profile == CameraProfileId.Mirror) copy(mirrorFront = front) else this
+
+internal fun BydExtendUiAction.forMirrorSource(front: Boolean): BydExtendUiAction = when (this) {
+    is BydExtendUiAction.CommitNumber -> copy(target = target.forMirrorSource(front))
+    is BydExtendUiAction.PreviewNumber -> copy(target = target.forMirrorSource(front))
+    is BydExtendUiAction.Toggle -> if (target is ToggleTarget.Profile && target.profile == CameraProfileId.Mirror)
+        copy(target = target.copy(mirrorFront = front)) else this
+    is BydExtendUiAction.Select -> if (target is SelectionTarget.Profile && target.profile == CameraProfileId.Mirror)
+        copy(target = target.copy(mirrorFront = front)) else this
+    is BydExtendUiAction.Run -> copy(mirrorFront = front)
+    else -> this
 }
 
 enum class CameraHostKind { Placement, CalibrationOriginal, CalibrationCorrected, CalibrationOutput, ReverseComposition, Mirror, Direct, Avm }

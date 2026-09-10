@@ -168,6 +168,11 @@ internal class UiStrings @JvmOverloads constructor(
 internal fun steeringButtonLabel(keyCode: Int, strings: UiStrings): String {
     if (keyCode < 0) return ""
     val name = when (keyCode) {
+        294 -> strings.text("Панорама", "Panorama", "全景影像")
+        304 -> strings.text("Мікрофон", "Microphone", "麦克风")
+        88 -> strings.text("Попередній трек", "Previous track", "上一曲")
+        87 -> strings.text("Наступний трек", "Next track", "下一曲")
+        353 -> strings.text("Коліщатко — натискання", "Wheel press", "滚轮按下")
         305 -> strings.text("Ліва зірочка", "Left star", "左侧星号键")
         309 -> strings.text("Режими приборки / завершення виклику",
             "Dashboard modes / end call", "仪表模式 / 挂断电话")

@@ -1103,9 +1103,13 @@ final class CameraHelperMain {
             return closeCameraForOwner(CAMERA_OWNER_PARKING, reason, expectedRequestId);
         }
 
-        synchronized String openMirrorCamera(Surface surface, int requestId) {
+        synchronized String openMirrorCamera(Surface surface, int cameraIndex, int requestId) {
+            if (cameraIndex != RearviewMirrorSettings.REAR_CAMERA_INDEX
+                    && cameraIndex != RearviewMirrorSettings.FRONT_CAMERA_INDEX) {
+                throw new IllegalArgumentException("invalid mirror camera index");
+            }
             return attachPersistentGroup(mirrorGroup, new Surface[]{surface},
-                    new int[]{ReverseCameraLayout.REAR_CAMERA_INDEX}, requestId,
+                    new int[]{cameraIndex}, requestId,
                     "rearview_mirror", false, false, null, "mirror_open");
         }
 

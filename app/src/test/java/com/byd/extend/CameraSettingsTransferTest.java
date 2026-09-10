@@ -29,10 +29,10 @@ public final class CameraSettingsTransferTest {
         // 4 Blind profiles (20 values each), 8 Parking profiles (20 each),
         // Three Reverse panes plus the optional central-front calibration
         // fields, and shared/background/front values.
-        // v2 adds the active independent Mirror group (23 fields) while
-        // Blind width/height remain optional when no explicit v2 placement
-        // has been saved.
-        assertEquals(392, settings.size());
+        // v2 adds the active independent Mirror group; its optional front
+        // source state/calibration contributes another 16 fields. Blind
+        // width/height remain optional without an explicitly saved placement.
+        assertEquals(408, settings.size());
         for (CameraProfile profile : CameraProfile.values()) {
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, false)));
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, true)));
@@ -221,12 +221,89 @@ public final class CameraSettingsTransferTest {
                 CameraPlacement.of(0.15f, 0.15f, 0.35f, 0.35f),
                 true, 125, CameraDewarpConfig.PROJECTION_RECTILINEAR,
                 false, 0, CameraRotation.MODE_FIT));
+        RearviewMirrorSettings.writePreset(target, true,
+                RearviewMirrorSettings.defaultCalibration(true));
 
         CameraSettingsTransfer.applyCameraPreset(target,
                 CameraSettingsTransfer.parseCameraPreset(activePreset));
 
         assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, false));
-        assertTrue(RearviewMirrorSettings.preset(target) != null);
+        assertTrue(RearviewMirrorSettings.preset(target, false) != null);
+        assertTrue(RearviewMirrorSettings.preset(target, true) != null);
+    }
+
+    @Test
+    public void frontMirrorExportRoundTripsAndExcludesLocalState() {
+        TestSharedPreferences source = new TestSharedPreferences();
+        RearviewMirrorSettings.Calibration front = new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(.1f, .2f, .7f, .6f),
+                CameraPlacement.of(.2f, .1f, .6f, .7f), true, 145, 1,
+                true, 30, CameraRotation.MODE_ALIGNED);
+        RearviewMirrorSettings.writeCalibration(source, true, front);
+        RearviewMirrorSettings.writePreset(source, true, front);
+        RearviewMirrorSettings.writeSourceState(
+                (android.content.SharedPreferences) source, true, true);
+        source.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, true);
+        source.putInt("mirror_source_steering_key_code", 88);
+        source.putInt("mirror_visibility_steering_key_code", 87);
+
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source));
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        assertEquals(true, values.get(RearviewMirrorSettings.PREF_FRONT_INTEGRATED));
+        assertEquals(true, values.get(RearviewMirrorSettings.PREF_SHOW_FRONT));
+        assertEquals(10f, number(values, "mirror_front_original_x"), 0f);
+        assertEquals(70f, number(values, "mirror_front_original_width"), 0f);
+        assertFalse(values.containsKey(RearviewMirrorSettings.PREF_FRONT_PRESET_PRESENT));
+        assertFalse(values.containsKey("mirror_front_preset_x"));
+        assertFalse(values.containsKey(RearviewMirrorSettings.PREF_MANUAL_HIDDEN));
+        assertFalse(values.containsKey("mirror_source_steering_key_code"));
+        assertFalse(values.containsKey("mirror_visibility_steering_key_code"));
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(target, parsed);
+        RearviewMirrorSettings.Settings imported = new RearviewMirrorSettings(target).load();
+        assertTrue(imported.activeFront());
+        assertEquals(front.raw, imported.frontCalibration.raw);
+        assertEquals(front.corrected, imported.frontCalibration.corrected);
+        assertTrue(imported.frontCalibration.mirrored);
+    }
+
+    @Test
+    public void v1V2V3WithoutFrontMirrorFieldsPreserveSavedFrontState() throws Exception {
+        org.json.JSONObject template = new org.json.JSONObject(
+                CameraSettingsTransfer.exportCameraPreset(new TestSharedPreferences(), GEOMETRY));
+        java.util.ArrayList<String> frontKeys = new java.util.ArrayList<>();
+        java.util.Iterator<String> keys = template.getJSONObject("settings").keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (key.startsWith("mirror_front_") || RearviewMirrorSettings.PREF_SHOW_FRONT.equals(key)) {
+                frontKeys.add(key);
+            }
+        }
+        for (String key : frontKeys) template.getJSONObject("settings").remove(key);
+
+        RearviewMirrorSettings.Calibration front = new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(.1f, .2f, .7f, .6f),
+                CameraPlacement.of(.2f, .1f, .6f, .7f), true, 145, 1,
+                true, 30, CameraRotation.MODE_ALIGNED);
+        for (int version : new int[]{1, 2, 3}) {
+            org.json.JSONObject old = new org.json.JSONObject(template.toString());
+            old.put("version", version);
+            TestSharedPreferences target = new TestSharedPreferences();
+            RearviewMirrorSettings.writeCalibration(target, true, front);
+            RearviewMirrorSettings.writeSourceState(
+                    (android.content.SharedPreferences) target, true, true);
+
+            CameraSettingsTransfer.applyCameraPreset(target,
+                    CameraSettingsTransfer.parseCameraPreset(old.toString()), GEOMETRY);
+
+            RearviewMirrorSettings.Settings saved = new RearviewMirrorSettings(target).load();
+            assertTrue(saved.activeFront());
+            assertEquals(front.raw, saved.frontCalibration.raw);
+            assertEquals(front.corrected, saved.frontCalibration.corrected);
+        }
     }
 
     @Test

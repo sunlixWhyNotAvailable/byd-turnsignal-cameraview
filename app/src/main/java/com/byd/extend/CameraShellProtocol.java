@@ -345,7 +345,7 @@ final class CameraShellProtocol {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
             requireTransparencyPercent(transparencyPercent);
-            if (dewarp.lens != lensForOverlayId(profile.id)) {
+            if (!validOverlayLens(profile.id, dewarp.lens)) {
                 throw new IllegalArgumentException("dewarp lens does not match camera");
             }
             validateCrop(rawFallbackCrop);
@@ -934,6 +934,12 @@ final class CameraShellProtocol {
     static int lensForOverlayId(int cameraId) {
         CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
         return profile.lens;
+    }
+
+    static boolean validOverlayLens(int cameraId, int lens) {
+        return lens == lensForOverlayId(cameraId)
+                || CameraOverlayProfile.isMirror(cameraId)
+                && lens == CameraDewarpConfig.LENS_FRONT;
     }
 
     private static int requireTransparencyPercent(int value) {

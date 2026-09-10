@@ -240,7 +240,7 @@ private fun readReverse(
             ReverseSource.Rear),
         showFront = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
             ReverseSource.Rear) == ReverseSource.Front,
-        steeringKeyCode = ReverseSteeringButtonPreferences.load(preferences),
+        steeringKeyCode = CameraButtonBindings.load(preferences, CameraButtonBindings.Action.ReverseSource).keyCode,
         frontIntegration = mapOf(
             ReverseElement.Rear to ReverseCameraController.loadCentralFrontIntegrated(preferences),
             ReverseElement.RearLeft to ReverseCameraController.loadFrontIntegrated(
@@ -273,7 +273,7 @@ private fun readMirror(
     // while typed Mirror edits change only the addressed field in the persisted model.
     fun crop(value: CameraPlacement) = CropUiState(
         percent(value.x), percent(value.y), percent(value.width), percent(value.height))
-    val calibration = settings.calibration
+    val calibration = settings.calibration(settings.activeFront())
     val profile = CameraProfileUiState(
         target = target,
         size = width,
@@ -293,10 +293,14 @@ private fun readMirror(
             outputMode = calibration.rotationMode,
             rotation = calibration.rotationDegrees.toString(),
         ),
-        presetAvailable = settings.preset != null,
+        presetAvailable = settings.preset(settings.activeFront()) != null,
     )
     return MirrorUiState(
         enabled = settings.enabled,
+        frontIntegrated = settings.frontIntegrated,
+        showFront = settings.showFront,
+        sourceBinding = CameraButtonBindings.load(preferences, CameraButtonBindings.Action.MirrorSource),
+        visibilityBinding = CameraButtonBindings.load(preferences, CameraButtonBindings.Action.MirrorVisibility),
         suppressWhilePanorama = preferences.getBoolean(
             MirrorUiContract.PREF_SUPPRESS_WHILE_PANORAMA, true),
         hidden = settings.manualHidden,

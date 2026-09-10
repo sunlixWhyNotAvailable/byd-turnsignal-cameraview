@@ -24,7 +24,8 @@ release are separate states.
   rotation, placement, scale, transparency, corner rounding, and image-quality controls.
 - User-selectable Reverse panes with optional integrated front side and central camera profiles.
 - Optional gear-driven front/rear selection while Reverse gear or the stock camera UI is active.
-- An independent rearview-mirror widget on the tablet or a supported instrument cluster.
+- An independent rearview-mirror widget on the tablet or a supported instrument cluster,
+  with optional front-camera integration and separate source/visibility button gestures.
 - A learned steering-wheel button for switching the active Reverse widget and integrated cameras
   between front and rear views.
 - Optional music metadata and local weather for the stock BYD weather UI.
@@ -44,13 +45,15 @@ integrated Reverse Front profiles, display targets, placement, scale, aspect, cr
 rotation, mirror, fill mode, camera switches, Reverse background, widget/stacking, and global
 buffer quality, transparency, and corner radius. They deliberately exclude numeric speed,
 steering-angle, and distance triggers, non-camera settings, and saved local calibration slots.
-The learned steering-button binding is also excluded and is preserved when loading camera presets
+The learned steering-button bindings are also excluded and preserved when loading camera presets
 or importing legacy settings.
 
 Preset format v3 stores both tablet and instrument-cluster rectangles for Mirror and all four
 Blind profiles. Existing v1/v2 files remain supported: their placement is applied only to the
 declared display (the current display when omitted), preserving the other display. Importing
 a file without Mirror leaves its settings unchanged.
+Optional Mirror front integration, selected source and front calibration fields are included without
+changing the v2/v3 format versions. Older files without these fields preserve the destination values.
 Panorama-suppression preferences are included when present; older presets without these fields
 preserve the current values, with suppression enabled by default on fresh settings.
 Local saved calibration slots and temporary Mirror hiding are not part of a camera preset.
@@ -91,8 +94,10 @@ Back leaves the previous assignment unchanged; the square reset clears only the 
 Subsequent single short presses switch the existing composition and its widget together after
 Android's inclusive multi-press window expires. Double presses and holds do not switch cameras
 or fall back to single presses. After their release, the next press starts a new gesture: three
-quick short presses are Double + Single; four are two Doubles. Known OEM long-code feedback is
-consumed without changing the ordinary key's gesture state. Learning uses the same gesture rules.
+quick short presses are Double + Single; four are two Doubles. A known OEM long code means Hold,
+which has no Reverse action; otherwise Hold is timed from the ordinary DOWN. Timer/native feedback
+for the same hold is deduplicated. Learning stores the base button code and consumes its release
+without executing a camera action.
 Enhanced reverse, the widget and at least one front-camera integration must be
 enabled, and the composition must already be active. Existing per-camera visibility/integration
 rules apply; the button does not open cameras, change calibration or add automatic switching in D.
@@ -123,11 +128,24 @@ not guaranteed.
 
 ## Rearview mirror and UI preferences
 
+Front-camera integration is off by default. When enabled, the rear/front selector remembers its
+choice; each source has independent calibration and a local preset, with an explicit rear-to-front
+copy. Turning integration off returns to the rear source without erasing front settings or bindings.
+The sources share one widget's placement, display target and border.
+
+Two independent learned-button rows switch source or show/hide the widget using Single, Hold or
+Double. Reset clears only that row's button, retaining its gesture. Duplicate assignments are
+allowed: every eligible matching action runs, and simultaneous Mirror effects use one state update.
+Source switching requires Mirror and front integration; visibility requires Mirror enabled and never
+enables it. Switching a hidden source does not reveal the widget, and normal app/panorama gates remain.
+Confirmed base/long pairs are `305/306` (star), `304/312` (microphone), `88/303` (previous track),
+`87/302` (next track). Panorama `294` and wheel `353` have no assumed native-long code and use timed Hold.
+
 Enable the rearview mirror and grant Android overlay permission when prompted. Its independent
 placement, calibration, preset and border settings do not modify Reverse or Blind profiles.
 Drag the external widget to move it; touch and hold to hide it until BYD Extend is opened again.
 It is hidden while BYD Extend is open. The default-enabled `Do not show while panorama is open`
-option also hides it during the stock camera UI; switching that option off does not disable
+option also hides tablet output during the stock camera UI, not cluster output; switching it off does not disable
 app-foreground or long-press hiding. A hidden widget leaves no input window blocking other apps,
 while taps inside the visible widget do not pass through.
 

@@ -46,6 +46,42 @@ public final class RearviewMirrorPolicyTest {
         assertFalse(RearviewMirrorController.matchesManualHideEvent(event, 17, 4));
     }
 
+    @Test public void mirrorButtonActionsUseOneOldStateAndNeverEnableMirror() {
+        CameraHelperService.MirrorButtonState both =
+                CameraHelperService.resolveMirrorButtonAction(
+                        true, true, false, false, true, true);
+        assertTrue(both.showFront);
+        assertTrue(both.manualHidden);
+        assertTrue(both.sourceChanged);
+        assertTrue(both.visibilityChanged);
+
+        CameraHelperService.MirrorButtonState disabled =
+                CameraHelperService.resolveMirrorButtonAction(
+                        false, true, false, true, true, true);
+        assertFalse(disabled.showFront);
+        assertTrue(disabled.manualHidden);
+        assertFalse(disabled.sourceChanged);
+        assertFalse(disabled.visibilityChanged);
+        assertFalse(disabled.changed());
+
+        CameraHelperService.MirrorButtonState noFront =
+                CameraHelperService.resolveMirrorButtonAction(
+                        true, false, false, false, true, false);
+        assertFalse(noFront.changed());
+        assertFalse(noFront.showFront);
+    }
+
+    @Test public void mirrorAcceptsOnlyItsRearAndFrontDewarpLenses() {
+        assertTrue(CameraShellProtocol.validOverlayLens(
+                CameraOverlayProfile.MIRROR_ID, CameraDewarpConfig.LENS_REAR));
+        assertTrue(CameraShellProtocol.validOverlayLens(
+                CameraOverlayProfile.MIRROR_ID, CameraDewarpConfig.LENS_FRONT));
+        assertFalse(CameraShellProtocol.validOverlayLens(
+                CameraOverlayProfile.MIRROR_ID, CameraDewarpConfig.LENS_LEFT));
+        assertFalse(CameraShellProtocol.validOverlayLens(
+                CameraProfile.REAR_LEFT, CameraDewarpConfig.LENS_FRONT));
+    }
+
     @Test public void mirrorHoldAndToastKeepTheRequiredBoundaries() throws Exception {
         assertEquals(1_000L, ShellCameraOverlay.MIRROR_HIDE_HOLD_MS);
         String overlay = sourceText("java/com/byd/extend/ShellCameraOverlay.java");

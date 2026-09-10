@@ -15,6 +15,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.byd.extend.readProductionUiState
 import com.byd.extend.AppLanguage
 import com.byd.extend.RearviewMirrorSettings
+import com.byd.extend.CameraButtonBindings
 
 /** Activity-owned effects. Compose never receives Binder, Surface, Bitmap or preferences. */
 interface ProductionUiBackend {
@@ -96,6 +97,13 @@ class ProductionUiController @JvmOverloads constructor(
             is BydExtendUiAction.MoveProfile -> !matchesPlacementTarget(action.profile, action.displayTarget)
             is BydExtendUiAction.CommitNumber -> !matchesNumberTarget(action.target)
             is BydExtendUiAction.PreviewNumber -> !matchesNumberTarget(action.target)
+            is BydExtendUiAction.Toggle -> (action.target as? ToggleTarget.Profile)?.let {
+                !matchesMirrorSource(it.profile, it.mirrorFront)
+            } ?: false
+            is BydExtendUiAction.Select -> (action.target as? SelectionTarget.Profile)?.let {
+                !matchesMirrorSource(it.profile, it.mirrorFront)
+            } ?: false
+            is BydExtendUiAction.Run -> !matchesMirrorSource(CameraProfileId.Mirror, action.mirrorFront)
             else -> false
         }
         if (stalePlacement) return
@@ -220,6 +228,11 @@ class ProductionUiController @JvmOverloads constructor(
                     }
                     simple?.id == SelectionId.ReverseElement -> typedBackendHandled = true
                     simple?.id == SelectionId.MirrorTarget -> typedBackendHandled = true
+                    simple?.id == SelectionId.MirrorSource -> {
+                        typedBackendHandled = true
+                        backend.onProductionMirrorAction(MirrorBackendAction(
+                            MirrorBackendActionKind.SetSource, front = action.index == 1))
+                    }
                 }
             } else if (action.target is SelectionTarget.Profile &&
                 action.target.profile == CameraProfileId.Mirror) {
@@ -252,7 +265,7 @@ class ProductionUiController @JvmOverloads constructor(
                         MirrorBackendActionKind.SetCalibration,
                         calibrationField = if (target.id == SelectionId.ProfileProjection)
                             MirrorCalibrationField.Projection else MirrorCalibrationField.OutputMode,
-                        value = index.toString()))
+                        value = index.toString(), front = target.mirrorFront ?: state.mirror.activeFront))
                 }
                 typedBackendHandled = true
             }
@@ -268,6 +281,11 @@ class ProductionUiController @JvmOverloads constructor(
                         MirrorBackendActionKind.SetEnabled, value = action.value.toString(),
                         enabled = action.value))
                     if (action.value) backend.requestProductionMirrorOverlayPermission()
+                }
+                action.target == ToggleTarget.Simple(ToggleId.MirrorFrontIntegration) -> {
+                    typedBackendHandled = true
+                    backend.onProductionMirrorAction(MirrorBackendAction(
+                        MirrorBackendActionKind.SetFrontIntegration, enabled = action.value))
                 }
                 action.target == ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama) -> {
                     typedBackendHandled = true
@@ -307,7 +325,7 @@ class ProductionUiController @JvmOverloads constructor(
                             MirrorBackendActionKind.SetCalibration,
                             calibrationField = if (target.id == ToggleId.ProfileCorrection)
                                 MirrorCalibrationField.CorrectionEnabled else MirrorCalibrationField.Mirrored,
-                            value = action.value.toString()))
+                            value = action.value.toString(), front = target.mirrorFront ?: state.mirror.activeFront))
                     }
                 }
                 action.target is ToggleTarget.Reverse &&
@@ -344,7 +362,8 @@ class ProductionUiController @JvmOverloads constructor(
                         state = applyNumberValue(state, target, action.value)
                         backend.onProductionMirrorAction(MirrorBackendAction(
                             MirrorBackendActionKind.SetCalibration,
-                            profileField = target.field, value = action.value))
+                            profileField = target.field, value = action.value,
+                            front = target.mirrorFront ?: state.mirror.activeFront))
                     }
                     else -> Unit
                 }
@@ -364,6 +383,7 @@ class ProductionUiController @JvmOverloads constructor(
                 val mirrorKind = when (action.command) {
                     CommandId.MirrorSavePreset -> MirrorBackendActionKind.SavePreset
                     CommandId.MirrorLoadPreset -> MirrorBackendActionKind.LoadPreset
+                    CommandId.MirrorCopyRearToFront -> MirrorBackendActionKind.CopyRearToFront
                     CommandId.MirrorResetPlacement -> MirrorBackendActionKind.ResetPlacement
                     CommandId.MirrorResetOriginal -> MirrorBackendActionKind.ResetOriginal
                     CommandId.MirrorResetCorrection -> MirrorBackendActionKind.ResetCorrection
@@ -373,7 +393,8 @@ class ProductionUiController @JvmOverloads constructor(
                 }
                 if (mirrorKind != null) {
                     typedBackendHandled = true
-                    backend.onProductionMirrorAction(MirrorBackendAction(mirrorKind))
+                    backend.onProductionMirrorAction(MirrorBackendAction(mirrorKind,
+                        front = action.mirrorFront ?: state.mirror.activeFront))
                 } else applyLocalCommand(action.command)
             }
             else -> Unit
@@ -426,7 +447,8 @@ class ProductionUiController @JvmOverloads constructor(
                 target = target.displayTarget ?: state.mirror.target))
             is NumberTarget.Profile -> if (target.profile == CameraProfileId.Mirror) {
                 backend.onProductionMirrorPreview(MirrorBackendAction(
-                    MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value))
+                    MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value,
+                    front = target.mirrorFront ?: state.mirror.activeFront))
             } else backend.onProductionUiPreview(target, value)
             else -> backend.onProductionUiPreview(target, value)
         } ?: return null
@@ -515,13 +537,20 @@ class ProductionUiController @JvmOverloads constructor(
 
     /** Opens the native-focusable HUD capture prompt after the Activity starts key learning. */
     fun showReverseButtonCaptureDialog() {
+        showCameraButtonCaptureDialog(CameraButtonBindings.Action.ReverseSource)
+    }
+
+    fun showCameraButtonCaptureDialog(action: CameraButtonBindings.Action) {
         val strings = UiStrings(state.language, context)
         pendingDialogCommand = null
         state = state.copy(dialog = DialogUiState(
             kind = DialogKind.ReverseButtonCapture,
             title = strings.text("Натисніть кнопку на кермі…",
                 "Press a steering-wheel button…", "请按下方向盘按键…"),
-            message = strings.text(
+            message = if (action == CameraButtonBindings.Action.MirrorVisibility) strings.text(
+                "Призначена кнопка та вибраний жест показуватимуть або приховуватимуть віджет дзеркала.",
+                "The assigned button and selected gesture will show or hide the mirror widget.",
+                "所选按键和手势将显示或隐藏后视镜悬浮窗。") else strings.text(
                 "Призначена кнопка перемикатиме передні й задні камери замість штатної дії. " +
                     "Передні види доступні лише з увімкненою інтеграцією.",
                 "The assigned button will switch front/rear cameras instead of its original action. " +
@@ -529,6 +558,7 @@ class ProductionUiController @JvmOverloads constructor(
                 "所选按键将切换前后摄像头，并取代原有操作。前方视角仅在启用集成后可用。"),
             cancellable = true,
             confirmEnabled = false,
+            captureAction = action,
         ))
     }
 
@@ -538,6 +568,10 @@ class ProductionUiController @JvmOverloads constructor(
             pendingDialogCommand = null
             state = state.copy(dialog = null)
         }
+    }
+
+    fun dismissCameraButtonCaptureDialog(action: CameraButtonBindings.Action) {
+        if (state.dialog?.captureAction == action) dismissReverseButtonCaptureDialog()
     }
 
     /** Canvas selection updates controls without restarting the running camera. */
@@ -726,7 +760,8 @@ class ProductionUiController @JvmOverloads constructor(
                 target = target.displayTarget ?: state.mirror.target))
             is NumberTarget.Profile -> if (target.profile == CameraProfileId.Mirror) {
                 backend.onProductionMirrorAction(MirrorBackendAction(
-                    MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value))
+                    MirrorBackendActionKind.SetCalibration, profileField = target.field, value = value,
+                    front = target.mirrorFront ?: state.mirror.activeFront))
             } else backend.onProductionUiAction(BydExtendUiAction.CommitNumber(
                 target, value, sessionId))
             else -> backend.onProductionUiAction(BydExtendUiAction.CommitNumber(
@@ -749,9 +784,13 @@ class ProductionUiController @JvmOverloads constructor(
 
     private fun matchesNumberTarget(target: NumberTarget, source: BydExtendUiState = state): Boolean = when (target) {
         is NumberTarget.Mirror -> matchesPlacementTarget(CameraProfileId.Mirror, target.displayTarget, source)
-        is NumberTarget.Profile -> matchesPlacementTarget(target.profile, target.displayTarget, source)
+        is NumberTarget.Profile -> matchesPlacementTarget(target.profile, target.displayTarget, source) &&
+            matchesMirrorSource(target.profile, target.mirrorFront, source)
         else -> true
     }
+
+    private fun matchesMirrorSource(profile: CameraProfileId, front: Boolean?, source: BydExtendUiState = state): Boolean =
+        profile != CameraProfileId.Mirror || front == null || front == source.mirror.activeFront
 
     /** Updates only the in-memory state used by Compose; persistence remains CommitNumber-owned. */
     private fun applyNumberValue(
@@ -931,7 +970,8 @@ class ProductionUiController @JvmOverloads constructor(
         }
         is BydExtendUiAction.PreviewNumber, is BydExtendUiAction.CommitNumber,
         is BydExtendUiAction.MoveProfile, is BydExtendUiAction.SetMirrorGeometry,
-        is BydExtendUiAction.SetProfileGeometry -> false
+        is BydExtendUiAction.SetProfileGeometry, is BydExtendUiAction.LearnCameraButton,
+        is BydExtendUiAction.ResetCameraButton, is BydExtendUiAction.SetCameraButtonPress -> false
     }
 
     private fun handoverReason(language: UiLanguage) = UiStrings(language, context).text(
@@ -1181,7 +1221,7 @@ private fun CommandId.allowedInLegacyHandover() = this == CommandId.OpenBackgrou
 private fun SelectionTarget.isLocalSelection() = this is SelectionTarget.Simple && id in setOf(
     SelectionId.CameraSection, SelectionId.BlindGroup, SelectionId.BlindSide,
     SelectionId.ParkingView, SelectionId.ReverseElement, SelectionId.ReverseSource,
-    SelectionId.MirrorTarget,
+    SelectionId.MirrorTarget, SelectionId.MirrorSource,
     SelectionId.SettingsCategory, SelectionId.DiagnosticMode, SelectionId.DirectMode,
     SelectionId.AvmMode, SelectionId.AvmOrientation,
 )

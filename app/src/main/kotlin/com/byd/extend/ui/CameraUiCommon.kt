@@ -133,8 +133,11 @@ internal fun ProfilePresetButtons(
         listOf(
             Triple(strings.text("Зберегти\nпресет", "Save\npreset"), saveCommand, true),
             Triple(strings.text("Завантажити\nпресет", "Load\npreset"), loadCommand, available),
-            Triple(strings.text("Перенести на\nпротилежну камеру", "Transfer to\nopposite camera"),
-                CommandId.TransferProfilePreset, canTransfer && profile != CameraProfileId.Mirror),
+            Triple(if (profile == CameraProfileId.Mirror)
+                strings.text("Перенести на\nпередню камеру", "Copy to\nfront camera", "复制到\n前摄像头")
+                else strings.text("Перенести на\nпротилежну камеру", "Transfer to\nopposite camera"),
+                if (profile == CameraProfileId.Mirror) CommandId.MirrorCopyRearToFront
+                else CommandId.TransferProfilePreset, canTransfer),
         ).forEach { (label, command, enabled) ->
             ActionButton(label, colors, Modifier.weight(1f), enabled = enabled, height = 44.dp, maxLines = 2) {
                 onAction(BydExtendUiAction.Run(command, profile))

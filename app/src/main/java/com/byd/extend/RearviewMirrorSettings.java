@@ -10,6 +10,7 @@ public final class RearviewMirrorSettings {
     public static final int TARGET_TABLET = 0;
     public static final int TARGET_CLUSTER = 1;
     public static final int REAR_CAMERA_INDEX = ReverseCameraLayout.REAR_CAMERA_INDEX;
+    public static final int FRONT_CAMERA_INDEX = 4;
     public static final int DEFAULT_BORDER_ARGB = 0xFF000000;
     public static final int MIN_BORDER_DP = 0;
     public static final int MAX_BORDER_DP = 16;
@@ -33,6 +34,9 @@ public final class RearviewMirrorSettings {
     public static final String PREF_BORDER_ARGB = "mirror_border_color";
     public static final String PREF_MANUAL_HIDDEN = "mirror_hidden";
     public static final String PREF_PRESET_PRESENT = "mirror_preset_available";
+    public static final String PREF_FRONT_INTEGRATED = "mirror_front_integrated";
+    public static final String PREF_SHOW_FRONT = "mirror_show_front";
+    public static final String PREF_FRONT_PRESET_PRESENT = "mirror_front_preset_available";
     // UI-contract aliases keep Java and Compose on one preference namespace.
     public static final String PREF_HIDDEN = PREF_MANUAL_HIDDEN;
     public static final String PREF_BORDER_WIDTH = PREF_BORDER_DP;
@@ -55,6 +59,8 @@ public final class RearviewMirrorSettings {
     private static final String ORIGINAL_PREFIX = "mirror_original_";
     private static final String CORRECTED_PREFIX = "mirror_corrected_";
     private static final String PRESET_PREFIX = "mirror_preset_";
+    private static final String FRONT_ORIGINAL_PREFIX = "mirror_front_original_";
+    private static final String FRONT_PRESET_PREFIX = "mirror_front_preset_";
 
     private final SharedPreferences preferences;
 
@@ -71,11 +77,18 @@ public final class RearviewMirrorSettings {
         Calibration calibration = readCalibration(fallback.calibration, ORIGINAL_PREFIX);
         Calibration preset = preferences.getBoolean(PREF_PRESET_PRESENT, false)
                 ? readCalibration(null, PRESET_PREFIX) : null;
+        boolean frontIntegrated = readBoolean(PREF_FRONT_INTEGRATED, fallback.frontIntegrated);
+        boolean showFront = readBoolean(PREF_SHOW_FRONT, fallback.showFront);
+        Calibration frontCalibration = readCalibration(
+                fallback.frontCalibration, FRONT_ORIGINAL_PREFIX);
+        Calibration frontPreset = readBoolean(PREF_FRONT_PRESET_PRESENT, false)
+                ? readCalibration(null, FRONT_PRESET_PREFIX) : null;
         int border = clamp(readInt(PREF_BORDER_DP, fallback.borderDp), MIN_BORDER_DP, MAX_BORDER_DP);
         int color = readInt(PREF_BORDER_ARGB, fallback.borderArgb) | 0xFF000000;
         boolean hidden = readBoolean(PREF_MANUAL_HIDDEN, fallback.manualHidden);
         return new Settings(enabled, target, placement, calibration, preset,
-                border, color, hidden);
+                border, color, hidden, frontIntegrated, showFront,
+                frontCalibration, frontPreset);
     }
 
     public Settings read() { return load(); }
@@ -94,6 +107,13 @@ public final class RearviewMirrorSettings {
         writeCalibration(editor, ORIGINAL_PREFIX, safe.calibration);
         if (safe.preset == null) removeCalibration(editor, PRESET_PREFIX);
         else writeCalibration(editor, PRESET_PREFIX, safe.preset);
+        if (safe.sourceFieldsSpecified) {
+            writeSourceState(editor, safe.frontIntegrated, safe.showFront);
+            writeCalibration(editor, FRONT_ORIGINAL_PREFIX, safe.frontCalibration);
+            editor.putBoolean(PREF_FRONT_PRESET_PRESENT, safe.frontPreset != null);
+            if (safe.frontPreset == null) removeCalibration(editor, FRONT_PRESET_PREFIX);
+            else writeCalibration(editor, FRONT_PRESET_PREFIX, safe.frontPreset);
+        }
         editor.apply();
     }
 
@@ -160,22 +180,57 @@ public final class RearviewMirrorSettings {
     }
 
     public static DirectCameraCrop raw(SharedPreferences preferences) {
-        Settings value = new RearviewMirrorSettings(preferences).load();
-        return toCrop(value.calibration.raw, value.calibration.mirrored,
-                value.calibration.rotationDegrees, value.calibration.rotationMode);
+        return raw(preferences, activeFront(preferences));
+    }
+
+    public static DirectCameraCrop raw(SharedPreferences preferences, boolean front) {
+        Calibration value = calibration(preferences, front);
+        return toCrop(value.raw, value.mirrored,
+                value.rotationDegrees, value.rotationMode);
     }
 
     public static DirectCameraCrop corrected(SharedPreferences preferences) {
-        Settings value = new RearviewMirrorSettings(preferences).load();
-        return toCrop(value.calibration.corrected, value.calibration.mirrored,
-                value.calibration.rotationDegrees, value.calibration.rotationMode);
+        return corrected(preferences, activeFront(preferences));
+    }
+
+    public static DirectCameraCrop corrected(SharedPreferences preferences, boolean front) {
+        Calibration value = calibration(preferences, front);
+        return toCrop(value.corrected, value.mirrored,
+                value.rotationDegrees, value.rotationMode);
     }
 
     public static CameraDewarpConfig dewarp(SharedPreferences preferences) {
-        Settings value = new RearviewMirrorSettings(preferences).load();
-        return CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR,
-                value.calibration.enabled, value.calibration.fovDegrees,
-                value.calibration.projection);
+        return dewarp(preferences, activeFront(preferences));
+    }
+
+    public static CameraDewarpConfig dewarp(SharedPreferences preferences, boolean front) {
+        Calibration value = calibration(preferences, front);
+        return CameraDewarpConfig.of(lens(front), value.enabled, value.fovDegrees,
+                value.projection);
+    }
+
+    public static boolean frontIntegrated(SharedPreferences preferences) {
+        return new RearviewMirrorSettings(preferences).load().frontIntegrated;
+    }
+
+    public static boolean activeFront(SharedPreferences preferences) {
+        return new RearviewMirrorSettings(preferences).load().activeFront();
+    }
+
+    public static int cameraIndex(SharedPreferences preferences) {
+        return activeFront(preferences) ? FRONT_CAMERA_INDEX : REAR_CAMERA_INDEX;
+    }
+
+    public static int lens(boolean front) {
+        return front ? CameraDewarpConfig.LENS_FRONT : CameraDewarpConfig.LENS_REAR;
+    }
+
+    public static Calibration calibration(SharedPreferences preferences, boolean front) {
+        return new RearviewMirrorSettings(preferences).load().calibration(front);
+    }
+
+    public static Calibration defaultCalibration(boolean front) {
+        return front ? Settings.frontDefaultCalibration() : Settings.rearDefaultCalibration();
     }
 
     public static int borderDp(SharedPreferences preferences) {
@@ -227,16 +282,61 @@ public final class RearviewMirrorSettings {
     }
 
     public static Calibration preset(SharedPreferences preferences) {
-        return new RearviewMirrorSettings(preferences).load().preset;
+        return preset(preferences, activeFront(preferences));
+    }
+
+    public static Calibration preset(SharedPreferences preferences, boolean front) {
+        return new RearviewMirrorSettings(preferences).load().preset(front);
     }
 
     public static void writePreset(SharedPreferences preferences, Calibration value) {
+        writePreset(preferences, false, value);
+    }
+
+    public static void writePreset(
+            SharedPreferences preferences, boolean front, Calibration value) {
+        if (preferences == null) throw new IllegalArgumentException("preferences is null");
+        String presentKey = front ? PREF_FRONT_PRESET_PRESENT : PREF_PRESET_PRESENT;
+        String prefix = front ? FRONT_PRESET_PREFIX : PRESET_PREFIX;
+        SharedPreferences.Editor editor = preferences.edit();
+        editor.putBoolean(presentKey, value != null);
+        if (value == null) removeCalibration(editor, prefix);
+        else writeCalibration(editor, prefix, value);
+        editor.apply();
+    }
+
+    public static void writeCalibration(
+            SharedPreferences preferences, boolean front, Calibration value) {
+        if (preferences == null || value == null) {
+            throw new IllegalArgumentException("mirror calibration arguments required");
+        }
+        SharedPreferences.Editor editor = preferences.edit();
+        writeCalibration(editor, front ? FRONT_ORIGINAL_PREFIX : ORIGINAL_PREFIX, value);
+        editor.apply();
+    }
+
+    public static void copyCalibration(
+            SharedPreferences preferences, boolean fromFront, boolean toFront) {
+        writeCalibration(preferences, toFront, calibration(preferences, fromFront));
+    }
+
+    public static void resetCalibration(SharedPreferences preferences, boolean front) {
+        writeCalibration(preferences, front, defaultCalibration(front));
+    }
+
+    public static void writeSourceState(
+            SharedPreferences preferences, boolean frontIntegrated, boolean showFront) {
         if (preferences == null) throw new IllegalArgumentException("preferences is null");
         SharedPreferences.Editor editor = preferences.edit();
-        editor.putBoolean(PREF_PRESET_PRESENT, value != null);
-        if (value == null) removeCalibration(editor, PRESET_PREFIX);
-        else writeCalibration(editor, PRESET_PREFIX, value);
+        writeSourceState(editor, frontIntegrated, showFront);
         editor.apply();
+    }
+
+    public static void writeSourceState(
+            SharedPreferences.Editor editor, boolean frontIntegrated, boolean showFront) {
+        if (editor == null) throw new IllegalArgumentException("editor is null");
+        editor.putBoolean(PREF_FRONT_INTEGRATED, frontIntegrated)
+                .putBoolean(PREF_SHOW_FRONT, frontIntegrated && showFront);
     }
 
     private static DirectCameraCrop toCrop(
@@ -284,9 +384,8 @@ public final class RearviewMirrorSettings {
         try {
             if (!preferences.contains(prefix + "x")) return fallback;
             String geometryPrefix = prefix;
-            String correctedPrefix = ORIGINAL_PREFIX.equals(prefix)
-                    ? CORRECTED_PREFIX : prefix + "corrected_";
-            String valuePrefix = ORIGINAL_PREFIX.equals(prefix) ? "mirror_" : prefix;
+            String correctedPrefix = correctedPrefix(prefix);
+            String valuePrefix = valuePrefix(prefix);
             CameraPlacement raw = CameraPlacement.source(
                     preferences.getFloat(geometryPrefix + "x", 0.0f) / 100.0f,
                     preferences.getFloat(geometryPrefix + "y", 0.0f) / 100.0f,
@@ -311,9 +410,8 @@ public final class RearviewMirrorSettings {
 
     private static void writeCalibration(
             SharedPreferences.Editor editor, String prefix, Calibration value) {
-        String correctedPrefix = ORIGINAL_PREFIX.equals(prefix)
-                ? CORRECTED_PREFIX : prefix + "corrected_";
-        String valuePrefix = ORIGINAL_PREFIX.equals(prefix) ? "mirror_" : prefix;
+        String correctedPrefix = correctedPrefix(prefix);
+        String valuePrefix = valuePrefix(prefix);
         editor.putFloat(prefix + "x", value.raw.x * 100.0f)
                 .putFloat(prefix + "y", value.raw.y * 100.0f)
                 .putFloat(prefix + "width", value.raw.width * 100.0f)
@@ -328,6 +426,18 @@ public final class RearviewMirrorSettings {
                 .putBoolean(valuePrefix + "mirrored", value.mirrored)
                 .putInt(valuePrefix + "rotation", value.rotationDegrees)
                 .putInt(valuePrefix + "output_mode", value.rotationMode);
+    }
+
+    private static String correctedPrefix(String prefix) {
+        if (ORIGINAL_PREFIX.equals(prefix)) return CORRECTED_PREFIX;
+        if (FRONT_ORIGINAL_PREFIX.equals(prefix)) return "mirror_front_corrected_";
+        return prefix + "corrected_";
+    }
+
+    private static String valuePrefix(String prefix) {
+        if (ORIGINAL_PREFIX.equals(prefix)) return "mirror_";
+        if (FRONT_ORIGINAL_PREFIX.equals(prefix)) return "mirror_front_";
+        return prefix;
     }
 
     private static void removeCalibration(SharedPreferences.Editor editor, String prefix) {
@@ -359,12 +469,40 @@ public final class RearviewMirrorSettings {
         public final int borderDp;
         public final int borderArgb;
         public final boolean manualHidden;
+        public final boolean frontIntegrated;
+        public final boolean showFront;
+        public final Calibration frontCalibration;
+        public final Calibration frontPreset;
+        private final boolean sourceFieldsSpecified;
 
         public Settings(boolean enabled, int target, CameraPlacement placement,
                 Calibration calibration, Calibration preset,
                 int borderDp, int borderArgb, boolean manualHidden) {
+            this(enabled, target, placement, calibration, preset, borderDp, borderArgb,
+                    manualHidden, false, false, frontDefaultCalibration(), null, false);
+        }
+
+        public Settings(boolean enabled, int target, CameraPlacement placement,
+                Calibration calibration, Calibration preset,
+                int borderDp, int borderArgb, boolean manualHidden,
+                boolean frontIntegrated, boolean showFront,
+                Calibration frontCalibration, Calibration frontPreset) {
+            this(enabled, target, placement, calibration, preset, borderDp, borderArgb,
+                    manualHidden, frontIntegrated, showFront,
+                    frontCalibration, frontPreset, true);
+        }
+
+        private Settings(boolean enabled, int target, CameraPlacement placement,
+                Calibration calibration, Calibration preset,
+                int borderDp, int borderArgb, boolean manualHidden,
+                boolean frontIntegrated, boolean showFront,
+                Calibration frontCalibration, Calibration frontPreset,
+                boolean sourceFieldsSpecified) {
             if (placement == null || calibration == null) {
                 throw new IllegalArgumentException("mirror geometry is required");
+            }
+            if (frontCalibration == null) {
+                throw new IllegalArgumentException("front mirror calibration is required");
             }
             this.enabled = enabled;
             this.target = target == TARGET_CLUSTER ? TARGET_CLUSTER : TARGET_TABLET;
@@ -374,35 +512,92 @@ public final class RearviewMirrorSettings {
             this.borderDp = clamp(borderDp, MIN_BORDER_DP, MAX_BORDER_DP);
             this.borderArgb = borderArgb | 0xFF000000;
             this.manualHidden = manualHidden;
+            this.frontIntegrated = frontIntegrated;
+            this.showFront = frontIntegrated && showFront;
+            this.frontCalibration = frontCalibration;
+            this.frontPreset = frontPreset;
+            this.sourceFieldsSpecified = sourceFieldsSpecified;
         }
 
         static Settings defaults() {
-            CameraPlacement full = CameraPlacement.of(0.0f, 0.0f, 1.0f, 1.0f);
-            Calibration calibration = new Calibration(full, full, false, 100, 0,
-                    false, 0, CameraRotation.MODE_FIT);
             return new Settings(false, TARGET_TABLET, CameraPlacement.mirrorDemo(),
-                    calibration, null, 0, DEFAULT_BORDER_ARGB, false);
+                    rearDefaultCalibration(), null, 0, DEFAULT_BORDER_ARGB, false,
+                    false, false, frontDefaultCalibration(), null);
+        }
+
+        private static Calibration rearDefaultCalibration() {
+            CameraPlacement full = CameraPlacement.of(0.0f, 0.0f, 1.0f, 1.0f);
+            return new Calibration(full, full, false, 100, 0,
+                    false, 0, CameraRotation.MODE_FIT);
+        }
+
+        private static Calibration frontDefaultCalibration() {
+            return new Calibration(
+                    CameraPlacement.of(0.0f, 0.0f, 1.0f, 0.85f),
+                    CameraPlacement.of(0.0f, 0.0f, 1.0f, 1.0f),
+                    false, 100, 0, false, 0, CameraRotation.MODE_FILL);
         }
 
         public Settings normalized() {
             return new Settings(enabled, target, CameraPlacement.bounded(
                     placement.x, placement.y, placement.width, placement.height),
-                    calibration, preset, borderDp, borderArgb, manualHidden);
+                    calibration, preset, borderDp, borderArgb, manualHidden,
+                    frontIntegrated, showFront, frontCalibration, frontPreset,
+                    sourceFieldsSpecified);
         }
 
         public Settings withEnabled(boolean value) {
             return new Settings(value, target, placement, calibration, preset,
-                    borderDp, borderArgb, manualHidden);
+                    borderDp, borderArgb, manualHidden, frontIntegrated, showFront,
+                    frontCalibration, frontPreset, sourceFieldsSpecified);
         }
 
         public Settings withPlacement(CameraPlacement value) {
             return new Settings(enabled, target, value, calibration, preset,
-                    borderDp, borderArgb, manualHidden);
+                    borderDp, borderArgb, manualHidden, frontIntegrated, showFront,
+                    frontCalibration, frontPreset, sourceFieldsSpecified);
         }
 
         public Settings withManualHidden(boolean value) {
             return new Settings(enabled, target, placement, calibration, preset,
-                    borderDp, borderArgb, value);
+                    borderDp, borderArgb, value, frontIntegrated, showFront,
+                    frontCalibration, frontPreset, sourceFieldsSpecified);
+        }
+
+        public boolean activeFront() { return frontIntegrated && showFront; }
+
+        public Calibration calibration(boolean front) {
+            return front ? frontCalibration : calibration;
+        }
+
+        public Calibration preset(boolean front) {
+            return front ? frontPreset : preset;
+        }
+
+        public Settings withCalibration(boolean front, Calibration value) {
+            return new Settings(enabled, target, placement,
+                    front ? calibration : value, preset, borderDp, borderArgb, manualHidden,
+                    frontIntegrated, showFront, front ? value : frontCalibration, frontPreset,
+                    true);
+        }
+
+        public Settings withPreset(boolean front, Calibration value) {
+            return new Settings(enabled, target, placement, calibration,
+                    front ? preset : value, borderDp, borderArgb, manualHidden,
+                    frontIntegrated, showFront, frontCalibration, front ? value : frontPreset,
+                    true);
+        }
+
+        public Settings withFrontIntegrated(boolean value) {
+            return new Settings(enabled, target, placement, calibration, preset,
+                    borderDp, borderArgb, manualHidden, value, showFront,
+                    frontCalibration, frontPreset, true);
+        }
+
+        public Settings withSource(boolean front) {
+            return new Settings(enabled, target, placement, calibration, preset,
+                    borderDp, borderArgb, manualHidden, frontIntegrated, front,
+                    frontCalibration, frontPreset, true);
         }
     }
 

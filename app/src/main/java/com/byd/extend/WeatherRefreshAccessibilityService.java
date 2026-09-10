@@ -12,54 +12,75 @@ import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-/** Listens for the stock WeatherData refresh click and the optional global Reverse key binding. */
+import java.util.ArrayList;
+import java.util.List;
+
+/** Listens for the stock WeatherData refresh click and global camera-button bindings. */
 public final class WeatherRefreshAccessibilityService extends AccessibilityService {
     public static final String WEATHER_PACKAGE = "com.byd.weatherdata";
     public static final String REFRESH_VIEW_ID = "com.byd.weatherdata:id/iv_refresh";
 
     private static volatile WeatherRefreshAccessibilityService activeService;
-    private final ReverseSteeringButtonPolicy.State steeringState =
-            new ReverseSteeringButtonPolicy.State();
     private final Handler steeringHandler = new Handler(Looper.getMainLooper());
+    private final CameraButtonGesturePolicy steeringGestures = new CameraButtonGesturePolicy(
+            ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
     private final Runnable steeringTimeout = this::handleSteeringTimeout;
     private SharedPreferences steeringPreferences;
     private final SharedPreferences.OnSharedPreferenceChangeListener steeringPreferenceListener =
             (preferences, key) -> {
-                if (!ReverseSteeringButtonPreferences.KEY_CODE.equals(key)) return;
-                steeringState.bindingChanged();
-                steeringHandler.removeCallbacks(steeringTimeout);
+                if (!isSteeringPreference(key)) return;
+                steeringGestures.bindingsChanged(currentAssignments(preferences));
+                syncSteeringTimeout();
             };
 
     static boolean beginSteeringButtonLearning(Context context) {
+        return beginCameraButtonLearning(context, CameraButtonBindings.Action.ReverseSource);
+    }
+
+    static boolean beginCameraButtonLearning(
+            Context context, CameraButtonBindings.Action action) {
         WeatherRefreshAccessibilityService service = activeService;
-        if (service == null || GuardRecovery.isUserShutdownActive(service)
+        if (service == null || action == null || GuardRecovery.isUserShutdownActive(service)
                 || LegacySettingsImporter.blocksRuntime(service)) return false;
         service.steeringHandler.removeCallbacks(service.steeringTimeout);
-        service.steeringState.beginLearning();
+        service.steeringGestures.beginLearning(action);
         return true;
     }
 
     static void cancelSteeringButtonLearning() {
+        cancelCameraButtonLearning();
+    }
+
+    static void cancelCameraButtonLearning() {
         WeatherRefreshAccessibilityService service = activeService;
         if (service == null) return;
-        service.steeringHandler.removeCallbacks(service.steeringTimeout);
-        service.steeringState.cancel();
+        service.steeringGestures.cancelLearning();
+        service.syncSteeringTimeout();
     }
 
     static boolean isSteeringButtonLearning() {
+        return isCameraButtonLearning(CameraButtonBindings.Action.ReverseSource);
+    }
+
+    static boolean isCameraButtonLearning(CameraButtonBindings.Action action) {
         WeatherRefreshAccessibilityService service = activeService;
-        if (service == null) return false;
-        return service.steeringState.isLearning();
+        return service != null && service.steeringGestures.learningAction() == action;
+    }
+
+    static boolean isCameraButtonLearning() {
+        WeatherRefreshAccessibilityService service = activeService;
+        return service != null && service.steeringGestures.isLearning();
     }
 
     private void clearSteeringState() {
         steeringHandler.removeCallbacks(steeringTimeout);
-        steeringState.cancel();
+        steeringGestures.cancelLearning();
+        steeringGestures.cancelActions();
     }
 
     private void resetSteeringState() {
         steeringHandler.removeCallbacks(steeringTimeout);
-        steeringState.reset();
+        steeringGestures.reset();
     }
 
     @Override
@@ -102,24 +123,18 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                 || LegacySettingsImporter.blocksRuntime(this)) {
             // Stop accepting new cycles, but finish consuming any cycle this filter already owns.
             clearSteeringState();
-            return steeringState.consumeOwnedTail(
-                    event.getAction(), event.getKeyCode(), event.getDownTime());
+            return dispatchSteeringResult(steeringGestures.onKey(
+                    event.getKeyCode(), event.getAction(), event.getRepeatCount(),
+                    event.isCanceled(), event.getDownTime(), event.getEventTime(),
+                    SystemClock.uptimeMillis(), new ArrayList<>()), preferences());
         }
-        SharedPreferences preferences = steeringPreferences != null
-                ? steeringPreferences : getSharedPreferences("settings", MODE_PRIVATE);
-        int configured = ReverseSteeringButtonPreferences.load(preferences);
-        long contextToken = CameraProbeActivity.reverseOwnerEpochSnapshot();
-        dispatchSteeringDecision(
-                steeringState.advanceTime(event.getEventTime(), configured, contextToken),
-                preferences);
-        configured = ReverseSteeringButtonPreferences.load(preferences);
-        ReverseSteeringButtonPolicy.Decision decision = steeringState.apply(
-                event.getAction(), event.getKeyCode(), event.getRepeatCount(),
-                event.getDownTime(), event.getEventTime(), event.getFlags(), configured,
-                contextToken, ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
+        SharedPreferences preferences = preferences();
+        CameraButtonGesturePolicy.Result result = steeringGestures.onKey(
+                event.getKeyCode(), event.getAction(), event.getRepeatCount(),
+                event.isCanceled(), event.getDownTime(), event.getEventTime(),
+                SystemClock.uptimeMillis(), currentAssignments(preferences));
         syncSteeringTimeout();
-        dispatchSteeringDecision(decision, preferences);
-        return decision != ReverseSteeringButtonPolicy.Decision.PASS;
+        return dispatchSteeringResult(result, preferences);
     }
 
     private void handleSteeringTimeout() {
@@ -128,29 +143,75 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
             clearSteeringState();
             return;
         }
-        SharedPreferences preferences = steeringPreferences != null
-                ? steeringPreferences : getSharedPreferences("settings", MODE_PRIVATE);
-        int configured = ReverseSteeringButtonPreferences.load(preferences);
-        dispatchSteeringDecision(steeringState.advanceTime(SystemClock.uptimeMillis(), configured,
-                CameraProbeActivity.reverseOwnerEpochSnapshot()), preferences);
+        SharedPreferences preferences = preferences();
+        dispatchSteeringResult(steeringGestures.advance(
+                SystemClock.uptimeMillis(), currentAssignments(preferences)), preferences);
         syncSteeringTimeout();
     }
 
-    private void dispatchSteeringDecision(ReverseSteeringButtonPolicy.Decision decision,
+    private boolean dispatchSteeringResult(CameraButtonGesturePolicy.Result result,
             SharedPreferences preferences) {
-        if (decision == ReverseSteeringButtonPolicy.Decision.LEARNED) {
-            ReverseSteeringButtonPreferences.save(
-                    preferences, steeringState.getConfirmedKeyCode());
-            CameraProbeActivity.publishReverseSteeringButtonCaptured();
-        } else if (decision == ReverseSteeringButtonPolicy.Decision.TOGGLE) {
+        if (result.learnedAction != null) {
+            CameraButtonBindings.Binding current = CameraButtonBindings.load(
+                    preferences, result.learnedAction);
+            CameraButtonBindings.save(preferences, result.learnedAction,
+                    new CameraButtonBindings.Binding(result.learnedKeyCode, current.press));
+            CameraProbeActivity.publishCameraSteeringButtonCaptured(result.learnedAction);
+        }
+        if (result.actions.contains(CameraButtonBindings.Action.ReverseSource)) {
             CameraHelperService.requestReverseSteeringToggle(this);
         }
+        boolean source = result.actions.contains(CameraButtonBindings.Action.MirrorSource);
+        boolean visibility = result.actions.contains(
+                CameraButtonBindings.Action.MirrorVisibility);
+        if (source || visibility) {
+            CameraHelperService.requestMirrorButtonAction(this, source, visibility);
+        }
+        return result.consumed;
     }
 
     private void syncSteeringTimeout() {
         steeringHandler.removeCallbacks(steeringTimeout);
-        long deadline = steeringState.getDeadline();
-        if (deadline >= 0L) steeringHandler.postAtTime(steeringTimeout, deadline);
+        long deadline = steeringGestures.nextDeadline();
+        if (deadline != Long.MAX_VALUE) steeringHandler.postAtTime(steeringTimeout, deadline);
+    }
+
+    private SharedPreferences preferences() {
+        return steeringPreferences != null
+                ? steeringPreferences : getSharedPreferences("settings", MODE_PRIVATE);
+    }
+
+    private List<CameraButtonGesturePolicy.Assignment> currentAssignments(
+            SharedPreferences preferences) {
+        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(3);
+        addAssignment(result, preferences, CameraButtonBindings.Action.ReverseSource,
+                CameraProbeActivity.reverseOwnerEpochSnapshot());
+        boolean mirrorEnabled = RearviewMirrorSettings.enabled(preferences);
+        if (mirrorEnabled && RearviewMirrorSettings.frontIntegrated(preferences)) {
+            addAssignment(result, preferences, CameraButtonBindings.Action.MirrorSource, 3L);
+        }
+        if (mirrorEnabled) {
+            addAssignment(result, preferences, CameraButtonBindings.Action.MirrorVisibility, 1L);
+        }
+        return result;
+    }
+
+    private static void addAssignment(List<CameraButtonGesturePolicy.Assignment> result,
+            SharedPreferences preferences, CameraButtonBindings.Action action, long contextToken) {
+        CameraButtonBindings.Binding binding = CameraButtonBindings.load(preferences, action);
+        if (binding.isAssigned()) {
+            result.add(new CameraButtonGesturePolicy.Assignment(action, binding, contextToken));
+        }
+    }
+
+    private static boolean isSteeringPreference(String key) {
+        return ReverseSteeringButtonPreferences.KEY_CODE.equals(key)
+                || CameraButtonBindings.MIRROR_SOURCE_KEY_CODE.equals(key)
+                || CameraButtonBindings.MIRROR_SOURCE_PRESS.equals(key)
+                || CameraButtonBindings.MIRROR_VISIBILITY_KEY_CODE.equals(key)
+                || CameraButtonBindings.MIRROR_VISIBILITY_PRESS.equals(key)
+                || RearviewMirrorSettings.PREF_ENABLED.equals(key)
+                || RearviewMirrorSettings.PREF_FRONT_INTEGRATED.equals(key);
     }
 
     private static int getMultiPressTimeout() {

@@ -52,6 +52,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.REVERSE_SETTINGS_CHANGED";
     private static final String ACTION_MIRROR_SETTINGS_CHANGED =
             "com.byd.extend.action.MIRROR_SETTINGS_CHANGED";
+    private static final String ACTION_MIRROR_BUTTON =
+            "com.byd.extend.action.MIRROR_BUTTON";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
             "com.byd.extend.action.MUSIC_SETTINGS_CHANGED";
     private static final String ACTION_WEATHER_SETTINGS_CHANGED =
@@ -72,6 +74,8 @@ public final class CameraHelperService extends Service {
     static final String EXTRA_WEATHER_RECEIVER = "weather_receiver";
     static final String EXTRA_WEATHER_REASON = "weather_reason";
     static final String EXTRA_FULL_IMPORT = "full_import";
+    static final String EXTRA_MIRROR_SOURCE_ACTION = "mirror_source_action";
+    static final String EXTRA_MIRROR_VISIBILITY_ACTION = "mirror_visibility_action";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
     static final int WEATHER_RESULT_OK = 0;
@@ -198,6 +202,44 @@ public final class CameraHelperService extends Service {
     static void mirrorSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_MIRROR_SETTINGS_CHANGED));
+    }
+
+    /** Applies every Mirror action matched by one gesture from one old persisted state. */
+    static void requestMirrorButtonAction(
+            Context context, boolean source, boolean visibility) {
+        if (!source && !visibility) return;
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_MIRROR_BUTTON)
+                .putExtra(EXTRA_MIRROR_SOURCE_ACTION, source)
+                .putExtra(EXTRA_MIRROR_VISIBILITY_ACTION, visibility));
+    }
+
+    static MirrorButtonState resolveMirrorButtonAction(
+            boolean enabled, boolean frontIntegrated, boolean showFront,
+            boolean manualHidden, boolean source, boolean visibility) {
+        boolean sourceChanged = source && enabled && frontIntegrated;
+        boolean visibilityChanged = visibility && enabled;
+        return new MirrorButtonState(
+                sourceChanged ? !showFront : showFront,
+                visibilityChanged ? !manualHidden : manualHidden,
+                sourceChanged, visibilityChanged);
+    }
+
+    static final class MirrorButtonState {
+        final boolean showFront;
+        final boolean manualHidden;
+        final boolean sourceChanged;
+        final boolean visibilityChanged;
+
+        MirrorButtonState(boolean showFront, boolean manualHidden,
+                boolean sourceChanged, boolean visibilityChanged) {
+            this.showFront = showFront;
+            this.manualHidden = manualHidden;
+            this.sourceChanged = sourceChanged;
+            this.visibilityChanged = visibilityChanged;
+        }
+
+        boolean changed() { return sourceChanged || visibilityChanged; }
     }
 
     /** Pause an already-running instance synchronously before preferences are replaced. */
@@ -444,13 +486,36 @@ public final class CameraHelperService extends Service {
         if (ACTION_AUTO_START_CHANGED.equals(action)) {
             GuardRecovery.setAutoStartEnabled(this, command.enabled);
         }
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        MirrorButtonState mirrorButton = null;
+        if (ACTION_MIRROR_BUTTON.equals(action)) {
+            RearviewMirrorSettings.Settings old = new RearviewMirrorSettings(settings).load();
+            mirrorButton = resolveMirrorButtonAction(old.enabled, old.frontIntegrated,
+                    old.showFront, old.manualHidden, command.mirrorSourceAction,
+                    command.mirrorVisibilityAction);
+            if (mirrorButton.changed()) {
+                SharedPreferences.Editor editor = settings.edit();
+                if (mirrorButton.sourceChanged) {
+                    RearviewMirrorSettings.writeSourceState(
+                            editor, old.frontIntegrated, mirrorButton.showFront);
+                }
+                if (mirrorButton.visibilityChanged) {
+                    editor.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN,
+                            mirrorButton.manualHidden);
+                }
+                editor.apply();
+                CameraProbeActivity.publishMirrorSettingsChanged();
+                if (mirrorButton.visibilityChanged && !mirrorButton.manualHidden) {
+                    manualMirrorSession = true;
+                }
+            }
+        }
         if (ACTION_ACTIVITY_OPEN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, false);
             manualMirrorSession = true;
         } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
             manualMirrorSession = true;
         }
-        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         boolean shouldRecover = GuardRecovery.shouldRecover(this);
         if (LegacySettingsImporter.blocksRuntime(this)) {
             lifecycle("runtime_blocked", "reason", "legacy_handover");
@@ -482,6 +547,10 @@ public final class CameraHelperService extends Service {
                 ensureMirrorOnlyRuntime();
                 routeManualMirrorSettingsChange(action, mirror::settingsChanged,
                         clusterFullscreen::settingsChanged);
+                if (mirrorButton != null && mirrorButton.changed()) {
+                    mirror.settingsChanged();
+                    clusterFullscreen.settingsChanged();
+                }
                 mainHandler.post(this::startForegroundRuntime);
                 return;
             }
@@ -549,6 +618,10 @@ public final class CameraHelperService extends Service {
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             reverseCameras.settingsChanged();
         } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
+            mirror.settingsChanged();
+            clusterFullscreen.settingsChanged();
+        } else if (ACTION_MIRROR_BUTTON.equals(action)
+                && mirrorButton != null && mirrorButton.changed()) {
             mirror.settingsChanged();
             clusterFullscreen.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {

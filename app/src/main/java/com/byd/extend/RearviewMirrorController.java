@@ -9,9 +9,10 @@ import android.view.Display;
 import android.view.Surface;
 import android.widget.Toast;
 import org.json.JSONObject;
+import java.util.Arrays;
 import java.util.function.BiConsumer;
 
-/** Desired-state owner for one rear-camera consumer; it never owns the shared producer. */
+/** Desired-state owner for one mirror-camera consumer; it never owns the shared producer. */
 final class RearviewMirrorController {
     private final Context context;
     private final SharedPreferences preferences;
@@ -42,7 +43,9 @@ final class RearviewMirrorController {
     private int sequence;
     private int requestId;
     private int requestTarget;
+    private int requestCameraIndex = RearviewMirrorSettings.REAR_CAMERA_INDEX;
     private int requestDisplayId = -1;
+    private Object[] requestConfiguration;
     private int generation;
     private boolean clusterChangePending;
     private Surface target;
@@ -77,8 +80,10 @@ final class RearviewMirrorController {
     }
 
     void settingsChanged() {
-        if (requestId != 0) stop("settings_changed", true);
-        else evaluate();
+        if (requestId != 0 && (!wanted()
+                || !Arrays.equals(requestConfiguration, runtimeConfiguration()))) {
+            stop("settings_changed", true);
+        } else evaluate();
     }
 
     void oemVisibility(boolean known, boolean visible) {
@@ -152,7 +157,13 @@ final class RearviewMirrorController {
         generation = 0;
         int expected = requestId;
         try {
-            CameraShellProtocol.OverlaySpec spec = buildSpec(expected);
+            RearviewMirrorSettings.Settings settings =
+                    new RearviewMirrorSettings(preferences).load();
+            requestCameraIndex = settings.activeFront()
+                    ? RearviewMirrorSettings.FRONT_CAMERA_INDEX
+                    : RearviewMirrorSettings.REAR_CAMERA_INDEX;
+            requestConfiguration = runtimeConfiguration(settings);
+            CameraShellProtocol.OverlaySpec spec = buildSpec(expected, settings.activeFront());
             requestTarget = spec.target;
             Display display = CameraDisplayTarget.resolve(context, spec.target);
             requestDisplayId = display == null ? -1 : display.getDisplayId();
@@ -167,13 +178,14 @@ final class RearviewMirrorController {
         }
     }
 
-    private CameraShellProtocol.OverlaySpec buildSpec(int id) {
+    private CameraShellProtocol.OverlaySpec buildSpec(int id, boolean front) {
         int displayTarget = RearviewMirrorSettings.target(preferences);
         int[] size = CameraDisplayTarget.displaySize(context, displayTarget);
         int[] rect = RearviewMirrorSettings.placement(preferences, displayTarget).toPixelRect(size[0], size[1]);
-        DirectCameraCrop raw = RearviewMirrorSettings.raw(preferences);
-        CameraDewarpConfig dewarp = RearviewMirrorSettings.dewarp(preferences);
-        DirectCameraCrop crop = dewarp.enabled ? RearviewMirrorSettings.corrected(preferences) : raw;
+        DirectCameraCrop raw = RearviewMirrorSettings.raw(preferences, front);
+        CameraDewarpConfig dewarp = RearviewMirrorSettings.dewarp(preferences, front);
+        DirectCameraCrop crop = dewarp.enabled
+                ? RearviewMirrorSettings.corrected(preferences, front) : raw;
         CameraShellProtocol.OverlaySpec result = new CameraShellProtocol.OverlaySpec(
                 CameraOverlayProfile.MIRROR_ID, id, displayTarget,
                 rect[2], rect[3], rect[0], rect[1],
@@ -186,6 +198,22 @@ final class RearviewMirrorController {
         return result;
     }
 
+    private Object[] runtimeConfiguration() {
+        return runtimeConfiguration(new RearviewMirrorSettings(preferences).load());
+    }
+
+    private Object[] runtimeConfiguration(RearviewMirrorSettings.Settings settings) {
+        RearviewMirrorSettings.Calibration calibration =
+                settings.calibration(settings.activeFront());
+        return new Object[]{settings.activeFront(), settings.target, settings.placement,
+                calibration.raw, calibration.corrected, calibration.enabled,
+                calibration.fovDegrees, calibration.projection, calibration.mirrored,
+                calibration.rotationDegrees, calibration.rotationMode,
+                settings.borderDp, settings.borderArgb,
+                BlindSpotOverlayController.readCornerRadius(preferences),
+                CameraBufferQuality.load(preferences)};
+    }
+
     private void acceptSurface(int expected, TurnSignalController.OverlaySurface surface) {
         if (expected != requestId || !wanted() || helper == null
                 || surface.requestId != expected || surface.cameraId != CameraOverlayProfile.MIRROR_ID) {
@@ -195,7 +223,8 @@ final class RearviewMirrorController {
         generation = surface.surfaceGeneration;
         target = surface.surface;
         try {
-            String result = helper.openMirrorCamera(surface.surface, expected);
+            String result = helper.openMirrorCamera(
+                    surface.surface, requestCameraIndex, expected);
             if (!"camera_opened".equals(new JSONObject(result).optString("kind"))) {
                 target = null; // The rejected attach has already released its input handle.
                 fail("consumer_open", false);
@@ -300,7 +329,9 @@ final class RearviewMirrorController {
         int closingGeneration = generation;
         requestId = 0;
         requestTarget = CameraDisplayTarget.TABLET;
+        requestCameraIndex = RearviewMirrorSettings.REAR_CAMERA_INDEX;
         requestDisplayId = -1;
+        requestConfiguration = null;
         generation = 0;
         clusterChangePending = false;
         target = null;

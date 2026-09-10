@@ -10,6 +10,8 @@ final class ServiceRuntimeCommand {
     final int startId;
     final boolean enabled;
     final boolean fullImport;
+    final boolean mirrorSourceAction;
+    final boolean mirrorVisibilityAction;
     final String weatherReason;
     final ResultReceiver flushReceiver;
     final ResultReceiver weatherReceiver;
@@ -20,6 +22,8 @@ final class ServiceRuntimeCommand {
             int startId,
             boolean enabled,
             boolean fullImport,
+            boolean mirrorSourceAction,
+            boolean mirrorVisibilityAction,
             String weatherReason,
             ResultReceiver flushReceiver,
             ResultReceiver weatherReceiver) {
@@ -28,6 +32,8 @@ final class ServiceRuntimeCommand {
         this.startId = startId;
         this.enabled = enabled;
         this.fullImport = fullImport;
+        this.mirrorSourceAction = mirrorSourceAction;
+        this.mirrorVisibilityAction = mirrorVisibilityAction;
         this.weatherReason = weatherReason;
         this.flushReceiver = flushReceiver;
         this.weatherReceiver = weatherReceiver;
@@ -37,6 +43,7 @@ final class ServiceRuntimeCommand {
         if (intent == null) {
             return new ServiceRuntimeCommand(
                     defaultAction, "", startId, true, false,
+                    false, false,
                     "manual", null, null);
         }
         return new ServiceRuntimeCommand(
@@ -45,6 +52,8 @@ final class ServiceRuntimeCommand {
                 startId,
                 intent.getBooleanExtra(CameraHelperService.EXTRA_ENABLED, true),
                 intent.getBooleanExtra(CameraHelperService.EXTRA_FULL_IMPORT, false),
+                intent.getBooleanExtra(CameraHelperService.EXTRA_MIRROR_SOURCE_ACTION, false),
+                intent.getBooleanExtra(CameraHelperService.EXTRA_MIRROR_VISIBILITY_ACTION, false),
                 valueOrDefault(
                         intent.getStringExtra(CameraHelperService.EXTRA_WEATHER_REASON), "manual"),
                 intent.getParcelableExtra(CameraHelperService.EXTRA_FLUSH_RECEIVER),

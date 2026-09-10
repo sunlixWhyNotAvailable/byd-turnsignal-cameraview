@@ -207,6 +207,16 @@ public final class CameraSettingsTransfer {
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
         }
+        if (settings.containsKey(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
+                || settings.containsKey(RearviewMirrorSettings.PREF_SHOW_FRONT)) {
+            boolean integrated = settings.containsKey(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
+                    ? (Boolean) settings.get(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
+                    : RearviewMirrorSettings.frontIntegrated(preferences);
+            boolean showFront = settings.containsKey(RearviewMirrorSettings.PREF_SHOW_FRONT)
+                    ? (Boolean) settings.get(RearviewMirrorSettings.PREF_SHOW_FRONT)
+                    : RearviewMirrorSettings.activeFront(preferences);
+            RearviewMirrorSettings.writeSourceState(editor, integrated, showFront);
+        }
         if (placements != null) placements.write(editor);
         if (!editor.commit()) throw new IllegalStateException("camera preset commit failed");
     }
@@ -581,24 +591,35 @@ public final class CameraSettingsTransfer {
             }
         }
         addMirrorCalibration(out, value.calibration);
+        out.put(RearviewMirrorSettings.PREF_FRONT_INTEGRATED, value.frontIntegrated);
+        out.put(RearviewMirrorSettings.PREF_SHOW_FRONT, value.showFront);
+        addMirrorCalibration(out, value.frontCalibration,
+                "mirror_front_original_", "mirror_front_corrected_", "mirror_front_");
     }
 
     private static void addMirrorCalibration(
             Map<String, Object> out, RearviewMirrorSettings.Calibration value) {
-        out.put("mirror_original_x", value.raw.x * 100.0f);
-        out.put("mirror_original_y", value.raw.y * 100.0f);
-        out.put("mirror_original_width", value.raw.width * 100.0f);
-        out.put("mirror_original_height", value.raw.height * 100.0f);
-        out.put("mirror_correction", value.enabled);
-        out.put("mirror_fov", value.fovDegrees);
-        out.put("mirror_projection", value.projection);
-        out.put("mirror_corrected_x", value.corrected.x * 100.0f);
-        out.put("mirror_corrected_y", value.corrected.y * 100.0f);
-        out.put("mirror_corrected_width", value.corrected.width * 100.0f);
-        out.put("mirror_corrected_height", value.corrected.height * 100.0f);
-        out.put("mirror_mirrored", value.mirrored);
-        out.put("mirror_output_mode", value.rotationMode);
-        out.put("mirror_rotation", value.rotationDegrees);
+        addMirrorCalibration(out, value,
+                "mirror_original_", "mirror_corrected_", "mirror_");
+    }
+
+    private static void addMirrorCalibration(
+            Map<String, Object> out, RearviewMirrorSettings.Calibration value,
+            String rawPrefix, String correctedPrefix, String valuePrefix) {
+        out.put(rawPrefix + "x", value.raw.x * 100.0f);
+        out.put(rawPrefix + "y", value.raw.y * 100.0f);
+        out.put(rawPrefix + "width", value.raw.width * 100.0f);
+        out.put(rawPrefix + "height", value.raw.height * 100.0f);
+        out.put(valuePrefix + "correction", value.enabled);
+        out.put(valuePrefix + "fov", value.fovDegrees);
+        out.put(valuePrefix + "projection", value.projection);
+        out.put(correctedPrefix + "x", value.corrected.x * 100.0f);
+        out.put(correctedPrefix + "y", value.corrected.y * 100.0f);
+        out.put(correctedPrefix + "width", value.corrected.width * 100.0f);
+        out.put(correctedPrefix + "height", value.corrected.height * 100.0f);
+        out.put(valuePrefix + "mirrored", value.mirrored);
+        out.put(valuePrefix + "output_mode", value.rotationMode);
+        out.put(valuePrefix + "rotation", value.rotationDegrees);
     }
 
     private static void addParking(Map<String, Object> out, SharedPreferences p,
@@ -832,14 +853,13 @@ public final class CameraSettingsTransfer {
     }
 
     private static void requireMirror(Map<String, Object> values, int version) {
-        boolean present = false;
-        for (String key : values.keySet()) {
-            if (key.startsWith("mirror_")) {
-                present = true;
-                break;
-            }
+        boolean present = values.containsKey(RearviewMirrorSettings.PREF_ENABLED);
+        if (!present) {
+            // v1 presets predate the independent rear Mirror group, while a
+            // newer partial file may still carry optional front fields.
+            requireOptionalFrontMirrorCalibration(values);
+            return;
         }
-        if (!present) return; // v1 presets predate the independent Mirror group.
 
         String[] required = {
                 RearviewMirrorSettings.PREF_ENABLED,
@@ -891,6 +911,27 @@ public final class CameraSettingsTransfer {
             }
         }
         requireMirrorCalibration(values, "mirror_original_", "mirror_corrected_", "mirror_");
+        requireOptionalFrontMirrorCalibration(values);
+    }
+
+    private static void requireOptionalFrontMirrorCalibration(Map<String, Object> values) {
+        String[] required = {
+                "mirror_front_original_x", "mirror_front_original_y",
+                "mirror_front_original_width", "mirror_front_original_height",
+                "mirror_front_correction", "mirror_front_fov", "mirror_front_projection",
+                "mirror_front_corrected_x", "mirror_front_corrected_y",
+                "mirror_front_corrected_width", "mirror_front_corrected_height",
+                "mirror_front_mirrored", "mirror_front_output_mode", "mirror_front_rotation"};
+        boolean present = false;
+        for (String key : required) present |= values.containsKey(key);
+        if (!present) return;
+        for (String key : required) {
+            if (!values.containsKey(key)) {
+                throw new IllegalArgumentException("incomplete front mirror calibration");
+            }
+        }
+        requireMirrorCalibration(values, "mirror_front_original_",
+                "mirror_front_corrected_", "mirror_front_");
     }
 
     private static void requireMirrorCalibration(
@@ -1040,11 +1081,20 @@ public final class CameraSettingsTransfer {
         }
         keys.add(RearviewMirrorSettings.PREF_BORDER_DP);
         keys.add(RearviewMirrorSettings.PREF_BORDER_ARGB);
+        keys.add(RearviewMirrorSettings.PREF_FRONT_INTEGRATED);
+        keys.add(RearviewMirrorSettings.PREF_SHOW_FRONT);
         for (String key : new String[]{"mirror_original_x", "mirror_original_y",
                 "mirror_original_width", "mirror_original_height", "mirror_correction",
                 "mirror_fov", "mirror_projection", "mirror_corrected_x",
                 "mirror_corrected_y", "mirror_corrected_width", "mirror_corrected_height",
                 "mirror_mirrored", "mirror_output_mode", "mirror_rotation"}) keys.add(key);
+        for (String key : new String[]{"mirror_front_original_x", "mirror_front_original_y",
+                "mirror_front_original_width", "mirror_front_original_height",
+                "mirror_front_correction", "mirror_front_fov", "mirror_front_projection",
+                "mirror_front_corrected_x", "mirror_front_corrected_y",
+                "mirror_front_corrected_width", "mirror_front_corrected_height",
+                "mirror_front_mirrored", "mirror_front_output_mode",
+                "mirror_front_rotation"}) keys.add(key);
         for (CameraProfile profile : CameraProfile.values()) {
             for (int field = 0; field < 8; field++) keys.add(DirectCameraCrop.preferenceKey(profile, field));
             String corrected = "direct_crop_v3_corrected_" + profile.id + "_";
@@ -1107,6 +1157,16 @@ public final class CameraSettingsTransfer {
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)
+                || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
+                || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
+                || key.startsWith("mirror_front_original_")
+                || key.startsWith("mirror_front_corrected_")
+                || key.equals("mirror_front_correction")
+                || key.equals("mirror_front_fov")
+                || key.equals("mirror_front_projection")
+                || key.equals("mirror_front_mirrored")
+                || key.equals("mirror_front_output_mode")
+                || key.equals("mirror_front_rotation")
                 || key.startsWith("mirror_")
                 || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
                 || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
@@ -1162,6 +1222,11 @@ public final class CameraSettingsTransfer {
 
     private static Set<String> cameraClearKeys(boolean preserveMirror) {
         LinkedHashSet<String> keys = new LinkedHashSet<>(cameraPresetKeys());
+        // Every new front-Mirror field is optional. Imported files that omit
+        // one must preserve its independently saved destination value.
+        keys.remove(RearviewMirrorSettings.PREF_FRONT_INTEGRATED);
+        keys.remove(RearviewMirrorSettings.PREF_SHOW_FRONT);
+        keys.removeIf(key -> key.startsWith("mirror_front_"));
         if (preserveMirror) {
             // An omitted optional Mirror group must not reset active Mirror.
             // Local hidden/preset keys are not in the transfer allowlist and
@@ -1181,8 +1246,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean containsMirror(Map<String, Object> values) {
-        for (String key : values.keySet()) if (key.startsWith("mirror_")) return true;
-        return false;
+        return values.containsKey(RearviewMirrorSettings.PREF_ENABLED);
     }
 
     private static boolean isBooleanKey(String key) {
@@ -1193,6 +1257,8 @@ public final class CameraSettingsTransfer {
                 || key.equals(ParkingCameraSettings.PREF_ALLOW_DURING_REVERSE)
                 || key.equals("parking_camera_scale_sync")
                 || key.equals(RearviewMirrorSettings.PREF_ENABLED)
+                || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
+                || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)

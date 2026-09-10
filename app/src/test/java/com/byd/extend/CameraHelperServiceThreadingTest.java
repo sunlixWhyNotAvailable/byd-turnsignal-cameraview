@@ -93,7 +93,7 @@ public final class CameraHelperServiceThreadingTest {
 
         String runtime = text.substring(
                 text.indexOf("private void handleStartCommand"),
-                text.indexOf("SharedPreferences settings =", text.indexOf(
+                text.indexOf("boolean shouldRecover =", text.indexOf(
                         "private void handleStartCommand")));
         assertTrue(runtime.contains("setUserShutdownActive(this, true)"));
         assertTrue(runtime.contains("setAutoStartEnabled(this, command.enabled)"));

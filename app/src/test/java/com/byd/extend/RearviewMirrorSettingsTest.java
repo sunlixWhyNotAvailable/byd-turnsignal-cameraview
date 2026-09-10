@@ -70,6 +70,19 @@ public class RearviewMirrorSettingsTest {
         assertEquals(CameraPlacement.mirrorDemo(), settings.placement);
         assertFalse(settings.calibration.enabled);
         assertEquals(CameraRotation.MODE_FIT, settings.calibration.rotationMode);
+        assertFalse(settings.frontIntegrated);
+        assertFalse(settings.showFront);
+        assertFalse(settings.activeFront());
+        assertEquals(CameraPlacement.of(0f, 0f, 1f, .85f),
+                settings.frontCalibration.raw);
+        assertEquals(CameraPlacement.of(0f, 0f, 1f, 1f),
+                settings.frontCalibration.corrected);
+        assertFalse(settings.frontCalibration.enabled);
+        assertEquals(100, settings.frontCalibration.fovDegrees);
+        assertEquals(0, settings.frontCalibration.projection);
+        assertFalse(settings.frontCalibration.mirrored);
+        assertEquals(0, settings.frontCalibration.rotationDegrees);
+        assertEquals(CameraRotation.MODE_FILL, settings.frontCalibration.rotationMode);
         assertEquals(0, settings.borderDp);
         assertEquals(RearviewMirrorSettings.DEFAULT_BORDER_ARGB, settings.borderArgb);
         assertTrue(RearviewMirrorSettings.suppressWhilePanorama(preferences));
@@ -173,5 +186,94 @@ public class RearviewMirrorSettingsTest {
         assertFalse(preferences.contains(RearviewMirrorSettings.placementKey(
                 RearviewMirrorSettings.TARGET_TABLET,
                 RearviewMirrorSettings.PLACEMENT_X)));
+    }
+
+    @Test
+    public void sourceReadsNeverMigrateOrResetOldPreferences() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.putFloat(RearviewMirrorSettings.PREF_ORIGINAL_X, 17f);
+        preferences.putFloat(RearviewMirrorSettings.PREF_ORIGINAL_WIDTH, 50f);
+        java.util.Map<String, ?> before = new java.util.HashMap<>(preferences.getAll());
+        int transactions = preferences.transactions;
+
+        RearviewMirrorSettings.Settings value = new RearviewMirrorSettings(preferences).load();
+
+        assertEquals(before, preferences.getAll());
+        assertEquals(transactions, preferences.transactions);
+        assertEquals(.17f, value.calibration.raw.x, .000001f);
+        assertEquals(.85f, value.frontCalibration.raw.height, 0f);
+    }
+
+    @Test
+    public void oldConstructorSavePreservesAddedSourceFields() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        RearviewMirrorSettings.Calibration front = new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(.1f, .2f, .7f, .6f),
+                CameraPlacement.of(.2f, .1f, .6f, .7f), true, 140, 1,
+                true, 45, CameraRotation.MODE_ALIGNED);
+        RearviewMirrorSettings.writeCalibration(preferences, true, front);
+        RearviewMirrorSettings.writePreset(preferences, true, front);
+        RearviewMirrorSettings.writeSourceState(
+                (android.content.SharedPreferences) preferences, true, true);
+        RearviewMirrorSettings.Settings base = new RearviewMirrorSettings(preferences).load();
+
+        new RearviewMirrorSettings(preferences).save(new RearviewMirrorSettings.Settings(
+                true, base.target, base.placement, base.calibration, base.preset,
+                base.borderDp, base.borderArgb, base.manualHidden));
+
+        RearviewMirrorSettings.Settings saved = new RearviewMirrorSettings(preferences).load();
+        assertTrue(saved.activeFront());
+        assertEquals(front.raw, saved.frontCalibration.raw);
+        assertEquals(front.corrected, saved.frontPreset.corrected);
+    }
+
+    @Test
+    public void sourceCalibrationPresetAndRuntimeGettersStayIsolated() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        RearviewMirrorSettings.Calibration rear = new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(.1f, .1f, .8f, .8f),
+                CameraPlacement.of(.2f, .2f, .7f, .7f), false, 110, 0,
+                false, -10, CameraRotation.MODE_FIT);
+        RearviewMirrorSettings.Calibration front = new RearviewMirrorSettings.Calibration(
+                CameraPlacement.of(.3f, .2f, .6f, .7f),
+                CameraPlacement.of(.2f, .3f, .7f, .6f), true, 150, 1,
+                true, 20, CameraRotation.MODE_FILL);
+        RearviewMirrorSettings.writeCalibration(preferences, false, rear);
+        RearviewMirrorSettings.writeCalibration(preferences, true, front);
+        RearviewMirrorSettings.writePreset(preferences, false, rear);
+        RearviewMirrorSettings.writePreset(preferences, true, front);
+
+        assertEquals(rear.raw, RearviewMirrorSettings.calibration(preferences, false).raw);
+        assertEquals(front.raw, RearviewMirrorSettings.calibration(preferences, true).raw);
+        assertEquals(rear.corrected, RearviewMirrorSettings.preset(preferences, false).corrected);
+        assertEquals(front.corrected, RearviewMirrorSettings.preset(preferences, true).corrected);
+        assertEquals(RearviewMirrorSettings.REAR_CAMERA_INDEX,
+                RearviewMirrorSettings.cameraIndex(preferences));
+        RearviewMirrorSettings.writeSourceState(
+                (android.content.SharedPreferences) preferences, true, true);
+        assertEquals(RearviewMirrorSettings.FRONT_CAMERA_INDEX,
+                RearviewMirrorSettings.cameraIndex(preferences));
+        DirectCameraCrop frontRaw = RearviewMirrorSettings.raw(preferences, true);
+        assertEquals(front.raw.x, frontRaw.left, 0f);
+        assertEquals(front.raw.y, frontRaw.top, 0f);
+        assertEquals(front.raw.width, frontRaw.width, 0f);
+        assertEquals(front.raw.height, frontRaw.height, 0f);
+        assertEquals(CameraDewarpConfig.LENS_FRONT,
+                RearviewMirrorSettings.dewarp(preferences).lens);
+
+        RearviewMirrorSettings.copyCalibration(preferences, true, false);
+        RearviewMirrorSettings.Calibration copied =
+                RearviewMirrorSettings.calibration(preferences, false);
+        assertEquals(front.raw, copied.raw);
+        assertEquals(front.corrected, copied.corrected);
+        assertTrue(copied.mirrored);
+
+        RearviewMirrorSettings.writeSourceState(
+                (android.content.SharedPreferences) preferences, false, true);
+        RearviewMirrorSettings.Settings disabled = new RearviewMirrorSettings(preferences).load();
+        assertFalse(disabled.showFront);
+        assertFalse(disabled.activeFront());
+        assertEquals(front.raw, disabled.frontCalibration.raw);
+        assertEquals(front.corrected, disabled.frontPreset.corrected);
     }
 }

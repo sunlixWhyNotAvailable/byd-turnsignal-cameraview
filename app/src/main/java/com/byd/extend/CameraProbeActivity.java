@@ -285,6 +285,10 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     static void publishReverseSteeringButtonCaptured() {
+        publishCameraSteeringButtonCaptured(CameraButtonBindings.Action.ReverseSource);
+    }
+
+    static void publishCameraSteeringButtonCaptured(CameraButtonBindings.Action action) {
         ReverseOwnerSnapshot snapshot;
         synchronized (REVERSE_OWNER_LOCK) {
             CameraProbeActivity owner = reverseOwner == null ? null : reverseOwner.get();
@@ -295,10 +299,34 @@ public final class CameraProbeActivity extends ComponentActivity
         snapshot.activity.mainHandler.post(() -> {
             if (!snapshot.activity.isReverseOwnerCurrent(snapshot.token, snapshot.epoch)) return;
             if (snapshot.activity.productionUi != null) {
-                snapshot.activity.productionUi.dismissReverseButtonCaptureDialog();
+                snapshot.activity.productionUi.dismissCameraButtonCaptureDialog(action);
                 snapshot.activity.productionUi.reload();
             }
         });
+    }
+
+    static void publishMirrorSettingsChanged() {
+        ReverseOwnerSnapshot snapshot;
+        synchronized (REVERSE_OWNER_LOCK) {
+            CameraProbeActivity owner = reverseOwner == null ? null : reverseOwner.get();
+            if (owner == null || !owner.reverseOwnerPresent) return;
+            snapshot = new ReverseOwnerSnapshot(owner, owner.reverseOwnerToken, reverseOwnerEpoch);
+        }
+        snapshot.activity.mainHandler.post(() -> {
+            if (snapshot.activity.isReverseOwnerCurrent(snapshot.token, snapshot.epoch)) {
+                snapshot.activity.refreshProductionMirrorState();
+            }
+        });
+    }
+
+    private void refreshProductionMirrorState() {
+        if (productionUi == null || activityDestroyed || shutdownRequested) return;
+        boolean changed = productionUi.getState().getMirror().getActiveFront()
+                != RearviewMirrorSettings.activeFront(preferences);
+        productionUi.reload();
+        if (changed && selectedTab == TAB_REARVIEW_MIRROR) {
+            onProductionCameraSelectionChanged(SelectionId.MirrorSource);
+        }
     }
 
     private void publishReverseOwnerPresence() {
@@ -519,6 +547,7 @@ public final class CameraProbeActivity extends ComponentActivity
     // initial crop so the final UP is classified as the same transform edit
     // instead of accidentally becoming a FREE geometry save.
     private DirectCameraCrop productionCalibrationGestureStart;
+    private Integer calibrationHostSourceIndex;
     private boolean productionCalibrationGestureCorrected;
     private boolean productionCalibrationGestureTransformChanged;
     private boolean productionCalibrationGestureActive;
@@ -794,6 +823,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private Runnable runtimeDialogDismiss;
     private String pendingUpdateTitle;
     private String pendingUpdateMessage;
+    private String pendingUpdateNotes = "";
+    private String downloadingUpdateVersion;
+    private String downloadingUpdateNotes = "";
     private File pendingUpdateFile;
     private AppUpdateManager.UpdateInfo pendingUpdateInstall;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
@@ -1574,7 +1606,8 @@ public final class CameraProbeActivity extends ComponentActivity
         runtimeDialogConfirm = confirm;
         runtimeDialogDismiss = dismiss;
         productionUi.showDialog(new DialogUiState(kind, title, message, null, cancellable, true,
-                true, confirmLabel, dismissLabel, confirm != null, markdown));
+                true, confirmLabel, dismissLabel, confirm != null, markdown,
+                owner == RuntimeDialogOwner.UPDATE));
         return true;
     }
 
@@ -1587,12 +1620,16 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void updateRuntimeProgress(RuntimeDialogOwner owner, String message, boolean cancellable) {
+        updateRuntimeProgress(owner, message, cancellable, null);
+    }
+
+    private void updateRuntimeProgress(RuntimeDialogOwner owner, String message,
+            boolean cancellable, Float progress) {
         if (activityDestroyed || productionUi == null || runtimeDialogOwner != owner) return;
         DialogUiState current = productionUi.getState().getDialog();
         if (current == null || !current.getManaged() || current.getKind() != DialogKind.Progress) return;
-        productionUi.showDialog(new DialogUiState(current.getKind(), current.getTitle(), message,
-                null, cancellable, false, true, null,
-                cancellable ? runtimeText(R.string.runtime_cancel) : null, false, ""));
+        productionUi.showDialog(current.withRuntimeProgress(message, progress, cancellable,
+                cancellable ? runtimeText(R.string.runtime_cancel) : null));
     }
 
     private boolean handleRuntimeDialogCommand(CommandId command) {
@@ -1830,16 +1867,19 @@ public final class CameraProbeActivity extends ComponentActivity
     private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
         if (activityDestroyed || updateDownloadInFlight) return;
         updateDownloadInFlight = true;
+        downloadingUpdateVersion = info.version;
+        downloadingUpdateNotes = ReleaseNotesSelector.select(info.releaseNotes, AppLanguage.read(preferences));
         record("update_download_started", "version", info.version);
         showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Progress,
                 runtimeText(R.string.runtime_update_download_title, info.version),
-                runtimeText(R.string.runtime_update_download, 0), false, null, null, "", null, null);
+                runtimeText(R.string.runtime_update_download, 0), false, null, null,
+                downloadingUpdateNotes, null, null);
         updateExecutor.execute(() -> {
             try {
                 File file = updateManager.downloadAndVerify(
                         getApplicationContext(), info, progress -> runOnUiThread(() -> {
                             if (!activityDestroyed) updateRuntimeProgress(RuntimeDialogOwner.UPDATE,
-                                    runtimeText(R.string.runtime_update_download, progress), false);
+                                    runtimeText(R.string.runtime_update_download, progress), false, progress / 100f);
                         }));
                 runOnUiThread(() -> {
                     dismissUpdateProgress();
@@ -1866,15 +1906,22 @@ public final class CameraProbeActivity extends ComponentActivity
     private void showUpdateError(Throwable error) {
         record("update_failed", "error", error.toString());
         if (activityDestroyed || isFinishing()) return;
-        showUpdateMessage(runtimeText(R.string.runtime_update_failed),
-                error.getMessage() == null
-                        ? error.getClass().getSimpleName() : error.getMessage());
+        String title = runtimeText(R.string.runtime_update_failed);
+        if (downloadingUpdateVersion != null) title += " • " + downloadingUpdateVersion;
+        pendingUpdateNotes = downloadingUpdateNotes;
+        pendingUpdateTitle = title;
+        pendingUpdateMessage = error.getMessage() == null
+                ? error.getClass().getSimpleName() : error.getMessage();
+        downloadingUpdateVersion = null;
+        downloadingUpdateNotes = "";
+        presentPendingUpdateResult();
     }
 
     private void showUpdateMessage(String title, String message) {
         if (activityDestroyed || isFinishing()) return;
         pendingUpdateTitle = title;
         pendingUpdateMessage = message;
+        pendingUpdateNotes = "";
         presentPendingUpdateResult();
     }
 
@@ -1899,14 +1946,18 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 updateManager.install(this, info, file);
                 record("update_install_opened", "version", info.version);
+                downloadingUpdateVersion = null;
+                downloadingUpdateNotes = "";
             } catch (Throwable error) { showUpdateError(error); }
         } else if (pendingUpdateTitle != null) {
             String title = pendingUpdateTitle;
             String message = pendingUpdateMessage;
+            String notes = pendingUpdateNotes;
             pendingUpdateTitle = null;
             pendingUpdateMessage = null;
+            pendingUpdateNotes = "";
             showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Message, title, message,
-                    true, runtimeText(R.string.runtime_ok), null, "", () -> {}, () -> {});
+                    true, runtimeText(R.string.runtime_ok), null, notes, () -> {}, () -> {});
         } else showCachedUpdateIfAvailable();
     }
 
@@ -2538,7 +2589,21 @@ public final class CameraProbeActivity extends ComponentActivity
                     ((BydExtendUiAction.Navigate) action).getTab()));
             return;
         }
-        if (action instanceof BydExtendUiAction.Toggle) {
+        if (action instanceof BydExtendUiAction.LearnCameraButton) {
+            beginCameraButtonLearning(((BydExtendUiAction.LearnCameraButton) action).getAction());
+        } else if (action instanceof BydExtendUiAction.ResetCameraButton) {
+            cancelReverseButtonLearning();
+            CameraButtonBindings.reset(preferences,
+                    ((BydExtendUiAction.ResetCameraButton) action).getAction());
+            productionUi.reload();
+        } else if (action instanceof BydExtendUiAction.SetCameraButtonPress) {
+            BydExtendUiAction.SetCameraButtonPress change = (BydExtendUiAction.SetCameraButtonPress) action;
+            cancelReverseButtonLearning();
+            CameraButtonBindings.Binding before = CameraButtonBindings.load(preferences, change.getAction());
+            CameraButtonBindings.save(preferences, change.getAction(),
+                    new CameraButtonBindings.Binding(before.keyCode, change.getPress()));
+            productionUi.reload();
+        } else if (action instanceof BydExtendUiAction.Toggle) {
             handleProductionToggle((BydExtendUiAction.Toggle) action);
         } else if (action instanceof BydExtendUiAction.CommitNumber) {
             handleProductionNumber((BydExtendUiAction.CommitNumber) action);
@@ -2588,17 +2653,34 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         RearviewMirrorSettings model = new RearviewMirrorSettings(preferences);
         RearviewMirrorSettings.Settings before = model.load();
+        boolean front = before.activeFront();
+        if (action.getFront() != null && action.getKind() != MirrorBackendActionKind.SetSource
+                && action.getFront() != front) return;
         MirrorUiState ui = productionUi.getState().getMirror();
         boolean enabled = before.enabled;
         int target = before.target;
         CameraPlacement placement = before.placement;
-        RearviewMirrorSettings.Calibration calibration = before.calibration;
-        RearviewMirrorSettings.Calibration preset = before.preset;
+        RearviewMirrorSettings.Calibration calibration = before.calibration(front);
+        RearviewMirrorSettings.Calibration preset = before.preset(front);
+        boolean integrated = before.frontIntegrated;
+        boolean showFront = before.showFront;
+        boolean copyRearToFront = false;
         int border = before.borderDp;
         int color = before.borderArgb;
         boolean hidden = before.manualHidden;
         try {
             switch (action.getKind()) {
+                case SetFrontIntegration:
+                    integrated = Boolean.TRUE.equals(action.getEnabled());
+                    showFront = integrated && showFront;
+                    break;
+                case SetSource:
+                    showFront = integrated && Boolean.TRUE.equals(action.getFront());
+                    break;
+                case CopyRearToFront:
+                    if (!integrated || front) return;
+                    copyRearToFront = true;
+                    break;
                 case SetEnabled:
                     enabled = action.getEnabled() != null ? action.getEnabled() : ui.getEnabled();
                     break;
@@ -2631,7 +2713,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     color = action.getBorderArgb() != null ? action.getBorderArgb() : ui.getBorderArgb();
                     break;
                 case SetCalibration:
-                    calibration = mergeMirrorCalibration(before.calibration, action);
+                    calibration = mergeMirrorCalibration(calibration, action);
                     break;
                 case SavePreset:
                     preset = calibration;
@@ -2649,11 +2731,11 @@ public final class CameraProbeActivity extends ComponentActivity
                     break;
                 case ResetOriginal:
                     calibration = mirrorCalibrationWithCrop(calibration, false,
-                            CameraPlacement.of(0, 0, 1, 1));
+                            RearviewMirrorSettings.defaultCalibration(front).raw);
                     break;
                 case ResetCorrection:
                     RearviewMirrorSettings.Calibration defaultCalibration =
-                            RearviewMirrorSettings.defaults().calibration;
+                            RearviewMirrorSettings.defaultCalibration(front);
                     calibration = new RearviewMirrorSettings.Calibration(calibration.raw,
                             defaultCalibration.corrected, defaultCalibration.enabled,
                             defaultCalibration.fovDegrees, defaultCalibration.projection,
@@ -2661,16 +2743,22 @@ public final class CameraProbeActivity extends ComponentActivity
                             calibration.rotationMode);
                     break;
                 case ResetOutput:
+                    RearviewMirrorSettings.Calibration outputDefaults = RearviewMirrorSettings.defaultCalibration(front);
                     calibration = new RearviewMirrorSettings.Calibration(calibration.raw,
                             calibration.corrected, calibration.enabled, calibration.fovDegrees,
-                            calibration.projection, false, 0, CameraRotation.MODE_FIT);
+                            calibration.projection, outputDefaults.mirrored, outputDefaults.rotationDegrees,
+                            outputDefaults.rotationMode);
                     break;
                 case HideUntilOpen:
                     hidden = true;
                     break;
             }
-            model.save(new RearviewMirrorSettings.Settings(enabled, target, placement, calibration,
-                    preset, border, color, hidden));
+            RearviewMirrorSettings.Settings updated = before.withCalibration(front, calibration)
+                    .withPreset(front, preset);
+            if (copyRearToFront) updated = updated.withCalibration(true, before.calibration);
+            model.save(new RearviewMirrorSettings.Settings(enabled, target, placement, updated.calibration,
+                    updated.preset, border, color, hidden, integrated, showFront,
+                    updated.frontCalibration, updated.frontPreset));
             if (action.getKind() == MirrorBackendActionKind.SavePreset
                     || action.getKind() == MirrorBackendActionKind.LoadPreset) {
                 Toast.makeText(this, runtimeText(action.getKind() == MirrorBackendActionKind.SavePreset
@@ -2681,7 +2769,7 @@ public final class CameraProbeActivity extends ComponentActivity
             transientProfilePreviewFov = null;
             transientProfilePreviewRotation = null;
             notifyProductionProfileChanged(CameraProfileId.Mirror.INSTANCE);
-            productionUi.reload();
+            refreshProductionMirrorState();
         } catch (IllegalArgumentException invalid) {
             record("camera_validation_rejected", "profile", "mirror",
                     "reason", invalid.getMessage());
@@ -2694,10 +2782,12 @@ public final class CameraProbeActivity extends ComponentActivity
         if (action == null) return null;
         try {
             if (action.getKind() == MirrorBackendActionKind.SetCalibration) {
+                boolean front = RearviewMirrorSettings.activeFront(preferences);
+                if (action.getFront() != null && action.getFront() != front) return null;
                 RearviewMirrorSettings.Calibration c = mergeMirrorCalibration(
-                        new RearviewMirrorSettings(preferences).load().calibration, action);
+                        RearviewMirrorSettings.calibration(preferences, front), action);
                 applyTransientDewarpConfig(CameraProfileId.Mirror.INSTANCE,
-                        CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR,
+                        CameraDewarpConfig.of(RearviewMirrorSettings.lens(front),
                                 c.enabled, c.fovDegrees, c.projection));
                 applyTransientCalibrationCrop(CameraProfileId.Mirror.INSTANCE,
                         mirrorDirectCrop(c.raw, c), mirrorDirectCrop(c.corrected, c));
@@ -2838,17 +2928,21 @@ public final class CameraProbeActivity extends ComponentActivity
 
     /** Starts global key capture only while the Accessibility filter is connected. */
     public boolean beginReverseButtonLearning() {
+        return beginCameraButtonLearning(CameraButtonBindings.Action.ReverseSource);
+    }
+
+    private boolean beginCameraButtonLearning(CameraButtonBindings.Action action) {
         if (productionUi == null || activityDestroyed || shutdownRequested
                 || LegacySettingsImporter.blocksRuntime(this)) return false;
         boolean started = WeatherRefreshAccessibilityService
-                .beginSteeringButtonLearning(this);
+                .beginCameraButtonLearning(this, action);
         if (!started) {
             Toast.makeText(this,
                     runtimeText(R.string.runtime_camera_button_unavailable),
                     Toast.LENGTH_LONG).show();
             return false;
         }
-        productionUi.showReverseButtonCaptureDialog();
+        productionUi.showCameraButtonCaptureDialog(action);
         return true;
     }
 
@@ -2868,7 +2962,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 == DialogKind.ReverseButtonCapture) {
             // A successful first-down already leaves the modal while its UP tail is consumed;
             // dismissing that stale UI must not clear the held identity before the tail arrives.
-            if (WeatherRefreshAccessibilityService.isSteeringButtonLearning()) {
+            if (WeatherRefreshAccessibilityService.isCameraButtonLearning()) {
                 cancelReverseButtonLearning();
             } else {
                 productionUi.dismissReverseButtonCaptureDialog();
@@ -4440,7 +4534,7 @@ public final class CameraProbeActivity extends ComponentActivity
             raw = RearviewMirrorSettings.raw(preferences);
             corrected = RearviewMirrorSettings.corrected(preferences);
             dewarp = RearviewMirrorSettings.dewarp(preferences);
-            sourceIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+            sourceIndex = RearviewMirrorSettings.cameraIndex(preferences);
             calibrationParkingMode = false;
         } else return;
         if (requestedSourceIndex != null) sourceIndex = requestedSourceIndex;
@@ -4923,7 +5017,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 productionUi.setCalibrationRawFallback(calibrationHostProfile, false);
             }
             if (calibrationHostProfile == null
-                    || !calibrationHostProfile.equals(profile)) {
+                    || !calibrationHostProfile.equals(profile)
+                    || profile instanceof CameraProfileId.Mirror
+                    && !java.util.Objects.equals(calibrationHostSourceIndex, slot.getSourceIndex())) {
                 productionCalibrationHostGeneration++;
                 productionCalibrationGestureStart = null;
                 productionCalibrationGestureActive = false;
@@ -4931,6 +5027,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 bindProductionCalibrationOverlayListeners();
             }
             calibrationHostProfile = profile;
+            calibrationHostSourceIndex = slot.getSourceIndex();
         }
         if (isProductionPlacementKind(slot.getKind()) && profile != null
                 && previousSlot != null && previousSlot.getProfile() != null
@@ -5336,6 +5433,9 @@ public final class CameraProbeActivity extends ComponentActivity
         if (generation != productionCalibrationHostGeneration) return;
         CameraProfileId profile = calibrationHostProfile;
         if (profile == null || calibrationPreview == null || crop == null) return;
+        if (profile instanceof CameraProfileId.Mirror
+                && !java.util.Objects.equals(calibrationHostSourceIndex,
+                        RearviewMirrorSettings.cameraIndex(preferences))) return;
         CameraDewarpConfig dewarp = loadProductionCalibrationDewarp(profile);
         boolean rawFallback = calibrationPreview.usesRawFallback();
         if (corrected && (!dewarp.enabled || rawFallback)) {
@@ -5397,11 +5497,9 @@ public final class CameraProbeActivity extends ComponentActivity
             RearviewMirrorSettings model = new RearviewMirrorSettings(preferences);
             RearviewMirrorSettings.Settings before = model.load();
             RearviewMirrorSettings.Calibration calibration = mirrorCalibrationWithCrop(
-                    before.calibration, corrected,
+                    before.calibration(before.activeFront()), corrected,
                     CameraPlacement.of(crop.left, crop.top, crop.width, crop.height));
-            model.save(new RearviewMirrorSettings.Settings(before.enabled, before.target,
-                    before.placement, calibration, before.preset, before.borderDp, before.borderArgb,
-                    before.manualHidden));
+            model.save(before.withCalibration(before.activeFront(), calibration));
             notifyProductionProfileChanged(profile);
             if (productionUi != null) productionUi.reload();
             return;
@@ -5439,13 +5537,11 @@ public final class CameraProbeActivity extends ComponentActivity
         if (profile instanceof CameraProfileId.Mirror) {
             RearviewMirrorSettings model = new RearviewMirrorSettings(preferences);
             RearviewMirrorSettings.Settings before = model.load();
-            RearviewMirrorSettings.Calibration c = before.calibration;
+            RearviewMirrorSettings.Calibration c = before.calibration(before.activeFront());
             RearviewMirrorSettings.Calibration calibration = new RearviewMirrorSettings.Calibration(
                     c.raw, c.corrected, c.enabled, c.fovDegrees, c.projection,
                     crop.mirrorHorizontally, crop.rotationDegrees, crop.rotationMode);
-            model.save(new RearviewMirrorSettings.Settings(before.enabled, before.target,
-                    before.placement, calibration, before.preset, before.borderDp, before.borderArgb,
-                    before.manualHidden));
+            model.save(before.withCalibration(before.activeFront(), calibration));
             notifyProductionProfileChanged(profile);
             if (productionUi != null) productionUi.reload();
             return;
@@ -10271,7 +10367,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (profile == null) return;
             configureProductionCameraProfile(profile, null);
             int sourceIndex = profile instanceof CameraProfileId.Mirror
-                    ? ReverseCameraLayout.REAR_CAMERA_INDEX
+                    ? RearviewMirrorSettings.cameraIndex(preferences)
                     : profile instanceof CameraProfileId.Blind
                     ? blindProfile((CameraProfileId.Blind) profile).previewIndex
                     : profile instanceof CameraProfileId.Parking
@@ -11204,7 +11300,7 @@ public final class CameraProbeActivity extends ComponentActivity
         CameraProfileId selected = selectedProductionProfile();
         if (selected != null) configureProductionCameraProfile(selected, null);
         if (selectedTab == TAB_REARVIEW_MIRROR) {
-            openProductionDirectCamera(ReverseCameraLayout.REAR_CAMERA_INDEX);
+            openProductionDirectCamera(RearviewMirrorSettings.cameraIndex(preferences));
             return;
         }
         if (selectedTab == TAB_PARKING_CAMERAS) {
