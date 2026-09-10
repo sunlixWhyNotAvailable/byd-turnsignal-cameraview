@@ -357,6 +357,8 @@ data class CameraProfileUiState(
     val width: String = "30",
     val height: String = "20",
     val frameAspect: Float = 16f / 9f,
+    val borderWidth: String = "0",
+    val borderArgb: Int = 0xFF000000.toInt(),
     val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val calibration: CalibrationUiState = CalibrationUiState(),
     val presetAvailable: Boolean = false,
@@ -364,10 +366,11 @@ data class CameraProfileUiState(
 )
 
 @Immutable
-data class HeaderUiState(
+data class HeaderUiState @JvmOverloads constructor(
     val adb: StatusUiState = StatusUiState(),
     val location: StatusUiState = StatusUiState(),
     val weatherEnabled: Boolean = false,
+    val permissions: StatusUiState = StatusUiState("", StatusTone.Ok, true),
 )
 
 @Immutable
@@ -620,6 +623,10 @@ sealed interface SelectionTarget {
 }
 
 sealed interface BydExtendUiAction {
+    @Immutable data class SetProfileBorder(
+        val profile: CameraProfileId, val width: String? = null, val argb: Int? = null,
+        val mirrorFront: Boolean? = null,
+    ) : BydExtendUiAction
     @Immutable data class LearnCameraButton(val action: CameraButtonBindings.Action) : BydExtendUiAction
     @Immutable data class ResetCameraButton(val action: CameraButtonBindings.Action) : BydExtendUiAction
     @Immutable data class SetCameraButtonPress(
@@ -669,6 +676,8 @@ internal fun NumberTarget.forMirrorSource(front: Boolean): NumberTarget =
     if (this is NumberTarget.Profile && profile == CameraProfileId.Mirror) copy(mirrorFront = front) else this
 
 internal fun BydExtendUiAction.forMirrorSource(front: Boolean): BydExtendUiAction = when (this) {
+    is BydExtendUiAction.SetProfileBorder -> if (profile == CameraProfileId.Mirror)
+        copy(mirrorFront = front) else this
     is BydExtendUiAction.CommitNumber -> copy(target = target.forMirrorSource(front))
     is BydExtendUiAction.PreviewNumber -> copy(target = target.forMirrorSource(front))
     is BydExtendUiAction.Toggle -> if (target is ToggleTarget.Profile && target.profile == CameraProfileId.Mirror)

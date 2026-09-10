@@ -26,7 +26,8 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
+    private static final int LEGACY_GEOMETRY_VERSION = 3;
     private static final int PREVIOUS_VERSION = 2;
     private static final int LEGACY_VERSION = 1;
     private static final String SETTINGS = "settings";
@@ -105,9 +106,7 @@ public final class CameraSettingsTransfer {
             if (!SCHEMA.equals(root.getString("schema"))
                     || !(version instanceof Number)
                     || !Double.isFinite(((Number) version).doubleValue())
-                    || (parsedVersion != LEGACY_VERSION
-                    && parsedVersion != PREVIOUS_VERSION
-                    && parsedVersion != VERSION)) {
+                    || (parsedVersion < LEGACY_VERSION || parsedVersion > VERSION)) {
                 throw new IllegalArgumentException("unsupported camera preset schema");
             }
             JSONObject settingsObject = root.getJSONObject(SETTINGS);
@@ -197,11 +196,19 @@ public final class CameraSettingsTransfer {
         // group, must leave active Mirror and its local hide/preset state
         // untouched.
         boolean preserveMirror = !containsMirror(settings);
-        LegacyPlacementPlan placements = version < VERSION && geometry != null
+        LegacyPlacementPlan placements = version < LEGACY_GEOMETRY_VERSION && geometry != null
                 ? legacyPlacementPlan(preferences, settings, geometry, preserveMirror)
                 : null;
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : cameraClearKeys(preserveMirror)) if (preferences.contains(key)) editor.remove(key);
+        preserveMissingBorders(editor, preferences, settings);
+        if (version < VERSION && settings.containsKey(RearviewMirrorSettings.PREF_BORDER_DP)) {
+            CameraBorderSettings.Border shared = new CameraBorderSettings.Border(
+                    integer(settings, RearviewMirrorSettings.PREF_BORDER_DP),
+                    integer(settings, RearviewMirrorSettings.PREF_BORDER_ARGB));
+            CameraBorderSettings.write(editor, CameraBorderSettings.mirrorPrefix(false), shared);
+            CameraBorderSettings.write(editor, CameraBorderSettings.mirrorPrefix(true), shared);
+        }
         preserveMissingFrameAspects(editor, preferences, settings);
         preserveMissingPanoramaSuppression(editor, preferences, settings);
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
@@ -276,6 +283,24 @@ public final class CameraSettingsTransfer {
                 BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA,
                 RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA}) {
             if (!imported.containsKey(key)) editor.putBoolean(key, bool(preferences, key, true));
+        }
+    }
+
+    private static void preserveMissingBorders(
+            SharedPreferences.Editor editor, SharedPreferences preferences,
+            Map<String, Object> imported) {
+        for (String prefix : borderPrefixes()) {
+            String width = CameraBorderSettings.widthKey(prefix);
+            if (imported.containsKey(width)) continue;
+            CameraBorderSettings.Border border;
+            if (CameraBorderSettings.mirrorPrefix(false).equals(prefix)) {
+                border = CameraBorderSettings.forMirror(preferences, false);
+            } else if (CameraBorderSettings.mirrorPrefix(true).equals(prefix)) {
+                border = CameraBorderSettings.forMirror(preferences, true);
+            } else {
+                border = CameraBorderSettings.read(preferences, prefix, null);
+            }
+            CameraBorderSettings.write(editor, prefix, border);
         }
     }
 
@@ -439,6 +464,8 @@ public final class CameraSettingsTransfer {
                     BlindSpotOverlayController.readScale(p, profile),
                     target,
                     BlindSpotOverlayController.readFrameAspect(p, profile));
+            if (geometry != null) addBorder(out, CameraBorderSettings.blindPrefix(profile),
+                    CameraBorderSettings.forBlind(p, profile));
             if (geometry != null) addBlindPlacements(out, p, profile, geometry);
             if (selectedPlacement != null) {
                 out.put(BlindSpotOverlayController.placementWidthKey(profile),
@@ -458,12 +485,24 @@ public final class CameraSettingsTransfer {
             DirectCameraCrop raw = DirectCameraCrop.load(p, profile);
             DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(p, profile, raw);
             addParking(out, p, profile, raw, corrected, CameraDewarpConfig.loadForParking(p, profile));
+            if (geometry != null) addBorder(out, CameraBorderSettings.parkingPrefix(profile),
+                    CameraBorderSettings.forParking(p, profile));
             addOptionalCorrectedAspect(out, p, DirectCameraCrop.correctedAspectKey(profile));
         }
 
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(p);
         addRect(out, "reverse_camera_background_left", layout.background);
         addRect(out, "reverse_camera_widget_left", layout.widget);
+        if (geometry != null) {
+            addBorder(out, CameraBorderSettings.reverseElementPrefix(
+                            ReverseCameraLayout.BACKGROUND_PANE_ID),
+                    CameraBorderSettings.forReverseElement(
+                            p, ReverseCameraLayout.BACKGROUND_PANE_ID));
+            addBorder(out, CameraBorderSettings.reverseElementPrefix(
+                            ReverseCameraLayout.WIDGET_PANE_ID),
+                    CameraBorderSettings.forReverseElement(
+                            p, ReverseCameraLayout.WIDGET_PANE_ID));
+        }
         for (ReverseCameraLayout.Pane pane : layout.panes()) {
             String prefix = "reverse_camera_" + pane.cameraIndex + "_";
             addRect(out, prefix + "left", pane.destination);
@@ -478,6 +517,9 @@ public final class CameraSettingsTransfer {
             out.put("reverse_camera_z_" + pane.zOrder, pane.cameraIndex);
             putDewarp(out, "camera_dewarp_v3_reverse_" + pane.cameraIndex + "_",
                     CameraDewarpConfig.loadForReverse(p, pane.cameraIndex));
+            if (geometry != null) addBorder(out,
+                    CameraBorderSettings.reversePrefix(pane.cameraIndex, false),
+                    CameraBorderSettings.forReverse(p, pane.cameraIndex, false));
         }
         ReverseCameraLayout front = ReverseCameraController.loadFrontRawLayout(p);
         for (int index : new int[]{ReverseCameraLayout.REAR_CAMERA_INDEX,
@@ -494,6 +536,9 @@ public final class CameraSettingsTransfer {
             out.put(prefix + "integrated", ReverseCameraController.loadFrontIntegrated(p, index));
             putDewarp(out, "camera_dewarp_v3_reverse_front_" + index + "_",
                     CameraDewarpConfig.loadForReverseFront(p, index));
+            if (geometry != null) addBorder(out,
+                    CameraBorderSettings.reversePrefix(index, true),
+                    CameraBorderSettings.forReverse(p, index, true));
         }
         return out;
     }
@@ -578,6 +623,10 @@ public final class CameraSettingsTransfer {
         out.put(RearviewMirrorSettings.PREF_BORDER_DP, value.borderDp);
         out.put(RearviewMirrorSettings.PREF_BORDER_ARGB, value.borderArgb);
         if (includeBothDisplays) {
+            addBorder(out, CameraBorderSettings.mirrorPrefix(false),
+                    CameraBorderSettings.forMirror(preferences, false));
+            addBorder(out, CameraBorderSettings.mirrorPrefix(true),
+                    CameraBorderSettings.forMirror(preferences, true));
             for (int target : new int[]{CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER}) {
                 CameraPlacement placement = RearviewMirrorSettings.placement(preferences, target);
                 out.put(RearviewMirrorSettings.placementKey(
@@ -595,6 +644,12 @@ public final class CameraSettingsTransfer {
         out.put(RearviewMirrorSettings.PREF_SHOW_FRONT, value.showFront);
         addMirrorCalibration(out, value.frontCalibration,
                 "mirror_front_original_", "mirror_front_corrected_", "mirror_front_");
+    }
+
+    private static void addBorder(
+            Map<String, Object> out, String prefix, CameraBorderSettings.Border border) {
+        out.put(CameraBorderSettings.widthKey(prefix), border.borderDp);
+        out.put(CameraBorderSettings.colorKey(prefix), border.borderArgb);
     }
 
     private static void addMirrorCalibration(
@@ -711,9 +766,7 @@ public final class CameraSettingsTransfer {
     private static Map<String, Object> cameraSettingsMap(Map<String, Object> parsed) {
         int parsedVersion = presetVersion(parsed);
         if (!SCHEMA.equals(parsed.get("schema"))
-                || (parsedVersion != LEGACY_VERSION
-                && parsedVersion != PREVIOUS_VERSION
-                && parsedVersion != VERSION)) {
+                || parsedVersion < LEGACY_VERSION || parsedVersion > VERSION) {
             throw new IllegalArgumentException("unsupported camera preset schema");
         }
         Object value = parsed.get(SETTINGS);
@@ -749,6 +802,7 @@ public final class CameraSettingsTransfer {
             }
         }
         for (Map.Entry<String, Object> entry : values.entrySet()) validateCameraValue(entry.getKey(), entry.getValue());
+        requireBorderPairs(values);
         requireMirror(values, version);
         for (CameraProfile profile : CameraProfile.values()) {
             String key = DirectCameraCrop.preferenceKey(profile, 0);
@@ -825,6 +879,14 @@ public final class CameraSettingsTransfer {
             if (key.endsWith("_rotation_degrees") && !CameraRotation.isValid(number)) throw new IllegalArgumentException("invalid rotation");
             if (key.endsWith("_display_mode") && !ReverseCameraLayout.isValidDisplayMode(number)) throw new IllegalArgumentException("invalid display mode");
             if (key.startsWith("reverse_camera_z_") && (number < 1 || number > 3)) throw new IllegalArgumentException("invalid z order");
+            if (key.endsWith("_border_width")
+                    && (number < CameraBorderSettings.MIN_DP
+                    || number > CameraBorderSettings.MAX_DP)) {
+                throw new IllegalArgumentException("invalid border width");
+            }
+            if (key.endsWith("_border_color") && (number >>> 24) != 0xFF) {
+                throw new IllegalArgumentException("border color must be opaque ARGB");
+            }
             return;
         }
         float number = floatValue(value, key);
@@ -880,7 +942,7 @@ public final class CameraSettingsTransfer {
             if (!"Tablet".equalsIgnoreCase(target) && !"Cluster".equalsIgnoreCase(target)) {
                 throw new IllegalArgumentException("invalid mirror target");
             }
-        } else if (version >= VERSION) {
+        } else if (version >= LEGACY_GEOMETRY_VERSION) {
             throw new IllegalArgumentException("incomplete mirror group");
         }
         float x = number(values, RearviewMirrorSettings.PREF_X) / 100.0f;
@@ -897,7 +959,7 @@ public final class CameraSettingsTransfer {
                 > RearviewMirrorSettings.MAX_BORDER_DP) {
             throw new IllegalArgumentException("invalid mirror border");
         }
-        if (version >= VERSION) {
+        if (version >= LEGACY_GEOMETRY_VERSION) {
             for (int target : new int[]{CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER}) {
                 CameraPlacement.of(
                         number(values, RearviewMirrorSettings.placementKey(
@@ -960,7 +1022,7 @@ public final class CameraSettingsTransfer {
 
     private static void requireBlindPlacement(
             Map<String, Object> values, CameraProfile profile, int version) {
-        if (version >= VERSION) {
+        if (version >= LEGACY_GEOMETRY_VERSION) {
             for (int target : new int[]{CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER}) {
                 CameraPlacement.of(
                         number(values, BlindSpotOverlayController.placementKey(
@@ -1081,6 +1143,8 @@ public final class CameraSettingsTransfer {
         }
         keys.add(RearviewMirrorSettings.PREF_BORDER_DP);
         keys.add(RearviewMirrorSettings.PREF_BORDER_ARGB);
+        addBorderKeys(keys, CameraBorderSettings.mirrorPrefix(false));
+        addBorderKeys(keys, CameraBorderSettings.mirrorPrefix(true));
         keys.add(RearviewMirrorSettings.PREF_FRONT_INTEGRATED);
         keys.add(RearviewMirrorSettings.PREF_SHOW_FRONT);
         for (String key : new String[]{"mirror_original_x", "mirror_original_y",
@@ -1111,6 +1175,7 @@ public final class CameraSettingsTransfer {
             }
             keys.add(BlindSpotOverlayController.scaleKey(profile)); keys.add(BlindSpotOverlayController.targetKey(profile));
             keys.add(BlindSpotOverlayController.frameAspectKey(profile));
+            addBorderKeys(keys, CameraBorderSettings.blindPrefix(profile));
             addDewarpKeys(keys, "camera_dewarp_v3_overlay_" + profile.wireName + "_");
         }
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
@@ -1120,6 +1185,7 @@ public final class CameraSettingsTransfer {
             String c = "parking_direct_crop_v1_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_corrected_";
             keys.add(c + "x"); keys.add(c + "y"); keys.add(c + "width"); keys.add(c + "height");
             keys.add(c + "aspect");
+            addBorderKeys(keys, CameraBorderSettings.parkingPrefix(profile));
             addDewarpKeys(keys, "camera_dewarp_v3_parking_" + profile.wireName.toLowerCase(java.util.Locale.US) + "_");
         }
         for (int index : new int[]{1, 2, 3}) {
@@ -1132,9 +1198,11 @@ public final class CameraSettingsTransfer {
             }
             keys.add("reverse_camera_z_0"); keys.add("reverse_camera_z_1"); keys.add("reverse_camera_z_2");
             addDewarpKeys(keys, "camera_dewarp_v3_reverse_" + index + "_");
+            addBorderKeys(keys, CameraBorderSettings.reversePrefix(index, false));
         }
         for (String prefix : new String[]{"reverse_camera_background_", "reverse_camera_widget_"}) {
             keys.add(prefix + "left"); keys.add(prefix + "top"); keys.add(prefix + "width"); keys.add(prefix + "height");
+            addBorderKeys(keys, prefix);
         }
         for (int index : new int[]{1, 2, 3}) {
             String p = "reverse_camera_front_" + index + "_";
@@ -1143,16 +1211,18 @@ public final class CameraSettingsTransfer {
             }
             keys.add(p + "rotation_degrees"); keys.add(p + "display_mode"); keys.add(p + "mirror"); keys.add(p + "integrated");
             addDewarpKeys(keys, "camera_dewarp_v3_reverse_front_" + index + "_");
+            addBorderKeys(keys, CameraBorderSettings.reversePrefix(index, true));
         }
         return Collections.unmodifiableSet(keys);
     }
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
-        return key != null && (key.startsWith("reverse_camera_front_1_")
+        return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
+                || version < VERSION && isBorderKey(key)
                 || key.endsWith("_frame_aspect")
                 || isLegacyBlindSizeKey(key)
-                || version < VERSION && isDisplayPlacementKey(key)
-                || version < VERSION && isDisplayTargetKey(key)
+                || version < LEGACY_GEOMETRY_VERSION && isDisplayPlacementKey(key)
+                || version < LEGACY_GEOMETRY_VERSION && isDisplayTargetKey(key)
                 || key.startsWith("camera_dewarp_v3_reverse_front_1_")
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
@@ -1167,7 +1237,7 @@ public final class CameraSettingsTransfer {
                 || key.equals("mirror_front_mirrored")
                 || key.equals("mirror_front_output_mode")
                 || key.equals("mirror_front_rotation")
-                || key.startsWith("mirror_")
+                || key.startsWith("mirror_") && !isBorderKey(key)
                 || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
                 || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
     }
@@ -1218,6 +1288,48 @@ public final class CameraSettingsTransfer {
 
     private static void addDewarpKeys(Set<String> keys, String prefix) {
         keys.add(prefix + "enabled"); keys.add(prefix + "fov"); keys.add(prefix + "projection");
+    }
+
+    private static void addBorderKeys(Set<String> keys, String prefix) {
+        keys.add(CameraBorderSettings.widthKey(prefix));
+        keys.add(CameraBorderSettings.colorKey(prefix));
+    }
+
+    private static boolean isBorderKey(String key) {
+        return key != null && (key.endsWith("_border_width")
+                || key.endsWith("_border_color"));
+    }
+
+    private static void requireBorderPairs(Map<String, Object> values) {
+        for (String prefix : borderPrefixes()) {
+            String width = CameraBorderSettings.widthKey(prefix);
+            String color = CameraBorderSettings.colorKey(prefix);
+            if (values.containsKey(width) != values.containsKey(color)) {
+                throw new IllegalArgumentException("incomplete camera border");
+            }
+        }
+    }
+
+    private static Set<String> borderPrefixes() {
+        LinkedHashSet<String> prefixes = new LinkedHashSet<>();
+        for (CameraProfile profile : CameraProfile.values()) {
+            prefixes.add(CameraBorderSettings.blindPrefix(profile));
+        }
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            prefixes.add(CameraBorderSettings.parkingPrefix(profile));
+        }
+        for (int index : new int[]{1, 2, 3}) {
+            prefixes.add(CameraBorderSettings.reversePrefix(index, false));
+            prefixes.add(CameraBorderSettings.reversePrefix(index, true));
+        }
+        prefixes.add(CameraBorderSettings.reverseElementPrefix(
+                ReverseCameraLayout.BACKGROUND_PANE_ID));
+        prefixes.add(CameraBorderSettings.reverseElementPrefix(
+                ReverseCameraLayout.WIDGET_PANE_ID));
+        prefixes.add(CameraBorderSettings.mirrorPrefix(false));
+        prefixes.add(CameraBorderSettings.mirrorPrefix(true));
+        prefixes.add("mirror_");
+        return prefixes;
     }
 
     private static Set<String> cameraClearKeys(boolean preserveMirror) {
@@ -1271,6 +1383,7 @@ public final class CameraSettingsTransfer {
                 || key.endsWith("_rotation_degrees") || key.endsWith("_display_mode") || key.endsWith("_fov")
                 || key.endsWith("_projection") || key.endsWith("_scale") || key.endsWith("_target")
                 || key.endsWith("_scale_percent") || key.endsWith("_mode")
+                || key.endsWith("_border_width") || key.endsWith("_border_color")
                 || key.startsWith("reverse_camera_z_") || key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)
                 || key.equals(BlindSpotOverlayController.PREF_CORNER_RADIUS)
                 || key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)
@@ -1295,6 +1408,7 @@ public final class CameraSettingsTransfer {
             if (value instanceof Double && !Double.isFinite((Double) value)) throw new IllegalArgumentException("nonfinite legacy value");
             validateLegacyBounds(entry.getKey(), value);
         }
+        requireBorderPairs(values);
         requireReverseZOrder(values);
     }
 
@@ -1339,6 +1453,13 @@ public final class CameraSettingsTransfer {
             if (key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)) requireRange(n, 0, 2, key);
             if (key.equals("outward_deg")) requireRange(n, 0, 360, key);
             if (key.equals("center_deg")) requireRange(n, 0, 45, key);
+            if (key.endsWith("_border_width")) {
+                requireRange(n, CameraBorderSettings.MIN_DP, CameraBorderSettings.MAX_DP, key);
+            }
+            if (key.endsWith("_border_color")
+                    && (((Number) value).intValue() >>> 24) != 0xFF) {
+                throw new IllegalArgumentException("border color must be opaque ARGB");
+            }
         }
     }
 

@@ -35,6 +35,72 @@ public final class RearviewMirrorPolicyTest {
         assertFalse(RearviewMirrorController.matchesFrameEvent(frame, 17, 4));
     }
 
+    @Test public void readinessPhasesAcceptOnlyCurrentCallbacksWithoutRegression() {
+        RearviewMirrorController.Readiness readiness =
+                new RearviewMirrorController.Readiness();
+        readiness.begin(17);
+        assertTrue(readiness.current(17, RearviewMirrorController.Readiness.PREPARING));
+        assertFalse(readiness.prepared(18));
+
+        assertTrue(readiness.surfaceAttached(17));
+        assertTrue(readiness.current(17, RearviewMirrorController.Readiness.FIRST_FRAME));
+        assertFalse(readiness.prepared(17));
+        assertTrue(readiness.current(17, RearviewMirrorController.Readiness.FIRST_FRAME));
+        assertFalse(readiness.surfaceAttached(17));
+
+        assertTrue(readiness.firstFrame(17));
+        assertFalse(readiness.firstFrame(17));
+        readiness.begin(18);
+        assertFalse(readiness.current(17, RearviewMirrorController.Readiness.PREPARING));
+        readiness.clear();
+        assertFalse(readiness.current(18, RearviewMirrorController.Readiness.PREPARING));
+    }
+
+    @Test public void preparedSurfaceAndFrameBudgetsRemainSeparate() {
+        assertEquals(30_000L, RearviewMirrorController.PREPARE_TIMEOUT_MS);
+        assertEquals(8_000L, RearviewMirrorController.SURFACE_TIMEOUT_MS);
+        assertEquals(3_000L, RearviewMirrorController.FIRST_FRAME_TIMEOUT_MS);
+    }
+
+    @Test public void onlyTheFirstSurfaceOrFrameTimeoutCanRetry() {
+        RearviewMirrorController.Readiness readiness =
+                new RearviewMirrorController.Readiness();
+        assertFalse(readiness.claimRetry(false));
+        assertTrue(readiness.claimRetry(true));
+        readiness.failure(true);
+        assertFalse(readiness.blocked());
+        assertFalse(readiness.claimRetry(true));
+        assertTrue(readiness.blocked());
+        readiness.freshCycle();
+        assertFalse(readiness.blocked());
+        assertTrue(readiness.claimRetry(true));
+        readiness.failure(false);
+        assertTrue(readiness.blocked());
+    }
+
+    @Test public void controllerWiresDeadlinesToTheRequiredPhaseBoundaries() throws Exception {
+        String controller = sourceText("java/com/byd/extend/RearviewMirrorController.java");
+        assertTrue(controller.contains("PREPARE_TIMEOUT_MS, \"prepare_timeout\", false"));
+        assertTrue(controller.contains("() -> prepared(expected)"));
+        assertTrue(controller.contains("SURFACE_TIMEOUT_MS, \"surface_timeout\", true"));
+        assertTrue(controller.contains("FIRST_FRAME_TIMEOUT_MS, \"first_frame_timeout\", true"));
+        assertTrue(controller.contains("if (!readiness.current(expected, phase)) return;"));
+        assertTrue(controller.contains("fail(reason, retry);"));
+    }
+
+    @Test public void prepareErrorsRequireTheCurrentMirrorRequest() throws Exception {
+        JSONObject event = new JSONObject().put("kind", "camera_overlay_error")
+                .put("stage", "prepare")
+                .put("camera_id", CameraOverlayProfile.MIRROR_ID)
+                .put("request_id", 17);
+        assertTrue(RearviewMirrorController.matchesPrepareError(event, 17));
+        assertFalse(RearviewMirrorController.matchesPrepareError(event, 18));
+        event.put("camera_id", CameraOverlayProfile.MIRROR_ID - 1);
+        assertFalse(RearviewMirrorController.matchesPrepareError(event, 17));
+        event.put("camera_id", CameraOverlayProfile.MIRROR_ID).put("stage", "close");
+        assertFalse(RearviewMirrorController.matchesPrepareError(event, 17));
+    }
+
     @Test public void manualHideRequiresTheCurrentGestureEvent() throws Exception {
         JSONObject event = new JSONObject().put("kind", "mirror_hidden_by_gesture")
                 .put("camera_id", CameraOverlayProfile.MIRROR_ID)

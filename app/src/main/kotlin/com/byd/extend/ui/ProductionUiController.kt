@@ -92,6 +92,7 @@ class ProductionUiController @JvmOverloads constructor(
         syncLegacyRuntimeBlock()
         // A disposed editor may finish after a display selection. Never retarget that write.
         val stalePlacement = when (action) {
+            is BydExtendUiAction.SetProfileBorder -> !matchesMirrorSource(action.profile, action.mirrorFront)
             is BydExtendUiAction.SetMirrorGeometry -> !matchesPlacementTarget(CameraProfileId.Mirror, action.displayTarget)
             is BydExtendUiAction.SetProfileGeometry -> !matchesPlacementTarget(action.profile, action.displayTarget)
             is BydExtendUiAction.MoveProfile -> !matchesPlacementTarget(action.profile, action.displayTarget)
@@ -406,6 +407,7 @@ class ProductionUiController @JvmOverloads constructor(
             action is BydExtendUiAction.CommitNumber ||
             action is BydExtendUiAction.MoveProfile ||
             action is BydExtendUiAction.SetProfileGeometry ||
+            action is BydExtendUiAction.SetProfileBorder ||
             action is BydExtendUiAction.Select && !action.target.isLocalSelection()) reload()
     }
 
@@ -465,7 +467,8 @@ class ProductionUiController @JvmOverloads constructor(
         state = applyPreviewValues(fresh.copy(
             activeTab = if (fresh.legacyRuntimeBlocked) RootTab.Settings else old.activeTab,
             legacyRuntimeBlocked = fresh.legacyRuntimeBlocked,
-            header = fresh.header.copy(adb = old.header.adb, location = old.header.location),
+            header = fresh.header.copy(adb = old.header.adb, location = old.header.location,
+                permissions = old.header.permissions),
             signals = fresh.signals.copy(
                 guard = fresh.signals.guard.copy(operation = old.signals.guard.operation),
                 music = fresh.signals.music.copy(operation = old.signals.music.operation),
@@ -949,7 +952,7 @@ class ProductionUiController @JvmOverloads constructor(
             action.target.id == SelectionId.SettingsCategory
         is BydExtendUiAction.Toggle -> action.target == ToggleTarget.Simple(ToggleId.AutoStart) ||
             action.target == ToggleTarget.Simple(ToggleId.AutomaticUpdate)
-        is BydExtendUiAction.SetMirrorBorderColor -> false
+        is BydExtendUiAction.SetMirrorBorderColor, is BydExtendUiAction.SetProfileBorder -> false
         BydExtendUiAction.RequestMirrorOverlayPermission -> false
         is BydExtendUiAction.Run -> when (action.command) {
             CommandId.OpenBackgroundSettings,

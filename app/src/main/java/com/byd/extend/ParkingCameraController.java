@@ -792,13 +792,17 @@ final class ParkingCameraController {
         DirectCameraCrop raw = DirectCameraCrop.load(settings, profile);
         DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(settings, profile, raw);
         DirectCameraCrop crop = dewarp.enabled ? corrected : raw;
-        return new CameraShellProtocol.OverlaySpec(
+        CameraShellProtocol.OverlaySpec result = new CameraShellProtocol.OverlaySpec(
                 CameraOverlayProfile.overlayIdForParking(profile.id), requestId, target,
                 width, height, Math.max(0, x), Math.max(0, y),
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, 8, dewarp,
                 raw, CameraBufferQuality.load(settings), crop.mirrorHorizontally,
                 BlindSpotOverlayController.readTransparencyPercent(settings));
+        CameraBorderSettings.Border border = CameraBorderSettings.forParking(settings, profile);
+        result.borderDp = border.borderDp;
+        result.borderArgb = border.borderArgb;
+        return result;
     }
 
     static int[] overlayGeometry(

@@ -114,6 +114,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         else {
             root.setCallback(this);
             root.setCornerRadiusDp(spec.cornerRadiusDp);
+            root.setBorders(spec.borderDp, spec.borderArgb);
             root.applyDewarpConfigs(spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                     spec.centralFrontDewarp);
             root.applyRawFallbackLayout(spec.rawFallbackLayout);
@@ -441,6 +442,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
         nextRoot.setCallback(this);
         nextRoot.setCornerRadiusDp(spec.cornerRadiusDp);
+        nextRoot.setBorders(spec.borderDp, spec.borderArgb);
         nextRoot.setDewarpPipelineRequirements(
                 spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
                 spec.frontLeftDewarp, spec.frontRightDewarp,

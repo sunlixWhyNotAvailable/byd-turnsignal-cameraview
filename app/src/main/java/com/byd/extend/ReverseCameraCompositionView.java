@@ -83,6 +83,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private int automaticBufferQuality = CameraBufferQuality.ORIGINAL;
     private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
     private boolean forceDewarpPipeline;
+    private int[] borderDp = new int[CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT];
+    private int[] borderArgb = defaultBorderColors();
 
     ReverseCameraCompositionView(Context context) {
         super(context);
@@ -182,6 +184,21 @@ final class ReverseCameraCompositionView extends FrameLayout {
         cornerRadiusDp = Math.max(0, Math.min(48, value));
         for (PaneView pane : panes) pane.setCornerRadiusDp(cornerRadiusDp);
         if (centralFrontPane != null) centralFrontPane.setCornerRadiusDp(cornerRadiusDp);
+        applyBorders();
+    }
+
+    void setBorders(int[] widthsDp, int[] colorsArgb) {
+        int count = CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT;
+        if (widthsDp == null || colorsArgb == null
+                || widthsDp.length != count || colorsArgb.length != count) {
+            throw new IllegalArgumentException("reverse borders required");
+        }
+        for (int index = 0; index < count; index++) {
+            CameraShellProtocol.validateBorder(widthsDp[index], colorsArgb[index]);
+        }
+        borderDp = widthsDp.clone();
+        borderArgb = colorsArgb.clone();
+        applyBorders();
     }
 
     void setForceDewarpPipeline(boolean value) {
@@ -1204,6 +1221,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private void applyModel(int width, int height) {
         applyEffectiveVisibility();
+        applyBorders();
         for (PaneView pane : panes) {
             boolean frontSource = effectiveSourceIsFront(pane.sourceIndex, sideMode,
                     frontLeftIntegrated, frontRightIntegrated);
@@ -1293,6 +1311,43 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (centralFrontPane != null) {
             applyPaneDewarpConfig(centralFrontPane, centralFrontDewarp);
         }
+    }
+
+    private void applyBorders() {
+        applyBorder(backgroundPane, CameraShellProtocol.ReverseOverlaySpec.BORDER_BACKGROUND, 0);
+        applyBorder(sideSelector, CameraShellProtocol.ReverseOverlaySpec.BORDER_WIDGET,
+                cornerRadiusDp);
+        for (PaneView pane : panes) {
+            boolean front = effectiveSourceIsFront(pane.sourceIndex, sideMode,
+                    frontLeftIntegrated, frontRightIntegrated);
+            int index = CameraShellProtocol.ReverseOverlaySpec.borderIndex(
+                    pane.cameraIndex, front);
+            pane.setBorder(borderDp[index], borderArgb[index]);
+        }
+        if (centralFrontPane != null) {
+            int index = CameraShellProtocol.ReverseOverlaySpec.BORDER_FRONT;
+            centralFrontPane.setBorder(borderDp[index], borderArgb[index]);
+        }
+    }
+
+    private void applyBorder(View view, int index, int radiusDp) {
+        GradientDrawable frame = new GradientDrawable();
+        frame.setColor(Color.TRANSPARENT);
+        frame.setCornerRadius(dp(radiusDp));
+        if (borderDp[index] > 0) {
+            frame.setStroke(Math.round(dp(borderDp[index])), borderArgb[index]);
+        }
+        view.setForeground(frame);
+    }
+
+    private static int[] defaultBorderColors() {
+        int[] result = new int[CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT];
+        java.util.Arrays.fill(result, CameraBorderSettings.DEFAULT_ARGB);
+        return result;
+    }
+
+    private float dp(int value) {
+        return value * getResources().getDisplayMetrics().density;
     }
 
     static boolean fallbackSourceIsFront(int sourceIndex, int sideMode) {
@@ -1455,6 +1510,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         int rotationDegrees;
         int displayMode = ReverseCameraLayout.DEFAULT_DISPLAY_MODE;
         boolean mirrorHorizontally = true;
+        int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
 
         PaneView(Context context, int cameraIndex, int sourceIndex, int dewarpLens) {
             super(context);
@@ -1556,11 +1612,23 @@ final class ReverseCameraCompositionView extends FrameLayout {
         }
 
         void setCornerRadiusDp(int value) {
+            cornerRadiusDp = value;
             GradientDrawable background = new GradientDrawable();
             background.setColor(Color.BLACK);
             background.setCornerRadius(dp(getContext(), value));
             setBackground(background);
             invalidateOutline();
+        }
+
+        void setBorder(int widthDp, int colorArgb) {
+            CameraShellProtocol.validateBorder(widthDp, colorArgb);
+            GradientDrawable frame = new GradientDrawable();
+            frame.setColor(Color.TRANSPARENT);
+            frame.setCornerRadius(dp(getContext(), cornerRadiusDp));
+            if (widthDp > 0) {
+                frame.setStroke(Math.round(dp(getContext(), widthDp)), colorArgb);
+            }
+            setForeground(frame);
         }
 
         private static float dp(Context context, int value) {

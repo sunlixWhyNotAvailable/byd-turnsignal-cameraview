@@ -17,6 +17,65 @@ public final class CameraCalibrationPresetTest {
     private static final float EPSILON = 0.0001f;
 
     @Test
+    public void cameraPresetFramesRoundTripTransferAndOldSlotsPreserveTarget() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraProfile left = CameraProfile.of(CameraProfile.REAR_LEFT);
+        CameraProfile right = CameraProfile.of(CameraProfile.REAR_RIGHT);
+        CameraBorderSettings.writeBlind(preferences, left,
+                new CameraBorderSettings.Border(5, 0xFF123456));
+        CameraCalibrationPreset.saveCamera(preferences, left);
+        CameraBorderSettings.writeBlind(preferences, left,
+                new CameraBorderSettings.Border(1, 0xFF654321));
+        assertTrue(CameraCalibrationPreset.loadCamera(preferences, left));
+        assertEquals(5, CameraBorderSettings.forBlind(preferences, left).borderDp);
+
+        CameraCalibrationPreset.mirrorCamera(preferences, left);
+        assertEquals(5, CameraBorderSettings.forBlind(preferences, right).borderDp);
+        assertEquals(0xFF123456,
+                CameraBorderSettings.forBlind(preferences, right).borderArgb);
+
+        String prefix = "camera_calibration_preset_v1_rear_left_";
+        preferences.remove(CameraBorderSettings.widthKey(prefix));
+        preferences.remove(CameraBorderSettings.colorKey(prefix));
+        CameraBorderSettings.writeBlind(preferences, left,
+                new CameraBorderSettings.Border(9, 0xFFABCDEF));
+        assertTrue(CameraCalibrationPreset.loadCamera(preferences, left));
+        assertEquals(9, CameraBorderSettings.forBlind(preferences, left).borderDp);
+        assertEquals(0xFFABCDEF,
+                CameraBorderSettings.forBlind(preferences, left).borderArgb);
+    }
+
+    @Test
+    public void reverseElementPresetIncludesPlacementVisibilityAndFrame() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int paneId = ReverseCameraLayout.WIDGET_PANE_ID;
+        preferences.putFloat("reverse_camera_widget_left", 0.20f);
+        preferences.putFloat("reverse_camera_widget_top", 0.30f);
+        preferences.putFloat("reverse_camera_widget_width",
+                ReverseCameraLayout.MIN_WIDGET_WIDTH);
+        preferences.putFloat("reverse_camera_widget_height",
+                ReverseCameraLayout.MIN_WIDGET_HEIGHT);
+        ReverseCameraController.saveWidgetVisible(preferences, true);
+        CameraBorderSettings.writeReverseElement(preferences, paneId,
+                new CameraBorderSettings.Border(7, 0xFF345678));
+        CameraCalibrationPreset.saveReverseElement(preferences, paneId);
+
+        preferences.putFloat("reverse_camera_widget_left", 0.60f);
+        ReverseCameraController.saveWidgetVisible(preferences, false);
+        CameraBorderSettings.writeReverseElement(preferences, paneId,
+                new CameraBorderSettings.Border(2, 0xFF000000));
+        assertTrue(CameraCalibrationPreset.loadReverseElement(preferences, paneId));
+        assertEquals(0.20f, preferences.getFloat("reverse_camera_widget_left", -1), 0.0f);
+        assertEquals(ReverseCameraLayout.MIN_WIDGET_WIDTH,
+                preferences.getFloat("reverse_camera_widget_width", -1), 0.0f);
+        assertEquals(ReverseCameraLayout.MIN_WIDGET_HEIGHT,
+                preferences.getFloat("reverse_camera_widget_height", -1), 0.0f);
+        assertTrue(ReverseCameraController.loadWidgetVisible(preferences));
+        assertEquals(7, CameraBorderSettings.forReverseElement(
+                preferences, paneId).borderDp);
+    }
+
+    @Test
     public void percentEntryAcceptsIndependentDimensionsAndValidatesBoundsAndEnums() {
         DirectCameraCrop free = DirectCameraCrop.parsePercent(
                 "10.25", "20,50", "30", "40,00",

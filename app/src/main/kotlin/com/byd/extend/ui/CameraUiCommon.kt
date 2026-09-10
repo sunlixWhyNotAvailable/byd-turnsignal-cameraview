@@ -176,7 +176,10 @@ internal fun ColumnScope.CameraProfileControls(
     fun command(generic: CommandId, mirror: CommandId): CommandId =
         if (profile == CameraProfileId.Mirror) mirror else generic
     when (section) {
-        CameraSection.Parameters -> parameters()
+        CameraSection.Parameters -> {
+            parameters()
+            CameraBorderControls(profile, state, strings, colors, onAction)
+        }
         CameraSection.Placement -> {
             Segmented(if (clusterAllowed) listOf(strings.text("Планшет", "Tablet"), strings.text("Приборка", "Cluster"))
                 else listOf(strings.text("Планшет", "Tablet")), if (clusterAllowed) state.target.ordinal else 0,
@@ -265,6 +268,7 @@ internal fun ColumnScope.CameraProfileControls(
                         identity = NumberTarget.Profile(profile, ProfileNumber.Rotation),
                         onPreview = { value, session -> profilePreview(ProfileNumber.Rotation, value, session) },
                         onCommitSession = { value, session -> profileNumber(ProfileNumber.Rotation, value, session) })
+                    CameraBorderControls(profile, state, strings, colors, onAction)
                     ResetProfileButton(strings.text("Скинути вивід", "Reset output"),
                         command(CommandId.ResetProfileOutput, CommandId.MirrorResetOutput), profile,
                         colors, onAction)

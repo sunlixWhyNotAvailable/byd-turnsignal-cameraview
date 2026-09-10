@@ -191,7 +191,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.correctedAspect));
+                        value.dewarp.projection), value.correctedAspect, value.border));
     }
 
     static int parkingMirrorTarget(ParkingCameraProfile source) {
@@ -218,7 +218,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.correctedAspect));
+                        value.dewarp.projection), value.correctedAspect, value.border));
         return true;
     }
 
@@ -243,6 +243,59 @@ final class CameraCalibrationPreset {
             applyReverse(preferences, cameraIndex,
                     readReverse(preferences, reversePrefix(cameraIndex),
                             CameraDewarpConfig.lensForReverseCamera(cameraIndex)));
+            return true;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
+    static boolean hasReverseElement(SharedPreferences preferences, int paneId) {
+        try {
+            return preferences.getInt(reverseElementPresetPrefix(paneId) + "version", 0)
+                    == VERSION;
+        } catch (RuntimeException invalidPreset) {
+            return false;
+        }
+    }
+
+    static void saveReverseElement(SharedPreferences preferences, int paneId) {
+        String prefix = reverseElementPresetPrefix(paneId);
+        ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
+        ReverseCameraLayout.Rect destination = paneId == ReverseCameraLayout.BACKGROUND_PANE_ID
+                ? layout.background : layout.widget;
+        SharedPreferences.Editor editor = preferences.edit();
+        writeRect(editor, prefix + "destination_", destination.left, destination.top,
+                destination.width, destination.height);
+        editor.putBoolean(prefix + "visible",
+                paneId == ReverseCameraLayout.WIDGET_PANE_ID
+                        ? ReverseCameraController.loadWidgetVisible(preferences)
+                        : ReverseCameraController.loadVisibility(preferences, paneId));
+        CameraBorderSettings.write(editor, prefix,
+                CameraBorderSettings.forReverseElement(preferences, paneId));
+        editor.putInt(prefix + "version", VERSION).apply();
+    }
+
+    static boolean loadReverseElement(SharedPreferences preferences, int paneId) {
+        if (!hasReverseElement(preferences, paneId)) return false;
+        try {
+            String prefix = reverseElementPresetPrefix(paneId);
+            ReverseCameraLayout.Rect destination = readReverseElementDestination(
+                    preferences, prefix + "destination_", paneId);
+            boolean visible = preferences.getBoolean(prefix + "visible",
+                    paneId == ReverseCameraLayout.WIDGET_PANE_ID
+                            ? ReverseCameraController.DEFAULT_WIDGET_VISIBLE : true);
+            CameraBorderSettings.Border border = readOptionalBorder(preferences, prefix);
+            SharedPreferences.Editor editor = preferences.edit();
+            String destinationPrefix = CameraBorderSettings.reverseElementPrefix(paneId);
+            editor.putFloat(destinationPrefix + "left", destination.left)
+                    .putFloat(destinationPrefix + "top", destination.top)
+                    .putFloat(destinationPrefix + "width", destination.width)
+                    .putFloat(destinationPrefix + "height", destination.height)
+                    .putBoolean(paneId == ReverseCameraLayout.WIDGET_PANE_ID
+                            ? ReverseCameraController.PREF_WIDGET_VISIBLE
+                            : ReverseCameraController.visibilityKey(paneId), visible);
+            if (border != null) CameraBorderSettings.write(editor, destinationPrefix, border);
+            editor.apply();
             return true;
         } catch (RuntimeException invalidPreset) {
             return false;
@@ -380,7 +433,7 @@ final class CameraCalibrationPreset {
                         CameraDewarpConfig.lensForReverseCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection),
-                targetVisible, value.mirrorHorizontally));
+                targetVisible, value.mirrorHorizontally, value.border));
         return true;
     }
 
@@ -428,7 +481,7 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseSideCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.mirrorHorizontally));
+                        value.dewarp.projection), value.mirrorHorizontally, value.border));
         return true;
     }
 
@@ -441,7 +494,7 @@ final class CameraCalibrationPreset {
                         CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection),
-                value.mirrorHorizontally));
+                value.mirrorHorizontally, value.border));
         return true;
     }
 
@@ -477,7 +530,8 @@ final class CameraCalibrationPreset {
         return new CameraValue(raw,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw),
                 CameraDewarpConfig.loadForProfile(preferences, profile),
-                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)));
+                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)),
+                CameraBorderSettings.forBlind(preferences, profile));
     }
 
     private static CameraValue activeParking(
@@ -486,7 +540,8 @@ final class CameraCalibrationPreset {
         return new CameraValue(raw,
                 DirectCameraCrop.loadCorrected(preferences, profile, raw),
                 CameraDewarpConfig.loadForParking(preferences, profile),
-                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)));
+                correctedAspect(preferences, DirectCameraCrop.correctedAspectKey(profile)),
+                CameraBorderSettings.forParking(preferences, profile));
     }
 
     private static void applyCamera(
@@ -501,6 +556,9 @@ final class CameraCalibrationPreset {
         CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
+        if (value.border != null) {
+            CameraBorderSettings.write(editor, CameraBorderSettings.blindPrefix(profile), value.border);
+        }
         editor.apply();
     }
 
@@ -515,6 +573,9 @@ final class CameraCalibrationPreset {
         CameraDewarpConfig.writeForParking(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
                 value.dewarp.fovDegrees, value.dewarp.projection));
+        if (value.border != null) {
+            CameraBorderSettings.write(editor, CameraBorderSettings.parkingPrefix(profile), value.border);
+        }
         editor.apply();
     }
 
@@ -529,7 +590,8 @@ final class CameraCalibrationPreset {
                 pane.rotationDegrees, pane.displayMode,
                 CameraDewarpConfig.loadForReverse(preferences, cameraIndex),
                 ReverseCameraController.loadVisibility(preferences, cameraIndex),
-                pane.mirrorHorizontally);
+                pane.mirrorHorizontally,
+                CameraBorderSettings.forReverse(preferences, cameraIndex, false));
     }
 
     private static ReverseFrontValue activeReverseFront(
@@ -542,7 +604,8 @@ final class CameraCalibrationPreset {
                         preferences, cameraIndex),
                 pane.rotationDegrees, pane.displayMode,
                 CameraDewarpConfig.loadForReverseFront(preferences, cameraIndex),
-                pane.mirrorHorizontally);
+                pane.mirrorHorizontally,
+                CameraBorderSettings.forReverse(preferences, cameraIndex, true));
     }
 
     private static void applyReverse(
@@ -567,6 +630,10 @@ final class CameraCalibrationPreset {
         CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensForReverseCamera(cameraIndex),
                 value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection));
+        if (value.border != null) {
+            CameraBorderSettings.write(editor,
+                    CameraBorderSettings.reversePrefix(cameraIndex, false), value.border);
+        }
         editor.apply();
     }
 
@@ -588,6 +655,10 @@ final class CameraCalibrationPreset {
                         CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection));
+        if (value.border != null) {
+            CameraBorderSettings.write(editor,
+                    CameraBorderSettings.reversePrefix(cameraIndex, true), value.border);
+        }
         editor.apply();
     }
 
@@ -599,6 +670,7 @@ final class CameraCalibrationPreset {
         editor.putBoolean(prefix + "corrected_mirror", value.raw.mirrorHorizontally);
         writeCorrectedAspect(editor, prefix + "corrected_aspect", value.correctedAspect);
         writeDewarp(editor, prefix, value.dewarp);
+        CameraBorderSettings.write(editor, prefix, value.border);
     }
 
     private static CameraValue readCamera(
@@ -640,7 +712,7 @@ final class CameraCalibrationPreset {
                     .withMirrorHorizontally(correctedMirror);
         }
         return new CameraValue(raw, corrected, readDewarp(preferences, prefix, lens),
-                correctedAspect);
+                correctedAspect, readOptionalBorder(preferences, prefix));
     }
 
     private static void writeReverse(
@@ -656,6 +728,7 @@ final class CameraCalibrationPreset {
                 .putBoolean(prefix + "mirror", value.mirrorHorizontally)
                 .putBoolean(prefix + "visible", value.visible);
         writeDewarp(editor, prefix, value.dewarp);
+        CameraBorderSettings.write(editor, prefix, value.border);
     }
 
     private static ReverseValue readReverse(
@@ -679,7 +752,8 @@ final class CameraCalibrationPreset {
         }
         boolean mirror = readOptionalMirror(preferences, prefix + "mirror", true);
         return new ReverseValue(destination, raw, corrected, rotation, mode,
-                readDewarp(preferences, prefix, lens), visible, mirror);
+                readDewarp(preferences, prefix, lens), visible, mirror,
+                readOptionalBorder(preferences, prefix));
     }
 
     private static void writeReverseFront(
@@ -692,6 +766,7 @@ final class CameraCalibrationPreset {
                 .putInt(prefix + "mode", value.displayMode)
                 .putBoolean(prefix + "mirror", value.mirrorHorizontally);
         writeDewarp(editor, prefix, value.dewarp);
+        CameraBorderSettings.write(editor, prefix, value.border);
     }
 
     private static ReverseFrontValue readReverseFront(
@@ -707,7 +782,8 @@ final class CameraCalibrationPreset {
         }
         return new ReverseFrontValue(raw, corrected, rotation, mode,
                 readDewarp(preferences, prefix, lens),
-                readOptionalMirror(preferences, prefix + "mirror", false));
+                readOptionalMirror(preferences, prefix + "mirror", false),
+                readOptionalBorder(preferences, prefix));
     }
 
     private static void writeCrop(
@@ -745,6 +821,21 @@ final class CameraCalibrationPreset {
         return destination
                 ? ReverseCameraLayout.destination(x, y, width, height)
                 : ReverseCameraLayout.sourceCrop(x, y, width, height);
+    }
+
+    private static ReverseCameraLayout.Rect readReverseElementDestination(
+            SharedPreferences preferences, String prefix, int paneId) {
+        float x = readFloat(preferences, prefix + "x");
+        float y = readFloat(preferences, prefix + "y");
+        float width = readFloat(preferences, prefix + "w");
+        float height = readFloat(preferences, prefix + "h");
+        if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
+            return ReverseCameraLayout.widgetDestination(x, y, width, height);
+        }
+        if (paneId == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+            return ReverseCameraLayout.destination(x, y, width, height);
+        }
+        throw new IllegalArgumentException("invalid reverse element pane id: " + paneId);
     }
 
     private static ReverseCameraLayout.Rect mirror(
@@ -794,6 +885,19 @@ final class CameraCalibrationPreset {
         }
     }
 
+    private static CameraBorderSettings.Border readOptionalBorder(
+            SharedPreferences preferences, String prefix) {
+        String width = CameraBorderSettings.widthKey(prefix);
+        String color = CameraBorderSettings.colorKey(prefix);
+        if (!preferences.contains(width) && !preferences.contains(color)) return null;
+        if (!preferences.contains(width) || !preferences.contains(color)) {
+            throw new IllegalArgumentException("incomplete preset border");
+        }
+        int borderDp = preferences.getInt(width, -1);
+        int borderArgb = preferences.getInt(color, 0);
+        return new CameraBorderSettings.Border(borderDp, borderArgb);
+    }
+
     private static int correctedAspect(SharedPreferences preferences, String key) {
         if (!preferences.contains(key)) return -1;
         final int value;
@@ -838,19 +942,33 @@ final class CameraCalibrationPreset {
         return "reverse_front_calibration_preset_v1_" + cameraIndex + "_";
     }
 
+    private static String reverseElementPresetPrefix(int paneId) {
+        return "reverse_calibration_preset_v1_"
+                + (paneId == ReverseCameraLayout.BACKGROUND_PANE_ID ? "background_"
+                : paneId == ReverseCameraLayout.WIDGET_PANE_ID ? "widget_"
+                : invalidReverseElement(paneId));
+    }
+
+    private static String invalidReverseElement(int paneId) {
+        throw new IllegalArgumentException("invalid reverse element pane id: " + paneId);
+    }
+
     private static final class CameraValue {
         final DirectCameraCrop raw;
         final DirectCameraCrop corrected;
         final CameraDewarpConfig dewarp;
         final int correctedAspect;
+        final CameraBorderSettings.Border border;
 
         CameraValue(
                 DirectCameraCrop raw, DirectCameraCrop corrected,
-                CameraDewarpConfig dewarp, int correctedAspect) {
+                CameraDewarpConfig dewarp, int correctedAspect,
+                CameraBorderSettings.Border border) {
             this.raw = raw;
             this.corrected = corrected;
             this.dewarp = dewarp;
             this.correctedAspect = correctedAspect;
+            this.border = border;
         }
     }
 
@@ -863,12 +981,13 @@ final class CameraCalibrationPreset {
         final CameraDewarpConfig dewarp;
         final boolean visible;
         final boolean mirrorHorizontally;
+        final CameraBorderSettings.Border border;
 
         ReverseValue(
                 ReverseCameraLayout.Rect destination, ReverseCameraLayout.Rect raw,
                 ReverseCameraLayout.Rect corrected, int rotationDegrees,
                 int displayMode, CameraDewarpConfig dewarp, boolean visible,
-                boolean mirrorHorizontally) {
+                boolean mirrorHorizontally, CameraBorderSettings.Border border) {
             this.destination = destination;
             this.raw = raw;
             this.corrected = corrected;
@@ -877,6 +996,7 @@ final class CameraCalibrationPreset {
             this.dewarp = dewarp;
             this.visible = visible;
             this.mirrorHorizontally = mirrorHorizontally;
+            this.border = border;
         }
     }
 
@@ -887,17 +1007,19 @@ final class CameraCalibrationPreset {
         final int displayMode;
         final CameraDewarpConfig dewarp;
         final boolean mirrorHorizontally;
+        final CameraBorderSettings.Border border;
 
         ReverseFrontValue(
                 ReverseCameraLayout.Rect raw, ReverseCameraLayout.Rect corrected,
                 int rotationDegrees, int displayMode, CameraDewarpConfig dewarp,
-                boolean mirrorHorizontally) {
+                boolean mirrorHorizontally, CameraBorderSettings.Border border) {
             this.raw = raw;
             this.corrected = corrected;
             this.rotationDegrees = rotationDegrees;
             this.displayMode = displayMode;
             this.dewarp = dewarp;
             this.mirrorHorizontally = mirrorHorizontally;
+            this.border = border;
         }
     }
 }

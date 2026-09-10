@@ -1,6 +1,8 @@
 package com.byd.extend;
 
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -45,6 +47,29 @@ public final class WeatherAccessibilityContractTest {
     }
 
     @Test
+    public void recoveryIsBoundedAndConnectionLifecycleIsObservable() throws Exception {
+        String helper = readProjectFile(
+                "app/src/main/java/com/byd/extend/CameraHelperService.java");
+        String recovery = helper.substring(helper.indexOf("private void recoverWeatherAccessibility"),
+                helper.indexOf("private boolean applyWeatherAccessibility"));
+        assertTrue(helper.contains("ACCESSIBILITY_CONNECTION_WAIT_MS = 5_000"));
+        assertTrue(recovery.contains("applyWeatherAccessibility(true, false, epoch)"));
+        assertTrue(recovery.contains("applyWeatherAccessibility(true, true, epoch)"));
+        assertEquals(2, occurrences(recovery,
+                "WeatherRefreshAccessibilityService.awaitConnection("));
+        assertFalse(helper.contains("settings put secure accessibility_enabled 0"));
+
+        String service = readProjectFile(
+                "app/src/main/java/com/byd/extend/WeatherRefreshAccessibilityService.java");
+        assertTrue(service.contains("static boolean isConnected()"));
+        assertTrue(service.contains("static void addConnectionListener"));
+        assertTrue(service.contains("public boolean onUnbind(android.content.Intent intent)"));
+        String interrupt = service.substring(service.indexOf("public void onInterrupt()"),
+                service.indexOf("public boolean onUnbind", service.indexOf("public void onInterrupt()")));
+        assertFalse(interrupt.contains("publishConnection"));
+    }
+
+    @Test
     public void activityOwnerWinsBeforeRuntimeFallbackAndInactiveRuntimeIsNoOp() throws Exception {
         String helper = readProjectFile(
                 "app/src/main/java/com/byd/extend/CameraHelperService.java");
@@ -71,5 +96,12 @@ public final class WeatherAccessibilityContractTest {
             path = Path.of(relativePath.substring("app/".length()));
         }
         return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int index = 0; (index = text.indexOf(needle, index)) >= 0;
+                index += needle.length()) count++;
+        return count;
     }
 }

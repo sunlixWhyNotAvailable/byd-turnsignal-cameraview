@@ -65,7 +65,7 @@
     <string name="runtime_update_download">Завантаження: %1$d%%</string>
     <string name="runtime_update_failed">Не вдалося оновити застосунок</string>
     <string name="runtime_update_check_error">Помилка перевірки оновлень</string>
-    <string name="runtime_update_later">Пізніше</string>
+    <string name="runtime_update_later">Закрити</string>
     <string name="runtime_installed_version">Встановлена версія: %1$s</string>
     <string name="runtime_available_version">Доступна версія: %1$s</string>
     <string name="runtime_car_compat_title">Пакет сумісності авто</string>

@@ -14,12 +14,84 @@ import java.util.function.BiConsumer;
 
 /** Desired-state owner for one mirror-camera consumer; it never owns the shared producer. */
 final class RearviewMirrorController {
+    static final long PREPARE_TIMEOUT_MS = 30_000;
+    static final long SURFACE_TIMEOUT_MS = 8_000;
+    static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
+
+    static final class Readiness {
+        static final int IDLE = 0;
+        static final int PREPARING = 1;
+        static final int SURFACE = 2;
+        static final int FIRST_FRAME = 3;
+        static final int VISIBLE = 4;
+
+        private int requestId;
+        private int phase = IDLE;
+        private boolean retryUsed;
+        private boolean cycleBlocked;
+
+        void begin(int request) {
+            requestId = request;
+            phase = PREPARING;
+        }
+
+        boolean prepared(int request) {
+            if (!current(request, PREPARING)) return false;
+            phase = SURFACE;
+            return true;
+        }
+
+        boolean surfaceAttached(int request) {
+            if (request != requestId || phase != PREPARING && phase != SURFACE) return false;
+            phase = FIRST_FRAME;
+            return true;
+        }
+
+        boolean firstFrame(int request) {
+            if (!current(request, FIRST_FRAME)) return false;
+            phase = VISIBLE;
+            return true;
+        }
+
+        boolean current(int request, int expectedPhase) {
+            return request > 0 && request == requestId && phase == expectedPhase;
+        }
+
+        boolean claimRetry(boolean retryable) {
+            if (!retryable) return false;
+            if (retryUsed) {
+                cycleBlocked = true;
+                return false;
+            }
+            retryUsed = true;
+            return true;
+        }
+
+        void failure(boolean reconcile) {
+            if (retryUsed && !reconcile) cycleBlocked = true;
+        }
+
+        boolean blocked() {
+            return cycleBlocked;
+        }
+
+        void freshCycle() {
+            retryUsed = false;
+            cycleBlocked = false;
+        }
+
+        void clear() {
+            requestId = 0;
+            phase = IDLE;
+        }
+    }
+
     private final Context context;
     private final SharedPreferences preferences;
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
     private final CameraShellRecoveryGate recovery = new CameraShellRecoveryGate();
-    private final Runnable timeout = () -> fail("readiness_timeout", false);
+    private final Readiness readiness = new Readiness();
     private final DisplayManager displays;
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
         @Override public void onDisplayAdded(int id) {
@@ -49,6 +121,7 @@ final class RearviewMirrorController {
     private int generation;
     private boolean clusterChangePending;
     private Surface target;
+    private Runnable deadline;
     private long shellEpoch;
 
     RearviewMirrorController(Context context, Handler handler,
@@ -65,28 +138,33 @@ final class RearviewMirrorController {
         if (helper == value) return;
         if (helper != null) stop("helper_changed", false);
         helper = value;
+        freshCycle();
         evaluate();
     }
 
     void setRuntimeAllowed(boolean allowed) {
+        if (runtimeAllowed != allowed) freshCycle();
         runtimeAllowed = allowed;
         evaluate();
     }
 
     void appVisibility(boolean visible) {
+        if (appVisible != visible) freshCycle();
         appVisible = visible;
         if (visible) RearviewMirrorSettings.setHidden(preferences, false);
         evaluate();
     }
 
     void settingsChanged() {
+        freshCycle();
         if (requestId != 0 && (!wanted()
                 || !Arrays.equals(requestConfiguration, runtimeConfiguration()))) {
-            stop("settings_changed", true);
+            stop("settings_changed", wanted());
         } else evaluate();
     }
 
     void oemVisibility(boolean known, boolean visible) {
+        if (oemKnown != known || oemVisible != (known && visible)) freshCycle();
         oemKnown = known;
         oemVisible = known && visible;
         evaluate();
@@ -132,28 +210,34 @@ final class RearviewMirrorController {
                 selected == null ? -1 : selected.getDisplayId(), displayId, event,
                 helper != null && wantedWithoutDisplay());
         if (action == ClusterDisplayLifecycle.INVALIDATE) {
+            freshCycle();
             String destination = CameraDisplayTarget.name(configuredTarget);
             String change = event == ClusterDisplayLifecycle.EVENT_CHANGED
                     ? "changed" : "removed";
             stop(destination + "_display_" + change, true);
         } else if (action == ClusterDisplayLifecycle.WAKE) {
+            freshCycle();
             evaluate();
         } else if (action == ClusterDisplayLifecycle.NOTE_CHANGE) {
+            freshCycle();
             clusterChangePending = true;
         }
     }
 
     private void evaluate() {
         if (!wanted() || helper == null) {
+            readiness.freshCycle();
             stop("not_visible", false);
             return;
         }
+        if (readiness.blocked()) return;
         if (stopping) {
             reconcileAfterStop = true;
             return;
         }
         if (requestId != 0 || recovery.pending()) return;
         requestId = ++sequence;
+        readiness.begin(requestId);
         generation = 0;
         int expected = requestId;
         try {
@@ -168,14 +252,23 @@ final class RearviewMirrorController {
             Display display = CameraDisplayTarget.resolve(context, spec.target);
             requestDisplayId = display == null ? -1 : display.getDisplayId();
             clusterChangePending = false;
-            handler.postDelayed(timeout, 8_000);
+            scheduleDeadline(expected, Readiness.PREPARING,
+                    PREPARE_TIMEOUT_MS, "prepare_timeout", false);
             helper.prepareOverlayWindow(spec,
-                    surface -> handler.post(() -> acceptSurface(expected, surface)), () -> {});
+                    surface -> handler.post(() -> acceptSurface(expected, surface)),
+                    () -> prepared(expected));
             emit("mirror_prepare", "request_id", expected, "target", spec.target);
         } catch (Throwable error) {
             emit("mirror_error", "stage", "prepare", "error", error.toString());
             fail("prepare", false);
         }
+    }
+
+    private void prepared(int expected) {
+        if (!readiness.prepared(expected)) return;
+        scheduleDeadline(expected, Readiness.SURFACE,
+                SURFACE_TIMEOUT_MS, "surface_timeout", true);
+        emit("mirror_stage", "stage", "surface_wait", "request_id", expected);
     }
 
     private CameraShellProtocol.OverlaySpec buildSpec(int id, boolean front) {
@@ -193,8 +286,9 @@ final class RearviewMirrorController {
                 crop.rotationDegrees, crop.rotationMode,
                 BlindSpotOverlayController.readCornerRadius(preferences), dewarp, raw,
                 CameraBufferQuality.load(preferences), crop.mirrorHorizontally, 0);
-        result.mirrorBorderDp = RearviewMirrorSettings.borderDp(preferences);
-        result.mirrorBorderArgb = RearviewMirrorSettings.borderArgb(preferences);
+        CameraBorderSettings.Border border = CameraBorderSettings.forMirror(preferences, front);
+        result.borderDp = border.borderDp;
+        result.borderArgb = border.borderArgb;
         return result;
     }
 
@@ -205,18 +299,21 @@ final class RearviewMirrorController {
     private Object[] runtimeConfiguration(RearviewMirrorSettings.Settings settings) {
         RearviewMirrorSettings.Calibration calibration =
                 settings.calibration(settings.activeFront());
+        CameraBorderSettings.Border border =
+                CameraBorderSettings.forMirror(preferences, settings.activeFront());
         return new Object[]{settings.activeFront(), settings.target, settings.placement,
                 calibration.raw, calibration.corrected, calibration.enabled,
                 calibration.fovDegrees, calibration.projection, calibration.mirrored,
                 calibration.rotationDegrees, calibration.rotationMode,
-                settings.borderDp, settings.borderArgb,
+                border.borderDp, border.borderArgb,
                 BlindSpotOverlayController.readCornerRadius(preferences),
                 CameraBufferQuality.load(preferences)};
     }
 
     private void acceptSurface(int expected, TurnSignalController.OverlaySurface surface) {
         if (expected != requestId || !wanted() || helper == null
-                || surface.requestId != expected || surface.cameraId != CameraOverlayProfile.MIRROR_ID) {
+                || surface.requestId != expected || surface.cameraId != CameraOverlayProfile.MIRROR_ID
+                || !readiness.surfaceAttached(expected)) {
             surface.surface.release();
             return;
         }
@@ -230,10 +327,12 @@ final class RearviewMirrorController {
                 fail("consumer_open", false);
                 return;
             }
-            handler.removeCallbacks(timeout);
-            handler.postDelayed(timeout, 3_000);
+            scheduleDeadline(expected, Readiness.FIRST_FRAME,
+                    FIRST_FRAME_TIMEOUT_MS, "first_frame_timeout", true);
             helper.armOverlayFirstFrame(OverlayFrameArm.create(
                     CameraOverlayProfile.MIRROR_ID, expected, generation, 1));
+            emit("mirror_stage", "stage", "first_frame_wait", "request_id", expected,
+                    "surface_generation", generation);
         } catch (Throwable error) {
             emit("mirror_error", "stage", "consumer_open", "error", error.toString());
             fail("consumer_open", false);
@@ -263,6 +362,8 @@ final class RearviewMirrorController {
                     boolean reconcile = clusterChangePending;
                     fail(ClusterDisplayLifecycle.UNAVAILABLE_STAGE, reconcile);
                 }
+            } else if (matchesPrepareError(event, requestId)) {
+                fail("prepare", false);
             } else if (matchesManualHideEvent(event, requestId, generation)) {
                 String language = AppLanguage.read(preferences);
                 RearviewMirrorSettings.setHidden(preferences, true);
@@ -275,8 +376,8 @@ final class RearviewMirrorController {
                 }
             } else if (matchesFrameEvent(event, requestId, generation)) {
                 if ("camera_overlay_first_frame".equals(kind) && event.optInt("frame_arm_epoch") == 1) {
-                    handler.removeCallbacks(timeout);
-                    if (wanted() && helper != null) {
+                    if (readiness.firstFrame(requestId) && wanted() && helper != null) {
+                        cancelDeadline();
                         helper.setOverlayWindowVisible(CameraOverlayProfile.MIRROR_ID,
                                 requestId, generation, true);
                     }
@@ -316,14 +417,47 @@ final class RearviewMirrorController {
                 && matchesFrameEvent(event, request, generation);
     }
 
+    static boolean matchesPrepareError(JSONObject event, int request) {
+        return request > 0 && "camera_overlay_error".equals(event.optString("kind"))
+                && "prepare".equals(event.optString("stage"))
+                && event.optInt("camera_id", -1) == CameraOverlayProfile.MIRROR_ID
+                && event.optInt("request_id", -1) == request;
+    }
+
+    private void scheduleDeadline(int expected, int phase, long delay,
+            String reason, boolean retryable) {
+        cancelDeadline();
+        deadline = () -> {
+            if (!readiness.current(expected, phase)) return;
+            boolean retry = readiness.claimRetry(retryable);
+            if (retry) {
+                emit("mirror_recovery", "stage", reason, "request_id", expected,
+                        "attempt", 1);
+            }
+            fail(reason, retry);
+        };
+        handler.postDelayed(deadline, delay);
+    }
+
+    private void cancelDeadline() {
+        if (deadline != null) handler.removeCallbacks(deadline);
+        deadline = null;
+    }
+
+    private void freshCycle() {
+        readiness.freshCycle();
+    }
+
     private void fail(String reason, boolean reconcile) {
         if (requestId == 0) return;
+        readiness.failure(reconcile);
         emit("mirror_error", "stage", reason, "request_id", requestId);
         stop(reason, reconcile);
     }
 
     private void stop(String reason, boolean reconcile) {
-        handler.removeCallbacks(timeout);
+        cancelDeadline();
+        if (!reconcile) reconcileAfterStop = false;
         if (requestId == 0 || stopping) return;
         int closing = requestId;
         int closingGeneration = generation;
@@ -333,6 +467,7 @@ final class RearviewMirrorController {
         requestDisplayId = -1;
         requestConfiguration = null;
         generation = 0;
+        readiness.clear();
         clusterChangePending = false;
         target = null;
         CameraHelperMain.HelperBinder closingHelper = helper;
@@ -369,6 +504,7 @@ final class RearviewMirrorController {
         shutdown = true;
         runtimeAllowed = false;
         recovery.clear();
+        readiness.freshCycle();
         if (displays != null) displays.unregisterDisplayListener(displayListener);
         stop("shutdown", false);
     }

@@ -83,8 +83,10 @@ public final class RearviewMirrorSettings {
                 fallback.frontCalibration, FRONT_ORIGINAL_PREFIX);
         Calibration frontPreset = readBoolean(PREF_FRONT_PRESET_PRESENT, false)
                 ? readCalibration(null, FRONT_PRESET_PREFIX) : null;
-        int border = clamp(readInt(PREF_BORDER_DP, fallback.borderDp), MIN_BORDER_DP, MAX_BORDER_DP);
-        int color = readInt(PREF_BORDER_ARGB, fallback.borderArgb) | 0xFF000000;
+        CameraBorderSettings.Border frame = CameraBorderSettings.forMirror(
+                preferences, frontIntegrated && showFront);
+        int border = frame.borderDp;
+        int color = frame.borderArgb;
         boolean hidden = readBoolean(PREF_MANUAL_HIDDEN, fallback.manualHidden);
         return new Settings(enabled, target, placement, calibration, preset,
                 border, color, hidden, frontIntegrated, showFront,
@@ -103,6 +105,7 @@ public final class RearviewMirrorSettings {
                 .putInt(PREF_BORDER_ARGB, safe.borderArgb)
                 .putBoolean(PREF_MANUAL_HIDDEN, safe.manualHidden)
                 .putBoolean(PREF_PRESET_PRESENT, safe.preset != null);
+        CameraBorderSettings.preserveLegacyMirrorSources(editor, preferences);
         writePlacement(editor, safe.target, safe.placement);
         writeCalibration(editor, ORIGINAL_PREFIX, safe.calibration);
         if (safe.preset == null) removeCalibration(editor, PRESET_PREFIX);
@@ -234,11 +237,11 @@ public final class RearviewMirrorSettings {
     }
 
     public static int borderDp(SharedPreferences preferences) {
-        return new RearviewMirrorSettings(preferences).load().borderDp;
+        return CameraBorderSettings.forMirror(preferences, activeFront(preferences)).borderDp;
     }
 
     public static int borderArgb(SharedPreferences preferences) {
-        return new RearviewMirrorSettings(preferences).load().borderArgb;
+        return CameraBorderSettings.forMirror(preferences, activeFront(preferences)).borderArgb;
     }
 
     public static void writePlacement(

@@ -65,7 +65,7 @@
     <string name="runtime_update_download">下载：%1$d%%</string>
     <string name="runtime_update_failed">无法更新应用</string>
     <string name="runtime_update_check_error">检查更新失败</string>
-    <string name="runtime_update_later">稍后</string>
+    <string name="runtime_update_later">关闭</string>
     <string name="runtime_installed_version">已安装版本：%1$s</string>
     <string name="runtime_available_version">可用版本：%1$s</string>
     <string name="runtime_car_compat_title">车辆兼容性数据包</string>

@@ -440,7 +440,8 @@ final class ReverseCameraController {
             SharedPreferences settings, int requestId) {
         ReverseCameraLayout frontLayout = loadFrontLayout(settings);
         ReverseCameraLayout frontRawLayout = loadFrontRawLayout(settings);
-        return new CameraShellProtocol.ReverseOverlaySpec(
+        CameraShellProtocol.ReverseOverlaySpec result =
+                new CameraShellProtocol.ReverseOverlaySpec(
                 requestId, loadLayout(settings), loadRawLayout(settings),
                 BlindSpotOverlayController.readCornerRadius(settings),
                 CameraDewarpConfig.loadForReverse(
@@ -466,6 +467,52 @@ final class ReverseCameraController {
                 loadCentralFrontIntegrated(settings),
                 loadWidgetVisible(settings),
                 switchByGear(settings));
+        loadBorders(settings, result);
+        return result;
+    }
+
+    static void applyBorders(
+            SharedPreferences settings, ReverseCameraCompositionView view) {
+        if (view == null) return;
+        CameraShellProtocol.ReverseOverlaySpec spec = borderSpec(settings);
+        view.setBorders(spec.borderDp, spec.borderArgb);
+    }
+
+    static void applyBorders(
+            SharedPreferences settings, ReverseCameraEditorView view, boolean front) {
+        if (view == null) return;
+        CameraShellProtocol.ReverseOverlaySpec spec = borderSpec(settings);
+        view.setBorders(spec.borderDp, spec.borderArgb, front);
+    }
+
+    private static CameraShellProtocol.ReverseOverlaySpec borderSpec(
+            SharedPreferences settings) {
+        CameraShellProtocol.ReverseOverlaySpec result =
+                new CameraShellProtocol.ReverseOverlaySpec(1, ReverseCameraLayout.defaults());
+        loadBorders(settings, result);
+        return result;
+    }
+
+    private static void loadBorders(
+            SharedPreferences settings, CameraShellProtocol.ReverseOverlaySpec spec) {
+        setBorder(spec, CameraShellProtocol.ReverseOverlaySpec.BORDER_BACKGROUND,
+                CameraBorderSettings.forReverseElement(
+                        settings, ReverseCameraLayout.BACKGROUND_PANE_ID));
+        setBorder(spec, CameraShellProtocol.ReverseOverlaySpec.BORDER_WIDGET,
+                CameraBorderSettings.forReverseElement(
+                        settings, ReverseCameraLayout.WIDGET_PANE_ID));
+        for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+            setBorder(spec, CameraShellProtocol.ReverseOverlaySpec.borderIndex(cameraIndex, false),
+                    CameraBorderSettings.forReverse(settings, cameraIndex, false));
+            setBorder(spec, CameraShellProtocol.ReverseOverlaySpec.borderIndex(cameraIndex, true),
+                    CameraBorderSettings.forReverse(settings, cameraIndex, true));
+        }
+    }
+
+    private static void setBorder(CameraShellProtocol.ReverseOverlaySpec spec, int index,
+            CameraBorderSettings.Border border) {
+        spec.setBorder(index, border.borderDp, border.borderArgb);
     }
 
     private void overlayPrepared(int requestId) {

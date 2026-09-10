@@ -19,7 +19,9 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import java.io.File;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,6 +29,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public final class CameraHelperService extends Service {
+    interface AccessibilityRecoveryCallback {
+        void onAccessibilityRecoveryFinished(boolean connected);
+    }
+
     private static volatile CameraHelperService activeInstance;
     private static final String CHANNEL_ID = "guard_service";
     private static final int NOTIFICATION_ID = 8713;
@@ -78,6 +84,7 @@ public final class CameraHelperService extends Service {
     static final String EXTRA_MIRROR_VISIBILITY_ACTION = "mirror_visibility_action";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
+    private static final long ACCESSIBILITY_CONNECTION_WAIT_MS = 5_000;
     static final int WEATHER_RESULT_OK = 0;
     static final int WEATHER_RESULT_FAILED = 1;
     static final int WEATHER_RESULT_BUSY = 2;
@@ -113,6 +120,11 @@ public final class CameraHelperService extends Service {
     private final RuntimeLifecycleGate runtimeLifecycle = new RuntimeLifecycleGate();
     private final ExecutorService weatherAccessibilityExecutor =
             Executors.newSingleThreadExecutor(r -> new Thread(r, "weather-accessibility"));
+    private final AccessibilityRecoveryGate weatherAccessibilityRecovery =
+            new AccessibilityRecoveryGate();
+    private final Object weatherAccessibilityCallbackLock = new Object();
+    private final List<AccessibilityRecoveryCallback> weatherAccessibilityCallbacks =
+            new ArrayList<>();
     private final Runnable heartbeat = new Runnable() {
         @Override
         public void run() {
@@ -177,6 +189,35 @@ public final class CameraHelperService extends Service {
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_ACTIVITY_OPEN);
         context.startService(intent);
+    }
+
+    static void requestWeatherAccessibilityRecovery(Context context, String reason) {
+        requestWeatherAccessibilityRecovery(context, reason, null);
+    }
+
+    static void requestWeatherAccessibilityRecovery(Context context, String reason,
+            AccessibilityRecoveryCallback callback) {
+        if (WeatherRefreshAccessibilityService.isConnected()) {
+            if (callback != null) new Handler(Looper.getMainLooper()).post(
+                    () -> callback.onAccessibilityRecoveryFinished(true));
+            return;
+        }
+        CameraHelperService service = activeInstance;
+        if (service != null) {
+            service.requestWeatherAccessibilityRecovery(reason, callback);
+        } else if (callback != null) {
+            new Handler(Looper.getMainLooper()).post(
+                    () -> callback.onAccessibilityRecoveryFinished(false));
+        }
+    }
+
+    static void accessibilityConnectionChanged(boolean connected) {
+        CameraHelperService service = activeInstance;
+        if (service == null) return;
+        service.lifecycle("weather_accessibility_connection", "connected", connected);
+        if (!connected && Boolean.TRUE.equals(service.weatherAccessibilityTarget)) {
+            service.requestWeatherAccessibilityRecovery("disconnect");
+        }
     }
 
     static void activityClosed(Context context) {
@@ -534,7 +575,11 @@ public final class CameraHelperService extends Service {
         // !shouldRecover branch so ordinary settings changes cannot disable it mid-UI.
         if (ACTION_ACTIVITY_OPEN.equals(action)) activityVisible = true;
         else if (ACTION_ACTIVITY_CLOSED.equals(action)) activityVisible = false;
-        syncWeatherAccessibility(shouldRecover || activityVisible);
+        boolean accessibilityTrigger = ACTION_ACTIVITY_OPEN.equals(action)
+                || ACTION_START.equals(action);
+        syncWeatherAccessibility(shouldRecover || activityVisible,
+                ACTION_ACTIVITY_OPEN.equals(action) ? "activity_foreground" : "startup",
+                accessibilityTrigger);
         if (!shouldRecover) {
             if (shouldRunManualMirror()) {
                 if (!mirrorOnlyRuntime && helperRuntimeStarted) {
@@ -690,13 +735,120 @@ public final class CameraHelperService extends Service {
     }
 
     private void syncWeatherAccessibility(boolean enabled) {
-        if (weatherAccessibilityTarget != null
-                && weatherAccessibilityTarget.booleanValue() == enabled) return;
-        weatherAccessibilityTarget = enabled;
-        weatherAccessibilityExecutor.execute(() -> applyWeatherAccessibility(enabled));
+        syncWeatherAccessibility(enabled, "registration", false);
     }
 
-    private void applyWeatherAccessibility(boolean enabled) {
+    private void syncWeatherAccessibility(
+            boolean enabled, String reason, boolean explicitTrigger) {
+        Boolean previous = weatherAccessibilityTarget;
+        weatherAccessibilityTarget = enabled;
+        if (enabled) {
+            if ((!Boolean.TRUE.equals(previous) || explicitTrigger)
+                    && !WeatherRefreshAccessibilityService.isConnected()) {
+                requestWeatherAccessibilityRecovery(reason);
+            }
+            return;
+        }
+        List<AccessibilityRecoveryCallback> cancelledCallbacks;
+        synchronized (weatherAccessibilityCallbackLock) {
+            weatherAccessibilityRecovery.cancel();
+            cancelledCallbacks = drainWeatherAccessibilityCallbacks();
+        }
+        dispatchWeatherAccessibilityCallbacks(cancelledCallbacks, false);
+        if (Boolean.FALSE.equals(previous)) return;
+        weatherAccessibilityExecutor.execute(() -> applyWeatherAccessibility(false, false));
+    }
+
+    private void requestWeatherAccessibilityRecovery(String reason) {
+        requestWeatherAccessibilityRecovery(reason, null);
+    }
+
+    private void requestWeatherAccessibilityRecovery(String reason,
+            AccessibilityRecoveryCallback callback) {
+        long epoch;
+        List<AccessibilityRecoveryCallback> connectedCallbacks = null;
+        synchronized (weatherAccessibilityCallbackLock) {
+            if (callback != null) weatherAccessibilityCallbacks.add(callback);
+            weatherAccessibilityTarget = true;
+            if (WeatherRefreshAccessibilityService.isConnected()) {
+                connectedCallbacks = drainWeatherAccessibilityCallbacks();
+                epoch = 0;
+            } else {
+                epoch = weatherAccessibilityRecovery.begin();
+            }
+        }
+        if (connectedCallbacks != null) {
+            dispatchWeatherAccessibilityCallbacks(connectedCallbacks, true);
+            return;
+        }
+        if (epoch == 0) return;
+        weatherAccessibilityExecutor.execute(() -> recoverWeatherAccessibility(epoch, reason));
+    }
+
+    private void recoverWeatherAccessibility(long epoch, String reason) {
+        String outcome = "cancelled";
+        try {
+            if (!weatherAccessibilityRecovery.isCurrent(epoch)) return;
+            if (!applyWeatherAccessibility(true, false, epoch)) {
+                outcome = weatherAccessibilityRecovery.isCurrent(epoch)
+                        ? "registration_failed" : "cancelled";
+                return;
+            }
+            if (WeatherRefreshAccessibilityService.awaitConnection(
+                    ACCESSIBILITY_CONNECTION_WAIT_MS)) {
+                outcome = "connected";
+                return;
+            }
+            if (!weatherAccessibilityRecovery.isCurrent(epoch)) return;
+            if (!applyWeatherAccessibility(true, true, epoch)) {
+                outcome = weatherAccessibilityRecovery.isCurrent(epoch)
+                        ? "rebind_failed" : "cancelled";
+                return;
+            }
+            outcome = WeatherRefreshAccessibilityService.awaitConnection(
+                    ACCESSIBILITY_CONNECTION_WAIT_MS) ? "rebind_connected" : "timeout";
+        } finally {
+            lifecycle("weather_accessibility_recovery", "reason", reason,
+                    "outcome", outcome);
+            List<AccessibilityRecoveryCallback> callbacks = null;
+            synchronized (weatherAccessibilityCallbackLock) {
+                if (weatherAccessibilityRecovery.finish(epoch)) {
+                    callbacks = drainWeatherAccessibilityCallbacks();
+                }
+            }
+            dispatchWeatherAccessibilityCallbacks(callbacks,
+                    WeatherRefreshAccessibilityService.isConnected());
+        }
+    }
+
+    /** Caller holds weatherAccessibilityCallbackLock. */
+    private List<AccessibilityRecoveryCallback> drainWeatherAccessibilityCallbacks() {
+        List<AccessibilityRecoveryCallback> callbacks =
+                new ArrayList<>(weatherAccessibilityCallbacks);
+        weatherAccessibilityCallbacks.clear();
+        return callbacks;
+    }
+
+    private void dispatchWeatherAccessibilityCallbacks(
+            List<AccessibilityRecoveryCallback> callbacks, boolean connected) {
+        if (callbacks == null || callbacks.isEmpty()) return;
+        mainHandler.post(() -> {
+            for (AccessibilityRecoveryCallback callback : callbacks) {
+                try {
+                    callback.onAccessibilityRecoveryFinished(connected);
+                } catch (RuntimeException ignored) {
+                    // A UI observer must not take down the helper runtime.
+                }
+            }
+        });
+    }
+
+    private boolean applyWeatherAccessibility(boolean enabled, boolean forceRebind) {
+        return applyWeatherAccessibility(enabled, forceRebind, 0);
+    }
+
+    private boolean applyWeatherAccessibility(
+            boolean enabled, boolean forceRebind, long recoveryEpoch) {
         LocalAdbClient.Result currentResult = LocalAdbClient.executeAuthorizedText(
                 this, "settings get secure enabled_accessibility_services", 8_192,
                 this::lifecycle);
@@ -704,10 +856,12 @@ public final class CameraHelperService extends Service {
             lifecycle("weather_accessibility_failed", "enabled", enabled,
                     "error", currentResult.error);
             clearWeatherAccessibilityTarget(enabled);
-            return;
+            return false;
         }
         String current = currentResult.output == null ? "" : currentResult.output.trim();
         if ("null".equalsIgnoreCase(current)) current = "";
+        if (enabled && recoveryEpoch != 0
+                && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch)) return false;
         boolean installed = WeatherAccessibilitySettings.hasOwnService(current);
         boolean legacyInstalled = WeatherAccessibilitySettings.hasLegacyService(current);
         String value = WeatherAccessibilitySettings.transformEnabledAccessibilityServices(
@@ -715,17 +869,19 @@ public final class CameraHelperService extends Service {
         if (!enabled && !installed && !legacyInstalled) {
             lifecycle("weather_accessibility_applied", "enabled", false,
                     "other_services", value.isEmpty() ? 0 : 1);
-            return;
+            return true;
         }
         boolean ok = true;
-        if (installed != enabled || legacyInstalled) {
+        if (installed != enabled || legacyInstalled || forceRebind) {
             if (enabled) {
                 String withoutOwn = WeatherAccessibilitySettings
                         .transformEnabledAccessibilityServices(current, false);
                 ok = runWeatherAccessibilityCommand(
                         "settings put secure enabled_accessibility_services ':" + withoutOwn + "'")
-                        && pauseWeatherAccessibility()
-                        && runWeatherAccessibilityCommand(
+                        && pauseWeatherAccessibility();
+                if (ok && recoveryEpoch != 0
+                        && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch)) return false;
+                ok = ok && runWeatherAccessibilityCommand(
                         "settings put secure enabled_accessibility_services ':" + value + "'")
                         && pauseWeatherAccessibility();
             } else {
@@ -734,14 +890,17 @@ public final class CameraHelperService extends Service {
                         && pauseWeatherAccessibility();
             }
         }
-        if (ok) {
+        if (ok && enabled && (recoveryEpoch == 0
+                || weatherAccessibilityRecovery.isCurrent(recoveryEpoch))) {
             ok = runWeatherAccessibilityCommand(
-                    "settings put secure accessibility_enabled "
-                            + (enabled || !value.isEmpty() ? "1" : "0"));
+                    "settings put secure accessibility_enabled 1");
         }
         lifecycle(ok ? "weather_accessibility_applied" : "weather_accessibility_failed",
-                "enabled", enabled, "other_services", value.isEmpty() ? 0 : 1);
+                "enabled", enabled, "listed", enabled && WeatherAccessibilitySettings
+                        .hasOwnService(value), "rebind", forceRebind,
+                "other_services", value.isEmpty() ? 0 : 1);
         if (!ok) clearWeatherAccessibilityTarget(enabled);
+        return ok;
     }
 
     private void clearWeatherAccessibilityTarget(boolean attemptedValue) {
@@ -779,7 +938,7 @@ public final class CameraHelperService extends Service {
         postRuntime(() -> {
             // A bound Activity is the foreground owner even when auto-start is disabled; keep the
             // Accessibility key filter enabled for the lifetime of this binding.
-            syncWeatherAccessibility(true);
+            syncWeatherAccessibility(true, "activity_bind", true);
             ensureControllersInitialized();
             ensureHelperStarted();
             CameraHelperMain.HelperBinder activeHelper = helper;
@@ -844,6 +1003,12 @@ public final class CameraHelperService extends Service {
         mirrorOnlyRuntime = false;
         oemCameraVisibility = null;
         weatherAccessibilityExecutor.shutdownNow();
+        List<AccessibilityRecoveryCallback> cancelledCallbacks;
+        synchronized (weatherAccessibilityCallbackLock) {
+            weatherAccessibilityRecovery.cancel();
+            cancelledCallbacks = drainWeatherAccessibilityCallbacks();
+        }
+        dispatchWeatherAccessibilityCallbacks(cancelledCallbacks, false);
         if (recover) GuardRecovery.scheduleSoon(this);
         if (serviceLog != null) serviceLog.close();
         runtimeHandler.removeCallbacksAndMessages(null);

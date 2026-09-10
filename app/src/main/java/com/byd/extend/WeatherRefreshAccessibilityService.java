@@ -14,6 +14,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 /** Listens for the stock WeatherData refresh click and global camera-button bindings. */
 public final class WeatherRefreshAccessibilityService extends AccessibilityService {
@@ -21,6 +22,10 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     public static final String REFRESH_VIEW_ID = "com.byd.weatherdata:id/iv_refresh";
 
     private static volatile WeatherRefreshAccessibilityService activeService;
+    private static final Object connectionLock = new Object();
+    private static final CopyOnWriteArraySet<ConnectionListener> connectionListeners =
+            new CopyOnWriteArraySet<>();
+    private static volatile boolean connected;
     private final Handler steeringHandler = new Handler(Looper.getMainLooper());
     private final CameraButtonGesturePolicy steeringGestures = new CameraButtonGesturePolicy(
             ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
@@ -40,7 +45,11 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     static boolean beginCameraButtonLearning(
             Context context, CameraButtonBindings.Action action) {
         WeatherRefreshAccessibilityService service = activeService;
-        if (service == null || action == null || GuardRecovery.isUserShutdownActive(service)
+        if (service == null) {
+            CameraHelperService.requestWeatherAccessibilityRecovery(context, "learning");
+            return false;
+        }
+        if (action == null || GuardRecovery.isUserShutdownActive(service)
                 || LegacySettingsImporter.blocksRuntime(service)) return false;
         service.steeringHandler.removeCallbacks(service.steeringTimeout);
         service.steeringGestures.beginLearning(action);
@@ -72,6 +81,61 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         return service != null && service.steeringGestures.isLearning();
     }
 
+    interface ConnectionListener {
+        void onAccessibilityConnectionChanged(boolean connected);
+    }
+
+    static boolean isConnected() {
+        return connected;
+    }
+
+    static void addConnectionListener(ConnectionListener listener) {
+        if (listener != null) connectionListeners.add(listener);
+    }
+
+    static void removeConnectionListener(ConnectionListener listener) {
+        if (listener != null) connectionListeners.remove(listener);
+    }
+
+    static boolean awaitConnection(long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + Math.max(0, timeoutMs);
+        synchronized (connectionLock) {
+            while (!connected) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) return false;
+                try {
+                    connectionLock.wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private static void publishConnection(boolean value) {
+        synchronized (connectionLock) {
+            if (connected == value) return;
+            connected = value;
+            connectionLock.notifyAll();
+        }
+        CameraHelperService.accessibilityConnectionChanged(value);
+        for (ConnectionListener listener : connectionListeners) {
+            try {
+                listener.onAccessibilityConnectionChanged(value);
+            } catch (RuntimeException ignored) {
+                // An observer must not take down the global key-filter service.
+            }
+        }
+    }
+
+    private void publishDisconnectedIfActive() {
+        if (activeService != this) return;
+        activeService = null;
+        publishConnection(false);
+    }
+
     private void clearSteeringState() {
         steeringHandler.removeCallbacks(steeringTimeout);
         steeringGestures.cancelLearning();
@@ -94,6 +158,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         steeringPreferences = getSharedPreferences("settings", MODE_PRIVATE);
         steeringPreferences.registerOnSharedPreferenceChangeListener(steeringPreferenceListener);
         activeService = this;
+        publishConnection(true);
     }
 
     @Override
@@ -227,6 +292,12 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     }
 
     @Override
+    public boolean onUnbind(android.content.Intent intent) {
+        publishDisconnectedIfActive();
+        return super.onUnbind(intent);
+    }
+
+    @Override
     public void onDestroy() {
         resetSteeringState();
         if (steeringPreferences != null) {
@@ -234,7 +305,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                     steeringPreferenceListener);
             steeringPreferences = null;
         }
-        if (activeService == this) activeService = null;
+        publishDisconnectedIfActive();
         super.onDestroy();
     }
 }

@@ -95,7 +95,7 @@ private fun readBlind(
             frameAspect = output[2].toFloat() / output[3].coerceAtLeast(1),
             displayGeometry = display,
             placement = placement,
-        )
+        ).withBorder(CameraBorderSettings.forBlind(preferences, profile))
     }
     return BlindUiState(
         section = enumPreference(preferences, UiSelectionPreferences.BLIND_SECTION,
@@ -173,7 +173,7 @@ private fun readParking(
                 preset = CameraCalibrationPreset.hasParking(preferences, profile),
                 frameAspect = output[2].toFloat() / output[3].coerceAtLeast(1),
                 displayGeometry = display,
-            ),
+            ).withBorder(CameraBorderSettings.forParking(preferences, profile)),
         )
     }
     return ParkingUiState(
@@ -218,14 +218,21 @@ private fun readReverse(
                 preferences, index, ReverseCameraLayout.centeredSourceCrop(rearPane.sourceCrop))
             put(CameraProfileId.Reverse(element, ReverseSource.Rear), reverseProfile(
                 rearPane, corrected, rearDewarp, CameraCalibrationPreset.hasReverse(preferences, index),
-                targetGeometry))
+                targetGeometry).withBorder(CameraBorderSettings.forReverse(preferences, index, false)))
 
             val frontPane = frontRaw.pane(index)
             put(CameraProfileId.Reverse(element, ReverseSource.Front), reverseProfile(
                 frontPane,
                 ReverseCameraController.loadFrontCorrectedSourceCrop(preferences, index),
                 CameraDewarpConfig.loadForReverseFront(preferences, index),
-                CameraCalibrationPreset.hasReverseFront(preferences, index), targetGeometry))
+                CameraCalibrationPreset.hasReverseFront(preferences, index), targetGeometry)
+                .withBorder(CameraBorderSettings.forReverse(preferences, index, true)))
+        }
+        for ((element, pane) in listOf(ReverseElement.Background to ReverseCameraLayout.BACKGROUND_PANE_ID,
+                ReverseElement.Widget to ReverseCameraLayout.WIDGET_PANE_ID)) {
+            for (source in ReverseSource.entries) put(CameraProfileId.Reverse(element, source),
+                CameraProfileUiState(presetAvailable = CameraCalibrationPreset.hasReverseElement(preferences, pane))
+                    .withBorder(CameraBorderSettings.forReverseElement(preferences, pane)))
         }
     }
     return ReverseUiState(
@@ -309,15 +316,18 @@ private fun readMirror(
         target = target,
         placement = MirrorGeometryUiState(x, y, width, height),
         displayGeometry = display,
-        borderWidth = settings.borderDp.toString(),
-        borderArgb = settings.borderArgb,
-        profile = profile,
+        borderWidth = CameraBorderSettings.forMirror(preferences, settings.activeFront()).borderDp.toString(),
+        borderArgb = CameraBorderSettings.forMirror(preferences, settings.activeFront()).borderArgb,
+        profile = profile.withBorder(CameraBorderSettings.forMirror(preferences, settings.activeFront())),
         presetAvailable = profile.presetAvailable,
         // Availability is an Activity/runtime fact; the controller replaces this default from
         // ProductionUiBackend so a synthetic display geometry cannot imply a real cluster.
         clusterAvailable = false,
     )
 }
+
+private fun CameraProfileUiState.withBorder(border: CameraBorderSettings.Border) =
+    copy(borderWidth = border.borderDp.toString(), borderArgb = border.borderArgb)
 
 private fun normalizedMirrorNumber(value: Float, range: ClosedFloatingPointRange<Float>): String {
     val bounded = value.takeIf { it.isFinite() }?.coerceIn(range) ?: range.start

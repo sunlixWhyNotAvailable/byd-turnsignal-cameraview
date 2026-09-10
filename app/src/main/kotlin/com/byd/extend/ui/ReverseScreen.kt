@@ -79,7 +79,7 @@ internal fun ReverseScreen(
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
             }
         }
-        if (cameraElement) ProfilePresetButtons(profileId, profile.presetAvailable,
+        ProfilePresetButtons(profileId, profile.presetAvailable,
             selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
                 selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
             strings, colors, onAction)
@@ -124,6 +124,7 @@ internal fun ReverseScreen(
                                     ToggleTarget.Reverse(ToggleId.ReverseElementVisible, element), it)) },
                                 colors)
                         }
+                        CameraBorderControls(profileId, profile, strings, colors, onAction)
                     } else {
                         ReverseCompositionControls(state, selected, cameraElement, strings, colors, onAction)
                     }

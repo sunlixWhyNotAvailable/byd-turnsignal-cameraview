@@ -190,6 +190,7 @@ private fun AppHeader(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 HeaderStatusPill(state.header.adb, "ADB", strings, colors)
+                HeaderStatusPill(state.header.permissions, strings.text("Права", "Permissions", "权限"), strings, colors)
                 if (state.header.location.visible || state.header.weatherEnabled) {
                     HeaderStatusPill(state.header.location, strings.text("Геолокація", "Location"), strings, colors)
                 }
@@ -457,7 +458,7 @@ private fun AppDialog(
             } else if ((state.cancellable && state.dismissLabel != null) ||
                 (state.confirmVisible && state.confirmLabel != null)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
-                    if (state.cancellable && state.dismissLabel != null) ActionButton(
+                    if (state.kind != DialogKind.Update && state.cancellable && state.dismissLabel != null) ActionButton(
                         state.dismissLabel, colors, Modifier.width(138.dp),
                     ) { onAction(BydExtendUiAction.Run(dismissCommand)) }
                     if (state.confirmVisible && state.confirmLabel != null) ActionButton(
@@ -468,6 +469,9 @@ private fun AppDialog(
                         destructive = state.kind == DialogKind.Shutdown,
                         enabled = state.confirmEnabled,
                     ) { onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog)) }
+                    if (state.kind == DialogKind.Update && state.cancellable && state.dismissLabel != null) ActionButton(
+                        state.dismissLabel, colors, Modifier.width(138.dp),
+                    ) { onAction(BydExtendUiAction.Run(dismissCommand)) }
                 }
             }
         }

@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 28;
+    static final int VERSION = 29;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -102,9 +102,9 @@ final class CameraShellProtocol {
     }
 
     static final class OverlaySpec {
-        // Only Mirror uses a touchable frame and an inner border. Ordinary overlays stay unchanged.
-        int mirrorBorderDp;
-        int mirrorBorderArgb = 0xff000000;
+        // Touchability remains Mirror-only; every configured camera may use this inner frame.
+        int borderDp;
+        int borderArgb = CameraBorderSettings.DEFAULT_ARGB;
         final int cameraId;
         final int requestId;
         final int target;
@@ -273,8 +273,8 @@ final class CameraShellProtocol {
             parcel.writeInt(bufferQuality);
             parcel.writeInt(mirrorHorizontally ? 1 : 0);
             parcel.writeInt(transparencyPercent);
-            parcel.writeInt(mirrorBorderDp);
-            parcel.writeInt(mirrorBorderArgb);
+            parcel.writeInt(borderDp);
+            parcel.writeInt(borderArgb);
         }
 
         static OverlaySpec readFromParcel(Parcel parcel) {
@@ -303,17 +303,14 @@ final class CameraShellProtocol {
                     cropLeft, cropTop, cropWidth, cropHeight, cropAspectMode,
                     rotationDegrees, rotationMode, cornerRadiusDp, dewarp,
                     rawFallbackCrop, bufferQuality, mirrorHorizontally, transparencyPercent);
-            result.mirrorBorderDp = parcel.readInt();
-            result.mirrorBorderArgb = parcel.readInt();
+            result.borderDp = parcel.readInt();
+            result.borderArgb = parcel.readInt();
             return result;
         }
 
         void validate(int displayWidth, int displayHeight) {
             CameraOverlayProfile profile = CameraOverlayProfile.of(cameraId);
-            if (mirrorBorderDp < 0 || mirrorBorderDp > 16
-                    || (!CameraOverlayProfile.isMirror(cameraId) && mirrorBorderDp != 0)) {
-                throw new IllegalArgumentException("invalid Mirror border width");
-            }
+            validateBorder(borderDp, borderArgb);
             if (requestId <= 0) throw new IllegalArgumentException("invalid request id");
             if (!CameraDisplayTarget.isValid(target)) {
                 throw new IllegalArgumentException("invalid display target");
@@ -375,6 +372,18 @@ final class CameraShellProtocol {
     }
 
     static final class ReverseOverlaySpec {
+        static final int BORDER_BACKGROUND = 0;
+        static final int BORDER_WIDGET = 1;
+        static final int BORDER_REAR = 2;
+        static final int BORDER_LEFT = 3;
+        static final int BORDER_RIGHT = 4;
+        static final int BORDER_FRONT = 5;
+        static final int BORDER_FRONT_LEFT = 6;
+        static final int BORDER_FRONT_RIGHT = 7;
+        static final int BORDER_COUNT = 8;
+
+        final int[] borderDp = new int[BORDER_COUNT];
+        final int[] borderArgb = defaultBorderColors();
         final int requestId;
         final ReverseCameraLayout layout;
         final ReverseCameraLayout rawFallbackLayout;
@@ -594,6 +603,10 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.displayMode);
                 parcel.writeInt(pane.mirrorHorizontally ? 1 : 0);
             }
+            for (int index = 0; index < BORDER_COUNT; index++) {
+                parcel.writeInt(borderDp[index]);
+                parcel.writeInt(borderArgb[index]);
+            }
         }
 
         static ReverseOverlaySpec readFromParcel(Parcel parcel) {
@@ -728,12 +741,17 @@ final class CameraShellProtocol {
                 frontLayout = ReverseCameraLayout.withMirrorHorizontally(
                         frontLayout, cameraIndex, frontMirror);
             }
-            return new ReverseOverlaySpec(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+            ReverseOverlaySpec result = new ReverseOverlaySpec(
+                    requestId, layout, rawFallbackLayout, cornerRadiusDp,
                     rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
                     transparencyPercent, frontLayout, frontRawFallbackLayout,
                     frontLeftDewarp, frontRightDewarp,
                     frontLeftIntegrated, frontRightIntegrated,
                     centralFrontDewarp, centralFrontIntegrated, widgetVisible, switchByGear);
+            for (int index = 0; index < BORDER_COUNT; index++) {
+                result.setBorder(index, parcel.readInt(), parcel.readInt());
+            }
+            return result;
         }
 
         void validate(int displayWidth, int displayHeight) {
@@ -751,6 +769,9 @@ final class CameraShellProtocol {
                 throw new IllegalArgumentException("invalid camera buffer quality");
             }
             requireTransparencyPercent(transparencyPercent);
+            for (int index = 0; index < BORDER_COUNT; index++) {
+                validateBorder(borderDp[index], borderArgb[index]);
+            }
             ReverseCameraLayout.requireVisibilityMask(visibilityMask);
             if (rearDewarp.lens != CameraDewarpConfig.LENS_REAR
                     || leftDewarp.lens != CameraDewarpConfig.LENS_LEFT
@@ -792,6 +813,34 @@ final class CameraShellProtocol {
 
         boolean requiresCentralFrontSource() {
             return centralFrontIntegrated && (widgetVisible || switchByGear);
+        }
+
+        void setBorder(int index, int widthDp, int colorArgb) {
+            if (index < 0 || index >= BORDER_COUNT) {
+                throw new IllegalArgumentException("invalid reverse border index");
+            }
+            validateBorder(widthDp, colorArgb);
+            borderDp[index] = widthDp;
+            borderArgb[index] = colorArgb;
+        }
+
+        static int borderIndex(int cameraIndex, boolean front) {
+            if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+                return front ? BORDER_FRONT : BORDER_REAR;
+            }
+            if (cameraIndex == ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) {
+                return front ? BORDER_FRONT_LEFT : BORDER_LEFT;
+            }
+            if (cameraIndex == ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
+                return front ? BORDER_FRONT_RIGHT : BORDER_RIGHT;
+            }
+            throw new IllegalArgumentException("invalid reverse camera index");
+        }
+
+        private static int[] defaultBorderColors() {
+            int[] colors = new int[BORDER_COUNT];
+            java.util.Arrays.fill(colors, CameraBorderSettings.DEFAULT_ARGB);
+            return colors;
         }
 
         private static void validateFrontLayout(ReverseCameraLayout value) {
@@ -854,6 +903,12 @@ final class CameraShellProtocol {
                     || rect[3] < ReverseCameraLayout.MIN_WIDGET_HEIGHT - 0.0001f) {
                 throw new IllegalArgumentException("reverse widget geometry outside canvas");
             }
+        }
+    }
+
+    static void validateBorder(int borderDp, int borderArgb) {
+        if (!CameraBorderSettings.valid(borderDp, borderArgb)) {
+            throw new IllegalArgumentException("invalid camera border");
         }
     }
 

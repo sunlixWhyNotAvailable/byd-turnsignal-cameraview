@@ -18,6 +18,7 @@ final class ReverseCameraEditorView extends View {
     private static final int BACKGROUND_COLOR = 0xFFAB47BC;
     private static final int WIDGET_COLOR = 0xFF26C6DA;
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint frame = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private ReverseCameraLayout layout = ReverseCameraLayout.defaults();
     private Listener listener;
@@ -26,6 +27,9 @@ final class ReverseCameraEditorView extends View {
     /** Runtime visibility supplied by the real Reverse host; hidden selected panes stay outlined. */
     private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
     private boolean widgetVisible = true;
+    private int[] borderDp = new int[CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT];
+    private int[] borderArgb = defaultBorderColors();
+    private boolean frontBorders;
     private float downX;
     private float downY;
     private ReverseCameraLayout.Rect startRect;
@@ -36,6 +40,7 @@ final class ReverseCameraEditorView extends View {
         // The real camera host owns pixels; this editor contributes outlines/handles only.
         setBackgroundColor(Color.TRANSPARENT);
         stroke.setStyle(Paint.Style.STROKE);
+        frame.setStyle(Paint.Style.STROKE);
         stroke.setStrokeWidth(dp(3));
         text.setColor(Color.WHITE);
         text.setTextSize(dp(16));
@@ -68,6 +73,21 @@ final class ReverseCameraEditorView extends View {
 
     void setWidgetVisible(boolean value) {
         widgetVisible = value;
+        invalidate();
+    }
+
+    void setBorders(int[] widthsDp, int[] colorsArgb, boolean front) {
+        int count = CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT;
+        if (widthsDp == null || colorsArgb == null
+                || widthsDp.length != count || colorsArgb.length != count) {
+            throw new IllegalArgumentException("reverse borders required");
+        }
+        for (int index = 0; index < count; index++) {
+            CameraShellProtocol.validateBorder(widthsDp[index], colorsArgb[index]);
+        }
+        borderDp = widthsDp.clone();
+        borderArgb = colorsArgb.clone();
+        frontBorders = front;
         invalidate();
     }
 
@@ -174,6 +194,9 @@ final class ReverseCameraEditorView extends View {
         ReverseCameraLayout.Rect value = pane.destination;
         RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
                 value.right() * getWidth(), value.bottom() * getHeight());
+        drawConfiguredFrame(canvas, rect,
+                CameraShellProtocol.ReverseOverlaySpec.borderIndex(
+                        pane.cameraIndex, frontBorders));
         int color = COLORS[index];
         stroke.setColor(color);
         stroke.setStrokeWidth(dp(pane.cameraIndex == selectedCamera ? 5 : 3));
@@ -206,6 +229,8 @@ final class ReverseCameraEditorView extends View {
         ReverseCameraLayout.Rect value = layout.background;
         RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
                 value.right() * getWidth(), value.bottom() * getHeight());
+        drawConfiguredFrame(canvas, rect,
+                CameraShellProtocol.ReverseOverlaySpec.BORDER_BACKGROUND);
         stroke.setColor(BACKGROUND_COLOR);
         stroke.setStrokeWidth(dp(selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID
                 ? 5 : 3));
@@ -235,6 +260,8 @@ final class ReverseCameraEditorView extends View {
             int color, String label) {
         RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
                 value.right() * getWidth(), value.bottom() * getHeight());
+        drawConfiguredFrame(canvas, rect,
+                CameraShellProtocol.ReverseOverlaySpec.BORDER_WIDGET);
         stroke.setColor(color);
         stroke.setStrokeWidth(dp(selectedCamera == paneId ? 5 : 3));
         canvas.drawRect(rect, stroke);
@@ -250,6 +277,23 @@ final class ReverseCameraEditorView extends View {
             canvas.drawCircle(rect.left, rect.bottom, radius, stroke);
             canvas.drawCircle(rect.right, rect.bottom, radius, stroke);
         }
+    }
+
+    private void drawConfiguredFrame(Canvas canvas, RectF bounds, int index) {
+        int widthDp = borderDp[index];
+        if (widthDp <= 0) return;
+        float width = dp(widthDp);
+        frame.setStrokeWidth(width);
+        frame.setColor(borderArgb[index]);
+        float inset = width / 2.0f;
+        canvas.drawRect(bounds.left + inset, bounds.top + inset,
+                bounds.right - inset, bounds.bottom - inset, frame);
+    }
+
+    private static int[] defaultBorderColors() {
+        int[] result = new int[CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT];
+        java.util.Arrays.fill(result, CameraBorderSettings.DEFAULT_ARGB);
+        return result;
     }
 
     private static int cornerAt(

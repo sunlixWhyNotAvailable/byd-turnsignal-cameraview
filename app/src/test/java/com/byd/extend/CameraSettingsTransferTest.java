@@ -491,7 +491,7 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
-    public void v3ExportsBothDisplayPlacementsForMirrorAndEveryBlindProfile() {
+    public void v4ExportsBothDisplayPlacementsForMirrorAndEveryBlindProfile() {
         TestSharedPreferences source = new TestSharedPreferences();
         for (CameraProfile profile : CameraProfile.values()) {
             seedBlindPlacement(source, profile, CameraDisplayTarget.TABLET,
@@ -506,7 +506,7 @@ public final class CameraSettingsTransferTest {
 
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
-        assertEquals(3, parsed.get("version"));
+        assertEquals(4, parsed.get("version"));
         @SuppressWarnings("unchecked") Map<String, Object> values =
                 (Map<String, Object>) parsed.get("settings");
         for (CameraProfile profile : CameraProfile.values()) {
@@ -682,7 +682,7 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
-    public void invalidV3PlacementIsRejectedBeforeEditorMutation() throws Exception {
+    public void invalidV4PlacementIsRejectedBeforeEditorMutation() throws Exception {
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(
                         new TestSharedPreferences(), GEOMETRY));
@@ -702,6 +702,90 @@ public final class CameraSettingsTransferTest {
         assertEquals(0, target.transactions);
     }
 
+    @Test
+    public void v4RoundTripsIndependentBordersAndRejectsInvalidPairsBeforeWrite() {
+        TestSharedPreferences source = new TestSharedPreferences();
+        CameraBorderSettings.writeBlind(source, CameraProfile.FRONT_LEFT,
+                new CameraBorderSettings.Border(3, 0xFF112233));
+        CameraBorderSettings.writeParking(source, ParkingCameraProfile.RIGHT,
+                new CameraBorderSettings.Border(4, 0xFF223344));
+        CameraBorderSettings.writeReverse(source, 2, false,
+                new CameraBorderSettings.Border(5, 0xFF334455));
+        CameraBorderSettings.writeReverse(source, 2, true,
+                new CameraBorderSettings.Border(6, 0xFF445566));
+        CameraBorderSettings.writeReverseElement(source,
+                ReverseCameraLayout.BACKGROUND_PANE_ID,
+                new CameraBorderSettings.Border(7, 0xFF556677));
+        CameraBorderSettings.writeReverseElement(source,
+                ReverseCameraLayout.WIDGET_PANE_ID,
+                new CameraBorderSettings.Border(8, 0xFF667788));
+        CameraBorderSettings.writeMirror(source, false,
+                new CameraBorderSettings.Border(9, 0xFF778899));
+        CameraBorderSettings.writeMirror(source, true,
+                new CameraBorderSettings.Border(10, 0xFF8899AA));
+
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
+        assertEquals(4, parsed.get("version"));
+        TestSharedPreferences target = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(target, parsed, GEOMETRY);
+        assertEquals(3, CameraBorderSettings.forBlind(target, CameraProfile.FRONT_LEFT).borderDp);
+        assertEquals(4, CameraBorderSettings.forParking(target, ParkingCameraProfile.RIGHT).borderDp);
+        assertEquals(5, CameraBorderSettings.forReverse(target, 2, false).borderDp);
+        assertEquals(6, CameraBorderSettings.forReverse(target, 2, true).borderDp);
+        assertEquals(7, CameraBorderSettings.forReverseElement(target,
+                ReverseCameraLayout.BACKGROUND_PANE_ID).borderDp);
+        assertEquals(8, CameraBorderSettings.forReverseElement(target,
+                ReverseCameraLayout.WIDGET_PANE_ID).borderDp);
+        assertEquals(9, CameraBorderSettings.forMirror(target, false).borderDp);
+        assertEquals(10, CameraBorderSettings.forMirror(target, true).borderDp);
+
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        String colorKey = CameraBorderSettings.colorKey(
+                CameraBorderSettings.blindPrefix(CameraProfile.of(CameraProfile.REAR_LEFT)));
+        values.remove(colorKey);
+        TestSharedPreferences unchanged = new TestSharedPreferences();
+        unchanged.putString("unrelated", "keep");
+        Map<String, ?> before = unchanged.getAll();
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraSettingsTransfer.applyCameraPreset(unchanged, parsed, GEOMETRY));
+        assertEquals(before, unchanged.getAll());
+        assertEquals(0, unchanged.transactions);
+    }
+
+    @Test
+    public void v3GeometryIsNotRemigratedAndSharedMirrorBorderAppliesToBothSources() {
+        Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(
+                        new TestSharedPreferences(), GEOMETRY));
+        parsed.put("version", 3);
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) parsed.get("settings");
+        values.keySet().removeIf(key -> key.endsWith("_border_width")
+                || key.endsWith("_border_color"));
+        values.put(RearviewMirrorSettings.PREF_BORDER_DP, 11);
+        values.put(RearviewMirrorSettings.PREF_BORDER_ARGB, 0xFFABCDEF);
+        CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
+        seedBlindPlacementValue(values, profile, CameraDisplayTarget.TABLET,
+                CameraPlacement.of(0.10f, 0.11f, 0.20f, 0.21f));
+        seedBlindPlacementValue(values, profile, CameraDisplayTarget.CLUSTER,
+                CameraPlacement.of(0.50f, 0.51f, 0.22f, 0.23f));
+        values.put(BlindSpotOverlayController.positionKey(profile, false), 0.70f);
+        values.put(BlindSpotOverlayController.positionKey(profile, true), 0.70f);
+
+        TestSharedPreferences target = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(target, parsed, GEOMETRY);
+        assertPlacement(CameraPlacement.of(0.10f, 0.11f, 0.20f, 0.21f),
+                BlindSpotOverlayController.readPlacement(target, profile,
+                        CameraDisplayTarget.TABLET, 1280, 800, 12, 30, 70));
+        assertPlacement(CameraPlacement.of(0.50f, 0.51f, 0.22f, 0.23f),
+                BlindSpotOverlayController.readPlacement(target, profile,
+                        CameraDisplayTarget.CLUSTER, 1920, 720, 0, 0, 0));
+        assertEquals(11, CameraBorderSettings.forMirror(target, false).borderDp);
+        assertEquals(11, CameraBorderSettings.forMirror(target, true).borderDp);
+    }
+
     private static void seedBlindPlacement(
             TestSharedPreferences preferences, CameraProfile profile,
             int target, CameraPlacement placement) {
@@ -712,6 +796,19 @@ public final class CameraSettingsTransferTest {
         preferences.putFloat(BlindSpotOverlayController.placementKey(
                 profile, target, BlindSpotOverlayController.PLACEMENT_WIDTH), placement.width);
         preferences.putFloat(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_HEIGHT), placement.height);
+    }
+
+    private static void seedBlindPlacementValue(
+            Map<String, Object> values, CameraProfile profile,
+            int target, CameraPlacement placement) {
+        values.put(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_X), placement.x);
+        values.put(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_Y), placement.y);
+        values.put(BlindSpotOverlayController.placementKey(
+                profile, target, BlindSpotOverlayController.PLACEMENT_WIDTH), placement.width);
+        values.put(BlindSpotOverlayController.placementKey(
                 profile, target, BlindSpotOverlayController.PLACEMENT_HEIGHT), placement.height);
     }
 

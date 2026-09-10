@@ -75,7 +75,6 @@ internal fun MirrorScreen(
         onPreview(target.forMirrorSource(state.activeFront), value, session)
     }
     val sourceIndex = if (state.activeFront) 4 else 1
-    var pickingBorderColor by rememberSaveable { mutableStateOf(false) }
     ScreenSurface(colors, scroll = false, compact = true) {
         CameraWorkspace(
             pageTab = RootTab.Mirror.pageIndex(),
@@ -96,8 +95,7 @@ internal fun MirrorScreen(
                 CameraProfileControls(profile, state.profile, state.section, true, strings, colors, sourceAction,
                     onPreview = sourcePreview,
                     parameters = {
-                        MirrorParameters(state, strings, colors, onAction,
-                            onPickBorderColor = { pickingBorderColor = true })
+                        MirrorParameters(state, strings, colors, onAction)
                     })
                 }
             },
@@ -116,16 +114,6 @@ internal fun MirrorScreen(
             },
         )
     }
-    if (pickingBorderColor) MirrorBorderColorPicker(
-        colors = colors,
-        strings = strings,
-        initial = state.borderArgb,
-        onDismiss = { pickingBorderColor = false },
-        onSelect = { color ->
-            onAction(BydExtendUiAction.SetMirrorBorderColor(color))
-            pickingBorderColor = false
-        },
-    )
 }
 
 @Composable
@@ -166,19 +154,11 @@ private fun ColumnScope.MirrorParameters(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-    onPickBorderColor: () -> Unit,
 ) {
     MirrorBindingRow(strings.text("Перемикання переднього / заднього виду", "Switch front / rear view", "切换前后视角"),
         CameraButtonBindings.Action.MirrorSource, state.sourceBinding, state.frontIntegrated, strings, colors, onAction)
     MirrorBindingRow(strings.text("Показати / приховати віджет", "Show / hide widget", "显示或隐藏悬浮窗"),
         CameraButtonBindings.Action.MirrorVisibility, state.visibilityBinding, true, strings, colors, onAction)
-    NumericSetting(strings.text("Товщина рамки", "Border width", "边框宽度"), state.borderWidth, "dp", colors,
-        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Mirror(MirrorNumber.BorderWidth), it)) },
-        0f..16f, adjustable = true, slider = true,
-        identity = NumberTarget.Mirror(MirrorNumber.BorderWidth))
-    Text(strings.text("0 — без рамки", "0 removes the border", "0 表示无边框"),
-        color = colors.muted, fontSize = 12.sp)
-    MirrorBorderColorLine(colors, strings, state.borderArgb, onPickBorderColor)
     Text(strings.text(
         "Постійний віджет камери поза BYD Extend. Поки застосунок відкритий, віджет приховано.",
         "A persistent camera widget outside BYD Extend. It is hidden while the application is open.",
@@ -242,6 +222,27 @@ private fun MirrorBindingRow(
                 mainBackground = true, height = 40.dp) { onAction(BydExtendUiAction.ResetCameraButton(action)) }
         }
     }
+}
+
+/** One frame control used by every camera profile; the renderer keeps the frame outside image transforms. */
+@Composable
+internal fun CameraBorderControls(
+    profile: CameraProfileId, state: CameraProfileUiState, strings: UiStrings,
+    colors: UiPalette, onAction: (BydExtendUiAction) -> Unit,
+) {
+    var pickingColor by rememberSaveable(profile) { mutableStateOf(false) }
+    NumericSetting(strings.text("Товщина рамки", "Border width", "边框宽度"), state.borderWidth, "dp", colors,
+        { onAction(BydExtendUiAction.SetProfileBorder(profile, width = it)) },
+        0f..16f, adjustable = true, slider = true, identity = profile to "border")
+    Text(strings.text("0 — без рамки", "0 removes the border", "0 表示无边框"),
+        color = colors.muted, fontSize = 12.sp)
+    MirrorBorderColorLine(colors, strings, state.borderArgb) { pickingColor = true }
+    if (pickingColor) MirrorBorderColorPicker(colors, strings, state.borderArgb,
+        onDismiss = { pickingColor = false },
+        onSelect = { color ->
+            onAction(BydExtendUiAction.SetProfileBorder(profile, argb = color))
+            pickingColor = false
+        })
 }
 
 @Composable

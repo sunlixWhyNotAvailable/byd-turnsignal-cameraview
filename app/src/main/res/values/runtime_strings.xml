@@ -65,7 +65,7 @@
     <string name="runtime_update_download">Download: %1$d%%</string>
     <string name="runtime_update_failed">Could not update the app</string>
     <string name="runtime_update_check_error">Update check failed</string>
-    <string name="runtime_update_later">Later</string>
+    <string name="runtime_update_later">Close</string>
     <string name="runtime_installed_version">Installed version: %1$s</string>
     <string name="runtime_available_version">Available version: %1$s</string>
     <string name="runtime_car_compat_title">Vehicle compatibility package</string>

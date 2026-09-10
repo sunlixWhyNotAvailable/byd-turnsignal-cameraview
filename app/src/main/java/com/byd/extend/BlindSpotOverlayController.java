@@ -1439,13 +1439,17 @@ final class BlindSpotOverlayController {
         CameraPlacement placement = readPlacement(settings, profile, target,
                 displayWidth, displayHeight, marginX, topMargin, bottomMargin);
         int[] geometry = placement.toPixelRect(displayWidth, displayHeight);
-        return new CameraShellProtocol.OverlaySpec(
+        CameraShellProtocol.OverlaySpec result = new CameraShellProtocol.OverlaySpec(
                 profile.id, requestId, target,
                 geometry[2], geometry[3], geometry[0], geometry[1],
                 crop.left, crop.top, crop.width, crop.height, crop.aspectMode,
                 crop.rotationDegrees, crop.rotationMode, readCornerRadius(settings),
                 dewarp, rawCrop, CameraBufferQuality.load(settings),
                 crop.mirrorHorizontally, readTransparencyPercent(settings));
+        CameraBorderSettings.Border border = CameraBorderSettings.forBlind(settings, profile);
+        result.borderDp = border.borderDp;
+        result.borderArgb = border.borderArgb;
+        return result;
     }
 
     static int[] overlayGeometry(

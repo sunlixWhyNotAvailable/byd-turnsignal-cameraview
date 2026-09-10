@@ -69,12 +69,12 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "surface_generation", surfaceGeneration);
     }
 
-    private void applyMirrorBorder(FrameLayout frame, CameraShellProtocol.OverlaySpec spec) {
+    private void applyBorder(FrameLayout frame, CameraShellProtocol.OverlaySpec spec) {
         GradientDrawable border = new GradientDrawable();
         border.setColor(Color.TRANSPARENT);
         border.setCornerRadius(dp(spec.cornerRadiusDp));
-        if (spec.mirrorBorderDp > 0) {
-            border.setStroke(dp(spec.mirrorBorderDp), spec.mirrorBorderArgb | 0xff000000);
+        if (spec.borderDp > 0) {
+            border.setStroke(dp(spec.borderDp), spec.borderArgb);
         }
         frame.setForeground(border);
     }
@@ -470,10 +470,10 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 Gravity.TOP | Gravity.START));
 
+        applyBorder(nextRoot, spec);
         if (CameraOverlayProfile.isMirror(cameraId)) {
             nextRoot.setClickable(true);
             nextRoot.setOnTouchListener((view, event) -> onMirrorTouch(event));
-            applyMirrorBorder(nextRoot, spec);
         }
 
         root = nextRoot;
@@ -529,7 +529,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         preview.applyDirectCameraCrop(spec.crop());
         GradientDrawable background = (GradientDrawable) root.getBackground();
         background.setCornerRadius(dp(spec.cornerRadiusDp));
-        if (CameraOverlayProfile.isMirror(cameraId)) applyMirrorBorder(root, spec);
+        applyBorder(root, spec);
         try {
             windowless.setPosition(spec.x, spec.y);
             if (CameraOverlayProfile.isMirror(cameraId)) windowless.setStrictVisible(false, 1.0f);
