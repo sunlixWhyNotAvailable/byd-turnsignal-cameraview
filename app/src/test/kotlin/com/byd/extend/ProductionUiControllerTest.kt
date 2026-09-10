@@ -32,6 +32,13 @@ import com.byd.extend.ui.ProfileNumber
 import com.byd.extend.ui.SettingsOperation
 import com.byd.extend.ui.MirrorBackendAction
 import com.byd.extend.ui.MirrorBackendActionKind
+import com.byd.extend.ui.AvasActionKind
+import com.byd.extend.ui.AvasAssetUiState
+import com.byd.extend.ui.AvasBackendAction
+import com.byd.extend.ui.AvasProfileIds
+import com.byd.extend.ui.AvasProfileUiState
+import com.byd.extend.ui.AvasUiState
+import com.byd.extend.ui.SignalsCategory
 import com.byd.extend.ui.steeringButtonLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -554,6 +561,40 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun avasActionsUseTypedSeamAndRefreshOnlyAvasState() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        controller.setGuardStatus(StatusUiState("live", StatusTone.Ok, true))
+        val asset = AvasAssetUiState("uuid-1", "lock.mp3", ready = true)
+        backend.avasState = AvasUiState(listOf(AvasProfileUiState(
+            id = AvasProfileIds.LOCK, selectedFilename = asset.filename,
+            assets = listOf(asset), selectedAssetId = asset.id)))
+        val action = AvasBackendAction(AvasProfileIds.LOCK, AvasActionKind.SelectAsset,
+            stringValue = asset.id)
+
+        controller.dispatch(BydExtendUiAction.Avas(action))
+
+        assertEquals(listOf(action), backend.avasActions)
+        assertEquals(asset.id, controller.state.avas.profiles.single().selectedAssetId)
+        assertEquals("live", controller.state.signals.guard.operation.status.text)
+    }
+
+    @Test
+    fun signalsCategorySelectionPersistsAndSurvivesReload() {
+        val preferences = TestSharedPreferences()
+        val controller = ProductionUiController(preferences, FakeBackend(preferences))
+
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.SignalsCategory), SignalsCategory.Avas.ordinal))
+        controller.reload()
+
+        assertEquals(SignalsCategory.Avas.ordinal,
+            preferences.getInt(UiSelectionPreferences.SIGNALS_CATEGORY, -1))
+        assertEquals(SignalsCategory.Avas, controller.state.signals.category)
+    }
+
+    @Test
     fun manualDiagnosticsSetterPublishesAllowedAndStatus() {
         val preferences = TestSharedPreferences()
         val controller = ProductionUiController(preferences, FakeBackend(preferences))
@@ -939,6 +980,14 @@ class ProductionUiControllerTest {
         val focusChanges = mutableListOf<Pair<ReverseElement, ReverseElement>>()
         val visibilityChanges = mutableListOf<Pair<ReverseElement, Boolean>>()
         val mirrorActions = mutableListOf<MirrorBackendAction>()
+        var avasState = AvasUiState()
+        val avasActions = mutableListOf<AvasBackendAction>()
+
+        override fun productionAvasState() = avasState
+
+        override fun onProductionAvasAction(action: AvasBackendAction) {
+            avasActions += action
+        }
 
         override fun onProductionMirrorAction(action: MirrorBackendAction) {
             mirrorActions += action

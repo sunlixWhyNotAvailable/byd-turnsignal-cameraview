@@ -62,6 +62,12 @@ import androidx.core.content.FileProvider;
 import androidx.activity.ComponentActivity;
 
 import com.byd.extend.ui.AvmOrientation;
+import com.byd.extend.ui.AvasActionKind;
+import com.byd.extend.ui.AvasAssetUiState;
+import com.byd.extend.ui.AvasBackendAction;
+import com.byd.extend.ui.AvasPlaybackUiState;
+import com.byd.extend.ui.AvasProfileUiState;
+import com.byd.extend.ui.AvasUiState;
 import com.byd.extend.ui.BydExtendUiAction;
 import com.byd.extend.ui.CameraGroup;
 import com.byd.extend.ui.CameraSection;
@@ -111,9 +117,14 @@ import java.io.File;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.lang.ref.WeakReference;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -125,6 +136,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
     private static final int CAMERA_PRESET_REQUEST = 12;
+    private static final int AVAS_AUDIO_REQUEST = 13;
     private static final float DEFAULT_OUTWARD_DEG = 90.0f;
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
@@ -148,6 +160,12 @@ public final class CameraProbeActivity extends ComponentActivity
             "weather_enable_requested";
     private static final String STATE_WEATHER_REFRESH_AFTER_PERMISSION =
             "weather_refresh_after_permission";
+    private static final String STATE_AVAS_IMPORT_PROFILE = "avas_import_profile";
+    private static final String PREF_AVAS_IMPORT_PROFILE = "ui_avas_import_profile";
+    private static final String PREF_AVAS_IMPORT_PHASE = "ui_avas_import_phase";
+    private static final String AVAS_IMPORT_PHASE_PICKER = "picker";
+    private static final String AVAS_IMPORT_PHASE_DECODING = "decoding";
+    private static volatile String avasImportInFlightProfile;
     private static final String BYD_START_SETTINGS_PACKAGE = "com.byd.appstartmanagement";
     private static final String BYD_START_SETTINGS_CLASS =
             "com.byd.appstartmanagement.frame.AppStartManagement";
@@ -437,6 +455,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService logExportExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService avasImportExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AppUpdateManager updateManager = new AppUpdateManager();
     private final CameraTransition cameraTransition = new CameraTransition();
@@ -460,6 +479,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private SharedPreferences preferences;
     private ProductionUiController productionUi;
+    private AvasAudioLibrary avasLibrary;
+    private final Map<String, AvasPlaybackUiState> avasPlayback = new HashMap<>();
     private long reverseOwnerToken;
     private boolean reverseOwnerPresent;
     private final EnumMap<CameraHostKind, View> productionCameraHosts =
@@ -940,6 +961,7 @@ public final class CameraProbeActivity extends ComponentActivity
             telemetryReady = false;
             manualGearPark = false;
             manualTurnRequestPending = false;
+            resetAvasPlayback();
             cameraDiscovered = false;
             requestedOpen = false;
             if (!shutdownRequested && isAutoPreviewTab(selectedTab)) {
@@ -967,6 +989,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 productionUi.setDiagnosticStatus(false, unavailable, false);
                 productionUi.setReversePanoramaStatus(
                         new StatusUiState("", StatusTone.Neutral, false), false);
+                productionUi.refreshAvasState();
             }
             stopCalibrationCopies(true);
             clearPreview("helper_service_disconnected");
@@ -995,6 +1018,16 @@ public final class CameraProbeActivity extends ComponentActivity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        avasLibrary = new AvasAudioLibrary(this, preferences);
+        resetAvasPlayback();
+        // Picker state survives recreation. A decoder is process-local, so a persisted decoding
+        // marker without the process-local counterpart is an orphan left by process death.
+        String persistedImportProfile = preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
+        String persistedImportPhase = preferences.getString(PREF_AVAS_IMPORT_PHASE, null);
+        if (shouldClearAvasImportMarker(savedInstanceState != null, persistedImportPhase,
+                persistedImportProfile, avasImportInFlightProfile)) {
+            clearAvasImportMarker();
+        }
         legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
         migrateCameraFrameAspects();
         installationReminder = new InstallationReminder(this);
@@ -1042,6 +1075,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 weatherEnableRequestedForPermission);
         outState.putBoolean(STATE_WEATHER_REFRESH_AFTER_PERMISSION,
                 weatherRefreshAfterPermission);
+        outState.putString(STATE_AVAS_IMPORT_PROFILE,
+                preferences.getString(PREF_AVAS_IMPORT_PROFILE, null));
         super.onSaveInstanceState(outState);
     }
 
@@ -1252,6 +1287,7 @@ public final class CameraProbeActivity extends ComponentActivity
         ipcExecutor.shutdown();
         updateExecutor.shutdownNow();
         logExportExecutor.shutdownNow();
+        avasImportExecutor.shutdown();
         if (activityLog != null) activityLog.close();
         if (legacyImportOfferDialog != null) legacyImportOfferDialog.dismiss();
         legacyImportOfferDialog = null;
@@ -1426,6 +1462,10 @@ public final class CameraProbeActivity extends ComponentActivity
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == AVAS_AUDIO_REQUEST) {
+            acceptAvasAudioResult(resultCode, data);
+            return;
+        }
         if (requestCode != CAMERA_PRESET_REQUEST) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             finishSettingsTransfer();
@@ -2033,6 +2073,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     StatusTone.Warning, true), true);
         }
         record("helper_service_connected");
+        CameraHelperService.reportAvasStatus(this);
         updateControls();
         maybeOpenProductionPreview();
         enqueueHelperCallbackRegistration(registrationTarget);
@@ -2611,6 +2652,235 @@ public final class CameraProbeActivity extends ComponentActivity
     public boolean runtimeBlockedByLegacy() {
         legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
         return legacyRuntimeBlocked;
+    }
+
+    @Override
+    public AvasUiState productionAvasState() {
+        AvasConfig config;
+        try {
+            config = avasLibrary == null ? AvasConfig.empty() : avasLibrary.loadConfig();
+        } catch (IllegalArgumentException invalid) {
+            record("avas_config_invalid", "error", invalid.toString());
+            config = AvasConfig.empty();
+        }
+        List<AvasProfileUiState> profiles = new ArrayList<>();
+        for (AvasConfig.Profile profile : config.profiles) {
+            List<AvasAssetUiState> assets = new ArrayList<>();
+            String selectedName = null;
+            for (AvasConfig.Asset asset : profile.assets) {
+                assets.add(new AvasAssetUiState(asset.id, asset.name,
+                        avasLibrary != null && avasLibrary.preparedFile(asset.id).isFile()));
+                if (asset.id.equals(profile.selectedAssetId)) selectedName = asset.name;
+            }
+            profiles.add(new AvasProfileUiState(profile.id, profile.enabled, profile.random,
+                    selectedName, assets, profile.volume, avasPlayback(profile.id),
+                    profile.selectedAssetId.isEmpty() ? null : profile.selectedAssetId));
+        }
+        String importing = preferences == null ? null
+                : preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
+        if (!AvasConfig.PROFILE_IDS.contains(importing)) importing = null;
+        return new AvasUiState(profiles, importing);
+    }
+
+    @Override
+    public void onProductionAvasAction(AvasBackendAction action) {
+        if (action == null || shutdownRequested || avasLibrary == null
+                || !AvasConfig.PROFILE_IDS.contains(action.getProfileId())) return;
+        String profileId = action.getProfileId();
+        try {
+            AvasConfig config = avasLibrary.loadConfig();
+            AvasConfig.Profile profile = config.profile(profileId);
+            AvasActionKind kind = action.getKind();
+            if (kind == AvasActionKind.ImportFiles) {
+                chooseAvasAudio(profileId);
+                return;
+            }
+            if (kind == AvasActionKind.StartManual) {
+                AvasPlaybackUiState playback = avasPlayback(profileId);
+                if (!profile.selectedAssetId.isEmpty()
+                        && playback != AvasPlaybackUiState.ManualQueued
+                        && playback != AvasPlaybackUiState.ManualPlaying
+                        && avasLibrary.preparedFile(profile.selectedAssetId).isFile()) {
+                    avasPlayback.put(profileId, AvasPlaybackUiState.ManualQueued);
+                    CameraHelperService.startAvasManual(this, profileId);
+                }
+                return;
+            }
+            if (kind == AvasActionKind.StopManual) {
+                AvasPlaybackUiState playback = avasPlayback(profileId);
+                if (playback == AvasPlaybackUiState.ManualQueued
+                        || playback == AvasPlaybackUiState.ManualPlaying) {
+                    CameraHelperService.stopAvasManual(this, profileId);
+                }
+                return;
+            }
+            boolean enabled = profile.enabled;
+            boolean random = profile.random;
+            int volume = profile.volume;
+            String selected = profile.selectedAssetId;
+            if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
+                enabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetRandom && action.getBooleanValue() != null) {
+                random = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetVolume && action.getIntValue() != null) {
+                volume = Math.max(0, Math.min(100, action.getIntValue()));
+            } else if (kind == AvasActionKind.SelectAsset && action.getStringValue() != null) {
+                selected = action.getStringValue();
+            } else {
+                return;
+            }
+            avasLibrary.saveConfig(config.withProfile(
+                    profile.withSettings(enabled, random, volume, selected)));
+            CameraHelperService.configureAvas(this);
+        } catch (RuntimeException invalid) {
+            if (action.getKind() == AvasActionKind.StartManual) {
+                avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
+                if (productionUi != null) productionUi.refreshAvasState();
+            }
+            record("avas_ui_action_failed", "profile_id", profileId,
+                    "action", action.getKind().name(), "error", invalid.toString());
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_action_failed),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private AvasPlaybackUiState avasPlayback(String profileId) {
+        AvasPlaybackUiState value = avasPlayback.get(profileId);
+        return value == null ? AvasPlaybackUiState.Idle : value;
+    }
+
+    private void resetAvasPlayback() {
+        avasPlayback.clear();
+        for (String profileId : AvasConfig.PROFILE_IDS) {
+            avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void chooseAvasAudio(String profileId) {
+        if (!AvasConfig.PROFILE_IDS.contains(profileId)
+                || preferences.contains(PREF_AVAS_IMPORT_PROFILE)) return;
+        if (!preferences.edit()
+                .putString(PREF_AVAS_IMPORT_PROFILE, profileId)
+                .putString(PREF_AVAS_IMPORT_PHASE, AVAS_IMPORT_PHASE_PICKER)
+                .commit()) {
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_import_failed),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")
+                    .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                            "audio/*", "application/ogg", "application/octet-stream"})
+                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            startActivityForResult(open, AVAS_AUDIO_REQUEST);
+        } catch (RuntimeException unavailable) {
+            clearAvasImportMarker();
+            if (productionUi != null) productionUi.refreshAvasState();
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_picker_unavailable),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void acceptAvasAudioResult(int resultCode, Intent data) {
+        String profileId = preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
+        if (!AvasConfig.PROFILE_IDS.contains(profileId)) return;
+        if (resultCode != RESULT_OK || data == null) {
+            clearAvasImportMarker();
+            if (productionUi != null) productionUi.refreshAvasState();
+            return;
+        }
+        Set<Uri> selected = new LinkedHashSet<>();
+        ClipData clips = data.getClipData();
+        if (clips != null) {
+            for (int index = 0; index < clips.getItemCount(); index++) {
+                Uri uri = clips.getItemAt(index).getUri();
+                if (uri != null) selected.add(uri);
+            }
+        }
+        if (data.getData() != null) selected.add(data.getData());
+        if (selected.isEmpty()) {
+            clearAvasImportMarker();
+            if (productionUi != null) productionUi.refreshAvasState();
+            return;
+        }
+        List<Uri> uris = new ArrayList<>(selected);
+        avasImportInFlightProfile = profileId;
+        if (!preferences.edit()
+                .putString(PREF_AVAS_IMPORT_PHASE, AVAS_IMPORT_PHASE_DECODING)
+                .commit()) {
+            avasImportInFlightProfile = null;
+            clearAvasImportMarker();
+            if (productionUi != null) productionUi.refreshAvasState();
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_import_failed),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        avasImportExecutor.execute(() -> {
+            AvasAudioLibrary.ImportResult result = null;
+            Throwable failure = null;
+            try {
+                result = avasLibrary.importFiles(profileId, uris);
+            } catch (Throwable error) {
+                failure = error;
+            }
+            AvasAudioLibrary.ImportResult completed = result;
+            Throwable error = failure;
+            mainHandler.post(() -> finishAvasImport(profileId, completed, error));
+        });
+    }
+
+    private void finishAvasImport(String profileId, AvasAudioLibrary.ImportResult result,
+            Throwable error) {
+        int addedCount = 0;
+        int failureCount = result == null ? 0 : result.failureCount;
+        try {
+            if (error != null || result == null) throw new IllegalStateException(
+                    error == null ? "AVAS import failed" : error.getMessage(), error);
+            AvasConfig latest = avasLibrary.loadConfig();
+            avasLibrary.saveConfig(mergeAvasImport(latest, profileId, result));
+            addedCount = result.added.size();
+            CameraHelperService.configureAvas(this);
+        } catch (Throwable failed) {
+            record("avas_import_failed", "profile_id", profileId, "error", failed.toString());
+            error = failed;
+        } finally {
+            if (profileId.equals(avasImportInFlightProfile)) avasImportInFlightProfile = null;
+            clearAvasImportMarker();
+            if (productionUi != null && !activityDestroyed) productionUi.refreshAvasState();
+        }
+        if (activityDestroyed || isFinishing()) return;
+        String message = error == null
+                ? runtimeText(R.string.runtime_avas_import_result, addedCount, failureCount)
+                : runtimeText(R.string.runtime_avas_import_failed);
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private void clearAvasImportMarker() {
+        preferences.edit()
+                .remove(PREF_AVAS_IMPORT_PROFILE)
+                .remove(PREF_AVAS_IMPORT_PHASE)
+                .apply();
+    }
+
+    static boolean shouldClearAvasImportMarker(boolean hasSavedState, String phase,
+            String persistedProfile, String inFlightProfile) {
+        if (persistedProfile != null && persistedProfile.equals(inFlightProfile)) return false;
+        return !hasSavedState || AVAS_IMPORT_PHASE_DECODING.equals(phase);
+    }
+
+    /** Merge decoded assets into the latest profile so in-flight UI edits are never reverted. */
+    static AvasConfig mergeAvasImport(AvasConfig latest, String profileId,
+            AvasAudioLibrary.ImportResult result) {
+        if (latest == null || result == null) throw new IllegalArgumentException("missing import");
+        AvasConfig.Profile profile = latest.profile(profileId);
+        List<AvasConfig.Asset> merged = new ArrayList<>(profile.assets);
+        merged.addAll(result.added);
+        String selected = profile.selectedAssetId;
+        if (selected.isEmpty() && !result.added.isEmpty()) selected = result.added.get(0).id;
+        return latest.withProfile(profile.withAssets(merged, selected));
     }
 
     @Override
@@ -13445,6 +13715,14 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 JSONObject json = parsed;
                 String kind = json.optString("kind");
+                if ("avas_status".equals(kind)) {
+                    acceptAvasStatus(json);
+                    return;
+                }
+                if ("avas_error".equals(kind)) {
+                    acceptAvasError(json);
+                    return;
+                }
                 // Validate a stock death against the live epoch before retiring that epoch.
                 boolean backgroundHandled = handleReversePreviewBackgroundEvent(json);
                 rememberActivityAvmShellEpoch(json, false);
@@ -13905,6 +14183,42 @@ public final class CameraProbeActivity extends ComponentActivity
             updateControls();
             });
         });
+    }
+
+    private void acceptAvasStatus(JSONObject event) {
+        JSONObject profiles = event.optJSONObject("profiles");
+        if (profiles == null) return;
+        Map<String, AvasPlaybackUiState> next = new HashMap<>();
+        for (String profileId : AvasConfig.PROFILE_IDS) {
+            String value = profiles.optString(profileId, "idle");
+            AvasPlaybackUiState playback;
+            if ("manual_queued".equals(value)) playback = AvasPlaybackUiState.ManualQueued;
+            else if ("manual_playing".equals(value)) playback = AvasPlaybackUiState.ManualPlaying;
+            else if ("automatic_playing".equals(value)) playback = AvasPlaybackUiState.AutomaticPlaying;
+            else playback = AvasPlaybackUiState.Idle;
+            next.put(profileId, playback);
+        }
+        avasPlayback.clear();
+        avasPlayback.putAll(next);
+        if (productionUi != null) productionUi.refreshAvasState();
+    }
+
+    private void acceptAvasError(JSONObject event) {
+        String profileId = event.optString("profile_id");
+        String stage = event.optString("stage");
+        if (AvasConfig.PROFILE_IDS.contains(profileId)
+                && ("manual_start".equals(stage) || "manual_stop".equals(stage)
+                        || "manual_playback".equals(stage))) {
+            avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
+        }
+        if (productionUi != null) productionUi.refreshAvasState();
+        String detail = event.optString("error");
+        record("avas_ui_error", "stage", stage, "profile_id", profileId,
+                "asset_id", event.optString("asset_id"), "error", detail);
+        if (!activityDestroyed && !isFinishing()) {
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_command_failed,
+                    detail.isEmpty() ? stage : detail), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void handleActivityCameraShellDied(JSONObject event) {

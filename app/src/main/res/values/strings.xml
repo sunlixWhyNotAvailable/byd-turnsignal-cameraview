@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="signals_integrations">"Signals &amp; integrations"</string>
+    <string name="signals_integrations">"BYD integrations"</string>
     <string name="blind_zone_cameras">"Blind-zone cameras"</string>
     <string name="parking_cameras">"Parking cameras"</string>
     <string name="reverse_cameras">"Reverse cameras"</string>
@@ -72,7 +72,7 @@
     <string name="balanced">"Balanced"</string>
     <string name="quality">"Quality"</string>
     <string name="app_tagline">"Turn signals, cameras and other features | v%1$s"</string>
-    <string name="turn_signal_guard_and_integrations">"Turn-signal guard and integrations"</string>
+    <string name="turn_signal_guard_and_integrations">"Choose an integration to configure"</string>
     <string name="turn_signal_guard">"Turn-signal guard"</string>
     <string name="outward_angle">"Outward angle"</string>
     <string name="return_to_centre">"Return to centre ±"</string>
@@ -280,4 +280,27 @@
     <string name="signals_guard_additional">Turn-signal guard and additional functions</string>
     <string name="status_ok">OK</string>
     <string name="status_neutral">—</string>
+    <string name="avas_title">AVAS (external speaker)</string>
+    <string name="avas_lock">Lock</string>
+    <string name="avas_unlock">Unlock</string>
+    <string name="avas_power_off">Power off</string>
+    <string name="avas_power_on">Power on</string>
+    <string name="avas_hint">Independent profiles with their own files, settings, and manual playback.</string>
+    <string name="avas_off_priority">When enabled, Power off overrides Unlock caused by switching the vehicle off.</string>
+    <string name="avas_selected_file">Selected audio file</string>
+    <string name="avas_no_file">No file selected</string>
+    <string name="avas_add_files">Add files…</string>
+    <string name="avas_importing">Importing…</string>
+    <string name="avas_file_list">Audio files (%1$s)</string>
+    <string name="avas_random">Random melody</string>
+    <string name="avas_random_hint">Choose randomly from this profile on each event. The selected file is retained.</string>
+    <string name="avas_volume">Volume</string>
+    <string name="avas_start">Start</string>
+    <string name="avas_choose_hint">Select a file for this profile. Selection does not play audio.</string>
+    <string name="avas_empty_list">No audio files yet. Add files using the system picker.</string>
+    <string name="runtime_avas_picker_unavailable">The system audio picker is unavailable.</string>
+    <string name="runtime_avas_import_result">Added: %1$d. Failed: %2$d.</string>
+    <string name="runtime_avas_import_failed">Audio import failed.</string>
+    <string name="runtime_avas_action_failed">Unable to update AVAS settings.</string>
+    <string name="runtime_avas_command_failed">AVAS command failed: %1$s</string>
 </resources>

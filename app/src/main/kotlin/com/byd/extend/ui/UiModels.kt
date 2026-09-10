@@ -30,6 +30,7 @@ enum class DisplayTarget { Tablet, Cluster }
 enum class CalibrationStage { Original, Correction, Output }
 enum class ReverseSource { Rear, Front }
 enum class DiagnosticMode { Signals, Direct, Avm }
+enum class SignalsCategory { TurnSignals, Music, Weather, Avas }
 enum class SettingsCategory { Permissions, CameraOutput, Logs }
 enum class SettingsOperation { AutoStart, Adb, Update, Logs, Compatibility, Preset, Import }
 enum class DialogKind { Background, Update, Shutdown, Progress, Message, ReverseButtonCapture }
@@ -164,6 +165,7 @@ enum class SelectionId {
     Root,
     Language,
     Theme,
+    SignalsCategory,
     CameraSection,
     BlindGroup,
     BlindSide,
@@ -294,6 +296,7 @@ data class CalibrationUiState(
 )
 
 internal object UiSelectionPreferences {
+    const val SIGNALS_CATEGORY = "ui_signals_category"
     const val BLIND_SECTION = "ui_blind_section"
     const val PARKING_SECTION = "ui_parking_section"
     const val REVERSE_SECTION = "ui_reverse_section"
@@ -399,9 +402,65 @@ data class WeatherUiState(
 
 @Immutable
 data class SignalsUiState(
+    val category: SignalsCategory = SignalsCategory.TurnSignals,
     val guard: GuardUiState = GuardUiState(),
     val music: MusicUiState = MusicUiState(),
     val weather: WeatherUiState = WeatherUiState(),
+)
+
+object AvasProfileIds {
+    const val LOCK = "lock"
+    const val UNLOCK = "unlock"
+    const val POWER_OFF = "power_off"
+    const val POWER_ON = "power_on"
+    val ALL = listOf(LOCK, UNLOCK, POWER_OFF, POWER_ON)
+}
+
+enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPlaying }
+enum class AvasActionKind { SetEnabled, SetRandom, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual }
+
+@Immutable
+data class AvasAssetUiState @JvmOverloads constructor(
+    val id: String = "",
+    val filename: String = "",
+    val ready: Boolean = false,
+)
+
+@Immutable
+data class AvasProfileUiState @JvmOverloads constructor(
+    val id: String = "",
+    val enabled: Boolean = false,
+    val random: Boolean = false,
+    val selectedFilename: String? = null,
+    val assets: List<AvasAssetUiState> = emptyList(),
+    val volume: Int = 15,
+    val playback: AvasPlaybackUiState = AvasPlaybackUiState.Idle,
+    val selectedAssetId: String? = null,
+) {
+    val hasReadySelection: Boolean get() = selectedAssetId != null &&
+        assets.any { it.id == selectedAssetId && it.ready }
+    val currentFilename: String? get() = selectedAssetId?.let { selected ->
+        assets.firstOrNull { it.id == selected }?.filename
+    } ?: selectedFilename
+    val manualActive: Boolean get() = playback == AvasPlaybackUiState.ManualQueued ||
+        playback == AvasPlaybackUiState.ManualPlaying
+    val manualStartAllowed: Boolean get() = hasReadySelection && !manualActive
+    val manualStopAllowed: Boolean get() = manualActive
+}
+
+@Immutable
+data class AvasUiState @JvmOverloads constructor(
+    val profiles: List<AvasProfileUiState> = AvasProfileIds.ALL.map { AvasProfileUiState(id = it) },
+    val importingProfileId: String? = null,
+)
+
+@Immutable
+data class AvasBackendAction @JvmOverloads constructor(
+    val profileId: String,
+    val kind: AvasActionKind,
+    val booleanValue: Boolean? = null,
+    val intValue: Int? = null,
+    val stringValue: String? = null,
 )
 
 @Immutable
@@ -579,6 +638,7 @@ data class BydExtendUiState(
     val theme: UiTheme = UiTheme.Dark,
     val header: HeaderUiState = HeaderUiState(),
     val signals: SignalsUiState = SignalsUiState(),
+    val avas: AvasUiState = AvasUiState(),
     val blind: BlindUiState = BlindUiState(),
     val parking: ParkingUiState = ParkingUiState(),
     val reverse: ReverseUiState = ReverseUiState(),
@@ -623,6 +683,7 @@ sealed interface SelectionTarget {
 }
 
 sealed interface BydExtendUiAction {
+    @Immutable data class Avas(val action: AvasBackendAction) : BydExtendUiAction
     @Immutable data class SetProfileBorder(
         val profile: CameraProfileId, val width: String? = null, val argb: Int? = null,
         val mirrorFront: Boolean? = null,

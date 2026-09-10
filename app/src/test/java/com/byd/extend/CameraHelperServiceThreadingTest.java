@@ -47,6 +47,49 @@ public final class CameraHelperServiceThreadingTest {
     }
 
     @Test
+    public void teardownSeparatesRecoveryAutoOffAndExplicitShutdown()
+            throws Exception {
+        assertEquals(CameraHelperService.HelperTeardownMode.RecoveryDetach,
+                CameraHelperService.helperTeardownMode(true, false));
+        assertEquals(CameraHelperService.HelperTeardownMode.StopKeepingAvas,
+                CameraHelperService.helperTeardownMode(false, false));
+        assertEquals(CameraHelperService.HelperTeardownMode.StopAll,
+                CameraHelperService.helperTeardownMode(false, true));
+
+        Path source = Path.of("app/src/main/java/com/byd/extend/CameraHelperService.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/CameraHelperService.java");
+        }
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String explicit = text.substring(
+                text.indexOf("if (ACTION_SHUTDOWN.equals(action))"),
+                text.indexOf("if (ACTION_FLUSH_LOGS.equals(action))"));
+        String teardown = text.substring(
+                text.indexOf("private void destroyRuntime"),
+                text.indexOf("private synchronized void ensureHelperCreated"));
+
+        assertTrue(explicit.contains("stopRuntime(true)"));
+        assertTrue(teardown.contains("helper.shutdownKeepingAvas()"));
+        assertTrue(teardown.contains("helper.shutdown(true)"));
+        assertTrue(teardown.contains("helper.shutdown(false)"));
+        assertFalse(teardown.contains("helper.shutdown(!recover)"));
+
+        Path controllerSource = Path.of(
+                "app/src/main/java/com/byd/extend/TurnSignalController.java");
+        if (!Files.exists(controllerSource)) {
+            controllerSource = Path.of("src/main/java/com/byd/extend/TurnSignalController.java");
+        }
+        String controller = new String(
+                Files.readAllBytes(controllerSource), StandardCharsets.UTF_8);
+        String keepingAvas = controller.substring(
+                controller.indexOf("private void shutdown(boolean terminateShells, boolean keepAvas)"),
+                controller.indexOf("void setRecoveryEnabled"));
+        assertTrue(keepingAvas.contains("shutdownTurnHelperKeepingAvas()"));
+        assertTrue(keepingAvas.contains("shutdownCameraHelper()"));
+        assertTrue(keepingAvas.contains("worker.execute(this::shutdownAvmShell)"));
+    }
+
+    @Test
     public void startCommandOnlySnapshotsForegroundsAndQueuesRuntimeWork() throws Exception {
         Path source = Path.of("app/src/main/java/com/byd/extend/CameraHelperService.java");
         if (!Files.exists(source)) {

@@ -11,8 +11,7 @@ Current source target: `1.2.0` (version code `102`), with Ukrainian, English and
 interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
-The current source changes have not been assembled into an APK; source target and published
-release are separate states.
+The source target and published release are separate states; a local test APK is not a publication.
 
 ## Features
 
@@ -29,6 +28,7 @@ release are separate states.
 - A learned steering-wheel button for switching the active Reverse widget and integrated cameras
   between front and rear views.
 - Optional music metadata and local weather for the stock BYD weather UI.
+- Four independent AVAS exterior-audio profiles for locking, unlocking, powering off and on.
 - Diagnostics and explicit log sharing.
 
 ## Camera presets and settings migration
@@ -164,8 +164,34 @@ language choices are preserved, and the Chinese selector label remains `中文` 
 
 Switches retain their ON/OFF appearance while an operation is pending, without a yellow or centered
 intermediate state; normal toggle and press feedback remain. Mirror uses the standard compact
-enable switch. Bottom navigation gives Signals and integrations more room and uses a square,
-bug-icon-only Debug button with a localized accessibility label.
+enable switch. The six text navigation tabs have equal widths; Debug remains a compact square,
+bug-icon-only button with a localized accessibility label.
+
+## BYD integrations and exterior sounds
+
+BYD integrations uses the same category layout as Settings: Turn signals, Music and lighting,
+Weather, and AVAS (external speaker). Existing integration settings are preserved.
+
+AVAS has separate Lock, Unlock, Power off and Power on profiles. Each starts disabled, with an
+empty audio library, random playback off and volume15%. Add one or more audio files through the
+system document picker; supported audio is copied privately and prepared before playback.
+Each profile has its own file list and selection. Imports preserve the selected file and do not
+overwrite duplicates. Audio libraries are not included in camera-preset JSON files.
+
+Volume is independent per profile, from0% (silent) to100%. Start auditions the selected ready
+file through the exterior route even when that profile's automatic switch is off. Stop cancels
+only the same profile's manual playback or queued audition, not automatic event sounds.
+Automatic random playback selects only from that profile's ready files. Nearby ordinary events
+play sequentially; a ready enabled Power-off sound replaces its associated automatic Unlock.
+Initial, repeated and unknown vehicle states do not trigger playback.
+
+The existing shell helper owns playback so losing the application process does not itself
+destroy the player. A helper restart starts from current telemetry without replaying old events.
+Explicit Shutdown stops playback and automatic recovery until BYD Extend is opened again.
+The exterior route is based on the owner's confirmed firmware23 probe. The combined Production
+path and recovery after kernel reboot still require vehicle validation; compatibility with other
+firmware is not established. Configure and audition at low volume while parked. AVAS does not
+replace the vehicle's stock pedestrian-warning sounds or silently fall back to a cabin speaker.
 
 ## Sharing diagnostics
 

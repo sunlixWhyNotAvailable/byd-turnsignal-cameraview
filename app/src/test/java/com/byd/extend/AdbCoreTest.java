@@ -106,7 +106,7 @@ public final class AdbCoreTest {
         assertEquals("1.2.0", BuildConfig.VERSION_NAME);
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
-        assertEquals(7, TurnSignalShellProtocol.VERSION);
+        assertEquals(9, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
 

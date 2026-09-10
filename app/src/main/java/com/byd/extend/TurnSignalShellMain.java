@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
+import android.os.ParcelFileDescriptor;
 import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
@@ -85,9 +86,12 @@ public final class TurnSignalShellMain {
         private final ReverseGearRuntime reverseGearRuntime;
         private final MusicVisualizerRuntime musicRuntime;
         private final ParkingRadarRuntime parkingRadarRuntime;
+        private final AvasRuntime avasRuntime;
+        private final String avasInitializationError;
         private final PowerManager powerManager;
         private final Runnable processTerminator;
         private final ExecutorService recoveryWorker = Executors.newSingleThreadExecutor();
+        private final ExecutorService avasCloseWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
         private final BroadcastReceiver powerReceiver;
@@ -102,6 +106,8 @@ public final class TurnSignalShellMain {
         private IBinder.DeathRecipient controllerDeathRecipient;
         private boolean stdoutFlushScheduled;
         private boolean processTerminationRequested;
+        private boolean avasCloseClaimed;
+        private boolean nonAvasStopped;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
             this(context, handler, appUid, versionCode, TurnSignalShellMain::terminateProcess);
@@ -133,6 +139,16 @@ public final class TurnSignalShellMain {
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
             parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
+            AvasRuntime createdAvas = null;
+            String avasError = "";
+            try {
+                createdAvas = new AvasRuntime(
+                        avasShellContext(context), appUid, this::forwardAvasEvent);
+            } catch (Throwable error) {
+                avasError = summary(error);
+            }
+            avasRuntime = createdAvas;
+            avasInitializationError = avasError;
         }
 
         void start() {
@@ -142,6 +158,15 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
             parkingRadarRuntime.start();
+            if (avasRuntime != null) {
+                try {
+                    avasRuntime.start();
+                } catch (Throwable error) {
+                    emit("avas_error", "stage", "start", "error", summary(error));
+                }
+            } else {
+                emit("avas_error", "stage", "initialize", "error", avasInitializationError);
+            }
         }
 
         void stop() {
@@ -154,6 +179,8 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
+            closeAvasOnce();
+            avasCloseWorker.shutdownNow();
             saveAwakeSession();
         }
 
@@ -208,6 +235,45 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_AVAS) {
+                    AvasConfig config = AvasConfig.parse(data.readString());
+                    requireAvasRuntime().configure(config);
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_INSTALL_AVAS_ASSET) {
+                    String assetId = data.readString();
+                    if (!TurnSignalShellProtocol.isAvasAssetAllowed(assetId)) {
+                        throw new IllegalArgumentException("invalid AVAS asset id");
+                    }
+                    ParcelFileDescriptor descriptor =
+                            ParcelFileDescriptor.CREATOR.createFromParcel(data);
+                    try {
+                        requireAvasRuntime().installAsset(assetId, descriptor);
+                        descriptor = null; // AvasRuntime owns and closes an accepted descriptor.
+                    } finally {
+                        if (descriptor != null) descriptor.close();
+                    }
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_START_AVAS_MANUAL) {
+                    String profileId = requireAvasProfile(data.readString());
+                    requireAvasRuntime().startManual(profileId);
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_STOP_AVAS_MANUAL) {
+                    String profileId = requireAvasProfile(data.readString());
+                    requireAvasRuntime().stopManual(profileId);
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_REPORT_AVAS_STATUS) {
+                    requireAvasRuntime().reportStatus();
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_SET_MANUAL_STATE) {
                     int payload = data.readInt();
                     if (!TurnSignalShellProtocol.isPayloadAllowed(payload)) {
@@ -223,6 +289,7 @@ public final class TurnSignalShellMain {
                     reverseGearRuntime.reportStatus();
                     musicRuntime.reportStatus();
                     parkingRadarRuntime.reportStatus();
+                    if (avasRuntime != null) avasRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
                     return true;
@@ -243,7 +310,29 @@ public final class TurnSignalShellMain {
                         warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_request");
-                        terminateProcessOnce();
+                        avasCloseWorker.execute(() -> {
+                            try {
+                                closeAvasOnce();
+                            } finally {
+                                terminateProcessOnce();
+                            }
+                        });
+                    });
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_SHUTDOWN_KEEPING_AVAS) {
+                    guardEnabled = false;
+                    recoveryEnabled = false;
+                    reply.writeNoException();
+                    handler.post(() -> {
+                        nonAvasStopped = true;
+                        // This helper will be reattached: keep the metadata executor and power state.
+                        musicRuntime.configure(false);
+                        parkingRadarRuntime.stop();
+                        reverseGearRuntime.stop();
+                        warningRuntime.stop();
+                        runtime.stop();
+                        emit("shell_shutdown", "reason", "controller_detached_avas_retained");
                     });
                     return true;
                 }
@@ -264,6 +353,9 @@ public final class TurnSignalShellMain {
             warningRuntime.reportStatus();
             reverseGearRuntime.reportStatus();
             musicRuntime.reportStatus();
+            // AVAS status emits back through this Binder; never enter its monitor while
+            // registerCallback still owns the ShellBinder monitor.
+            if (avasRuntime != null) handler.post(avasRuntime::reportStatus);
             emitPowerState("callback_registered", false);
         }
 
@@ -279,6 +371,31 @@ public final class TurnSignalShellMain {
             processTerminator.run();
         }
 
+        private AvasRuntime requireAvasRuntime() {
+            if (avasRuntime == null) {
+                throw new IllegalStateException("AVAS unavailable: " + avasInitializationError);
+            }
+            return avasRuntime;
+        }
+
+        private static String requireAvasProfile(String profileId) {
+            if (!TurnSignalShellProtocol.isAvasProfileAllowed(profileId)) {
+                throw new IllegalArgumentException("invalid AVAS profile id");
+            }
+            return profileId;
+        }
+
+        private void closeAvasOnce() {
+            AvasRuntime closing;
+            synchronized (this) {
+                if (avasCloseClaimed || avasRuntime == null) return;
+                avasCloseClaimed = true;
+                closing = avasRuntime;
+            }
+            // Runtime closure waits for playback, whose final event re-enters this Binder.
+            closing.close();
+        }
+
         private synchronized void attachController(IBinder token, boolean requestedRecovery)
                 throws RemoteException {
             if (token == null) throw new IllegalArgumentException("controller token is null");
@@ -292,6 +409,13 @@ public final class TurnSignalShellMain {
             token.linkToDeath(controllerDeathRecipient, 0);
             emit("controller_attached", "recovery_enabled", recoveryEnabled);
             handler.post(() -> {
+                if (nonAvasStopped) {
+                    nonAvasStopped = false;
+                    runtime.start();
+                    warningRuntime.start();
+                    reverseGearRuntime.start();
+                    parkingRadarRuntime.start();
+                }
                 awaitingControllerAttach = false;
                 handler.removeCallbacks(recoveryRunnable);
                 handler.removeCallbacks(wakeCheckRunnable);
@@ -721,6 +845,14 @@ public final class TurnSignalShellMain {
             } catch (Throwable error) {
                 line = "{\"kind\":\"shell_json_error\"}";
             }
+            forwardEventLine(line);
+        }
+
+        private void forwardAvasEvent(JSONObject event) {
+            if (event != null) forwardEventLine(event.toString());
+        }
+
+        private void forwardEventLine(String line) {
             System.out.println(line);
             scheduleStdoutFlush();
             IBinder target;
@@ -758,6 +890,21 @@ public final class TurnSignalShellMain {
                 System.out.flush();
             }
         }
+    }
+
+    /** Gives only AVAS a real shell-package attribution and shell-owned AudioManager. */
+    private static Context avasShellContext(Context system) throws Exception {
+        Class<?> threadClass = Class.forName("android.app.ActivityThread");
+        Object thread = threadClass.getMethod("currentActivityThread").invoke(null);
+        if (thread == null) thread = threadClass.getMethod("systemMain").invoke(null);
+        Context shellPackage = system.createPackageContext("com.android.shell", 0);
+        Class<?> impl = Class.forName("android.app.ContextImpl");
+        java.lang.reflect.Field packageInfo = impl.getDeclaredField("mPackageInfo");
+        packageInfo.setAccessible(true);
+        Method create = impl.getDeclaredMethod(
+                "createAppContext", threadClass, Class.forName("android.app.LoadedApk"));
+        create.setAccessible(true);
+        return (Context) create.invoke(null, thread, packageInfo.get(shellPackage));
     }
 
     private static Context systemContext() throws Exception {

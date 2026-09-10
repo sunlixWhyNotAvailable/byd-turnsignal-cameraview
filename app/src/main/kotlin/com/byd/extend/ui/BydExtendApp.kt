@@ -29,12 +29,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LocalParking
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.LinearProgressIndicator
@@ -88,7 +94,7 @@ private val rootIcons: List<ImageVector> = listOf(
 )
 
 internal fun bottomNavigationEqualWidth(barWidth: androidx.compose.ui.unit.Dp): androidx.compose.ui.unit.Dp =
-    (barWidth - 12.dp - 8.dp * (RootTab.entries.size - 1)) / RootTab.entries.size
+    (barWidth - 12.dp - 8.dp * (RootTab.entries.size - 1) - 48.dp) / (RootTab.entries.size - 1)
 
 /**
  * Production UI shell. Native camera content is supplied by the Activity and never enters Compose
@@ -143,7 +149,7 @@ fun BydExtendApp(
                 AppHeader(state, strings, colors, onAction)
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (state.activeTab) {
-                        RootTab.Signals -> SignalsScreen(state.signals, strings, colors, onAction)
+                        RootTab.Signals -> SignalsScreen(state.signals, state.avas, strings, colors, onAction)
                         RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost, onPreview)
@@ -230,61 +236,78 @@ private fun HeaderStatusPill(
 @Composable
 private fun SignalsScreen(
     state: SignalsUiState,
+    avas: AvasUiState,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
-    ScreenSurface(colors) {
-        PageTitle(strings.tabs[0], strings.text("Захист поворотника та додаткові функції",
-            "Turn-signal guard and additional functions"), colors)
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp).height(IntrinsicSize.Max),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Section(strings.text("Захист поворотника", "Turn-signal guard"), colors,
-                Modifier.weight(1f).fillMaxHeight(), trailing = {
+    val categories = listOf(
+        strings.text("Поворотники", "Turn signals", "转向灯"),
+        strings.text("Музика та підсвітка", "Music and lighting", "音乐与氛围灯"),
+        strings.text("Погода", "Weather", "天气"),
+        strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
+    )
+    val icons = listOf(Icons.AutoMirrored.Outlined.CompareArrows, Icons.Outlined.Palette,
+        Icons.Outlined.Info, Icons.AutoMirrored.Outlined.VolumeUp)
+    ScreenSurface(colors, scroll = false) {
+        PageTitle(strings.tabs[0], strings.text("Виберіть інтеграцію для налаштування",
+            "Choose an integration to configure", "选择要配置的集成功能"), colors)
+        Row(Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            CategorySidebar(categories, icons, state.category.ordinal, colors, strings) {
+                onAction(BydExtendUiAction.Select(
+                    SelectionTarget.Simple(SelectionId.SignalsCategory), it))
+            }
+            Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                .background(colors.surface).padding(12.dp).verticalScroll(rememberScrollState())) {
+                when (state.category) {
+                    SignalsCategory.TurnSignals -> Section(strings.text("Захист поворотника", "Turn-signal guard",
+                        "转向灯保护"), colors, trailing = {
                     AppSwitch(state.guard.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Guard), it)) }, colors,
                         pending = state.guard.operation.pending, enabled = state.guard.operation.enabled,
                         label = strings.text("Захист поворотника", "Turn-signal guard"))
-                }) {
-                GuardNumber.entries.forEach { field ->
-                    val value = when (field) {
-                        GuardNumber.OutwardAngle -> state.guard.outwardAngle
-                        GuardNumber.CentreTolerance -> state.guard.centreTolerance
-                        GuardNumber.CorrectionDelayMs -> state.guard.correctionDelayMs
-                        GuardNumber.MaximumSpeed -> state.guard.maximumSpeed
+                    }) {
+                        GuardNumber.entries.forEach { field ->
+                            val value = when (field) {
+                                GuardNumber.OutwardAngle -> state.guard.outwardAngle
+                                GuardNumber.CentreTolerance -> state.guard.centreTolerance
+                                GuardNumber.CorrectionDelayMs -> state.guard.correctionDelayMs
+                                GuardNumber.MaximumSpeed -> state.guard.maximumSpeed
+                            }
+                            val title = when (field) {
+                                GuardNumber.OutwardAngle -> strings.text("Поворот у напрямку", "Outward angle")
+                                GuardNumber.CentreTolerance -> strings.text("Повернення до центру ±", "Return to centre ±")
+                                GuardNumber.CorrectionDelayMs -> strings.text("Затримка корекції", "Correction delay")
+                                GuardNumber.MaximumSpeed -> strings.text("Максимальна швидкість", "Maximum speed")
+                            }
+                            val suffix = when (field) {
+                                GuardNumber.OutwardAngle, GuardNumber.CentreTolerance -> "°"
+                                GuardNumber.CorrectionDelayMs -> strings.text("мс", "ms")
+                                GuardNumber.MaximumSpeed -> strings.text("км/год", "km/h")
+                            }
+                            val range = when (field) {
+                                GuardNumber.OutwardAngle -> 0f..360f
+                                GuardNumber.CentreTolerance -> 0f..45f
+                                GuardNumber.CorrectionDelayMs -> 0f..1000f
+                                GuardNumber.MaximumSpeed -> 0f..300f
+                            }
+                            NumericSetting(title, value, suffix, colors,
+                                { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Guard(field), it)) }, range,
+                                enabled = state.guard.operation.enabled && !state.guard.operation.pending,
+                                identity = NumberTarget.Guard(field))
+                        }
                     }
-                    val title = when (field) {
-                        GuardNumber.OutwardAngle -> strings.text("Поворот у напрямку", "Outward angle")
-                        GuardNumber.CentreTolerance -> strings.text("Повернення до центру ±", "Return to centre ±")
-                        GuardNumber.CorrectionDelayMs -> strings.text("Затримка корекції", "Correction delay")
-                        GuardNumber.MaximumSpeed -> strings.text("Максимальна швидкість", "Maximum speed")
-                    }
-                    val suffix = when (field) {
-                        GuardNumber.OutwardAngle, GuardNumber.CentreTolerance -> "°"
-                        GuardNumber.CorrectionDelayMs -> strings.text("мс", "ms")
-                        GuardNumber.MaximumSpeed -> strings.text("км/год", "km/h")
-                    }
-                    val range = when (field) {
-                        GuardNumber.OutwardAngle -> 0f..360f
-                        GuardNumber.CentreTolerance -> 0f..45f
-                        GuardNumber.CorrectionDelayMs -> 0f..1000f
-                        GuardNumber.MaximumSpeed -> 0f..300f
-                    }
-                    NumericSetting(title, value, suffix, colors,
-                        { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Guard(field), it)) }, range,
-                        enabled = state.guard.operation.enabled && !state.guard.operation.pending,
-                        identity = NumberTarget.Guard(field))
-                }
-            }
-            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Section(strings.text("Музика та підсвітка", "Music and lighting"), colors) {
+                    SignalsCategory.Music -> Section(strings.text("Музика та підсвітка", "Music and lighting",
+                        "音乐与氛围灯"), colors) {
                     SwitchLine(strings.text("Підсвітка та метадані музики", "Ambient lighting and music metadata"),
                         strings.text("Штатна підсвітка під час відтворення", "Stock ambient lighting during playback"),
                         state.music.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Music), it)) }, colors,
                         pending = state.music.operation.pending, enabled = state.music.operation.enabled)
-                }
-                Section(strings.text("Погода", "Weather"), colors, Modifier.weight(1f)) {
+                    }
+                    SignalsCategory.Weather -> Section(strings.text("Погода", "Weather", "天气"), colors) {
                     SwitchLine(strings.text("Локальна погода", "Local weather"),
                         strings.text("Погода за координатами у штатній картці BYD",
                             "Coordinate-based weather in the stock BYD card"), state.weather.enabled,
@@ -309,7 +332,192 @@ private fun SignalsScreen(
                         colors,
                         Modifier.width(230.dp),
                     ) { onAction(BydExtendUiAction.Run(CommandId.OpenWeatherAttribution)) }
+                    }
+                    SignalsCategory.Avas -> AvasIntegration(avas, strings, colors, onAction)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategorySidebar(
+    categories: List<String>, icons: List<ImageVector>, selected: Int,
+    colors: UiPalette, strings: UiStrings, onSelect: (Int) -> Unit,
+) {
+    Column(Modifier.width(260.dp).fillMaxHeight().clip(RoundedCornerShape(8.dp))
+        .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+        .background(colors.panelAlt).padding(horizontal = 8.dp, vertical = 10.dp)) {
+        Text(strings.text("КАТЕГОРІЇ", "CATEGORIES", "类别"), color = colors.muted,
+            fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+        Spacer(Modifier.height(4.dp))
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            categories.forEachIndexed { index, title ->
+                val active = selected == index
+                val press = rememberPressFeedback()
+                val visualClick = rememberVisualFirstClick { onSelect(index) }
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                    .background(pressBackground(if (active) colors.accent.copy(alpha = .14f)
+                        else Color.Transparent, colors, press.pressed)).then(press.modifier)
+                    .testTag("signals-category-$index")
+                    .selectable(active, interactionSource = press.interactionSource, indication = null,
+                        role = Role.Tab, onClick = visualClick).padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Icon(icons[index], null, tint = if (active) colors.accent else colors.muted,
+                        modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(title, color = if (active) colors.accent else colors.muted, fontSize = 14.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+private fun avasTitle(id: String, strings: UiStrings) = when (id) {
+    AvasProfileIds.LOCK -> strings.text("Закриття", "Lock", "上锁")
+    AvasProfileIds.UNLOCK -> strings.text("Відкриття", "Unlock", "解锁")
+    AvasProfileIds.POWER_OFF -> strings.text("Вимкнення", "Power off", "下电")
+    AvasProfileIds.POWER_ON -> strings.text("Увімкнення", "Power on", "上电")
+    else -> id
+}
+
+@Composable
+private fun AvasIntegration(
+    state: AvasUiState, strings: UiStrings, colors: UiPalette,
+    onAction: (BydExtendUiAction) -> Unit,
+) {
+    var listing by remember { mutableStateOf<String?>(null) }
+    fun send(profileId: String, kind: AvasActionKind, boolean: Boolean? = null,
+        number: Int? = null, text: String? = null) {
+        onAction(BydExtendUiAction.Avas(AvasBackendAction(profileId, kind, boolean, number, text)))
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
+            color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text(strings.text("Незалежні профілі з власними файлами, налаштуваннями та ручною перевіркою.",
+            "Independent profiles with their own files, settings, and manual playback.",
+            "各配置独立保存文件、设置并支持手动播放。"), color = colors.muted, fontSize = 13.sp)
+        Text(strings.text("Активний профіль «Вимкнення» замінює «Відкриття», спричинене вимкненням авто.",
+            "When enabled, Power off overrides Unlock caused by switching the vehicle off.",
+            "启用下电配置后，下电声音优先于车辆下电触发的自动解锁声音。"),
+            color = colors.muted, fontSize = 13.sp)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val columns = if (maxWidth >= 600.dp) 2 else 1
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                AvasProfileIds.ALL.map { id -> state.profiles.firstOrNull { it.id == id }
+                    ?: AvasProfileUiState(id = id) }
+                    .chunked(columns).forEach { row ->
+                    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        row.forEach { profile ->
+                            val importing = state.importingProfileId != null
+                            val title = avasTitle(profile.id, strings)
+                            Section(title, colors, Modifier.weight(1f).fillMaxHeight()
+                                .testTag("avas-${profile.id}"), trailing = {
+                                AppSwitch(profile.enabled,
+                                    { send(profile.id, AvasActionKind.SetEnabled, boolean = it) }, colors,
+                                    label = title)
+                            }) {
+                                Text(strings.text("Обраний аудіофайл", "Selected audio file", "已选音频文件"),
+                                    color = colors.muted, fontSize = 12.sp)
+                                Text(profile.currentFilename ?: strings.text("Файл не обрано", "No file selected",
+                                    "未选择文件"), color = if (profile.currentFilename == null) colors.muted else colors.text,
+                                    fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                        .clip(RoundedCornerShape(7.dp)).background(colors.field)
+                                        .border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp)).padding(10.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    ActionButton(strings.text(if (importing) "Імпортування…" else "Додати файли…",
+                                        if (importing) "Importing…" else "Add files…",
+                                        if (importing) "正在导入…" else "添加文件…"), colors,
+                                        Modifier.weight(1f).testTag("avas-add-${profile.id}"), enabled = !importing,
+                                        maxLines = 2) { send(profile.id, AvasActionKind.ImportFiles) }
+                                    ActionButton(strings.format("Аудіофайли (%1\$s)", "Audio files (%1\$s)",
+                                        "音频文件（%1\$s）", profile.assets.size.toString()), colors,
+                                        Modifier.weight(1f).testTag("avas-list-${profile.id}"), maxLines = 2) {
+                                        listing = profile.id
+                                    }
+                                }
+                                SwitchLine(strings.text("Випадкова мелодія", "Random melody", "随机旋律"), "",
+                                    profile.random, { send(profile.id, AvasActionKind.SetRandom, boolean = it) }, colors)
+                                Text(strings.text("Випадковий файл із цього профілю для кожної події. Обраний файл зберігається.",
+                                    "Choose randomly from this profile on each event. The selected file is retained.",
+                                    "每次事件从此配置中随机选择文件。保留手动选择的文件。"),
+                                    color = colors.muted, fontSize = 12.sp)
+                                NumericSetting(strings.text("Гучність", "Volume", "音量"),
+                                    profile.volume.coerceIn(0, 100).toString(), "%", colors,
+                                    { send(profile.id, AvasActionKind.SetVolume, number = it.toFloat().toInt()) },
+                                    0f..100f, slider = true, compactSuffix = true,
+                                    identity = "avas-volume-${profile.id}")
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    ActionButton(strings.text("Старт", "Start", "开始"), colors,
+                                        Modifier.weight(1f).testTag("avas-start-${profile.id}"),
+                                        icon = Icons.Outlined.PlayArrow, primary = true,
+                                        enabled = profile.manualStartAllowed) {
+                                        send(profile.id, AvasActionKind.StartManual)
+                                    }
+                                    ActionButton(strings.text("Стоп", "Stop", "停止"), colors,
+                                        Modifier.weight(1f).testTag("avas-stop-${profile.id}"),
+                                        icon = Icons.Outlined.Stop, mainBackground = true,
+                                        enabled = profile.manualStopAllowed) { send(profile.id, AvasActionKind.StopManual) }
+                                }
+                            }
+                        }
+                        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        }
+    }
+    listing?.let { profileId ->
+        val profile = state.profiles.firstOrNull { it.id == profileId }
+        if (profile == null) listing = null else Dialog(
+            onDismissRequest = { listing = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+            SideEffect { window?.setDimAmount(if (colors.dark) .48f else .32f) }
+            Column(Modifier.widthIn(max = 660.dp).fillMaxWidth().heightIn(max = 520.dp)
+                .clip(RoundedCornerShape(8.dp)).background(colors.surface)
+                .border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(avasTitle(profile.id, strings), color = colors.text, fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold)
+                Text(strings.text("Оберіть файл для цього профілю. Вибір не запускає звук.",
+                    "Select a file for this profile. Selection does not play audio.",
+                    "选择此配置的文件。选择文件不会播放声音。"), color = colors.muted, fontSize = 13.sp)
+                Column(Modifier.fillMaxWidth().weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState()).selectableGroup(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (profile.assets.isEmpty()) Text(strings.text("Аудіофайлів ще немає. Додайте їх через системний вибір файлів.",
+                        "No audio files yet. Add files using the system picker.",
+                        "暂无音频文件。请通过系统文件选择器添加。"), color = colors.muted, fontSize = 14.sp)
+                    profile.assets.forEach { asset ->
+                        val selected = asset.id == profile.selectedAssetId
+                        val press = rememberPressFeedback()
+                        val click = rememberVisualFirstClick {
+                            send(profile.id, AvasActionKind.SelectAsset, text = asset.id)
+                            listing = null
+                        }
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp))
+                            .background(pressBackground(if (selected) colors.accent.copy(alpha = .14f)
+                                else colors.panelAlt, colors, press.pressed)).then(press.modifier)
+                            .selectable(selected, interactionSource = press.interactionSource, indication = null,
+                                role = Role.RadioButton, onClick = click).padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text(asset.filename, color = colors.text, fontSize = 15.sp, modifier = Modifier.weight(1f),
+                                maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            if (selected) Icon(Icons.Outlined.CheckCircle, null, tint = colors.accent,
+                                modifier = Modifier.padding(start = 12.dp).size(22.dp))
+                        }
+                    }
+                }
+                ActionButton(strings.text("Закрити", "Close", "关闭"), colors,
+                    Modifier.align(Alignment.End)) { listing = null }
             }
         }
     }
@@ -327,7 +535,6 @@ private fun BottomNavigation(active: RootTab, strings: UiStrings, colors: UiPale
                 val press = rememberPressFeedback()
                 val visualClick = rememberVisualFirstClick { onSelect(tab) }
                 val width = when (tab) {
-                    RootTab.Signals -> Modifier.weight(1f)
                     RootTab.Debug -> Modifier.width(48.dp)
                     else -> Modifier.width(equalWidth)
                 }

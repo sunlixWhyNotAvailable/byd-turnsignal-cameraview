@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="signals_integrations">"转向灯与集成"</string>
+    <string name="signals_integrations">"BYD 集成"</string>
     <string name="blind_zone_cameras">"盲区摄像头"</string>
     <string name="parking_cameras">"泊车摄像头"</string>
     <string name="reverse_cameras">"倒车摄像头"</string>
@@ -72,7 +72,7 @@
     <string name="balanced">"均衡"</string>
     <string name="quality">"画质"</string>
     <string name="app_tagline">"转向灯、摄像头及其他功能 | v%1$s"</string>
-    <string name="turn_signal_guard_and_integrations">"转向灯保护与集成功能"</string>
+    <string name="turn_signal_guard_and_integrations">"选择要配置的集成功能"</string>
     <string name="turn_signal_guard">"转向灯保护"</string>
     <string name="outward_angle">"转向触发角度"</string>
     <string name="return_to_centre">"回正角度 ±"</string>
@@ -280,4 +280,27 @@
     <string name="signals_guard_additional">"转向灯保护与其他功能"</string>
     <string name="status_ok">"正常"</string>
     <string name="status_neutral">"—"</string>
+    <string name="avas_title">AVAS（车外扬声器）</string>
+    <string name="avas_lock">上锁</string>
+    <string name="avas_unlock">解锁</string>
+    <string name="avas_power_off">下电</string>
+    <string name="avas_power_on">上电</string>
+    <string name="avas_hint">各配置独立保存文件、设置并支持手动播放。</string>
+    <string name="avas_off_priority">启用下电配置后，下电声音优先于车辆下电触发的自动解锁声音。</string>
+    <string name="avas_selected_file">已选音频文件</string>
+    <string name="avas_no_file">未选择文件</string>
+    <string name="avas_add_files">添加文件…</string>
+    <string name="avas_importing">正在导入…</string>
+    <string name="avas_file_list">音频文件（%1$s）</string>
+    <string name="avas_random">随机旋律</string>
+    <string name="avas_random_hint">每次事件从此配置中随机选择文件。保留手动选择的文件。</string>
+    <string name="avas_volume">音量</string>
+    <string name="avas_start">开始</string>
+    <string name="avas_choose_hint">选择此配置的文件。选择文件不会播放声音。</string>
+    <string name="avas_empty_list">暂无音频文件。请通过系统文件选择器添加。</string>
+    <string name="runtime_avas_picker_unavailable">系统音频文件选择器不可用。</string>
+    <string name="runtime_avas_import_result">已添加：%1$d。失败：%2$d。</string>
+    <string name="runtime_avas_import_failed">音频导入失败。</string>
+    <string name="runtime_avas_action_failed">无法更新 AVAS 设置。</string>
+    <string name="runtime_avas_command_failed">AVAS 命令失败：%1$s</string>
 </resources>

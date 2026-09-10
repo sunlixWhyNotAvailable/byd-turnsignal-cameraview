@@ -120,7 +120,7 @@ internal class UiStrings @JvmOverloads constructor(
         "1.1.0",
     )
     val tabs get() = listOf(
-        text("Поворотники та інтеграції", "Signals & integrations", "转向灯与集成"),
+        text("Інтеграції BYD", "BYD integrations", "BYD 集成"),
         text("Камери сліпих зон", "Blind-zone cameras", "盲区摄像头"),
         text("Камери паркування", "Parking cameras", "泊车摄像头"),
         text("Камери заднього ходу", "Reverse cameras", "倒车摄像头"),

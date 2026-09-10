@@ -21,6 +21,12 @@ import com.byd.extend.CameraButtonBindings
 interface ProductionUiBackend {
     fun onProductionUiAction(action: BydExtendUiAction)
 
+    /** Current AVAS configuration and runtime playback state supplied by the Activity. */
+    fun productionAvasState(): AvasUiState = AvasUiState()
+
+    /** Typed AVAS mutation; imports are completed by the Activity's system file picker. */
+    fun onProductionAvasAction(action: AvasBackendAction) = Unit
+
     /** Independent Mirror seam; Java backends may apply the typed action asynchronously. */
     fun onProductionMirrorAction(action: MirrorBackendAction) = Unit
 
@@ -92,6 +98,7 @@ class ProductionUiController @JvmOverloads constructor(
         syncLegacyRuntimeBlock()
         // A disposed editor may finish after a display selection. Never retarget that write.
         val stalePlacement = when (action) {
+            is BydExtendUiAction.Avas -> false
             is BydExtendUiAction.SetProfileBorder -> !matchesMirrorSource(action.profile, action.mirrorFront)
             is BydExtendUiAction.SetMirrorGeometry -> !matchesPlacementTarget(CameraProfileId.Mirror, action.displayTarget)
             is BydExtendUiAction.SetProfileGeometry -> !matchesPlacementTarget(action.profile, action.displayTarget)
@@ -148,6 +155,11 @@ class ProductionUiController @JvmOverloads constructor(
         }
         var typedBackendHandled = false
         when (action) {
+            is BydExtendUiAction.Avas -> {
+                typedBackendHandled = true
+                backend.onProductionAvasAction(action.action)
+                refreshAvasState()
+            }
             is BydExtendUiAction.Navigate -> {
                 state = state.copy(activeTab = action.tab)
                 preferences.edit().putInt("selected_tab", action.tab.legacyTab()).apply()
@@ -470,6 +482,7 @@ class ProductionUiController @JvmOverloads constructor(
             header = fresh.header.copy(adb = old.header.adb, location = old.header.location,
                 permissions = old.header.permissions),
             signals = fresh.signals.copy(
+                category = old.signals.category,
                 guard = fresh.signals.guard.copy(operation = old.signals.guard.operation),
                 music = fresh.signals.music.copy(operation = old.signals.music.operation),
                 weather = fresh.signals.weather.copy(
@@ -537,6 +550,9 @@ class ProductionUiController @JvmOverloads constructor(
     }
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
+
+    /** Refresh helper/file-picker state without disturbing navigation, camera hosts, or feedback. */
+    fun refreshAvasState() { state = state.copy(avas = backend.productionAvasState()) }
 
     /** Opens the native-focusable HUD capture prompt after the Activity starts key learning. */
     fun showReverseButtonCaptureDialog() {
@@ -914,7 +930,7 @@ class ProductionUiController @JvmOverloads constructor(
 
     private fun readState() = readProductionUiState(
         preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible(),
-        backend::productionDisplayGeometry).let { fresh ->
+        backend::productionDisplayGeometry).copy(avas = backend.productionAvasState()).let { fresh ->
         val mirror = fresh.mirror.copy(
             overlayPermissionGranted = backend.productionMirrorOverlayPermissionGranted(),
             clusterAvailable = backend.productionMirrorClusterAvailable(),
@@ -946,6 +962,7 @@ class ProductionUiController @JvmOverloads constructor(
     }
 
     private fun allowedWhileLegacyBlocked(action: BydExtendUiAction): Boolean = when (action) {
+        is BydExtendUiAction.Avas -> false
         is BydExtendUiAction.Navigate -> action.tab == RootTab.Settings
         is BydExtendUiAction.SetLanguage, is BydExtendUiAction.SetTheme -> true
         is BydExtendUiAction.Select -> action.target is SelectionTarget.Simple &&
@@ -999,6 +1016,11 @@ class ProductionUiController @JvmOverloads constructor(
                     state = state.copy(mirror = state.mirror.copy(section = it))
                 }
                 else -> Unit
+            }
+            SelectionId.SignalsCategory -> {
+                val value = SignalsCategory.entries.getOrElse(index) { SignalsCategory.TurnSignals }
+                preferences.edit().putInt(UiSelectionPreferences.SIGNALS_CATEGORY, value.ordinal).apply()
+                state = state.copy(signals = state.signals.copy(category = value))
             }
             SelectionId.BlindGroup -> state = state.copy(blind = state.blind.copy(
                 selectedGroup = CameraGroup.entries.getOrElse(index) { CameraGroup.Rear }))
@@ -1222,7 +1244,7 @@ private fun CommandId.allowedInLegacyHandover() = this == CommandId.OpenBackgrou
     this == CommandId.OpenWeatherAttribution
 
 private fun SelectionTarget.isLocalSelection() = this is SelectionTarget.Simple && id in setOf(
-    SelectionId.CameraSection, SelectionId.BlindGroup, SelectionId.BlindSide,
+    SelectionId.SignalsCategory, SelectionId.CameraSection, SelectionId.BlindGroup, SelectionId.BlindSide,
     SelectionId.ParkingView, SelectionId.ReverseElement, SelectionId.ReverseSource,
     SelectionId.MirrorTarget, SelectionId.MirrorSource,
     SelectionId.SettingsCategory, SelectionId.DiagnosticMode, SelectionId.DirectMode,

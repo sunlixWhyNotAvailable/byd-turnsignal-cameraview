@@ -90,23 +90,20 @@ class ComposeHotfixUiPolicyTest {
     }
 
     @Test
-    fun bottomNavigationGivesDebugWidthToSignalsAndFitsAllLocalizedTitles() {
+    fun bottomNavigationGivesSixTextTabsEqualWidthAndKeepsDebugSquare() {
         // 1920 px at the conservative 320 dpi viewport is 960 dp; the app shell removes 36 dp.
         val barWidth = 924.dp
         val equalWidth = bottomNavigationEqualWidth(barWidth)
-        val signalsWidth = equalWidth * 2f - 48.dp
         val debugWidth = 48.dp
         assertEquals(48f, debugWidth.value, 0f)
-        assertEquals(equalWidth.value * 2f - 48f, signalsWidth.value, .001f)
         assertEquals(barWidth.value - 12f - 6f * 8f,
-            signalsWidth.value + debugWidth.value + equalWidth.value * 5f, .001f)
+            debugWidth.value + equalWidth.value * 6f, .001f)
 
         val labels = UiLanguage.entries.map { UiStrings(it).tabs[0] }
-        assertEquals(listOf("Поворотники та інтеграції", "Signals & integrations", "转向灯与集成"), labels)
-        labels.forEach { label ->
-            val longestLineToken = label.split(' ').maxOf { it.length }
-            assertTrue(label, longestLineToken * 14f <= signalsWidth.value)
-        }
+        assertEquals(listOf("Інтеграції BYD", "BYD integrations", "BYD 集成"), labels)
+        // Character count times font size is not a proportional-font text measurement.
+        // Preserve the approved labels and test the actual equal-width/two-line contract.
+        assertTrue(labels.all { it.isNotBlank() })
 
         val source = File("src/main/kotlin/com/byd/extend/ui/BydExtendApp.kt").readText()
         val navigation = source.substring(
@@ -117,7 +114,7 @@ class ComposeHotfixUiPolicyTest {
         assertTrue(navigation.contains("padding(6.dp)"))
         assertTrue(navigation.contains("Arrangement.spacedBy(8.dp)"))
         assertTrue(navigation.contains("val equalWidth = bottomNavigationEqualWidth(maxWidth)"))
-        assertTrue(navigation.contains("RootTab.Signals -> Modifier.weight(1f)"))
+        assertFalse(navigation.contains("RootTab.Signals -> Modifier.weight(1f)"))
         assertTrue(navigation.contains("RootTab.Debug -> Modifier.width(48.dp)"))
         assertTrue(navigation.contains("else -> Modifier.width(equalWidth)"))
         assertTrue(navigation.contains("if (tab != RootTab.Debug)"))

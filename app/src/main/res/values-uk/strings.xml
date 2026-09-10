@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="signals_integrations">"Поворотники та інтеграції"</string>
+    <string name="signals_integrations">"Інтеграції BYD"</string>
     <string name="blind_zone_cameras">"Камери сліпих зон"</string>
     <string name="parking_cameras">"Камери паркування"</string>
     <string name="reverse_cameras">"Камери заднього ходу"</string>
@@ -72,7 +72,7 @@
     <string name="balanced">"Баланс"</string>
     <string name="quality">"Якість"</string>
     <string name="app_tagline">"Поворотники, камери та інші функції | v%1$s"</string>
-    <string name="turn_signal_guard_and_integrations">"Захист поворотника та інтеграції"</string>
+    <string name="turn_signal_guard_and_integrations">"Виберіть інтеграцію для налаштування"</string>
     <string name="turn_signal_guard">"Захист поворотника"</string>
     <string name="outward_angle">"Поворот у напрямку"</string>
     <string name="return_to_centre">"Повернення до центру ±"</string>
@@ -280,4 +280,27 @@
     <string name="signals_guard_additional">"Захист поворотника та додаткові функції"</string>
     <string name="status_ok">"ОК"</string>
     <string name="status_neutral">"—"</string>
+    <string name="avas_title">AVAS (зовнішній динамік)</string>
+    <string name="avas_lock">Закриття</string>
+    <string name="avas_unlock">Відкриття</string>
+    <string name="avas_power_off">Вимкнення</string>
+    <string name="avas_power_on">Увімкнення</string>
+    <string name="avas_hint">Незалежні профілі з власними файлами, налаштуваннями та ручною перевіркою.</string>
+    <string name="avas_off_priority">Активний профіль «Вимкнення» замінює «Відкриття», спричинене вимкненням авто.</string>
+    <string name="avas_selected_file">Обраний аудіофайл</string>
+    <string name="avas_no_file">Файл не обрано</string>
+    <string name="avas_add_files">Додати файли…</string>
+    <string name="avas_importing">Імпортування…</string>
+    <string name="avas_file_list">Аудіофайли (%1$s)</string>
+    <string name="avas_random">Випадкова мелодія</string>
+    <string name="avas_random_hint">Випадковий файл із цього профілю для кожної події. Обраний файл зберігається.</string>
+    <string name="avas_volume">Гучність</string>
+    <string name="avas_start">Старт</string>
+    <string name="avas_choose_hint">Оберіть файл для цього профілю. Вибір не запускає звук.</string>
+    <string name="avas_empty_list">Аудіофайлів ще немає. Додайте їх через системний вибір файлів.</string>
+    <string name="runtime_avas_picker_unavailable">Системний вибір аудіофайлів недоступний.</string>
+    <string name="runtime_avas_import_result">Додано: %1$d. Не вдалося: %2$d.</string>
+    <string name="runtime_avas_import_failed">Не вдалося імпортувати аудіофайли.</string>
+    <string name="runtime_avas_action_failed">Не вдалося оновити налаштування AVAS.</string>
+    <string name="runtime_avas_command_failed">Помилка команди AVAS: %1$s</string>
 </resources>

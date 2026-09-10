@@ -50,6 +50,8 @@ fun readProductionUiState(
 )
 
 private fun readSignals(preferences: SharedPreferences) = SignalsUiState(
+    category = enumPreference(preferences, UiSelectionPreferences.SIGNALS_CATEGORY,
+        SignalsCategory.TurnSignals),
     guard = GuardUiState(
         enabled = preferences.getBoolean("guard_enabled", false),
         outwardAngle = decimal(preferences.getFloat("outward_deg", 90f)),

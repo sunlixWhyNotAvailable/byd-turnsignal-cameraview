@@ -150,6 +150,22 @@ final class CameraHelperMain {
             turnController.configureParkingRadar(anyEnabled);
         }
 
+        public void configureAvas() {
+            turnController.configureAvas();
+        }
+
+        public void startAvasManual(String profileId) {
+            turnController.startAvasManual(profileId);
+        }
+
+        public void stopAvasManual(String profileId) {
+            turnController.stopAvasManual(profileId);
+        }
+
+        public void reportAvasStatus() {
+            turnController.reportAvasStatus();
+        }
+
         void setRecoveryEnabled(boolean enabled) {
             turnController.setRecoveryEnabled(enabled);
         }
@@ -178,6 +194,13 @@ final class CameraHelperMain {
             closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", terminateShells);
+        }
+
+        void shutdownKeepingAvas() {
+            turnController.shutdownKeepingAvas();
+            closeCamera("service_destroyed");
+            emit("helper_shutdown", "reason", "service_destroyed",
+                    "terminate_shells", true, "avas_retained", true);
         }
 
         @Override

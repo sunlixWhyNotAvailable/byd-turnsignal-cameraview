@@ -6,6 +6,8 @@ import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Parcel;
+import android.os.ParcelFileDescriptor;
+import android.os.Parcelable;
 import android.os.Process;
 import android.os.SystemClock;
 import android.view.Surface;
@@ -14,7 +16,9 @@ import org.json.JSONObject;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -36,6 +40,7 @@ final class TurnSignalController {
     private final Consumer<String> shellEventSink;
     private final BiConsumer<String, Object[]> eventSink;
     private final SharedPreferences settings;
+    private final AvasAudioLibrary avasLibrary;
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Binder controllerToken = new Binder();
@@ -82,6 +87,8 @@ final class TurnSignalController {
     private volatile IBinder cameraHelper;
     private volatile IBinder avmShell;
     private IBinder.DeathRecipient helperDeathRecipient;
+    private IBinder avasSyncedBinder;
+    private final Set<String> transferredAvasAssets = new HashSet<>();
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private IBinder.DeathRecipient avmShellDeathRecipient;
     private long cameraHelperEpoch;
@@ -115,6 +122,7 @@ final class TurnSignalController {
         this.shellEventSink = shellEventSink;
         this.eventSink = eventSink;
         settings = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        avasLibrary = new AvasAudioLibrary(this.context, settings);
         apkMarker = currentApkMarker(this.context);
         migrateLegacyLatchState();
     }
@@ -129,13 +137,24 @@ final class TurnSignalController {
     }
 
     void shutdown(boolean terminateShells) {
+        shutdown(terminateShells, false);
+    }
+
+    void shutdownKeepingAvas() {
+        shutdown(false, true);
+    }
+
+    private void shutdown(boolean terminateShells, boolean keepAvas) {
         synchronized (this) {
             stopped = true;
         }
         handler.removeCallbacks(pingRunnable);
         LocalAdbClient.cancelPendingAuthorization();
         StockAvmOpenState canceledOpen = cancelStockAvmOpen(0);
-        if (terminateShells) {
+        if (keepAvas) {
+            shutdownTurnHelperKeepingAvas();
+            shutdownCameraHelper();
+        } else if (terminateShells) {
             shutdownTurnHelper();
             shutdownCameraHelper();
         } else {
@@ -153,7 +172,7 @@ final class TurnSignalController {
             if (canceledOpen != null) {
                 queueStockAvmCleanup(canceledOpen, "controller_shutdown");
             }
-            if (terminateShells) {
+            if (terminateShells || keepAvas) {
                 worker.execute(this::shutdownAvmShell);
             } else if (canceledOpen == null) {
                 worker.execute(() -> closeStockAvmNow("controller_shutdown"));
@@ -210,6 +229,54 @@ final class TurnSignalController {
         settings.edit().putBoolean("parking_any_enabled", anyEnabled).apply();
         worker.execute(() -> {
             if (!sendParkingRadarConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+        });
+    }
+
+    void configureAvas() {
+        worker.execute(() -> {
+            IBinder value = healthyHelper();
+            if (value == null) {
+                ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+                value = healthyHelper();
+            }
+            if (value == null) {
+                emitAvasError("config", null, null, "helper_unavailable");
+                return;
+            }
+            syncAvas(value);
+        });
+    }
+
+    void startAvasManual(String profileId) {
+        requireAvasProfile(profileId);
+        worker.execute(() -> startAvasManualNow(profileId));
+    }
+
+    void stopAvasManual(String profileId) {
+        requireAvasProfile(profileId);
+        worker.execute(() -> {
+            IBinder value = healthyHelper();
+            if (value == null) {
+                emitAvasError("manual_stop", profileId, null, "helper_unavailable");
+                return; // Stop never creates a helper.
+            }
+            try {
+                transactAvasProfile(value, TurnSignalShellProtocol.TX_STOP_AVAS_MANUAL, profileId);
+            } catch (Throwable error) {
+                emitAvasError("manual_stop", profileId, null, summary(error));
+                reportAvasStatus(value);
+            }
+        });
+    }
+
+    void reportAvasStatus() {
+        worker.execute(() -> {
+            IBinder value = healthyHelper();
+            if (value == null) {
+                emitAvasError("status", null, null, "helper_unavailable");
+                return;
+            }
+            reportAvasStatus(value);
         });
     }
 
@@ -1094,6 +1161,7 @@ final class TurnSignalController {
             emit("telemetry_ready", "ok", false, "listener_ok", false,
                     "poll_ok", false, "control_ready", false, "error", primaryError);
         }
+        if (healthy && helper == value) syncAvas(value);
     }
 
     private void helperDied(IBinder deadHelper, int deadPid) {
@@ -1158,6 +1226,121 @@ final class TurnSignalController {
             primaryError = "parking_radar_config_binder_error: " + summary(error);
             emit("helper_ping_failed", "error", primaryError);
             return false;
+        }
+    }
+
+    private void startAvasManualNow(String profileId) {
+        AvasConfig config;
+        AvasConfig.Profile profile;
+        try {
+            config = avasLibrary.loadConfig();
+            profile = config.profile(profileId);
+            if (profile.selectedAssetId.isEmpty()) {
+                throw new IllegalStateException("no selected AVAS asset");
+            }
+            if (!avasLibrary.preparedFile(profile.selectedAssetId).isFile()) {
+                throw new IllegalStateException("selected AVAS asset is not ready");
+            }
+        } catch (Throwable error) {
+            emitAvasError("manual_start", profileId, null, summary(error));
+            return;
+        }
+        IBinder value = healthyHelper();
+        if (value == null) {
+            ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            value = healthyHelper();
+        }
+        if (value == null) {
+            emitAvasError("manual_start", profileId, profile.selectedAssetId,
+                    "helper_unavailable");
+            return;
+        }
+        try {
+            if (!ensureAvasAsset(value, profileId, profile.assets, profile.selectedAssetId)) {
+                emitAvasError("manual_start", profileId, profile.selectedAssetId,
+                        "asset_transfer_failed");
+                reportAvasStatus(value);
+                return;
+            }
+            transactAvasConfig(value, config.toJson());
+            transactAvasProfile(value, TurnSignalShellProtocol.TX_START_AVAS_MANUAL, profileId);
+        } catch (Throwable error) {
+            emitAvasError("manual_start", profileId, profile.selectedAssetId, summary(error));
+            reportAvasStatus(value);
+        }
+    }
+
+    private void syncAvas(IBinder value) {
+        try {
+            AvasConfig config = avasLibrary.loadConfig();
+            for (AvasConfig.Profile profile : config.profiles) {
+                for (AvasConfig.Asset asset : profile.assets) {
+                    ensureAvasAsset(value, profile.id, profile.assets, asset.id);
+                }
+            }
+            transactAvasConfig(value, config.toJson());
+        } catch (Throwable error) {
+            emitAvasError("config", null, null, summary(error));
+        }
+    }
+
+    private boolean ensureAvasAsset(IBinder value, String profileId,
+            java.util.List<AvasConfig.Asset> assets, String assetId) {
+        synchronized (this) {
+            if (avasSyncedBinder == value && transferredAvasAssets.contains(assetId)) return true;
+        }
+        boolean declared = false;
+        for (AvasConfig.Asset asset : assets) {
+            if (asset.id.equals(assetId)) {
+                declared = true;
+                break;
+            }
+        }
+        if (!declared) {
+            emitAvasError("asset_transfer", profileId, assetId, "asset_not_in_profile");
+            return false;
+        }
+        try (ParcelFileDescriptor descriptor = avasLibrary.openPrepared(assetId)) {
+            transactAvasAsset(value, assetId, descriptor);
+            synchronized (this) {
+                if (avasSyncedBinder == value) transferredAvasAssets.add(assetId);
+            }
+            return true;
+        } catch (Throwable error) {
+            emitAvasError("asset_transfer", profileId, assetId, summary(error));
+            return false;
+        }
+    }
+
+    private IBinder healthyHelper() {
+        IBinder value = helper;
+        return healthy && value != null && value.isBinderAlive() ? value : null;
+    }
+
+    private void reportAvasStatus(IBinder value) {
+        try {
+            transactNoArgs(value, TurnSignalShellProtocol.TX_REPORT_AVAS_STATUS);
+        } catch (Throwable error) {
+            emitAvasError("status", null, null, summary(error));
+        }
+    }
+
+    private static void requireAvasProfile(String profileId) {
+        if (!TurnSignalShellProtocol.isAvasProfileAllowed(profileId)) {
+            throw new IllegalArgumentException("invalid AVAS profile id");
+        }
+    }
+
+    private void emitAvasError(String stage, String profileId, String assetId, String error) {
+        if (profileId != null && assetId != null) {
+            emit("avas_error", "stage", stage, "profile_id", profileId,
+                    "asset_id", assetId, "error", error);
+        } else if (profileId != null) {
+            emit("avas_error", "stage", stage, "profile_id", profileId, "error", error);
+        } else if (assetId != null) {
+            emit("avas_error", "stage", stage, "asset_id", assetId, "error", error);
+        } else {
+            emit("avas_error", "stage", stage, "error", error);
         }
     }
 
@@ -1246,6 +1429,48 @@ final class TurnSignalController {
             data.writeInt(settings.getBoolean("parking_any_enabled", false) ? 1 : 0);
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR,
                     data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactAvasConfig(IBinder value, String configJson) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeString(configJson);
+            requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_AVAS, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactAvasAsset(
+            IBinder value, String assetId, ParcelFileDescriptor descriptor) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeString(assetId);
+            descriptor.writeToParcel(data, Parcelable.PARCELABLE_WRITE_RETURN_VALUE);
+            requireTransact(value, TurnSignalShellProtocol.TX_INSTALL_AVAS_ASSET, data, reply);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void transactAvasProfile(IBinder value, int transaction, String profileId)
+            throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeString(profileId);
+            requireTransact(value, transaction, data, reply);
         } finally {
             data.recycle();
             reply.recycle();
@@ -2065,6 +2290,19 @@ final class TurnSignalController {
         }
     }
 
+    private void shutdownTurnHelperKeepingAvas() {
+        IBinder value = helper;
+        if (value == null || !value.isBinderAlive()) return;
+        try {
+            transactAttach(value, false);
+            transactNoArgs(value, TurnSignalShellProtocol.TX_SHUTDOWN_KEEPING_AVAS);
+            emit("shell_shutdown_requested", "helper", "turn", "avas_retained", true);
+        } catch (Throwable error) {
+            emit("shell_shutdown_failed", "helper", "turn", "avas_retained", true,
+                    "error", summary(error));
+        }
+    }
+
     private void shutdownCameraHelper() {
         IBinder cached;
         long cachedEpoch;
@@ -2320,6 +2558,8 @@ final class TurnSignalController {
         IBinder.DeathRecipient previousRecipient = helperDeathRecipient;
         helper = value;
         helperDeathRecipient = recipient;
+        avasSyncedBinder = value;
+        transferredAvasAssets.clear();
         unlinkDeathRecipient(previous, previousRecipient);
     }
 
@@ -2532,6 +2772,10 @@ final class TurnSignalController {
             previousRecipient = helperDeathRecipient;
             helper = null;
             helperDeathRecipient = null;
+            if (avasSyncedBinder == previous) {
+                avasSyncedBinder = null;
+                transferredAvasAssets.clear();
+            }
         }
         unlinkDeathRecipient(previous, previousRecipient);
     }
