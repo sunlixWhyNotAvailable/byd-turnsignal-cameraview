@@ -162,6 +162,14 @@ final class CameraHelperMain {
             turnController.stopAvasManual(profileId);
         }
 
+        public void startAvasAudition(String profileId, String assetId, String sessionId) {
+            turnController.startAvasAudition(profileId, assetId, sessionId);
+        }
+
+        public void stopAvasAudition(String sessionId) {
+            turnController.stopAvasAudition(sessionId);
+        }
+
         public void reportAvasStatus() {
             turnController.reportAvasStatus();
         }

@@ -172,18 +172,32 @@ bug-icon-only button with a localized accessibility label.
 BYD integrations uses the same category layout as Settings: Turn signals, Music and lighting,
 Weather, and AVAS (external speaker). Existing integration settings are preserved.
 
-AVAS has separate Lock, Unlock, Power off and Power on profiles. Each starts disabled, with an
-empty audio library, random playback off and volume15%. Add one or more audio files through the
+AVAS has separate Lock, Unlock, Power off and Power on profiles. Each starts disabled, with a
+protected one-second Test sound, random playback off and volume15%. Existing settings and
+selections, including an empty selection, are preserved on upgrade. Add audio files through the
 system document picker; supported audio is copied privately and prepared before playback.
 Each profile has its own file list and selection. Imports preserve the selected file and do not
 overwrite duplicates. Audio libraries are not included in camera-preset JSON files.
 
-Volume is independent per profile, from0% (silent) to100%. Start auditions the selected ready
+The profile header toggles its automation. Volume is independent per profile, from0% (silent)
+to100%, with the slider and percentage below its title. Start plays the selected ready
 file through the exterior route even when that profile's automatic switch is off. Stop cancels
-only the same profile's manual playback or queued audition, not automatic event sounds.
-Automatic random playback selects only from that profile's ready files. Nearby ordinary events
+only the same profile's manual playback or queued request, not automatic event sounds.
+Automatic random playback excludes Test and skips an event when no imported file is ready.
+Nearby ordinary events
 play sequentially; a ready enabled Power-off sound replaces its associated automatic Unlock.
 Initial, repeated and unknown vehicle states do not trigger playback.
+
+The file list stays open when selecting a sound and shows its duration. Long names are shortened
+visually without changing the stored filename. Imported files can be deleted; deleting the
+selected file selects Test. Only private copies are removed, never the original document.
+The note button plays that exact row through the OEM driver-navigation speaker, not ordinary
+cabin media, regardless of selection, random mode or automation enablement. It becomes Stop
+while playing; another note replaces it. Closing the list, leaving the screen/backgrounding,
+process death or deleting that file stops only this listening session. Start and automatic
+events take precedence and use the exterior speaker; a note cannot interrupt or queue behind
+exterior playback. Stopped notes do not resume. Both routes apply the profile's PCM gain and
+restore their saved route/volume state without a media-channel fallback.
 
 The existing shell helper owns playback so losing the application process does not itself
 destroy the player. A helper restart starts from current telemetry without replaying old events.

@@ -417,15 +417,30 @@ object AvasProfileIds {
     val ALL = listOf(LOCK, UNLOCK, POWER_OFF, POWER_ON)
 }
 
-enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPlaying }
-enum class AvasActionKind { SetEnabled, SetRandom, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual }
+enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPlaying, AutomaticQueued }
+enum class AvasActionKind {
+    SetEnabled, SetRandom, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
+    DeleteAsset, StartAudition, StopAudition,
+}
 
 @Immutable
 data class AvasAssetUiState @JvmOverloads constructor(
     val id: String = "",
     val filename: String = "",
     val ready: Boolean = false,
+    val builtin: Boolean = false,
+    val durationMs: Long? = null,
 )
+
+@Immutable
+data class AvasAuditionUiState @JvmOverloads constructor(
+    val profileId: String? = null,
+    val assetId: String? = null,
+    val sessionId: String? = null,
+    val state: String = "idle",
+) {
+    val active: Boolean get() = state != "idle" && sessionId != null
+}
 
 @Immutable
 data class AvasProfileUiState @JvmOverloads constructor(
@@ -453,6 +468,7 @@ data class AvasProfileUiState @JvmOverloads constructor(
 data class AvasUiState @JvmOverloads constructor(
     val profiles: List<AvasProfileUiState> = AvasProfileIds.ALL.map { AvasProfileUiState(id = it) },
     val importingProfileId: String? = null,
+    val audition: AvasAuditionUiState = AvasAuditionUiState(),
 )
 
 @Immutable

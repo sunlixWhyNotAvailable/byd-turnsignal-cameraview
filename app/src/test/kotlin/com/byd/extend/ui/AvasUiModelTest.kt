@@ -12,6 +12,7 @@ class AvasUiModelTest {
     fun fixedProfilesAndDefaultsMatchProductionContract() {
         assertEquals(listOf("lock", "unlock", "power_off", "power_on"), AvasProfileIds.ALL)
         assertTrue(AvasUiState().profiles.all { it.volume == 15 })
+        assertEquals(AvasAuditionUiState(), AvasUiState().audition)
     }
 
     @Test
@@ -33,5 +34,33 @@ class AvasUiModelTest {
         assertTrue(profile.copy(playback = AvasPlaybackUiState.ManualQueued).manualStopAllowed)
         assertTrue(profile.copy(playback = AvasPlaybackUiState.ManualPlaying).manualStopAllowed)
         assertFalse(profile.copy(playback = AvasPlaybackUiState.AutomaticPlaying).manualStopAllowed)
+    }
+
+    @Test
+    fun auditionIdentityAndAssetMetadataAreIndependentFromSelection() {
+        val builtin = AvasAssetUiState("builtin", "test.wav", ready = true,
+            builtin = true, durationMs = 1_001)
+        val audition = AvasAuditionUiState(AvasProfileIds.UNLOCK, builtin.id, "session-7", "playing")
+
+        assertTrue(builtin.builtin)
+        assertEquals(1_001L, builtin.durationMs)
+        assertTrue(audition.active)
+        assertFalse(audition.copy(state = "idle").active)
+        assertEquals("0:02", avasDurationLabel(builtin.durationMs))
+        assertEquals("—", avasDurationLabel(null))
+    }
+
+    @Test
+    fun auditionActionsCarryAssetOrSessionIdentity() {
+        val start = AvasBackendAction(AvasProfileIds.LOCK, AvasActionKind.StartAudition,
+            stringValue = "asset-id")
+        val stop = AvasBackendAction(AvasProfileIds.LOCK, AvasActionKind.StopAudition,
+            stringValue = "session-id")
+        val delete = AvasBackendAction(AvasProfileIds.LOCK, AvasActionKind.DeleteAsset,
+            stringValue = "asset-id")
+
+        assertEquals("asset-id", start.stringValue)
+        assertEquals("session-id", stop.stringValue)
+        assertEquals("asset-id", delete.stringValue)
     }
 }

@@ -24,6 +24,17 @@ public final class AvasRuntimeContractTest {
         assertTrue(text.contains("void installAsset(String assetId, ParcelFileDescriptor descriptor)"));
         assertTrue(text.contains("void startManual(String profileId)"));
         assertTrue(text.contains("void stopManual(String profileId)"));
+        assertTrue(text.contains("void startAudition(String profileId, String assetId, String sessionId)"));
+        assertTrue(text.contains("void stopAudition(String sessionId)"));
+        assertTrue(text.contains("void stopAllAuditions()"));
+        assertTrue(text.contains("private volatile String auditionSessionId"));
+        assertTrue(text.contains("String auditionSessionId()"));
+        assertTrue(text.contains("sessionId.matches(\"[0-9a-f]{32}\")"));
+        assertTrue(text.contains(".put(\"audition\", audition)"));
+        assertTrue(text.contains("\"stage\", \"audition\""));
+        assertTrue(text.contains("AvasBuiltinSounds.isBuiltinAsset(asset.id)"));
+        assertTrue(text.contains("queue.removeAuditionsForAssets(deleted)"));
+        assertTrue(text.contains("assetId.equals(activeAssetId)"));
         assertTrue(text.contains("scheduleWithFixedDelay(this::poll, 0, POLL_MS"));
         assertTrue(text.contains("StandardCopyOption.ATOMIC_MOVE"));
         assertTrue(text.contains("Os.chmod(CACHE.getAbsolutePath(), 0700)"));

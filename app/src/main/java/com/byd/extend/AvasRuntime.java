@@ -60,6 +60,11 @@ final class AvasRuntime implements AutoCloseable {
     private volatile boolean closed;
     private boolean configOwned;
     private volatile int telemetryState = -1;
+    private final Set<String> pendingPrune = new HashSet<>();
+    private volatile String activeAssetId = "";
+    private String auditionProfileId = "";
+    private String auditionAssetId = "";
+    private volatile String auditionSessionId = "";
 
     AvasRuntime(Context context, int ownerUid, Consumer<JSONObject> eventSink) {
         if (context == null) throw new IllegalArgumentException("context is null");
@@ -73,6 +78,13 @@ final class AvasRuntime implements AutoCloseable {
         if (closed || started) return;
         started = true;
         config = loadConfig();
+        // Recover a route left dirty by helper death even when no new sound is requested.
+        try {
+            player = new AvasAudioPlayer(context, this::emit);
+        } catch (Exception failure) {
+            // The dirty marker remains set; the existing next-play construction retries cleanup.
+            event("avas_error", "stage", "recovery", "error", failure.toString());
+        }
         playback.execute(this::playbackLoop);
         updatePolling();
         event("avas_runtime_started", "ownerUid", ownerUid);
@@ -83,7 +95,14 @@ final class AvasRuntime implements AutoCloseable {
         if (closed) return;
         if (next == null) throw new IllegalArgumentException("AVAS config is null");
         String previous = config.toJson();
+        Set<String> deleted = assetIds(config);
+        deleted.removeAll(assetIds(next));
         config = next;
+        if (!deleted.isEmpty()) {
+            queue.removeAuditionsForAssets(deleted);
+            pendingPrune.addAll(deleted);
+            pruneDeletedAssets();
+        }
         if (!previous.equals(next.toJson()) || !configOwned) {
             configOwned = persistConfig(next);
             Set<String> enabled = new HashSet<>();
@@ -142,6 +161,7 @@ final class AvasRuntime implements AutoCloseable {
 
     void startManual(String profileId) {
         if (closed) return;
+        queue.stopAllAuditions();
         AvasConfig.Profile profile = config.profile(profileId);
         File selected = selectedReady(profile);
         if (selected == null) {
@@ -150,7 +170,7 @@ final class AvasRuntime implements AutoCloseable {
             reportStatus();
             return;
         }
-        AvasPlaybackQueue.Request request = queue.enqueue(profileId, true);
+        AvasPlaybackQueue.Request request = queue.enqueueExterior(profileId, true);
         if (request == null) {
             event("avas_profile_skipped", "profile", profileId, "source", "manual",
                     "reason", "already_queued_or_playing");
@@ -169,12 +189,85 @@ final class AvasRuntime implements AutoCloseable {
         reportStatus();
     }
 
+    synchronized void startAudition(String profileId, String assetId, String sessionId) {
+        if (closed) return;
+        if (!validSessionId(sessionId)) {
+            auditionError(profileId, assetId, sessionId, "invalid audition session id");
+            reportStatus();
+            return;
+        }
+        AvasConfig.Profile profile;
+        try {
+            profile = config.profile(profileId);
+        } catch (Exception failure) {
+            auditionError(profileId, assetId, sessionId, failure.toString());
+            reportStatus();
+            return;
+        }
+        if (!profileContains(profile, assetId)) {
+            auditionError(profileId, assetId, sessionId, "asset is not in AVAS profile");
+            reportStatus();
+            return;
+        }
+        File file = assetFile(assetId);
+        if (!file.isFile()) {
+            auditionError(profileId, assetId, sessionId, "AVAS asset is not ready");
+            reportStatus();
+            return;
+        }
+        auditionProfileId = profileId;
+        auditionAssetId = assetId;
+        auditionSessionId = sessionId;
+        AvasPlaybackQueue.Request request = queue.enqueueAudition(profileId, assetId, sessionId);
+        if (request == null) {
+            auditionError(profileId, assetId, sessionId, "exterior playback is busy");
+        } else {
+            event("avas_queue_enqueued", "request", request.id, "profile", profileId,
+                    "asset", assetId, "session", sessionId, "source", "audition",
+                    "pending", queue.pendingCount());
+        }
+        reportStatus();
+    }
+
+    void stopAudition(String sessionId) {
+        if (closed) return;
+        if (!validSessionId(sessionId)) {
+            auditionError("", "", sessionId, "invalid audition session id");
+            return;
+        }
+        queue.stopAudition(sessionId);
+        event("avas_audition_stopped", "session_id", sessionId);
+        reportStatus();
+    }
+
+    void stopAllAuditions() {
+        if (closed) return;
+        queue.stopAllAuditions();
+        event("avas_auditions_stopped");
+        reportStatus();
+    }
+
+    /** Lock-free helper-death snapshot; callers stop only this captured session. */
+    String auditionSessionId() { return auditionSessionId; }
+
     void reportStatus() {
         if (closed) return;
         try {
             JSONObject profiles = new JSONObject();
             for (String id : AvasConfig.PROFILE_IDS) profiles.put(id, queue.state(id));
-            emit(new JSONObject().put("kind", "avas_status").put("profiles", profiles));
+            String profile;
+            String asset;
+            String session;
+            synchronized (this) {
+                profile = auditionProfileId;
+                asset = auditionAssetId;
+                session = auditionSessionId;
+            }
+            JSONObject audition = new JSONObject().put("profileId", profile)
+                    .put("assetId", asset).put("sessionId", session)
+                    .put("state", queue.auditionState(session));
+            emit(new JSONObject().put("kind", "avas_status").put("profiles", profiles)
+                    .put("audition", audition));
         } catch (Exception ignored) {
         }
     }
@@ -226,10 +319,21 @@ final class AvasRuntime implements AutoCloseable {
 
     private void play(AvasPlaybackQueue.Request request) {
         AvasConfig.Profile profile = config.profile(request.profile);
-        File file = request.manual ? selectedReady(profile) : automaticReady(profile);
+        if (request.cancelled.get()) return;
+        File file = request.audition() ? assetFile(request.asset)
+                : request.manual ? selectedReady(profile) : automaticReady(profile);
         if (file == null) {
             event("avas_profile_skipped", "request", request.id, "profile", request.profile,
                     "source", request.manual ? "manual" : "automatic", "reason", "asset_not_ready");
+            return;
+        }
+        setActiveAsset(assetId(file));
+        if (!file.isFile()) {
+            if (request.audition()) {
+                auditionError(request.profile, request.asset, request.session,
+                        "AVAS asset is not ready");
+            }
+            clearActiveAsset(assetId(file));
             return;
         }
         try {
@@ -239,20 +343,30 @@ final class AvasRuntime implements AutoCloseable {
                 player = output;
             }
             event("avas_play_start", "request", request.id, "profile", request.profile,
-                    "source", request.manual ? "manual" : "automatic", "asset", assetId(file),
+                    "source", request.audition() ? "audition"
+                            : request.manual ? "manual" : "automatic", "asset", assetId(file),
                     "gain", profile.volume);
             reportStatus();
-            output.play(file, profile.volume, request.cancelled::get,
-                    () -> config.profile(request.profile).volume);
+            if (request.audition()) {
+                output.playNavigation(file, profile.volume, request.cancelled::get,
+                        () -> config.profile(request.profile).volume);
+            } else {
+                output.play(file, profile.volume, request.cancelled::get,
+                        () -> config.profile(request.profile).volume);
+            }
             event("avas_play_finish", "request", request.id, "profile", request.profile,
                     "asset", assetId(file), "cancelled", request.cancelled.get());
         } catch (Exception failure) {
             event("avas_play_error", "request", request.id, "profile", request.profile,
                     "asset", assetId(file), "error", failure.toString());
-            if (request.manual) {
+            if (request.audition()) {
+                auditionError(request.profile, request.asset, request.session, failure.toString());
+            } else if (request.manual) {
                 event("avas_error", "stage", "manual_playback", "profile_id", request.profile,
                         "asset_id", assetId(file), "error", failure.toString());
             }
+        } finally {
+            clearActiveAsset(assetId(file));
         }
     }
 
@@ -304,7 +418,7 @@ final class AvasRuntime implements AutoCloseable {
             event("avas_event_skipped", "profile", profileId, "reason", "disabled_or_not_ready");
             return;
         }
-        AvasPlaybackQueue.Request request = queue.enqueue(profileId, false);
+        AvasPlaybackQueue.Request request = queue.enqueueExterior(profileId, false);
         if (request != null) {
             event("avas_event_accepted", "profile", profileId, "request", request.id);
             event("avas_queue_enqueued", "request", request.id, "profile", profileId,
@@ -328,6 +442,7 @@ final class AvasRuntime implements AutoCloseable {
         if (!profile.random) return selectedReady(profile);
         List<File> ready = new ArrayList<>();
         for (AvasConfig.Asset asset : profile.assets) {
+            if (AvasBuiltinSounds.isBuiltinAsset(asset.id)) continue;
             File file = assetFile(asset.id);
             if (file.isFile()) ready.add(file);
         }
@@ -407,6 +522,52 @@ final class AvasRuntime implements AutoCloseable {
     private static String assetId(File file) {
         String name = file.getName();
         return name.substring(0, name.length() - 4);
+    }
+
+    private static boolean profileContains(AvasConfig.Profile profile, String assetId) {
+        if (!validAssetId(assetId)) return false;
+        for (AvasConfig.Asset asset : profile.assets) if (asset.id.equals(assetId)) return true;
+        return false;
+    }
+
+    private static boolean validSessionId(String sessionId) {
+        return sessionId != null && sessionId.matches("[0-9a-f]{32}");
+    }
+
+    private static String safe(String value) { return value == null ? "" : value; }
+
+    private static Set<String> assetIds(AvasConfig value) {
+        Set<String> ids = new HashSet<>();
+        for (AvasConfig.Profile profile : value.profiles) {
+            for (AvasConfig.Asset asset : profile.assets) ids.add(asset.id);
+        }
+        return ids;
+    }
+
+    private synchronized void setActiveAsset(String assetId) { activeAssetId = assetId; }
+
+    private synchronized void clearActiveAsset(String assetId) {
+        if (activeAssetId.equals(assetId)) activeAssetId = "";
+        pruneDeletedAssets();
+    }
+
+    private void pruneDeletedAssets() {
+        pendingPrune.removeIf(assetId -> {
+            if (assetId.equals(activeAssetId)) return false;
+            try {
+                return Files.deleteIfExists(assetFile(assetId).toPath())
+                        || !assetFile(assetId).exists();
+            } catch (Exception failure) {
+                event("avas_asset_error", "asset", assetId, "operation", "prune",
+                        "error", failure.toString());
+                return false;
+            }
+        });
+    }
+
+    private void auditionError(String profileId, String assetId, String sessionId, String error) {
+        event("avas_error", "stage", "audition", "profile_id", safe(profileId),
+                "asset_id", safe(assetId), "session_id", safe(sessionId), "error", error);
     }
 
     private void event(String kind, Object... fields) {

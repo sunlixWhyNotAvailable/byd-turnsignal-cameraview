@@ -64,6 +64,7 @@ import androidx.activity.ComponentActivity;
 import com.byd.extend.ui.AvmOrientation;
 import com.byd.extend.ui.AvasActionKind;
 import com.byd.extend.ui.AvasAssetUiState;
+import com.byd.extend.ui.AvasAuditionUiState;
 import com.byd.extend.ui.AvasBackendAction;
 import com.byd.extend.ui.AvasPlaybackUiState;
 import com.byd.extend.ui.AvasProfileUiState;
@@ -120,6 +121,7 @@ import java.util.Date;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -481,6 +483,10 @@ public final class CameraProbeActivity extends ComponentActivity
     private ProductionUiController productionUi;
     private AvasAudioLibrary avasLibrary;
     private final Map<String, AvasPlaybackUiState> avasPlayback = new HashMap<>();
+    private AvasAuditionUiState avasAudition = new AvasAuditionUiState();
+    private String lastStoppedAvasSession = "";
+    private final Map<String, Long> avasDurations = new HashMap<>();
+    private final Set<String> avasDurationRequests = new HashSet<>();
     private long reverseOwnerToken;
     private boolean reverseOwnerPresent;
     private final EnumMap<CameraHostKind, View> productionCameraHosts =
@@ -1019,7 +1025,23 @@ public final class CameraProbeActivity extends ComponentActivity
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
         avasLibrary = new AvasAudioLibrary(this, preferences);
+        try {
+            avasLibrary.initializeBuiltinConfig();
+        } catch (RuntimeException error) {
+            record("avas_builtin_config_failed", "error", error.toString());
+            avasLibrary = null;
+        }
         resetAvasPlayback();
+        if (avasLibrary != null) avasImportExecutor.execute(() -> {
+            try {
+                avasLibrary.ensureBuiltins();
+                mainHandler.post(() -> {
+                    if (!activityDestroyed && productionUi != null) productionUi.refreshAvasState();
+                });
+            } catch (RuntimeException error) {
+                record("avas_builtin_prepare_failed", "error", error.toString());
+            }
+        });
         // Picker state survives recreation. A decoder is process-local, so a persisted decoding
         // marker without the process-local counterpart is an orphan left by process death.
         String persistedImportProfile = preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
@@ -1230,6 +1252,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onStop() {
         activityStarted = false;
+        stopAvasListAudition(avasAudition.getSessionId());
         preferences.unregisterOnSharedPreferenceChangeListener(permissionsPreferenceListener);
         WeatherRefreshAccessibilityService.removeConnectionListener(accessibilityConnectionListener);
         clearReverseOwnerPresence();
@@ -1263,6 +1286,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     @Override
     protected void onDestroy() {
+        stopAvasListAudition(avasAudition.getSessionId());
         cancelReverseButtonLearningIfVisible();
         clearReverseOwnerPresence();
         activityDestroyed = true;
@@ -2668,8 +2692,10 @@ public final class CameraProbeActivity extends ComponentActivity
             List<AvasAssetUiState> assets = new ArrayList<>();
             String selectedName = null;
             for (AvasConfig.Asset asset : profile.assets) {
+                requestAvasDuration(asset.id);
                 assets.add(new AvasAssetUiState(asset.id, asset.name,
-                        avasLibrary != null && avasLibrary.preparedFile(asset.id).isFile()));
+                        avasLibrary != null && avasLibrary.preparedFile(asset.id).isFile(),
+                        AvasBuiltinSounds.isBuiltinAsset(asset.id), avasDurations.get(asset.id)));
                 if (asset.id.equals(profile.selectedAssetId)) selectedName = asset.name;
             }
             profiles.add(new AvasProfileUiState(profile.id, profile.enabled, profile.random,
@@ -2679,7 +2705,7 @@ public final class CameraProbeActivity extends ComponentActivity
         String importing = preferences == null ? null
                 : preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
         if (!AvasConfig.PROFILE_IDS.contains(importing)) importing = null;
-        return new AvasUiState(profiles, importing);
+        return new AvasUiState(profiles, importing, avasAudition);
     }
 
     @Override
@@ -2695,6 +2721,48 @@ public final class CameraProbeActivity extends ComponentActivity
                 chooseAvasAudio(profileId);
                 return;
             }
+            if (kind == AvasActionKind.StartAudition) {
+                String assetId = action.getStringValue();
+                boolean member = false;
+                for (AvasConfig.Asset asset : profile.assets) member |= asset.id.equals(assetId);
+                if (!member || !activityStarted || !avasLibrary.preparedFile(assetId).isFile()) return;
+                for (AvasPlaybackUiState playback : avasPlayback.values()) {
+                    if (playback != AvasPlaybackUiState.Idle) return;
+                }
+                String sessionId = java.util.UUID.randomUUID().toString().replace("-", "");
+                avasAudition = new AvasAuditionUiState(profileId, assetId, sessionId, "queued");
+                CameraHelperService.startAvasAudition(this, profileId, assetId, sessionId);
+                return;
+            }
+            if (kind == AvasActionKind.StopAudition) {
+                stopAvasListAudition(action.getStringValue());
+                return;
+            }
+            if (kind == AvasActionKind.DeleteAsset) {
+                String assetId = action.getStringValue();
+                if (assetId != null && assetId.equals(avasAudition.getAssetId())) {
+                    stopAvasListAudition(avasAudition.getSessionId());
+                }
+                avasImportExecutor.execute(() -> {
+                    try {
+                        if (avasLibrary.removeAsset(profileId, assetId)) {
+                            CameraHelperService.configureAvas(this);
+                            mainHandler.post(() -> {
+                                avasDurations.remove(assetId);
+                                avasDurationRequests.remove(assetId);
+                                if (!activityDestroyed && productionUi != null) productionUi.refreshAvasState();
+                            });
+                        }
+                    } catch (RuntimeException error) {
+                        mainHandler.post(() -> {
+                            record("avas_delete_failed", "profile_id", profileId, "error", error.toString());
+                            if (!activityDestroyed && !isFinishing()) Toast.makeText(this,
+                                    runtimeText(R.string.runtime_avas_action_failed), Toast.LENGTH_LONG).show();
+                        });
+                    }
+                });
+                return;
+            }
             if (kind == AvasActionKind.StartManual) {
                 AvasPlaybackUiState playback = avasPlayback(profileId);
                 if (!profile.selectedAssetId.isEmpty()
@@ -2702,6 +2770,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         && playback != AvasPlaybackUiState.ManualPlaying
                         && avasLibrary.preparedFile(profile.selectedAssetId).isFile()) {
                     avasPlayback.put(profileId, AvasPlaybackUiState.ManualQueued);
+                    stopAvasListAudition(avasAudition.getSessionId());
                     CameraHelperService.startAvasManual(this, profileId);
                 }
                 return;
@@ -2714,10 +2783,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 }
                 return;
             }
-            boolean enabled = profile.enabled;
-            boolean random = profile.random;
-            int volume = profile.volume;
-            String selected = profile.selectedAssetId;
+            Boolean enabled = null;
+            Boolean random = null;
+            Integer volume = null;
+            String selected = null;
             if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
                 enabled = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetRandom && action.getBooleanValue() != null) {
@@ -2729,10 +2798,13 @@ public final class CameraProbeActivity extends ComponentActivity
             } else {
                 return;
             }
-            avasLibrary.saveConfig(config.withProfile(
-                    profile.withSettings(enabled, random, volume, selected)));
+            avasLibrary.updateProfileSettings(profileId, enabled, random, volume, selected);
             CameraHelperService.configureAvas(this);
         } catch (RuntimeException invalid) {
+            if (action.getKind() == AvasActionKind.StartAudition) {
+                avasAudition = new AvasAuditionUiState();
+                if (productionUi != null) productionUi.refreshAvasState();
+            }
             if (action.getKind() == AvasActionKind.StartManual) {
                 avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
                 if (productionUi != null) productionUi.refreshAvasState();
@@ -2750,10 +2822,36 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void resetAvasPlayback() {
+        avasAudition = new AvasAuditionUiState();
         avasPlayback.clear();
         for (String profileId : AvasConfig.PROFILE_IDS) {
             avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
         }
+    }
+
+    private void stopAvasListAudition(String sessionId) {
+        if (sessionId == null || !sessionId.equals(avasAudition.getSessionId())) return;
+        lastStoppedAvasSession = sessionId;
+        avasAudition = new AvasAuditionUiState();
+        try {
+            CameraHelperService.stopAvasAudition(this, sessionId);
+        } catch (RuntimeException error) {
+            record("avas_audition_stop_failed", "error", error.toString());
+        }
+        if (!activityDestroyed && productionUi != null) productionUi.refreshAvasState();
+    }
+
+    private void requestAvasDuration(String assetId) {
+        if (activityDestroyed || avasLibrary == null || avasImportExecutor.isShutdown()
+                || !avasDurationRequests.add(assetId)) return;
+        avasImportExecutor.execute(() -> {
+            Long duration = avasLibrary.durationMillis(assetId);
+            mainHandler.post(() -> {
+                if (activityDestroyed) return;
+                if (duration != null) avasDurations.put(assetId, duration);
+                if (productionUi != null) productionUi.refreshAvasState();
+            });
+        });
     }
 
     @SuppressWarnings("deprecation")
@@ -2839,8 +2937,7 @@ public final class CameraProbeActivity extends ComponentActivity
         try {
             if (error != null || result == null) throw new IllegalStateException(
                     error == null ? "AVAS import failed" : error.getMessage(), error);
-            AvasConfig latest = avasLibrary.loadConfig();
-            avasLibrary.saveConfig(mergeAvasImport(latest, profileId, result));
+            avasLibrary.mergeImportedAssets(profileId, result);
             addedCount = result.added.size();
             CameraHelperService.configureAvas(this);
         } catch (Throwable failed) {
@@ -2869,18 +2966,6 @@ public final class CameraProbeActivity extends ComponentActivity
             String persistedProfile, String inFlightProfile) {
         if (persistedProfile != null && persistedProfile.equals(inFlightProfile)) return false;
         return !hasSavedState || AVAS_IMPORT_PHASE_DECODING.equals(phase);
-    }
-
-    /** Merge decoded assets into the latest profile so in-flight UI edits are never reverted. */
-    static AvasConfig mergeAvasImport(AvasConfig latest, String profileId,
-            AvasAudioLibrary.ImportResult result) {
-        if (latest == null || result == null) throw new IllegalArgumentException("missing import");
-        AvasConfig.Profile profile = latest.profile(profileId);
-        List<AvasConfig.Asset> merged = new ArrayList<>(profile.assets);
-        merged.addAll(result.added);
-        String selected = profile.selectedAssetId;
-        if (selected.isEmpty() && !result.added.isEmpty()) selected = result.added.get(0).id;
-        return latest.withProfile(profile.withAssets(merged, selected));
     }
 
     @Override
@@ -14097,6 +14182,13 @@ public final class CameraProbeActivity extends ComponentActivity
                             StatusTone.Error);
                 } else if ("helper_death".equals(kind)
                         || "helper_ping_failed".equals(kind)) {
+                    if ("helper_death".equals(kind)
+                            && avasAudition.getSessionId() != null
+                            && avasAudition.getSessionId().equals(
+                                    json.optString("audition_session_id"))) {
+                        avasAudition = new AvasAuditionUiState();
+                        if (productionUi != null) productionUi.refreshAvasState();
+                    }
                     telemetryReady = false;
                     manualGearPark = false;
                     publishGuardStatus("Helper відновлюється: "
@@ -14211,17 +14303,34 @@ public final class CameraProbeActivity extends ComponentActivity
             if ("manual_queued".equals(value)) playback = AvasPlaybackUiState.ManualQueued;
             else if ("manual_playing".equals(value)) playback = AvasPlaybackUiState.ManualPlaying;
             else if ("automatic_playing".equals(value)) playback = AvasPlaybackUiState.AutomaticPlaying;
+            else if ("automatic_queued".equals(value)) playback = AvasPlaybackUiState.AutomaticQueued;
             else playback = AvasPlaybackUiState.Idle;
             next.put(profileId, playback);
         }
         avasPlayback.clear();
         avasPlayback.putAll(next);
+        JSONObject audition = event.optJSONObject("audition");
+        if (audition != null && avasAudition.getSessionId() != null
+                && avasAudition.getSessionId().equals(audition.optString("sessionId"))) {
+            avasAudition = "idle".equals(audition.optString("state"))
+                    ? new AvasAuditionUiState()
+                    : new AvasAuditionUiState(audition.optString("profileId"),
+                            audition.optString("assetId"), audition.optString("sessionId"),
+                            audition.optString("state"));
+        }
         if (productionUi != null) productionUi.refreshAvasState();
     }
 
     private void acceptAvasError(JSONObject event) {
         String profileId = event.optString("profile_id");
         String stage = event.optString("stage");
+        if ("audition".equals(stage)) {
+            if (!event.optString("session_id").equals(avasAudition.getSessionId())) return;
+            avasAudition = new AvasAuditionUiState();
+        } else if ("audition_stop".equals(stage)
+                && !event.optString("session_id").equals(lastStoppedAvasSession)) {
+            return;
+        }
         if (AvasConfig.PROFILE_IDS.contains(profileId)
                 && ("manual_start".equals(stage) || "manual_stop".equals(stage)
                         || "manual_playback".equals(stage))) {

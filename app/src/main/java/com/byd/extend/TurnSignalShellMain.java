@@ -274,6 +274,27 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_START_AVAS_AUDITION) {
+                    String profileId = requireAvasProfile(data.readString());
+                    String assetId = data.readString();
+                    String sessionId = data.readString();
+                    if (!TurnSignalShellProtocol.isAvasAssetAllowed(assetId)
+                            || !TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+                        throw new IllegalArgumentException("invalid AVAS audition identity");
+                    }
+                    requireAvasRuntime().startAudition(profileId, assetId, sessionId);
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_STOP_AVAS_AUDITION) {
+                    String sessionId = data.readString();
+                    if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+                        throw new IllegalArgumentException("invalid AVAS audition session");
+                    }
+                    requireAvasRuntime().stopAudition(sessionId);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_SET_MANUAL_STATE) {
                     int payload = data.readInt();
                     if (!TurnSignalShellProtocol.isPayloadAllowed(payload)) {
@@ -326,6 +347,7 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     handler.post(() -> {
                         nonAvasStopped = true;
+                        if (avasRuntime != null) avasRuntime.stopAllAuditions();
                         // This helper will be reattached: keep the metadata executor and power state.
                         musicRuntime.configure(false);
                         parkingRadarRuntime.stop();
@@ -346,6 +368,12 @@ public final class TurnSignalShellMain {
 
         private synchronized void registerCallback(IBinder value) throws RemoteException {
             if (value == null) throw new IllegalArgumentException("callback is null");
+            if (callback != value && avasRuntime != null) {
+                String replacedSession = avasRuntime.auditionSessionId();
+                if (TurnSignalShellProtocol.isAvasSessionAllowed(replacedSession)) {
+                    handler.post(() -> avasRuntime.stopAudition(replacedSession));
+                }
+            }
             callback = value;
             value.linkToDeath(() -> handler.post(() -> clearCallback(value)), 0);
             emit("shell_callback_registered", "shell_uid", Process.myUid());
@@ -360,7 +388,16 @@ public final class TurnSignalShellMain {
         }
 
         private synchronized void clearCallback(IBinder value) {
-            if (callback == value) callback = null;
+            if (callback == value) {
+                callback = null;
+                // Capture the old session; a delayed death must not cancel a newer audition.
+                if (avasRuntime != null) {
+                    String diedSession = avasRuntime.auditionSessionId();
+                    if (TurnSignalShellProtocol.isAvasSessionAllowed(diedSession)) {
+                        handler.post(() -> avasRuntime.stopAudition(diedSession));
+                    }
+                }
+            }
         }
 
         private void terminateProcessOnce() {

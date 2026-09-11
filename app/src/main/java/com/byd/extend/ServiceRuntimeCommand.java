@@ -14,6 +14,8 @@ final class ServiceRuntimeCommand {
     final boolean mirrorVisibilityAction;
     final String weatherReason;
     final String avasProfileId;
+    final String avasAssetId;
+    final String avasSessionId;
     final ResultReceiver flushReceiver;
     final ResultReceiver weatherReceiver;
 
@@ -27,6 +29,8 @@ final class ServiceRuntimeCommand {
             boolean mirrorVisibilityAction,
             String weatherReason,
             String avasProfileId,
+            String avasAssetId,
+            String avasSessionId,
             ResultReceiver flushReceiver,
             ResultReceiver weatherReceiver) {
         this.action = action;
@@ -38,6 +42,8 @@ final class ServiceRuntimeCommand {
         this.mirrorVisibilityAction = mirrorVisibilityAction;
         this.weatherReason = weatherReason;
         this.avasProfileId = avasProfileId;
+        this.avasAssetId = avasAssetId;
+        this.avasSessionId = avasSessionId;
         this.flushReceiver = flushReceiver;
         this.weatherReceiver = weatherReceiver;
     }
@@ -47,7 +53,7 @@ final class ServiceRuntimeCommand {
             return new ServiceRuntimeCommand(
                     defaultAction, "", startId, true, false,
                     false, false,
-                    "manual", "", null, null);
+                    "manual", "", "", "", null, null);
         }
         return new ServiceRuntimeCommand(
                 intent.getAction(),
@@ -60,6 +66,8 @@ final class ServiceRuntimeCommand {
                 valueOrDefault(
                         intent.getStringExtra(CameraHelperService.EXTRA_WEATHER_REASON), "manual"),
                 valueOrEmpty(intent.getStringExtra(CameraHelperService.EXTRA_AVAS_PROFILE_ID)),
+                valueOrEmpty(intent.getStringExtra(CameraHelperService.EXTRA_AVAS_ASSET_ID)),
+                valueOrEmpty(intent.getStringExtra(CameraHelperService.EXTRA_AVAS_SESSION_ID)),
                 intent.getParcelableExtra(CameraHelperService.EXTRA_FLUSH_RECEIVER),
                 intent.getParcelableExtra(CameraHelperService.EXTRA_WEATHER_RECEIVER));
     }

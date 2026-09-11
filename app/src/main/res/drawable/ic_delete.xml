@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Icons Outlined.Delete, AndroidX; Apache-2.0. From BYD HUD. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16.0,9.0v10.0H8.0V9.0h8.0m-1.5,-6.0h-5.0l-1.0,1H5.0v2h14.0V4.0h-3.5l-1.0,-1.0zM18.0,7.0H6.0v12.0c0,1.1,0.9,2,2,2h8.0c1.1,0,2,-0.9,2,-2.0V7.0z" />
+</vector>

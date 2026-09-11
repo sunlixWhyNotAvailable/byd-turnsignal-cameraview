@@ -5,6 +5,13 @@ import java.util.Collections;
 import static org.junit.Assert.*;
 
 public class AvasPlaybackQueueTest {
+    @Test public void pendingAutomaticIsVisibleAndRejectsNotes() {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        queue.enqueueExterior("lock", false);
+        assertEquals("automatic_queued", queue.state("lock"));
+        assertNull(queue.enqueueAudition("unlock", "asset", "session"));
+    }
+
     @Test public void automaticEventsAreFifoAndNotPreempted() throws Exception {
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
         AvasPlaybackQueue.Request off = queue.enqueue("power_off", false);
@@ -69,5 +76,64 @@ public class AvasPlaybackQueueTest {
         queue.take();
         queue.enqueue("lock", true);
         assertEquals("manual_queued", queue.state("lock"));
+    }
+
+    @Test public void newerAuditionReplacesActiveAudition() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request first = queue.enqueueAudition("lock", "asset1", "session1");
+        assertSame(first, queue.take());
+        AvasPlaybackQueue.Request second = queue.enqueueAudition("unlock", "asset2", "session2");
+        assertTrue(first.cancelled.get());
+        assertEquals("idle", queue.auditionState("session1"));
+        assertEquals("queued", queue.auditionState("session2"));
+        queue.finish(first);
+        assertSame(second, queue.take());
+        assertEquals("playing", queue.auditionState("session2"));
+    }
+
+    @Test public void auditionNeverInterruptsOrQueuesBehindExterior() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request exterior = queue.enqueueExterior("lock", false);
+        assertSame(exterior, queue.take());
+        assertNull(queue.enqueueAudition("unlock", "asset", "session"));
+        assertFalse(exterior.cancelled.get());
+        assertEquals(0, queue.pendingCount());
+        exterior.cancelled.set(true); // Teardown is still using the single player.
+        assertNull(queue.enqueueAudition("unlock", "asset", "later"));
+    }
+
+    @Test public void acceptedAutomaticCancelsOnlyAuditionThenWaitsForCleanup() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request audition = queue.enqueueAudition("lock", "asset", "session");
+        assertSame(audition, queue.take());
+        AvasPlaybackQueue.Request automatic = queue.enqueueExterior("power_on", false);
+        assertTrue(audition.cancelled.get());
+        assertEquals(1, queue.pendingCount());
+        queue.finish(audition);
+        assertSame(automatic, queue.take());
+    }
+
+    @Test public void staleAuditionStopDoesNotCancelReplacementOrExterior() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request first = queue.enqueueAudition("lock", "asset1", "session1");
+        assertSame(first, queue.take());
+        AvasPlaybackQueue.Request replacement = queue.enqueueAudition(
+                "lock", "asset2", "session2");
+        queue.stopAudition("session1");
+        queue.finish(first);
+        assertSame(replacement, queue.take());
+        assertFalse(replacement.cancelled.get());
+        queue.finish(replacement);
+        AvasPlaybackQueue.Request exterior = queue.enqueueExterior("lock", true);
+        queue.stopAudition("session2");
+        assertFalse(exterior.cancelled.get());
+    }
+
+    @Test public void deletedAssetCancelsOnlyMatchingAudition() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request audition = queue.enqueueAudition("lock", "gone", "session");
+        assertSame(audition, queue.take());
+        queue.removeAuditionsForAssets(Collections.singleton("gone"));
+        assertTrue(audition.cancelled.get());
     }
 }

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,16 +25,16 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DirectionsCar
-import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.LocalParking
-import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -46,12 +47,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -88,7 +91,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 
 private val rootIcons: List<ImageVector> = listOf(
-    Icons.AutoMirrored.Outlined.CompareArrows, Icons.Outlined.Visibility, Icons.Outlined.LocalParking,
+    Icons.Outlined.Extension, Icons.Outlined.Visibility, Icons.Outlined.LocalParking,
     Icons.Outlined.Videocam, Icons.Outlined.DirectionsCar, Icons.Outlined.Settings,
     Icons.Outlined.BugReport,
 )
@@ -247,8 +250,8 @@ private fun SignalsScreen(
         strings.text("Погода", "Weather", "天气"),
         strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
     )
-    val icons = listOf(Icons.AutoMirrored.Outlined.CompareArrows, Icons.Outlined.Palette,
-        Icons.Outlined.Info, Icons.AutoMirrored.Outlined.VolumeUp)
+    val icons = listOf(IntegrationIcons.TurnSignals, Icons.Outlined.MusicNote,
+        IntegrationIcons.Weather, Icons.AutoMirrored.Outlined.VolumeUp)
     ScreenSurface(colors, scroll = false) {
         PageTitle(strings.tabs[0], strings.text("Виберіть інтеграцію для налаштування",
             "Choose an integration to configure", "选择要配置的集成功能"), colors)
@@ -395,6 +398,7 @@ private fun AvasIntegration(
         number: Int? = null, text: String? = null) {
         onAction(BydExtendUiAction.Avas(AvasBackendAction(profileId, kind, boolean, number, text)))
     }
+    val exteriorBusy = state.profiles.any { it.playback != AvasPlaybackUiState.Idle }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
             color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
@@ -416,16 +420,29 @@ private fun AvasIntegration(
                         row.forEach { profile ->
                             val importing = state.importingProfileId != null
                             val title = avasTitle(profile.id, strings)
+                            val selectedAsset = profile.assets.firstOrNull {
+                                it.id == profile.selectedAssetId
+                            }
+                            val selectedLabel = selectedAsset?.let { avasAssetLabel(it, strings) }
+                                ?: profile.currentFilename
                             Section(title, colors, Modifier.weight(1f).fillMaxHeight()
-                                .testTag("avas-${profile.id}"), trailing = {
-                                AppSwitch(profile.enabled,
-                                    { send(profile.id, AvasActionKind.SetEnabled, boolean = it) }, colors,
-                                    label = title)
+                                .testTag("avas-${profile.id}"), header = {
+                                Row(Modifier.fillMaxWidth().background(colors.panelAlt)
+                                    .avasSwitchRow(profile.enabled, {
+                                        send(profile.id, AvasActionKind.SetEnabled, boolean = it)
+                                    }, colors).padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Text(title.uppercase(), color = colors.muted, fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                    AppSwitch(profile.enabled, {
+                                        send(profile.id, AvasActionKind.SetEnabled, boolean = it)
+                                    }, colors, clearSemantics = true, label = title)
+                                }
                             }) {
                                 Text(strings.text("Обраний аудіофайл", "Selected audio file", "已选音频文件"),
                                     color = colors.muted, fontSize = 12.sp)
-                                Text(profile.currentFilename ?: strings.text("Файл не обрано", "No file selected",
-                                    "未选择文件"), color = if (profile.currentFilename == null) colors.muted else colors.text,
+                                Text(selectedLabel ?: strings.text("Файл не обрано", "No file selected",
+                                    "未选择文件"), color = if (selectedLabel == null) colors.muted else colors.text,
                                     fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                                         .clip(RoundedCornerShape(7.dp)).background(colors.field)
@@ -444,14 +461,17 @@ private fun AvasIntegration(
                                 }
                                 SwitchLine(strings.text("Випадкова мелодія", "Random melody", "随机旋律"), "",
                                     profile.random, { send(profile.id, AvasActionKind.SetRandom, boolean = it) }, colors)
-                                Text(strings.text("Випадковий файл із цього профілю для кожної події. Обраний файл зберігається.",
-                                    "Choose randomly from this profile on each event. The selected file is retained.",
-                                    "每次事件从此配置中随机选择文件。保留手动选择的文件。"),
+                                Text(strings.text("Лише для цієї автоматизації. «Старт» відтворює вибраний файл через зовнішній динамік.",
+                                    "Only for this automation. Start plays the selected file through the exterior speaker.",
+                                    "仅用于此自动化。“开始”通过车外扬声器播放所选文件。"),
                                     color = colors.muted, fontSize = 12.sp)
+                                Text(strings.text("Гучність", "Volume", "音量"), color = colors.text,
+                                    fontSize = if (LocalCompactControls.current) 14.sp else 16.sp,
+                                    fontWeight = FontWeight.SemiBold)
                                 NumericSetting(strings.text("Гучність", "Volume", "音量"),
                                     profile.volume.coerceIn(0, 100).toString(), "%", colors,
                                     { send(profile.id, AvasActionKind.SetVolume, number = it.toFloat().toInt()) },
-                                    0f..100f, slider = true, compactSuffix = true,
+                                    0f..100f, slider = true, showLabel = false, compactSuffix = true,
                                     identity = "avas-volume-${profile.id}")
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     ActionButton(strings.text("Старт", "Start", "开始"), colors,
@@ -479,6 +499,17 @@ private fun AvasIntegration(
             onDismissRequest = { listing = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
+            val latestAudition by rememberUpdatedState(state.audition)
+            DisposableEffect(profileId) {
+                onDispose {
+                    val active = latestAudition
+                    if (active.active && active.profileId == profileId) {
+                        active.sessionId?.let {
+                            send(profileId, AvasActionKind.StopAudition, text = it)
+                        }
+                    }
+                }
+            }
             val window = (LocalView.current.parent as? DialogWindowProvider)?.window
             SideEffect { window?.setDimAmount(if (colors.dark) .48f else .32f) }
             Column(Modifier.widthIn(max = 660.dp).fillMaxWidth().heightIn(max = 520.dp)
@@ -498,28 +529,112 @@ private fun AvasIntegration(
                         "暂无音频文件。请通过系统文件选择器添加。"), color = colors.muted, fontSize = 14.sp)
                     profile.assets.forEach { asset ->
                         val selected = asset.id == profile.selectedAssetId
+                        val audition = state.audition
+                        val playing = audition.active && audition.profileId == profile.id &&
+                            audition.assetId == asset.id
                         val press = rememberPressFeedback()
                         val click = rememberVisualFirstClick {
                             send(profile.id, AvasActionKind.SelectAsset, text = asset.id)
-                            listing = null
                         }
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp))
+                        Row(Modifier.fillMaxWidth().height(66.dp).testTag("avas-file-${asset.id}")
+                            .clip(RoundedCornerShape(7.dp))
                             .background(pressBackground(if (selected) colors.accent.copy(alpha = .14f)
                                 else colors.panelAlt, colors, press.pressed)).then(press.modifier)
                             .selectable(selected, interactionSource = press.interactionSource, indication = null,
                                 role = Role.RadioButton, onClick = click).padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically) {
-                            Text(asset.filename, color = colors.text, fontSize = 15.sp, modifier = Modifier.weight(1f),
-                                maxLines = 3, overflow = TextOverflow.Ellipsis)
-                            if (selected) Icon(Icons.Outlined.CheckCircle, null, tint = colors.accent,
-                                modifier = Modifier.padding(start = 12.dp).size(22.dp))
+                            Text(avasAssetLabel(asset, strings), color = colors.text, fontSize = 15.sp,
+                                modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(avasDurationLabel(asset.durationMs), color = colors.muted, fontSize = 15.sp,
+                                modifier = Modifier.width(72.dp).padding(start = 8.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.End, maxLines = 1)
+                            Box(Modifier.width(34.dp).height(42.dp), contentAlignment = Alignment.CenterEnd) {
+                                if (selected) Icon(Icons.Outlined.CheckCircle, null, tint = colors.accent,
+                                    modifier = Modifier.size(22.dp))
+                            }
+                            Box(Modifier.width(54.dp).height(42.dp), contentAlignment = Alignment.CenterEnd) {
+                                AvasVectorButton(if (playing) Icons.Outlined.Stop else Icons.Outlined.MusicNote,
+                                    if (playing) strings.text("Зупинити прослуховування", "Stop listening", "停止试听")
+                                    else strings.format("Прослухати %1\$s", "Listen to %1\$s", "试听 %1\$s",
+                                        avasAssetLabel(asset, strings)), colors, colors.accent,
+                                    enabled = playing || (asset.ready && !exteriorBusy)) {
+                                    if (playing) audition.sessionId?.let {
+                                        send(profile.id, AvasActionKind.StopAudition, text = it)
+                                    } else send(profile.id, AvasActionKind.StartAudition, text = asset.id)
+                                }
+                            }
+                            Box(Modifier.width(54.dp).height(42.dp), contentAlignment = Alignment.CenterEnd) {
+                                if (!asset.builtin) AvasDeleteButton(strings.format("Видалити %1\$s",
+                                    "Delete %1\$s", "删除 %1\$s", asset.filename), colors) {
+                                    if (playing) audition.sessionId?.let {
+                                        send(profile.id, AvasActionKind.StopAudition, text = it)
+                                    }
+                                    send(profile.id, AvasActionKind.DeleteAsset, text = asset.id)
+                                }
+                            }
                         }
                     }
                 }
                 ActionButton(strings.text("Закрити", "Close", "关闭"), colors,
-                    Modifier.align(Alignment.End)) { listing = null }
+                    Modifier.fillMaxWidth(.94f).align(Alignment.CenterHorizontally)) { listing = null }
             }
         }
+    }
+}
+
+private fun avasAssetLabel(asset: AvasAssetUiState, strings: UiStrings): String =
+    if (asset.builtin) strings.text("Тест (не включено у «Випадкову мелодію»)",
+        "Test (not included in Random melody)", "测试（不参与随机旋律）") else asset.filename
+
+internal fun avasDurationLabel(durationMs: Long?): String {
+    if (durationMs == null || durationMs < 0) return "—"
+    val seconds = durationMs / 1000 + if (durationMs % 1000 > 0) 1 else 0
+    return if (seconds < 3600) "%d:%02d".format(java.util.Locale.ROOT, seconds / 60, seconds % 60)
+    else "%d:%02d:%02d".format(java.util.Locale.ROOT,
+        seconds / 3600, seconds / 60 % 60, seconds % 60)
+}
+
+@Composable
+private fun Modifier.avasSwitchRow(
+    checked: Boolean, onCheckedChange: (Boolean) -> Unit, colors: UiPalette,
+): Modifier {
+    val press = rememberPressFeedback()
+    return background(pressBackground(Color.Transparent, colors, press.pressed))
+        .then(press.modifier).toggleable(value = checked, interactionSource = press.interactionSource,
+            indication = null, role = Role.Switch, onValueChange = onCheckedChange)
+}
+
+@Composable
+private fun AvasVectorButton(
+    icon: ImageVector, description: String, colors: UiPalette, tint: Color,
+    enabled: Boolean = true, onClick: () -> Unit,
+) {
+    val press = rememberPressFeedback(enabled)
+    val visualClick = rememberVisualFirstClick(onClick)
+    Box(Modifier.size(42.dp).clip(RoundedCornerShape(7.dp))
+        .border(1.dp, tint.copy(alpha = .85f), RoundedCornerShape(7.dp))
+        .background(if (!enabled) colors.disabled else if (press.pressed) tint.copy(alpha = .72f)
+            else tint.copy(alpha = if (colors.dark) .20f else .12f)).then(press.modifier)
+        .clickable(interactionSource = press.interactionSource, indication = null,
+            enabled = enabled, role = Role.Button, onClick = visualClick).padding(6.dp),
+        contentAlignment = Alignment.Center) {
+        Icon(icon, description, tint = if (!enabled) colors.muted.copy(alpha = .62f)
+            else if (press.pressed) Color.White else tint, modifier = Modifier.size(28.dp))
+    }
+}
+
+@Composable
+private fun AvasDeleteButton(description: String, colors: UiPalette, onClick: () -> Unit) {
+    val press = rememberPressFeedback()
+    val visualClick = rememberVisualFirstClick(onClick)
+    Box(Modifier.size(42.dp).clip(RoundedCornerShape(7.dp))
+        .border(1.dp, colors.red.copy(alpha = .85f), RoundedCornerShape(7.dp))
+        .background(if (press.pressed) colors.red.copy(alpha = .55f) else colors.red.copy(alpha = .16f))
+        .then(press.modifier).clickable(interactionSource = press.interactionSource,
+            indication = null, role = Role.Button, onClick = visualClick).padding(9.dp),
+        contentAlignment = Alignment.Center) {
+        Icon(painterResource(R.drawable.ic_delete), description, tint = colors.red,
+            modifier = Modifier.size(24.dp))
     }
 }
 

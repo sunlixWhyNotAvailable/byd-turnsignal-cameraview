@@ -89,6 +89,7 @@ final class TurnSignalController {
     private IBinder.DeathRecipient helperDeathRecipient;
     private IBinder avasSyncedBinder;
     private final Set<String> transferredAvasAssets = new HashSet<>();
+    private volatile String desiredAvasAudition = "";
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private IBinder.DeathRecipient avmShellDeathRecipient;
     private long cameraHelperEpoch;
@@ -147,6 +148,7 @@ final class TurnSignalController {
     private void shutdown(boolean terminateShells, boolean keepAvas) {
         synchronized (this) {
             stopped = true;
+            desiredAvasAudition = "";
         }
         handler.removeCallbacks(pingRunnable);
         LocalAdbClient.cancelPendingAuthorization();
@@ -249,7 +251,65 @@ final class TurnSignalController {
 
     void startAvasManual(String profileId) {
         requireAvasProfile(profileId);
+        desiredAvasAudition = "";
         worker.execute(() -> startAvasManualNow(profileId));
+    }
+
+    void startAvasAudition(String profileId, String assetId, String sessionId) {
+        requireAvasProfile(profileId);
+        if (!TurnSignalShellProtocol.isAvasAssetAllowed(assetId)
+                || !TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+            throw new IllegalArgumentException("invalid AVAS audition identity");
+        }
+        desiredAvasAudition = sessionId;
+        worker.execute(() -> {
+            if (stopped || !sessionId.equals(desiredAvasAudition)) return;
+            try {
+                AvasConfig config = avasLibrary.loadConfig();
+                AvasConfig.Profile profile = config.profile(profileId);
+                IBinder value = healthyHelper();
+                if (value == null) {
+                    ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+                    value = healthyHelper();
+                }
+                if (stopped || !sessionId.equals(desiredAvasAudition)) return;
+                if (value == null) throw new IllegalStateException("helper_unavailable");
+                if (!ensureAvasAsset(value, profileId, profile.assets, assetId)) {
+                    throw new IllegalStateException("asset_transfer_failed");
+                }
+                if (!sessionId.equals(desiredAvasAudition)) return;
+                config = avasLibrary.loadConfig();
+                transactAvasConfig(value, config.toJson());
+                if (!sessionId.equals(desiredAvasAudition)) return;
+                Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+                try {
+                    data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                    data.writeString(profileId);
+                    data.writeString(assetId);
+                    data.writeString(sessionId);
+                    requireTransact(value, TurnSignalShellProtocol.TX_START_AVAS_AUDITION, data, reply);
+                } finally { data.recycle(); reply.recycle(); }
+            } catch (Throwable error) {
+                emit("avas_error", "stage", "audition", "profile_id", profileId,
+                        "asset_id", assetId, "session_id", sessionId, "error", summary(error));
+            }
+        });
+    }
+
+    void stopAvasAudition(String sessionId) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) return;
+        if (sessionId.equals(desiredAvasAudition)) desiredAvasAudition = "";
+        if (stopped) return;
+        worker.execute(() -> {
+            IBinder value = healthyHelper();
+            if (value == null) return;
+            try {
+                transactAvasProfile(value, TurnSignalShellProtocol.TX_STOP_AVAS_AUDITION, sessionId);
+            } catch (Throwable error) {
+                emit("avas_error", "stage", "audition_stop", "session_id", sessionId,
+                        "error", summary(error));
+            }
+        });
     }
 
     void stopAvasManual(String profileId) {
@@ -1166,6 +1226,7 @@ final class TurnSignalController {
 
     private void helperDied(IBinder deadHelper, int deadPid) {
         boolean stale;
+        String diedAudition = "";
         synchronized (this) {
             stale = helper != deadHelper;
             if (!stale) {
@@ -1174,13 +1235,16 @@ final class TurnSignalController {
                 healthy = false;
                 primaryError = "helper_binder_died";
                 lastLaunchFailureAt = 0;
+                diedAudition = desiredAvasAudition;
+                desiredAvasAudition = "";
             }
         }
         if (stale) {
             emit("helper_death_ignored", "pid", deadPid, "reason", "stale_binder");
             return;
         }
-        emit("helper_death", "pid", deadPid, "error", primaryError);
+        emit("helper_death", "pid", deadPid, "error", primaryError,
+                "audition_session_id", diedAudition);
         if (!stopped) worker.execute(() -> ensureRunning(LocalAdbClient.PromptMode.NEVER, true));
     }
 
@@ -1272,13 +1336,14 @@ final class TurnSignalController {
 
     private void syncAvas(IBinder value) {
         try {
+            avasLibrary.ensureBuiltins();
             AvasConfig config = avasLibrary.loadConfig();
             for (AvasConfig.Profile profile : config.profiles) {
                 for (AvasConfig.Asset asset : profile.assets) {
                     ensureAvasAsset(value, profile.id, profile.assets, asset.id);
                 }
             }
-            transactAvasConfig(value, config.toJson());
+            transactAvasConfig(value, avasLibrary.loadConfig().toJson());
         } catch (Throwable error) {
             emitAvasError("config", null, null, summary(error));
         }

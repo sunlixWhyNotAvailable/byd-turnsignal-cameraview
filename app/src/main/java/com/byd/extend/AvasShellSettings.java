@@ -13,6 +13,9 @@ final class AvasShellSettings {
     static final String DIRTY = "byd_extend_avas_dirty";
     static final String SAVED_NAV = "byd_extend_avas_saved_nav";
     static final String SAVED_MUTE = "byd_extend_avas_saved_mute";
+    static final int CLEAN = 0;
+    static final int EXTERIOR_DIRTY = 1;
+    static final int NAVIGATION_DIRTY = 2;
 
     private final IBinder token = new Binder();
     private final Object provider;

@@ -83,6 +83,10 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.AVAS_STOP_MANUAL";
     private static final String ACTION_AVAS_REPORT_STATUS =
             "com.byd.extend.action.AVAS_REPORT_STATUS";
+    private static final String ACTION_AVAS_START_AUDITION =
+            "com.byd.extend.action.AVAS_START_AUDITION";
+    private static final String ACTION_AVAS_STOP_AUDITION =
+            "com.byd.extend.action.AVAS_STOP_AUDITION";
     static final String EXTRA_ENABLED = "enabled";
     static final String EXTRA_REASON = "reason";
     static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
@@ -92,6 +96,8 @@ public final class CameraHelperService extends Service {
     static final String EXTRA_MIRROR_SOURCE_ACTION = "mirror_source_action";
     static final String EXTRA_MIRROR_VISIBILITY_ACTION = "mirror_visibility_action";
     static final String EXTRA_AVAS_PROFILE_ID = "avas_profile_id";
+    static final String EXTRA_AVAS_ASSET_ID = "avas_asset_id";
+    static final String EXTRA_AVAS_SESSION_ID = "avas_session_id";
     private static final long CAMERA_DISCOVERY_RETRY_MS = 3_000;
     private static final long LOG_FLUSH_DELAY_MS = 250;
     private static final long ACCESSIBILITY_CONNECTION_WAIT_MS = 5_000;
@@ -410,6 +416,24 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_AVAS_REPORT_STATUS));
     }
 
+    static void startAvasAudition(Context context, String profileId, String assetId, String sessionId) {
+        if (!AvasConfig.PROFILE_IDS.contains(profileId)
+                || !TurnSignalShellProtocol.isAvasAssetAllowed(assetId)
+                || !TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) return;
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_AVAS_START_AUDITION)
+                .putExtra(EXTRA_AVAS_PROFILE_ID, profileId)
+                .putExtra(EXTRA_AVAS_ASSET_ID, assetId)
+                .putExtra(EXTRA_AVAS_SESSION_ID, sessionId));
+    }
+
+    static void stopAvasAudition(Context context, String sessionId) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) return;
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_AVAS_STOP_AUDITION)
+                .putExtra(EXTRA_AVAS_SESSION_ID, sessionId));
+    }
+
     static void weatherRefreshRequested(
             Context context, String reason, ResultReceiver receiver) {
         SharedPreferences settings = context.getSharedPreferences("settings", MODE_PRIVATE);
@@ -550,6 +574,11 @@ public final class CameraHelperService extends Service {
 
     private void handleStartCommand(ServiceRuntimeCommand command) {
         String action = command.action;
+        // A dismissal is cleanup, even after the Activity becomes invisible. It never boots a helper.
+        if (ACTION_AVAS_STOP_AUDITION.equals(action)) {
+            if (helper != null) helper.stopAvasAudition(command.avasSessionId);
+            return;
+        }
         if (ACTION_SHUTDOWN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, true);
             stopRuntime(true);
@@ -765,6 +794,8 @@ public final class CameraHelperService extends Service {
         return ACTION_AVAS_CONFIGURE.equals(action)
                 || ACTION_AVAS_START_MANUAL.equals(action)
                 || ACTION_AVAS_STOP_MANUAL.equals(action)
+                || ACTION_AVAS_START_AUDITION.equals(action)
+                || ACTION_AVAS_STOP_AUDITION.equals(action)
                 || ACTION_AVAS_REPORT_STATUS.equals(action);
     }
 
@@ -778,6 +809,11 @@ public final class CameraHelperService extends Service {
             active.stopAvasManual(command.avasProfileId);
         } else if (ACTION_AVAS_REPORT_STATUS.equals(command.action)) {
             active.reportAvasStatus();
+        } else if (ACTION_AVAS_START_AUDITION.equals(command.action)) {
+            if (activityVisible) active.startAvasAudition(command.avasProfileId,
+                    command.avasAssetId, command.avasSessionId);
+        } else if (ACTION_AVAS_STOP_AUDITION.equals(command.action)) {
+            active.stopAvasAudition(command.avasSessionId);
         }
     }
 

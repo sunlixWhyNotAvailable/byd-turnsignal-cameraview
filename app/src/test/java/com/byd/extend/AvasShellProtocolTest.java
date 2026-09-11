@@ -14,8 +14,8 @@ import static org.junit.Assert.assertTrue;
 
 public final class AvasShellProtocolTest {
     @Test
-    public void protocolNineAddsOnlyFixedTypedAvasLifecycleTransactions() {
-        assertEquals(9, TurnSignalShellProtocol.VERSION);
+    public void protocolTenAddsOnlyFixedTypedAvasAuditionTransactions() {
+        assertEquals(10, TurnSignalShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 9,
                 TurnSignalShellProtocol.TX_CONFIGURE_AVAS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
@@ -28,6 +28,15 @@ public final class AvasShellProtocolTest {
                 TurnSignalShellProtocol.TX_REPORT_AVAS_STATUS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 14,
                 TurnSignalShellProtocol.TX_SHUTDOWN_KEEPING_AVAS);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 15,
+                TurnSignalShellProtocol.TX_START_AVAS_AUDITION);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 16,
+                TurnSignalShellProtocol.TX_STOP_AVAS_AUDITION);
+        assertTrue(TurnSignalShellProtocol.isAvasSessionAllowed(
+                "0123456789abcdef0123456789abcdef"));
+        assertFalse(TurnSignalShellProtocol.isAvasSessionAllowed(null));
+        assertFalse(TurnSignalShellProtocol.isAvasSessionAllowed("../session"));
+        assertFalse(TurnSignalShellProtocol.isAvasSessionAllowed(""));
         for (String profile : AvasConfig.PROFILE_IDS) {
             assertTrue(TurnSignalShellProtocol.isAvasProfileAllowed(profile));
         }
