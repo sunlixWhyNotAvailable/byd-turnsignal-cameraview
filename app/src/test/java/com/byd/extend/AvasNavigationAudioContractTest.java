@@ -58,7 +58,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(player.contains("NAV_STREAM = 15"));
         assertTrue(player.contains("REQUESTED_ROUTE_FLAGS = 0x20000"));
         assertTrue(player.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
-        assertTrue(player.contains("NAV_SILENCE_MILLIS = 420"));
+        assertTrue(player.contains("NAV_SILENCE_MILLIS = 0"));
         assertTrue(player.contains("getStreamMaxVolume(NAV_STREAM)"));
         assertTrue(player.contains("setStreamVolume(NAV_STREAM, maximum, 0)"));
         assertTrue(player.contains("AvasWav.scalePcm16"));

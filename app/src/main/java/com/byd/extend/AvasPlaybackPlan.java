@@ -5,8 +5,8 @@ import java.util.function.BooleanSupplier;
 /** Pure per-request PCM timing rules shared by playback and deterministic JVM tests. */
 final class AvasPlaybackPlan {
     interface FrameWriter { long write(long frames) throws Exception; }
-    static final int AUTOMATIC_POWER_ON_SILENCE_MILLIS = 500;
-    static final int NAVIGATION_SILENCE_MILLIS = 420;
+    static final int AUTOMATIC_POWER_ON_SILENCE_MILLIS = 0;
+    static final int NAVIGATION_SILENCE_MILLIS = 0;
 
     private AvasPlaybackPlan() {}
 

@@ -27,7 +27,7 @@ import java.util.function.IntConsumer;
 final class AvasAudioPlayer implements AutoCloseable {
     private static final int NAV_STREAM = 15;
     private static final int REQUESTED_ROUTE_FLAGS = 0x20000;
-    private static final int NAV_SILENCE_MILLIS = 420;
+    private static final int NAV_SILENCE_MILLIS = 0;
     private final AudioManager manager;
     private final AvasShellSettings settings;
     private final AvasExteriorRoute route;

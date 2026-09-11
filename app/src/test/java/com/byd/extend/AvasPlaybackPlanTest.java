@@ -7,9 +7,9 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public final class AvasPlaybackPlanTest {
-    @Test public void silenceIsSelectedOnlyForEveryAutomaticPowerOnAndNavigation() {
+    @Test public void automaticPowerOnAndNavigationSilenceAreDisabled() {
         for (int request = 0; request < 3; request++) {
-            assertEquals(500, AvasPlaybackPlan.silenceMillis(
+            assertEquals(0, AvasPlaybackPlan.silenceMillis(
                     AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "power_on"));
         }
         assertEquals(0, AvasPlaybackPlan.silenceMillis(
@@ -18,7 +18,7 @@ public final class AvasPlaybackPlanTest {
                 AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "power_off"));
         assertEquals(0, AvasPlaybackPlan.silenceMillis(
                 AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "lock"));
-        assertEquals(420, AvasPlaybackPlan.silenceMillis(
+        assertEquals(0, AvasPlaybackPlan.silenceMillis(
                 AvasPlaybackQueue.Kind.AUDITION_NAV, "power_on"));
     }
 
