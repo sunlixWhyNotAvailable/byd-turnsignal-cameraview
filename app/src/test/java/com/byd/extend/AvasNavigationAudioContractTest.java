@@ -72,6 +72,32 @@ public final class AvasNavigationAudioContractTest {
         assertFalse(player.contains("MediaPlayer"));
     }
 
+    @Test public void exteriorAndNavigationUseTheirOwnProductionGainPolicies() throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String exterior = player.substring(player.indexOf("void play(File wav"),
+                player.indexOf("void playNavigation(File wav"));
+        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
+                player.indexOf("void stop()"));
+        String writer = player.substring(player.indexOf("private int write("),
+                player.indexOf("private long writeSilence("));
+        String runtime = source("AvasRuntime.java");
+
+        assertTrue(exterior.contains("currentVolume, initialVolume, true"));
+        assertFalse(exterior.contains("currentVolume, initialVolume, false"));
+        assertTrue(navigation.contains("currentVolume, initialVolume, false"));
+        assertFalse(navigation.contains("currentVolume, initialVolume, true"));
+        assertTrue(writer.contains("currentVolume.getAsInt()"));
+        assertTrue(writer.contains("scaleExteriorPcm16"));
+        assertTrue(writer.contains("scalePcm16"));
+        assertTrue(writer.contains("while (offset < length"));
+        assertTrue(writer.contains("output.write(scaled, 0, writable"));
+        assertTrue(writer.contains("offset += count"));
+        assertTrue(runtime.contains("queue.enqueueExterior(profileId, true)"));
+        assertTrue(runtime.contains("queue.enqueueExterior(profileId, false)"));
+        assertTrue(runtime.contains("output.play(file, profile.volume"));
+        assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
+    }
+
     private static String source(String name) throws Exception {
         Path path = Path.of("app/src/main/java/com/byd/extend", name);
         if (!Files.exists(path)) path = Path.of("src/main/java/com/byd/extend", name);

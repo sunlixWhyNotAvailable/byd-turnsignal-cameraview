@@ -85,6 +85,13 @@ are not imported again or overwritten. Shut down BYD Extend before deliberately 
 old application. A first legacy-to-Extend installation is a manual APK install because the
 package identity changes.
 
+## Turn-signal telemetry recovery
+
+Turn-signal protection rejects invalid stalk/blink samples without treating them as a neutral
+position. A transient sample gap can recover after valid listener evidence and fresh telemetry;
+the interrupted action is discarded and a new stalk cycle is required after returning to neutral.
+A broken telemetry subscription remains unavailable until it is successfully reinitialized.
+
 ## Reverse Widget steering button
 
 In Reverse, select `Widget` and use `Select button…` below `Enhanced reverse view`. A confirmed
@@ -198,6 +205,11 @@ process death or deleting that file stops only this listening session. Start and
 events take precedence and use the exterior speaker; a note cannot interrupt or queue behind
 exterior playback. Stopped notes do not resume. Both routes apply the profile's PCM gain and
 restore their saved route/volume state without a media-channel fallback.
+
+Exterior playback applies twice the internal PCM gain: exterior50% matches the previous exterior
+100% signal level, while note audition is unchanged. The stored0–100% setting is not rewritten.
+Loud imported files can clip at the signed16 ceiling above50%; reducing volume avoids that boost.
+Zero remains silent. This is digital signal gain, not a guarantee of twice the perceived loudness.
 
 The existing shell helper owns playback so losing the application process does not itself
 destroy the player. A helper restart starts from current telemetry without replaying old events.

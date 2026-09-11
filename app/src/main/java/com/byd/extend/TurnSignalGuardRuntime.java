@@ -57,6 +57,8 @@ final class TurnSignalGuardRuntime {
     private boolean requestedEnabled;
     private boolean listenerHealthy;
     private boolean pollHealthy;
+    private final TurnSignalListenerRecovery listenerSampleRecovery =
+            new TurnSignalListenerRecovery();
     private boolean gestureLatched;
     private int gestureDirection;
     private boolean gestureLongSeen;
@@ -205,6 +207,7 @@ final class TurnSignalGuardRuntime {
         clearSpeedDeferredSession();
         handler.removeCallbacks(pollRunnable);
         resetSession();
+        resetGesture();
         boolean unregistered = false;
         String error = null;
         try {
@@ -217,6 +220,7 @@ final class TurnSignalGuardRuntime {
         }
         listenerHealthy = false;
         pollHealthy = false;
+        listenerSampleRecovery.reset();
         emit("telemetry_stopped", "listener_unregistered", unregistered,
                 "error", error == null ? "" : error);
     }
@@ -431,6 +435,7 @@ final class TurnSignalGuardRuntime {
 
     private void pollOnce() {
         long now = SystemClock.elapsedRealtime();
+        boolean wasTelemetryReady = telemetryReady();
         long gap = lastPollAt == 0 ? 0 : now - lastPollAt;
         lastPollAt = now;
 
@@ -480,6 +485,14 @@ final class TurnSignalGuardRuntime {
         latestAngle = angle;
         latestSpeedKph = speedKph;
         latestStalk = stalk.raw;
+        boolean listenerSampleRecovered = listenerSampleRecovery.validPoll(
+                pollFresh(SystemClock.elapsedRealtime(), lastPollAt), stalk.raw);
+        if (listenerSampleRecovered
+                && primaryTelemetryError != null
+                && primaryTelemetryError.startsWith("listener_sample_error:")) {
+            primaryTelemetryError = null;
+            emit("telemetry_recovered", "previous_reason", "listener_sample_invalid");
+        }
         if (sessionActive && !speedAllowed(latestSpeedKph, maxSpeedKph)) {
             int deferredDirection = sessionDirection;
             boolean deferredBlinkSeen = matchingBlinkSeen;
@@ -494,7 +507,9 @@ final class TurnSignalGuardRuntime {
                         "speed_kph", latestSpeedKph, "max_speed_kph", maxSpeedKph);
             }
         }
-        observeStalk(stalk.raw, "poll", now);
+        if (listenerSampleRecovery.acceptStalkObservation()) {
+            observeStalk(stalk.raw, "poll", now);
+        }
         observeAngle(angle);
         observeBlink(blink.raw, now);
         if (startupCleanupArmedGeneration == awakeSessionGeneration) {
@@ -511,13 +526,13 @@ final class TurnSignalGuardRuntime {
         evaluateTelemetryRecoveryCleanup();
         evaluateNeutralization();
         evaluateCorrection(now);
-        if (recovered && telemetryReady()) {
+        if (!wasTelemetryReady && telemetryReady()) {
             primaryTelemetryError = null;
             emit("telemetry_ready", "ok", true,
                     "listener_ok", true, "poll_ok", true,
                     "control_ready", true, "error", "");
         }
-        if (recovered && requestedEnabled) emitGuardConfig();
+        if (!wasTelemetryReady && telemetryReady() && requestedEnabled) emitGuardConfig();
 
         if ((sessionActive || speedDeferredDirection != 0) && now - lastSampleAt >= 200) {
             lastSampleAt = now;
@@ -1112,6 +1127,8 @@ final class TurnSignalGuardRuntime {
         Method register = findListenerMethod(lightDevice, "registerListener", true);
         unregisterListener = findListenerMethod(lightDevice, "unregisterListener", false);
         register.invoke(lightDevice, listener, new int[]{STALK.fid, BLINK.fid});
+        listenerSampleRecovery.reset();
+        resetGesture();
         listenerHealthy = true;
     }
 
@@ -1140,28 +1157,58 @@ final class TurnSignalGuardRuntime {
                 "signal", fid == STALK.fid ? "stalk" : fid == BLINK.fid ? "blink" : "unexpected",
                 "raw", raw);
         long now = SystemClock.elapsedRealtime();
+        if (!listenerHealthy) return;
         if (fid == STALK.fid) {
-            if (raw < 1 || raw > 5) {
-                listenerFailed("invalid stalk callback " + raw);
+            if (!TurnSignalListenerRecovery.validSample(
+                    TurnSignalListenerRecovery.STALK, raw)) {
+                listenerSampleFailed(
+                        TurnSignalListenerRecovery.STALK, "invalid stalk callback " + raw);
             } else {
-                latestStalk = raw;
-                observeStalk(raw, "listener", now);
+                listenerSampleRecovery.validCallback(TurnSignalListenerRecovery.STALK);
+                if (listenerSampleRecovery.ready()
+                        && listenerSampleRecovery.acceptStalkObservation()) {
+                    latestStalk = raw;
+                    observeStalk(raw, "listener", now);
+                }
             }
         } else if (fid == BLINK.fid) {
-            if (raw < 1 || raw > 9) {
-                listenerFailed("invalid blink callback " + raw);
+            if (!TurnSignalListenerRecovery.validSample(
+                    TurnSignalListenerRecovery.BLINK, raw)) {
+                listenerSampleFailed(
+                        TurnSignalListenerRecovery.BLINK, "invalid blink callback " + raw);
             } else {
-                observeBlink(raw, now);
+                listenerSampleRecovery.validCallback(TurnSignalListenerRecovery.BLINK);
+                if (listenerSampleRecovery.ready()) observeBlink(raw, now);
             }
         } else {
             listenerFailed("unexpected callback fid " + fid);
         }
     }
 
+    private void listenerSampleFailed(int signal, String reason) {
+        boolean readinessChanged = telemetryReady();
+        boolean newlyInvalid = listenerSampleRecovery.invalidate(signal);
+        resetGesture();
+        if (hazardCleanupPending) cancelHazardCleanup("listener_sample_invalid");
+        if (speedDeferredDirection != 0) {
+            cancelSpeedDeferredSession("listener_sample_invalid");
+        }
+        if (sessionActive || pendingNeutralizeReason != null) {
+            suppress("telemetry_gap_or_invalid");
+        }
+        if (newlyInvalid) {
+            primaryTelemetryError = "listener_sample_error: " + reason;
+            emit("telemetry_error", "reason", "listener_sample_invalid", "error", reason);
+        }
+        if (readinessChanged && requestedEnabled) emitGuardConfig();
+    }
+
     private void listenerFailed(String reason) {
         listenerHealthy = false;
         primaryTelemetryError = "listener_error: " + reason;
+        resetGesture();
         if (hazardCleanupPending) cancelHazardCleanup("listener_error");
+        if (speedDeferredDirection != 0) cancelSpeedDeferredSession("listener_error");
         if (sessionActive || pendingNeutralizeReason != null) suppress("listener_error");
         emit("telemetry_error", "reason", "listener_error", "error", reason);
         emitGuardConfig();
@@ -1229,8 +1276,24 @@ final class TurnSignalGuardRuntime {
         confirmationDeadline = 0;
     }
 
+    private void resetGesture() {
+        gestureLatched = false;
+        gestureDirection = 0;
+        gestureLongSeen = false;
+        gestureWasActivation = false;
+    }
+
     private boolean telemetryReady() {
-        return listenerHealthy && pollHealthy && setLightFeature != null;
+        return telemetryReady(listenerHealthy, pollHealthy,
+                setLightFeature != null, listenerSampleRecovery);
+    }
+
+    static boolean telemetryReady(
+            boolean listenerHealthy,
+            boolean pollHealthy,
+            boolean controlReady,
+            TurnSignalListenerRecovery listenerSampleRecovery) {
+        return listenerHealthy && pollHealthy && controlReady && listenerSampleRecovery.ready();
     }
 
     private boolean guardActive() {

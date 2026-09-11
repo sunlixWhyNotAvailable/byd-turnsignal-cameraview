@@ -115,7 +115,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                     int wanted = (int) Math.min(pcm.length, remaining);
                     readFully(input, pcm, wanted);
                     int written = write(output, pcm, scaled, wanted, header.frameSize, ticket,
-                            cancelled, currentVolume, initialVolume);
+                            cancelled, currentVolume, initialVolume, true);
                     framesWritten += written / header.frameSize;
                     remaining -= written;
                     if (written < wanted) break;
@@ -212,7 +212,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                     int wanted = (int) Math.min(pcm.length, remaining);
                     readFully(input, pcm, wanted);
                     int written = write(output, pcm, scaled, wanted, header.frameSize, ticket,
-                            cancelled, currentVolume, initialVolume);
+                            cancelled, currentVolume, initialVolume, false);
                     framesWritten += written / header.frameSize;
                     remaining -= written;
                     if (written < wanted) break;
@@ -259,13 +259,14 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     private int write(AudioTrack output, byte[] pcm, byte[] scaled, int length, int frameSize,
             long ticket, BooleanSupplier externalCancellation, IntSupplier currentVolume,
-            int initialVolume) throws Exception {
+            int initialVolume, boolean exterior) throws Exception {
         int offset = 0;
         long lastProgress = SystemClock.elapsedRealtime();
         while (offset < length && !cancelled(ticket, externalCancellation)) {
             int writable = length - offset;
             int volume = currentVolume == null ? initialVolume : clamp(currentVolume.getAsInt());
-            AvasWav.scalePcm16(pcm, offset, scaled, 0, writable, volume);
+            if (exterior) AvasWav.scaleExteriorPcm16(pcm, offset, scaled, 0, writable, volume);
+            else AvasWav.scalePcm16(pcm, offset, scaled, 0, writable, volume);
             int count = output.write(scaled, 0, writable, AudioTrack.WRITE_NON_BLOCKING);
             if (count < 0) {
                 if (cancelled(ticket, externalCancellation)) return offset;
@@ -296,7 +297,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         while (remaining > 0 && !cancelled(ticket, externalCancellation)) {
             int wanted = (int) Math.min(silence.length, remaining);
             int count = write(output, silence, scaled, wanted, header.frameSize, ticket,
-                    externalCancellation, currentVolume, initialVolume);
+                    externalCancellation, currentVolume, initialVolume, false);
             written += count;
             remaining -= count;
             if (count < wanted) break;
