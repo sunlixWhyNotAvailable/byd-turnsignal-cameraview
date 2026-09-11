@@ -66,7 +66,8 @@ final class CameraHelperMain {
     };
     private CameraHelperMain() {}
 
-    static class HelperBinder extends Binder {
+    static class HelperBinder extends Binder
+            implements CameraHelperService.RuntimeSettingsSink {
         private final Handler callbackHandler;
         private final TurnSignalController turnController;
         private final Consumer<String> logSink;
@@ -142,12 +143,28 @@ final class CameraHelperMain {
             turnController.configure(enabled, outward, center, delayMs, maxSpeedKph);
         }
 
+        @Override
+        public void applyGuard(
+                boolean enabled, float outward, float center, int delayMs, int maxSpeedKph) {
+            turnController.applyGuard(enabled, outward, center, delayMs, maxSpeedKph);
+        }
+
         void configureMusic(boolean enabled) {
             turnController.configureMusic(enabled);
         }
 
+        @Override
+        public void applyMusic(boolean enabled) {
+            turnController.applyMusic(enabled);
+        }
+
         void configureParkingRadar(boolean anyEnabled) {
             turnController.configureParkingRadar(anyEnabled);
+        }
+
+        @Override
+        public void applyParkingRadar(boolean anyEnabled) {
+            turnController.applyParkingRadar(anyEnabled);
         }
 
         public void configureAvas() {

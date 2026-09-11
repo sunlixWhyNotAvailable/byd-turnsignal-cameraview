@@ -124,6 +124,7 @@ fun BydExtendApp(
     var scrollRestored by remember(scrollKey, savedScrollOffset) {
         mutableStateOf(savedScrollOffset == 0)
     }
+    val imeDismissalPolicy = remember { ImeDismissalPolicy() }
     LaunchedEffect(primaryScroll, scrollKey, savedScrollOffset) {
         if (savedScrollOffset > 0) {
             // ScrollState starts with Int.MAX_VALUE before its first layout.  It is a sentinel,
@@ -145,7 +146,10 @@ fun BydExtendApp(
             }
         }
     }
-    CompositionLocalProvider(LocalPrimaryScroll provides primaryScroll) {
+    CompositionLocalProvider(
+        LocalPrimaryScroll provides primaryScroll,
+        LocalImeDismissalPolicy provides imeDismissalPolicy,
+    ) {
         Box(Modifier.fillMaxSize().background(colors.background).semantics { testTagsAsResourceId = true }) {
             Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -471,7 +475,8 @@ private fun AvasIntegration(
                                 NumericSetting(strings.text("Гучність", "Volume", "音量"),
                                     profile.volume.coerceIn(0, 100).toString(), "%", colors,
                                     { send(profile.id, AvasActionKind.SetVolume, number = it.toFloat().toInt()) },
-                                    0f..100f, slider = true, showLabel = false, compactSuffix = true,
+                                    0f..100f, adjustable = true, slider = true, showLabel = false,
+                                    compactSuffix = true, narrowInput = true,
                                     identity = "avas-volume-${profile.id}")
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     ActionButton(strings.text("Старт", "Start", "开始"), colors,

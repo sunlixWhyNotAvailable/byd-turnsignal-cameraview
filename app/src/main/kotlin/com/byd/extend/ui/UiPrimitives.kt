@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
@@ -120,6 +123,27 @@ internal data class UiPalette(
 
 internal val LocalPrimaryScroll = staticCompositionLocalOf<ScrollState> { error("Primary scroll is missing") }
 internal val LocalCompactControls = staticCompositionLocalOf { false }
+internal val LocalImeDismissalPolicy = staticCompositionLocalOf { ImeDismissalPolicy() }
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+internal fun ImeDismissalEffect(focused: Boolean, onDismiss: () -> Unit) {
+    val policy = LocalImeDismissalPolicy.current
+    val owner = remember { Any() }
+    val latestDismiss by rememberUpdatedState(onDismiss)
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(focused, imeVisible, policy) {
+        if (focused) {
+            policy.claim(owner) { latestDismiss() }
+            policy.onImeVisibility(owner, imeVisible)
+        } else {
+            policy.release(owner)
+        }
+    }
+    DisposableEffect(policy, owner) {
+        onDispose { policy.release(owner) }
+    }
+}
 
 internal fun palette(theme: UiTheme) = if (theme == UiTheme.Dark) UiPalette(
     true, Color(0xFF080D12), Color(0xFF0E151D), Color(0xFF131B25), Color(0xFF172231),
@@ -539,6 +563,7 @@ internal fun NumericSetting(
     inlineLabel: Boolean = false,
     showLabel: Boolean = true,
     compactSuffix: Boolean = false,
+    narrowInput: Boolean = false,
     beforeInput: (@Composable () -> Unit)? = null,
     afterInput: (@Composable () -> Unit)? = null,
     identity: Any = Unit,
@@ -580,6 +605,13 @@ internal fun NumericSetting(
         invalid = false
         commit(draft)
     }
+    fun finishEditing() {
+        commit()
+        focused = false
+        keyboard?.hide()
+        focusManager.clearFocus()
+    }
+    ImeDismissalEffect(focused, ::finishEditing)
     fun finishSliderGesture() {
         // Material's slider may report both DragInteraction.Cancel and
         // onValueChangeFinished for one pointer sequence.  Make either callback the one
@@ -675,16 +707,15 @@ internal fun NumericSetting(
             }
         }, enabled = enabled, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = {
-                commit(); focused = false; keyboard?.hide(); focusManager.clearFocus()
-            }),
+            keyboardActions = KeyboardActions(onDone = { finishEditing() }),
             cursorBrush = SolidColor(colors.accent), textStyle = TextStyle(colors.text, fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center),
-            modifier = Modifier.width(if (compact) 64.dp else 80.dp).height(if (compact) 36.dp else 44.dp)
+            modifier = (if (narrowInput) Modifier.width(if (compact) 52.dp else 64.dp)
+                else Modifier.width(if (compact) 64.dp else 80.dp)).height(if (compact) 36.dp else 44.dp)
                 .onPreviewKeyEvent {
                     if (it.key == Key.Enter || it.key == Key.NumPadEnter) {
                         if (it.type == KeyEventType.KeyUp) {
-                            commit(); focused = false; keyboard?.hide(); focusManager.clearFocus()
+                            finishEditing()
                         }
                         true
                     } else false

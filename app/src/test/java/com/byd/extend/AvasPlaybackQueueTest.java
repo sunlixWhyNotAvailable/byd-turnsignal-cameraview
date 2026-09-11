@@ -5,6 +5,19 @@ import java.util.Collections;
 import static org.junit.Assert.*;
 
 public class AvasPlaybackQueueTest {
+    @Test public void requestCarriesImmutableSourcePidAndMonotonicTimes() {
+        long[] times = {10, 11};
+        int[] index = {0};
+        AvasPlaybackQueue queue = new AvasPlaybackQueue(() -> times[index[0]++], 77);
+        AvasPlaybackQueue.Request request = queue.enqueueExterior("power_on", false);
+        assertEquals(1, request.diagnostics.requestId);
+        assertEquals("power_on", request.diagnostics.profile);
+        assertEquals("automatic", request.diagnostics.source);
+        assertEquals(77, request.diagnostics.helperPid);
+        assertEquals(10, request.diagnostics.acceptedMs);
+        assertEquals(11, request.diagnostics.enqueuedMs);
+    }
+
     @Test public void pendingAutomaticIsVisibleAndRejectsNotes() {
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
         queue.enqueueExterior("lock", false);

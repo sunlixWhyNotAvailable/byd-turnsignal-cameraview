@@ -35,15 +35,19 @@ public final class MirrorCompactLayoutTest {
         String primitives = source("UiPrimitives.kt");
         String numeric = primitives.substring(primitives.indexOf("internal fun NumericSetting("),
                 primitives.indexOf("internal fun normalizeSliderValue("));
-        Matcher widths = Pattern.compile("Modifier\\.width\\(if \\(compact\\) (\\d+)\\.dp else (\\d+)\\.dp\\)")
-                .matcher(numeric);
-        int compactWidths = 0;
+        String widthExpression = "Modifier\\.width\\(if \\(compact\\) (\\d+)\\.dp else (\\d+)\\.dp\\)";
+        int inputStart = numeric.indexOf("BasicTextField(");
+        int labelWidth = number(numeric.substring(0, inputStart), widthExpression);
+        Matcher widths = Pattern.compile(widthExpression).matcher(numeric.substring(inputStart));
+        int widestInput = 0;
         int count = 0;
         while (widths.find()) {
-            compactWidths += Integer.parseInt(widths.group(1));
+            widestInput = Math.max(widestInput, Integer.parseInt(widths.group(1)));
             count++;
         }
-        assertEquals("label and input must use compact widths", 2, count);
+        assertEquals("regular and narrow input alternatives must use compact widths", 2, count);
+        // Width alternatives are exclusive; budget the larger input, not both simultaneously.
+        int compactWidths = labelWidth + widestInput;
         int gap = number(numeric, "Arrangement\\.spacedBy\\(if \\(compact\\) (\\d+)\\.dp");
         int step = number(primitives.substring(primitives.indexOf("private fun NumberStep(")),
                 "Modifier\\.size\\((\\d+)\\.dp\\)");

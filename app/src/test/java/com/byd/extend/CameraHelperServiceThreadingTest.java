@@ -47,11 +47,11 @@ public final class CameraHelperServiceThreadingTest {
     }
 
     @Test
-    public void teardownSeparatesRecoveryAutoOffAndExplicitShutdown()
+    public void teardownPreservesFullHelperUnlessShutdownIsExplicit()
             throws Exception {
         assertEquals(CameraHelperService.HelperTeardownMode.RecoveryDetach,
                 CameraHelperService.helperTeardownMode(true, false));
-        assertEquals(CameraHelperService.HelperTeardownMode.StopKeepingAvas,
+        assertEquals(CameraHelperService.HelperTeardownMode.RecoveryDetach,
                 CameraHelperService.helperTeardownMode(false, false));
         assertEquals(CameraHelperService.HelperTeardownMode.StopAll,
                 CameraHelperService.helperTeardownMode(false, true));
@@ -69,24 +69,54 @@ public final class CameraHelperServiceThreadingTest {
                 text.indexOf("private synchronized void ensureHelperCreated"));
 
         assertTrue(explicit.contains("stopRuntime(true)"));
-        assertTrue(teardown.contains("helper.shutdownKeepingAvas()"));
         assertTrue(teardown.contains("helper.shutdown(true)"));
         assertTrue(teardown.contains("helper.shutdown(false)"));
+        assertFalse(teardown.contains("helper.shutdownKeepingAvas()"));
         assertFalse(teardown.contains("helper.shutdown(!recover)"));
+    }
 
-        Path controllerSource = Path.of(
-                "app/src/main/java/com/byd/extend/TurnSignalController.java");
-        if (!Files.exists(controllerSource)) {
-            controllerSource = Path.of("src/main/java/com/byd/extend/TurnSignalController.java");
+    @Test
+    public void manualAdmissionRetainsOneFullRuntimeAcrossAutoOffAndBackground()
+            throws Exception {
+        String activityOpen = "com.byd.extend.action.ACTIVITY_OPEN";
+        String activityClosed = "com.byd.extend.action.ACTIVITY_CLOSED";
+        String autoStartChanged = "com.byd.extend.action.AUTO_START_CHANGED";
+
+        assertTrue(CameraHelperService.shouldAdmitFullRuntime(
+                false, false, false, false, activityOpen));
+        assertTrue(CameraHelperService.shouldAdmitFullRuntime(
+                false, false, true, false, activityClosed));
+        assertTrue(CameraHelperService.shouldAdmitFullRuntime(
+                false, false, true, false, autoStartChanged));
+        assertTrue(CameraHelperService.shouldAdmitFullRuntime(
+                false, true, false, false, null));
+        assertFalse(CameraHelperService.shouldAdmitFullRuntime(
+                false, false, false, false, autoStartChanged));
+        assertFalse(CameraHelperService.shouldAdmitFullRuntime(
+                true, false, false, true,
+                "com.byd.extend.action.MUSIC_SETTINGS_CHANGED"));
+        assertFalse(CameraHelperService.shouldAdmitFullRuntime(
+                true, false, false, true, activityOpen));
+
+        Path source = Path.of("app/src/main/java/com/byd/extend/CameraHelperService.java");
+        if (!Files.exists(source)) {
+            source = Path.of("src/main/java/com/byd/extend/CameraHelperService.java");
         }
-        String controller = new String(
-                Files.readAllBytes(controllerSource), StandardCharsets.UTF_8);
-        String keepingAvas = controller.substring(
-                controller.indexOf("private void shutdown(boolean terminateShells, boolean keepAvas)"),
-                controller.indexOf("void setRecoveryEnabled"));
-        assertTrue(keepingAvas.contains("shutdownTurnHelperKeepingAvas()"));
-        assertTrue(keepingAvas.contains("shutdownCameraHelper()"));
-        assertTrue(keepingAvas.contains("worker.execute(this::shutdownAvmShell)"));
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        assertFalse(text.contains("ensureMirrorOnlyRuntime"));
+        assertFalse(text.contains("ensureAvasOnlyRuntime"));
+        assertFalse(text.contains("mirrorOnlyRuntime"));
+        assertFalse(text.contains("avasOnlyRuntime"));
+        String bind = text.substring(text.indexOf("public IBinder onBind"),
+                text.indexOf("public boolean onUnbind"));
+        assertTrue(bind.contains("CameraHelperMain.HelperBinder boundHelper = helper"));
+        assertTrue(bind.contains("ensureHelperStarted()"));
+        assertTrue(bind.contains("return boundHelper"));
+        assertFalse(bind.contains("stopRuntime("));
+        String unbind = text.substring(text.indexOf("public boolean onUnbind"),
+                text.indexOf("public void onTaskRemoved"));
+        assertFalse(unbind.contains("stopSelf"));
+        assertFalse(unbind.contains("stopRuntime"));
     }
 
     @Test

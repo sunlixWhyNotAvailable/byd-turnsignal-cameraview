@@ -36,6 +36,14 @@ public final class WeatherRuntimeTest {
     }
 
     @Test
+    public void manualWeatherRefreshUsesActiveRuntimeWhenColdRecoveryIsOff() {
+        assertTrue(CameraHelperService.canRouteWeatherRefresh(true, true, false));
+        assertTrue(CameraHelperService.canRouteWeatherRefresh(true, false, true));
+        assertFalse(CameraHelperService.canRouteWeatherRefresh(true, false, false));
+        assertFalse(CameraHelperService.canRouteWeatherRefresh(false, true, true));
+    }
+
+    @Test
     public void fallbackFollowsAppLanguage() throws Exception {
         assertEquals("en", WeatherRuntime.normalizedLanguage("en"));
         assertEquals("uk", WeatherRuntime.normalizedLanguage("uk"));
@@ -166,7 +174,7 @@ public final class WeatherRuntimeTest {
         String start = text.substring(text.indexOf("private void handleStartCommand"));
         int blockedStart = start.indexOf("if (LegacySettingsImporter.blocksRuntime(this))");
         int accessibilityStart = start.indexOf(
-                "syncWeatherAccessibility(shouldRecover || activityVisible,", blockedStart);
+                "syncWeatherAccessibility(!userShutdown", blockedStart);
         assertTrue(blockedStart >= 0 && accessibilityStart > blockedStart);
         String blocked = start.substring(blockedStart, accessibilityStart);
         assertTrue(blocked.contains("stopRuntime(true)"));

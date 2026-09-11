@@ -32,40 +32,49 @@ final class AvasExteriorRoute {
         manager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
     }
 
-    void naviFocus(boolean on) {
-        call(manager, on ? "requestAudioNaviFocus" : "abandonAudioNaviFocus");
+    void naviFocus(boolean on) { naviFocus(on, null); }
+
+    void naviFocus(boolean on, AvasAudioDiagnostics.Context diagnostics) {
+        call(diagnostics, manager, on ? "requestAudioNaviFocus" : "abandonAudioNaviFocus");
     }
 
-    void mute(boolean on) throws Exception {
-        if (call(manager, "setStreamMute", 15, on) == null) {
+    void mute(boolean on) throws Exception { mute(on, null); }
+
+    void mute(boolean on, AvasAudioDiagnostics.Context diagnostics) throws Exception {
+        if (call(diagnostics, manager, "setStreamMute", 15, on) == null) {
             throw new IllegalStateException("NAV mute operation unavailable");
         }
+        event(diagnostics, "avas_mute_command", "muted", on);
     }
 
-    void prepare() throws Exception {
-        boolean primary = write(3, POSITION_FID, 1, "prepare") >= 0;
-        tryWrite(1000, AUX_FID, 1, "prepare_aux");
-        boolean optional = exteriorPath(true);
-        naviFocus(true);
-        event("avas_route_ready", "primary", primary, "optionalSdkAccepted", optional);
+    void prepare(AvasAudioDiagnostics.Context diagnostics) throws Exception {
+        boolean primary = write(3, POSITION_FID, 1, "prepare", diagnostics) >= 0;
+        tryWrite(1000, AUX_FID, 1, "prepare_aux", diagnostics);
+        boolean optional = exteriorPath(true, diagnostics);
+        naviFocus(true, diagnostics);
+        // Command acceptance only; physical amplifier readiness is not observable here.
+        event(diagnostics, "avas_route_ready", "primary", primary,
+                "optionalSdkAccepted", optional, "amplifier_ready", "unknown");
         if (!primary) throw new IllegalStateException("Exterior primary route failed");
     }
 
-    void release(AudioFocusRequest focus) throws Exception {
+    void release(AudioFocusRequest focus) throws Exception { release(focus, null); }
+
+    void release(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics) throws Exception {
         Exception failure = null;
         boolean interrupted = false;
         try {
-            if (write(3, POSITION_FID, 0, "release") < 0) {
+            if (write(3, POSITION_FID, 0, "release", diagnostics) < 0) {
                 failure = new IllegalStateException("Exterior primary teardown failed");
             }
         } catch (Exception error) {
             failure = error;
         }
-        tryWrite(1000, AUX_FID, 0, "release_aux");
+        tryWrite(1000, AUX_FID, 0, "release_aux", diagnostics);
         interrupted |= sleep(180);
-        exteriorPath(false);
+        exteriorPath(false, diagnostics);
         interrupted |= sleep(60);
-        naviFocus(false);
+        naviFocus(false, diagnostics);
         try {
             if (focus != null) manager.abandonAudioFocusRequest(focus);
         } catch (Exception error) {
@@ -91,32 +100,34 @@ final class AvasExteriorRoute {
         }
     }
 
-    private boolean exteriorPath(boolean on) {
+    private boolean exteriorPath(boolean on, AvasAudioDiagnostics.Context diagnostics) {
         int state = on ? 1 : 0;
-        Object body = device("bodywork.BYDAutoBodyworkDevice");
+        Object body = device("bodywork.BYDAutoBodyworkDevice", diagnostics);
         boolean confirmed = false;
         for (int command : new int[]{4150, 4160, 4159}) {
-            confirmed |= accepted(call(body, "set", 850, command, state));
+            confirmed |= accepted(call(diagnostics, body, "set", 850, command, state));
         }
-        Object audio = device("audio.BYDAutoAudioDevice");
-        for (int[] tuple : HAL) confirmed |= accepted(call(audio, "set", tuple[0], tuple[1], state));
-        confirmed |= accepted(call(audio, "setKaraokeMode", on ? 3 : 1));
-        confirmed |= accepted(call(audio, "setChannel", on ? 2 : 1));
-        Object special = device("special.BYDAutoSpecialDevice");
-        for (int[] tuple : HAL) call(special, "postEvent", tuple[0], tuple[1], state, null);
+        Object audio = device("audio.BYDAutoAudioDevice", diagnostics);
+        for (int[] tuple : HAL) confirmed |= accepted(call(diagnostics, audio, "set", tuple[0], tuple[1], state));
+        confirmed |= accepted(call(diagnostics, audio, "setKaraokeMode", on ? 3 : 1));
+        confirmed |= accepted(call(diagnostics, audio, "setChannel", on ? 2 : 1));
+        Object special = device("special.BYDAutoSpecialDevice", diagnostics);
+        for (int[] tuple : HAL) call(diagnostics, special, "postEvent", tuple[0], tuple[1], state, null);
         return confirmed;
     }
 
-    private int tryWrite(int device, int fid, int value, String phase) {
+    private int tryWrite(int device, int fid, int value, String phase,
+            AvasAudioDiagnostics.Context diagnostics) {
         try {
-            return write(device, fid, value, phase);
+            return write(device, fid, value, phase, diagnostics);
         } catch (Exception failure) {
-            event("avas_route_write_error", "phase", phase, "error", failure.toString());
+            event(diagnostics, "avas_route_write_error", "phase", phase, "error", failure.toString());
             return Integer.MIN_VALUE;
         }
     }
 
-    private int write(int device, int fid, int value, String phase) throws Exception {
+    private int write(int device, int fid, int value, String phase,
+            AvasAudioDiagnostics.Context diagnostics) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -129,7 +140,7 @@ final class AvasExteriorRoute {
                 throw new IllegalStateException("Empty exterior route reply");
             }
             int status = reply.readInt();
-            event("avas_route_write", "phase", phase, "device", device,
+            event(diagnostics, "avas_route_write", "phase", phase, "device", device,
                     "fid", "0x" + Integer.toHexString(fid).toUpperCase(Locale.ROOT),
                     "value", value, "status", status);
             return status;
@@ -148,7 +159,7 @@ final class AvasExteriorRoute {
         return autoservice;
     }
 
-    private Object device(String name) {
+    private Object device(String name, AvasAudioDiagnostics.Context diagnostics) {
         try {
             Class<?> type = Class.forName(SDK + name);
             try {
@@ -157,12 +168,17 @@ final class AvasExteriorRoute {
                 return type.getMethod("getInstance").invoke(null);
             }
         } catch (Exception failure) {
-            unavailable(name, failure);
+            unavailable(diagnostics, name, failure);
             return null;
         }
     }
 
     private Object call(Object target, String method, Object... arguments) {
+        return call(null, target, method, arguments);
+    }
+
+    private Object call(AvasAudioDiagnostics.Context diagnostics, Object target,
+            String method, Object... arguments) {
         if (target == null) return null;
         try {
             Method found = null;
@@ -177,11 +193,11 @@ final class AvasExteriorRoute {
             if (found == null) throw new NoSuchMethodException(method);
             found.setAccessible(true);
             Object result = found.invoke(target, arguments);
-            event("avas_route_call", "class", target.getClass().getName(), "method", method,
+            event(diagnostics, "avas_route_call", "class", target.getClass().getName(), "method", method,
                     "args", Arrays.toString(arguments), "result", String.valueOf(result));
             return found.getReturnType() == void.class ? Boolean.TRUE : result;
         } catch (Exception failure) {
-            unavailable(target.getClass().getName() + "." + method, failure);
+            unavailable(diagnostics, target.getClass().getName() + "." + method, failure);
             return null;
         }
     }
@@ -202,14 +218,30 @@ final class AvasExteriorRoute {
     }
 
     private void unavailable(String operation, Exception failure) {
+        unavailable(null, operation, failure);
+    }
+
+    private void unavailable(AvasAudioDiagnostics.Context diagnostics, String operation,
+            Exception failure) {
         Throwable cause = failure instanceof InvocationTargetException ? failure.getCause() : failure;
-        event("avas_route_call_unavailable", "operation", operation, "error", String.valueOf(cause));
+        event(diagnostics, "avas_route_call_unavailable", "operation", operation,
+                "error", String.valueOf(cause));
     }
 
     private void event(String kind, Object... fields) {
+        event((AvasAudioDiagnostics.Context) null, kind, fields);
+    }
+
+    private void event(AvasAudioDiagnostics.Context diagnostics, String kind, Object... fields) {
         if (log == null) return;
         try {
             JSONObject event = new JSONObject().put("kind", kind);
+            if (diagnostics != null) {
+                event.put("request", diagnostics.requestId).put("profile", diagnostics.profile)
+                        .put("source", diagnostics.source).put("helper_pid", diagnostics.helperPid)
+                        .put("accepted_t_ms", diagnostics.acceptedMs)
+                        .put("enqueued_t_ms", diagnostics.enqueuedMs);
+            }
             for (int i = 0; i + 1 < fields.length; i += 2) event.put(String.valueOf(fields[i]), fields[i + 1]);
             log.accept(event);
         } catch (Throwable ignored) {

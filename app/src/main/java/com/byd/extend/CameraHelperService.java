@@ -16,7 +16,6 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.widget.Toast;
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -132,7 +131,55 @@ public final class CameraHelperService extends Service {
         }
     }
 
-    enum HelperTeardownMode { RecoveryDetach, StopKeepingAvas, StopAll }
+    interface RuntimeSettingsSink {
+        void applyGuard(boolean enabled, float outward, float center,
+                int delayMs, int maxSpeedKph);
+        void applyMusic(boolean enabled);
+        void applyParkingRadar(boolean enabled);
+    }
+
+    static final class RuntimeSettingsSnapshot {
+        final boolean guardEnabled;
+        final float outward;
+        final float center;
+        final int delayMs;
+        final int maxSpeedKph;
+        final boolean musicEnabled;
+        final boolean parkingEnabled;
+
+        private RuntimeSettingsSnapshot(
+                boolean guardEnabled, float outward, float center,
+                int delayMs, int maxSpeedKph, boolean musicEnabled,
+                boolean parkingEnabled) {
+            this.guardEnabled = guardEnabled;
+            this.outward = outward;
+            this.center = center;
+            this.delayMs = delayMs;
+            this.maxSpeedKph = maxSpeedKph;
+            this.musicEnabled = musicEnabled;
+            this.parkingEnabled = parkingEnabled;
+        }
+
+        static RuntimeSettingsSnapshot read(
+                SharedPreferences settings, boolean parkingEnabled) {
+            return new RuntimeSettingsSnapshot(
+                    settings.getBoolean("guard_enabled", false),
+                    settings.getFloat("outward_deg", 90.0f),
+                    settings.getFloat("center_deg", 10.0f),
+                    settings.getInt("correction_delay_ms", 100),
+                    settings.getInt("max_speed_kph", 30),
+                    settings.getBoolean("music_visualizer_enabled", false),
+                    parkingEnabled);
+        }
+
+        void replay(RuntimeSettingsSink sink) {
+            sink.applyGuard(guardEnabled, outward, center, delayMs, maxSpeedKph);
+            sink.applyMusic(musicEnabled);
+            sink.applyParkingRadar(parkingEnabled);
+        }
+    }
+
+    enum HelperTeardownMode { RecoveryDetach, StopAll }
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final RuntimeLifecycleGate runtimeLifecycle = new RuntimeLifecycleGate();
@@ -146,7 +193,7 @@ public final class CameraHelperService extends Service {
     private final Runnable heartbeat = new Runnable() {
         @Override
         public void run() {
-            if (!GuardRecovery.shouldRecover(CameraHelperService.this)) return;
+            if (!helperRuntimeStarted) return;
             GuardRecovery.heartbeat(CameraHelperService.this);
             runtimeHandler.postDelayed(this, 30_000);
         }
@@ -155,7 +202,7 @@ public final class CameraHelperService extends Service {
     private final Runnable retryCameraDiscovery = new Runnable() {
         @Override
         public void run() {
-            if (helper == null || !GuardRecovery.shouldRecover(CameraHelperService.this)) return;
+            if (helper == null || !helperRuntimeStarted) return;
             boolean ready = helper.discoverCamera();
             lifecycle("camera_discovery_retry", "ready", ready);
             if (!ready) runtimeHandler.postDelayed(this, CAMERA_DISCOVERY_RETRY_MS);
@@ -167,14 +214,11 @@ public final class CameraHelperService extends Service {
     private OemCameraVisibilityRuntime oemCameraVisibility;
     private AsyncServiceLog serviceLog;
     private volatile CameraHelperMain.HelperBinder helper;
-    private boolean helperRuntimeStarted;
+    private volatile boolean helperRuntimeStarted;
     private BlindSpotOverlayController overlay;
     private ParkingCameraController parkingCameras;
     private ReverseCameraController reverseCameras;
     private RearviewMirrorController mirror;
-    private volatile boolean manualMirrorSession;
-    private boolean mirrorOnlyRuntime;
-    private boolean avasOnlyRuntime;
     private ClusterFullscreenController clusterFullscreen;
     private WeatherRuntime weatherRuntime;
     private boolean controllersInitialized;
@@ -437,8 +481,11 @@ public final class CameraHelperService extends Service {
     static void weatherRefreshRequested(
             Context context, String reason, ResultReceiver receiver) {
         SharedPreferences settings = context.getSharedPreferences("settings", MODE_PRIVATE);
-        if (!settings.getBoolean(WeatherRuntime.PREF_ENABLED, false)
-                || !GuardRecovery.shouldRecover(context)) {
+        CameraHelperService service = activeInstance;
+        boolean activeRuntime = service != null && service.helperRuntimeStarted;
+        if (!canRouteWeatherRefresh(
+                settings.getBoolean(WeatherRuntime.PREF_ENABLED, false),
+                GuardRecovery.shouldRecover(context), activeRuntime)) {
             sendWeatherResult(receiver, WEATHER_RESULT_FAILED,
                     runtimeText(context, R.string.runtime_weather_off));
             return;
@@ -449,6 +496,11 @@ public final class CameraHelperService extends Service {
                 .putExtra(EXTRA_WEATHER_RECEIVER, receiver);
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
         else context.startService(intent);
+    }
+
+    static boolean canRouteWeatherRefresh(
+            boolean weatherEnabled, boolean recoveryAllowed, boolean activeRuntime) {
+        return weatherEnabled && (recoveryAllowed || activeRuntime);
     }
 
     private static void sendWeatherResult(
@@ -555,13 +607,9 @@ public final class CameraHelperService extends Service {
                 ? false : ACTION_SHUTDOWN.equals(action)
                 ? true : GuardRecovery.isUserShutdownActive(this);
         boolean willRecover = GuardRecovery.shouldRecover(targetAutoStart, targetUserShutdown);
-        boolean manualAvas = !targetUserShutdown && activityVisible && isAvasAction(action);
-        boolean manualMirror = !targetUserShutdown
-                && (manualMirrorSession || ACTION_ACTIVITY_OPEN.equals(action)
-                || ACTION_MIRROR_SETTINGS_CHANGED.equals(action))
-                && RearviewMirrorSettings.enabled(getSharedPreferences("settings", MODE_PRIVATE))
-                && Settings.canDrawOverlays(this);
-        if ((willRecover || manualMirror || manualAvas) && !blocked) {
+        boolean manualRuntime = !targetUserShutdown
+                && (activityVisible || ACTION_ACTIVITY_OPEN.equals(action));
+        if ((willRecover || helperRuntimeStarted || manualRuntime) && !blocked) {
             startForegroundRuntime();
         }
         if (!postRuntime(() -> handleStartCommand(command))) {
@@ -613,9 +661,7 @@ public final class CameraHelperService extends Service {
                 }
                 editor.apply();
                 CameraProbeActivity.publishMirrorSettingsChanged();
-                if (mirrorButton.visibilityChanged && !mirrorButton.manualHidden) {
-                    manualMirrorSession = true;
-                } else if (mirrorButton.visibilityChanged) {
+                if (mirrorButton.visibilityChanged && mirrorButton.manualHidden) {
                     String language = AppLanguage.read(settings);
                     Context localized = AppLanguage.localizedContext(this, language);
                     mainHandler.post(() -> Toast.makeText(localized,
@@ -626,11 +672,9 @@ public final class CameraHelperService extends Service {
         }
         if (ACTION_ACTIVITY_OPEN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, false);
-            manualMirrorSession = true;
-        } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
-            manualMirrorSession = true;
         }
         boolean shouldRecover = GuardRecovery.shouldRecover(this);
+        boolean userShutdown = GuardRecovery.isUserShutdownActive(this);
         if (LegacySettingsImporter.blocksRuntime(this)) {
             lifecycle("runtime_blocked", "reason", "legacy_handover");
             stopRuntime(true);
@@ -650,35 +694,12 @@ public final class CameraHelperService extends Service {
         else if (ACTION_ACTIVITY_CLOSED.equals(action)) activityVisible = false;
         boolean accessibilityTrigger = ACTION_ACTIVITY_OPEN.equals(action)
                 || ACTION_START.equals(action);
-        syncWeatherAccessibility(shouldRecover || activityVisible,
+        syncWeatherAccessibility(!userShutdown
+                        && (shouldRecover || helperRuntimeStarted || activityVisible),
                 ACTION_ACTIVITY_OPEN.equals(action) ? "activity_foreground" : "startup",
                 accessibilityTrigger);
-        if (!shouldRecover) {
-            if (!GuardRecovery.isUserShutdownActive(this)
-                    && activityVisible && isAvasAction(action)) {
-                ensureAvasOnlyRuntime();
-                routeAvasAction(command);
-                return;
-            }
-            if (shouldRunManualMirror()) {
-                if (!mirrorOnlyRuntime && helperRuntimeStarted) {
-                    stopRuntime(true);
-                }
-                ensureControllersInitialized();
-                if (ACTION_ACTIVITY_OPEN.equals(action) || ACTION_ACTIVITY_CLOSED.equals(action)) {
-                    mirror.appVisibility(activityVisible);
-                }
-                ensureMirrorOnlyRuntime();
-                routeManualMirrorSettingsChange(action, mirror::settingsChanged,
-                        clusterFullscreen::settingsChanged);
-                if (mirrorButton != null && mirrorButton.changed()) {
-                    mirror.settingsChanged();
-                    clusterFullscreen.settingsChanged();
-                }
-                mainHandler.post(this::startForegroundRuntime);
-                return;
-            }
-            if (helper != null) helper.setRecoveryEnabled(false);
+        if (!shouldAdmitFullRuntime(
+                userShutdown, shouldRecover, helperRuntimeStarted, activityVisible, action)) {
             runtimeHandler.removeCallbacks(heartbeat);
             stopServiceFromRuntime(command.startId);
             return;
@@ -688,11 +709,6 @@ public final class CameraHelperService extends Service {
             runtimeNeedsReinit = false;
         } else {
             ensureControllersInitialized();
-        }
-        if (mirrorOnlyRuntime || avasOnlyRuntime) {
-            mirrorOnlyRuntime = false;
-            avasOnlyRuntime = false;
-            helperRuntimeStarted = false;
         }
         mirror.setRuntimeAllowed(true);
         boolean refreshMusicAfterClose = false;
@@ -723,10 +739,10 @@ public final class CameraHelperService extends Service {
         }
         ensureHelperStarted();
         weatherRuntime.start();
-        helper.setRecoveryEnabled(true);
-        helper.configureParkingRadar(anyParkingEnabled());
+        helper.setRecoveryEnabled(shouldRecover);
+        helper.applyParkingRadar(anyParkingEnabled());
         if (refreshMusicAfterClose) {
-            helper.configureMusic(settings
+            helper.applyMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             mirror.settingsChanged();
@@ -750,7 +766,7 @@ public final class CameraHelperService extends Service {
             mirror.settingsChanged();
             clusterFullscreen.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
-            helper.configureMusic(settings
+            helper.applyMusic(settings
                     .getBoolean("music_visualizer_enabled", false));
         } else if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
             weatherRuntime.settingsChanged();
@@ -784,10 +800,11 @@ public final class CameraHelperService extends Service {
         });
     }
 
-    private boolean shouldRunManualMirror() {
-        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-        return manualMirrorSession && !GuardRecovery.isUserShutdownActive(this)
-                && RearviewMirrorSettings.enabled(settings) && Settings.canDrawOverlays(this);
+    static boolean shouldAdmitFullRuntime(
+            boolean userShutdown, boolean recoveryAllowed, boolean runtimeStarted,
+            boolean activityVisible, String action) {
+        return !userShutdown && (recoveryAllowed || runtimeStarted || activityVisible
+                || ACTION_ACTIVITY_OPEN.equals(action));
     }
 
     private static boolean isAvasAction(String action) {
@@ -817,20 +834,6 @@ public final class CameraHelperService extends Service {
         }
     }
 
-    /** Foreground manual playback does not initialize or wait for any camera controller. */
-    private void ensureAvasOnlyRuntime() {
-        ensureHelperCreated();
-        if (helperRuntimeStarted) return;
-        helperRuntimeStarted = true;
-        avasOnlyRuntime = true;
-        helper.configureGuard(false, 90f, 10f, 100, 30);
-        helper.configureMusic(false);
-        helper.configureParkingRadar(false);
-        helper.setRecoveryEnabled(false);
-        helper.startGuardRuntime();
-        helper.configureAvas();
-    }
-
     static void routeManualMirrorSettingsChange(
             String action, Runnable mirrorSettingsChanged, Runnable clusterSettingsChanged) {
         if (!ACTION_MIRROR_SETTINGS_CHANGED.equals(action)
@@ -838,23 +841,6 @@ public final class CameraHelperService extends Service {
                 && !ACTION_SETTINGS_RELOADED.equals(action)) return;
         mirrorSettingsChanged.run();
         clusterSettingsChanged.run();
-    }
-
-    /** Auto-start OFF still permits an explicitly opened Mirror session, without recovery. */
-    private void ensureMirrorOnlyRuntime() {
-        ensureHelperCreated();
-        mirror.setRuntimeAllowed(true);
-        mirror.attachHelper(helper);
-        if (!helperRuntimeStarted) {
-            helperRuntimeStarted = true;
-            mirrorOnlyRuntime = true;
-            helper.discoverCamera();
-            helper.configureGuard(false, 90f, 10f, 100, 30);
-            helper.configureMusic(false);
-            helper.configureParkingRadar(false);
-            helper.setRecoveryEnabled(false);
-            helper.startGuardRuntime();
-        }
     }
 
     private void syncWeatherAccessibility(boolean enabled) {
@@ -1059,6 +1045,8 @@ public final class CameraHelperService extends Service {
         CameraHelperMain.HelperBinder boundHelper = helper;
         if (boundHelper == null) return null;
         postRuntime(() -> {
+            if (LegacySettingsImporter.blocksRuntime(this)
+                    || GuardRecovery.isUserShutdownActive(this)) return;
             // A bound Activity is the foreground owner even when auto-start is disabled; keep the
             // Accessibility key filter enabled for the lifetime of this binding.
             syncWeatherAccessibility(true, "activity_bind", true);
@@ -1075,11 +1063,6 @@ public final class CameraHelperService extends Service {
 
     @Override
     public boolean onUnbind(Intent intent) {
-        postRuntime(() -> {
-            if (!GuardRecovery.shouldRecover(this)) {
-                mainHandler.post(this::stopSelf);
-            }
-        });
         return false;
     }
 
@@ -1124,15 +1107,11 @@ public final class CameraHelperService extends Service {
         HelperTeardownMode teardownMode = helperTeardownMode(recover, explicitShutdown);
         if (helper != null) {
             if (teardownMode == HelperTeardownMode.StopAll) helper.shutdown(true);
-            else if (teardownMode == HelperTeardownMode.StopKeepingAvas) {
-                helper.shutdownKeepingAvas();
-            } else helper.shutdown(false);
+            else helper.shutdown(false);
         }
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
-        mirrorOnlyRuntime = false;
-        avasOnlyRuntime = false;
         oemCameraVisibility = null;
         weatherAccessibilityExecutor.shutdownNow();
         List<AccessibilityRecoveryCallback> cancelledCallbacks;
@@ -1149,8 +1128,7 @@ public final class CameraHelperService extends Service {
 
     static HelperTeardownMode helperTeardownMode(boolean recover, boolean explicitShutdown) {
         if (explicitShutdown) return HelperTeardownMode.StopAll;
-        return recover ? HelperTeardownMode.RecoveryDetach
-                : HelperTeardownMode.StopKeepingAvas;
+        return HelperTeardownMode.RecoveryDetach;
     }
 
     private synchronized void ensureHelperCreated() {
@@ -1171,21 +1149,15 @@ public final class CameraHelperService extends Service {
         helper.configureAvas();
 
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-        helper.configureGuard(
-                settings.getBoolean("guard_enabled", false),
-                settings.getFloat("outward_deg", 90.0f),
-                settings.getFloat("center_deg", 10.0f),
-                settings.getInt("correction_delay_ms", 100),
-                settings.getInt("max_speed_kph", 30));
+        RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
         overlay.attachHelper(helper);
         parkingCameras.attachHelper(helper);
         parkingCameras.setUiHidden(activityVisible);
         parkingCameras.setSuspended(cameraPreviewActive);
-        helper.configureParkingRadar(anyParkingEnabled());
         reverseCameras.attachHelper(helper);
         overlay.setUiHidden(activityVisible);
         overlay.setSuspended(cameraPreviewActive);
-        if (shouldRetryCameraDiscovery(cameraReady, GuardRecovery.shouldRecover(this))) {
+        if (shouldRetryCameraDiscovery(cameraReady, helperRuntimeStarted)) {
             scheduleCameraDiscoveryRetry(CAMERA_DISCOVERY_RETRY_MS);
         }
     }
@@ -1210,8 +1182,6 @@ public final class CameraHelperService extends Service {
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
-        mirrorOnlyRuntime = false;
-        avasOnlyRuntime = false;
         mainHandler.post(this::stopForegroundRuntime);
         GuardRecovery.schedule(this);
     }
@@ -1219,14 +1189,7 @@ public final class CameraHelperService extends Service {
     private void reloadSettings(boolean fullImport) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         if (helper != null) {
-            helper.configureGuard(
-                    settings.getBoolean("guard_enabled", false),
-                    settings.getFloat("outward_deg", 90.0f),
-                    settings.getFloat("center_deg", 10.0f),
-                    settings.getInt("correction_delay_ms", 100),
-                    settings.getInt("max_speed_kph", 30));
-            helper.configureMusic(settings.getBoolean("music_visualizer_enabled", false));
-            helper.configureParkingRadar(anyParkingEnabled());
+            RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
             helper.configureAvas();
         }
         overlay.applySettings();
@@ -1240,7 +1203,9 @@ public final class CameraHelperService extends Service {
             GuardRecovery.setAutoStartEnabled(this,
                     settings.getBoolean("auto_start_enabled", true));
             weatherRuntime.settingsChanged();
-            syncWeatherAccessibility(GuardRecovery.shouldRecover(this) || activityVisible);
+            syncWeatherAccessibility(!GuardRecovery.isUserShutdownActive(this)
+                    && (GuardRecovery.shouldRecover(this)
+                    || helperRuntimeStarted || activityVisible));
         }
         lifecycle("settings_reloaded", "full_import", fullImport);
     }
@@ -1255,8 +1220,8 @@ public final class CameraHelperService extends Service {
         runtimeHandler.postDelayed(retryCameraDiscovery, Math.max(0, delayMs));
     }
 
-    static boolean shouldRetryCameraDiscovery(boolean cameraReady, boolean recover) {
-        return !cameraReady && recover;
+    static boolean shouldRetryCameraDiscovery(boolean cameraReady, boolean runtimeActive) {
+        return !cameraReady && runtimeActive;
     }
 
     private void startForegroundRuntime() {

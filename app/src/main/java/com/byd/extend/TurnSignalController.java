@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
@@ -215,22 +216,41 @@ final class TurnSignalController {
                 .putInt("max_speed_kph", maxSpeedKph)
                 .apply();
         GuardRecovery.schedule(context);
+        applyGuard(enabled, outward, center, delayMs, maxSpeedKph);
+    }
+
+    void applyGuard(
+            boolean enabled, float outward, float center, int delayMs, int maxSpeedKph) {
         worker.execute(() -> {
-            if (!sendConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            if (!sendConfig(enabled, outward, center, delayMs, maxSpeedKph)) {
+                ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            }
         });
     }
 
     void configureMusic(boolean enabled) {
         settings.edit().putBoolean("music_visualizer_enabled", enabled).apply();
+        applyMusic(enabled);
+    }
+
+    void applyMusic(boolean enabled) {
         worker.execute(() -> {
-            if (!sendMusicConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            if (!sendMusicConfig(enabled)) {
+                ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            }
         });
     }
 
     void configureParkingRadar(boolean anyEnabled) {
         settings.edit().putBoolean("parking_any_enabled", anyEnabled).apply();
+        applyParkingRadar(anyEnabled);
+    }
+
+    void applyParkingRadar(boolean anyEnabled) {
         worker.execute(() -> {
-            if (!sendParkingRadarConfig()) ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            if (!sendParkingRadarConfig(anyEnabled)) {
+                ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            }
         });
     }
 
@@ -672,15 +692,29 @@ final class TurnSignalController {
 
     void closeCameraOverlay(int cameraId, String reason) {
         CameraOverlayProfile.of(cameraId);
-        worker.execute(() -> closeCameraOverlayNow(cameraId, reason));
+        executeCleanup(worker, () -> stopped,
+                () -> closeCameraOverlayNow(cameraId, reason));
     }
 
     void closeCameraOverlays(String reason) {
-        worker.execute(() -> {
+        executeCleanup(worker, () -> stopped, () -> {
             for (CameraProfile profile : CameraProfile.values()) {
                 closeCameraOverlayNow(profile.id, reason);
             }
         });
+    }
+
+    static void executeCleanup(
+            java.util.concurrent.Executor executor, BooleanSupplier stopped,
+            Runnable cleanup) {
+        if (stopped.getAsBoolean()) return;
+        try {
+            executor.execute(() -> {
+                if (!stopped.getAsBoolean()) cleanup.run();
+            });
+        } catch (RejectedExecutionException rejected) {
+            if (!stopped.getAsBoolean()) throw rejected;
+        }
     }
 
     void prepareReverseOverlay(
@@ -1205,8 +1239,10 @@ final class TurnSignalController {
             transactAttach(value, GuardRecovery.shouldRecover(context));
             transactCallback(value);
             transactConfig(value);
-            transactMusicConfig(value);
-            transactParkingRadarConfig(value);
+            transactMusicConfig(value,
+                    settings.getBoolean("music_visualizer_enabled", false));
+            transactParkingRadarConfig(value,
+                    CameraHelperService.anyParkingEnabled(settings));
             transactNoArgs(value, TurnSignalShellProtocol.TX_REPORT_STATUS);
             healthy = true;
             primaryError = "";
@@ -1248,11 +1284,12 @@ final class TurnSignalController {
         if (!stopped) worker.execute(() -> ensureRunning(LocalAdbClient.PromptMode.NEVER, true));
     }
 
-    private boolean sendConfig() {
+    private boolean sendConfig(
+            boolean enabled, float outward, float center, int delayMs, int maxSpeedKph) {
         IBinder value = helper;
         if (!healthy || value == null) return false;
         try {
-            transactConfig(value);
+            transactConfig(value, enabled, outward, center, delayMs, maxSpeedKph);
             return true;
         } catch (Throwable error) {
             clearHelper(value);
@@ -1263,11 +1300,11 @@ final class TurnSignalController {
         }
     }
 
-    private boolean sendMusicConfig() {
+    private boolean sendMusicConfig(boolean enabled) {
         IBinder value = helper;
         if (!healthy || value == null) return false;
         try {
-            transactMusicConfig(value);
+            transactMusicConfig(value, enabled);
             return true;
         } catch (Throwable error) {
             clearHelper(value);
@@ -1278,11 +1315,11 @@ final class TurnSignalController {
         }
     }
 
-    private boolean sendParkingRadarConfig() {
+    private boolean sendParkingRadarConfig(boolean anyEnabled) {
         IBinder value = helper;
         if (!healthy || value == null) return false;
         try {
-            transactParkingRadarConfig(value);
+            transactParkingRadarConfig(value, anyEnabled);
             return true;
         } catch (Throwable error) {
             clearHelper(value);
@@ -1443,15 +1480,26 @@ final class TurnSignalController {
     }
 
     private void transactConfig(IBinder value) throws Exception {
+        transactConfig(value,
+                settings.getBoolean("guard_enabled", false),
+                settings.getFloat("outward_deg", 90.0f),
+                settings.getFloat("center_deg", 10.0f),
+                settings.getInt("correction_delay_ms", 100),
+                settings.getInt("max_speed_kph", 30));
+    }
+
+    private void transactConfig(
+            IBinder value, boolean enabled, float outward, float center,
+            int delayMs, int maxSpeedKph) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
-            data.writeInt(settings.getBoolean("guard_enabled", false) ? 1 : 0);
-            data.writeFloat(settings.getFloat("outward_deg", 90.0f));
-            data.writeFloat(settings.getFloat("center_deg", 10.0f));
-            data.writeInt(settings.getInt("correction_delay_ms", 100));
-            data.writeInt(settings.getInt("max_speed_kph", 30));
+            data.writeInt(enabled ? 1 : 0);
+            data.writeFloat(outward);
+            data.writeFloat(center);
+            data.writeInt(delayMs);
+            data.writeInt(maxSpeedKph);
             data.writeInt(settings.getInt("assumed_latch_state", -1));
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_GUARD, data, reply);
         } finally {
@@ -1473,12 +1521,12 @@ final class TurnSignalController {
         }
     }
 
-    private void transactMusicConfig(IBinder value) throws Exception {
+    private void transactMusicConfig(IBinder value, boolean enabled) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
-            data.writeInt(settings.getBoolean("music_visualizer_enabled", false) ? 1 : 0);
+            data.writeInt(enabled ? 1 : 0);
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_MUSIC, data, reply);
         } finally {
             data.recycle();
@@ -1486,12 +1534,12 @@ final class TurnSignalController {
         }
     }
 
-    private void transactParkingRadarConfig(IBinder value) throws Exception {
+    private void transactParkingRadarConfig(IBinder value, boolean anyEnabled) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
-            data.writeInt(settings.getBoolean("parking_any_enabled", false) ? 1 : 0);
+            data.writeInt(anyEnabled ? 1 : 0);
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR,
                     data, reply);
         } finally {

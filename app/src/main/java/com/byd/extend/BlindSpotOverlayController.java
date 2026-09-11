@@ -148,6 +148,7 @@ final class BlindSpotOverlayController {
     };
 
     private CameraHelperMain.HelperBinder helper;
+    private PendingHelperAttachment pendingHelperAttachment;
     private boolean suspended;
     private boolean reversePriority;
     private boolean hardBlocked;
@@ -586,10 +587,40 @@ final class BlindSpotOverlayController {
     }
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
-        handler.post(() -> {
+        if (shutdown) return;
+        cancelHelperAttachment();
+        pendingHelperAttachment = new PendingHelperAttachment(() -> {
+            if (shutdown) return;
             helper = value;
             applySettingsOnMain();
         });
+        if (!handler.post(pendingHelperAttachment)) cancelHelperAttachment();
+    }
+
+    private void cancelHelperAttachment() {
+        if (pendingHelperAttachment == null) return;
+        pendingHelperAttachment.cancel();
+        handler.removeCallbacks(pendingHelperAttachment);
+        pendingHelperAttachment = null;
+    }
+
+    /** A queued attachment cannot survive its controller or a replacement attachment. */
+    static final class PendingHelperAttachment implements Runnable {
+        private Runnable attachment;
+
+        PendingHelperAttachment(Runnable attachment) {
+            this.attachment = attachment;
+        }
+
+        void cancel() {
+            attachment = null;
+        }
+
+        @Override public void run() {
+            Runnable action = attachment;
+            attachment = null;
+            if (action != null) action.run();
+        }
     }
 
     void setSuspended(boolean value) {
@@ -780,6 +811,7 @@ final class BlindSpotOverlayController {
 
     void shutdown() {
         shutdown = true;
+        cancelHelperAttachment();
         handler.removeCallbacks(staleState);
         cancelCameraRetry("overlay_shutdown");
         shellRecovery.clear();

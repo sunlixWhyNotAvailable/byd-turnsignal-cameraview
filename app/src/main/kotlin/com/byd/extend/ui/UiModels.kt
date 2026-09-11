@@ -96,6 +96,43 @@ internal object NumericDraftPolicy {
     }
 }
 
+/** Commits the focused editor only after its visible IME transitions to hidden. */
+internal class ImeDismissalPolicy {
+    private var owner: Any? = null
+    private var sawVisibleIme = false
+    private var onDismiss: (() -> Unit)? = null
+
+    fun claim(newOwner: Any, callback: () -> Unit) {
+        if (owner !== newOwner) {
+            owner = newOwner
+            sawVisibleIme = false
+        }
+        onDismiss = callback
+    }
+
+    fun release(currentOwner: Any) {
+        if (owner === currentOwner) {
+            owner = null
+            sawVisibleIme = false
+            onDismiss = null
+        }
+    }
+
+    fun onImeVisibility(currentOwner: Any, visible: Boolean) {
+        if (owner !== currentOwner) return
+        if (visible) {
+            sawVisibleIme = true
+            return
+        }
+        if (!sawVisibleIme) return
+        val callback = onDismiss
+        owner = null
+        sawVisibleIme = false
+        onDismiss = null
+        callback?.invoke()
+    }
+}
+
 /** One slider gesture; disposed sessions cannot emit a late finish commit. */
 internal class NumericPreviewSession {
     private var id: Long = 0L

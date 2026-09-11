@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 
 /** One worker queue for exterior playback and short in-cabin NAV auditions. */
 final class AvasPlaybackQueue {
@@ -16,15 +17,18 @@ final class AvasPlaybackQueue {
         final String asset;
         final String session;
         final boolean manual;
+        final AvasAudioDiagnostics.Context diagnostics;
         final AtomicBoolean cancelled = new AtomicBoolean();
 
-        private Request(long id, Kind kind, String profile, String asset, String session) {
+        private Request(long id, Kind kind, String profile, String asset, String session,
+                AvasAudioDiagnostics.Context diagnostics) {
             this.id = id;
             this.kind = kind;
             this.profile = profile;
             this.asset = asset;
             this.session = session;
             this.manual = kind == Kind.MANUAL_EXTERIOR;
+            this.diagnostics = diagnostics;
         }
 
         boolean audition() { return kind == Kind.AUDITION_NAV; }
@@ -35,6 +39,15 @@ final class AvasPlaybackQueue {
     private Request active;
     private long nextId;
     private boolean closed;
+    private final LongSupplier clock;
+    private final int helperPid;
+
+    AvasPlaybackQueue() { this(() -> System.nanoTime() / 1_000_000L, 0); }
+
+    AvasPlaybackQueue(LongSupplier clock, int helperPid) {
+        this.clock = clock;
+        this.helperPid = helperPid;
+    }
 
     synchronized Request enqueue(String profile, boolean manual) {
         return enqueueExterior(profile, manual);
@@ -43,9 +56,12 @@ final class AvasPlaybackQueue {
     synchronized Request enqueueExterior(String profile, boolean manual) {
         if (closed || manual && hasManual(profile)) return null;
         stopAllAuditionsLocked();
-        Request request = new Request(++nextId,
-                manual ? Kind.MANUAL_EXTERIOR : Kind.AUTOMATIC_EXTERIOR,
-                profile, "", "");
+        Kind kind = manual ? Kind.MANUAL_EXTERIOR : Kind.AUTOMATIC_EXTERIOR;
+        long acceptedMs = clock.getAsLong();
+        long id = ++nextId;
+        Request request = new Request(id, kind, profile, "", "",
+                new AvasAudioDiagnostics.Context(id, profile, manual ? "manual" : "automatic",
+                        helperPid, acceptedMs, clock.getAsLong()));
         requests.addLast(request);
         notifyAll();
         return request;
@@ -55,7 +71,11 @@ final class AvasPlaybackQueue {
     synchronized Request enqueueAudition(String profile, String asset, String session) {
         if (closed || exteriorBusy()) return null;
         stopAllAuditionsLocked();
-        Request request = new Request(++nextId, Kind.AUDITION_NAV, profile, asset, session);
+        long acceptedMs = clock.getAsLong();
+        long id = ++nextId;
+        Request request = new Request(id, Kind.AUDITION_NAV, profile, asset, session,
+                new AvasAudioDiagnostics.Context(id, profile, "audition", helperPid,
+                        acceptedMs, clock.getAsLong()));
         requests.addLast(request);
         notifyAll();
         return request;

@@ -290,12 +290,26 @@ private fun MirrorBorderColorPicker(
     fun hex(value: Int) = "%06X".format(java.util.Locale.ROOT, value and 0xFFFFFF)
     var picked by remember(initial) { mutableIntStateOf(initial or 0xFF000000.toInt()) }
     var hexDraft by remember(initial) { mutableStateOf(hex(initial)) }
+    var hexFocused by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     fun update(value: Int) {
         picked = value or 0xFF000000.toInt()
         hexDraft = hex(picked)
     }
+    fun commitHexDraft() {
+        val parsed = hexDraft.takeIf { it.length == 6 }?.toIntOrNull(16)
+        if (parsed == null) hexDraft = hex(picked) else update(parsed)
+    }
+    fun finishHexEditing() {
+        commitHexDraft()
+        hexFocused = false
+        keyboard?.hide()
+        focusManager.clearFocus()
+    }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        ImeDismissalEffect(hexFocused, ::finishHexEditing)
         Column(Modifier.width(560.dp).heightIn(max = 560.dp).clip(RoundedCornerShape(8.dp))
             .background(colors.surface).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp))
             .verticalScroll(rememberScrollState()).padding(18.dp),
@@ -311,11 +325,17 @@ private fun MirrorBorderColorPicker(
                     hexDraft = filtered
                     if (filtered.length == 6) filtered.toIntOrNull(16)?.let { picked = it or 0xFF000000.toInt() }
                 }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { finishHexEditing() }),
                     textStyle = TextStyle(color = colors.text, fontSize = 16.sp, fontFamily = FontFamily.Monospace),
                     modifier = Modifier.width(112.dp).height(44.dp).clip(RoundedCornerShape(7.dp))
                         .background(colors.field).border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp))
                         .semantics { contentDescription = strings.text("Колір HEX", "Hex color", "十六进制颜色") }
-                        .padding(horizontal = 10.dp),
+                        .onFocusChanged {
+                            if (hexFocused && !it.isFocused) commitHexDraft()
+                            hexFocused = it.isFocused
+                        }.padding(horizontal = 10.dp),
                     decorationBox = { field -> Row(Modifier.fillMaxHeight(),
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("#", color = colors.muted, fontSize = 16.sp); field()

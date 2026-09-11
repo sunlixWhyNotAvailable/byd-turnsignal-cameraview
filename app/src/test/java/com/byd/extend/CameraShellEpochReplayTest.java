@@ -176,7 +176,7 @@ public final class CameraShellEpochReplayTest {
         assertTrue(stoppedWrite > shutdownLock && stoppedWrite < shutdownLockEnd);
 
         int deathStart = text.indexOf("private void helperDied(");
-        int deathEnd = text.indexOf("private boolean sendConfig()", deathStart);
+        int deathEnd = text.indexOf("private boolean sendConfig(", deathStart);
         assertTrue(deathStart >= 0);
         assertTrue(deathEnd > deathStart);
         String death = text.substring(deathStart, deathEnd);

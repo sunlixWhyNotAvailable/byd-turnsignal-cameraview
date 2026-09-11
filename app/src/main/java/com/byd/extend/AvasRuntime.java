@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -46,7 +47,7 @@ final class AvasRuntime implements AutoCloseable {
     private final Context context;
     private final int ownerUid;
     private final Consumer<JSONObject> eventSink;
-    private final AvasPlaybackQueue queue = new AvasPlaybackQueue();
+    private final AvasPlaybackQueue queue;
     private final AvasEventPolicy policy = new AvasEventPolicy();
     private final VehicleReader vehicle = new VehicleReader();
     private final ExecutorService playback = Executors.newSingleThreadExecutor(r ->
@@ -72,6 +73,7 @@ final class AvasRuntime implements AutoCloseable {
         this.context = context;
         this.ownerUid = ownerUid;
         this.eventSink = eventSink;
+        queue = new AvasPlaybackQueue(SystemClock::elapsedRealtime, Process.myPid());
     }
 
     synchronized void start() {
@@ -175,8 +177,8 @@ final class AvasRuntime implements AutoCloseable {
             event("avas_profile_skipped", "profile", profileId, "source", "manual",
                     "reason", "already_queued_or_playing");
         } else {
-            event("avas_queue_enqueued", "request", request.id, "profile", profileId,
-                    "source", "manual", "pending", queue.pendingCount());
+            event(request, "avas_request_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
+            event(request, "avas_queue_enqueued", "pending", queue.pendingCount());
         }
         reportStatus();
     }
@@ -222,8 +224,8 @@ final class AvasRuntime implements AutoCloseable {
         if (request == null) {
             auditionError(profileId, assetId, sessionId, "exterior playback is busy");
         } else {
-            event("avas_queue_enqueued", "request", request.id, "profile", profileId,
-                    "asset", assetId, "session", sessionId, "source", "audition",
+            event(request, "avas_request_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
+            event(request, "avas_queue_enqueued", "asset", assetId, "session", sessionId,
                     "pending", queue.pendingCount());
         }
         reportStatus();
@@ -308,10 +310,14 @@ final class AvasRuntime implements AutoCloseable {
                 continue;
             }
             if (request == null) return;
+            event(request, "avas_queue_dequeued", "pending", queue.pendingCount(),
+                    "dequeued_t_ms", SystemClock.elapsedRealtime());
             try {
                 play(request);
             } finally {
                 queue.finish(request);
+                event(request, "avas_request_cleanup", "cancelled", request.cancelled.get(),
+                        "cleanup_t_ms", SystemClock.elapsedRealtime());
                 reportStatus();
             }
         }
@@ -319,12 +325,15 @@ final class AvasRuntime implements AutoCloseable {
 
     private void play(AvasPlaybackQueue.Request request) {
         AvasConfig.Profile profile = config.profile(request.profile);
-        if (request.cancelled.get()) return;
+        if (request.cancelled.get()) {
+            event(request, "avas_play_cancel", "cancelled", true,
+                    "finish_t_ms", SystemClock.elapsedRealtime(), "phase", "before_prepare");
+            return;
+        }
         File file = request.audition() ? assetFile(request.asset)
                 : request.manual ? selectedReady(profile) : automaticReady(profile);
         if (file == null) {
-            event("avas_profile_skipped", "request", request.id, "profile", request.profile,
-                    "source", request.manual ? "manual" : "automatic", "reason", "asset_not_ready");
+            event(request, "avas_profile_skipped", "reason", "asset_not_ready");
             return;
         }
         setActiveAsset(assetId(file));
@@ -342,23 +351,28 @@ final class AvasRuntime implements AutoCloseable {
                 output = new AvasAudioPlayer(context, this::emit);
                 player = output;
             }
-            event("avas_play_start", "request", request.id, "profile", request.profile,
-                    "source", request.audition() ? "audition"
-                            : request.manual ? "manual" : "automatic", "asset", assetId(file),
+            event(request, "avas_play_start", "asset", assetId(file),
                     "gain", profile.volume);
             reportStatus();
             if (request.audition()) {
                 output.playNavigation(file, profile.volume, request.cancelled::get,
+                        request.diagnostics,
                         () -> config.profile(request.profile).volume);
             } else {
                 output.play(file, profile.volume, request.cancelled::get,
+                        request.diagnostics, request.kind,
                         () -> config.profile(request.profile).volume);
             }
-            event("avas_play_finish", "request", request.id, "profile", request.profile,
-                    "asset", assetId(file), "cancelled", request.cancelled.get());
+            if (request.cancelled.get()) {
+                event(request, "avas_play_cancel", "asset", assetId(file), "cancelled", true,
+                        "finish_t_ms", SystemClock.elapsedRealtime());
+            }
+            event(request, "avas_play_finish", "asset", assetId(file),
+                    "cancelled", request.cancelled.get(),
+                    "finish_t_ms", SystemClock.elapsedRealtime());
         } catch (Exception failure) {
-            event("avas_play_error", "request", request.id, "profile", request.profile,
-                    "asset", assetId(file), "error", failure.toString());
+            event(request, "avas_play_error", "asset", assetId(file),
+                    "error", failure.toString(), "error_t_ms", SystemClock.elapsedRealtime());
             if (request.audition()) {
                 auditionError(request.profile, request.asset, request.session, failure.toString());
             } else if (request.manual) {
@@ -420,9 +434,9 @@ final class AvasRuntime implements AutoCloseable {
         }
         AvasPlaybackQueue.Request request = queue.enqueueExterior(profileId, false);
         if (request != null) {
-            event("avas_event_accepted", "profile", profileId, "request", request.id);
-            event("avas_queue_enqueued", "request", request.id, "profile", profileId,
-                    "source", "automatic", "pending", queue.pendingCount());
+            event(request, "avas_event_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
+            event(request, "avas_request_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
+            event(request, "avas_queue_enqueued", "pending", queue.pendingCount());
             reportStatus();
         }
     }
@@ -579,6 +593,21 @@ final class AvasRuntime implements AutoCloseable {
             emit(event);
         } catch (Exception ignored) {
         }
+    }
+
+    private void event(AvasPlaybackQueue.Request request, String kind, Object... fields) {
+        if (request == null) {
+            event(kind, fields);
+            return;
+        }
+        AvasAudioDiagnostics.Context context = request.diagnostics;
+        Object[] correlated = new Object[fields.length + 12];
+        Object[] identity = {"request", context.requestId, "profile", context.profile,
+                "source", context.source, "helper_pid", context.helperPid,
+                "accepted_t_ms", context.acceptedMs, "enqueued_t_ms", context.enqueuedMs};
+        System.arraycopy(identity, 0, correlated, 0, identity.length);
+        System.arraycopy(fields, 0, correlated, identity.length, fields.length);
+        event(kind, correlated);
     }
 
     private void emit(JSONObject event) {
