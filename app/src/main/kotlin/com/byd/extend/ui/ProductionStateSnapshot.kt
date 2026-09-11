@@ -312,6 +312,7 @@ private fun readMirror(
         visibilityBinding = CameraButtonBindings.load(preferences, CameraButtonBindings.Action.MirrorVisibility),
         suppressWhilePanorama = preferences.getBoolean(
             MirrorUiContract.PREF_SUPPRESS_WHILE_PANORAMA, true),
+        returnOnAppOpen = RearviewMirrorSettings.returnOnAppOpen(preferences),
         hidden = settings.manualHidden,
         section = enumPreference(preferences, UiSelectionPreferences.MIRROR_SECTION,
             CameraSection.Parameters),

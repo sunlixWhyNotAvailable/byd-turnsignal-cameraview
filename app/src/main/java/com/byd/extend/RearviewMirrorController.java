@@ -151,7 +151,12 @@ final class RearviewMirrorController {
     void appVisibility(boolean visible) {
         if (appVisible != visible) freshCycle();
         appVisible = visible;
-        if (visible) RearviewMirrorSettings.setHidden(preferences, false);
+        if (visible && RearviewMirrorSettings.shouldRestoreOnAppOpen(
+                RearviewMirrorSettings.hidden(preferences),
+                RearviewMirrorSettings.hiddenByButton(preferences),
+                RearviewMirrorSettings.returnOnAppOpen(preferences))) {
+            RearviewMirrorSettings.setHidden(preferences, false);
+        }
         evaluate();
     }
 

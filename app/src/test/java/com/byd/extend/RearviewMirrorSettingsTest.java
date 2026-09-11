@@ -91,6 +91,75 @@ public class RearviewMirrorSettingsTest {
     }
 
     @Test
+    public void returnOnOpenDefaultsOnAndPersistsOff() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        assertTrue(RearviewMirrorSettings.returnOnAppOpen(preferences));
+        assertFalse(RearviewMirrorSettings.hiddenByButton(preferences));
+
+        preferences.edit().putBoolean(
+                RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, false).apply();
+
+        assertFalse(RearviewMirrorSettings.returnOnAppOpen(preferences));
+    }
+
+    @Test
+    public void appOpenRestorationPolicyCoversEveryOriginAndPreferenceCombination() {
+        for (int mask = 0; mask < 8; mask++) {
+            boolean hidden = (mask & 1) != 0;
+            boolean byButton = (mask & 2) != 0;
+            boolean returnOnOpen = (mask & 4) != 0;
+            assertEquals(hidden && (!byButton || returnOnOpen),
+                    RearviewMirrorSettings.shouldRestoreOnAppOpen(
+                            hidden, byButton, returnOnOpen));
+        }
+    }
+
+    @Test
+    public void hideAndShowWritesKeepOriginAtomicAndNonButtonActionsClearIt() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int transactions = preferences.transactions;
+        android.content.SharedPreferences.Editor buttonHide = preferences.edit();
+        RearviewMirrorSettings.writeHidden(buttonHide, true, true);
+        buttonHide.apply();
+        assertEquals(transactions + 1, preferences.transactions);
+        assertTrue(RearviewMirrorSettings.hidden(preferences));
+        assertTrue(RearviewMirrorSettings.hiddenByButton(preferences));
+
+        android.content.SharedPreferences.Editor buttonShow = preferences.edit();
+        RearviewMirrorSettings.writeHidden(buttonShow, false, false);
+        buttonShow.apply();
+        assertFalse(RearviewMirrorSettings.hidden(preferences));
+        assertFalse(RearviewMirrorSettings.hiddenByButton(preferences));
+
+        preferences.edit().putBoolean(RearviewMirrorSettings.PREF_HIDDEN_BY_BUTTON, true).apply();
+        RearviewMirrorSettings.setHidden(preferences, true);
+        assertTrue(RearviewMirrorSettings.hidden(preferences));
+        assertFalse(RearviewMirrorSettings.hiddenByButton(preferences));
+        RearviewMirrorSettings.setHidden(preferences, false);
+        assertFalse(RearviewMirrorSettings.hidden(preferences));
+        assertFalse(RearviewMirrorSettings.hiddenByButton(preferences));
+    }
+
+    @Test
+    public void unrelatedAndSourceOnlySavesRetainReturnAndOriginFlags() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.edit()
+                .putBoolean(RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, false)
+                .putBoolean(RearviewMirrorSettings.PREF_HIDDEN_BY_BUTTON, true)
+                .putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, true)
+                .apply();
+
+        RearviewMirrorSettings.writeSourceState(
+                (android.content.SharedPreferences) preferences, true, true);
+        RearviewMirrorSettings.Settings loaded = new RearviewMirrorSettings(preferences).load();
+        new RearviewMirrorSettings(preferences).save(loaded.withEnabled(true));
+
+        assertFalse(RearviewMirrorSettings.returnOnAppOpen(preferences));
+        assertTrue(RearviewMirrorSettings.hiddenByButton(preferences));
+        assertTrue(RearviewMirrorSettings.hidden(preferences));
+    }
+
+    @Test
     public void placementAndTransformedRawPersistIndependently() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         RearviewMirrorSettings.writePlacement(preferences,

@@ -154,6 +154,7 @@ enum class ToggleId {
     MirrorEnabled,
     MirrorFrontIntegration,
     MirrorSuppressWhilePanorama,
+    MirrorReturnOnAppOpen,
     MirrorHidden,
     ProfileCorrection,
     ProfileMirror,
@@ -325,7 +326,7 @@ object MirrorUiContract {
 enum class MirrorBackendActionKind {
     SetEnabled, SetSuppressWhilePanorama, SetTarget, SetGeometry, SetBorder, SetCalibration, SavePreset, LoadPreset,
     ResetPlacement, ResetOriginal, ResetCorrection, ResetOutput, HideUntilOpen,
-    SetFrontIntegration, SetSource, CopyRearToFront,
+    SetFrontIntegration, SetSource, SetReturnOnAppOpen, CopyRearToFront,
 }
 
 /** Identifies a non-numeric Mirror calibration mutation while preserving untouched model fields. */
@@ -547,6 +548,7 @@ data class MirrorUiState(
     val sourceBinding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
     val visibilityBinding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
     val suppressWhilePanorama: Boolean = true,
+    val returnOnAppOpen: Boolean = true,
     val hidden: Boolean = false,
     val section: CameraSection = CameraSection.Parameters,
     val target: DisplayTarget = DisplayTarget.Tablet,

@@ -158,7 +158,16 @@ private fun ColumnScope.MirrorParameters(
     MirrorBindingRow(strings.text("Перемикання переднього / заднього виду", "Switch front / rear view", "切换前后视角"),
         CameraButtonBindings.Action.MirrorSource, state.sourceBinding, state.frontIntegrated, strings, colors, onAction)
     MirrorBindingRow(strings.text("Показати / приховати віджет", "Show / hide widget", "显示或隐藏悬浮窗"),
-        CameraButtonBindings.Action.MirrorVisibility, state.visibilityBinding, true, strings, colors, onAction)
+        CameraButtonBindings.Action.MirrorVisibility, state.visibilityBinding, true, strings, colors, onAction) {
+        SwitchLine(strings.text(
+            "Повертати при відкритті застосунку",
+            "Restore when opening the app",
+            "打开应用时恢复显示",
+        ), "", state.returnOnAppOpen, { value ->
+            onAction(BydExtendUiAction.Toggle(
+                ToggleTarget.Simple(ToggleId.MirrorReturnOnAppOpen), value))
+        }, colors)
+    }
     Text(strings.text(
         "Постійний віджет камери поза BYD Extend. Поки застосунок відкритий, віджет приховано.",
         "A persistent camera widget outside BYD Extend. It is hidden while the application is open.",
@@ -189,6 +198,7 @@ private fun ColumnScope.MirrorParameters(
 private fun MirrorBindingRow(
     title: String, action: CameraButtonBindings.Action, binding: CameraButtonBindings.Binding,
     enabled: Boolean, strings: UiStrings, colors: UiPalette, onAction: (BydExtendUiAction) -> Unit,
+    footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(colors.panelAlt)
         .border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp)).padding(8.dp),
@@ -221,6 +231,7 @@ private fun MirrorBindingRow(
             }, icon = Icons.Outlined.Refresh, enabled = enabled && binding.keyCode >= 0,
                 mainBackground = true, height = 40.dp) { onAction(BydExtendUiAction.ResetCameraButton(action)) }
         }
+        footer()
     }
 }
 

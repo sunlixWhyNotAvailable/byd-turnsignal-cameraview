@@ -216,6 +216,8 @@ public final class CameraSettingsTransferTest {
                 new TestSharedPreferences());
         TestSharedPreferences target = new TestSharedPreferences();
         target.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, true);
+        target.putBoolean(RearviewMirrorSettings.PREF_HIDDEN_BY_BUTTON, true);
+        target.putBoolean(RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, false);
         RearviewMirrorSettings.writePreset(target, new RearviewMirrorSettings.Calibration(
                 CameraPlacement.of(0.10f, 0.10f, 0.40f, 0.40f),
                 CameraPlacement.of(0.15f, 0.15f, 0.35f, 0.35f),
@@ -228,6 +230,8 @@ public final class CameraSettingsTransferTest {
                 CameraSettingsTransfer.parseCameraPreset(activePreset));
 
         assertTrue(target.getBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, false));
+        assertTrue(RearviewMirrorSettings.hiddenByButton(target));
+        assertFalse(RearviewMirrorSettings.returnOnAppOpen(target));
         assertTrue(RearviewMirrorSettings.preset(target, false) != null);
         assertTrue(RearviewMirrorSettings.preset(target, true) != null);
     }
@@ -244,6 +248,8 @@ public final class CameraSettingsTransferTest {
         RearviewMirrorSettings.writeSourceState(
                 (android.content.SharedPreferences) source, true, true);
         source.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN, true);
+        source.putBoolean(RearviewMirrorSettings.PREF_HIDDEN_BY_BUTTON, true);
+        source.putBoolean(RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, false);
         source.putInt("mirror_source_steering_key_code", 88);
         source.putInt("mirror_visibility_steering_key_code", 87);
 
@@ -258,6 +264,8 @@ public final class CameraSettingsTransferTest {
         assertFalse(values.containsKey(RearviewMirrorSettings.PREF_FRONT_PRESET_PRESENT));
         assertFalse(values.containsKey("mirror_front_preset_x"));
         assertFalse(values.containsKey(RearviewMirrorSettings.PREF_MANUAL_HIDDEN));
+        assertFalse(values.containsKey(RearviewMirrorSettings.PREF_HIDDEN_BY_BUTTON));
+        assertFalse(values.containsKey(RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN));
         assertFalse(values.containsKey("mirror_source_steering_key_code"));
         assertFalse(values.containsKey("mirror_visibility_steering_key_code"));
 

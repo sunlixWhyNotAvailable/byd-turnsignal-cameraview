@@ -243,6 +243,7 @@
     <string name="mirror_cluster_unavailable">"No secondary display is available. Cluster placement is shown here only; the widget will not move to the tablet."</string>
     <string name="mirror_size_hint">"Width and height set the widget size independently. Drag the corner to resize."</string>
     <string name="mirror_hidden">"Mirror hidden — open BYD Extend to restore it."</string>
+    <string name="mirror_hidden_by_button">"Mirror hidden — repeat the assigned button action to restore it."</string>
     <string name="mirror_hide_action">"Hide until the application opens"</string>
     <string name="mirror_notification">"Tap to open BYD Extend Preview"</string>
     <string name="mirror_overlay_error">"Unable to show the mirror widget"</string>

@@ -33,6 +33,8 @@ public final class RearviewMirrorSettings {
     public static final String PREF_BORDER_DP = "mirror_border_width";
     public static final String PREF_BORDER_ARGB = "mirror_border_color";
     public static final String PREF_MANUAL_HIDDEN = "mirror_hidden";
+    public static final String PREF_RETURN_ON_APP_OPEN = "mirror_return_on_app_open";
+    public static final String PREF_HIDDEN_BY_BUTTON = "mirror_hidden_by_button";
     public static final String PREF_PRESET_PRESENT = "mirror_preset_available";
     public static final String PREF_FRONT_INTEGRATED = "mirror_front_integrated";
     public static final String PREF_SHOW_FRONT = "mirror_show_front";
@@ -158,9 +160,41 @@ public final class RearviewMirrorSettings {
         return new RearviewMirrorSettings(preferences).load().manualHidden;
     }
 
+    public static boolean returnOnAppOpen(SharedPreferences preferences) {
+        return readBoolean(preferences, PREF_RETURN_ON_APP_OPEN, true);
+    }
+
+    public static boolean hiddenByButton(SharedPreferences preferences) {
+        return readBoolean(preferences, PREF_HIDDEN_BY_BUTTON, false);
+    }
+
+    public static boolean shouldRestoreOnAppOpen(
+            boolean hidden, boolean hiddenByButton, boolean returnOnAppOpen) {
+        return hidden && (!hiddenByButton || returnOnAppOpen);
+    }
+
+    public static void writeHidden(
+            SharedPreferences.Editor editor, boolean hidden, boolean byButton) {
+        if (editor == null) throw new IllegalArgumentException("editor is null");
+        editor.putBoolean(PREF_MANUAL_HIDDEN, hidden)
+                .putBoolean(PREF_HIDDEN_BY_BUTTON, hidden && byButton);
+    }
+
     public static void setHidden(SharedPreferences preferences, boolean hidden) {
         if (preferences == null) throw new IllegalArgumentException("preferences is null");
-        preferences.edit().putBoolean(PREF_MANUAL_HIDDEN, hidden).apply();
+        SharedPreferences.Editor editor = preferences.edit();
+        writeHidden(editor, hidden, false);
+        editor.apply();
+    }
+
+    private static boolean readBoolean(
+            SharedPreferences preferences, String key, boolean fallback) {
+        if (preferences == null) throw new IllegalArgumentException("preferences is null");
+        try {
+            return preferences.getBoolean(key, fallback);
+        } catch (RuntimeException invalidPreference) {
+            return fallback;
+        }
     }
 
     public static int target(SharedPreferences preferences) {

@@ -243,6 +243,7 @@
     <string name="mirror_cluster_unavailable">"Другий дисплей недоступний. Розташування на приборці показане лише тут; віджет не переноситься на планшет."</string>
     <string name="mirror_size_hint">"Ширина й висота незалежно задають розмір віджета. Перетягніть кут для зміни розміру."</string>
     <string name="mirror_hidden">"Дзеркало приховано — відкрийте BYD Extend, щоб повернути."</string>
+    <string name="mirror_hidden_by_button">"Дзеркало приховано — повторіть призначену дію кнопки, щоб повернути."</string>
     <string name="mirror_hide_action">"Приховати до відкриття застосунку"</string>
     <string name="mirror_notification">"Натисніть, щоб відкрити BYD Extend Preview"</string>
     <string name="mirror_overlay_error">"Не вдалося показати віджет дзеркала"</string>

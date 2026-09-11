@@ -330,6 +330,33 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun mirrorReturnOnAppOpenDefaultsOnAndReadsExplicitFalse() {
+        val preferences = TestSharedPreferences()
+        assertTrue(readProductionUiState(preferences, false, false).mirror.returnOnAppOpen)
+
+        preferences.edit().putBoolean(RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, false).apply()
+
+        assertFalse(readProductionUiState(preferences, false, false).mirror.returnOnAppOpen)
+    }
+
+    @Test
+    fun mirrorReturnOnAppOpenUsesIndependentOptimisticTypedAction() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.MirrorReturnOnAppOpen), false))
+
+        assertFalse(controller.state.mirror.returnOnAppOpen)
+        assertEquals(MirrorBackendActionKind.SetReturnOnAppOpen,
+            backend.mirrorActions.single().kind)
+        assertFalse(backend.mirrorActions.single().enabled ?: true)
+        assertEquals("false", backend.mirrorActions.single().value)
+        assertTrue(backend.actions.isEmpty())
+    }
+
+    @Test
     fun exportFeedbackTracksOwnedProgressAndEveryTerminalOutcomeAcrossReload() {
         for (operation in listOf(SettingsOperation.Logs, SettingsOperation.Compatibility)) {
             for (terminal in listOf(

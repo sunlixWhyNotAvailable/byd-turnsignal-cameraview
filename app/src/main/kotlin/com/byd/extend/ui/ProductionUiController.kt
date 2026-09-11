@@ -308,6 +308,13 @@ class ProductionUiController @JvmOverloads constructor(
                         MirrorBackendActionKind.SetSuppressWhilePanorama,
                         value = action.value.toString(), enabled = action.value))
                 }
+                action.target == ToggleTarget.Simple(ToggleId.MirrorReturnOnAppOpen) -> {
+                    typedBackendHandled = true
+                    state = state.copy(mirror = state.mirror.copy(returnOnAppOpen = action.value))
+                    backend.onProductionMirrorAction(MirrorBackendAction(
+                        MirrorBackendActionKind.SetReturnOnAppOpen,
+                        value = action.value.toString(), enabled = action.value))
+                }
                 action.target == ToggleTarget.Simple(ToggleId.ReverseSwitchByGear) -> {
                     if (state.reverse.hasAnyFrontIntegration()) {
                         state = state.copy(reverse = state.reverse.copy(switchByGear = action.value))

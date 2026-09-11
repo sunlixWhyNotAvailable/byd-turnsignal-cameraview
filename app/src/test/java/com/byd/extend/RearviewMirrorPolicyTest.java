@@ -112,6 +112,21 @@ public final class RearviewMirrorPolicyTest {
         assertFalse(RearviewMirrorController.matchesManualHideEvent(event, 17, 4));
     }
 
+    @Test public void appOpenAndTouchHideUseTheAcceptedOriginPolicy() throws Exception {
+        String controller = sourceText("java/com/byd/extend/RearviewMirrorController.java");
+        int visibility = controller.indexOf("void appVisibility(boolean visible)");
+        int restore = controller.indexOf("RearviewMirrorSettings.shouldRestoreOnAppOpen(",
+                visibility);
+        int clear = controller.indexOf("RearviewMirrorSettings.setHidden(preferences, false);",
+                restore);
+        int manualEvent = controller.indexOf(
+                "matchesManualHideEvent(event, requestId, generation)");
+        int touchHide = controller.indexOf(
+                "RearviewMirrorSettings.setHidden(preferences, true);", manualEvent);
+        assertTrue(visibility >= 0 && restore > visibility && clear > restore);
+        assertTrue(manualEvent >= 0 && touchHide > manualEvent);
+    }
+
     @Test public void mirrorButtonActionsUseOneOldStateAndNeverEnableMirror() {
         CameraHelperService.MirrorButtonState both =
                 CameraHelperService.resolveMirrorButtonAction(
@@ -184,6 +199,28 @@ public final class RearviewMirrorPolicyTest {
             assertTrue(entry.contains(messages[index]));
             assertFalse(entry.contains("Preview"));
         }
+    }
+
+    @Test public void buttonHideUsesItsOwnAccurateLocalizedLongToast() throws Exception {
+        String[] folders = {"values", "values-uk", "values-zh-rCN"};
+        String[] messages = {
+                "Mirror hidden — repeat the assigned button action to restore it.",
+                "Дзеркало приховано — повторіть призначену дію кнопки, щоб повернути.",
+                "后视镜已隐藏，再次执行已绑定的按键操作即可恢复。"
+        };
+        for (int index = 0; index < folders.length; index++) {
+            String resources = sourceText("res/" + folders[index] + "/strings.xml");
+            int start = resources.indexOf("<string name=\"mirror_hidden_by_button\">");
+            int end = resources.indexOf("</string>", start);
+            assertTrue(start >= 0 && resources.substring(start, end).contains(messages[index]));
+        }
+
+        String service = sourceText("java/com/byd/extend/CameraHelperService.java");
+        int write = service.indexOf("RearviewMirrorSettings.writeHidden(");
+        int apply = service.indexOf("editor.apply();", write);
+        int toast = service.indexOf("R.string.mirror_hidden_by_button", apply);
+        assertTrue(write >= 0 && apply > write && toast > apply);
+        assertTrue(service.substring(toast).contains("Toast.LENGTH_LONG).show()"));
     }
 
     private static Path sourcePath(String relative) {

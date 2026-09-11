@@ -2947,6 +2947,20 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onProductionMirrorAction(MirrorBackendAction action) {
         if (productionUi == null || action == null || shutdownRequested) return;
+        if (action.getKind() == MirrorBackendActionKind.SetReturnOnAppOpen) {
+            boolean restore = action.getEnabled() != null ? action.getEnabled()
+                    : RearviewMirrorSettings.returnOnAppOpen(preferences);
+            preferences.edit().putBoolean(
+                    RearviewMirrorSettings.PREF_RETURN_ON_APP_OPEN, restore).apply();
+            productionUi.reload();
+            return;
+        }
+        if (action.getKind() == MirrorBackendActionKind.HideUntilOpen) {
+            RearviewMirrorSettings.setHidden(preferences, true);
+            CameraHelperService.mirrorSettingsChanged(this);
+            refreshProductionMirrorState();
+            return;
+        }
         if (action.getKind() == MirrorBackendActionKind.SetSuppressWhilePanorama) {
             boolean suppress = action.getEnabled() != null ? action.getEnabled()
                     : productionUi.getState().getMirror().getSuppressWhilePanorama();
@@ -3053,9 +3067,6 @@ public final class CameraProbeActivity extends ComponentActivity
                             calibration.corrected, calibration.enabled, calibration.fovDegrees,
                             calibration.projection, outputDefaults.mirrored, outputDefaults.rotationDegrees,
                             outputDefaults.rotationMode);
-                    break;
-                case HideUntilOpen:
-                    hidden = true;
                     break;
             }
             CameraBorderSettings.Border requestedBorder =

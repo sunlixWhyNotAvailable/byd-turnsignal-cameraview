@@ -17,6 +17,7 @@ import android.os.Looper;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.widget.Toast;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -578,13 +579,19 @@ public final class CameraHelperService extends Service {
                             editor, old.frontIntegrated, mirrorButton.showFront);
                 }
                 if (mirrorButton.visibilityChanged) {
-                    editor.putBoolean(RearviewMirrorSettings.PREF_MANUAL_HIDDEN,
-                            mirrorButton.manualHidden);
+                    RearviewMirrorSettings.writeHidden(
+                            editor, mirrorButton.manualHidden, mirrorButton.manualHidden);
                 }
                 editor.apply();
                 CameraProbeActivity.publishMirrorSettingsChanged();
                 if (mirrorButton.visibilityChanged && !mirrorButton.manualHidden) {
                     manualMirrorSession = true;
+                } else if (mirrorButton.visibilityChanged) {
+                    String language = AppLanguage.read(settings);
+                    Context localized = AppLanguage.localizedContext(this, language);
+                    mainHandler.post(() -> Toast.makeText(localized,
+                            localized.getString(R.string.mirror_hidden_by_button),
+                            Toast.LENGTH_LONG).show());
                 }
             }
         }
