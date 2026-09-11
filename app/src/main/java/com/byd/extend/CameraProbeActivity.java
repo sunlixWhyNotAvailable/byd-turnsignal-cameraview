@@ -14046,7 +14046,12 @@ public final class CameraProbeActivity extends ComponentActivity
                         activePreviewCover = null;
                         if (resumeOverlay) CameraHelperService.cameraPreviewStopped(this);
                         if (hasAutoPreviewIntent()) {
-                            renewSelectedPreviewInputForTabSwitch();
+                            // TextureView recreates the lost input itself. If that callback
+                            // arrived before this matching close, keep it; if it arrives later,
+                            // onCameraSurfaceAvailable performs the same gated resume.
+                            if (shouldRenewAutomaticInputAfterTerminalClose(reason)) {
+                                renewSelectedPreviewInputForTabSwitch();
+                            }
                             resumeSelectedCameraPreview();
                         }
                     }
@@ -14439,8 +14444,17 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean canStartActivityCamera() {
+        return canStartActivityCamera(
+                activityResumed, shutdownRequested, activityDestroyed,
+                activityClosePending, closingActivityCameraRequestId);
+    }
+
+    static boolean canStartActivityCamera(
+            boolean activityResumed, boolean shutdownRequested,
+            boolean activityDestroyed, boolean activityClosePending,
+            int closingRequestId) {
         return activityResumed && !shutdownRequested && !activityDestroyed
-                && !activityClosePending && closingActivityCameraRequestId <= 0;
+                && !activityClosePending && closingRequestId <= 0;
     }
 
     private boolean canAutoOpenSelectedPreview() {
@@ -14508,17 +14522,44 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean isCurrentActivityCameraTerminalEvent(int eventRequestId) {
-        int expectedRequestId = requestedOpen
-                ? activeActivityCameraRequestId : closingActivityCameraRequestId;
+        return isCurrentActivityCameraTerminalEvent(
+                requestedOpen, activeActivityCameraRequestId,
+                closingActivityCameraRequestId, eventRequestId);
+    }
+
+    static boolean isCurrentActivityCameraTerminalEvent(
+            boolean requestedOpen, int activeRequestId,
+            int closingRequestId, int eventRequestId) {
+        int expectedRequestId = requestedOpen ? activeRequestId : closingRequestId;
         return expectedRequestId > 0 && eventRequestId == expectedRequestId;
     }
 
     private boolean shouldPreserveAutoPreviewAfterClose(String reason) {
         if (shutdownRequested) return false;
+        if (shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                reason, hasAutoPreviewIntent(),
+                activePreview == cameraPreview && !isProductionCalibrationSection(),
+                activePreview == calibrationPreview && isProductionCalibrationSection())) {
+            return true;
+        }
         if (CameraTransition.owns(reason)
                 || "activity_stopped".equals(reason)
                 || "replace_with_multi_preview".equals(reason)) return true;
         return !activityResumed && hasAutoPreviewIntent();
+    }
+
+    static boolean shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+            String reason, boolean existingSelectedIntent,
+            boolean productionOwner, boolean calibrationOwner) {
+        if (!existingSelectedIntent) return false;
+        return (productionOwner && "surface_destroyed".equals(reason))
+                || (calibrationOwner
+                        && "calibration_surface_destroyed".equals(reason));
+    }
+
+    static boolean shouldRenewAutomaticInputAfterTerminalClose(String reason) {
+        return !"surface_destroyed".equals(reason)
+                && !"calibration_surface_destroyed".equals(reason);
     }
 
     static boolean shouldWaitForStockShellClose(

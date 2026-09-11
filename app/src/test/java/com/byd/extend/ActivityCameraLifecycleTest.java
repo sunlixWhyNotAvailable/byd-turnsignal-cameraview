@@ -630,6 +630,96 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
+    public void temporarySurfaceLossPreservesOnlyTheExistingSelectedOwnerIntent() {
+        assertTrue(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "surface_destroyed", true, true, false));
+        assertTrue(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "calibration_surface_destroyed", true, false, true));
+
+        assertFalse(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "surface_destroyed", false, true, false));
+        assertFalse(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "surface_destroyed", true, false, true));
+        assertFalse(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "calibration_surface_destroyed", true, true, false));
+        assertFalse(CameraProbeActivity.shouldPreserveAutoPreviewForTemporarySurfaceLoss(
+                "manual_stop", true, true, false));
+    }
+
+    @Test
+    public void surfaceLossCloseKeepsWhicheverReplacementInputOrderAlreadyExists()
+            throws Exception {
+        assertFalse(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
+                "surface_destroyed"));
+        assertFalse(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
+                "calibration_surface_destroyed"));
+
+        // Other terminal closes retain their established renewal path.
+        assertTrue(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
+                "replace_with_multi_preview"));
+        assertTrue(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
+                "camera_tab_changed"));
+
+        for (boolean surfaceBeforeClose : new boolean[]{true, false}) {
+            int closingRequestId = 41;
+            int activeRequestId = 0;
+            boolean requestedOpen = false;
+            boolean surfaceReady = false;
+            int opens = 0;
+
+            if (surfaceBeforeClose) {
+                surfaceReady = true;
+                if (CameraProbeActivity.canStartActivityCamera(
+                        true, false, false, false, closingRequestId)) opens++;
+            }
+            assertTrue(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(
+                    requestedOpen, activeRequestId, closingRequestId, 41));
+            closingRequestId = 0;
+            if (surfaceReady && CameraProbeActivity.canStartActivityCamera(
+                    true, false, false, false, closingRequestId)) {
+                opens++;
+                requestedOpen = true;
+                activeRequestId = 42;
+            }
+            if (!surfaceBeforeClose) {
+                surfaceReady = true;
+                if (CameraProbeActivity.canStartActivityCamera(
+                        true, false, false, false, closingRequestId)) {
+                    opens++;
+                    requestedOpen = true;
+                    activeRequestId = 42;
+                }
+            }
+
+            assertEquals(1, opens);
+            assertFalse(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(
+                    requestedOpen, activeRequestId, closingRequestId, 41));
+        }
+
+        assertFalse(CameraProbeActivity.canStartActivityCamera(
+                true, true, false, false, 0));
+        assertFalse(CameraProbeActivity.canStartActivityCamera(
+                true, false, false, false, 41));
+
+        Path file = Path.of("app/src/main/java/com/byd/extend/CameraProbeActivity.java");
+        if (!Files.exists(file)) file = Path.of("src/main/java/com/byd/extend/CameraProbeActivity.java");
+        String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        String available = source.substring(
+                source.indexOf("public void onCameraSurfaceAvailable("),
+                source.indexOf("public void onCameraSurfaceSizeChanged("));
+        assertTrue(available.contains("maybeOpenCalibrationCamera();"));
+        assertTrue(available.contains("maybeOpenProductionPreview();"));
+
+        int terminalStart = source.indexOf("if (hasAutoPreviewIntent()) {",
+                source.indexOf("} else if (\"camera_closed\".equals(kind))"));
+        String terminal = source.substring(terminalStart,
+                source.indexOf("} else if (\"telemetry_ready\".equals(kind))", terminalStart));
+        assertTrue(terminal.contains(
+                "shouldRenewAutomaticInputAfterTerminalClose(reason)"));
+        assertTrue(terminal.contains("resumeSelectedCameraPreview();"));
+    }
+
+    @Test
     public void correctedStageFallbackRemainsReadOnly() {
         CameraProbeActivity.CalibrationUiState off =
                 CameraProbeActivity.calibrationUiState(false, false);

@@ -654,6 +654,67 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun mirrorPreviewStatusIsIndependentFromGlobalStateAndSurvivesReload() {
+        for (initiallyEnabled in listOf(true, false)) {
+            val preferences = TestSharedPreferences().apply {
+                edit().putBoolean(RearviewMirrorSettings.PREF_ENABLED, initiallyEnabled).apply()
+            }
+            val controller = ProductionUiController(preferences, FakeBackend(preferences))
+            val savedPreferences = preferences.all.toMap()
+            val globalOperation = controller.state.mirror.operation
+            val statuses = listOf(
+                StatusUiState("Opening", StatusTone.Warning, true) to true,
+                StatusUiState("First frame ready", StatusTone.Ok, true) to false,
+                StatusUiState("Camera error", StatusTone.Error, true) to false,
+                StatusUiState("Camera closed", StatusTone.Warning, true) to false,
+            )
+
+            for ((status, pending) in statuses) {
+                controller.setProfileStatus(CameraProfileId.Mirror, status, pending)
+
+                assertEquals(initiallyEnabled, controller.state.mirror.enabled)
+                assertEquals(globalOperation, controller.state.mirror.operation)
+                assertEquals(pending, controller.state.mirror.profile.operation.pending)
+                assertEquals(!pending, controller.state.mirror.profile.operation.enabled)
+                assertEquals(status, controller.state.mirror.profile.operation.status)
+
+                controller.reload()
+
+                assertEquals(initiallyEnabled, controller.state.mirror.enabled)
+                assertEquals(globalOperation, controller.state.mirror.operation)
+                assertEquals(pending, controller.state.mirror.profile.operation.pending)
+                assertEquals(status, controller.state.mirror.profile.operation.status)
+                assertEquals(savedPreferences, preferences.all)
+            }
+        }
+    }
+
+    @Test
+    fun mirrorGlobalToggleRemainsFunctionalWhilePreviewIsPending() {
+        for (initiallyEnabled in listOf(true, false)) {
+            val preferences = TestSharedPreferences().apply {
+                edit().putBoolean(RearviewMirrorSettings.PREF_ENABLED, initiallyEnabled).apply()
+            }
+            val backend = FakeBackend(preferences)
+            val controller = ProductionUiController(preferences, backend)
+            val globalOperation = controller.state.mirror.operation
+            val opening = StatusUiState("Opening", StatusTone.Warning, true)
+            controller.setProfileStatus(CameraProfileId.Mirror, opening, pending = true)
+
+            controller.dispatch(BydExtendUiAction.Toggle(
+                ToggleTarget.Simple(ToggleId.MirrorEnabled), !initiallyEnabled))
+
+            assertEquals(!initiallyEnabled, controller.state.mirror.enabled)
+            assertEquals(globalOperation, controller.state.mirror.operation)
+            assertTrue(controller.state.mirror.profile.operation.pending)
+            assertEquals(opening, controller.state.mirror.profile.operation.status)
+            assertEquals(MirrorBackendActionKind.SetEnabled, backend.mirrorActions.single().kind)
+            assertEquals(!initiallyEnabled, backend.mirrorActions.single().enabled)
+            assertTrue(backend.actions.isEmpty())
+        }
+    }
+
+    @Test
     fun reversePanoramaStatusIsIndependentFromDirectFramesAndSurvivesReload() {
         val preferences = TestSharedPreferences()
         val controller = ProductionUiController(preferences, FakeBackend(preferences))

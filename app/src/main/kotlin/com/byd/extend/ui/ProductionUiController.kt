@@ -733,7 +733,7 @@ class ProductionUiController @JvmOverloads constructor(
                 profiles = state.reverse.profiles + (profile to
                     (state.reverse.profiles[profile] ?: CameraProfileUiState()).copy(operation = operation))))
             CameraProfileId.Mirror -> state.copy(mirror = state.mirror.copy(
-                profile = state.mirror.profile.copy(operation = operation), operation = operation))
+                profile = state.mirror.profile.copy(operation = operation)))
         }
     }
 
