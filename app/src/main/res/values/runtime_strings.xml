@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="ui_archive_save_as">Save as…</string>
+    <string name="runtime_archive_save_title">Save archive</string>
+    <string name="runtime_archive_choose_destination">Choose where to save the ZIP archive</string>
+    <string name="runtime_archive_saving">Saving archive…</string>
+    <string name="runtime_archive_saved">Archive saved to the selected location</string>
+    <string name="runtime_archive_save_canceled">Archive saving canceled</string>
+    <string name="runtime_archive_save_failed">Could not save the archive. Check free space and access to the selected location; an incomplete file may remain.</string>
+    <string name="runtime_archive_picker_failed">Could not open the system file picker</string>
     <string name="runtime_weather_disabled">Weather remains disabled without location access</string>
     <string name="runtime_weather_off">Weather is disabled</string>
     <string name="runtime_finish_migration">Finish migration from the old app first</string>

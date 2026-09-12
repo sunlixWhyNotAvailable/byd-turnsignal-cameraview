@@ -205,6 +205,8 @@ class ProductionUiControllerTest {
             controller.showDialog(dialog)
             backend.actions.clear()
             controller.dispatch(BydExtendUiAction.Run(CommandId.ShareLogs))
+            controller.dispatch(BydExtendUiAction.Run(CommandId.SaveLogs))
+            controller.dispatch(BydExtendUiAction.Run(CommandId.SaveCompatibilityPackage))
             controller.dispatch(BydExtendUiAction.Run(CommandId.CheckForUpdates))
             assertTrue(backend.actions.isEmpty())
             for (command in listOf(CommandId.ConfirmDialog, CommandId.DismissDialog, CommandId.CancelOperation)) {
@@ -574,6 +576,11 @@ class ProductionUiControllerTest {
         assertTrue(backend.actions.any {
             it == BydExtendUiAction.Run(CommandId.CheckForUpdates)
         })
+        for (command in listOf(CommandId.SaveLogs, CommandId.SaveCompatibilityPackage)) {
+            controller.dispatch(BydExtendUiAction.Run(command))
+            assertEquals(BydExtendUiAction.Run(command), backend.actions.last())
+            assertEquals(null, controller.state.dialog)
+        }
 
         val before = backend.actions.size
         controller.dispatch(BydExtendUiAction.Run(

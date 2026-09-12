@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="ui_archive_save_as">Зберегти як…</string>
+    <string name="runtime_archive_save_title">Зберегти архів</string>
+    <string name="runtime_archive_choose_destination">Виберіть місце для збереження ZIP-архіву</string>
+    <string name="runtime_archive_saving">Збереження архіву…</string>
+    <string name="runtime_archive_saved">Архів збережено у вибране місце</string>
+    <string name="runtime_archive_save_canceled">Збереження архіву скасовано</string>
+    <string name="runtime_archive_save_failed">Не вдалося зберегти архів. Перевірте вільне місце та доступ до вибраної теки; може залишитися неповний файл.</string>
+    <string name="runtime_archive_picker_failed">Не вдалося відкрити системний вибір файлу</string>
     <string name="runtime_weather_disabled">Погода залишилась вимкненою без доступу до геолокації</string>
     <string name="runtime_weather_off">Погоду вимкнено</string>
     <string name="runtime_finish_migration">Спочатку завершіть перенесення зі старого застосунку</string>

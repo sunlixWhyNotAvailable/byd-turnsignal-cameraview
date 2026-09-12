@@ -116,6 +116,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.ArrayList;
@@ -139,6 +140,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private static final int LOCATION_PERMISSION_REQUEST = 11;
     private static final int CAMERA_PRESET_REQUEST = 12;
     private static final int AVAS_AUDIO_REQUEST = 13;
+    private static final int ARCHIVE_SAVE_REQUEST = 14;
+    private static final String STATE_ARCHIVE_SAVE_NAME = "archive_save_name";
+    private static final String STATE_ARCHIVE_SAVE_COMPATIBILITY = "archive_save_compatibility";
     private static final float DEFAULT_OUTWARD_DEG = 90.0f;
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
@@ -764,6 +768,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private final UpdateHintRuntime.CheckListener updateCheckListener = this::onUpdateCheckFinished;
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
+    private boolean exportArchiveToDocument;
+    private File pendingArchiveDocument;
+    private boolean pendingArchiveCompatibility;
     private volatile CompatibilityBundleExporter.ExportControl compatibilityExportControl;
     private boolean settingsTransferInProgress;
     private SettingsOperation activeSettingsOperation;
@@ -1061,6 +1068,7 @@ public final class CameraProbeActivity extends ComponentActivity
         activityLog = new AsyncServiceLog(() -> logFile, 250L);
         boolean clearedShutdown = GuardRecovery.isUserShutdownActive(this);
         productionUi = new ProductionUiController(preferences, this, this);
+        restoreArchiveDocumentState(savedInstanceState);
         if (backgroundStartSettingsRequired) productionUi.selectInstallationSettings();
         selectedTab = rootTabToLegacy(productionUi.getState().getActiveTab());
         ProductionUiInstaller.install(this, productionUi);
@@ -1101,6 +1109,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 weatherRefreshAfterPermission);
         outState.putString(STATE_AVAS_IMPORT_PROFILE,
                 preferences.getString(PREF_AVAS_IMPORT_PROFILE, null));
+        if (pendingArchiveDocument != null) {
+            outState.putString(STATE_ARCHIVE_SAVE_NAME, pendingArchiveDocument.getName());
+            outState.putBoolean(STATE_ARCHIVE_SAVE_COMPATIBILITY, pendingArchiveCompatibility);
+        }
         super.onSaveInstanceState(outState);
     }
 
@@ -1494,6 +1506,10 @@ public final class CameraProbeActivity extends ComponentActivity
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == ARCHIVE_SAVE_REQUEST) {
+            acceptArchiveDocument(resultCode, data);
+            return;
+        }
         if (requestCode == AVAS_AUDIO_REQUEST) {
             acceptAvasAudioResult(resultCode, data);
             return;
@@ -1773,21 +1789,26 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void confirmDiagnosticLogShare() {
+        confirmDiagnosticLogExport(false);
+    }
+
+    private void confirmDiagnosticLogExport(boolean saveAs) {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Message,
-                runtimeText(R.string.runtime_logs_share_title),
+                runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_logs_share_title),
                 runtimeText(R.string.runtime_logs_share_message), true,
                 runtimeText(R.string.runtime_create), runtimeText(R.string.runtime_cancel), "",
-                this::startDiagnosticLogExport, () -> {});
+                () -> startDiagnosticLogExport(saveAs), () -> {});
     }
 
-    private void startDiagnosticLogExport() {
+    private void startDiagnosticLogExport(boolean saveAs) {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         logExportInProgress = true;
+        exportArchiveToDocument = saveAs;
         showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Progress,
-                runtimeText(R.string.runtime_logs_share_title),
+                runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_logs_share_title),
                 runtimeText(R.string.runtime_logs_progress), false, null, null, "", null, null);
         if (settingsPanel != null) settingsPanel.setLogExportInProgress(true);
         publishSettingsOperation(SettingsOperation.Logs,
@@ -1841,6 +1862,11 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void finishDiagnosticLogExport(File archive, Throwable error) {
+        if (exportArchiveToDocument && archive != null && error == null
+                && activityResumed && !activityDestroyed && !shutdownRequested) {
+            chooseArchiveDocument(archive, false);
+            return;
+        }
         logExportInProgress = false;
         if (runtimeDialogOwner == RuntimeDialogOwner.LOGS) clearRuntimeDialog();
         if (!activityDestroyed && settingsPanel != null) {
@@ -1890,6 +1916,108 @@ public final class CameraProbeActivity extends ComponentActivity
                     runtimeText(R.string.runtime_share_menu_failed), StatusTone.Error, false);
             Toast.makeText(this, runtimeText(R.string.runtime_share_menu_failed), Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void restoreArchiveDocumentState(Bundle state) {
+        if (state == null || !state.containsKey(STATE_ARCHIVE_SAVE_NAME)) return;
+        pendingArchiveCompatibility = state.getBoolean(STATE_ARCHIVE_SAVE_COMPATIBILITY);
+        pendingArchiveDocument = ArchiveDocumentWriter.restore(getCacheDir(),
+                state.getString(STATE_ARCHIVE_SAVE_NAME));
+        if (pendingArchiveDocument == null) {
+            publishSettingsOperation(pendingArchiveCompatibility
+                            ? SettingsOperation.Compatibility : SettingsOperation.Logs,
+                    runtimeText(R.string.runtime_archive_save_failed), StatusTone.Error, false, true);
+            return;
+        }
+        logExportInProgress = !pendingArchiveCompatibility;
+        compatibilityExportInProgress = pendingArchiveCompatibility;
+        publishSettingsOperation(pendingArchiveCompatibility
+                        ? SettingsOperation.Compatibility : SettingsOperation.Logs,
+                runtimeText(R.string.runtime_archive_choose_destination), StatusTone.Warning, true, true);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void chooseArchiveDocument(File archive, boolean compatibility) {
+        if (runtimeDialogOwner == (compatibility ? RuntimeDialogOwner.COMPATIBILITY : RuntimeDialogOwner.LOGS)) {
+            clearRuntimeDialog();
+        }
+        pendingArchiveDocument = archive;
+        pendingArchiveCompatibility = compatibility;
+        publishSettingsOperation(compatibility ? SettingsOperation.Compatibility : SettingsOperation.Logs,
+                runtimeText(R.string.runtime_archive_choose_destination), StatusTone.Warning, true);
+        try {
+            startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/zip")
+                    .putExtra(Intent.EXTRA_TITLE, archive.getName()), ARCHIVE_SAVE_REQUEST);
+        } catch (RuntimeException error) {
+            pendingArchiveDocument = null;
+            archive.delete();
+            record("archive_document_save", "state", "picker_failed", "error", error.toString());
+            finishArchiveDocument(compatibility, R.string.runtime_archive_picker_failed, StatusTone.Error);
+        }
+    }
+
+    private void acceptArchiveDocument(int resultCode, Intent data) {
+        final File archive = pendingArchiveDocument;
+        final boolean compatibility = pendingArchiveCompatibility;
+        // Only a picker request is persisted. A canceled/interrupted copy must not restore a busy UI.
+        pendingArchiveDocument = null;
+        if (archive == null) {
+            finishArchiveDocument(compatibility, R.string.runtime_archive_save_failed, StatusTone.Error);
+            return;
+        }
+        final Uri destination = resultCode == RESULT_OK && data != null ? data.getData() : null;
+        if (destination == null) {
+            archive.delete();
+            finishArchiveDocument(compatibility, R.string.runtime_archive_save_canceled, StatusTone.Warning);
+            return;
+        }
+        publishSettingsOperation(compatibility ? SettingsOperation.Compatibility : SettingsOperation.Logs,
+                runtimeText(R.string.runtime_archive_saving), StatusTone.Warning, true);
+        final Context appContext = getApplicationContext();
+        try {
+            logExportExecutor.execute(() -> {
+                Throwable failure = null;
+                try (OutputStream output = appContext.getContentResolver().openOutputStream(destination, "w")) {
+                    ArchiveDocumentWriter.copy(archive, output);
+                } catch (Exception error) {
+                    failure = error;
+                }
+                if (failure != null) {
+                    // This URI is the new document just created by the picker, never an existing archive.
+                    try {
+                        android.provider.DocumentsContract.deleteDocument(appContext.getContentResolver(), destination);
+                    } catch (Exception ignored) { /* Some providers cannot remove an incomplete document. */ }
+                }
+                archive.delete();
+                Throwable error = failure;
+                mainHandler.post(() -> {
+                    record("archive_document_save", "state", error == null ? "saved" : "failed",
+                            "compatibility", compatibility, "error", error == null ? "" : error.toString());
+                    finishArchiveDocument(compatibility, error == null ? R.string.runtime_archive_saved
+                            : R.string.runtime_archive_save_failed, error == null ? StatusTone.Ok : StatusTone.Error);
+                });
+            });
+        } catch (RuntimeException error) {
+            archive.delete();
+            record("archive_document_save", "state", "start_failed", "error", error.toString());
+            finishArchiveDocument(compatibility, R.string.runtime_archive_save_failed, StatusTone.Error);
+        }
+    }
+
+    private void finishArchiveDocument(boolean compatibility, int message, StatusTone tone) {
+        if (compatibility) compatibilityExportInProgress = false;
+        else logExportInProgress = false;
+        if (activityDestroyed) return;
+        if (settingsPanel != null) {
+            if (compatibility) settingsPanel.setCompatibilityExportInProgress(false);
+            else settingsPanel.setLogExportInProgress(false);
+        }
+        publishSettingsOperation(compatibility ? SettingsOperation.Compatibility : SettingsOperation.Logs,
+                runtimeText(message), tone, false);
+        Toast.makeText(this, runtimeText(message), Toast.LENGTH_LONG).show();
+        if (activityResumed) advanceStartupAuthorizationFlow();
     }
 
     private void runUpdateCheck(boolean force) {
@@ -2259,19 +2387,24 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void confirmCompatibilityBundleShare() {
+        confirmCompatibilityBundleExport(false);
+    }
+
+    private void confirmCompatibilityBundleExport(boolean saveAs) {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         showRuntimeDialog(RuntimeDialogOwner.COMPATIBILITY, DialogKind.Message,
-                runtimeText(R.string.runtime_car_compat_title),
+                runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_car_compat_title),
                 runtimeText(R.string.runtime_car_compat_message), true,
                 runtimeText(R.string.runtime_create), runtimeText(R.string.runtime_cancel), "",
-                this::startCompatibilityBundleExport, () -> {});
+                () -> startCompatibilityBundleExport(saveAs), () -> {});
     }
 
-    private void startCompatibilityBundleExport() {
+    private void startCompatibilityBundleExport(boolean saveAs) {
         if (logExportInProgress || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         compatibilityExportInProgress = true;
+        exportArchiveToDocument = saveAs;
         publishSettingsOperation(SettingsOperation.Compatibility,
                 runtimeText(R.string.runtime_car_compat_forming),
                 StatusTone.Warning, true, true);
@@ -2396,6 +2529,13 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void finishCompatibilityBundleExport(
             CompatibilityBundleExporter.ExportControl control, File archive, Throwable error) {
+        if (exportArchiveToDocument && archive != null && error == null
+                && (control == null || !control.isCancellationRequested())
+                && activityResumed && !activityDestroyed && !shutdownRequested) {
+            if (compatibilityExportControl == control) compatibilityExportControl = null;
+            chooseArchiveDocument(archive, true);
+            return;
+        }
         compatibilityExportInProgress = false;
         if (compatibilityExportControl == control) compatibilityExportControl = null;
         if (runtimeDialogOwner == RuntimeDialogOwner.COMPATIBILITY) clearRuntimeDialog();
@@ -4179,8 +4319,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 "adb_authorization_manual", "settings_manual", false);
         else if (command == CommandId.CheckForUpdates) runUpdateCheck(true);
         else if (command == CommandId.ShareLogs) confirmDiagnosticLogShare();
+        else if (command == CommandId.SaveLogs) confirmDiagnosticLogExport(true);
         else if (command == CommandId.ClearLogs) clearCaptureLogs();
         else if (command == CommandId.ShareCompatibilityPackage) confirmCompatibilityBundleShare();
+        else if (command == CommandId.SaveCompatibilityPackage) confirmCompatibilityBundleExport(true);
         else if (command == CommandId.ExportCameraPresets) exportCameraPreset();
         else if (command == CommandId.LoadCameraPresets) chooseCameraPreset();
         else if (command == CommandId.ImportLegacySettings) readLegacySettings();

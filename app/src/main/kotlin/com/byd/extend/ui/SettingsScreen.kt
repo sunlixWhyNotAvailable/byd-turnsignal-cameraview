@@ -254,8 +254,13 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
             strings.text("Поділитися або очистити локальну історію", "Share or clear local history"), colors) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ActionButton(strings.text("Поділитись", "Share"), colors, Modifier.width(190.dp),
-                    icon = Icons.Outlined.Share, enabled = state.logOperation.enabled && !state.logOperation.pending) {
+                    icon = Icons.Outlined.Share, primary = true,
+                    enabled = state.logOperation.enabled && !state.logOperation.pending) {
                     onAction(BydExtendUiAction.Run(CommandId.ShareLogs))
+                }
+                ActionButton(strings.text("Зберегти як…", "Save as…", "另存为…"), colors, Modifier.width(190.dp),
+                    mainBackground = true, enabled = state.logOperation.enabled && !state.logOperation.pending) {
+                    onAction(BydExtendUiAction.Run(CommandId.SaveLogs))
                 }
                 ActionButton(strings.text("Очистити логи", "Clear logs"), colors, Modifier.width(190.dp),
                     enabled = state.logOperation.enabled && !state.logOperation.pending, mainBackground = true) {
@@ -267,11 +272,16 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
         SettingsActionRow(strings.text("Пакет сумісності", "Compatibility package"),
             strings.text("Дані системи для перевірки сумісності", "System details for compatibility checks"),
             colors, verticalPadding = 8.dp) {
-            Row(Modifier.width(388.dp), horizontalArrangement = Arrangement.Start) {
+            Row(Modifier.width(586.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionButton(strings.text("Поділитись", "Share"), colors, Modifier.width(190.dp),
-                    icon = Icons.Outlined.Share,
+                    icon = Icons.Outlined.Share, primary = true,
                     enabled = state.compatibilityOperation.enabled && !state.compatibilityOperation.pending) {
                     onAction(BydExtendUiAction.Run(CommandId.ShareCompatibilityPackage))
+                }
+                ActionButton(strings.text("Зберегти як…", "Save as…", "另存为…"), colors, Modifier.width(190.dp),
+                    mainBackground = true,
+                    enabled = state.compatibilityOperation.enabled && !state.compatibilityOperation.pending) {
+                    onAction(BydExtendUiAction.Run(CommandId.SaveCompatibilityPackage))
                 }
             }
         }

@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="ui_archive_save_as">另存为…</string>
+    <string name="runtime_archive_save_title">保存压缩包</string>
+    <string name="runtime_archive_choose_destination">请选择 ZIP 压缩包的保存位置</string>
+    <string name="runtime_archive_saving">正在保存压缩包…</string>
+    <string name="runtime_archive_saved">压缩包已保存到所选位置</string>
+    <string name="runtime_archive_save_canceled">已取消保存压缩包</string>
+    <string name="runtime_archive_save_failed">无法保存压缩包。请检查可用空间和所选位置的访问权限；可能会留下不完整的文件。</string>
+    <string name="runtime_archive_picker_failed">无法打开系统文件选择器</string>
     <string name="runtime_weather_disabled">没有位置权限，天气仍保持关闭</string>
     <string name="runtime_weather_off">天气已关闭</string>
     <string name="runtime_finish_migration">请先完成旧应用的迁移</string>

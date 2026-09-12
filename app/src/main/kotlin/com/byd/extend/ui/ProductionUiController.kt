@@ -1016,7 +1016,9 @@ class ProductionUiController @JvmOverloads constructor(
             CommandId.GrantAdb,
             CommandId.CheckForUpdates,
             CommandId.ShareLogs,
+            CommandId.SaveLogs,
             CommandId.ShareCompatibilityPackage,
+            CommandId.SaveCompatibilityPackage,
             CommandId.ExportCameraPresets,
             CommandId.ImportLegacySettings,
             CommandId.RestoreLegacyAccess,
@@ -1277,7 +1279,9 @@ private fun CommandId.allowedInLegacyHandover() = this == CommandId.OpenBackgrou
     this == CommandId.CheckForUpdates ||
     this == CommandId.Shutdown ||
     this == CommandId.ShareLogs ||
+    this == CommandId.SaveLogs ||
     this == CommandId.ShareCompatibilityPackage ||
+    this == CommandId.SaveCompatibilityPackage ||
     this == CommandId.ExportCameraPresets ||
     this == CommandId.ImportLegacySettings ||
     this == CommandId.RestoreLegacyAccess ||
