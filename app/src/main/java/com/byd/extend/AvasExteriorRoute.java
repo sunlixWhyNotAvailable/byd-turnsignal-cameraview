@@ -14,8 +14,11 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.function.Consumer;
 
-/** Fixed AutoTark New23 exterior route; no caller-selected vehicle operations. */
+/** Fixed AutoTark CHANNEL0 exterior route; no caller-selected vehicle operations. */
 final class AvasExteriorRoute {
+    private static final int NO_PRIMARY_DEVICE = -1;
+    private static final int LEGACY_EXTERIOR_DEVICE = 3;
+    private static final int CHANNEL0_DEVICE = 1000;
     private static final int POSITION_FID = 0xAA000282;
     private static final int AUX_FID = 0x94E88A89;
     private static final String SDK = "android.hardware.bydauto.";
@@ -47,33 +50,83 @@ final class AvasExteriorRoute {
         event(diagnostics, "avas_mute_command", "muted", on);
     }
 
-    void prepare(AvasAudioDiagnostics.Context diagnostics) throws Exception {
-        boolean primary = write(3, POSITION_FID, 1, "prepare", diagnostics) >= 0;
-        tryWrite(1000, AUX_FID, 1, "prepare_aux", diagnostics);
+    void prepare(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics,
+            AvasNavigationRecovery.Marker marker)
+            throws Exception {
+        boolean primary = acquirePrimary(marker,
+                () -> tryWrite(CHANNEL0_DEVICE, POSITION_FID, 1, "prepare", diagnostics));
+        tryWrite(CHANNEL0_DEVICE, AUX_FID, 1, "prepare_aux", diagnostics);
         boolean optional = exteriorPath(true, diagnostics);
         naviFocus(true, diagnostics);
+        int focusResult = manager.requestAudioFocus(focus);
+        event(diagnostics, "avas_focus_request", "result", focusResult, "phase", "post_route");
+        boolean ready = routeAccepted(primary, optional,
+                focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
         // Command acceptance only; physical amplifier readiness is not observable here.
         event(diagnostics, "avas_route_ready", "primary", primary,
-                "optionalSdkAccepted", optional, "amplifier_ready", "unknown");
-        if (!primary) throw new IllegalStateException("Exterior primary route failed");
+                "optionalSdkAccepted", optional, "focus_result", focusResult,
+                "accepted", ready, "amplifier_ready", "unknown");
+        if (!ready) throw new IllegalStateException("Exterior route and focus were not accepted");
     }
 
-    void release(AudioFocusRequest focus) throws Exception { release(focus, null); }
+    static boolean acquirePrimary(AvasNavigationRecovery.Marker marker,
+            AvasNavigationRecovery.Command command) throws Exception {
+        marker.write(AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY);
+        int status = writePrimary(command);
+        if (status < 0 && status != Integer.MIN_VALUE) {
+            // Both primary replies rejected the request, but shared SDK setup still follows.
+            marker.write(AvasShellSettings.EXTERIOR_CHANNEL0_SHARED);
+        }
+        return status >= 0;
+    }
 
-    void release(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics) throws Exception {
+    static int writePrimary(AvasNavigationRecovery.Command command) throws Exception {
+        boolean uncertain = false;
+        int status = Integer.MIN_VALUE;
+        // AutoTark's profile write falls back once to the identical fixed CHANNEL0 write.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                status = command.run();
+            } catch (InterruptedException interrupted) {
+                throw interrupted;
+            } catch (Exception missingReply) {
+                status = Integer.MIN_VALUE;
+            }
+            if (status >= 0) return status;
+            uncertain |= status == Integer.MIN_VALUE;
+        }
+        return uncertain ? Integer.MIN_VALUE : status;
+    }
+
+    static boolean routeAccepted(boolean primary, boolean sdk, boolean focus) {
+        // The selected controller-series23 reference accepts any of these existing paths.
+        return primary || sdk || focus;
+    }
+
+    void release(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics, int dirty)
+            throws Exception {
         Exception failure = null;
         boolean interrupted = false;
-        try {
-            if (write(3, POSITION_FID, 0, "release", diagnostics) < 0) {
-                failure = new IllegalStateException("Exterior primary teardown failed");
+        int primaryDevice = releasePrimaryDevice(dirty);
+        if (primaryDevice != NO_PRIMARY_DEVICE) {
+            try {
+                int status = dirty == AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY
+                        ? writePrimary(() -> tryWrite(primaryDevice, POSITION_FID, 0,
+                                "release", diagnostics))
+                        : write(primaryDevice, POSITION_FID, 0, "release", diagnostics);
+                if (status < 0) {
+                    failure = new IllegalStateException("Exterior primary teardown failed");
+                }
+            } catch (Exception error) {
+                failure = error;
             }
-        } catch (Exception error) {
-            failure = error;
         }
-        tryWrite(1000, AUX_FID, 0, "release_aux", diagnostics);
-        interrupted |= sleep(180);
-        exteriorPath(false, diagnostics);
-        interrupted |= sleep(60);
+        if (dirty != AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED) {
+            tryWrite(CHANNEL0_DEVICE, AUX_FID, 0, "release_aux", diagnostics);
+            interrupted |= sleep(180);
+            exteriorPath(false, diagnostics);
+            interrupted |= sleep(60);
+        }
         naviFocus(false, diagnostics);
         try {
             if (focus != null) manager.abandonAudioFocusRequest(focus);
@@ -81,7 +134,9 @@ final class AvasExteriorRoute {
             if (failure == null) failure = error;
             else failure.addSuppressed(error);
         }
-        interrupted |= sleep(800);
+        if (dirty != AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED) {
+            interrupted |= sleep(800);
+        }
         if (interrupted) {
             Thread.currentThread().interrupt();
             InterruptedException error = new InterruptedException("Interrupted during exterior teardown");
@@ -89,6 +144,14 @@ final class AvasExteriorRoute {
             else failure.addSuppressed(error);
         }
         if (failure != null) throw failure;
+    }
+
+    static int releasePrimaryDevice(int dirty) {
+        if (dirty == AvasShellSettings.EXTERIOR_DIRTY) return LEGACY_EXTERIOR_DEVICE;
+        if (dirty == AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY) return CHANNEL0_DEVICE;
+        if (dirty == AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED
+                || dirty == AvasShellSettings.EXTERIOR_CHANNEL0_SHARED) return NO_PRIMARY_DEVICE;
+        throw new IllegalArgumentException("Invalid exterior route marker " + dirty);
     }
 
     private static boolean sleep(long millis) {

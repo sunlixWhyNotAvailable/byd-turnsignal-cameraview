@@ -72,16 +72,6 @@ final class AvasWav {
 
     static void scalePcm16(byte[] source, int sourceOffset, byte[] target,
             int targetOffset, int length, int volume) {
-        scalePcm16(source, sourceOffset, target, targetOffset, length, volume, 1);
-    }
-
-    static void scaleExteriorPcm16(byte[] source, int sourceOffset, byte[] target,
-            int targetOffset, int length, int volume) {
-        scalePcm16(source, sourceOffset, target, targetOffset, length, volume, 2);
-    }
-
-    private static void scalePcm16(byte[] source, int sourceOffset, byte[] target,
-            int targetOffset, int length, int volume, int multiplier) {
         if ((sourceOffset | targetOffset | length) < 0
                 || sourceOffset + length > source.length || targetOffset + length > target.length
                 || (length & 1) != 0) {
@@ -91,8 +81,7 @@ final class AvasWav {
         for (int i = 0; i < length; i += 2) {
             int sample = (short) ((source[sourceOffset + i] & 0xff)
                     | (source[sourceOffset + i + 1] << 8));
-            int scaled = sample * gain * multiplier / 100;
-            scaled = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, scaled));
+            int scaled = sample * gain / 100;
             target[targetOffset + i] = (byte) scaled;
             target[targetOffset + i + 1] = (byte) (scaled >> 8);
         }

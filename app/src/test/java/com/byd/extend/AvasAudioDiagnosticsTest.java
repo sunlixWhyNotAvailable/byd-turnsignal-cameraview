@@ -3,6 +3,7 @@ package com.byd.extend;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertThrows;
 
 import org.junit.Test;
 
@@ -11,6 +12,30 @@ import java.util.List;
 import java.util.function.IntConsumer;
 
 public final class AvasAudioDiagnosticsTest {
+    @Test public void pcmLevelsCountOnlyAcceptedRangesWithoutChangingTheirSamples() {
+        byte[] pcm = {99, 98, 0, (byte) 0x80, 0, 0x40, 0, 0, 97, 96};
+        byte[] original = pcm.clone();
+        AvasAudioDiagnostics.PcmLevels levels = new AvasAudioDiagnostics.PcmLevels();
+        levels.record(pcm, 2, 2);
+        levels.record(pcm, 4, 4);
+        assertEquals(3, levels.samples);
+        assertEquals(32768, levels.peak);
+        assertEquals(Math.sqrt((32768d * 32768 + 16384d * 16384) / 3), levels.rms(), 0d);
+        org.junit.Assert.assertArrayEquals(original, pcm);
+        assertThrows(IllegalArgumentException.class, () -> levels.record(pcm, 2, 3));
+        assertThrows(IllegalArgumentException.class, () -> levels.record(pcm, 2, pcm.length));
+        assertEquals(3, levels.samples);
+    }
+
+    @Test public void pcmLevelsDistinguishAnEmptyOrSilentBuffer() {
+        AvasAudioDiagnostics.PcmLevels levels = new AvasAudioDiagnostics.PcmLevels();
+        assertEquals(0d, levels.rms(), 0d);
+        levels.record(new byte[8], 0, 8);
+        assertEquals(4, levels.samples);
+        assertEquals(0, levels.peak);
+        assertEquals(0d, levels.rms(), 0d);
+    }
+
     @Test public void initialSamplingIsRateAndWindowBoundedAndStopsAtProgress() {
         AvasAudioDiagnostics.SampleGate gate = new AvasAudioDiagnostics.SampleGate(1_000);
         assertTrue(gate.initial(1_000));

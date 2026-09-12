@@ -65,6 +65,28 @@ final class AvasAudioDiagnostics {
         boolean hasProgress() { return progress; }
     }
 
+    /** Levels of accepted source samples, not measurements after the native effect or speaker. */
+    static final class PcmLevels {
+        long samples;
+        int peak;
+        private double squareSum;
+
+        void record(byte[] pcm, int offset, int length) {
+            if ((offset | length) < 0 || offset > pcm.length || length > pcm.length - offset
+                    || ((offset | length) & 1) != 0) {
+                throw new IllegalArgumentException("Invalid PCM16 sample range");
+            }
+            for (int end = offset + length; offset < end; offset += 2) {
+                int sample = (short) ((pcm[offset] & 0xff) | (pcm[offset + 1] << 8));
+                peak = Math.max(peak, Math.abs(sample));
+                squareSum += (double) sample * sample;
+                samples++;
+            }
+        }
+
+        double rms() { return samples == 0 ? 0 : Math.sqrt(squareSum / samples); }
+    }
+
     private AvasAudioDiagnostics() {}
 
     static Snapshot safeProbe(Probe probe) {

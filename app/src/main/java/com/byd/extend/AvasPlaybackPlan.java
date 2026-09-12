@@ -2,13 +2,21 @@ package com.byd.extend;
 
 import java.util.function.BooleanSupplier;
 
-/** Pure per-request PCM timing rules shared by playback and deterministic JVM tests. */
+/** Pure per-request audio policy shared by playback and deterministic JVM tests. */
 final class AvasPlaybackPlan {
     interface FrameWriter { long write(long frames) throws Exception; }
     static final int AUTOMATIC_POWER_ON_SILENCE_MILLIS = 0;
     static final int NAVIGATION_SILENCE_MILLIS = 0;
 
     private AvasPlaybackPlan() {}
+
+    static float exteriorPlayerVolume(int volume) {
+        return Math.max(0, Math.min(100, volume)) / 100f;
+    }
+
+    static int exteriorTargetGainMb(int volume) {
+        return Math.max(0, Math.min(100, volume)) * 2800 / 100;
+    }
 
     static int silenceMillis(AvasPlaybackQueue.Kind kind, String profile) {
         if (kind == AvasPlaybackQueue.Kind.AUDITION_NAV) return NAVIGATION_SILENCE_MILLIS;

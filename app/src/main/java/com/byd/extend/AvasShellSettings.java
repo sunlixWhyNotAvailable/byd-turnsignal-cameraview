@@ -19,6 +19,9 @@ final class AvasShellSettings implements AutoCloseable {
     static final int NAVIGATION_PENDING = 3;
     static final int NAVIGATION_ACTIVE = 4;
     static final int NAVIGATION_REJECTED = 5;
+    static final int EXTERIOR_CHANNEL0_DIRTY = 6;
+    static final int EXTERIOR_CHANNEL0_UNACQUIRED = 7;
+    static final int EXTERIOR_CHANNEL0_SHARED = 8;
 
     private final IBinder token = new Binder();
     private final Object provider;

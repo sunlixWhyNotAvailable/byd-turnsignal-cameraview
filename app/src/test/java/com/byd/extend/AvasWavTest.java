@@ -52,36 +52,28 @@ public final class AvasWavTest {
     }
 
     @Test
-    public void exteriorScalingDoublesGainAndSaturatesWithoutWrap() {
+    public void navigationScalingClampsVolumeOutsideSupportedRange() {
         byte[] samples = pcm(Short.MIN_VALUE, -20_000, -1, 0, 1, 20_000, Short.MAX_VALUE);
 
-        assertArrayEquals(pcm(0, 0, 0, 0, 0, 0, 0), exterior(samples, 0));
-        assertArrayEquals(pcm(-16_384, -10_000, 0, 0, 0, 10_000, 16_383),
-                exterior(samples, 25));
-        assertArrayEquals(samples, exterior(samples, 50));
-        assertArrayEquals(pcm(Short.MIN_VALUE, Short.MIN_VALUE, -2, 0, 2,
-                Short.MAX_VALUE, Short.MAX_VALUE), exterior(samples, 100));
-        assertArrayEquals(exterior(samples, 0), exterior(samples, -1));
-        assertArrayEquals(exterior(samples, 100), exterior(samples, 101));
+        assertArrayEquals(navigation(samples, 0), navigation(samples, -1));
+        assertArrayEquals(navigation(samples, 100), navigation(samples, 101));
     }
 
     @Test
-    public void exteriorScalingPreservesSourceOffsetsChannelsAndSurroundingBytes() {
+    public void navigationScalingPreservesOffsetsAndRejectsInvalidRanges() {
         byte[] source = {99, 98, 0x34, 0x12, (byte) 0xcc, (byte) 0xed, 97, 96};
         byte[] original = source.clone();
         byte[] target = {11, 12, 13, 14, 15, 16, 17, 18};
 
-        AvasWav.scaleExteriorPcm16(source, 2, target, 2, 4, 50);
+        AvasWav.scalePcm16(source, 2, target, 2, 4, 50);
 
         assertArrayEquals(original, source);
-        assertArrayEquals(new byte[]{11, 12, 0x34, 0x12, (byte) 0xcc, (byte) 0xed, 17, 18},
+        assertArrayEquals(new byte[]{11, 12, 0x1a, 0x09, (byte) 0xe6, (byte) 0xf6, 17, 18},
                 target);
-    }
-
-    private static byte[] exterior(byte[] source, int volume) {
-        byte[] target = new byte[source.length];
-        AvasWav.scaleExteriorPcm16(source, 0, target, 0, source.length, volume);
-        return target;
+        assertThrows(IllegalArgumentException.class,
+                () -> AvasWav.scalePcm16(source, 2, target, 2, 3, 50));
+        assertThrows(IllegalArgumentException.class,
+                () -> AvasWav.scalePcm16(source, 6, target, 2, 4, 50));
     }
 
     private static byte[] navigation(byte[] source, int volume) {

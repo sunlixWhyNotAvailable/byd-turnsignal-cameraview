@@ -203,18 +203,25 @@ cabin media, regardless of selection, random mode or automation enablement. It b
 while playing; another note replaces it. Closing the list, leaving the screen/backgrounding,
 process death or deleting that file stops only this listening session. Start and automatic
 events take precedence and use the exterior speaker; a note cannot interrupt or queue behind
-exterior playback. Stopped notes do not resume. Both routes apply the profile's PCM gain and
+exterior playback. Stopped notes do not resume. Both routes apply the profile's volume and
 restore their saved route/volume state without a media-channel fallback.
 
-Exterior playback applies twice the internal PCM gain: exterior50% matches the previous exterior
-100% signal level, while note audition is unchanged. The stored0–100% setting is not rewritten.
-Loud imported files can clip at the signed16 ceiling above50%; reducing volume avoids that boost.
-Zero remains silent. This is digital signal gain, not a guarantee of twice the perceived loudness.
+Exterior playback uses a private AudioTrack LoudnessEnhancer instead of clipping PCM samples
+with a fixed multiplier. Player volume follows the stored percentage; the effect target ranges
+from0 to2800mB (+28dB). Live volume adjustments update both controls, and0% remains silent.
+If the effect is unavailable, playback continues with player volume only and records that fallback.
+The stored0–100% setting and internal note audition are unchanged. Actual loudness depends on
+the file and vehicle audio path; the effect target is not a measured speaker-level increase.
 
 The existing shell helper owns playback so losing the application process does not itself
 destroy the player. A helper restart starts from current telemetry without replaying old events.
 Explicit Shutdown stops playback and automatic recovery until BYD Extend is opened again.
-The exterior route is based on the owner's confirmed firmware23 probe. The combined Production
+The exterior route follows the automatic CHANNEL0 helper reference, retaining streamed PCM
+without extra silent audio or longer preparation waits. Its controller-series23 path retries a
+rejected primary command once, then also evaluates the existing SDK path and audio focus.
+Definite primary rejection still cleans up shared setup; an uncertain primary result retains
+primary teardown ownership. Legacy New23 cleanup is preserved for an interrupted session from
+an older build. The combined Production
 path and recovery after kernel reboot still require vehicle validation; compatibility with other
 firmware is not established. Configure and audition at low volume while parked. AVAS does not
 replace the vehicle's stock pedestrian-warning sounds or silently fall back to a cabin speaker.
