@@ -304,4 +304,17 @@
     <string name="runtime_avas_import_failed">Audio import failed.</string>
     <string name="runtime_avas_action_failed">Unable to update AVAS settings.</string>
     <string name="runtime_avas_command_failed">AVAS command failed: %1$s</string>
+    <string name="update_hint_title">New version hint widget</string>
+    <string name="update_hint_description">Show a hint for 10 seconds when a check finds an update</string>
+    <string name="update_hint_message">A new version is available to update</string>
+    <string name="update_hint_permission">Allow display over other apps for the update widget, then check for updates again.</string>
+    <string name="update_hint_unavailable">Could not display the update widget. The update offer is available in Settings.</string>
+    <string name="update_hint_settings">Update hint widget settings</string>
+    <string name="update_hint_transparency">Transparency</string>
+    <string name="update_hint_transparency_hint">0%% visible, 100%% invisible</string>
+    <string name="update_hint_rounding">Corner rounding</string>
+    <string name="update_hint_border_width">Border width</string>
+    <string name="update_hint_border_hint">0 removes the border</string>
+    <string name="update_hint_size">Widget size</string>
+    <string name="update_hint_sample">Preview · 1:1</string>
 </resources>

@@ -26,6 +26,10 @@ import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,12 +44,15 @@ import androidx.compose.ui.unit.sp
 internal fun SettingsScreen(
     state: SettingsUiState,
     legacyRuntimeBlocked: Boolean,
+    language: UiLanguage,
+    darkTheme: Boolean,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
 ) {
     val focus = LocalFocusManager.current
+    var editUpdateHint by remember { mutableStateOf(false) }
     ScreenSurface(colors, scroll = false) {
         PageTitle(strings.tabs[5], strings.text("Дозволи, параметри виводу камер та логи",
             "Permissions, camera output settings, and logs"), colors)
@@ -94,18 +101,29 @@ internal fun SettingsScreen(
                         StatusTone.Warning, true), colors)
                 }
                 when (state.category) {
-                    SettingsCategory.Permissions -> PermissionsSettings(state, strings, colors, onAction)
+                    SettingsCategory.Permissions -> PermissionsSettings(state, strings, colors, onAction) {
+                        editUpdateHint = true
+                    }
                     SettingsCategory.CameraOutput -> CameraOutputSettings(state, strings, colors, onAction, onPreview)
                     SettingsCategory.Logs -> LogSettings(state, strings, colors, onAction)
                 }
             }
         }
     }
+    if (editUpdateHint) UpdateHintSettingsDialog(
+        strings = strings,
+        colors = colors,
+        language = language,
+        darkTheme = darkTheme,
+        appearance = state.updateHintAppearance,
+        onAppearanceChange = { onAction(BydExtendUiAction.SetUpdateHintAppearance(it)) },
+        onClose = { editUpdateHint = false },
+    )
 }
 
 @Composable
 private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
-    onAction: (BydExtendUiAction) -> Unit) {
+    onAction: (BydExtendUiAction) -> Unit, onEditUpdateHint: () -> Unit) {
     Section(strings.settingsCategories[0], colors, bodyPadding = 0.dp) {
         SettingsActionRow(strings.text("Дозволи ADB", "ADB permissions"),
             strings.text("Самоперевірка автоматично видає потрібні дозволи, коли ADB авторизований",
@@ -145,6 +163,48 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                 AppSwitch(state.automaticUpdate,
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutomaticUpdate), it)) },
                     colors, compact = false)
+            }
+        }
+        Divider(colors)
+        val hintPress = rememberPressFeedback()
+        SettingsActionRow(
+            strings.text("Віджет-підказка нової версії", "New version hint widget", "新版本提示悬浮窗"),
+            strings.text(
+                "Показувати підказку на 10 секунд, коли перевірка виявить оновлення",
+                "Show a hint for 10 seconds when a check finds an update",
+                "检测到新版本时显示提示 10 秒",
+            ),
+            colors,
+            modifier = Modifier
+                .background(pressBackground(Color.Transparent, colors, hintPress.pressed))
+                .then(hintPress.modifier)
+                .clickable(
+                    interactionSource = hintPress.interactionSource,
+                    indication = null,
+                    role = Role.Switch,
+                ) { onAction(BydExtendUiAction.Toggle(
+                    ToggleTarget.Simple(ToggleId.UpdateHintEnabled), !state.updateHintEnabled)) },
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                UpdateHintSettingsButton(strings, colors, onEditUpdateHint)
+                AppSwitch(
+                    state.updateHintEnabled,
+                    { onAction(BydExtendUiAction.Toggle(
+                        ToggleTarget.Simple(ToggleId.UpdateHintEnabled), it)) },
+                    colors,
+                    compact = false,
+                    clearSemantics = true,
+                )
+            }
+        }
+        Divider(colors)
+        SettingsActionRow(strings.text("Вимкнути", "Shutdown", "关闭应用"),
+            strings.text("Завершити роботу застосунку до наступного відкриття",
+                "Stop the app until it is opened again", "停止应用，直到下次打开"),
+            colors, verticalPadding = 8.dp) {
+            ShutdownButton(strings.text("Вимкнути", "Shutdown", "关闭应用"), colors) {
+                onAction(BydExtendUiAction.Run(CommandId.Shutdown))
             }
         }
     }
@@ -246,14 +306,6 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
                 ActionButton(strings.text("Відновити", "Restore"), colors, Modifier.width(190.dp)) {
                     onAction(BydExtendUiAction.Run(CommandId.RestoreLegacyAccess))
                 }
-            }
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Вимкнути", "Shutdown"),
-            strings.text("Завершити роботу застосунку до наступного відкриття",
-                "Stop the app until it is opened again"), colors, verticalPadding = 8.dp) {
-            ShutdownButton(strings.text("Вимкнути", "Shutdown"), colors) {
-                onAction(BydExtendUiAction.Run(CommandId.Shutdown))
             }
         }
     }

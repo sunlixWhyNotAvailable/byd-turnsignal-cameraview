@@ -761,6 +761,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 }
             });
     private boolean updateCheckInFlight;
+    private final UpdateHintRuntime.CheckListener updateCheckListener = this::onUpdateCheckFinished;
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
     private volatile CompatibilityBundleExporter.ExportControl compatibilityExportControl;
@@ -1068,6 +1069,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!shutdownRequested && isAutoPreviewTab(selectedTab)) armResumeAutoPreview();
         verifyMappings();
         acceptDiagnosticIntent(getIntent());
+        acceptUpdateHintIntent(getIntent());
 
         record("activity_start", "log_path", logFile.getAbsolutePath(),
                 "shutdown_cleared", clearedShutdown,
@@ -1107,12 +1109,15 @@ public final class CameraProbeActivity extends ComponentActivity
         super.onNewIntent(intent);
         setIntent(intent);
         acceptDiagnosticIntent(intent);
+        acceptUpdateHintIntent(intent);
     }
 
     @Override
     protected void onStart() {
         super.onStart();
         activityStarted = true;
+        UpdateHintRuntime.get(this).setCheckListener(updateCheckListener);
+        updateCheckInFlight = UpdateHintRuntime.get(this).isChecking();
         publishReverseOwnerPresence();
         LocalAdbClient.setAccessStateListener(adbAccessListener);
         preferences.registerOnSharedPreferenceChangeListener(permissionsPreferenceListener);
@@ -1290,6 +1295,7 @@ public final class CameraProbeActivity extends ComponentActivity
         cancelReverseButtonLearningIfVisible();
         clearReverseOwnerPresence();
         activityDestroyed = true;
+        UpdateHintRuntime.get(this).removeCheckListener(updateCheckListener);
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingWeatherLocationPermission();
         CompatibilityBundleExporter.ExportControl exportControl =
@@ -1343,12 +1349,14 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void scheduleStartupUpdateCheck() {
         mainHandler.removeCallbacks(runStartupUpdateCheck);
+        if (!preferences.getBoolean("update_auto_check_enabled", true)) return;
         long remainingMs = UpdateAutoCheckRuntime.remainingMs();
         if (remainingMs >= 0L) mainHandler.postDelayed(runStartupUpdateCheck, remainingMs);
     }
 
     private void runStartupUpdateCheck() {
         if (!activityResumed || activityDestroyed) return;
+        if (!preferences.getBoolean("update_auto_check_enabled", true)) return;
         if (!UpdateAutoCheckRuntime.consumeIfReady()) {
             scheduleStartupUpdateCheck();
             return;
@@ -1886,50 +1894,38 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void runUpdateCheck(boolean force) {
         if (updateCheckInFlight || updateDownloadInFlight || activityDestroyed) return;
+        if (!UpdateHintRuntime.get(this).check(force)) return;
         updateCheckInFlight = true;
         publishSettingsOperation(SettingsOperation.Update,
                 runtimeText(R.string.runtime_update_checking), StatusTone.Warning, true);
         if (settingsPanel != null) settingsPanel.setUpdateButton(
                 runtimeText(R.string.runtime_update_check_button), false);
         record("update_check_started", "automatic", !force);
-        updateExecutor.execute(() -> {
-            try {
-                AppUpdateManager.UpdateInfo available = updateManager.checkForUpdate(
-                        getApplicationContext(), force);
-                runOnUiThread(() -> {
-                    updateCheckInFlight = false;
-                    if (activityDestroyed || isFinishing()) return;
-                    restoreUpdateButton();
-                    if (available == null) {
-                        publishSettingsOperation(SettingsOperation.Update,
-                                runtimeText(R.string.runtime_up_to_date), StatusTone.Ok, false);
-                        record("update_check_finished", "result", "up_to_date");
-                        if (force) showUpdateMessage(
-                                runtimeText(R.string.runtime_update),
-                                runtimeText(R.string.runtime_up_to_date));
-                    } else {
-                        publishSettingsOperation(SettingsOperation.Update,
-                                runtimeText(R.string.runtime_update_available_version,
-                                        available.version),
-                                StatusTone.Ok, false);
-                        record("update_check_finished", "result", "available",
-                                "version", available.version);
-                        showCachedUpdateIfAvailable();
-                    }
-                });
-            } catch (Throwable error) {
-                runOnUiThread(() -> {
-                    updateCheckInFlight = false;
-                    if (activityDestroyed || isFinishing()) return;
-                    restoreUpdateButton();
-                    record("update_check_finished", "result", "error",
-                            "error", error.toString());
-                    publishSettingsOperation(SettingsOperation.Update,
-                            runtimeText(R.string.runtime_update_check_error), StatusTone.Error, false);
-                    if (force) showUpdateError(error);
-                });
-            }
-        });
+    }
+
+    private void onUpdateCheckFinished(AppUpdateManager.UpdateInfo available,
+            Throwable error, boolean force) {
+        updateCheckInFlight = false;
+        if (activityDestroyed || isFinishing()) return;
+        restoreUpdateButton();
+        if (error != null) {
+            record("update_check_finished", "result", "error", "error", error.toString());
+            publishSettingsOperation(SettingsOperation.Update,
+                    runtimeText(R.string.runtime_update_check_error), StatusTone.Error, false);
+            if (force) showUpdateError(error);
+        } else if (available == null) {
+            publishSettingsOperation(SettingsOperation.Update,
+                    runtimeText(R.string.runtime_up_to_date), StatusTone.Ok, false);
+            record("update_check_finished", "result", "up_to_date");
+            if (force) showUpdateMessage(runtimeText(R.string.runtime_update),
+                    runtimeText(R.string.runtime_up_to_date));
+        } else {
+            publishSettingsOperation(SettingsOperation.Update,
+                    runtimeText(R.string.runtime_update_available_version, available.version),
+                    StatusTone.Ok, false);
+            record("update_check_finished", "result", "available", "version", available.version);
+            showCachedUpdateIfAvailable();
+        }
     }
 
     private void restoreUpdateButton() {
@@ -1940,7 +1936,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void showCachedUpdateIfAvailable() {
-        AppUpdateManager.UpdateInfo available = AppUpdateManager.cachedAvailable();
+        AppUpdateManager.UpdateInfo available = UpdateHintRuntime.get(this).pendingOffer();
         if (!canPresentUpdateResult() || available == null || updateDownloadInFlight) return;
         showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Update,
                 runtimeText(R.string.runtime_update_available),
@@ -1949,9 +1945,20 @@ public final class CameraProbeActivity extends ComponentActivity
                 true, runtimeText(R.string.runtime_update), runtimeText(R.string.runtime_update_later),
                 ReleaseNotesSelector.select(available.releaseNotes, AppLanguage.read(preferences)),
                 () -> {
-                    AppUpdateManager.clearCachedAvailable();
+                    UpdateHintRuntime.get(this).consume(available.resultId);
                     startUpdateDownload(available);
-                }, AppUpdateManager::clearCachedAvailable);
+                }, () -> UpdateHintRuntime.get(this).consume(available.resultId));
+    }
+
+    private void acceptUpdateHintIntent(Intent intent) {
+        if (intent == null || productionUi == null) return;
+        String resultId = intent.getStringExtra(UpdateHintRuntime.EXTRA_RESULT_ID);
+        intent.removeExtra(UpdateHintRuntime.EXTRA_RESULT_ID);
+        if (!UpdateHintRuntime.get(this).acceptsIntent(resultId)) return;
+        productionUi.dispatch(new BydExtendUiAction.Navigate(RootTab.Settings));
+        productionUi.dispatch(new BydExtendUiAction.Select(
+                new SelectionTarget.Simple(SelectionId.SettingsCategory), 0));
+        showCachedUpdateIfAvailable();
     }
 
     private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
@@ -3027,6 +3034,27 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         Toast.makeText(this, runtimeText(R.string.runtime_overlay_permission_unavailable),
                 Toast.LENGTH_LONG).show();
+    }
+
+    @Override
+    public void onProductionUpdateHintEnabledChanged(boolean enabled) {
+        if (!enabled) UpdateHintOverlay.hide("disabled");
+        refreshProductionHeader();
+    }
+
+    @Override
+    public void onProductionUpdateHintAppearanceChanged(UpdateHintAppearance appearance) {
+        UpdateHintOverlay.refreshAppearance();
+    }
+
+    @Override
+    public void requestProductionUpdateHintOverlayPermission() {
+        requestProductionMirrorOverlayPermission();
+    }
+
+    @Override
+    public boolean productionUpdateHintOverlayPermissionGranted() {
+        return android.provider.Settings.canDrawOverlays(this);
     }
 
     @Override
@@ -6861,6 +6889,7 @@ public final class CameraProbeActivity extends ComponentActivity
     void requestAppShutdown() {
         if (shutdownRequested) return;
         shutdownRequested = true;
+        UpdateHintRuntime.get(this).shutdown();
         com.byd.extend.ui.RuntimeUiSession.clearProcessState();
         clearResumeAutoPreview();
         record("user_shutdown_requested", "auto_start",

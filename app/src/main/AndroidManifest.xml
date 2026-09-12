@@ -18,6 +18,11 @@
     <queries>
         <package android:name="com.byd.appstartmanagement" />
         <package android:name="com.byd.turnsignalguard.capture" />
+        <package android:name="com.bydhud.app" />
+        <package android:name="com.bydcollector.collector" />
+        <intent>
+            <action android:name="com.byd.apps.updatehint.COORDINATION" />
+        </intent>
     </queries>
 
     <application
@@ -53,6 +58,17 @@
             android:exported="false"
             android:foregroundServiceType="location"
             android:stopWithTask="false" />
+
+        <service
+            android:name="com.byd.extend.UpdateHintCoordinationService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.byd.apps.updatehint.COORDINATION" />
+            </intent-filter>
+            <meta-data
+                android:name="com.byd.apps.updatehint.PROTOCOL_VERSION"
+                android:value="1" />
+        </service>
 
         <service
             android:name="com.byd.extend.WeatherRefreshAccessibilityService"

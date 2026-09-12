@@ -37,6 +37,7 @@ fun readProductionUiState(
             transparency = BlindSpotOverlayController.readTransparencyPercent(preferences).toString(),
         ),
         automaticUpdate = preferences.getBoolean("update_auto_check_enabled", true),
+        updateHintEnabled = preferences.getBoolean(UpdateHintAppearance.ENABLED_PREFERENCE, true),
         restoreLegacyAccessVisible = legacyAccessRestoreVisible,
     ),
     debug = DebugUiState(

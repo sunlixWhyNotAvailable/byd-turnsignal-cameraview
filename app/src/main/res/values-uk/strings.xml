@@ -304,4 +304,17 @@
     <string name="runtime_avas_import_failed">Не вдалося імпортувати аудіофайли.</string>
     <string name="runtime_avas_action_failed">Не вдалося оновити налаштування AVAS.</string>
     <string name="runtime_avas_command_failed">Помилка команди AVAS: %1$s</string>
+    <string name="update_hint_title">Віджет-підказка нової версії</string>
+    <string name="update_hint_description">Показувати підказку на 10 секунд, коли перевірка виявить оновлення</string>
+    <string name="update_hint_message">Доступна нова версія для оновлення</string>
+    <string name="update_hint_permission">Дозвольте показ поверх інших застосунків для віджета оновлення, потім повторіть перевірку оновлень.</string>
+    <string name="update_hint_unavailable">Не вдалося показати віджет оновлення. Пропозиція оновлення доступна в налаштуваннях.</string>
+    <string name="update_hint_settings">Налаштування віджету-підказки</string>
+    <string name="update_hint_transparency">Прозорість</string>
+    <string name="update_hint_transparency_hint">0%% — видимий, 100%% — невидимий</string>
+    <string name="update_hint_rounding">Заокруглення країв</string>
+    <string name="update_hint_border_width">Ширина рамки</string>
+    <string name="update_hint_border_hint">0 — прибрати рамку</string>
+    <string name="update_hint_size">Розмір віджету</string>
+    <string name="update_hint_sample">Передпоказ · 1:1</string>
 </resources>

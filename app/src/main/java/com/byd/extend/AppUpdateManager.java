@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 
 final class AppUpdateManager {
     static final int MAX_RELEASE_RESPONSE_BYTES = 512 * 1024;
@@ -51,6 +52,7 @@ final class AppUpdateManager {
     }
 
     static final class UpdateInfo {
+        final String resultId = UUID.randomUUID().toString();
         final String version;
         final String downloadUrl;
         final String releaseNotes;
@@ -62,17 +64,22 @@ final class AppUpdateManager {
         }
     }
 
-    UpdateInfo checkForUpdate(Context context, boolean force) throws Exception {
-        UpdateInfo cached = cachedAvailable;
-        if (!force && cached != null) return cached;
-        if (force) cachedAvailable = null;
+    static final class CheckResult {
+        final UpdateInfo available;
+        final boolean fresh;
 
+        CheckResult(UpdateInfo available, boolean fresh) {
+            this.available = available;
+            this.fresh = fresh;
+        }
+    }
+
+    CheckResult checkForUpdate(Context context, boolean force) throws Exception {
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         long now = System.currentTimeMillis();
         long lastCheck = preferences.getLong(KEY_LAST_CHECK_MS, 0L);
-        if (!force && lastCheck > 0L && now >= lastCheck
-                && now - lastCheck < CHECK_THROTTLE_MS) {
-            return null;
+        if (isCheckThrottled(force, now, lastCheck)) {
+            return new CheckResult(cachedAvailable, false);
         }
         preferences.edit().putLong(KEY_LAST_CHECK_MS, now).apply();
 
@@ -81,14 +88,17 @@ final class AppUpdateManager {
             throw new IllegalStateException("GitHub latest release is not stable");
         }
         String version = normalizeVersion(release.optString("tag_name", ""));
-        if (!isNewerVersion(version, BuildConfig.VERSION_NAME)) return null;
+        if (!isNewerVersion(version, BuildConfig.VERSION_NAME)) {
+            cachedAvailable = null;
+            return new CheckResult(null, true);
+        }
 
         UpdateInfo available = new UpdateInfo(
                 version,
                 findApkAssetUrl(release.optJSONArray("assets"), version),
                 release.optString("body", ""));
         cachedAvailable = available;
-        return available;
+        return new CheckResult(available, true);
     }
 
     File downloadAndVerify(Context context, UpdateInfo info, ProgressListener listener)
@@ -141,12 +151,9 @@ final class AppUpdateManager {
         context.startActivity(intent);
     }
 
-    static UpdateInfo cachedAvailable() {
-        return cachedAvailable;
-    }
-
-    static void clearCachedAvailable() {
-        cachedAvailable = null;
+    static boolean isCheckThrottled(boolean force, long nowMs, long lastCheckMs) {
+        return !force && lastCheckMs > 0L && nowMs >= lastCheckMs
+                && nowMs - lastCheckMs < CHECK_THROTTLE_MS;
     }
 
     static boolean isNewerVersion(String remote, String local) {

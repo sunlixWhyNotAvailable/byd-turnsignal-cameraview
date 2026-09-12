@@ -16,6 +16,7 @@ import com.byd.extend.readProductionUiState
 import com.byd.extend.AppLanguage
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
+import com.byd.extend.UpdateHintAppearance
 
 /** Activity-owned effects. Compose never receives Binder, Surface, Bitmap or preferences. */
 interface ProductionUiBackend {
@@ -35,6 +36,12 @@ interface ProductionUiBackend {
 
     /** Requests overlay permission when Mirror is enabled without a grant. */
     fun requestProductionMirrorOverlayPermission() = Unit
+
+    /** Update-hint state changed after it was persisted by this controller. */
+    fun onProductionUpdateHintEnabledChanged(enabled: Boolean) = Unit
+    fun onProductionUpdateHintAppearanceChanged(appearance: UpdateHintAppearance) = Unit
+    fun requestProductionUpdateHintOverlayPermission() = Unit
+    fun productionUpdateHintOverlayPermissionGranted() = false
 
     /** Current permission/display availability supplied by the Activity host. */
     fun productionMirrorOverlayPermissionGranted() = false
@@ -180,6 +187,13 @@ class ProductionUiController @JvmOverloads constructor(
                 preferences.edit().putBoolean(PREF_DARK_THEME, action.theme == UiTheme.Dark).apply()
                 state = state.copy(theme = action.theme)
             }
+            is BydExtendUiAction.SetUpdateHintAppearance -> {
+                typedBackendHandled = true
+                val appearance = action.appearance.normalized()
+                context?.let { appearance.save(UpdateHintAppearance.preferences(it)) }
+                state = state.copy(settings = state.settings.copy(updateHintAppearance = appearance))
+                backend.onProductionUpdateHintAppearanceChanged(appearance)
+            }
             is BydExtendUiAction.SetMirrorBorderColor -> {
                 typedBackendHandled = true
                 val color = action.argb or 0xFF000000.toInt()
@@ -283,6 +297,15 @@ class ProductionUiController @JvmOverloads constructor(
                 typedBackendHandled = true
             }
             is BydExtendUiAction.Toggle -> when {
+                action.target == ToggleTarget.Simple(ToggleId.UpdateHintEnabled) -> {
+                    typedBackendHandled = true
+                    preferences.edit().putBoolean(UpdateHintAppearance.ENABLED_PREFERENCE, action.value).apply()
+                    state = state.copy(settings = state.settings.copy(updateHintEnabled = action.value))
+                    backend.onProductionUpdateHintEnabledChanged(action.value)
+                    if (action.value && !backend.productionUpdateHintOverlayPermissionGranted()) {
+                        backend.requestProductionUpdateHintOverlayPermission()
+                    }
+                }
                 action.target == ToggleTarget.Simple(ToggleId.AutoStart) -> {
                     state = state.copy(settings = state.settings.copy(
                         automaticStart = action.value))
@@ -942,12 +965,20 @@ class ProductionUiController @JvmOverloads constructor(
             overlayPermissionGranted = backend.productionMirrorOverlayPermissionGranted(),
             clusterAvailable = backend.productionMirrorClusterAvailable(),
         )
-        val withMirrorAvailability = fresh.copy(mirror = mirror)
+        val hintAppearance = context?.let { UpdateHintAppearance.read(UpdateHintAppearance.preferences(it)) }
+            ?: UpdateHintAppearance()
+        val withMirrorAvailability = fresh.copy(
+            mirror = mirror,
+            settings = fresh.settings.copy(
+                updateHintAppearance = hintAppearance,
+                updateHintOverlayPermissionGranted = backend.productionUpdateHintOverlayPermissionGranted(),
+            ),
+        )
         if (!backend.runtimeBlockedByLegacy()) withMirrorAvailability
         else withMirrorAvailability.copy(
             activeTab = RootTab.Settings,
             legacyRuntimeBlocked = true,
-            settings = fresh.settings.copy(
+            settings = withMirrorAvailability.settings.copy(
                 feedback = StatusUiState(handoverReason(fresh.language), StatusTone.Warning, true)),
         )
     }
@@ -975,9 +1006,11 @@ class ProductionUiController @JvmOverloads constructor(
         is BydExtendUiAction.Select -> action.target is SelectionTarget.Simple &&
             action.target.id == SelectionId.SettingsCategory
         is BydExtendUiAction.Toggle -> action.target == ToggleTarget.Simple(ToggleId.AutoStart) ||
-            action.target == ToggleTarget.Simple(ToggleId.AutomaticUpdate)
+            action.target == ToggleTarget.Simple(ToggleId.AutomaticUpdate) ||
+            action.target == ToggleTarget.Simple(ToggleId.UpdateHintEnabled)
         is BydExtendUiAction.SetMirrorBorderColor, is BydExtendUiAction.SetProfileBorder -> false
         BydExtendUiAction.RequestMirrorOverlayPermission -> false
+        is BydExtendUiAction.SetUpdateHintAppearance -> true
         is BydExtendUiAction.Run -> when (action.command) {
             CommandId.OpenBackgroundSettings,
             CommandId.GrantAdb,

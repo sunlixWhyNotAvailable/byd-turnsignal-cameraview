@@ -839,9 +839,10 @@ internal fun SettingsActionRow(
     hint: String,
     colors: UiPalette,
     verticalPadding: Dp = 12.dp,
+    modifier: Modifier = Modifier,
     action: @Composable () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = verticalPadding), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().then(modifier).padding(horizontal = 14.dp, vertical = verticalPadding), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             if (hint.isNotBlank()) Text(hint, color = colors.muted, fontSize = 13.sp)

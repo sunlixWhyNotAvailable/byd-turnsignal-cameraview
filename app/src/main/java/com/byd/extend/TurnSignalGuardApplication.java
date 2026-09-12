@@ -14,5 +14,6 @@ public final class TurnSignalGuardApplication extends Application {
         AppLanguage.initialize(this, preferences);
         DisplayPlacementPersistence.initialize(this, preferences, existingInstall);
         UpdateAutoCheckRuntime.onProcessStarted();
+        UpdateHintRuntime.get(this);
     }
 }

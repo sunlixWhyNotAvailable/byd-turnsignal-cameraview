@@ -47,6 +47,46 @@ import org.junit.Test
 
 class ProductionUiControllerTest {
     @Test
+    fun legacyBlockedReloadKeepsEnrichedUpdateHintSettings() {
+        val preferences = TestSharedPreferences()
+        preferences.edit().putBoolean(UpdateHintAppearance.ENABLED_PREFERENCE, false).apply()
+        val backend = FakeBackend(preferences).also {
+            it.blocked = true
+            it.updateHintPermissionGranted = true
+        }
+        val controller = ProductionUiController(preferences, backend)
+
+        assertTrue(controller.state.legacyRuntimeBlocked)
+        assertTrue(controller.state.settings.updateHintOverlayPermissionGranted)
+        assertFalse(controller.state.settings.updateHintEnabled)
+        controller.reload()
+        assertTrue(controller.state.settings.updateHintOverlayPermissionGranted)
+        backend.updateHintPermissionGranted = false
+        controller.reload()
+        assertFalse(controller.state.settings.updateHintOverlayPermissionGranted)
+    }
+
+    @Test
+    fun updateHintTogglePersistsNotifiesAndRequestsMissingOverlayPermission() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.UpdateHintEnabled), true))
+        assertEquals(listOf(true), backend.updateHintEnabledChanges)
+        assertEquals(1, backend.updateHintPermissionRequests)
+        assertTrue(preferences.getBoolean(UpdateHintAppearance.ENABLED_PREFERENCE, false))
+
+        backend.updateHintPermissionGranted = true
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Simple(ToggleId.UpdateHintEnabled), false))
+        assertEquals(listOf(true, false), backend.updateHintEnabledChanges)
+        assertEquals(1, backend.updateHintPermissionRequests)
+        assertFalse(controller.state.settings.updateHintEnabled)
+    }
+
+    @Test
     fun retainedReverseNativeCodesArePresentedAsBaseWithoutWritingPreferences() {
         for ((base, native) in listOf(305 to 306, 304 to 312, 88 to 303, 87 to 302)) {
             val preferences = TestSharedPreferences()
@@ -1070,6 +1110,19 @@ class ProductionUiControllerTest {
         val mirrorActions = mutableListOf<MirrorBackendAction>()
         var avasState = AvasUiState()
         val avasActions = mutableListOf<AvasBackendAction>()
+        val updateHintEnabledChanges = mutableListOf<Boolean>()
+        var updateHintPermissionRequests = 0
+        var updateHintPermissionGranted = false
+
+        override fun onProductionUpdateHintEnabledChanged(enabled: Boolean) {
+            updateHintEnabledChanges += enabled
+        }
+
+        override fun requestProductionUpdateHintOverlayPermission() {
+            updateHintPermissionRequests++
+        }
+
+        override fun productionUpdateHintOverlayPermissionGranted() = updateHintPermissionGranted
 
         override fun productionAvasState() = avasState
 

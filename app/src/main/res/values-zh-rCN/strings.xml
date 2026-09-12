@@ -304,4 +304,17 @@
     <string name="runtime_avas_import_failed">音频导入失败。</string>
     <string name="runtime_avas_action_failed">无法更新 AVAS 设置。</string>
     <string name="runtime_avas_command_failed">AVAS 命令失败：%1$s</string>
+    <string name="update_hint_title">新版本提示悬浮窗</string>
+    <string name="update_hint_description">检测到新版本时显示提示 10 秒</string>
+    <string name="update_hint_message">有新版本可供更新</string>
+    <string name="update_hint_permission">请允许更新提示显示在其他应用上层，然后重新检查更新。</string>
+    <string name="update_hint_unavailable">无法显示更新提示。请在设置中查看更新提示。</string>
+    <string name="update_hint_settings">更新提示悬浮窗设置</string>
+    <string name="update_hint_transparency">透明度</string>
+    <string name="update_hint_transparency_hint">0%% 可见，100%% 不可见</string>
+    <string name="update_hint_rounding">圆角</string>
+    <string name="update_hint_border_width">边框宽度</string>
+    <string name="update_hint_border_hint">0 表示无边框</string>
+    <string name="update_hint_size">悬浮窗大小</string>
+    <string name="update_hint_sample">预览 · 1:1</string>
 </resources>

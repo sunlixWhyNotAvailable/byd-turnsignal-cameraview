@@ -1,0 +1,19 @@
+{
+  "displayId": 0,
+  "availableLeftPx": 0,
+  "availableTopPx": 0,
+  "availableWidthPx": 352,
+  "availableHeightPx": 86,
+  "density": 1.0,
+  "nowElapsedNanos": 2000000000,
+  "nowElapsedMs": 2000,
+  "cards": [
+    {"ownerPackage":"com.bydhud.app","processSessionId":"hud-session","revision":1,"eventId":"hud","phase":"PENDING","requestedAtElapsedNanos":1600000000,"expiresAtElapsedMs":0,"preferredSizePercent":100,"preferredWidthPx":100,"preferredHeightPx":50},
+    {"ownerPackage":"com.byd.extend","processSessionId":"extend-session","revision":1,"eventId":"extend","phase":"PENDING","requestedAtElapsedNanos":1700000000,"expiresAtElapsedMs":0,"preferredSizePercent":100,"preferredWidthPx":100,"preferredHeightPx":50},
+    {"ownerPackage":"com.bydcollector.collector","processSessionId":"collector-session","revision":1,"eventId":"collector","phase":"PENDING","requestedAtElapsedNanos":1800000000,"expiresAtElapsedMs":0,"preferredSizePercent":100,"preferredWidthPx":100,"preferredHeightPx":50}
+  ],
+  "expectedRows": 1,
+  "expectedColumns": 3,
+  "expectedX": [18, 126, 234],
+  "expectedY": [18, 18, 18]
+}

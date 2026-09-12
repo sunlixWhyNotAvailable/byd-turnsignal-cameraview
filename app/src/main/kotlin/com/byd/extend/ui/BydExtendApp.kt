@@ -162,7 +162,7 @@ fun BydExtendApp(
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, onAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
-                            strings, colors, onAction, onPreview)
+                            state.language, state.theme == UiTheme.Dark, strings, colors, onAction, onPreview)
                         RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, onAction, cameraHost)
                     }
                 }
@@ -769,10 +769,6 @@ private fun AppDialog(
                     Modifier.width(138.dp)) {
                     onAction(BydExtendUiAction.Run(CommandId.DismissDialog))
                 }
-                if (state.kind != DialogKind.Background && state.cancellable) ActionButton(strings.text("Скасувати", "Cancel"), colors, Modifier.width(138.dp)) {
-                    onAction(BydExtendUiAction.Run(if (state.kind == DialogKind.Progress) CommandId.CancelOperation
-                    else CommandId.DismissDialog))
-                }
                 if (state.kind != DialogKind.Background) ActionButton(
                     if (state.kind == DialogKind.Shutdown) strings.text("Зупинити", "Stop")
                     else strings.text("Готово", "Done"),
@@ -782,12 +778,13 @@ private fun AppDialog(
                     destructive = state.kind == DialogKind.Shutdown,
                     enabled = state.confirmEnabled,
                 ) { onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog)) }
+                if (state.kind != DialogKind.Background && state.cancellable) ActionButton(strings.text("Скасувати", "Cancel"), colors, Modifier.width(138.dp)) {
+                    onAction(BydExtendUiAction.Run(if (state.kind == DialogKind.Progress) CommandId.CancelOperation
+                    else CommandId.DismissDialog))
+                }
             } else if ((state.cancellable && state.dismissLabel != null) ||
                 (state.confirmVisible && state.confirmLabel != null)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
-                    if (state.kind != DialogKind.Update && state.cancellable && state.dismissLabel != null) ActionButton(
-                        state.dismissLabel, colors, Modifier.width(138.dp),
-                    ) { onAction(BydExtendUiAction.Run(dismissCommand)) }
                     if (state.confirmVisible && state.confirmLabel != null) ActionButton(
                         state.confirmLabel,
                         colors,
@@ -796,7 +793,7 @@ private fun AppDialog(
                         destructive = state.kind == DialogKind.Shutdown,
                         enabled = state.confirmEnabled,
                     ) { onAction(BydExtendUiAction.Run(CommandId.ConfirmDialog)) }
-                    if (state.kind == DialogKind.Update && state.cancellable && state.dismissLabel != null) ActionButton(
+                    if (state.cancellable && state.dismissLabel != null) ActionButton(
                         state.dismissLabel, colors, Modifier.width(138.dp),
                     ) { onAction(BydExtendUiAction.Run(dismissCommand)) }
                 }

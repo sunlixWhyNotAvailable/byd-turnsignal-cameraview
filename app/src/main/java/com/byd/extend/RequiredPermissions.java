@@ -34,7 +34,8 @@ final class RequiredPermissions {
                 || mirror && (assigned(preferences, CameraButtonBindings.Action.MirrorVisibility)
                     || RearviewMirrorSettings.frontIntegrated(preferences)
                         && assigned(preferences, CameraButtonBindings.Action.MirrorSource));
-        return new RequiredPermissions(camera, mirror, accessibility, installRequested);
+        boolean hint = preferences.getBoolean(UpdateHintRuntime.PREF_ENABLED, true);
+        return new RequiredPermissions(camera, mirror || hint, accessibility, installRequested);
     }
 
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,

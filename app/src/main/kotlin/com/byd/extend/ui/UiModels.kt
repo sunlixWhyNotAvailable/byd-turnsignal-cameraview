@@ -3,6 +3,7 @@ package com.byd.extend.ui
 import androidx.compose.runtime.Immutable
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
+import com.byd.extend.UpdateHintAppearance
 import java.util.concurrent.atomic.AtomicLong
 
 enum class UiLanguage { Ukrainian, English, Chinese }
@@ -174,6 +175,7 @@ enum class ToggleId {
     Weather,
     AutoStart,
     AutomaticUpdate,
+    UpdateHintEnabled,
     BlindRear,
     BlindFront,
     BlindSuppressWhilePanorama,
@@ -637,6 +639,9 @@ data class SettingsUiState(
     val adbOperation: OperationUiState = OperationUiState(),
     val cameraOutput: CameraOutputUiState = CameraOutputUiState(),
     val automaticUpdate: Boolean = true,
+    val updateHintEnabled: Boolean = true,
+    val updateHintAppearance: UpdateHintAppearance = UpdateHintAppearance(),
+    val updateHintOverlayPermissionGranted: Boolean = false,
     val updateOperation: OperationUiState = OperationUiState(),
     val logOperation: OperationUiState = OperationUiState(),
     val compatibilityOperation: OperationUiState = OperationUiState(),
@@ -753,6 +758,7 @@ sealed interface BydExtendUiAction {
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
     @Immutable data class SetMirrorBorderColor(val argb: Int) : BydExtendUiAction
     @Immutable data object RequestMirrorOverlayPermission : BydExtendUiAction
+    @Immutable data class SetUpdateHintAppearance(val appearance: UpdateHintAppearance) : BydExtendUiAction
     @Immutable data class SetMirrorGeometry @JvmOverloads constructor(
         val geometry: MirrorGeometryUiState, val displayTarget: DisplayTarget? = null,
     ) : BydExtendUiAction
