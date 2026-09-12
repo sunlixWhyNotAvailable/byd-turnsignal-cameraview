@@ -50,6 +50,21 @@ public class BlindHelperAttachmentTest {
         assertEquals(1, count[0]);
     }
 
+    @Test public void failedSubmissionDoesNotReleaseSurfacesConsumedByHelper() throws Exception {
+        Path path = Path.of("src/main/java/com/byd/extend/BlindSpotOverlayController.java");
+        if (!Files.exists(path)) path = Path.of("app").resolve(path);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String open = source.substring(source.indexOf("private void maybeOpenCamera()"),
+                source.indexOf("private void cameraOpened("));
+        assertTrue(open.contains("CameraHelperMain.HelperBinder activeHelper = helper;"));
+        assertTrue(open.contains("activeHelper.openOverlayDirectCameras("));
+        String failed = open.substring(open.indexOf("catch (Throwable error)"));
+        assertTrue(failed.contains("pane.surface == surfaces[i]) pane.surface = null;"));
+        assertTrue(failed.contains("cameraUnavailable(\"open_direct_camera\")"));
+        assertFalse(failed.contains("releaseSurface("));
+        assertFalse(failed.contains(".release()"));
+    }
+
     @Test public void controllerUsesGuardedAttachmentAndOwnCallbackCancellation() throws Exception {
         Path source = Path.of("src/main/java/com/byd/extend/BlindSpotOverlayController.java");
         if (!Files.exists(source)) source = Path.of("app").resolve(source);

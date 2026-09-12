@@ -938,7 +938,9 @@ final class BlindSpotOverlayController {
     }
 
     private void maybeOpenCamera() {
-        if (isHardBlocked() || cameraOpenPending || cameraSessionOpen || helper == null) return;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (isHardBlocked() || cameraOpenPending || cameraSessionOpen
+                || activeHelper == null) return;
         List<PaneState> ready = new ArrayList<>();
         int expected = 0;
         int resolved = 0;
@@ -972,19 +974,20 @@ final class BlindSpotOverlayController {
         cameraOpenPending = true;
         cameraOpenRequestId = nextRequestId();
         try {
-            helper.openOverlayDirectCameras(
+            activeHelper.openOverlayDirectCameras(
                     surfaces, indexes, cameraIds, cameraOpenRequestId);
-            emit("overlay_camera_request", "camera_ids", java.util.Arrays.toString(cameraIds),
-                    "preview_indexes", java.util.Arrays.toString(indexes),
-                    "request_id", cameraOpenRequestId);
         } catch (Throwable error) {
+            // The helper consumes every submitted Surface on both success and failure paths.
             for (int i = 0; i < surfaces.length; i++) {
-                releaseSurface(surfaces[i]);
                 PaneState pane = pane(cameraIds[i]);
                 if (pane != null && pane.surface == surfaces[i]) pane.surface = null;
             }
             cameraUnavailable("open_direct_camera");
+            return;
         }
+        emit("overlay_camera_request", "camera_ids", java.util.Arrays.toString(cameraIds),
+                "preview_indexes", java.util.Arrays.toString(indexes),
+                "request_id", cameraOpenRequestId);
     }
 
     private void cameraOpened(int cameraRequestId) {

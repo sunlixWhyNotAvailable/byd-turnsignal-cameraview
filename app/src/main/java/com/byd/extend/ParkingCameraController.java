@@ -473,6 +473,7 @@ final class ParkingCameraController {
                 return;
             }
             pane.surface = surface.surface;
+            pane.submittedToHelper = false;
             pane.surfaceGeneration = surface.surfaceGeneration;
             pane.prepared = true;
             pane.preparing = false;
@@ -504,6 +505,12 @@ final class ParkingCameraController {
         }
         try {
             int groupRequestId = nextGroupRequest();
+            for (Pane pane : panes) {
+                if ((potentialMask & pane.profile.bit()) != 0
+                        && pane.prepared && pane.surface != null) {
+                    pane.submittedToHelper = true;
+                }
+            }
             String result = activeHelper.openParkingCameras(surfaces, indexes, groupRequestId);
             boolean ok = result != null && result.contains("camera_opened");
             attachedGroupMask = ok ? potentialMask : 0;
@@ -688,10 +695,15 @@ final class ParkingCameraController {
 
     private void clearPaneState() {
         for (Pane pane : panes) {
+            if (pane.surface != null
+                    && controllerOwnsPreparedSurface(pane.submittedToHelper)) {
+                pane.surface.release();
+            }
             pane.attached = false;
             pane.prepared = false;
             pane.preparing = false;
             pane.surface = null;
+            pane.submittedToHelper = false;
             pane.requestId = 0;
             pane.surfaceGeneration = 0;
             pane.visible = false;
@@ -701,6 +713,10 @@ final class ParkingCameraController {
             pane.visibilityPending = false;
             pane.transition++;
         }
+    }
+
+    static boolean controllerOwnsPreparedSurface(boolean submittedToHelper) {
+        return !submittedToHelper;
     }
 
     private void scheduleCloseRetry() {
@@ -917,6 +933,7 @@ final class ParkingCameraController {
         int frameEpoch;
         boolean preparing;
         boolean prepared;
+        boolean submittedToHelper;
         boolean attached;
         boolean active;
         boolean visible;

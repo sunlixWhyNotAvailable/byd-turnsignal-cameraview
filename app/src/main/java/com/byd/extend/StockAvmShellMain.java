@@ -27,6 +27,46 @@ import java.util.concurrent.TimeUnit;
 public final class StockAvmShellMain {
     private StockAvmShellMain() {}
 
+    interface OpenLifecycle<T> {
+        boolean open() throws Exception;
+        T handoff() throws Exception;
+        void close() throws Exception;
+    }
+
+    static final class OpenResult<T> {
+        final boolean initialized;
+        final T value;
+
+        OpenResult(boolean initialized, T value) {
+            this.initialized = initialized;
+            this.value = value;
+        }
+    }
+
+    static <T> OpenResult<T> openOwned(OpenLifecycle<T> lifecycle) throws Exception {
+        boolean opened = false;
+        try {
+            boolean initialized = lifecycle.open();
+            opened = true;
+            return new OpenResult<>(initialized, lifecycle.handoff());
+        } catch (Throwable error) {
+            if (opened) {
+                try {
+                    lifecycle.close();
+                } catch (Throwable closeError) {
+                    error.addSuppressed(closeError);
+                }
+            }
+            if (error instanceof Exception) throw (Exception) error;
+            if (error instanceof Error) throw (Error) error;
+            throw new Exception(error);
+        }
+    }
+
+    static void releaseBeforeTransfer(boolean transferred, Runnable release) {
+        if (!transferred) release.run();
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 2) throw new IllegalArgumentException(
                 "usage: StockAvmShellMain <appUid> <versionCode>");
@@ -110,6 +150,7 @@ public final class StockAvmShellMain {
                 }
                 if (code == StockAvmShellProtocol.TX_OPEN) {
                     Surface surface = Surface.CREATOR.createFromParcel(data);
+                    boolean surfaceTransferred = false;
                     try {
                         int viewpoint = data.readInt();
                         boolean horizontal = data.readInt() != 0;
@@ -128,11 +169,12 @@ public final class StockAvmShellMain {
                                 surface, viewpoint, config, horizontal, stockDewarp,
                                 requestId, attempt));
                         if (!handler.post(task)) throw new IllegalStateException("AVM main handler rejected open");
+                        surfaceTransferred = true;
                         Surface input = task.get(15, TimeUnit.SECONDS);
                         reply.writeNoException();
                         input.writeToParcel(reply, 0);
                     } catch (Throwable error) {
-                        if (!preview.isOpen()) surface.release();
+                        releaseBeforeTransfer(surfaceTransferred, surface::release);
                         throw error;
                     }
                     return true;
@@ -167,16 +209,38 @@ public final class StockAvmShellMain {
             try {
                 emit("camera_config_received", "detail", config.detail(), "viewpoint", viewpoint,
                         "orientation", horizontal ? "horizontal" : "vertical", "dewarp", stockDewarp);
-                boolean initialized = preview.open(surface, viewpoint, config, horizontal, stockDewarp);
+                OpenResult<Surface> opened = openOwned(new OpenLifecycle<Surface>() {
+                    @Override
+                    public boolean open() throws Exception {
+                        return preview.open(
+                                surface, viewpoint, config, horizontal, stockDewarp);
+                    }
+
+                    @Override
+                    public Surface handoff() {
+                        Surface input = preview.getInputSurface();
+                        if (!input.isValid()) {
+                            throw new IllegalStateException("AVM input Surface is invalid");
+                        }
+                        return input;
+                    }
+
+                    @Override
+                    public void close() throws Exception {
+                        preview.close();
+                    }
+                });
+                boolean initialized = opened.initialized;
                 activeRequestId = requestId;
                 emit("camera_opened", "renderer", "stock_avm_shell", "view", view,
                         "viewpoint", viewpoint, "initialized", initialized, "request_id", requestId,
                         "attempt", attempt,
                         "orientation", horizontal ? "horizontal" : "vertical", "dewarp", stockDewarp,
                         "shell_uid", Process.myUid(), "display_ready", true,
-                        "input_surface_valid", preview.getInputSurface().isValid());
-                return preview.getInputSurface();
+                        "input_surface_valid", true);
+                return opened.value;
             } catch (Throwable error) {
+                if (!preview.isOpen()) activeRequestId = 0;
                 String stage = error instanceof StockAvmPreview.StageException
                         ? ((StockAvmPreview.StageException) error).stage : "open";
                 emit("camera_error", "renderer", "stock_avm_shell", "stage", stage, "view", view,

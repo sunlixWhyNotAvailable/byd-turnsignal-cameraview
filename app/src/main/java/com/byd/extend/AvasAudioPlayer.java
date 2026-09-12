@@ -44,7 +44,16 @@ final class AvasAudioPlayer implements AutoCloseable {
         settings = new AvasShellSettings(context);
         route = new AvasExteriorRoute(context, log);
         navigationRoute = new AvasNavigationRoute(manager, log);
-        restore(null);
+        try {
+            restore(null);
+        } catch (Exception failure) {
+            try {
+                settings.close();
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     void play(File wav, int volume, BooleanSupplier cancelled,
@@ -78,6 +87,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                     .setOnAudioFocusChangeListener(focusCallback::accept,
                             new Handler(Looper.getMainLooper())).build();
 
+            settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_DIRTY);
             route.naviFocus(true, diagnostics);
             int granted = manager.requestAudioFocus(focus);
             event(diagnostics, "avas_focus_request", "result", granted);
@@ -85,7 +95,6 @@ final class AvasAudioPlayer implements AutoCloseable {
             int savedMute = manager.isStreamMute(NAV_STREAM) ? 1 : 0;
             settings.putInt(AvasShellSettings.SAVED_NAV, savedVolume);
             settings.putInt(AvasShellSettings.SAVED_MUTE, savedMute);
-            settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_DIRTY);
             event(diagnostics, "avas_mute_volume", "phase", "saved", "volume", savedVolume,
                     "muted", savedMute == 1);
             route.mute(true, diagnostics);
@@ -336,6 +345,11 @@ final class AvasAudioPlayer implements AutoCloseable {
     @Override
     public void close() {
         stop();
+        try {
+            settings.close();
+        } catch (Exception failure) {
+            event("avas_settings_provider_release_error", "error", failure.toString());
+        }
     }
 
     private int write(AudioTrack output, byte[] pcm, byte[] scaled, int length, int frameSize,

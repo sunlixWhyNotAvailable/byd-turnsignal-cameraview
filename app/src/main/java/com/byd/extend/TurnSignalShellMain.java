@@ -97,6 +97,7 @@ public final class TurnSignalShellMain {
         private final BroadcastReceiver powerReceiver;
         private final AwakeSessionState awakeSession;
         private IBinder callback;
+        private IBinder.DeathRecipient callbackDeathRecipient;
         private IBinder controllerToken;
         private boolean guardEnabled;
         private boolean recoveryEnabled;
@@ -174,6 +175,7 @@ public final class TurnSignalShellMain {
             handler.removeCallbacks(wakeCheckRunnable);
             unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
+            clearCallback();
             musicRuntime.stop();
             parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
@@ -368,14 +370,22 @@ public final class TurnSignalShellMain {
 
         private synchronized void registerCallback(IBinder value) throws RemoteException {
             if (value == null) throw new IllegalArgumentException("callback is null");
-            if (callback != value && avasRuntime != null) {
-                String replacedSession = avasRuntime.auditionSessionId();
-                if (TurnSignalShellProtocol.isAvasSessionAllowed(replacedSession)) {
-                    handler.post(() -> avasRuntime.stopAudition(replacedSession));
+            if (callback != value) {
+                IBinder.DeathRecipient recipient =
+                        () -> handler.post(() -> clearCallback(value));
+                value.linkToDeath(recipient, 0);
+                if (avasRuntime != null) {
+                    String replacedSession = avasRuntime.auditionSessionId();
+                    if (TurnSignalShellProtocol.isAvasSessionAllowed(replacedSession)) {
+                        handler.post(() -> avasRuntime.stopAudition(replacedSession));
+                    }
                 }
+                IBinder previous = callback;
+                IBinder.DeathRecipient previousRecipient = callbackDeathRecipient;
+                callback = value;
+                callbackDeathRecipient = recipient;
+                unlinkDeathRecipient(previous, previousRecipient);
             }
-            callback = value;
-            value.linkToDeath(() -> handler.post(() -> clearCallback(value)), 0);
             emit("shell_callback_registered", "shell_uid", Process.myUid());
             runtime.reportStatus();
             warningRuntime.reportStatus();
@@ -389,7 +399,10 @@ public final class TurnSignalShellMain {
 
         private synchronized void clearCallback(IBinder value) {
             if (callback == value) {
+                IBinder.DeathRecipient recipient = callbackDeathRecipient;
                 callback = null;
+                callbackDeathRecipient = null;
+                unlinkDeathRecipient(value, recipient);
                 // Capture the old session; a delayed death must not cancel a newer audition.
                 if (avasRuntime != null) {
                     String diedSession = avasRuntime.auditionSessionId();
@@ -398,6 +411,14 @@ public final class TurnSignalShellMain {
                     }
                 }
             }
+        }
+
+        private void clearCallback() {
+            IBinder value;
+            synchronized (this) {
+                value = callback;
+            }
+            if (value != null) clearCallback(value);
         }
 
         private void terminateProcessOnce() {
@@ -468,13 +489,15 @@ public final class TurnSignalShellMain {
 
         private void controllerDiedOnHandler(IBinder deadToken) {
             boolean restart;
+            IBinder detachedCallback;
             synchronized (this) {
                 if (controllerToken != deadToken) return;
                 controllerToken = null;
                 controllerDeathRecipient = null;
-                callback = null;
+                detachedCallback = callback;
                 restart = recoveryEnabled;
             }
+            if (detachedCallback != null) clearCallback(detachedCallback);
             boolean interactive = isInteractive();
             emit("controller_died", "recovery_enabled", restart,
                     "interactive", interactive,
@@ -925,6 +948,15 @@ public final class TurnSignalShellMain {
                     stdoutFlushScheduled = false;
                 }
                 System.out.flush();
+            }
+        }
+
+        private static void unlinkDeathRecipient(
+                IBinder binder, IBinder.DeathRecipient recipient) {
+            if (binder == null || recipient == null) return;
+            try {
+                binder.unlinkToDeath(recipient, 0);
+            } catch (Throwable ignored) {
             }
         }
     }

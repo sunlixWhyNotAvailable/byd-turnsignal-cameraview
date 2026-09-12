@@ -125,4 +125,24 @@ public final class AvasShellProtocolTest {
                 shell.indexOf("if (code == TurnSignalShellProtocol.TX_SHUTDOWN_KEEPING_AVAS)"));
         assertTrue(terminal.contains("musicRuntime.stop()"));
     }
+
+    @Test
+    public void callbackReplacementOwnsExactlyOneDeathRecipient() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/byd/extend/TurnSignalShellMain.java")),
+                StandardCharsets.UTF_8);
+        String registration = source.substring(source.indexOf(
+                        "private synchronized void registerCallback"),
+                source.indexOf("private synchronized void clearCallback"));
+        assertTrue(registration.indexOf("value.linkToDeath(recipient, 0)") <
+                registration.indexOf("callback = value"));
+        assertTrue(registration.indexOf("callback = value") <
+                registration.indexOf("unlinkDeathRecipient(previous, previousRecipient)"));
+
+        String clear = source.substring(source.indexOf(
+                        "private synchronized void clearCallback"),
+                source.indexOf("private void terminateProcessOnce"));
+        assertTrue(clear.contains("callbackDeathRecipient = null"));
+        assertTrue(clear.contains("unlinkDeathRecipient(value, recipient)"));
+    }
 }

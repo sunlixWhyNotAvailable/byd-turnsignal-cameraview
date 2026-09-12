@@ -2,6 +2,10 @@ package com.byd.extend;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -53,5 +57,27 @@ public final class ParkingCameraControllerGenerationTest {
         assertFalse(ParkingCameraController.acceptsRadarCallback(
                 "radar_core", ParkingCameraProfile.coreRadarFids()[0],
                 1L, 0L, true));
+    }
+
+    @Test
+    public void preparedSurfaceOwnershipTransfersWhenBatchIsSubmitted() {
+        assertTrue(ParkingCameraController.controllerOwnsPreparedSurface(false));
+        assertFalse(ParkingCameraController.controllerOwnsPreparedSurface(true));
+    }
+
+    @Test
+    public void preparedSurfaceCleanupUsesSubmissionOwnershipNotAttachSuccess() throws Exception {
+        Path path = Path.of("src/main/java/com/byd/extend/ParkingCameraController.java");
+        if (!Files.exists(path)) path = Path.of("app").resolve(path);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        int transfer = source.indexOf("pane.submittedToHelper = true;");
+        assertTrue(transfer > source.indexOf("pane.submittedToHelper = false;"));
+        assertTrue(transfer < source.indexOf("activeHelper.openParkingCameras("));
+        String clear = source.substring(source.indexOf("private void clearPaneState()"),
+                source.indexOf("static boolean controllerOwnsPreparedSurface("));
+        assertTrue(clear.contains("controllerOwnsPreparedSurface(pane.submittedToHelper)"));
+        assertTrue(clear.indexOf("pane.surface.release()") < clear.indexOf("pane.surface = null"));
+        assertTrue(clear.contains("pane.submittedToHelper = false;"));
+        assertFalse(clear.contains("if (pane.attached"));
     }
 }

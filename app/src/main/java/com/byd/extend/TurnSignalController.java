@@ -431,6 +431,7 @@ final class TurnSignalController {
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
+            boolean remoteOpenAttempted = false;
             boolean resetRetried = false;
             try {
                 if (isStockAvmCanceled(openState)) return;
@@ -441,6 +442,7 @@ final class TurnSignalController {
                         value = ensureAvmShell();
                         epoch = avmShellEpoch(value);
                         if (isStockAvmCanceled(openState)) return;
+                        remoteOpenAttempted = true;
                         Surface inputSurface = transactAvmOpen(
                                 value, surface, viewpoint, horizontal, stockDewarp,
                                 requestId, attempt + 1, config);
@@ -500,7 +502,15 @@ final class TurnSignalController {
             } finally {
                 endStockAvmAttempt(requestId);
                 surface.release();
-                if (!openState.published.get()) clearStockAvmOpen(openState);
+                if (!openState.published.get()) {
+                    // A thrown input callback or failed reply can follow a successful SDK
+                    // open. Retiring local state alone would orphan that remote session.
+                    if (remoteOpenAttempted) {
+                        queueStockAvmCleanup(openState, "stock_avm_open_not_published");
+                    } else {
+                        clearStockAvmOpen(openState);
+                    }
+                }
             }
             });
         } catch (RejectedExecutionException error) {

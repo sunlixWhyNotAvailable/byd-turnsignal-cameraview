@@ -296,6 +296,10 @@ final class AvasRuntime implements AutoCloseable {
                 if (current != null) current.stop();
             }
         }
+        // A dequeued request may have created the player after the pre-join stop snapshot.
+        current = player;
+        player = null;
+        if (current != null) current.close();
         if (interrupted) Thread.currentThread().interrupt();
         event("avas_runtime_closed");
     }

@@ -1028,6 +1028,71 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void deliveredOrdinaryStockRequestClosesSdkOnceAndKeepsProducerWarm() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        StockAvmRequestState stock = new StockAvmRequestState();
+        stock.begin(63);
+        assertTrue(stock.takeInput(63));
+        session.startProducer(camera, fanout, session.activityGroup,
+                testSurfaces(1), new int[]{0}, 63, "stock_avm_input", true, true, true);
+        AtomicInteger sdkCloses = new AtomicInteger();
+        CameraHelperMain.HelperBinder.PersistentShellCloseSink shell = (reason, requestId) -> {
+            if (!stock.matches(requestId)) return false;
+            sdkCloses.incrementAndGet();
+            stock.clear();
+            return true;
+        };
+
+        CameraHelperMain.HelperBinder.CloseOutcome outcome = session.close(
+                camera, session.activityGroup, "tab_closed", 63,
+                events, shell, 7, 8, stock.matches(63));
+        session.close(camera, session.activityGroup, "duplicate_close", 63,
+                events, shell, 7, 8, stock.matches(63));
+
+        assertTrue(outcome.shellCloseQueued);
+        assertEquals(true, events.byKindAndRequest("camera_closed", 63)
+                .field("stock_close_pending"));
+        assertEquals(1, sdkCloses.get());
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertFalse(stock.isActive());
+        assertFalse(session.activityGroup.has());
+        assertTrue(session.producerOpen);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+    }
+
+    @Test
+    public void ordinaryStockTerminalDetachesInputOnceWithoutClosingOtherConsumers()
+            throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        session.startProducer(camera, fanout, session.activityGroup,
+                testSurfaces(1), new int[]{0}, 63, "stock_avm_input", false, true, true);
+        session.attach(camera, session.overlayGroup,
+                testSurfaces(1), new int[]{2}, 64, "blind", false, false,
+                events, new FakeShellClose(trace), 7, 8);
+
+        session.invalidateStockAvmGroup(camera, "stock_avm_session_closed", events, 7, 8);
+        session.invalidateStockAvmGroup(camera, "duplicate_terminal", events, 7, 8);
+
+        assertFalse(session.activityGroup.has());
+        assertTrue(session.overlayGroup.attached);
+        assertEquals(64, session.overlayGroup.requestId);
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertEquals(1, fanout.activeTargets);
+        assertTrue(session.producerOpen);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(0, count(trace.values, "close"));
+    }
+
+    @Test
     public void reverseStockClosePendingQueuesExactlyOneShellClose() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);

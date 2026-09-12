@@ -118,6 +118,35 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
     }
 
+    @Test public void exteriorRouteIsDirtyBeforeItsFirstSideEffect() throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String exterior = player.substring(player.indexOf("void play(File wav"),
+                player.indexOf("void playNavigation(File wav"));
+        int dirty = exterior.indexOf(
+                "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_DIRTY)");
+        assertTrue(dirty >= 0);
+        assertTrue(dirty < exterior.indexOf("route.naviFocus(true, diagnostics)"));
+        assertTrue(dirty < exterior.indexOf("manager.requestAudioFocus(focus)"));
+    }
+
+    @Test public void settingsProviderClosesOnlyAfterPlaybackWorkerTerminates() throws Exception {
+        String runtime = source("AvasRuntime.java");
+        String close = runtime.substring(runtime.indexOf("public void close()"),
+                runtime.indexOf("private void playbackLoop()"));
+        int joined = close.indexOf("playback.awaitTermination");
+        int finalPlayer = close.indexOf("current = player;", joined);
+        assertTrue(joined > close.indexOf("current.stop()"));
+        // Covers the failed-start path where a dequeued request creates a late player.
+        assertTrue(finalPlayer > joined);
+        assertTrue(close.indexOf("player = null;", finalPlayer) > finalPlayer);
+        assertTrue(close.indexOf("current.close()") > finalPlayer);
+
+        String player = source("AvasAudioPlayer.java");
+        String constructor = player.substring(player.indexOf("AvasAudioPlayer(Context"),
+                player.indexOf("void play(File wav"));
+        assertTrue(constructor.contains("settings.close()"));
+    }
+
     private static String source(String name) throws Exception {
         Path path = Path.of("app/src/main/java/com/byd/extend", name);
         if (!Files.exists(path)) path = Path.of("src/main/java/com/byd/extend", name);

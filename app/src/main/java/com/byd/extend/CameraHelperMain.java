@@ -103,8 +103,7 @@ final class CameraHelperMain {
         private String activeCameraOwner = "none";
         private int activeCameraRequestId;
         private int activeReverseControllerRequestId;
-        private boolean stockCameraRequested;
-        private int pendingStockCameraRequestId;
+        private final StockAvmRequestState stockRequest = new StockAvmRequestState();
         private boolean reverseStockActive;
         private boolean reverseStockInputAttached;
         private int reverseStockRequestId;
@@ -741,8 +740,7 @@ final class CameraHelperMain {
             reverseStockInputAttached = false;
             reverseStockRequestId = requestId;
             reverseStockProducerEpoch = producerEpoch;
-            stockCameraRequested = true;
-            pendingStockCameraRequestId = requestId;
+            stockRequest.begin(requestId);
             pendingReversePreviewRequestId = requestId;
             pendingReversePreviewSurfaces = new Surface[0];
             viewName = "reverse_preview_with_stock_base";
@@ -774,7 +772,7 @@ final class CameraHelperMain {
             int requestId = callbackRequestId;
             int producerEpoch = callbackProducerEpoch;
             pendingReversePreviewRequestId = 0;
-            pendingStockCameraRequestId = 0;
+            stockRequest.takeInput(requestId);
             String attachResult;
             try {
                 boolean attached = persistentSession.attachStockInput(
@@ -1296,8 +1294,11 @@ final class CameraHelperMain {
                         activeCameraId, activeCameraTag);
             }
             String requestedView = StockAvmPreview.viewName(viewpoint);
-            stockCameraRequested = true;
-            pendingStockCameraRequestId = requestId;
+            if (requestId <= 0) {
+                requestedSurface.release();
+                throw new IllegalArgumentException("camera request id required");
+            }
+            stockRequest.begin(requestId);
             viewName = requestedView;
             previewIndex = -1;
             turnController.openStockAvm(requestedSurface, viewpoint, horizontal, stockDewarp,
@@ -1311,22 +1312,26 @@ final class CameraHelperMain {
 
         private synchronized void attachStockAvmInputSurface(
                 Surface inputSurface, int callbackRequestId) {
-            if (!stockCameraRequested
-                    || !matchesPendingCameraRequest(
-                            pendingStockCameraRequestId, callbackRequestId)) {
+            if (!stockRequest.takeInput(callbackRequestId)) {
                 inputSurface.release();
                 emit("camera_input_surface_ignored", "view", viewName,
                         "request_id", callbackRequestId,
-                        "pending_request_id", pendingStockCameraRequestId);
+                        "pending_request_id", stockRequest.pendingId());
                 return;
             }
             int requestId = callbackRequestId;
-            pendingStockCameraRequestId = 0;
-            String attachResult = openCamera(
-                    inputSurface, 0, "stock_avm_input", false, true,
-                    cameraId, cameraTag, CAMERA_OWNER_ACTIVITY, requestId);
-            emit("camera_input_surface_attached", "view", viewName,
-                    "result", attachResult);
+            boolean attached = false;
+            try {
+                String attachResult = openCamera(
+                        inputSurface, 0, "stock_avm_input", false, true,
+                        cameraId, cameraTag, CAMERA_OWNER_ACTIVITY, requestId);
+                attached = !isCameraErrorResult(attachResult) && !isCameraBusyResult(attachResult);
+                emit("camera_input_surface_attached", "view", viewName,
+                        "result", attachResult);
+            } finally {
+                // The SDK is already open even when its input cannot join our producer.
+                if (!attached) cancelPendingStock("stock_avm_input_attach_failed", requestId);
+            }
         }
 
         synchronized String closeCamera(String reason) {
@@ -1356,12 +1361,11 @@ final class CameraHelperMain {
 
         private synchronized String closeOneShotCamera(
                 String reason, boolean preserveActivityPreview) {
-            boolean closeStock = stockCameraRequested;
-            int stockRequestId = pendingStockCameraRequestId > 0
-                    ? pendingStockCameraRequestId : activeCameraRequestId;
+            boolean closeStock = stockRequest.isActive();
+            int stockRequestId = stockRequest.isActive()
+                    ? stockRequest.id() : activeCameraRequestId;
             String activeView = viewName == null ? "unknown" : viewName;
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            stockRequest.clear();
             Surface[] pendingReverseSurfaces = pendingReversePreviewSurfaces;
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
@@ -1463,8 +1467,7 @@ final class CameraHelperMain {
                 if (group == null) return result("camera_close_ignored", null);
                 if (!group.has()) {
                     if (CAMERA_OWNER_ACTIVITY.equals(expectedOwner)
-                            && stockCameraRequested
-                            && expectedRequestId == pendingStockCameraRequestId) {
+                            && stockRequest.matches(expectedRequestId)) {
                         boolean shellCloseQueued = cancelPendingStock(reason, expectedRequestId);
                         return result(persistentCloseResultKind(shellCloseQueued), null,
                                 activeCameraId, activeCameraTag);
@@ -1477,10 +1480,10 @@ final class CameraHelperMain {
                     && activityPreview.has()) {
                 return detachActivityPreview(reason);
             }
-            if (camera == null && !stockCameraRequested) {
+            if (camera == null && !stockRequest.isActive()) {
                 return result("already_closed", null);
             }
-            String owner = stockCameraRequested && camera == null
+            String owner = stockRequest.isActive() && camera == null
                     ? CAMERA_OWNER_ACTIVITY : activeCameraOwner;
             if (!expectedOwner.equals(owner)) {
                 emit("camera_close_ignored", "reason", "owner_mismatch",
@@ -1489,7 +1492,7 @@ final class CameraHelperMain {
                 return result("camera_close_ignored", null, activeCameraId, activeCameraTag);
             }
             int closeRequestId = cameraRequestIdForClose(
-                    stockCameraRequested, pendingStockCameraRequestId,
+                    stockRequest.isActive(), stockRequest.id(),
                     activeCameraRequestId);
             if (expectedRequestId > 0 && closeRequestId != expectedRequestId) {
                 emit("camera_close_ignored", "reason", "request_mismatch",
@@ -1872,7 +1875,8 @@ final class CameraHelperMain {
                 ConsumerGroup group, String reason, int expectedRequestId) {
             CloseOutcome outcome;
             boolean stockClosePending = group == activityGroup
-                    && ((reverseStockActive
+                    && (stockRequest.matches(group.requestId)
+                    || (reverseStockActive
                     && reverseStockRequestMatches(group.requestId)
                     && reverseStockProducerEpoch == producerEpoch)
                     || (reverseStockClosePending
@@ -1924,9 +1928,9 @@ final class CameraHelperMain {
                 String reason, Throwable failure, boolean shellCloseAlreadyQueued) {
             Object active = camera;
             int closedEpoch = producerEpoch;
-            boolean closeStock = stockCameraRequested || activityGroup.shellOwned;
-            int stockRequestId = pendingStockCameraRequestId > 0
-                    ? pendingStockCameraRequestId
+            boolean closeStock = stockRequest.isActive() || activityGroup.shellOwned;
+            int stockRequestId = stockRequest.isActive()
+                    ? stockRequest.id()
                     : reverseStockRequestId > 0 ? reverseStockRequestId : activityGroup.requestId;
             if (reverseStockActive && closeStock) {
                 reverseStockClosePending = true;
@@ -1938,8 +1942,7 @@ final class CameraHelperMain {
             persistentPanoProducer = false;
             producerCameraId = -1;
             rawSourceHub = null;
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            stockRequest.clear();
             reverseStockActive = false;
             reverseStockInputAttached = false;
             reverseStockRequestId = 0;
@@ -2084,9 +2087,8 @@ final class CameraHelperMain {
         }
 
         private boolean cancelPendingStock(String reason, int requestId) {
-            boolean closeStock = stockCameraRequested
-                    && (requestId <= 0 || pendingStockRequestMatches(requestId)
-                    || reverseStockRequestMatches(requestId));
+            boolean closeStock = stockRequest.isActive()
+                    && (requestId <= 0 || stockRequest.matches(requestId));
             boolean queuedClose = reverseStockClosePending
                     && requestId > 0 && reverseStockCloseRequestId == requestId;
             // A late close/failure for another request must not cancel the current stock
@@ -2101,11 +2103,10 @@ final class CameraHelperMain {
             boolean reverseClose = reverseStockActive
                     && (requestId <= 0 || reverseStockRequestMatches(requestId));
             int closeRequestId = requestId > 0 ? requestId
-                    : pendingStockCameraRequestId > 0 ? pendingStockCameraRequestId
+                    : stockRequest.isActive() ? stockRequest.id()
                     : reverseStockRequestId;
             int closeEpoch = reverseStockProducerEpoch;
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            stockRequest.clear();
             reverseStockActive = false;
             reverseStockInputAttached = false;
             reverseStockRequestId = 0;
@@ -2125,18 +2126,14 @@ final class CameraHelperMain {
             return closeStock;
         }
 
-        private boolean pendingStockRequestMatches(int requestId) {
-            return requestId > 0 && pendingStockCameraRequestId == requestId;
-        }
-
         private boolean reverseStockRequestMatches(int requestId) {
             return requestId > 0 && reverseStockRequestId == requestId;
         }
 
         private boolean isCurrentReverseStockCallback(int requestId, int epoch) {
-            return reverseStockActive && stockCameraRequested
+            return reverseStockActive && stockRequest.isActive()
                     && requestId > 0 && requestId == reverseStockRequestId
-                    && requestId == pendingStockCameraRequestId
+                    && requestId == stockRequest.pendingId()
                     && epoch > 0 && epoch == reverseStockProducerEpoch
                     && epoch == producerEpoch && persistentPanoProducer
                     && activityGroup.has() && activityGroup.attached
@@ -2159,8 +2156,7 @@ final class CameraHelperMain {
                 // has no shell to close and is settled by the controller's failure event.
                 if (live) cancelPendingStock("reverse_preview_stock_failed", requestId);
                 else {
-                    stockCameraRequested = false;
-                    pendingStockCameraRequestId = 0;
+                    stockRequest.clear();
                     reverseStockActive = false;
                     reverseStockInputAttached = false;
                     reverseStockRequestId = 0;
@@ -2185,7 +2181,7 @@ final class CameraHelperMain {
         private int currentRequestId(String owner) {
             ConsumerGroup group = groupForOwner(owner);
             if (group != null && group.has()) return group.requestId;
-            return CAMERA_OWNER_ACTIVITY.equals(owner) ? pendingStockCameraRequestId : 0;
+            return CAMERA_OWNER_ACTIVITY.equals(owner) ? stockRequest.id() : 0;
         }
 
         private ConsumerGroup groupForOwner(String owner) {
@@ -3800,6 +3796,11 @@ final class CameraHelperMain {
 
         private void acceptControllerEvent(String kind, Object[] fields) {
             Object[] forwarded = reverseStockControllerFields(kind, fields);
+            if (!hasReverseStockComponent(forwarded)
+                    && fieldString(forwarded, "renderer").startsWith("stock_avm")
+                    && ("camera_error".equals(kind) || "camera_closed".equals(kind))) {
+                settleOrdinaryStockTerminal(requestId(forwarded), "camera_error".equals(kind));
+            }
             emit(kind, forwarded);
             if ("camera_shell_died".equals(kind)) {
                 cameraShellDiedCleanup();
@@ -4017,8 +4018,7 @@ final class CameraHelperMain {
                 stockAvmShellDiedCleanup();
                 return;
             }
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            stockRequest.clear();
             pendingReversePreviewRequestId = 0;
             reverseStockRetiredRequestId = requestId;
             reverseStockRetiredProducerEpoch = reverseStockProducerEpoch;
@@ -4057,11 +4057,10 @@ final class CameraHelperMain {
         }
 
         private synchronized void stockAvmShellDiedCleanup() {
-            boolean stockWasActive = stockCameraRequested
+            boolean stockWasActive = stockRequest.isActive()
                     || (camera != null && CAMERA_OWNER_ACTIVITY.equals(activeCameraOwner)
                     && viewName != null && !viewName.startsWith("direct_"));
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            stockRequest.clear();
             boolean reverseStock = reverseStockActive
                     || reverseStockInputAttached
                     || reverseStockClosePending;
@@ -4110,8 +4109,9 @@ final class CameraHelperMain {
         }
 
         private synchronized void cameraShellDiedCleanup() {
-            stockCameraRequested = false;
-            pendingStockCameraRequestId = 0;
+            // The stock SDK lives in another process; losing the overlay shell does not
+            // terminate it. Close it before dropping the input group's ownership.
+            cancelPendingStock("camera_shell_died", stockRequest.id());
             releaseSurfaces(pendingReversePreviewSurfaces);
             pendingReversePreviewSurfaces = new Surface[0];
             pendingReversePreviewRequestId = 0;
@@ -4129,6 +4129,28 @@ final class CameraHelperMain {
                 return;
             }
             closeCamera("camera_shell_died");
+        }
+
+        private synchronized void settleOrdinaryStockTerminal(int requestId, boolean failed) {
+            if (!stockRequest.matches(requestId) || reverseStockActive) return;
+            String reason = failed ? "stock_avm_session_failed" : "stock_avm_session_closed";
+            boolean shellCloseQueued = failed && cancelPendingStock(reason, requestId);
+            stockRequest.clear();
+            if (persistentPanoProducer) {
+                if (activityGroup.requestId != requestId
+                        || !PersistentSession.isStockAvmGroup(activityGroup)) return;
+                try {
+                    persistentSession.invalidateStockAvmGroup(
+                            new ReflectivePersistentCameraPort(camera), reason, this::emit,
+                            producerCameraId, producerEpoch);
+                    refreshPersistentLegacyState();
+                } catch (PersistentSessionFailure error) {
+                    tearDownPersistentProducer(error.reason, error.getCause(), shellCloseQueued);
+                }
+            } else if (CAMERA_OWNER_ACTIVITY.equals(activeCameraOwner)
+                    && activeCameraRequestId == requestId) {
+                closeOneShotCamera(reason, false);
+            }
         }
 
         private void acceptShellEvent(String line) {
@@ -4151,22 +4173,19 @@ final class CameraHelperMain {
                     }
                 }
                 int requestId = event.optInt("request_id", 0);
-                boolean terminal = "camera_error".equals(kind)
-                        || "camera_closed".equals(kind);
                 boolean pendingPreviewError;
                 synchronized (this) {
                     boolean reverseStockEvent = isReverseStockEvent(event);
-                    boolean stockTerminal = terminal && matchesCurrentStockRequest(
-                            stockCameraRequested, pendingStockCameraRequestId,
-                            activeCameraRequestId, requestId);
+                    boolean stockTerminal = isCurrentStockTerminal(event, stockRequest.id());
                     pendingPreviewError = "camera_error".equals(kind)
                             && !reverseStockEvent
                             && matchesPendingCameraRequest(
                                     pendingReversePreviewRequestId, requestId);
                     if (!reverseStockEvent && (stockTerminal || pendingPreviewError)) {
-                        stockCameraRequested = false;
-                        if (pendingStockCameraRequestId == requestId) {
-                            pendingStockCameraRequestId = 0;
+                        if (stockTerminal) {
+                            settleOrdinaryStockTerminal(requestId, "camera_error".equals(kind));
+                        } else {
+                            stockRequest.clear();
                         }
                         releaseSurfaces(pendingReversePreviewSurfaces);
                         pendingReversePreviewSurfaces = new Surface[0];
@@ -4268,6 +4287,14 @@ final class CameraHelperMain {
                     || "camera_shell_opened".equals(kind);
         }
 
+        static boolean isCurrentStockTerminal(JSONObject event, int activeStockRequestId) {
+            String kind = event.optString("kind");
+            return activeStockRequestId > 0
+                    && event.optInt("request_id", 0) == activeStockRequestId
+                    && ("camera_closed".equals(kind) || "camera_error".equals(kind))
+                    && isStockShellEvent(event);
+        }
+
         private static boolean isReverseStockEvent(JSONObject event) {
             return event != null
                     && "reverse_preview_background".equals(
@@ -4288,10 +4315,7 @@ final class CameraHelperMain {
         }
 
         private synchronized void clearReverseStockState() {
-            stockCameraRequested = false;
-            if (pendingStockCameraRequestId == reverseStockRequestId) {
-                pendingStockCameraRequestId = 0;
-            }
+            if (stockRequest.matches(reverseStockRequestId)) stockRequest.clear();
             pendingReversePreviewRequestId = 0;
             reverseStockActive = false;
             reverseStockInputAttached = false;
