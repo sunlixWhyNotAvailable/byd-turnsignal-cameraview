@@ -228,12 +228,11 @@ final class AvasAudioPlayer implements AutoCloseable {
             int maximum = manager.getStreamMaxVolume(NAV_STREAM);
             if (maximum <= 0) throw new IllegalStateException("No NAV stream on this firmware");
             settings.putInt(AvasShellSettings.SAVED_NAV, previous);
-            settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.NAVIGATION_DIRTY);
             manager.setStreamVolume(NAV_STREAM, maximum, 0);
             event(diagnostics, "avas_mute_volume", "phase", "navigation", "saved_volume",
                     previous, "requested_volume", maximum,
                     "actual_volume", safeStreamVolume());
-            navigationRoute.prepare();
+            navigationRoute.prepare(dirty -> settings.putInt(AvasShellSettings.DIRTY, dirty));
             if (cancelled(ticket, cancelled)) return;
 
             int channelMask = header.channels == 1
@@ -421,13 +420,15 @@ final class AvasAudioPlayer implements AutoCloseable {
             } catch (Exception routeFailure) {
                 failure = routeFailure;
             }
-        } else if (dirty == AvasShellSettings.NAVIGATION_DIRTY) {
+        } else if (AvasNavigationRecovery.requiresRelease(dirty)) {
             try {
-                navigationRoute.release(focus);
+                navigationRoute.release(focus, dirty,
+                        next -> settings.putInt(AvasShellSettings.DIRTY, next));
             } catch (Exception routeFailure) {
                 failure = routeFailure;
             }
-        } else if (dirty != AvasShellSettings.CLEAN) {
+        } else if (dirty != AvasShellSettings.CLEAN
+                && dirty != AvasShellSettings.NAVIGATION_REJECTED) {
             failure = new IllegalStateException("Unknown AVAS route marker " + dirty);
         } else if (focus != null) {
             try {

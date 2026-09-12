@@ -24,16 +24,17 @@ final class AvasNavigationRoute {
         this.log = log;
     }
 
-    void prepare() throws Exception {
-        int status = write(1, "prepare");
-        if (status < 0) throw new IllegalStateException("Navigation route prepare failed");
+    void prepare(AvasNavigationRecovery.Marker marker) throws Exception {
+        AvasNavigationRecovery.prepare(marker, () -> write(1, "prepare"));
     }
 
-    void release(AudioFocusRequest focus) throws Exception {
+    void release(AudioFocusRequest focus, int dirty, AvasNavigationRecovery.Marker marker)
+            throws Exception {
         Exception failure = null;
         try {
-            if (write(0, "release") < 0) {
-                failure = new IllegalStateException("Navigation route release failed");
+            if (AvasNavigationRecovery.release(dirty, marker, () -> write(0, "release"))) {
+                event("avas_nav_legacy_marker_discarded", "previous_marker", dirty,
+                        "status", -10011, "route_closed_confirmed", false);
             }
         } catch (Exception error) {
             failure = error;

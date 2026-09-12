@@ -3,6 +3,7 @@ package com.byd.extend.ui
 import android.content.Context
 import android.content.res.Resources
 import com.byd.extend.AppLanguage
+import com.byd.extend.BuildConfig
 import com.byd.extend.R
 import java.util.Locale
 
@@ -117,7 +118,7 @@ internal class UiStrings @JvmOverloads constructor(
         "Поворотники, камери та інші функції | v%1\$s",
         "Turn signals, cameras and other features | v%1\$s",
         "转向灯、摄像头及其他功能 | v%1\$s",
-        "1.1.0",
+        BuildConfig.VERSION_NAME,
     )
     val tabs get() = listOf(
         text("Інтеграції BYD", "BYD integrations", "BYD 集成"),

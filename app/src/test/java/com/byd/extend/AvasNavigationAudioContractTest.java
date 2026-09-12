@@ -45,7 +45,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(route.contains("POSITION_FID = 0xAA000282"));
         assertTrue(route.contains("write(1, \"prepare\")"));
         assertTrue(route.contains("write(0, \"release\")"));
-        assertTrue(route.contains("status < 0"));
+        assertTrue(source("AvasNavigationRecovery.java").contains("status < 0"));
         assertTrue(route.contains("transact(6, data, reply, 0)"));
         assertFalse(route.contains("setLegacyStreamType"));
         assertFalse(route.contains("MediaPlayer"));
@@ -64,12 +64,32 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(player.contains("AvasWav.scalePcm16"));
         assertTrue(player.contains("currentVolume.getAsInt()"));
         assertTrue(player.contains("new AudioTrack.Builder()"));
-        assertTrue(player.contains("navigationRoute.release(focus)"));
+        assertTrue(player.contains("navigationRoute.release(focus, dirty,"));
         assertTrue(player.contains("setStreamVolume(NAV_STREAM, savedNav, 0)"));
         assertTrue(settings.contains("EXTERIOR_DIRTY = 1"));
         assertTrue(settings.contains("NAVIGATION_DIRTY = 2"));
         assertFalse(player.contains("AudioManager.STREAM_MUSIC"));
         assertFalse(player.contains("MediaPlayer"));
+    }
+
+    @Test public void rejectedNavigationRestoresLocalStateWithoutIssuingRelease() throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
+                player.indexOf("void stop()"));
+        assertTrue(navigation.contains("navigationRoute.prepare(dirty -> settings.putInt("));
+        assertFalse(navigation.contains("AvasShellSettings.NAVIGATION_DIRTY"));
+        String restore = player.substring(player.indexOf("int dirty = 0;"),
+                player.indexOf("private static Exception combine("));
+        assertTrue(restore.contains("AvasNavigationRecovery.requiresRelease(dirty)"));
+        assertTrue(restore.contains("&& dirty != AvasShellSettings.NAVIGATION_REJECTED"));
+        assertTrue(restore.contains("manager.abandonAudioFocusRequest(focus)"));
+        assertTrue(restore.contains("setStreamVolume(NAV_STREAM, savedNav, 0)"));
+        assertTrue(restore.indexOf("if (failure == null)") <
+                restore.indexOf("settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.CLEAN)"));
+        String route = source("AvasNavigationRoute.java");
+        assertTrue(route.indexOf("AvasNavigationRecovery.release(") <
+                route.indexOf("manager.abandonAudioFocusRequest(focus)"));
+        assertTrue(route.contains("\"route_closed_confirmed\", false"));
     }
 
     @Test public void exteriorAndNavigationUseTheirOwnProductionGainPolicies() throws Exception {

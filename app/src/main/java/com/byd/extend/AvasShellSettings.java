@@ -16,6 +16,9 @@ final class AvasShellSettings {
     static final int CLEAN = 0;
     static final int EXTERIOR_DIRTY = 1;
     static final int NAVIGATION_DIRTY = 2;
+    static final int NAVIGATION_PENDING = 3;
+    static final int NAVIGATION_ACTIVE = 4;
+    static final int NAVIGATION_REJECTED = 5;
 
     private final IBinder token = new Binder();
     private final Object provider;
