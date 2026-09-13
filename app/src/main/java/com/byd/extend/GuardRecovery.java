@@ -63,15 +63,21 @@ final class GuardRecovery {
     static boolean startService(Context context, String reason) {
         if (!shouldRecover(context) || LegacySettingsImporter.blocksRuntime(context)) {
             Log.i(TAG, "recovery_gate_blocked reason=" + reason);
+            AvasRecoveryJournal.event(context, "recovery_gate_blocked", "reason", reason);
             return false;
         }
         Log.i(TAG, "recovery_gate_passed reason=" + reason);
+        AvasRecoveryJournal.event(context, "recovery_gate_passed", "reason", reason);
         try {
             CameraHelperService.startPersistent(context, reason);
             Log.i(TAG, "foreground_service_start_accepted reason=" + reason);
+            AvasRecoveryJournal.event(context, "foreground_service_start_accepted",
+                    "reason", reason);
             return true;
         } catch (RuntimeException error) {
             Log.e(TAG, "foreground_service_start_failed reason=" + reason, error);
+            AvasRecoveryJournal.event(context, "foreground_service_start_failed",
+                    "reason", reason, "error", error.toString());
             return false;
         }
     }

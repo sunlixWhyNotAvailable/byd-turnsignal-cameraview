@@ -14,6 +14,7 @@ import android.os.IBinder;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
 import android.widget.Toast;
@@ -195,6 +196,9 @@ public final class CameraHelperService extends Service {
         public void run() {
             if (!helperRuntimeStarted) return;
             GuardRecovery.heartbeat(CameraHelperService.this);
+            CameraHelperMain.HelperBinder activeHelper = helper;
+            if (activeHelper != null) activeHelper.configureAvas();
+            reconcileAvasRecovery(false, "service_heartbeat");
             runtimeHandler.postDelayed(this, 30_000);
         }
     };
@@ -213,6 +217,8 @@ public final class CameraHelperService extends Service {
     private RuntimeLifecycleGate.Queue runtimeQueue;
     private OemCameraVisibilityRuntime oemCameraVisibility;
     private AsyncServiceLog serviceLog;
+    private AvasRecoveryDaemonController avasRecoveryDaemon;
+    private PowerManager.WakeLock avasWakeLock;
     private volatile CameraHelperMain.HelperBinder helper;
     private volatile boolean helperRuntimeStarted;
     private BlindSpotOverlayController overlay;
@@ -225,6 +231,7 @@ public final class CameraHelperService extends Service {
     private boolean foreground;
     private boolean activityVisible;
     private boolean cameraPreviewActive;
+    private boolean avasStartupPermissionAttempted;
     private volatile Boolean weatherAccessibilityTarget;
     private volatile boolean runtimeNeedsReinit;
 
@@ -579,12 +586,24 @@ public final class CameraHelperService extends Service {
             }
         };
         serviceLog = new AsyncServiceLog(this::createLogFile, LOG_FLUSH_DELAY_MS);
+        avasRecoveryDaemon = new AvasRecoveryDaemonController(
+                this, this::lifecycle, owns -> postRuntime(() -> {
+                    CameraHelperMain.HelperBinder activeHelper = helper;
+                    if (activeHelper != null) {
+                        activeHelper.setRecoveryEnabled(
+                                AvasRecoveryPolicy.legacyHelperRecoveryEnabled(
+                                        GuardRecovery.shouldRecover(this), owns));
+                    }
+                }));
         oemCameraVisibility = new OemCameraVisibilityRuntime(
                 getApplicationContext(), runtimeHandler, this::oemVisibilityChanged,
                 this::lifecycle);
         oemCameraVisibility.start();
         activeInstance = this;
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
+                "user_shutdown", GuardRecovery.isUserShutdownActive(this));
+        AvasRecoveryJournal.event(this, "service_recovery_create",
+                "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
         if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
             startForegroundRuntime();
@@ -629,6 +648,8 @@ public final class CameraHelperService extends Service {
         }
         if (ACTION_SHUTDOWN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, true);
+            setAvasWakeLock(false, "explicit_shutdown");
+            avasRecoveryDaemon.reconcile(false, "explicit_shutdown");
             stopRuntime(true);
             stopServiceFromRuntime(command.startId);
             return;
@@ -739,7 +760,9 @@ public final class CameraHelperService extends Service {
         }
         ensureHelperStarted();
         weatherRuntime.start();
-        helper.setRecoveryEnabled(shouldRecover);
+        helper.setRecoveryEnabled(AvasRecoveryPolicy.legacyHelperRecoveryEnabled(
+                shouldRecover, avasRecoveryDaemon != null
+                        && avasRecoveryDaemon.ownsRecovery()));
         helper.applyParkingRadar(anyParkingEnabled());
         if (refreshMusicAfterClose) {
             helper.applyMusic(settings
@@ -790,6 +813,15 @@ public final class CameraHelperService extends Service {
         } else if (ACTION_SETTINGS_RELOADED.equals(action)) {
             reloadSettings(command.fullImport);
         }
+        boolean avasStartupPermissionTrigger = ACTION_START.equals(action)
+                && !avasStartupPermissionAttempted;
+        if (avasStartupPermissionTrigger) avasStartupPermissionAttempted = true;
+        reconcileAvasRecovery(avasStartupPermissionTrigger
+                        || ACTION_ACTIVITY_OPEN.equals(action)
+                        || ACTION_AVAS_CONFIGURE.equals(action)
+                        || (ACTION_AUTO_START_CHANGED.equals(action) && command.enabled)
+                        || (ACTION_SETTINGS_RELOADED.equals(action) && command.fullImport),
+                action == null ? "service_start" : action);
         startHeartbeat();
     }
 
@@ -1054,7 +1086,10 @@ public final class CameraHelperService extends Service {
             ensureHelperStarted();
             CameraHelperMain.HelperBinder activeHelper = helper;
             if (activeHelper != null) {
-                activeHelper.setRecoveryEnabled(GuardRecovery.shouldRecover(this));
+                SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+                activeHelper.setRecoveryEnabled(AvasRecoveryPolicy.legacyHelperRecoveryEnabled(
+                        GuardRecovery.shouldRecover(this), avasRecoveryDaemon != null
+                                && avasRecoveryDaemon.ownsRecovery()));
                 activeHelper.configureAvas();
             }
         });
@@ -1097,6 +1132,13 @@ public final class CameraHelperService extends Service {
         boolean recover = GuardRecovery.shouldRecover(this);
         boolean explicitShutdown = GuardRecovery.isUserShutdownActive(this);
         lifecycle("service_destroy", "recover", recover);
+        setAvasWakeLock(false, "service_teardown");
+        if (avasRecoveryDaemon != null) {
+            if (!avasDaemonRequired(getSharedPreferences("settings", MODE_PRIVATE))) {
+                avasRecoveryDaemon.reconcile(false, "service_teardown");
+            }
+            avasRecoveryDaemon.close();
+        }
         if (oemCameraVisibility != null) oemCameraVisibility.stopForTeardown();
         if (reverseCameras != null) reverseCameras.shutdown();
         if (mirror != null) mirror.shutdown();
@@ -1182,6 +1224,11 @@ public final class CameraHelperService extends Service {
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
+        setAvasWakeLock(false, terminateShells ? "runtime_shutdown" : "runtime_stop");
+        if (avasRecoveryDaemon != null && !avasDaemonRequired(
+                getSharedPreferences("settings", MODE_PRIVATE))) {
+            avasRecoveryDaemon.reconcile(false, "runtime_stop");
+        }
         mainHandler.post(this::stopForegroundRuntime);
         GuardRecovery.schedule(this);
     }
@@ -1213,6 +1260,68 @@ public final class CameraHelperService extends Service {
     private void startHeartbeat() {
         runtimeHandler.removeCallbacks(heartbeat);
         heartbeat.run();
+    }
+
+    private boolean avasDaemonRequired(SharedPreferences settings) {
+        return !LegacySettingsImporter.blocksRuntime(this)
+                && AvasRecoveryPolicy.daemonRequired(
+                GuardRecovery.isAutoStartEnabled(this),
+                GuardRecovery.isUserShutdownActive(this),
+                AvasNotificationAccess.hasEnabledProfiles(settings));
+    }
+
+    private void reconcileAvasRecovery(boolean permissionTrigger, String reason) {
+        SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        boolean anyProfile = AvasNotificationAccess.hasEnabledProfiles(settings);
+        boolean daemonRequired = avasDaemonRequired(settings);
+        boolean wakeRequired = AvasRecoveryPolicy.wakeRequired(
+                helperRuntimeStarted, GuardRecovery.isUserShutdownActive(this), anyProfile);
+        setAvasWakeLock(wakeRequired, reason);
+        if (avasRecoveryDaemon != null) avasRecoveryDaemon.reconcile(daemonRequired, reason);
+        if (permissionTrigger && AvasNotificationAccess.required(settings)) {
+            boolean granted = AvasNotificationAccess.ensureGranted(
+                    this, reason, this::avasRecoveryEvent);
+            lifecycle("avas_notification_access_startup", "reason", reason,
+                    "granted", granted);
+            AvasRecoveryJournal.event(this, "avas_notification_access_startup",
+                    "reason", reason, "granted", granted);
+        }
+    }
+
+    private void avasRecoveryEvent(String kind, Object[] fields) {
+        Object[] safeFields = fields == null ? new Object[0] : fields;
+        lifecycle(kind, safeFields);
+        AvasRecoveryJournal.event(this, kind, safeFields);
+    }
+
+    private void setAvasWakeLock(boolean required, String reason) {
+        try {
+            if (required) {
+                if (avasWakeLock == null) {
+                    PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+                    if (power == null) throw new IllegalStateException("PowerManager unavailable");
+                    avasWakeLock = power.newWakeLock(
+                            PowerManager.PARTIAL_WAKE_LOCK, "com.byd.extend:avas-recovery");
+                    avasWakeLock.setReferenceCounted(false);
+                }
+                if (!avasWakeLock.isHeld()) {
+                    avasWakeLock.acquire();
+                    lifecycle("avas_wake_lock", "held", true, "reason", reason);
+                    AvasRecoveryJournal.event(this, "avas_wake_lock",
+                            "held", true, "reason", reason);
+                }
+            } else if (avasWakeLock != null && avasWakeLock.isHeld()) {
+                avasWakeLock.release();
+                lifecycle("avas_wake_lock", "held", false, "reason", reason);
+                AvasRecoveryJournal.event(this, "avas_wake_lock",
+                        "held", false, "reason", reason);
+            }
+        } catch (Throwable failure) {
+            lifecycle("avas_wake_lock_failed", "required", required,
+                    "reason", reason, "error", failure.toString());
+            AvasRecoveryJournal.event(this, "avas_wake_lock_failed",
+                    "required", required, "reason", reason, "error", failure.toString());
+        }
     }
 
     private void scheduleCameraDiscoveryRetry(long delayMs) {

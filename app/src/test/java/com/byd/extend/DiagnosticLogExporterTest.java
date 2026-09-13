@@ -54,6 +54,28 @@ public final class DiagnosticLogExporterTest {
     }
 
     @Test
+    public void includesEarlyRecoveryAndRotatedDaemonHistoryWithoutArbitraryJsonl() throws Exception {
+        File logs = temporary.newFolder("recovery-history");
+        write(new File(logs, "avas-recovery-journal.jsonl"), "{\"kind\":\"listener_connected\"}\n");
+        write(new File(logs, "avas-recovery-journal.1.jsonl"), "{\"kind\":\"listener_created\"}\n");
+        write(new File(logs, "avas-recovery-private.jsonl"), "not a retained journal\n");
+        DiagnosticLogExporter.Snapshot snapshot = DiagnosticLogExporter.snapshot(logs);
+        assertEquals(2, snapshot.sources.size());
+        File archive = DiagnosticLogExporter.export(
+                temporary.newFolder("cache-recovery-history"), snapshot, identity(),
+                command -> command.contains("/bydextend_avas_keepalive")
+                        ? DiagnosticLogExporter.CommandResult.success("recovery evidence\n") : missing(),
+                1500L);
+        assertEquals("{\"kind\":\"listener_connected\"}\n",
+                readEntry(archive, "logs/avas-recovery-journal.jsonl"));
+        assertEquals("{\"kind\":\"listener_created\"}\n",
+                readEntry(archive, "logs/avas-recovery-journal.1.jsonl"));
+        assertEquals("recovery evidence\n", readEntry(archive, "system/bydextend_avas_keepalive.log"));
+        assertEquals("recovery evidence\n", readEntry(archive, "system/bydextend_avas_keepalive.log.1"));
+        assertEquals("recovery evidence\n", readEntry(archive, "system/bydextend_avas_keepalive_boot.log"));
+    }
+
+    @Test
     public void honorsSnapshotBoundAndDropsOnlyIncompleteFinalJsonlLine() throws Exception {
         File logs = temporary.newFolder("bounded-logs");
         File source = new File(logs, "guard-camera-bounded.jsonl");
@@ -93,7 +115,10 @@ public final class DiagnosticLogExporterTest {
                 "for file in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 3); do printf '\\n--- %s ---\\n' \"$file\"; tail -c 524288 \"$file\" 2>/dev/null; done",
                 "for prop in ro.build.version.release ro.build.version.incremental ro.build.version.security_patch ro.build.id ro.build.display.id ro.product.board ro.board.platform ro.hardware ro.boot.hardware ro.product.cpu.abi ro.product.cpu.abilist; do printf '%s=' \"$prop\"; getprop \"$prop\"; done",
                 "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20",
-                "tail -c 1048576 /data/local/tmp/bydextend_avm.log 2>/dev/null"
+                "tail -c 1048576 /data/local/tmp/bydextend_avm.log 2>/dev/null",
+                "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log 2>/dev/null",
+                "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log.1 2>/dev/null",
+                "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null"
         };
         assertArrayEquals(expected, DiagnosticLogExporter.fixedCommands());
 

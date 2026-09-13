@@ -4379,7 +4379,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
                         android.provider.Settings.canDrawOverlays(this),
                         WeatherRefreshAccessibilityService.isConnected(),
-                        android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls())));
+                        android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls(),
+                        AvasNotificationAccess.isGranted(this))));
     }
 
     static HeaderUiState productionHeader(LocalAdbClient.AccessState.Status access,
@@ -13818,12 +13819,17 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             LocalAdbClient.Result result = LocalAdbClient.authorize(
                     getApplicationContext(), mode, this::record);
+            if (result.ok) {
+                AvasNotificationAccess.ensureGranted(
+                        getApplicationContext(), operation, this::record);
+            }
             mainHandler.post(() -> {
                 if (activityDestroyed) return;
                 adbAuthPending = false;
                 adbAuthMode = null;
                 adbAuthorizationRequested = result.ok;
                 publishAdbOperation(false);
+                refreshProductionHeader();
                 updateControls();
                 advanceStartupAuthorizationFlow();
             });
@@ -14345,6 +14351,17 @@ public final class CameraProbeActivity extends ComponentActivity
                     publishAdbOperation(adbAuthPending);
                 } else if ("adb_auth_result".equals(kind)) {
                     publishAdbOperation(adbAuthPending);
+                    if (json.optBoolean("ok")) {
+                        ipcExecutor.execute(() -> {
+                            AvasNotificationAccess.ensureGranted(getApplicationContext(),
+                                    "adb_authorization_result", this::record);
+                            mainHandler.post(() -> {
+                                if (activityStarted && !activityDestroyed) {
+                                    refreshProductionHeader();
+                                }
+                            });
+                        });
+                    }
                 } else if ("helper_launch".equals(kind) && !json.optBoolean("ok")) {
                     telemetryReady = false;
                     manualGearPark = false;

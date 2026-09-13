@@ -2627,7 +2627,7 @@ final class TurnSignalController {
                 + "if [ -n \"$(pidof " + process + " 2>/dev/null)\" ]; then "
                 + "echo helper_stop_timeout; false; else "
                 + "rm -f " + TurnSignalShellProtocol.LOCK_PATH + "; "
-                + "CLASSPATH=" + apk
+                + "trap '' HUP; CLASSPATH=" + apk
                 + " setsid app_process /system/bin --nice-name=" + process + " "
                 + TurnSignalShellProtocol.HELPER_CLASS + " " + appUid + " " + apk + " "
                 + versionCode + " </dev/null >" + TurnSignalShellProtocol.LOG_PATH

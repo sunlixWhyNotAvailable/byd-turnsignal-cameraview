@@ -29,7 +29,6 @@ import java.util.function.IntConsumer;
 final class AvasAudioPlayer implements AutoCloseable {
     private static final int NAV_STREAM = 15;
     private static final int REQUESTED_ROUTE_FLAGS = 0x20000;
-    private static final int NAV_SILENCE_MILLIS = 0;
     private final AudioManager manager;
     private final AvasShellSettings settings;
     private final AvasExteriorRoute route;
@@ -38,6 +37,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     private final AtomicLong generation = new AtomicLong();
     private final Object trackLock = new Object();
     private AudioTrack activeTrack;
+    private AvasFocusMaintainer activeFocusMaintainer;
 
     AvasAudioPlayer(Context context, Consumer<JSONObject> log) throws Exception {
         this.log = log;
@@ -65,19 +65,18 @@ final class AvasAudioPlayer implements AutoCloseable {
         int initialVolume = clamp(volume);
         long ticket = generation.incrementAndGet();
         AudioFocusRequest focus = null;
+        AvasFocusMaintainer focusMaintainer = null;
         AudioTrack output = null;
         ExteriorGain exteriorGain = null;
         Exception playbackFailure = null;
         long framesWritten = 0;
-        long silenceFrames = AvasPlaybackPlan.silenceFrames(header.sampleRate,
-                AvasPlaybackPlan.silenceMillis(kind, diagnostics.profile));
         long fileFrames = 0;
         SessionDiagnostics session = new SessionDiagnostics(diagnostics);
         try {
             restore(null);
             if (cancelled(ticket, cancelled)) return;
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
-                    SystemClock.elapsedRealtime(), "silence_planned_frames", silenceFrames);
+                    SystemClock.elapsedRealtime(), "silence_planned_frames", 0);
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
             IntConsumer focusCallback = AvasAudioDiagnostics.bind(diagnostics,
@@ -90,7 +89,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                     .setOnAudioFocusChangeListener(focusCallback::accept,
                             new Handler(Looper.getMainLooper())).build();
 
-            settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED);
+            settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED);
             int savedVolume = manager.getStreamVolume(NAV_STREAM);
             int savedMute = manager.isStreamMute(NAV_STREAM) ? 1 : 0;
             settings.putInt(AvasShellSettings.SAVED_NAV, savedVolume);
@@ -101,20 +100,9 @@ final class AvasAudioPlayer implements AutoCloseable {
             route.naviFocus(true, diagnostics);
             int granted = manager.requestAudioFocus(focus);
             event(diagnostics, "avas_focus_request", "result", granted);
-            int preflightFocus = manager.requestAudioFocus(focus);
-            event(diagnostics, "avas_focus_request", "result", preflightFocus,
-                    "phase", "pre_route_reassert");
             Thread.sleep(80); // Proven exterior NAV preflight, not a UI/startup delay.
             if (cancelled(ticket, cancelled)) return;
             route.prepare(focus, diagnostics, dirty -> settings.putInt(AvasShellSettings.DIRTY, dirty));
-            if (cancelled(ticket, cancelled)) return;
-
-            // CHANNEL0 keeps in-cabin NAV quiet while the exterior route carries PCM.
-            // Do not mix in the old manual New23 cap-to-1/unmute sequence.
-            route.mute(true, diagnostics);
-            event(diagnostics, "avas_mute_volume", "phase", "channel0_playback",
-                    "saved_volume", savedVolume, "actual_volume", safeStreamVolume(),
-                    "requested_muted", true, "muted", safeStreamMute());
             if (cancelled(ticket, cancelled)) return;
 
             int channelMask = header.channels == 1
@@ -137,32 +125,36 @@ final class AvasAudioPlayer implements AutoCloseable {
             synchronized (trackLock) {
                 if (ticket != generation.get()) return;
                 activeTrack = output;
+                AudioFocusRequest maintainedFocus = focus;
+                focusMaintainer = new AvasFocusMaintainer(
+                        () -> manager.requestAudioFocus(maintainedFocus),
+                        AudioManager.AUDIOFOCUS_REQUEST_GRANTED,
+                        report -> focusReport(diagnostics, report));
+                activeFocusMaintainer = focusMaintainer;
             }
             session.bind(output);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
-            if (cancelled(ticket, cancelled)) return;
-            output.play();
+            synchronized (trackLock) {
+                if (cancelled(ticket, cancelled)) return;
+                output.play();
+                focusMaintainer.start();
+                manager.setStreamVolume(NAV_STREAM, 1, 0);
+                route.mute(false, diagnostics);
+                if (manager.getStreamVolume(NAV_STREAM) != 1) {
+                    throw new IllegalStateException("Exterior NAV cap was not applied");
+                }
+            }
             event(diagnostics, "avas_track_state", "phase", "played", "state",
                     safeTrackState(output), "play_state", safePlayState(output));
+            event(diagnostics, "avas_mute_volume", "phase", "exterior_playback",
+                    "saved_volume", savedVolume, "requested_volume", 1,
+                    "actual_volume", safeStreamVolume(), "requested_muted", false,
+                    "muted", safeStreamMute());
             event(diagnostics, "avas_play_begin", "file", wav.getName(), "volume", initialVolume,
                     "sampleRate", header.sampleRate, "channels", header.channels,
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags(),
                     "attributes", attributes.toString());
-
-            long silenceWritten = writeSilence(output, bufferBytes, header, silenceFrames, ticket,
-                    cancelled, session);
-            framesWritten += silenceWritten;
-            event(diagnostics, "avas_silence_frames", "planned", silenceFrames,
-                    "written", silenceWritten, "cancelled", cancelled(ticket, cancelled));
-            if (!AvasPlaybackPlan.maySubmitFile(silenceFrames, silenceWritten,
-                    cancelled(ticket, cancelled))) {
-                event(diagnostics, "avas_play_end", "interrupted", true,
-                        "framesWritten", framesWritten, "silenceFrames", silenceWritten,
-                        "fileFrames", 0, "playbackHead",
-                        safePlaybackHead(output));
-                return;
-            }
 
             byte[] pcm = new byte[align(Math.max(bufferBytes, 4096), header.frameSize)];
             try (FileInputStream input = new FileInputStream(wav)) {
@@ -182,13 +174,14 @@ final class AvasAudioPlayer implements AutoCloseable {
             }
             drain(output, framesWritten, ticket, cancelled, session, exteriorGain);
             event(diagnostics, "avas_play_end", "interrupted", cancelled(ticket, cancelled),
-                    "framesWritten", framesWritten, "silenceFrames", silenceWritten,
+                    "framesWritten", framesWritten, "silenceFrames", 0,
                     "fileFrames", fileFrames,
                     "playbackHead", safePlaybackHead(output));
         } catch (Exception failure) {
             playbackFailure = failure;
             throw failure;
         } finally {
+            stopFocusMaintainer(focusMaintainer);
             synchronized (trackLock) {
                 if (activeTrack == output) activeTrack = null;
             }
@@ -216,8 +209,6 @@ final class AvasAudioPlayer implements AutoCloseable {
         AudioTrack output = null;
         Exception playbackFailure = null;
         long framesWritten = 0;
-        long silenceFrames = AvasPlaybackPlan.silenceFrames(header.sampleRate,
-                NAV_SILENCE_MILLIS);
         long fileFrames = 0;
         SessionDiagnostics session = new SessionDiagnostics(diagnostics);
         try {
@@ -225,7 +216,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (cancelled(ticket, cancelled)) return;
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
                     SystemClock.elapsedRealtime(), "route", "navigation",
-                    "silence_planned_frames", silenceFrames);
+                    "silence_planned_frames", 0);
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
             IntConsumer focusCallback = AvasAudioDiagnostics.bind(diagnostics,
@@ -280,20 +271,6 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "sampleRate", header.sampleRate, "channels", header.channels,
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags());
 
-            long silenceWritten = writeSilence(output, bufferBytes, header, silenceFrames, ticket,
-                    cancelled, session);
-            framesWritten += silenceWritten;
-            event(diagnostics, "avas_silence_frames", "planned", silenceFrames,
-                    "written", silenceWritten, "cancelled", cancelled(ticket, cancelled));
-            if (!AvasPlaybackPlan.maySubmitFile(silenceFrames, silenceWritten,
-                    cancelled(ticket, cancelled))) {
-                event(diagnostics, "avas_play_end", "route", "navigation", "interrupted", true,
-                        "framesWritten", framesWritten, "silenceFrames", silenceWritten,
-                        "fileFrames", 0, "playbackHead",
-                        safePlaybackHead(output));
-                return;
-            }
-
             byte[] pcm = new byte[align(Math.max(bufferBytes, 4096), header.frameSize)];
             byte[] scaled = new byte[pcm.length];
             try (FileInputStream input = new FileInputStream(wav)) {
@@ -314,7 +291,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             drain(output, framesWritten, ticket, cancelled, session);
             event(diagnostics, "avas_play_end", "route", "navigation",
                     "interrupted", cancelled(ticket, cancelled), "framesWritten", framesWritten,
-                    "silenceFrames", silenceWritten, "fileFrames", fileFrames,
+                    "silenceFrames", 0, "fileFrames", fileFrames,
                     "playbackHead", safePlaybackHead(output));
         } catch (Exception failure) {
             playbackFailure = failure;
@@ -337,6 +314,12 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     void stop() {
         generation.incrementAndGet();
+        AvasFocusMaintainer focusMaintainer;
+        synchronized (trackLock) {
+            focusMaintainer = activeFocusMaintainer;
+            activeFocusMaintainer = null;
+        }
+        if (focusMaintainer != null) focusMaintainer.close();
         synchronized (trackLock) {
             if (activeTrack != null) {
                 try {
@@ -397,22 +380,6 @@ final class AvasAudioPlayer implements AutoCloseable {
         return offset;
     }
 
-    private long writeSilence(AudioTrack output, int bufferBytes, AvasWav.Header header,
-            long plannedFrames, long ticket, BooleanSupplier externalCancellation,
-            SessionDiagnostics diagnostics) throws Exception {
-        byte[] silence = AvasPlaybackPlan.zeroPcm(
-                align(Math.max(bufferBytes, 4096), header.frameSize));
-        byte[] scaled = new byte[silence.length];
-        int maximumChunkFrames = silence.length / header.frameSize;
-        return AvasPlaybackPlan.writeSilence(plannedFrames, maximumChunkFrames,
-                () -> cancelled(ticket, externalCancellation), wantedFrames -> {
-            int wanted = Math.toIntExact(wantedFrames * header.frameSize);
-            int count = write(output, silence, scaled, wanted, header.frameSize, ticket,
-                    externalCancellation, null, 0, null, "silence", diagnostics);
-            return count / header.frameSize;
-        });
-    }
-
     private void drain(AudioTrack output, long framesWritten, long ticket,
             BooleanSupplier externalCancellation, SessionDiagnostics diagnostics) throws Exception {
         drain(output, framesWritten, ticket, externalCancellation, diagnostics, null);
@@ -438,6 +405,21 @@ final class AvasAudioPlayer implements AutoCloseable {
         restore(focus, null);
     }
 
+    private void stopFocusMaintainer(AvasFocusMaintainer owned) {
+        if (owned == null) return;
+        synchronized (trackLock) {
+            if (activeFocusMaintainer == owned) activeFocusMaintainer = null;
+        }
+        owned.close();
+    }
+
+    private void focusReport(AvasAudioDiagnostics.Context diagnostics,
+            AvasFocusMaintainer.Report report) {
+        event(diagnostics, "avas_focus_maintenance", "phase", report.phase,
+                "result", report.result, "successes", report.successes,
+                "failures", report.failures, "error", report.error);
+    }
+
     private void restore(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics)
             throws Exception {
         Exception failure = null;
@@ -450,8 +432,9 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
         if (dirty == AvasShellSettings.EXTERIOR_DIRTY
                 || dirty == AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY
-                || dirty == AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED
-                || dirty == AvasShellSettings.EXTERIOR_CHANNEL0_SHARED) {
+                || dirty == AvasShellSettings.EXTERIOR_DEVICE3_DIRTY
+                || dirty == AvasShellSettings.EXTERIOR_UNACQUIRED
+                || dirty == AvasShellSettings.EXTERIOR_SHARED) {
             try {
                 route.release(focus, diagnostics, dirty);
             } catch (Exception routeFailure) {

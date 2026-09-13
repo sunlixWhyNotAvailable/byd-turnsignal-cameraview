@@ -8,12 +8,15 @@ final class RequiredPermissions {
     final boolean overlay;
     final boolean accessibility;
     final boolean install;
+    final boolean notificationAccess;
 
-    private RequiredPermissions(boolean camera, boolean overlay, boolean accessibility, boolean install) {
+    private RequiredPermissions(boolean camera, boolean overlay, boolean accessibility,
+            boolean install, boolean notificationAccess) {
         this.camera = camera;
         this.overlay = overlay;
         this.accessibility = accessibility;
         this.install = install;
+        this.notificationAccess = notificationAccess;
     }
 
     static RequiredPermissions read(SharedPreferences preferences, boolean previewRequested,
@@ -35,13 +38,21 @@ final class RequiredPermissions {
                     || RearviewMirrorSettings.frontIntegrated(preferences)
                         && assigned(preferences, CameraButtonBindings.Action.MirrorSource));
         boolean hint = preferences.getBoolean(UpdateHintRuntime.PREF_ENABLED, true);
-        return new RequiredPermissions(camera, mirror || hint, accessibility, installRequested);
+        return new RequiredPermissions(camera, mirror || hint, accessibility, installRequested,
+                AvasNotificationAccess.required(preferences));
     }
 
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,
             boolean accessibilityConnected, boolean installGranted) {
+        return satisfied(cameraGranted, overlayGranted, accessibilityConnected, installGranted, true);
+    }
+
+    boolean satisfied(boolean cameraGranted, boolean overlayGranted,
+            boolean accessibilityConnected, boolean installGranted,
+            boolean notificationAccessGranted) {
         return (!camera || cameraGranted) && (!overlay || overlayGranted)
-                && (!accessibility || accessibilityConnected) && (!install || installGranted);
+                && (!accessibility || accessibilityConnected) && (!install || installGranted)
+                && (!notificationAccess || notificationAccessGranted);
     }
 
     private static boolean assigned(SharedPreferences preferences, CameraButtonBindings.Action action) {

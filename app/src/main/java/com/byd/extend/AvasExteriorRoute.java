@@ -14,10 +14,10 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.function.Consumer;
 
-/** Fixed AutoTark CHANNEL0 exterior route; no caller-selected vehicle operations. */
+/** Fixed device-3 exterior route; no caller-selected vehicle operations. */
 final class AvasExteriorRoute {
     private static final int NO_PRIMARY_DEVICE = -1;
-    private static final int LEGACY_EXTERIOR_DEVICE = 3;
+    static final int EXTERIOR_DEVICE = 3;
     private static final int CHANNEL0_DEVICE = 1000;
     private static final int POSITION_FID = 0xAA000282;
     private static final int AUX_FID = 0x94E88A89;
@@ -28,6 +28,10 @@ final class AvasExteriorRoute {
     private final AudioManager manager;
     private final Consumer<JSONObject> log;
     private IBinder autoservice;
+    private boolean naviFocusResolved;
+    private boolean naviFocusUnavailableLogged;
+    private Method requestNaviFocus;
+    private Method abandonNaviFocus;
 
     AvasExteriorRoute(Context context, Consumer<JSONObject> log) {
         this.context = context;
@@ -38,7 +42,16 @@ final class AvasExteriorRoute {
     void naviFocus(boolean on) { naviFocus(on, null); }
 
     void naviFocus(boolean on, AvasAudioDiagnostics.Context diagnostics) {
-        call(diagnostics, manager, on ? "requestAudioNaviFocus" : "abandonAudioNaviFocus");
+        resolveNaviFocus(diagnostics);
+        Method method = on ? requestNaviFocus : abandonNaviFocus;
+        if (method == null) return;
+        try {
+            Object result = method.invoke(manager);
+            event(diagnostics, "avas_route_call", "class", manager.getClass().getName(),
+                    "method", method.getName(), "args", "[]", "result", String.valueOf(result));
+        } catch (Exception failure) {
+            unavailable(diagnostics, manager.getClass().getName() + "." + method.getName(), failure);
+        }
     }
 
     void mute(boolean on) throws Exception { mute(on, null); }
@@ -54,7 +67,7 @@ final class AvasExteriorRoute {
             AvasNavigationRecovery.Marker marker)
             throws Exception {
         boolean primary = acquirePrimary(marker,
-                () -> tryWrite(CHANNEL0_DEVICE, POSITION_FID, 1, "prepare", diagnostics));
+                () -> tryWrite(EXTERIOR_DEVICE, POSITION_FID, 1, "prepare", diagnostics));
         tryWrite(CHANNEL0_DEVICE, AUX_FID, 1, "prepare_aux", diagnostics);
         boolean optional = exteriorPath(true, diagnostics);
         naviFocus(true, diagnostics);
@@ -71,11 +84,18 @@ final class AvasExteriorRoute {
 
     static boolean acquirePrimary(AvasNavigationRecovery.Marker marker,
             AvasNavigationRecovery.Command command) throws Exception {
-        marker.write(AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY);
-        int status = writePrimary(command);
+        marker.write(AvasShellSettings.EXTERIOR_DEVICE3_DIRTY);
+        int status;
+        try {
+            status = command.run();
+        } catch (InterruptedException interrupted) {
+            throw interrupted;
+        } catch (Exception missingReply) {
+            status = Integer.MIN_VALUE;
+        }
         if (status < 0 && status != Integer.MIN_VALUE) {
-            // Both primary replies rejected the request, but shared SDK setup still follows.
-            marker.write(AvasShellSettings.EXTERIOR_CHANNEL0_SHARED);
+            // Definite rejection owns only the shared preparation that still follows.
+            marker.write(AvasShellSettings.EXTERIOR_SHARED);
         }
         return status >= 0;
     }
@@ -83,7 +103,7 @@ final class AvasExteriorRoute {
     static int writePrimary(AvasNavigationRecovery.Command command) throws Exception {
         boolean uncertain = false;
         int status = Integer.MIN_VALUE;
-        // AutoTark's profile write falls back once to the identical fixed CHANNEL0 write.
+        // Retain the existing single retry of the identical fixed primary command.
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
                 status = command.run();
@@ -99,8 +119,37 @@ final class AvasExteriorRoute {
     }
 
     static boolean routeAccepted(boolean primary, boolean sdk, boolean focus) {
-        // The selected controller-series23 reference accepts any of these existing paths.
-        return primary || sdk || focus;
+        // The fixed autoservice route is mandatory; SDK/focus cannot substitute for it.
+        return primary;
+    }
+
+    private synchronized void resolveNaviFocus(AvasAudioDiagnostics.Context diagnostics) {
+        if (naviFocusResolved) return;
+        naviFocusResolved = true;
+        requestNaviFocus = findMethod(manager, "requestAudioNaviFocus");
+        abandonNaviFocus = findMethod(manager, "abandonAudioNaviFocus");
+        if (requestNaviFocus == null || abandonNaviFocus == null) {
+            requestNaviFocus = null;
+            abandonNaviFocus = null;
+            if (!naviFocusUnavailableLogged) {
+                naviFocusUnavailableLogged = true;
+                event(diagnostics, "avas_route_call_unavailable", "operation",
+                        "AudioManager navigation focus", "error", "method absent");
+            }
+        }
+    }
+
+    private static Method findMethod(Object target, String name) {
+        if (target == null) return null;
+        for (Class<?> type = target.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                Method method = type.getDeclaredMethod(name);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException | SecurityException ignored) {
+            }
+        }
+        return null;
     }
 
     void release(AudioFocusRequest focus, AvasAudioDiagnostics.Context diagnostics, int dirty)
@@ -111,6 +160,7 @@ final class AvasExteriorRoute {
         if (primaryDevice != NO_PRIMARY_DEVICE) {
             try {
                 int status = dirty == AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY
+                        || dirty == AvasShellSettings.EXTERIOR_DEVICE3_DIRTY
                         ? writePrimary(() -> tryWrite(primaryDevice, POSITION_FID, 0,
                                 "release", diagnostics))
                         : write(primaryDevice, POSITION_FID, 0, "release", diagnostics);
@@ -121,7 +171,7 @@ final class AvasExteriorRoute {
                 failure = error;
             }
         }
-        if (dirty != AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED) {
+        if (dirty != AvasShellSettings.EXTERIOR_UNACQUIRED) {
             tryWrite(CHANNEL0_DEVICE, AUX_FID, 0, "release_aux", diagnostics);
             interrupted |= sleep(180);
             exteriorPath(false, diagnostics);
@@ -134,7 +184,7 @@ final class AvasExteriorRoute {
             if (failure == null) failure = error;
             else failure.addSuppressed(error);
         }
-        if (dirty != AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED) {
+        if (dirty != AvasShellSettings.EXTERIOR_UNACQUIRED) {
             interrupted |= sleep(800);
         }
         if (interrupted) {
@@ -147,10 +197,11 @@ final class AvasExteriorRoute {
     }
 
     static int releasePrimaryDevice(int dirty) {
-        if (dirty == AvasShellSettings.EXTERIOR_DIRTY) return LEGACY_EXTERIOR_DEVICE;
+        if (dirty == AvasShellSettings.EXTERIOR_DIRTY
+                || dirty == AvasShellSettings.EXTERIOR_DEVICE3_DIRTY) return EXTERIOR_DEVICE;
         if (dirty == AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY) return CHANNEL0_DEVICE;
-        if (dirty == AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED
-                || dirty == AvasShellSettings.EXTERIOR_CHANNEL0_SHARED) return NO_PRIMARY_DEVICE;
+        if (dirty == AvasShellSettings.EXTERIOR_UNACQUIRED
+                || dirty == AvasShellSettings.EXTERIOR_SHARED) return NO_PRIMARY_DEVICE;
         throw new IllegalArgumentException("Invalid exterior route marker " + dirty);
     }
 

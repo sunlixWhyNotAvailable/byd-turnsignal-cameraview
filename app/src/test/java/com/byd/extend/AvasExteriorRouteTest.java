@@ -18,18 +18,18 @@ public final class AvasExteriorRouteTest {
             order.add("command");
             return 1;
         }));
-        assertEquals(List.of("marker:6", "command"), order);
+        assertEquals(List.of("marker:9", "command"), order);
     }
 
-    @Test public void rejectedPrimaryStillAllowsSharedSetupAfterOneIdenticalRetry() throws Exception {
+    @Test public void rejectedPrimaryUsesOneAttemptAndLeavesOnlySharedOwnership() throws Exception {
         List<Integer> markers = new ArrayList<>();
         AtomicInteger calls = new AtomicInteger();
         assertFalse(AvasExteriorRoute.acquirePrimary(markers::add, () -> {
             calls.incrementAndGet();
             return -10011;
         }));
-        assertEquals(2, calls.get());
-        assertEquals(List.of(6, 8), markers);
+        assertEquals(1, calls.get());
+        assertEquals(List.of(9, 8), markers);
         assertEquals(-1, AvasExteriorRoute.releasePrimaryDevice(markers.get(1)));
     }
 
@@ -40,18 +40,18 @@ public final class AvasExteriorRouteTest {
                     calls.incrementAndGet();
                     throw new IllegalStateException("missing Binder reply");
                 }));
-        assertEquals(2, calls.get());
-        assertEquals(List.of(6), markers);
-        assertEquals(1000, AvasExteriorRoute.releasePrimaryDevice(markers.get(0)));
+        assertEquals(1, calls.get());
+        assertEquals(List.of(9), markers);
+        assertEquals(3, AvasExteriorRoute.releasePrimaryDevice(markers.get(0)));
     }
 
-    @Test public void successfulRetryKeepsPrimaryOwnership() throws Exception {
+    @Test public void rejectedActivationIsNotRetried() throws Exception {
         List<Integer> markers = new ArrayList<>();
         AtomicInteger calls = new AtomicInteger();
-        assertTrue(AvasExteriorRoute.acquirePrimary(markers::add,
+        assertFalse(AvasExteriorRoute.acquirePrimary(markers::add,
                 () -> calls.getAndIncrement() == 0 ? -10011 : 1));
-        assertEquals(2, calls.get());
-        assertEquals(List.of(6), markers);
+        assertEquals(1, calls.get());
+        assertEquals(List.of(9, 8), markers);
     }
 
     @Test public void negativeReplyCannotEraseAnEarlierUnknownOutcome() throws Exception {
@@ -59,7 +59,7 @@ public final class AvasExteriorRouteTest {
         AtomicInteger calls = new AtomicInteger();
         assertFalse(AvasExteriorRoute.acquirePrimary(markers::add,
                 () -> calls.getAndIncrement() == 0 ? Integer.MIN_VALUE : -10011));
-        assertEquals(List.of(6), markers);
+        assertEquals(List.of(9), markers);
     }
 
     @Test public void cancellationDoesNotRetryOrReleaseUnknownOwnership() {
@@ -71,12 +71,12 @@ public final class AvasExteriorRouteTest {
                     throw new InterruptedException();
                 }));
         assertEquals(1, calls.get());
-        assertEquals(List.of(6), markers);
+        assertEquals(List.of(9), markers);
     }
 
-    @Test public void series23AcceptsAnyExistingRouteOrFocusAndRejectsOnlyAllFailures() {
+    @Test public void primaryAdmissionIsMandatoryRegardlessOfSdkOrFocus() {
         for (int bits = 0; bits < 8; bits++) {
-            assertEquals(bits != 0, AvasExteriorRoute.routeAccepted(
+            assertEquals((bits & 1) != 0, AvasExteriorRoute.routeAccepted(
                     (bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0));
         }
     }
@@ -89,16 +89,19 @@ public final class AvasExteriorRouteTest {
     }
 
     @Test public void releaseMarkerSelectsOnlyItsFixedPrimaryRoute() {
+        assertEquals(3, AvasExteriorRoute.EXTERIOR_DEVICE);
         assertEquals(6, AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY);
-        assertEquals(7, AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED);
-        assertEquals(8, AvasShellSettings.EXTERIOR_CHANNEL0_SHARED);
+        assertEquals(7, AvasShellSettings.EXTERIOR_UNACQUIRED);
+        assertEquals(8, AvasShellSettings.EXTERIOR_SHARED);
+        assertEquals(9, AvasShellSettings.EXTERIOR_DEVICE3_DIRTY);
         assertEquals(3, AvasExteriorRoute.releasePrimaryDevice(AvasShellSettings.EXTERIOR_DIRTY));
+        assertEquals(3, AvasExteriorRoute.releasePrimaryDevice(AvasShellSettings.EXTERIOR_DEVICE3_DIRTY));
         assertEquals(1000, AvasExteriorRoute.releasePrimaryDevice(
                 AvasShellSettings.EXTERIOR_CHANNEL0_DIRTY));
         assertEquals(-1, AvasExteriorRoute.releasePrimaryDevice(
-                AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED));
+                AvasShellSettings.EXTERIOR_UNACQUIRED));
         assertEquals(-1, AvasExteriorRoute.releasePrimaryDevice(
-                AvasShellSettings.EXTERIOR_CHANNEL0_SHARED));
+                AvasShellSettings.EXTERIOR_SHARED));
         assertThrows(IllegalArgumentException.class,
                 () -> AvasExteriorRoute.releasePrimaryDevice(AvasShellSettings.CLEAN));
     }

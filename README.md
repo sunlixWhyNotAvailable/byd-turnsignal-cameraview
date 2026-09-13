@@ -7,7 +7,7 @@
 
 ## Project status
 
-Current source target: `1.2.0` (version code `102`), with Ukrainian, English and Simplified Chinese
+Current source target: `1.2.1` (version code `103`), with Ukrainian, English and Simplified Chinese
 interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
@@ -216,14 +216,32 @@ the file and vehicle audio path; the effect target is not a measured speaker-lev
 The existing shell helper owns playback so losing the application process does not itself
 destroy the player. A helper restart starts from current telemetry without replaying old events.
 Explicit Shutdown stops playback and automatic recovery until BYD Extend is opened again.
-The exterior route follows the automatic CHANNEL0 helper reference, retaining streamed PCM
-without extra silent audio or longer preparation waits. Its controller-series23 path retries a
-rejected primary command once, then also evaluates the existing SDK path and audio focus.
-Definite primary rejection still cleans up shared setup; an uncertain primary result retains
-primary teardown ownership. Legacy New23 cleanup is preserved for an interrupted session from
-an older build. The combined Production
-path and recovery after kernel reboot still require vehicle validation; compatibility with other
-firmware is not established. Configure and audition at low volume while parked. AVAS does not
+The exterior route uses device3 and the complete selected file without an added silent prefix;
+internal note audition also has no added silence. The existing80ms OEM preparation remains.
+NAV volume and mute are saved, NAV is muted during preparation, then volume1 and unmute are
+applied for exterior playback. Cleanup restores the original values. Transient-exclusive focus
+is requested again approximately every120ms only while an exterior sound is playing, including
+buffer drain, and released afterward; simultaneous navigation speech is not guaranteed.
+Main-route rejection is not treated as success merely because an optional SDK or audio-focus
+request succeeded. Partial preparation and interrupted older device3/CHANNEL0 sessions retain
+their matching cleanup. Saved user settings are not reset.
+
+With Auto-start and any automatic AVAS profile enabled, notification-listener access is required
+for early recovery. The application provisions its own listener through already authorized local
+ADB and verifies access locally; the Permissions indicator does not need ADB for that readback.
+Notification contents are not read or recorded. Listener callbacks, a separate shell keepalive
+and the existing service/alarm restore the runtime without waiting for the screen to turn on.
+Automatic recovery still respects Auto-start, explicit Shutdown and migration gates.
+
+While the runtime is active and an automatic AVAS profile is enabled, it holds a partial wake
+lock even with the screen or ignition off. Disabling all profiles, explicit Shutdown or service
+teardown releases it. This may increase parked power consumption; the additional cost has not
+been measured. A wake lock does not survive kernel reboot: the recovery chain must restart the
+application and shell processes. Local ADB must still be available for a cold helper launch;
+this feature does not itself reopen a disabled ADB daemon.
+
+The combined Production path and recovery after kernel reboot still require vehicle validation;
+compatibility with other firmware is not established. Configure and audition at low volume while parked. AVAS does not
 replace the vehicle's stock pedestrian-warning sounds or silently fall back to a cabin speaker.
 
 ## Sharing diagnostics
@@ -234,6 +252,10 @@ partial archive. It supports individual files up to 2 GiB and a total source pay
 missing or inaccessible optional files are reported in the package instead of stopping the export.
 Individual text captures remain limited to 16 MiB. Data is streamed rather than held in RAM;
 temporary files and ZIP overhead can require additional disk space beyond the source-data budget.
+
+Diagnostic archives also retain early AVAS listener/recovery events and current/previous shell
+keepalive journals. The full system Logcat is still captured as a snapshot at export time,
+not recorded continuously in the background by this feature.
 
 ## Compatibility and requirements
 

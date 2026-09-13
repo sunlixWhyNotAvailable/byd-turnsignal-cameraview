@@ -349,6 +349,14 @@ public final class ActivityCameraLifecycleTest {
         header = CameraProbeActivity.productionHeader(LocalAdbClient.AccessState.Status.UNKNOWN, true, true);
         assertEquals(com.byd.extend.ui.StatusTone.Neutral, header.getAdb().getTone());
         assertEquals(com.byd.extend.ui.StatusTone.Ok, header.getLocation().getTone());
+        header = CameraProbeActivity.productionHeader(
+                LocalAdbClient.AccessState.Status.OK, false, true, false);
+        assertEquals(com.byd.extend.ui.StatusTone.Ok, header.getAdb().getTone());
+        assertEquals(com.byd.extend.ui.StatusTone.Error, header.getPermissions().getTone());
+        header = CameraProbeActivity.productionHeader(
+                LocalAdbClient.AccessState.Status.ERROR, false, true, true);
+        assertEquals(com.byd.extend.ui.StatusTone.Error, header.getAdb().getTone());
+        assertEquals(com.byd.extend.ui.StatusTone.Ok, header.getPermissions().getTone());
     }
 
     @Test

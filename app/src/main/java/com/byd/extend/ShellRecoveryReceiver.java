@@ -15,7 +15,10 @@ public final class ShellRecoveryReceiver extends BroadcastReceiver {
             return;
         }
         Log.i(TAG, "recovery_receiver_entered");
+        AvasRecoveryJournal.event(context, "shell_recovery_receiver_entered");
         boolean accepted = GuardRecovery.startService(context, "shell_helper_wake");
         Log.i(TAG, "recovery_receiver_complete accepted=" + accepted);
+        AvasRecoveryJournal.event(context, "shell_recovery_receiver_complete",
+                "accepted", accepted);
     }
 }

@@ -962,7 +962,7 @@ public final class TurnSignalShellMain {
     }
 
     /** Gives only AVAS a real shell-package attribution and shell-owned AudioManager. */
-    private static Context avasShellContext(Context system) throws Exception {
+    static Context avasShellContext(Context system) throws Exception {
         Class<?> threadClass = Class.forName("android.app.ActivityThread");
         Object thread = threadClass.getMethod("currentActivityThread").invoke(null);
         if (thread == null) thread = threadClass.getMethod("systemMain").invoke(null);
@@ -976,7 +976,7 @@ public final class TurnSignalShellMain {
         return (Context) create.invoke(null, thread, packageInfo.get(shellPackage));
     }
 
-    private static Context systemContext() throws Exception {
+    static Context systemContext() throws Exception {
         Class<?> type = Class.forName("android.app.ActivityThread");
         Object thread = type.getMethod("currentActivityThread").invoke(null);
         if (thread == null) thread = type.getMethod("systemMain").invoke(null);

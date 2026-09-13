@@ -21,27 +21,22 @@ public final class AvasPlaybackPlanTest {
         assertEquals(2800, AvasPlaybackPlan.exteriorTargetGainMb(101));
     }
 
-    @Test public void automaticPowerOnAndNavigationSilenceAreDisabled() {
+    @Test public void everyExteriorAndNavigationRequestHasNoInsertedSilence() {
         for (int request = 0; request < 3; request++) {
             assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                    AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "power_on"));
+                    AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR));
+            assertEquals(0, AvasPlaybackPlan.silenceMillis(
+                    AvasPlaybackQueue.Kind.MANUAL_EXTERIOR));
+            assertEquals(0, AvasPlaybackPlan.silenceMillis(AvasPlaybackQueue.Kind.AUDITION_NAV));
         }
-        assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                AvasPlaybackQueue.Kind.MANUAL_EXTERIOR, "power_on"));
-        assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "power_off"));
-        assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR, "lock"));
-        assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                AvasPlaybackQueue.Kind.AUDITION_NAV, "power_on"));
     }
 
     @Test public void monoAndStereoSilenceUsesWavRateAndWholeFrames() {
         assertEquals(24_000, AvasPlaybackPlan.silenceFrames(48_000, 500));
         assertEquals(48_000, AvasPlaybackPlan.silenceBytes(48_000, 2, 500));
         assertEquals(96_000, AvasPlaybackPlan.silenceBytes(48_000, 4, 500));
-        assertEquals(18_522, AvasPlaybackPlan.silenceFrames(44_100, 420));
-        assertEquals(74_088, AvasPlaybackPlan.silenceBytes(44_100, 4, 420));
+        assertEquals(22_050, AvasPlaybackPlan.silenceFrames(44_100, 500));
+        assertEquals(88_200, AvasPlaybackPlan.silenceBytes(44_100, 4, 500));
     }
 
     @Test public void cancellationOrPartialZerosPreventFileSubmission() {

@@ -59,7 +59,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(player.contains("NAV_STREAM = 15"));
         assertTrue(player.contains("REQUESTED_ROUTE_FLAGS = 0x20000"));
         assertTrue(player.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
-        assertTrue(player.contains("NAV_SILENCE_MILLIS = 0"));
+        assertFalse(player.contains("NAV_SILENCE_MILLIS"));
         assertTrue(player.contains("getStreamMaxVolume(NAV_STREAM)"));
         assertTrue(player.contains("setStreamVolume(NAV_STREAM, maximum, 0)"));
         assertTrue(player.contains("AvasWav.scalePcm16"));
@@ -100,7 +100,7 @@ public final class AvasNavigationAudioContractTest {
         String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
                 player.indexOf("void stop()"));
         String writer = player.substring(player.indexOf("private int write("),
-                player.indexOf("private long writeSilence("));
+                player.indexOf("private void drain("));
         String runtime = source("AvasRuntime.java");
 
         assertTrue(exterior.contains("currentVolume, initialVolume, exteriorGain"));
@@ -122,31 +122,65 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
     }
 
-    @Test public void exteriorPreparesChannel0NavQuietAndPrivateEffectBeforeStreamingWithoutNewSilence()
+    @Test public void exteriorRestoresReferenceNavOrderAndStreamsTheFileWithoutInsertedPcm()
             throws Exception {
         String player = source("AvasAudioPlayer.java");
         String exterior = player.substring(player.indexOf("void play(File wav"),
                 player.indexOf("void playNavigation(File wav"));
         int mute = exterior.indexOf("route.mute(true, diagnostics)");
         int focus = exterior.indexOf("manager.requestAudioFocus(focus)");
-        int reassert = exterior.indexOf("\"pre_route_reassert\"");
         int route = exterior.indexOf("route.prepare(focus, diagnostics, dirty ->");
-        int quiet = exterior.indexOf("route.mute(true, diagnostics)", route);
         int create = exterior.indexOf("new AudioTrack.Builder()");
         int gain = exterior.indexOf("exteriorGain.prepare()");
         int play = exterior.indexOf("output.play()");
-        assertTrue(mute >= 0 && mute < focus && focus < reassert && reassert < route);
-        assertTrue(route < quiet && quiet < create);
-        assertFalse(exterior.contains("manager.setStreamVolume("));
-        assertFalse(exterior.contains("route.mute(false"));
+        int cap = exterior.indexOf("manager.setStreamVolume(NAV_STREAM, 1, 0)");
+        int unmute = exterior.indexOf("route.mute(false, diagnostics)");
+        int fileRead = exterior.indexOf("new FileInputStream(wav)");
+        assertTrue(mute >= 0 && mute < focus && focus < route && route < create);
         assertTrue(create < gain && gain < play);
+        assertTrue(play < cap && cap < unmute && unmute < fileRead);
+        assertFalse(exterior.contains("writeSilence("));
+        assertFalse(exterior.contains("zeroPcm("));
+        assertFalse(exterior.contains("silenceWritten"));
+        assertTrue(exterior.contains("skipFully(input, header.dataOffset)"));
+        assertTrue(exterior.contains("long remaining = header.dataBytes"));
+        assertEquals(1, exterior.split("new AudioTrack\\.Builder", -1).length - 1);
+        assertEquals(1, exterior.split("output\\.play\\(", -1).length - 1);
         assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
         assertFalse(exterior.contains("AudioTrack.MODE_STATIC"));
         assertTrue(exterior.contains("Thread.sleep(80)"));
         assertEquals(1, exterior.split("Thread\\.sleep\\(", -1).length - 1);
         assertTrue(exterior.contains("drain(output, framesWritten, ticket, cancelled, session, exteriorGain)"));
+        assertTrue(exterior.indexOf("focusMaintainer.start()") > play);
+        assertTrue(exterior.indexOf("focusMaintainer.start()") < fileRead);
+        assertTrue(exterior.indexOf("drain(output, framesWritten, ticket, cancelled, session, exteriorGain)")
+                < exterior.indexOf("stopFocusMaintainer(focusMaintainer)"));
+        assertTrue(exterior.indexOf("stopFocusMaintainer(focusMaintainer)")
+                < exterior.indexOf("release(output, true)"));
         assertTrue(exterior.indexOf("exteriorGain.close()") < exterior.indexOf("release(output, true)"));
         assertTrue(exterior.indexOf("release(output, true)") < exterior.indexOf("restore(focus, diagnostics)"));
+    }
+
+    @Test public void periodicFocusIsExteriorOnlyAndStopsBeforeEveryCleanupPath() throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String exterior = player.substring(player.indexOf("void play(File wav"),
+                player.indexOf("void playNavigation(File wav"));
+        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
+                player.indexOf("void stop()"));
+        String stop = player.substring(player.indexOf("void stop()"),
+                player.indexOf("@Override", player.indexOf("void stop()")));
+        assertTrue(exterior.contains("new AvasFocusMaintainer("));
+        assertTrue(exterior.contains("() -> manager.requestAudioFocus(maintainedFocus)"));
+        assertFalse(navigation.contains("AvasFocusMaintainer"));
+        assertTrue(stop.indexOf("focusMaintainer.close()") < stop.indexOf("activeTrack.pause()"));
+
+        String maintainer = source("AvasFocusMaintainer.java");
+        assertTrue(maintainer.contains("PERIOD_MILLIS = 120"));
+        assertTrue(maintainer.contains("synchronized (callLock)"));
+        assertTrue(maintainer.contains("if (!active) return"));
+        assertTrue(maintainer.indexOf("active = false") < maintainer.indexOf("owned.cancel()"));
+        assertTrue(maintainer.contains("MAX_DETAIL_REPORTS = 3"));
+        assertTrue(maintainer.contains("new Report(\"summary\""));
     }
 
     @Test public void exteriorEffectIsPrivateOptionalAndUpdatedOnlyWhenVolumeChanges() throws Exception {
@@ -173,7 +207,7 @@ public final class AvasNavigationAudioContractTest {
         String exterior = player.substring(player.indexOf("void play(File wav"),
                 player.indexOf("void playNavigation(File wav"));
         int dirty = exterior.indexOf(
-                "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED)");
+                "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED)");
         assertTrue(dirty >= 0);
         assertTrue(dirty < exterior.indexOf("route.naviFocus(true, diagnostics)"));
         assertTrue(dirty < exterior.indexOf("manager.requestAudioFocus(focus)"));
@@ -185,18 +219,28 @@ public final class AvasNavigationAudioContractTest {
         String route = source("AvasExteriorRoute.java");
         String prepare = route.substring(route.indexOf("void prepare("),
                 route.indexOf("static boolean acquirePrimary("));
+        assertTrue(prepare.contains("tryWrite(EXTERIOR_DEVICE, POSITION_FID, 1"));
+        assertTrue(prepare.contains("tryWrite(CHANNEL0_DEVICE, AUX_FID, 1"));
+        assertFalse(prepare.contains("tryWrite(CHANNEL0_DEVICE, POSITION_FID"));
         assertTrue(prepare.indexOf("acquirePrimary(") < prepare.indexOf("exteriorPath(true"));
         assertTrue(prepare.indexOf("exteriorPath(true") < prepare.indexOf("manager.requestAudioFocus"));
         assertTrue(prepare.indexOf("manager.requestAudioFocus") < prepare.indexOf("if (!ready)"));
         assertFalse(prepare.contains("if (primary"));
+        assertTrue(prepare.contains("routeAccepted(primary, optional"));
+        assertTrue(route.contains("if (naviFocusResolved) return"));
+        assertTrue(route.contains("requestNaviFocus = findMethod(manager, \"requestAudioNaviFocus\")"));
+        assertTrue(route.contains("if (!naviFocusUnavailableLogged)"));
         String release = route.substring(route.indexOf("void release("),
                 route.indexOf("static int releasePrimaryDevice("));
         assertTrue(release.contains("writePrimary(() -> tryWrite(primaryDevice"));
-        assertFalse(release.contains("EXTERIOR_CHANNEL0_SHARED"));
-        assertTrue(release.contains("if (dirty != AvasShellSettings.EXTERIOR_CHANNEL0_UNACQUIRED)"));
+        assertFalse(release.contains("EXTERIOR_SHARED"));
+        assertTrue(release.contains("if (dirty != AvasShellSettings.EXTERIOR_UNACQUIRED)"));
+        assertTrue(release.contains("|| dirty == AvasShellSettings.EXTERIOR_DEVICE3_DIRTY"));
         assertTrue(release.contains("exteriorPath(false"));
         assertTrue(source("AvasAudioPlayer.java").contains(
-                "|| dirty == AvasShellSettings.EXTERIOR_CHANNEL0_SHARED"));
+                "|| dirty == AvasShellSettings.EXTERIOR_SHARED"));
+        assertTrue(source("AvasAudioPlayer.java").contains(
+                "|| dirty == AvasShellSettings.EXTERIOR_DEVICE3_DIRTY"));
     }
 
     @Test public void settingsProviderClosesOnlyAfterPlaybackWorkerTerminates() throws Exception {

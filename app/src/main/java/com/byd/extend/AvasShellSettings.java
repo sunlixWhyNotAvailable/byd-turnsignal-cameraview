@@ -20,8 +20,11 @@ final class AvasShellSettings implements AutoCloseable {
     static final int NAVIGATION_ACTIVE = 4;
     static final int NAVIGATION_REJECTED = 5;
     static final int EXTERIOR_CHANNEL0_DIRTY = 6;
-    static final int EXTERIOR_CHANNEL0_UNACQUIRED = 7;
-    static final int EXTERIOR_CHANNEL0_SHARED = 8;
+    // Persisted 7/8 own only shared preparation, independent of the primary device.
+    static final int EXTERIOR_UNACQUIRED = 7;
+    static final int EXTERIOR_SHARED = 8;
+    // Never reinterpret marker 6: interrupted CHANNEL0 sessions still require device 1000.
+    static final int EXTERIOR_DEVICE3_DIRTY = 9;
 
     private final IBinder token = new Binder();
     private final Object provider;

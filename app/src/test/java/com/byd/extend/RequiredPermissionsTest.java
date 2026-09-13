@@ -54,6 +54,21 @@ public class RequiredPermissionsTest {
                 .satisfied(false, false, false, false));
     }
 
+    @Test public void enabledAutomaticAvasRequiresNotificationAccessOnlyWithAutoStart() {
+        TestSharedPreferences prefs = withoutUpdateHint();
+        AvasConfig config = AvasConfig.empty();
+        AvasConfig.Profile lock = config.profile("lock");
+        prefs.edit().putString(AvasAudioLibrary.PREF_CONFIG,
+                config.withProfile(lock.withSettings(true, false, 15, "")).toJson()).apply();
+        RequiredPermissions required = RequiredPermissions.read(prefs, false, false, false);
+        assertFalse(required.satisfied(true, true, true, true, false));
+        assertTrue(required.satisfied(true, true, true, true, true));
+
+        prefs.edit().putBoolean(GuardRecovery.KEY_AUTO_START, false).apply();
+        assertTrue(RequiredPermissions.read(prefs, false, false, false)
+                .satisfied(false, false, false, false, false));
+    }
+
     private static TestSharedPreferences withoutUpdateHint() {
         TestSharedPreferences prefs = new TestSharedPreferences();
         prefs.edit().putBoolean(UpdateHintRuntime.PREF_ENABLED, false).apply();

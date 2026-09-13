@@ -75,7 +75,16 @@ final class DiagnosticLogExporter {
                     "dumpsys package com.byd.avc 2>/dev/null | grep -E 'versionName=|versionCode=|longVersionCode=|firstInstallTime=|lastUpdateTime=|enabled=' | head -n 20"),
             new CollectorSpec(
                     "system/bydextend_avm.log",
-                    "tail -c 1048576 " + StockAvmShellProtocol.LOG_PATH + " 2>/dev/null")
+                    "tail -c 1048576 " + StockAvmShellProtocol.LOG_PATH + " 2>/dev/null"),
+            new CollectorSpec(
+                    "system/bydextend_avas_keepalive.log",
+                    "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log 2>/dev/null"),
+            new CollectorSpec(
+                    "system/bydextend_avas_keepalive.log.1",
+                    "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log.1 2>/dev/null"),
+            new CollectorSpec(
+                    "system/bydextend_avas_keepalive_boot.log",
+                    "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null")
     };
 
     private DiagnosticLogExporter() {}
@@ -433,7 +442,9 @@ final class DiagnosticLogExporter {
     private static boolean isRetainedJsonl(File file) {
         String name = file.getName();
         return name.endsWith(".jsonl")
-                && (name.startsWith("guard-camera-") || name.startsWith("helper-service-"));
+                && (name.startsWith("guard-camera-") || name.startsWith("helper-service-")
+                    || name.equals("avas-recovery-journal.jsonl")
+                    || name.equals("avas-recovery-journal.1.jsonl"));
     }
 
     private static String uniqueLogEntry(String fileName, Set<String> usedNames) {
