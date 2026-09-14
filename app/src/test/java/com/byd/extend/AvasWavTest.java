@@ -10,8 +10,48 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Arrays;
 
 public final class AvasWavTest {
+    @Test public void staticPreloadPreservesCompletePcmAfterHalfSecondOfZeros() throws Exception {
+        for (int rate : new int[]{44_100, 48_000}) {
+            for (int channels : new int[]{1, 2}) {
+                byte[] samples = pcm(12_345, -23_456, 1, -1);
+                byte[] original = wav(rate, channels, samples, true);
+                File file = Files.createTempFile("avas-static", ".wav").toFile();
+                Files.write(file.toPath(), original);
+                try {
+                    AvasWav.Header header = AvasWav.read(file);
+                    int leading = Math.toIntExact(AvasPlaybackPlan.silenceBytes(rate,
+                            header.frameSize, AvasPlaybackPlan.EXTERIOR_SILENCE_MILLIS));
+                    byte[] preloaded = AvasWav.readPcm(file, header, leading);
+                    assertEquals(rate / 2 * header.frameSize, leading);
+                    assertEquals(leading + samples.length, preloaded.length);
+                    assertArrayEquals(new byte[leading], Arrays.copyOf(preloaded, leading));
+                    assertArrayEquals(samples, Arrays.copyOfRange(preloaded, leading, preloaded.length));
+                    assertArrayEquals(original, Files.readAllBytes(file.toPath()));
+                    assertArrayEquals(samples, AvasWav.readPcm(file, header, 0));
+                } finally {
+                    Files.deleteIfExists(file.toPath());
+                }
+            }
+        }
+    }
+
+    @Test public void staticPreloadRejectsTruncationInsteadOfPaddingMissingFileAudio() throws Exception {
+        File file = Files.createTempFile("avas-static-truncated", ".wav").toFile();
+        byte[] original = wav(44_100, 2, pcm(1, 2, 3, 4), false);
+        Files.write(file.toPath(), original);
+        try {
+            AvasWav.Header header = AvasWav.read(file);
+            assertThrows(IllegalArgumentException.class, () -> AvasWav.readPcm(file, header, 1));
+            Files.write(file.toPath(), Arrays.copyOf(original, original.length - 1));
+            assertThrows(java.io.EOFException.class, () -> AvasWav.readPcm(file, header, 88_200));
+        } finally {
+            Files.deleteIfExists(file.toPath());
+        }
+    }
+
     @Test
     public void parsesPcm16StereoWithAnOddUnknownChunk() throws Exception {
         File wav = Files.createTempFile("avas", ".wav").toFile();

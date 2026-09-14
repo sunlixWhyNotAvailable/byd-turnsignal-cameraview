@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -180,6 +181,7 @@ private fun AdbReminderEditor(
     onChange: (AdbReminderAppearance) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var showRetry by rememberSaveable { mutableStateOf(false) }
     var hidden by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxWidth(.94f).fillMaxHeight(.94f).clip(RoundedCornerShape(12.dp))
@@ -190,6 +192,9 @@ private fun AdbReminderEditor(
             Text(strings.text("Перетягніть віджет. Утримуйте 1 секунду, щоб приховати.",
                 "Drag the widget. Hold for 1 second to hide it.", "拖动悬浮窗。长按 1 秒可隐藏。"),
                 color = colors.muted, fontSize = 13.sp)
+            SwitchLine(strings.text("Показати висувну кнопку повтору (редактор)",
+                "Show expanding Retry action (editor)", "显示展开式重试按钮（编辑器）"),
+                "", showRetry, { showRetry = it }, colors)
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds(),
                 contentAlignment = Alignment.Center) {
                 if (!hidden) {
@@ -199,7 +204,7 @@ private fun AdbReminderEditor(
                     val density = LocalDensity.current
                     CompositionLocalProvider(LocalDensity provides Density(
                         density.density * scale, density.fontScale)) {
-                        ReminderCanvas(strings, colors, appearance, logicalWidth, onChange) {
+                        ReminderCanvas(strings, colors, appearance, logicalWidth, showRetry, onChange) {
                             hidden = true
                         }
                     }
@@ -224,6 +229,7 @@ private fun ReminderCanvas(
     colors: UiPalette,
     appearance: AdbReminderAppearance,
     canvasWidth: androidx.compose.ui.unit.Dp,
+    showRetry: Boolean,
     onChange: (AdbReminderAppearance) -> Unit,
     onHide: () -> Unit,
 ) {
@@ -256,7 +262,7 @@ private fun ReminderCanvas(
             topStart = appearance.cornerRadiusDp.dp, topEnd = appearance.cornerRadiusDp.dp)
         else RoundedCornerShape(bottomStart = appearance.cornerRadiusDp.dp,
             bottomEnd = appearance.cornerRadiusDp.dp)
-        AnimatedVisibility(true,
+        AnimatedVisibility(showRetry,
             modifier = Modifier.offset { IntOffset((x * density).roundToInt(), (retryY * density).roundToInt()) },
             enter = slideInVertically(tween(220)) { if (retryAbove) it else -it },
             exit = slideOutVertically(tween(220)) { if (retryAbove) it else -it }) {

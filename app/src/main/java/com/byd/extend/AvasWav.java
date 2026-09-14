@@ -70,6 +70,20 @@ final class AvasWav {
         throw new IOException("WAV data chunk missing");
     }
 
+    /** One STATIC preload: zero PCM followed by the original, frame-aligned WAV data. */
+    static byte[] readPcm(File file, Header header, int leadingBytes) throws IOException {
+        if (leadingBytes < 0 || leadingBytes % header.frameSize != 0) {
+            throw new IllegalArgumentException("Silence must contain whole PCM frames");
+        }
+        int fileBytes = Math.toIntExact(header.dataBytes);
+        byte[] pcm = new byte[Math.addExact(leadingBytes, fileBytes)];
+        try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
+            input.seek(header.dataOffset);
+            input.readFully(pcm, leadingBytes, fileBytes);
+        }
+        return pcm;
+    }
+
     static void scalePcm16(byte[] source, int sourceOffset, byte[] target,
             int targetOffset, int length, int volume) {
         if ((sourceOffset | targetOffset | length) < 0

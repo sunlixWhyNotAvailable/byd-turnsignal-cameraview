@@ -16,6 +16,9 @@ final class AdbRecoveryCoordinator {
     private boolean enabled;
     private boolean authenticated;
     private boolean wifiConnected;
+    private boolean recoveryAttempted;
+    private AdbRecoverySnapshot.ReadyOutcome readyOutcome =
+            AdbRecoverySnapshot.ReadyOutcome.NONE;
     private long waitStarted = -1L;
     private AdbRecoverySnapshot.Stage stage = AdbRecoverySnapshot.Stage.DISABLED;
 
@@ -30,6 +33,8 @@ final class AdbRecoveryCoordinator {
         enabled = value;
         if (!enabled) {
             authenticated = false;
+            recoveryAttempted = false;
+            readyOutcome = AdbRecoverySnapshot.ReadyOutcome.NONE;
             waitStarted = -1L;
             stage = AdbRecoverySnapshot.Stage.DISABLED;
         }
@@ -42,6 +47,8 @@ final class AdbRecoveryCoordinator {
             cycleId++;
             cycleActive = true;
             hintSuppressed = false;
+            recoveryAttempted = false;
+            readyOutcome = AdbRecoverySnapshot.ReadyOutcome.NONE;
             waitStarted = -1L;
             store.save(cycleId, true, false);
         }
@@ -50,7 +57,10 @@ final class AdbRecoveryCoordinator {
     }
 
     synchronized void stage(AdbRecoverySnapshot.Stage value) {
-        if (enabled) stage = value;
+        if (enabled) {
+            stage = value;
+            if (value == AdbRecoverySnapshot.Stage.PREPARING) recoveryAttempted = true;
+        }
     }
 
     synchronized void wifi(boolean connected, long elapsedMs) {
@@ -74,6 +84,9 @@ final class AdbRecoveryCoordinator {
 
     synchronized void ready() {
         authenticated = true;
+        readyOutcome = recoveryAttempted
+                ? AdbRecoverySnapshot.ReadyOutcome.RESTORED
+                : AdbRecoverySnapshot.ReadyOutcome.AVAILABLE;
         cycleActive = false;
         waitStarted = -1L;
         stage = AdbRecoverySnapshot.Stage.READY;
@@ -82,6 +95,6 @@ final class AdbRecoveryCoordinator {
 
     synchronized AdbRecoverySnapshot snapshot() {
         return new AdbRecoverySnapshot(stage, enabled, authenticated, wifiConnected,
-                waitStarted, cycleId, hintSuppressed);
+                waitStarted, cycleId, hintSuppressed, readyOutcome);
     }
 }

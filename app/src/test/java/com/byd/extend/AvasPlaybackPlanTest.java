@@ -21,11 +21,11 @@ public final class AvasPlaybackPlanTest {
         assertEquals(2800, AvasPlaybackPlan.exteriorTargetGainMb(101));
     }
 
-    @Test public void everyExteriorAndNavigationRequestHasNoInsertedSilence() {
+    @Test public void everyExteriorRequestHasHalfSecondPrerollButNavigationHasNone() {
         for (int request = 0; request < 3; request++) {
-            assertEquals(0, AvasPlaybackPlan.silenceMillis(
+            assertEquals(500, AvasPlaybackPlan.silenceMillis(
                     AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR));
-            assertEquals(0, AvasPlaybackPlan.silenceMillis(
+            assertEquals(500, AvasPlaybackPlan.silenceMillis(
                     AvasPlaybackQueue.Kind.MANUAL_EXTERIOR));
             assertEquals(0, AvasPlaybackPlan.silenceMillis(AvasPlaybackQueue.Kind.AUDITION_NAV));
         }

@@ -7,6 +7,19 @@ import org.junit.Test;
 
 /** Bounded native/UI wiring checks supplement the executable coordinator and geometry tests. */
 public final class AdbRecoveryIntegrationContractTest {
+    @Test public void reminderEditorHasLocalRetryToggleWithoutChangingRuntimeGates() throws Exception {
+        String screen = source("kotlin/com/byd/extend/ui/AdbRecoveryScreen.kt");
+        String editor = screen.substring(screen.indexOf("private fun AdbReminderEditor("));
+        assertTrue(editor.contains("var showRetry by rememberSaveable { mutableStateOf(false) }"));
+        assertTrue(editor.contains("Show expanding Retry action (editor)"));
+        assertTrue(editor.contains("\"\", showRetry, { showRetry = it }, colors"));
+        assertTrue(editor.contains("logicalWidth, showRetry, onChange"));
+        assertTrue(editor.contains("AnimatedVisibility(showRetry,"));
+        assertFalse(editor.contains("AnimatedVisibility(true,"));
+        assertFalse(editor.contains("AdbRecoveryUiAction.Retry"));
+        assertTrue(screen.contains("enabled = state.enabled && !state.authenticated5555"));
+    }
+
     @Test public void appRecoveryStartsBeforeDependentHelperAndKeepsItsOwnObserver() throws Exception {
         String service = source("java/com/byd/extend/CameraHelperService.java");
         String handle = service.substring(service.indexOf("private void handleStartCommand("),

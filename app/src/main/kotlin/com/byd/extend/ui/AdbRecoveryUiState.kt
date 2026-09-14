@@ -35,7 +35,10 @@ data class AdbRecoveryUiState @JvmOverloads constructor(
                 AdbRecoverySnapshot.Stage.SWITCHING_TO_5555,
                 AdbRecoverySnapshot.Stage.VERIFYING_5555,
                 AdbRecoverySnapshot.Stage.CLEANING_UP -> AdbRecoveryStage.RESTORING
-                AdbRecoverySnapshot.Stage.READY -> AdbRecoveryStage.RESTORED
+                AdbRecoverySnapshot.Stage.READY -> when (snapshot.readyOutcome()) {
+                    AdbRecoverySnapshot.ReadyOutcome.RESTORED -> AdbRecoveryStage.RESTORED
+                    else -> AdbRecoveryStage.AVAILABLE
+                }
                 AdbRecoverySnapshot.Stage.BLOCKED -> AdbRecoveryStage.FAILED
             },
             waitStartedElapsedMs = snapshot.waitStartedElapsedMs(),

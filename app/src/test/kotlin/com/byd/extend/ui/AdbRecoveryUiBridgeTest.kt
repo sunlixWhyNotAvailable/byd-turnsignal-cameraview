@@ -20,7 +20,8 @@ class AdbRecoveryUiBridgeTest {
 
     @Test fun waitingSnapshotMapsToUiAndOverlayWithoutStartingAnotherTimerModel() {
         val snapshot = AdbRecoverySnapshot(AdbRecoverySnapshot.Stage.WAITING_FOR_WIFI,
-            true, false, false, 1234L, 17L, false)
+            true, false, false, 1234L, 17L, false,
+            AdbRecoverySnapshot.ReadyOutcome.NONE)
         val settings = AdbReminderSettings(TestSharedPreferences())
         val state = AdbRecoveryUiBridge.state(snapshot, settings)
         assertEquals(AdbRecoveryStage.WAIT_WIFI, state.stage)
@@ -35,18 +36,37 @@ class AdbRecoveryUiBridgeTest {
         assertFalse(overlay.darkTheme)
     }
 
-    @Test fun readyAndBlockedSnapshotsDoNotRequestOverlay() {
+    @Test fun bothReadyOutcomesMapPreciselyAndSuppressRetryAndOverlay() {
         listOf(
-            AdbRecoverySnapshot.Stage.READY to AdbRecoveryStage.RESTORED,
-            AdbRecoverySnapshot.Stage.BLOCKED to AdbRecoveryStage.FAILED,
-        ).forEach { (backendStage, uiStage) ->
-            val snapshot = AdbRecoverySnapshot(backendStage, true,
-                backendStage == AdbRecoverySnapshot.Stage.READY, true, 0L, 8L, true)
+            AdbRecoverySnapshot.ReadyOutcome.AVAILABLE to AdbRecoveryStage.AVAILABLE,
+            AdbRecoverySnapshot.ReadyOutcome.RESTORED to AdbRecoveryStage.RESTORED,
+        ).forEach { (outcome, uiStage) ->
+            val snapshot = AdbRecoverySnapshot(AdbRecoverySnapshot.Stage.READY, true,
+                true, true, 0L, 8L, true, outcome)
             val settings = AdbReminderSettings(TestSharedPreferences())
-            assertEquals(uiStage, AdbRecoveryUiBridge.state(snapshot, settings).stage)
+            val state = AdbRecoveryUiBridge.state(snapshot, settings)
+            assertEquals(uiStage, state.stage)
+            assertTrue(state.authenticated5555)
             assertFalse(AdbRecoveryUiBridge.overlay(snapshot, settings,
                 UiLanguage.English, true).waitWifi)
         }
+    }
+
+    @Test fun readyWithoutOutcomeMapsConservativelyToAvailable() {
+        val snapshot = AdbRecoverySnapshot(AdbRecoverySnapshot.Stage.READY, true,
+            true, true, 0L, 8L, true, AdbRecoverySnapshot.ReadyOutcome.NONE)
+        assertEquals(AdbRecoveryStage.AVAILABLE, AdbRecoveryUiBridge.state(snapshot,
+            AdbReminderSettings(TestSharedPreferences())).stage)
+    }
+
+    @Test fun blockedSnapshotDoesNotRequestOverlay() {
+        val snapshot = AdbRecoverySnapshot(AdbRecoverySnapshot.Stage.BLOCKED, true,
+            false, true, 0L, 8L, true, AdbRecoverySnapshot.ReadyOutcome.NONE)
+        val settings = AdbReminderSettings(TestSharedPreferences())
+        assertEquals(AdbRecoveryStage.FAILED,
+            AdbRecoveryUiBridge.state(snapshot, settings).stage)
+        assertFalse(AdbRecoveryUiBridge.overlay(snapshot, settings,
+            UiLanguage.English, true).waitWifi)
     }
 
     @Test fun persistedOffWinsDuringStaleBackendSnapshot() {
@@ -55,7 +75,8 @@ class AdbRecoveryUiBridgeTest {
         }
         val settings = AdbReminderSettings(preferences)
         val stale = AdbRecoverySnapshot(AdbRecoverySnapshot.Stage.WAITING_FOR_WIFI,
-            true, false, false, 500L, 3L, false)
+            true, false, false, 500L, 3L, false,
+            AdbRecoverySnapshot.ReadyOutcome.NONE)
         assertFalse(AdbRecoveryUiBridge.state(stale, settings).enabled)
         assertFalse(AdbRecoveryUiBridge.overlay(stale, settings,
             UiLanguage.English, true).waitWifi)

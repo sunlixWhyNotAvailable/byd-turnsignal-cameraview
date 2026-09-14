@@ -2,11 +2,87 @@ package com.byd.extend;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 public final class AdbRecoveryCoordinatorTest {
+    @Test public void initialHealthyProofIsAvailableWithoutClaimingRecovery() {
+        AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
+        coordinator.begin(false, 1L);
+        coordinator.ready();
+
+        assertEquals(AdbRecoverySnapshot.Stage.READY, coordinator.snapshot().stage());
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.AVAILABLE,
+                coordinator.snapshot().readyOutcome());
+    }
+
+    @Test public void failedInitialProofThenRecoveryIsRestoredAcrossSameCycleRetries() {
+        AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
+        coordinator.begin(false, 1L);
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        coordinator.begin(false, 2L);
+        coordinator.ready();
+
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.RESTORED,
+                coordinator.snapshot().readyOutcome());
+    }
+
+    @Test public void freshCycleAndDisableReenableResetRecoveryAttempt() {
+        AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
+        coordinator.begin(false, 1L);
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        coordinator.begin(true, 2L);
+        coordinator.ready();
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.AVAILABLE,
+                coordinator.snapshot().readyOutcome());
+
+        coordinator.begin(false, 3L);
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        coordinator.configure(false);
+        coordinator.configure(true);
+        coordinator.begin(false, 4L);
+        coordinator.ready();
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.AVAILABLE,
+                coordinator.snapshot().readyOutcome());
+    }
+
+    @Test public void restartedRuntimeDoesNotInheritUnfinishedRecoveryAttempt() {
+        MemoryStore store = new MemoryStore();
+        AdbRecoveryCoordinator first = configuredCoordinator(store);
+        first.begin(false, 1L);
+        first.stage(AdbRecoverySnapshot.Stage.PREPARING);
+
+        AdbRecoveryCoordinator restarted = configuredCoordinator(store);
+        restarted.begin(false, 2L);
+        restarted.ready();
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.AVAILABLE,
+                restarted.snapshot().readyOutcome());
+    }
+
+    @Test public void successfulOutcomeSurvivesOrdinaryReconfigure() {
+        AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
+        coordinator.begin(false, 1L);
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        coordinator.ready();
+        coordinator.configure(true);
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.RESTORED,
+                coordinator.snapshot().readyOutcome());
+        assertTrue(coordinator.snapshot().authenticated5555());
+    }
+
+    @Test public void snapshotIdentityIncludesReadyOutcome() {
+        AdbRecoverySnapshot available = new AdbRecoverySnapshot(
+                AdbRecoverySnapshot.Stage.READY, true, true, true,
+                -1L, 1L, false, AdbRecoverySnapshot.ReadyOutcome.AVAILABLE);
+        AdbRecoverySnapshot restored = new AdbRecoverySnapshot(
+                AdbRecoverySnapshot.Stage.READY, true, true, true,
+                -1L, 1L, false, AdbRecoverySnapshot.ReadyOutcome.RESTORED);
+        assertNotEquals(available, restored);
+        assertNotEquals(available.hashCode(), restored.hashCode());
+    }
+
     @Test public void wifiConnectionSuppressesHintForWholePersistedCycle() {
         MemoryStore store = new MemoryStore();
         AdbRecoveryCoordinator first = new AdbRecoveryCoordinator(store);
@@ -92,5 +168,11 @@ public final class AdbRecoveryCoordinatorTest {
             this.active = active;
             suppressed = hintSuppressed;
         }
+    }
+
+    private static AdbRecoveryCoordinator configuredCoordinator(MemoryStore store) {
+        AdbRecoveryCoordinator coordinator = new AdbRecoveryCoordinator(store);
+        coordinator.configure(true);
+        return coordinator;
     }
 }

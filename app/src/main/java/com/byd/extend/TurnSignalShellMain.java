@@ -467,6 +467,8 @@ public final class TurnSignalShellMain {
             token.linkToDeath(controllerDeathRecipient, 0);
             emit("controller_attached", "recovery_enabled", recoveryEnabled);
             handler.post(() -> {
+                musicRuntime.reconcilePowerState(
+                        completedRecovery ? "controller_recovered" : "controller_attached");
                 if (nonAvasStopped) {
                     nonAvasStopped = false;
                     runtime.start();

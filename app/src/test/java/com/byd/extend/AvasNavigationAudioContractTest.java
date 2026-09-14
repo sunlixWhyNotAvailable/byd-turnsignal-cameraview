@@ -103,7 +103,7 @@ public final class AvasNavigationAudioContractTest {
                 player.indexOf("private void drain("));
         String runtime = source("AvasRuntime.java");
 
-        assertTrue(exterior.contains("session.exteriorPcm(pcm, 0, written)"));
+        assertTrue(exterior.contains("session.exteriorPcm(pcm, silenceBytes, fileBytes)"));
         assertFalse(exterior.contains("AvasWav.scalePcm16"));
         assertTrue(exterior.contains("new ExteriorGain(output, currentVolume, initialVolume"));
         assertTrue(navigation.contains("currentVolume, initialVolume, null"));
@@ -123,7 +123,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
     }
 
-    @Test public void exteriorRestoresReferenceNavOrderAndPreloadsStaticWithoutInsertedPcm()
+    @Test public void exteriorKeepsReferenceNavOrderAndPreloadsSilenceAndFileOnce()
             throws Exception {
         String player = source("AvasAudioPlayer.java");
         String exterior = player.substring(player.indexOf("void play(File wav"),
@@ -136,7 +136,7 @@ public final class AvasNavigationAudioContractTest {
         int play = exterior.indexOf("output.play()");
         int cap = exterior.indexOf("manager.setStreamVolume(NAV_STREAM, 1, 0)");
         int unmute = exterior.indexOf("route.mute(false, diagnostics)");
-        int fileRead = exterior.indexOf("new FileInputStream(wav)");
+        int fileRead = exterior.indexOf("AvasWav.readPcm(wav, header, silenceBytes)");
         int preload = exterior.indexOf("output.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING)");
         assertTrue(mute >= 0 && mute < focus && focus < route && route < create);
         assertTrue(create < fileRead && fileRead < preload && preload < gain && gain < play);
@@ -144,10 +144,12 @@ public final class AvasNavigationAudioContractTest {
         assertFalse(exterior.contains("writeSilence("));
         assertFalse(exterior.contains("zeroPcm("));
         assertFalse(exterior.contains("silenceWritten"));
-        assertTrue(exterior.contains("skipFully(input, header.dataOffset)"));
         assertTrue(exterior.contains("Math.toIntExact(header.dataBytes)"));
-        assertTrue(exterior.contains("byte[] pcm = new byte[bufferBytes]"));
-        assertTrue(exterior.contains("readFully(input, pcm, pcm.length)"));
+        assertTrue(exterior.contains("Math.addExact(silenceBytes, fileBytes)"));
+        assertTrue(exterior.contains("AvasPlaybackPlan.silenceMillis(kind)"));
+        assertTrue(exterior.contains("session.staticPreload(output, silenceFrames, fileFrames)"));
+        assertTrue(exterior.contains("fileFrames = fileBytes / header.frameSize"));
+        assertTrue(exterior.contains("\"silenceFrames\", silenceFrames"));
         assertTrue(exterior.contains("written != pcm.length || output.getState() != AudioTrack.STATE_INITIALIZED"));
         assertEquals(1, exterior.split("output\\.write\\(", -1).length - 1);
         assertEquals(1, exterior.split("new AudioTrack\\.Builder", -1).length - 1);

@@ -4,6 +4,8 @@ import java.util.Objects;
 
 /** Immutable app-side recovery state; safe to map into UI without Android dependencies. */
 public final class AdbRecoverySnapshot {
+    public enum ReadyOutcome { NONE, AVAILABLE, RESTORED }
+
     public enum Stage {
         DISABLED,
         CHECKING_5555,
@@ -25,10 +27,11 @@ public final class AdbRecoverySnapshot {
     private final long waitStartedElapsedMs;
     private final long cycleId;
     private final boolean hintSuppressedForCycle;
+    private final ReadyOutcome readyOutcome;
 
     AdbRecoverySnapshot(Stage stage, boolean enabled, boolean authenticated5555,
             boolean wifiConnected, long waitStartedElapsedMs, long cycleId,
-            boolean hintSuppressedForCycle) {
+            boolean hintSuppressedForCycle, ReadyOutcome readyOutcome) {
         this.stage = Objects.requireNonNull(stage);
         this.enabled = enabled;
         this.authenticated5555 = authenticated5555;
@@ -36,6 +39,7 @@ public final class AdbRecoverySnapshot {
         this.waitStartedElapsedMs = waitStartedElapsedMs;
         this.cycleId = cycleId;
         this.hintSuppressedForCycle = hintSuppressedForCycle;
+        this.readyOutcome = Objects.requireNonNull(readyOutcome);
     }
 
     public Stage stage() { return stage; }
@@ -45,6 +49,7 @@ public final class AdbRecoverySnapshot {
     public long waitStartedElapsedMs() { return waitStartedElapsedMs; }
     public long cycleId() { return cycleId; }
     public boolean hintSuppressedForCycle() { return hintSuppressedForCycle; }
+    public ReadyOutcome readyOutcome() { return readyOutcome; }
 
     @Override public boolean equals(Object value) {
         if (!(value instanceof AdbRecoverySnapshot)) return false;
@@ -54,11 +59,12 @@ public final class AdbRecoverySnapshot {
                 && wifiConnected == other.wifiConnected
                 && waitStartedElapsedMs == other.waitStartedElapsedMs
                 && cycleId == other.cycleId
-                && hintSuppressedForCycle == other.hintSuppressedForCycle;
+                && hintSuppressedForCycle == other.hintSuppressedForCycle
+                && readyOutcome == other.readyOutcome;
     }
 
     @Override public int hashCode() {
         return Objects.hash(stage, enabled, authenticated5555, wifiConnected,
-                waitStartedElapsedMs, cycleId, hintSuppressedForCycle);
+                waitStartedElapsedMs, cycleId, hintSuppressedForCycle, readyOutcome);
     }
 }

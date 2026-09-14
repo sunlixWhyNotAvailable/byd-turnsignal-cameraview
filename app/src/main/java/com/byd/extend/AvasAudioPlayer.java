@@ -62,6 +62,9 @@ final class AvasAudioPlayer implements AutoCloseable {
             AvasAudioDiagnostics.Context diagnostics, AvasPlaybackQueue.Kind kind,
             IntSupplier currentVolume) throws Exception {
         AvasWav.Header header = AvasWav.read(wav);
+        long silenceFrames = AvasPlaybackPlan.silenceFrames(header.sampleRate,
+                AvasPlaybackPlan.silenceMillis(kind));
+        int silenceBytes = Math.toIntExact(silenceFrames * header.frameSize);
         int initialVolume = clamp(volume);
         long ticket = generation.incrementAndGet();
         AudioFocusRequest focus = null;
@@ -76,7 +79,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             restore(null);
             if (cancelled(ticket, cancelled)) return;
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
-                    SystemClock.elapsedRealtime(), "silence_planned_frames", 0);
+                    SystemClock.elapsedRealtime(), "silence_planned_frames", silenceFrames);
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
             IntConsumer focusCallback = AvasAudioDiagnostics.bind(diagnostics,
@@ -107,7 +110,8 @@ final class AvasAudioPlayer implements AutoCloseable {
 
             int channelMask = header.channels == 1
                     ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
-            int bufferBytes = Math.toIntExact(header.dataBytes);
+            int fileBytes = Math.toIntExact(header.dataBytes);
+            int bufferBytes = Math.addExact(silenceBytes, fileBytes);
             output = new AudioTrack.Builder().setAudioAttributes(attributes)
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(header.sampleRate)
                             .setChannelMask(channelMask).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
@@ -130,13 +134,9 @@ final class AvasAudioPlayer implements AutoCloseable {
                 activeFocusMaintainer = focusMaintainer;
             }
             session.bind(output);
-            // STATIC writes always start at buffer offset zero: preload the entire file once.
+            // STATIC writes start at offset zero: preload silence + the entire file in one write.
             {
-                byte[] pcm = new byte[bufferBytes];
-                try (FileInputStream input = new FileInputStream(wav)) {
-                    skipFully(input, header.dataOffset);
-                    readFully(input, pcm, pcm.length);
-                }
+                byte[] pcm = AvasWav.readPcm(wav, header, silenceBytes);
                 if (cancelled(ticket, cancelled)) return;
                 int written = output.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING);
                 if (cancelled(ticket, cancelled)) return;
@@ -145,12 +145,13 @@ final class AvasAudioPlayer implements AutoCloseable {
                             + "/" + pcm.length + " state=" + output.getState());
                 }
                 framesWritten = written / header.frameSize;
-                fileFrames = framesWritten;
-                session.exteriorPcm(pcm, 0, written);
-                session.positiveWrite(output, "wav", framesWritten);
+                fileFrames = fileBytes / header.frameSize;
+                session.exteriorPcm(pcm, silenceBytes, fileBytes);
+                session.staticPreload(output, silenceFrames, fileFrames);
             }
             event(diagnostics, "avas_track_state", "phase", "preloaded", "state",
-                    safeTrackState(output), "transfer_mode", "static", "file_frames", fileFrames);
+                    safeTrackState(output), "transfer_mode", "static", "file_frames", fileFrames,
+                    "silence_frames", silenceFrames, "total_frames", framesWritten);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
             synchronized (trackLock) {
@@ -178,7 +179,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             long playbackMillis = (framesWritten * 1000 + header.sampleRate - 1) / header.sampleRate;
             drain(output, framesWritten, ticket, cancelled, session, exteriorGain, playbackMillis + 3000);
             event(diagnostics, "avas_play_end", "interrupted", cancelled(ticket, cancelled),
-                    "framesWritten", framesWritten, "silenceFrames", 0,
+                    "framesWritten", framesWritten, "silenceFrames", silenceFrames,
                     "fileFrames", fileFrames,
                     "playbackHead", safePlaybackHead(output));
         } catch (Exception failure) {
@@ -736,6 +737,11 @@ final class AvasAudioPlayer implements AutoCloseable {
                 event(context, "avas_routing_listener", "phase", "remove", "available", false,
                         "error", String.valueOf(failure));
             }
+        }
+
+        void staticPreload(AudioTrack output, long leadingFrames, long fileFrames) {
+            silenceSubmittedFrames = leadingFrames;
+            positiveWrite(output, "wav", fileFrames);
         }
 
         void positiveWrite(AudioTrack output, String phase, long frames) {

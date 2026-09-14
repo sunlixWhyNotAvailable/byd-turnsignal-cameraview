@@ -73,6 +73,7 @@ final class MusicMetadataRuntime {
     private final Context context;
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
+    private final BiConsumer<String, Runnable> eventReconciler;
     private final AudioManager audioManager;
     private final ActivityManager activityManager;
     private final ExecutorService writerExecutor = Executors.newSingleThreadExecutor(runnable -> {
@@ -81,8 +82,7 @@ final class MusicMetadataRuntime {
         return thread;
     });
     private final Map<MediaSession.Token, SessionBinding> sessions = new HashMap<>();
-    private final MediaSessionManager.OnActiveSessionsChangedListener sessionListener =
-            controllers -> runOnHandler(() -> replaceSessions(controllers, "sessions_callback"));
+    private final MediaSessionManager.OnActiveSessionsChangedListener sessionListener;
     private final Runnable publishRunnable = this::publishSelectedSession;
     private final Runnable progressRunnable = this::refreshPlayingProgress;
 
@@ -111,30 +111,51 @@ final class MusicMetadataRuntime {
     private WriteRequest queuedWrite;
 
     MusicMetadataRuntime(
-            Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
+            Context context, Handler handler, BiConsumer<String, Object[]> eventSink,
+            BiConsumer<String, Runnable> eventReconciler) {
         this.context = context;
         this.handler = handler;
         this.eventSink = eventSink;
+        this.eventReconciler = eventReconciler;
+        sessionListener = controllers -> eventReconciler.accept("sessions_callback",
+                () -> replaceSessions(controllers, "sessions_callback"));
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
     }
 
     void configure(boolean value) {
         runOnHandler(() -> {
+            if (terminalStop) return;
             enabled = value;
-            if (enabled && awake) startObservers("configure");
+            if (enabled) startObservers("configure");
             else if (!enabled) stopObservers("disabled", awake);
             emit("music_metadata_config", "enabled", enabled, "awake", awake,
                     "observer_active", observersStarted, "error", error);
         });
     }
 
-    void powerStateChanged(boolean interactive) {
+    void powerStateChanged(boolean interactive, String reason) {
         runOnHandler(() -> {
             if (awake == interactive) return;
+            boolean previous = awake;
             awake = interactive;
-            if (awake && enabled) startObservers("wake");
-            else if (!awake) stopObservers("sleep", false);
+            emit("music_metadata_awake", "source_event", reason,
+                    "old_awake", previous, "awake", awake,
+                    "observer_active", observersStarted);
+            if (awake && enabled) refreshSessions("wake");
+            else if (!awake) pausePublishing();
+        });
+    }
+
+    void refreshSessions(String reason) {
+        runOnHandler(() -> {
+            if (!enabled || !awake || !observersStarted || sessionManager == null) return;
+            try {
+                replaceSessions(sessionManager.getActiveSessions(null), reason);
+                schedulePublish(reason, true);
+            } catch (Throwable failure) {
+                setError("session_refresh: " + summary(failure), reason);
+            }
         });
     }
 
@@ -173,9 +194,8 @@ final class MusicMetadataRuntime {
     }
 
     private void startObservers(String reason) {
-        if (!enabled || !awake) return;
-        if (observersStarted) {
-            schedulePublish(reason + "_retry", shouldForceObserverRetry(reason));
+        if (!shouldRegisterSessionObservers(enabled, terminalStop, observersStarted)) {
+            if (observersStarted && awake) refreshSessions(reason + "_retry");
             return;
         }
         try {
@@ -190,6 +210,8 @@ final class MusicMetadataRuntime {
                     "getCurrentAudioFocusPackage");
             sessionManager.addOnActiveSessionsChangedListener(sessionListener, null, handler);
             observersStarted = true;
+            emit("music_metadata_observer", "registered", true,
+                    "source_event", reason, "awake", awake);
             replaceSessions(sessionManager.getActiveSessions(null), reason);
             clearError();
             schedulePublish(reason, true);
@@ -213,6 +235,10 @@ final class MusicMetadataRuntime {
                 setError("observer_stop: " + summary(failure), reason);
             }
         }
+        if (observersStarted) {
+            emit("music_metadata_observer", "registered", false,
+                    "source_event", reason, "awake", awake);
+        }
         observersStarted = false;
         for (SessionBinding binding : new ArrayList<>(sessions.values())) {
             binding.unregister();
@@ -231,6 +257,16 @@ final class MusicMetadataRuntime {
         } else {
             published = false;
         }
+    }
+
+    private void pausePublishing() {
+        lifecycleGeneration++;
+        handler.removeCallbacks(publishRunnable);
+        cancelProgressRefresh();
+        publishPending = false;
+        forcePending = false;
+        pendingReason = "";
+        queuedWrite = null;
     }
 
     private void replaceSessions(List<MediaController> controllers, String reason) {
@@ -657,6 +693,11 @@ final class MusicMetadataRuntime {
         return force || !published || !nextFingerprint.equals(previousFingerprint);
     }
 
+    static boolean shouldRegisterSessionObservers(
+            boolean enabled, boolean terminalStop, boolean observersStarted) {
+        return enabled && !terminalStop && !observersStarted;
+    }
+
     static boolean shouldClaimSource(
             boolean published, String previousPackage, String nextPackage) {
         return !published || nextPackage == null || !nextPackage.equals(previousPackage);
@@ -862,7 +903,8 @@ final class MusicMetadataRuntime {
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
             this.metadata = metadata;
-            schedulePublish("metadata_callback", false);
+            eventReconciler.accept("metadata_callback",
+                    () -> schedulePublish("metadata_callback", false));
         }
 
         @Override
@@ -871,7 +913,8 @@ final class MusicMetadataRuntime {
             if (state == null || state.getState() != PlaybackState.STATE_PLAYING) {
                 cancelProgressRefresh();
             }
-            schedulePublish("playback_callback", false);
+            eventReconciler.accept("session_playback_callback",
+                    () -> schedulePublish("playback_callback", false));
         }
 
         @Override
@@ -879,7 +922,8 @@ final class MusicMetadataRuntime {
             SessionBinding removed = sessions.remove(token);
             if (removed != null) removed.unregister();
             if (removed == progressSession) cancelProgressRefresh();
-            schedulePublish("session_destroyed", false);
+            eventReconciler.accept("session_destroyed",
+                    () -> schedulePublish("session_destroyed", false));
         }
     }
 

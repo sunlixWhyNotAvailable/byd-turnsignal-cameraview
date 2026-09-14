@@ -10,6 +10,27 @@ import java.nio.file.Path;
 import org.junit.Test;
 
 public final class AdbRecoveryRuntimeContractTest {
+    @Test public void recoveryAttemptBeginsOnlyAfterFailedInitialProof() throws Exception {
+        String source = source();
+        int begin = source.indexOf("coordinator.begin(forceCycle, nowElapsed);");
+        int initialProof = source.indexOf("if (freshClassicProof())", begin);
+        int preparing = source.indexOf(
+                "coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);", initialProof);
+        assertTrue(begin >= 0 && initialProof > begin && preparing > initialProof);
+        assertTrue(source.contains("\"outcome\", ready.readyOutcome()"));
+    }
+
+    @Test public void authenticatedOrdinaryEventsKeepSuccessfulOutcome() throws Exception {
+        String source = source();
+        int authenticated = source.indexOf("if (coordinator.snapshot().authenticated5555()");
+        int begin = source.indexOf("coordinator.begin(forceCycle, nowElapsed);", authenticated);
+        String earlyReturn = source.substring(authenticated, begin);
+        assertTrue(earlyReturn.contains("reason != Reason.ADB_FAILURE"));
+        assertTrue(earlyReturn.contains("reason != Reason.BOOT"));
+        assertTrue(earlyReturn.contains("publish();"));
+        assertTrue(earlyReturn.contains("return;"));
+    }
+
     @Test public void wifiDetectionChecksAllAvailableNetworksNotOnlyDefault() throws Exception {
         String source = source();
         int start = source.indexOf("    private boolean wifiConnected()");

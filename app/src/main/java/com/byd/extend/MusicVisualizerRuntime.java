@@ -6,6 +6,7 @@ import android.media.AudioManager;
 import android.media.AudioPlaybackConfiguration;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -21,6 +22,7 @@ final class MusicVisualizerRuntime {
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
     private final AudioManager audioManager;
+    private final PowerManager powerManager;
     private final MusicMetadataRuntime metadataRuntime;
     private final AudioManager.AudioPlaybackCallback playbackCallback;
     private final Runnable deferredStop = this::finishDeferredStop;
@@ -43,12 +45,17 @@ final class MusicVisualizerRuntime {
         this.handler = handler;
         this.eventSink = eventSink;
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        metadataRuntime = new MusicMetadataRuntime(context, handler, eventSink);
+        powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        metadataRuntime = new MusicMetadataRuntime(
+                context, handler, eventSink, this::reconcileMetadataEvent);
         playbackCallback = new AudioManager.AudioPlaybackCallback() {
             @Override
             public void onPlaybackConfigChanged(
                     List<AudioPlaybackConfiguration> configurations) {
-                runOnHandler(() -> applyPlaybackConfigurations(configurations, "callback"));
+                runOnHandler(() -> {
+                    reconcileAwakeFromSystem("playback_callback");
+                    applyPlaybackConfigurations(configurations, "callback");
+                });
             }
         };
         selfCheck();
@@ -59,7 +66,14 @@ final class MusicVisualizerRuntime {
     }
 
     void powerStateChanged(boolean interactive) {
-        runOnHandler(() -> powerStateChangedOnHandler(interactive));
+        runOnHandler(() -> applyPowerState(interactive, "power_broadcast", true));
+    }
+
+    void reconcilePowerState(String reason) {
+        runOnHandler(() -> {
+            reconcileAwakeFromSystem(reason);
+            if (enabled && awake) refreshCurrentState(reason);
+        });
     }
 
     void stop() {
@@ -81,35 +95,67 @@ final class MusicVisualizerRuntime {
     }
 
     private void configureOnHandler(boolean value) {
-        metadataRuntime.configure(value);
-        if (enabled == value) {
-            if (enabled && awake && !callbackRegistered) activate("configure_retry");
-            return;
-        }
+        if (value) reconcileAwakeFromSystem("configure");
+        boolean changed = enabled != value;
         enabled = value;
+        metadataRuntime.configure(value);
         if (enabled) {
-            emitConfig("configure");
-            if (awake) activate("configure");
+            activate(changed ? "configure" : "configure_retry");
+            if (awake) refreshCurrentState(changed ? "configure" : "configure_retry");
         } else {
             deactivate("disabled");
-            emitConfig("configure");
+        }
+        if (changed) emitConfig("configure");
+    }
+
+    private void applyPowerState(boolean interactive, String reason, boolean refreshOnWake) {
+        boolean previous = awake;
+        awake = interactive;
+        metadataRuntime.powerStateChanged(interactive, reason);
+        if (previous == interactive) return;
+        emit("music_awake_reconcile", "source_event", reason,
+                "old_awake", previous, "awake", awake,
+                "callback_registered", callbackRegistered);
+        if (awake && enabled) {
+            activate("wake");
+            if (refreshOnWake) refreshCurrentState("wake");
+        } else if (!awake) {
+            suspendOutput("sleep");
         }
     }
 
-    private void powerStateChangedOnHandler(boolean interactive) {
-        metadataRuntime.powerStateChanged(interactive);
-        if (awake == interactive) return;
-        awake = interactive;
-        if (awake && enabled) activate("wake");
-        else if (!awake) deactivate("sleep");
+    private boolean reconcileAwakeFromSystem(String reason) {
+        boolean previous = awake;
+        boolean interactive = false;
+        try {
+            if (powerManager == null) throw new IllegalStateException("PowerManager unavailable");
+            interactive = powerManager.isInteractive();
+        } catch (Throwable failure) {
+            setRuntimeError("power_state: " + summary(failure), reason);
+        }
+        applyPowerState(interactive, reason, false);
+        return previous != awake;
+    }
+
+    private void reconcileMetadataEvent(String reason, Runnable action) {
+        runOnHandler(() -> {
+            boolean awakeChanged = reconcileAwakeFromSystem(reason);
+            if (awakeChanged && awake) queryPlaybackConfigurations("wake");
+            action.run();
+        });
+    }
+
+    private void refreshCurrentState(String reason) {
+        queryPlaybackConfigurations(reason);
+        metadataRuntime.refreshSessions(reason);
     }
 
     private void activate(String reason) {
-        if (!enabled || !awake || callbackRegistered) return;
-        if (stopRetryExhausted) {
+        if (shouldRearmStopRetries(enabled, awake, stopRetryExhausted)) {
             stopRetryExhausted = false;
             stopRetryAttempts = 0;
         }
+        if (!shouldRegisterPlaybackObserver(enabled, callbackRegistered)) return;
         if (audioManager == null) {
             setRuntimeError("audio_manager_unavailable", reason);
             return;
@@ -118,6 +164,8 @@ final class MusicVisualizerRuntime {
             audioManager.registerAudioPlaybackCallback(playbackCallback, handler);
             callbackRegistered = true;
             clearError();
+            emit("music_playback_observer", "registered", true,
+                    "source_event", reason, "awake", awake);
         } catch (Throwable failure) {
             callbackRegistered = false;
             setMediaActive(false, "registration_error");
@@ -126,13 +174,23 @@ final class MusicVisualizerRuntime {
             setRuntimeError("callback_registration: " + summary(failure), reason);
             return;
         }
+        queryPlaybackConfigurations("initial");
+    }
+
+    private void queryPlaybackConfigurations(String reason) {
+        if (!enabled || !callbackRegistered) return;
         try {
-            applyPlaybackConfigurations(
-                    audioManager.getActivePlaybackConfigurations(), "initial");
+            applyPlaybackConfigurations(audioManager.getActivePlaybackConfigurations(), reason);
         } catch (Throwable failure) {
             setMediaActive(false, "initial_query_error");
             setRuntimeError("initial_playback_query: " + summary(failure), reason);
         }
+    }
+
+    private void suspendOutput(String reason) {
+        cancelDeferredStop(reason);
+        setMediaActive(false, reason);
+        stopOutput(reason);
     }
 
     private void deactivate(String reason) {
@@ -147,6 +205,8 @@ final class MusicVisualizerRuntime {
         callbackRegistered = false;
         try {
             audioManager.unregisterAudioPlaybackCallback(playbackCallback);
+            emit("music_playback_observer", "registered", false,
+                    "source_event", reason, "awake", awake);
         } catch (Throwable failure) {
             setRuntimeError("callback_unregistration: " + summary(failure), reason);
         }
@@ -154,11 +214,13 @@ final class MusicVisualizerRuntime {
 
     private void applyPlaybackConfigurations(
             List<AudioPlaybackConfiguration> configurations, String source) {
-        if (!callbackRegistered || !enabled || !awake) return;
+        // Observation survives sleep; activity must not cancel a required sleep-stop retry.
+        if (!shouldProcessPlayback(enabled, awake, callbackRegistered)) return;
         metadataRuntime.audioPlaybackChanged(source);
         boolean nextActive = hasMediaPlayback(configurations);
         if (nextActive == mediaActive) {
-            if (!nextActive && outputActive) scheduleDeferredStop(source);
+            if (nextActive) startOutput(source);
+            else if (outputActive) scheduleDeferredStop(source);
             return;
         }
         if (nextActive) {
@@ -341,6 +403,21 @@ final class MusicVisualizerRuntime {
             boolean enabled, boolean awake, boolean callbackRegistered,
             boolean mediaActive, boolean outputActive) {
         return enabled && awake && callbackRegistered && mediaActive && !outputActive;
+    }
+
+    static boolean shouldRegisterPlaybackObserver(
+            boolean enabled, boolean callbackRegistered) {
+        return enabled && !callbackRegistered;
+    }
+
+    static boolean shouldProcessPlayback(
+            boolean enabled, boolean awake, boolean callbackRegistered) {
+        return enabled && awake && callbackRegistered;
+    }
+
+    static boolean shouldRearmStopRetries(
+            boolean enabled, boolean awake, boolean exhausted) {
+        return enabled && awake && exhausted;
     }
 
     static boolean shouldScheduleStop(

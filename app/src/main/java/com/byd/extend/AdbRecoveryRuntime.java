@@ -240,7 +240,9 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         closeDiscovery();
         coordinator.ready();
         publish();
-        log.log("adb_recovery_ready", "cycle", coordinator.snapshot().cycleId());
+        AdbRecoverySnapshot ready = coordinator.snapshot();
+        log.log("adb_recovery_ready", "cycle", ready.cycleId(),
+                "outcome", ready.readyOutcome());
     }
 
     private boolean requestWirelessDebugging(boolean manual) {

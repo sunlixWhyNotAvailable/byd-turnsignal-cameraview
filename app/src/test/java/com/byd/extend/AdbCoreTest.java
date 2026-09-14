@@ -1843,6 +1843,38 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void musicObserversSurviveSleepAndAlreadyPlayingResumesExactlyOnce() {
+        assertTrue(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(true, false));
+        assertFalse(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(true, true));
+        assertFalse(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(false, false));
+        assertTrue(MusicMetadataRuntime.shouldRegisterSessionObservers(true, false, false));
+        assertFalse(MusicMetadataRuntime.shouldRegisterSessionObservers(true, false, true));
+        assertFalse(MusicMetadataRuntime.shouldRegisterSessionObservers(false, false, false));
+        assertFalse(MusicMetadataRuntime.shouldRegisterSessionObservers(true, true, false));
+        assertFalse(MusicVisualizerRuntime.shouldStartOutput(
+                true, false, true, true, false));
+        assertTrue(MusicVisualizerRuntime.shouldStartOutput(
+                true, true, true, true, false));
+        assertFalse(MusicVisualizerRuntime.shouldStartOutput(
+                true, true, true, true, true));
+    }
+
+    @Test
+    public void musicSleepCallbacksCannotCancelStopAndWakeRearmsExhaustion() {
+        // A retained observer may deliver active playback while sleep's stop retry is pending.
+        assertFalse(MusicVisualizerRuntime.shouldProcessPlayback(true, false, true));
+        assertFalse(MusicVisualizerRuntime.shouldRearmStopRetries(true, false, true));
+        // Wake must re-arm stop cleanup even though the same observer is already registered.
+        assertTrue(MusicVisualizerRuntime.shouldRearmStopRetries(true, true, true));
+        assertFalse(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(true, true));
+        assertTrue(MusicVisualizerRuntime.shouldProcessPlayback(true, true, true));
+        assertFalse(MusicVisualizerRuntime.shouldProcessPlayback(false, true, true));
+        assertFalse(MusicVisualizerRuntime.shouldProcessPlayback(true, true, false));
+        assertFalse(MusicVisualizerRuntime.shouldRearmStopRetries(false, true, true));
+        assertFalse(MusicVisualizerRuntime.shouldRearmStopRetries(true, true, false));
+    }
+
+    @Test
     public void stockAvmConfigUsesNarrowPanoramaReaderAndStableWireOrder() throws Exception {
         Path source = Path.of("app/src/main/java/com/byd/extend/StockAvmPreview.java");
         if (!Files.exists(source)) {

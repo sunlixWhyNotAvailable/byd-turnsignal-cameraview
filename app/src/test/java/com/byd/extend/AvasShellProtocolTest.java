@@ -95,27 +95,36 @@ public final class AvasShellProtocolTest {
     }
 
     @Test
-    public void temporaryMusicDisableKeepsExecutorAndAwakeStateForConfigReplay() throws Exception {
+    public void temporaryMusicDisableKeepsExecutorAndReenableReconcilesAwake() throws Exception {
         String visualizer = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/byd/extend/MusicVisualizerRuntime.java")),
                 StandardCharsets.UTF_8);
         String configure = visualizer.substring(
                 visualizer.indexOf("private void configureOnHandler"),
-                visualizer.indexOf("private void powerStateChangedOnHandler"));
+                visualizer.indexOf("private void applyPowerState"));
         assertTrue(configure.contains("metadataRuntime.configure(value)"));
-        assertTrue(configure.contains("if (awake) activate(\"configure\")"));
+        assertTrue(configure.contains("reconcileAwakeFromSystem(\"configure\")"));
+        assertTrue(configure.contains(
+                "activate(changed ? \"configure\" : \"configure_retry\")"));
         assertTrue(configure.contains("deactivate(\"disabled\")"));
         assertFalse(configure.contains("metadataRuntime.stop()"));
         assertFalse(configure.contains("awake ="));
+
+        String sessionReconcile = visualizer.substring(
+                visualizer.indexOf("private void reconcileMetadataEvent"),
+                visualizer.indexOf("private void refreshCurrentState"));
+        assertTrue(sessionReconcile.contains("reconcileAwakeFromSystem(reason)"));
+        assertTrue(sessionReconcile.contains(
+                "if (awakeChanged && awake) queryPlaybackConfigurations(\"wake\")"));
 
         String metadata = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/byd/extend/MusicMetadataRuntime.java")),
                 StandardCharsets.UTF_8);
         String metadataConfigure = metadata.substring(metadata.indexOf("void configure(boolean value)"),
                 metadata.indexOf("void powerStateChanged"));
-        assertTrue(metadataConfigure.contains("startObservers(\"configure\")"));
+        assertTrue(metadataConfigure.contains("if (enabled) startObservers(\"configure\")"));
         assertTrue(metadataConfigure.contains("stopObservers(\"disabled\", awake)"));
-        assertFalse(metadataConfigure.contains("terminalStop"));
+        assertTrue(metadataConfigure.contains("if (terminalStop) return"));
         assertFalse(metadataConfigure.contains("writerExecutor.shutdown"));
 
         String shell = new String(Files.readAllBytes(Paths.get(
@@ -124,6 +133,47 @@ public final class AvasShellProtocolTest {
         String terminal = shell.substring(shell.indexOf("if (code == TurnSignalShellProtocol.TX_SHUTDOWN)"),
                 shell.indexOf("if (code == TurnSignalShellProtocol.TX_SHUTDOWN_KEEPING_AVAS)"));
         assertTrue(terminal.contains("musicRuntime.stop()"));
+
+        String sleep = metadata.substring(metadata.indexOf("void powerStateChanged"),
+                metadata.indexOf("void audioPlaybackChanged"));
+        assertTrue(sleep.contains("pausePublishing()"));
+        assertFalse(sleep.contains("stopObservers"));
+
+        String attach = shell.substring(shell.indexOf("private synchronized void attachController"),
+                shell.indexOf("private void controllerDied"));
+        assertTrue(attach.contains("musicRuntime.reconcilePowerState("));
+    }
+
+    @Test
+    public void retainedMusicObserverCannotBypassSleepStopCleanup() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/byd/extend/MusicVisualizerRuntime.java")),
+                StandardCharsets.UTF_8);
+        String callback = source.substring(source.indexOf("public void onPlaybackConfigChanged"),
+                source.indexOf("selfCheck();"));
+        int reconciliation = callback.indexOf("reconcileAwakeFromSystem(\"playback_callback\")");
+        assertTrue(reconciliation >= 0
+                && reconciliation < callback.indexOf("applyPlaybackConfigurations("));
+
+        String activity = source.substring(source.indexOf("private void applyPlaybackConfigurations"),
+                source.indexOf("private void setMediaActive"));
+        int sleepGate = activity.indexOf(
+                "if (!shouldProcessPlayback(enabled, awake, callbackRegistered)) return;");
+        assertTrue(sleepGate >= 0 && sleepGate < activity.indexOf("cancelStopRetry();"));
+
+        String activation = source.substring(source.indexOf("private void activate"),
+                source.indexOf("private void queryPlaybackConfigurations"));
+        int rearm = activation.indexOf(
+                "if (shouldRearmStopRetries(enabled, awake, stopRetryExhausted))");
+        int reset = activation.indexOf("stopRetryExhausted = false;");
+        int registrationGate = activation.indexOf(
+                "if (!shouldRegisterPlaybackObserver(enabled, callbackRegistered)) return;");
+        assertTrue(rearm >= 0 && reset > rearm && registrationGate > reset);
+
+        String sleep = source.substring(source.indexOf("private void suspendOutput"),
+                source.indexOf("private void deactivate"));
+        assertTrue(sleep.contains("stopOutput(reason)"));
+        assertFalse(sleep.contains("unregisterCallback"));
     }
 
     @Test
