@@ -7,6 +7,7 @@ import java.io.OutputStream;
 final class AdbPacket {
     static final int A_CNXN = command("CNXN");
     static final int A_AUTH = command("AUTH");
+    static final int A_STLS = command("STLS");
     static final int A_OPEN = command("OPEN");
     static final int A_OKAY = command("OKAY");
     static final int A_CLSE = command("CLSE");

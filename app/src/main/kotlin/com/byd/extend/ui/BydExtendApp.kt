@@ -55,6 +55,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -85,9 +86,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import com.byd.extend.R
 import com.byd.extend.ReleaseNotesMarkdown
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 
 private val rootIcons: List<ImageVector> = listOf(
@@ -110,40 +113,63 @@ fun BydExtendApp(
     onAction: (BydExtendUiAction) -> Unit,
     cameraHost: @Composable (CameraHostSlot) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
+    contentReady: Boolean = true,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalView.current.findViewTreeLifecycleOwner()
     val strings = remember(state.language, context) { UiStrings(state.language, context) }
     val colors = remember(state.theme) { palette(state.theme) }
+    val uiSession = remember {
+        RuntimeUiSession.INSTANCE.getOrCreate(RuntimeUiSelections.from(state))
+    }
     val scrollKey = state.scrollKey()
-    val savedScrollOffset = remember(scrollKey) { RuntimeUiSession.INSTANCE.scrollOffset(scrollKey) }
-    val primaryScroll = remember(scrollKey) {
-        // ScrollState clamps its initial value before the first real content measurement.  The
-        // saved offset is restored explicitly below once a non-empty range exists.
-        ScrollState(savedScrollOffset)
+    val sidebarKey = state.sidebarScrollKey()
+    val viewportPositions = rememberSaveableStateHolder()
+    lateinit var primaryScroll: ScrollState
+    lateinit var sidebarScroll: ScrollState
+    // Save only the viewport position. Keying the screen itself would recreate camera hosts.
+    viewportPositions.SaveableStateProvider("main:$scrollKey") {
+        primaryScroll = rememberScrollState(
+            uiSession.viewport(scrollKey, RuntimeViewportKind.Main).offset)
     }
-    var scrollRestored by remember(scrollKey, savedScrollOffset) {
-        mutableStateOf(savedScrollOffset == 0)
+    viewportPositions.SaveableStateProvider("sidebar:$sidebarKey") {
+        sidebarScroll = rememberScrollState(
+            uiSession.viewport(sidebarKey, RuntimeViewportKind.Sidebar).offset)
     }
+    // Android-restored state takes precedence over the process-only fallback.
+    val mainViewport = rememberSessionScrollRestore(primaryScroll, scrollKey, contentReady)
+    val sidebarViewport = rememberSessionScrollRestore(sidebarScroll, sidebarKey, true)
     val imeDismissalPolicy = remember { ImeDismissalPolicy() }
-    LaunchedEffect(primaryScroll, scrollKey, savedScrollOffset) {
-        if (savedScrollOffset > 0) {
-            // ScrollState starts with Int.MAX_VALUE before its first layout.  It is a sentinel,
-            // not a measured scroll range; applying the saved value against it can then be
-            // clamped back to zero by the first real measurement. A zero range can also be a
-            // temporary short layout before runtime status arrives. Keep the saved offset dormant
-            // until scrolling is possible instead of arming persistence with a placeholder zero.
-            val measuredMax = primaryScroll.maxValue.takeIf { RuntimeUiSession.canRestoreScroll(it) }
-                ?: snapshotFlow { primaryScroll.maxValue }
-                    .filter { RuntimeUiSession.canRestoreScroll(it) }.first()
-            primaryScroll.scrollTo(savedScrollOffset.coerceAtMost(measuredMax))
-        }
-        scrollRestored = true
+    val latestState by rememberUpdatedState(state)
+    fun captureUiSession() {
+        uiSession.select(RuntimeUiSelections.from(latestState))
+        uiSession.recordViewport(scrollKey, RuntimeViewportKind.Main, mainViewport.position())
+        uiSession.recordViewport(sidebarKey, RuntimeViewportKind.Sidebar, sidebarViewport.position())
     }
-    LaunchedEffect(primaryScroll, scrollKey) {
-        snapshotFlow { primaryScroll.value to primaryScroll.maxValue }.collect { (value, max) ->
-            if (scrollRestored && max > 0 && max != Int.MAX_VALUE) {
-                RuntimeUiSession.INSTANCE.rememberScrollOffset(scrollKey, value, max)
-            }
+    val latestCaptureUiSession by rememberUpdatedState(::captureUiSession)
+    val dispatchAction: (BydExtendUiAction) -> Unit = {
+        // Snapshot the outgoing viewport synchronously before navigation disposes its state.
+        latestCaptureUiSession()
+        onAction(it)
+    }
+    LaunchedEffect(uiSession, mainViewport, sidebarViewport, scrollKey, sidebarKey) {
+        snapshotFlow {
+            Triple(
+                RuntimeUiSelections.from(latestState),
+                mainViewport.position(),
+                sidebarViewport.position(),
+            )
+        }.collect { latestCaptureUiSession() }
+    }
+    DisposableEffect(uiSession, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP ||
+                event == Lifecycle.Event.ON_DESTROY) latestCaptureUiSession()
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose {
+            latestCaptureUiSession()
+            lifecycleOwner?.lifecycle?.removeObserver(observer)
         }
     }
     CompositionLocalProvider(
@@ -153,35 +179,74 @@ fun BydExtendApp(
         Box(Modifier.fillMaxSize().background(colors.background).semantics { testTagsAsResourceId = true }) {
             Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                AppHeader(state, strings, colors, onAction)
+                AppHeader(state, strings, colors, dispatchAction)
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (state.activeTab) {
-                        RootTab.Signals -> SignalsScreen(state.signals, state.avas, strings, colors, onAction)
-                        RootTab.Blind -> BlindScreen(state.blind, strings, colors, onAction, cameraHost, onPreview)
-                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, onAction, cameraHost, onPreview)
-                        RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, onAction, cameraHost, onPreview)
-                        RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, onAction, cameraHost, onPreview)
+                        RootTab.Signals -> SignalsScreen(
+                            state.signals, state.avas, state.adbRecovery, strings, colors, dispatchAction,
+                            sidebarScroll)
+                        RootTab.Blind -> BlindScreen(state.blind, strings, colors, dispatchAction, cameraHost, onPreview)
+                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, dispatchAction, cameraHost, onPreview)
+                        RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, dispatchAction, cameraHost, onPreview)
+                        RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, dispatchAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
-                            state.language, state.theme == UiTheme.Dark, strings, colors, onAction, onPreview)
-                        RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, onAction, cameraHost)
+                            state.language, state.theme == UiTheme.Dark, strings, colors, dispatchAction,
+                            sidebarScroll, onPreview)
+                        RootTab.Debug -> DebugScreen(state.debug, state.signals.guard.enabled, strings, colors, dispatchAction, cameraHost)
                     }
                 }
-                BottomNavigation(state.activeTab, strings, colors) { onAction(BydExtendUiAction.Navigate(it)) }
+                BottomNavigation(state.activeTab, strings, colors) { dispatchAction(BydExtendUiAction.Navigate(it)) }
             }
-            state.dialog?.let { AppDialog(it, strings, colors, onAction) }
+            state.dialog?.let { AppDialog(it, strings, colors, dispatchAction) }
         }
     }
 }
 
-/** Semantic viewport identity; persisted selections remain separate from this process-only state. */
-private fun BydExtendUiState.scrollKey(): String = when (activeTab) {
-    RootTab.Signals -> "signals"
+private class SessionScrollState(
+    val scroll: ScrollState,
+    private val restored: () -> Boolean,
+) {
+    fun position(): RuntimeViewport? = if (restored() && scroll.maxValue != Int.MAX_VALUE) {
+        RuntimeViewport(scroll.value)
+    } else null
+}
+
+@Composable
+private fun rememberSessionScrollRestore(
+    scroll: ScrollState,
+    key: String,
+    contentReady: Boolean,
+): SessionScrollState {
+    // rememberScrollState's Android saveable value takes precedence over the process fallback.
+    val savedOffset = remember(scroll) { scroll.value }
+    var restored by remember(scroll, key) { mutableStateOf(savedOffset == 0) }
+    LaunchedEffect(scroll, key, savedOffset, contentReady) {
+        if (contentReady && !restored) {
+            // Int.MAX_VALUE is ScrollState's pre-layout sentinel. A measured zero is valid final
+            // content, but must only be allowed to clamp after its caller declares content ready.
+            snapshotFlow { scroll.maxValue }.first { it != Int.MAX_VALUE }
+            scroll.scrollTo(savedOffset.coerceAtMost(scroll.maxValue))
+            restored = true
+        }
+    }
+    return remember(scroll) { SessionScrollState(scroll) { restored } }
+}
+
+/** Semantic viewport identity; saved scroll state remains separate from persisted selections. */
+internal fun BydExtendUiState.scrollKey(): String = when (activeTab) {
+    RootTab.Signals -> "signals:${signals.category}"
     RootTab.Blind -> "blind:${blind.selectedGroup}:${blind.selectedSide}:${blind.section}"
     RootTab.Parking -> "parking:${parking.selectedView}:${parking.section}"
     RootTab.Reverse -> "reverse:${reverse.selectedElement}:${reverse.selectedSource}:${reverse.section}"
     RootTab.Mirror -> "mirror:${mirror.target}:${mirror.section}"
     RootTab.Settings -> "settings:${settings.category}"
     RootTab.Debug -> "debug:${debug.mode}"
+}
+
+internal fun BydExtendUiState.sidebarScrollKey(): String = when (activeTab) {
+    RootTab.Signals -> "signals"
+    RootTab.Settings -> "settings"
+    else -> "none:${activeTab.name}"
 }
 
 @Composable
@@ -244,30 +309,33 @@ private fun HeaderStatusPill(
 private fun SignalsScreen(
     state: SignalsUiState,
     avas: AvasUiState,
+    adbRecovery: AdbRecoveryUiState,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    sidebarScroll: ScrollState,
 ) {
     val categories = listOf(
         strings.text("Поворотники", "Turn signals", "转向灯"),
         strings.text("Музика та підсвітка", "Music and lighting", "音乐与氛围灯"),
         strings.text("Погода", "Weather", "天气"),
         strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
+        strings.text("Відновлення ADB", "ADB recovery", "ADB 恢复"),
     )
     val icons = listOf(IntegrationIcons.TurnSignals, Icons.Outlined.MusicNote,
-        IntegrationIcons.Weather, Icons.AutoMirrored.Outlined.VolumeUp)
+        IntegrationIcons.Weather, Icons.AutoMirrored.Outlined.VolumeUp, Icons.Outlined.Refresh)
     ScreenSurface(colors, scroll = false) {
         PageTitle(strings.tabs[0], strings.text("Виберіть інтеграцію для налаштування",
             "Choose an integration to configure", "选择要配置的集成功能"), colors)
         Row(Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CategorySidebar(categories, icons, state.category.ordinal, colors, strings) {
+            CategorySidebar(categories, icons, state.category.ordinal, colors, strings, sidebarScroll) {
                 onAction(BydExtendUiAction.Select(
                     SelectionTarget.Simple(SelectionId.SignalsCategory), it))
             }
             Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp))
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                .background(colors.surface).padding(12.dp).verticalScroll(rememberScrollState())) {
+                .background(colors.surface).padding(12.dp).verticalScroll(LocalPrimaryScroll.current)) {
                 when (state.category) {
                     SignalsCategory.TurnSignals -> Section(strings.text("Захист поворотника", "Turn-signal guard",
                         "转向灯保护"), colors, trailing = {
@@ -341,6 +409,9 @@ private fun SignalsScreen(
                     ) { onAction(BydExtendUiAction.Run(CommandId.OpenWeatherAttribution)) }
                     }
                     SignalsCategory.Avas -> AvasIntegration(avas, strings, colors, onAction)
+                    SignalsCategory.AdbRecovery -> AdbRecoveryScreen(adbRecovery, strings, colors) {
+                        onAction(BydExtendUiAction.AdbRecovery(it))
+                    }
                 }
             }
         }
@@ -350,7 +421,7 @@ private fun SignalsScreen(
 @Composable
 private fun CategorySidebar(
     categories: List<String>, icons: List<ImageVector>, selected: Int,
-    colors: UiPalette, strings: UiStrings, onSelect: (Int) -> Unit,
+    colors: UiPalette, strings: UiStrings, scroll: ScrollState, onSelect: (Int) -> Unit,
 ) {
     Column(Modifier.width(260.dp).fillMaxHeight().clip(RoundedCornerShape(8.dp))
         .border(1.dp, colors.border, RoundedCornerShape(8.dp))
@@ -359,7 +430,7 @@ private fun CategorySidebar(
             fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
         Spacer(Modifier.height(4.dp))
-        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).selectableGroup(),
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(scroll).selectableGroup(),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             categories.forEachIndexed { index, title ->
                 val active = selected == index

@@ -28,6 +28,7 @@ import java.security.spec.RSAPublicKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.function.BiConsumer;
 
 final class LocalAdbClient {
@@ -59,6 +60,8 @@ final class LocalAdbClient {
     private static volatile AccessState currentAccessState = AccessState.unknown();
     private static volatile long accessStateVersion;
     private static volatile AccessStateListener accessStateListener;
+    private static final CopyOnWriteArraySet<AccessStateListener> ACCESS_STATE_LISTENERS =
+            new CopyOnWriteArraySet<>();
 
     private LocalAdbClient() {}
 
@@ -100,6 +103,14 @@ final class LocalAdbClient {
 
     static void clearAccessStateListener(AccessStateListener listener) {
         if (accessStateListener == listener) accessStateListener = null;
+    }
+
+    static void addAccessStateListener(AccessStateListener listener) {
+        if (listener != null) ACCESS_STATE_LISTENERS.add(listener);
+    }
+
+    static void removeAccessStateListener(AccessStateListener listener) {
+        if (listener != null) ACCESS_STATE_LISTENERS.remove(listener);
     }
 
     static boolean hasAccessStateListenerForTest(AccessStateListener listener) {
@@ -893,7 +904,7 @@ final class LocalAdbClient {
         void clearActiveSocket(Socket socket);
     }
 
-    private static KeyPair loadOrCreateKeys(Context context) throws Exception {
+    static KeyPair loadOrCreateKeys(Context context) throws Exception {
         File dir = new File(context.getFilesDir(), "adb_keys");
         File privateFile = new File(dir, "adb_key.priv");
         File publicFile = new File(dir, "adb_key.pub");
@@ -1048,6 +1059,13 @@ final class LocalAdbClient {
     private static void notifyAccessStateChanged(long priorVersion) {
         if (accessStateVersion == priorVersion) return;
         AccessStateListener listener = accessStateListener;
+        for (AccessStateListener additional : ACCESS_STATE_LISTENERS) {
+            try {
+                additional.onAccessStateChanged(currentAccessState);
+            } catch (Throwable ignored) {
+                // Observers are best-effort and must not change ADB operation results.
+            }
+        }
         if (listener == null) return;
         try {
             listener.onAccessStateChanged(currentAccessState);

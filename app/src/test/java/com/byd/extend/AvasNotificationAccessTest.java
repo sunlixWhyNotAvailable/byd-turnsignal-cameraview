@@ -5,6 +5,9 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.Assert.*;
 
@@ -12,10 +15,22 @@ public class AvasNotificationAccessTest {
     private static final String FULL =
             "com.byd.extend/com.byd.extend.RecoveryNotificationListener";
 
-    @Test public void requirementNeedsAutoStartAndAnEnabledAutomaticProfile() {
+    @Test public void adbRecoveryIsRequiredByDefaultWhenAutoStartIsEnabled() {
         TestSharedPreferences prefs = new TestSharedPreferences();
-        assertFalse(AvasNotificationAccess.required(prefs));
+        assertTrue(AvasNotificationAccess.required(prefs));
         assertFalse(prefs.contains(AvasAudioLibrary.PREF_CONFIG));
+
+        prefs.edit().putBoolean("adb_recovery_enabled", false).apply();
+        assertFalse(AvasNotificationAccess.required(prefs));
+        prefs.edit().putBoolean("adb_recovery_enabled", true)
+                .putBoolean(GuardRecovery.KEY_AUTO_START, false).apply();
+        assertFalse(AvasNotificationAccess.required(prefs));
+    }
+
+    @Test public void avasOnlyRequirementNeedsAutoStartAndAnEnabledAutomaticProfile() {
+        TestSharedPreferences prefs = new TestSharedPreferences();
+        prefs.edit().putBoolean("adb_recovery_enabled", false).apply();
+        assertFalse(AvasNotificationAccess.required(prefs));
 
         prefs.edit().putString(AvasAudioLibrary.PREF_CONFIG, config(false).toJson()).apply();
         assertFalse(AvasNotificationAccess.required(prefs));
@@ -72,6 +87,22 @@ public class AvasNotificationAccessTest {
                     return LocalAdbClient.Result.failed("unexpected", "", 1, "");
                 }));
         assertEquals(0, commands.get());
+    }
+
+    @Test public void contextProvisioningIsUnconditionalAndReadbackDriven() throws Exception {
+        Path path = Path.of("app/src/main/java/com/byd/extend/AvasNotificationAccess.java");
+        if (!Files.exists(path)) {
+            path = Path.of("src/main/java/com/byd/extend/AvasNotificationAccess.java");
+        }
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        int start = source.indexOf("static boolean ensureGranted(");
+        int end = source.indexOf("    static boolean exactComponentEnabled", start);
+        assertTrue(start >= 0 && end > start);
+        String contextGrant = source.substring(start, end);
+        assertTrue(contextGrant.contains("return ensureGranted(true, userId"));
+        assertFalse(contextGrant.contains("required("));
+        assertFalse(contextGrant.contains("hasEnabledProfiles"));
+        assertTrue(contextGrant.contains("() -> readGranted(app)"));
     }
 
     @Test public void successfulShellExitWithoutPositiveReadbackIsNotGranted() {

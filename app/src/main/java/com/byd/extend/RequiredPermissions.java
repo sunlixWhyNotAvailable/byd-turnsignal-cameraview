@@ -9,14 +9,16 @@ final class RequiredPermissions {
     final boolean accessibility;
     final boolean install;
     final boolean notificationAccess;
+    final boolean writeSecureSettings;
 
     private RequiredPermissions(boolean camera, boolean overlay, boolean accessibility,
-            boolean install, boolean notificationAccess) {
+            boolean install, boolean notificationAccess, boolean writeSecureSettings) {
         this.camera = camera;
         this.overlay = overlay;
         this.accessibility = accessibility;
         this.install = install;
         this.notificationAccess = notificationAccess;
+        this.writeSecureSettings = writeSecureSettings;
     }
 
     static RequiredPermissions read(SharedPreferences preferences, boolean previewRequested,
@@ -30,16 +32,12 @@ final class RequiredPermissions {
         for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
             camera |= ParkingCameraSettings.readRule(preferences, profile).enabled;
         }
-        boolean accessibility = learningRequested
-                || preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false)
-                || reverse && ReverseCameraController.hasAnyFrontIntegration(preferences)
-                    && assigned(preferences, CameraButtonBindings.Action.ReverseSource)
-                || mirror && (assigned(preferences, CameraButtonBindings.Action.MirrorVisibility)
-                    || RearviewMirrorSettings.frontIntegrated(preferences)
-                        && assigned(preferences, CameraButtonBindings.Action.MirrorSource));
         boolean hint = preferences.getBoolean(UpdateHintRuntime.PREF_ENABLED, true);
-        return new RequiredPermissions(camera, mirror || hint, accessibility, installRequested,
-                AvasNotificationAccess.required(preferences));
+        boolean adbRecovery = preferences.getBoolean("adb_recovery_enabled", true);
+        boolean adbReminder = adbRecovery && preferences.getBoolean("adb_reminder_enabled", true);
+        // These three accesses are provisioned and read back independently of runtime switches.
+        return new RequiredPermissions(camera, mirror || hint || adbReminder, true, installRequested,
+                true, true);
     }
 
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,
@@ -50,12 +48,17 @@ final class RequiredPermissions {
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,
             boolean accessibilityConnected, boolean installGranted,
             boolean notificationAccessGranted) {
-        return (!camera || cameraGranted) && (!overlay || overlayGranted)
-                && (!accessibility || accessibilityConnected) && (!install || installGranted)
-                && (!notificationAccess || notificationAccessGranted);
+        return satisfied(cameraGranted, overlayGranted, accessibilityConnected, installGranted,
+                notificationAccessGranted, true);
     }
 
-    private static boolean assigned(SharedPreferences preferences, CameraButtonBindings.Action action) {
-        return CameraButtonBindings.load(preferences, action).isAssigned();
+    boolean satisfied(boolean cameraGranted, boolean overlayGranted,
+            boolean accessibilityConnected, boolean installGranted,
+            boolean notificationAccessGranted, boolean writeSecureSettingsGranted) {
+        return (!camera || cameraGranted) && (!overlay || overlayGranted)
+                && (!accessibility || accessibilityConnected) && (!install || installGranted)
+                && (!notificationAccess || notificationAccessGranted)
+                && (!writeSecureSettings || writeSecureSettingsGranted);
     }
+
 }

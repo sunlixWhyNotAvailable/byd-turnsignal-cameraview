@@ -28,6 +28,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import com.byd.extend.ui.AdbRecoveryUiBridge;
+import com.byd.extend.ui.UiLanguage;
 
 public final class CameraHelperService extends Service {
     interface AccessibilityRecoveryCallback {
@@ -35,6 +39,15 @@ public final class CameraHelperService extends Service {
     }
 
     private static volatile CameraHelperService activeInstance;
+    private static volatile AdbRecoverySnapshot latestAdbRecovery;
+    private static final CopyOnWriteArrayList<Runnable> adbRecoveryListeners =
+            new CopyOnWriteArrayList<>();
+    private static final String ACTION_ADB_RECOVERY_CHANGED =
+            "com.byd.extend.action.ADB_RECOVERY_CHANGED";
+    private static final String ACTION_ADB_WIFI_RETRY =
+            "com.byd.extend.action.ADB_WIFI_RETRY";
+    private static final String ACTION_ADB_READY =
+            "com.byd.extend.action.ADB_READY";
     private static final String CHANNEL_ID = "guard_service";
     private static final int NOTIFICATION_ID = 8713;
     private static final String ACTION_START =
@@ -232,8 +245,89 @@ public final class CameraHelperService extends Service {
     private boolean activityVisible;
     private boolean cameraPreviewActive;
     private boolean avasStartupPermissionAttempted;
+    private AdbRecoveryRuntime adbRecovery;
+    private AdbReminderOverlayRuntime adbReminder;
+    private final AtomicBoolean permissionsProvisioning = new AtomicBoolean();
+    private final LocalAdbClient.AccessStateListener serviceAdbListener = state -> {
+        AdbRecoveryRuntime recovery = adbRecovery;
+        if (recovery != null) recovery.onAdbAccessChanged(
+                state.status == LocalAdbClient.AccessState.Status.OK);
+        if (state.status == LocalAdbClient.AccessState.Status.OK) {
+            provisionAppPermissions("authorized_adb");
+        }
+    };
+    private boolean adbWasReady;
     private volatile Boolean weatherAccessibilityTarget;
     private volatile boolean runtimeNeedsReinit;
+
+    public static AdbRecoverySnapshot adbRecoverySnapshot() { return latestAdbRecovery; }
+
+    public static void addAdbRecoveryListener(Runnable listener) {
+        adbRecoveryListeners.addIfAbsent(listener);
+    }
+
+    public static void removeAdbRecoveryListener(Runnable listener) {
+        adbRecoveryListeners.remove(listener);
+    }
+
+    public static void adbRecoverySettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_ADB_RECOVERY_CHANGED));
+    }
+
+    public static void retryAdbWifi(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_ADB_WIFI_RETRY));
+    }
+
+    public static void suppressAdbReminder() {
+        CameraHelperService active = activeInstance;
+        if (active != null && active.adbRecovery != null) active.adbRecovery.suppressHint();
+    }
+
+    private void provisionAppPermissions(String reason) {
+        if (!permissionsProvisioning.compareAndSet(false, true)) return;
+        try {
+            weatherAccessibilityExecutor.execute(() -> {
+                try { AppPermissionProvisioner.ensure(this, reason, this::avasRecoveryEvent); }
+                finally {
+                    permissionsProvisioning.set(false);
+                    publishAdbRecoveryUi();
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException stopped) {
+            permissionsProvisioning.set(false);
+        }
+    }
+
+    private void publishAdbRecoveryUi() {
+        mainHandler.post(() -> {
+            if (activeInstance != this) return;
+            AdbRecoverySnapshot snapshot = latestAdbRecovery;
+            if (snapshot != null && adbReminder != null) {
+                SharedPreferences prefs = getSharedPreferences("settings", MODE_PRIVATE);
+                String language = AppLanguage.read(prefs);
+                UiLanguage uiLanguage = "uk".equals(language) ? UiLanguage.Ukrainian
+                        : "zh".equals(language) ? UiLanguage.Chinese : UiLanguage.English;
+                adbReminder.update(AdbRecoveryUiBridge.overlay(snapshot,
+                        new AdbReminderSettings(this), uiLanguage,
+                        prefs.getBoolean("ui_dark_theme", true)));
+            }
+            for (Runnable listener : adbRecoveryListeners) listener.run();
+        });
+    }
+
+    private void onAdbRecoverySnapshot(AdbRecoverySnapshot snapshot) {
+        latestAdbRecovery = snapshot;
+        publishAdbRecoveryUi();
+        boolean newlyReady = snapshot.authenticated5555() && !adbWasReady;
+        adbWasReady = snapshot.authenticated5555();
+        if (newlyReady) {
+            provisionAppPermissions("adb_recovery_ready");
+            postRuntime(() -> handleStartCommand(ServiceRuntimeCommand.capture(
+                    new Intent().setAction(ACTION_ADB_READY), 0, ACTION_START)));
+        }
+    }
 
     private void resumeOverlayIfIdle() {
         if (shouldResumeOverlay(cameraPreviewActive, activityVisible)) {
@@ -586,6 +680,17 @@ public final class CameraHelperService extends Service {
             }
         };
         serviceLog = new AsyncServiceLog(this::createLogFile, LOG_FLUSH_DELAY_MS);
+        adbRecovery = new AdbRecoveryRuntime(this, this::onAdbRecoverySnapshot,
+                this::avasRecoveryEvent);
+        adbReminder = new AdbReminderOverlayRuntime(this, new AdbReminderOverlayRuntime.Callback() {
+            @Override public void onRetry() { adbRecovery.retryWifi(); }
+            @Override public void onSuppressed() { adbRecovery.suppressHint(); }
+            @Override public void onAppearanceChanged(AdbReminderAppearance appearance) {
+                new AdbReminderSettings(CameraHelperService.this).saveAppearance(appearance);
+                publishAdbRecoveryUi();
+            }
+        });
+        LocalAdbClient.addAccessStateListener(serviceAdbListener);
         avasRecoveryDaemon = new AvasRecoveryDaemonController(
                 this, this::lifecycle, owns -> postRuntime(() -> {
                     CameraHelperMain.HelperBinder activeHelper = helper;
@@ -648,6 +753,8 @@ public final class CameraHelperService extends Service {
         }
         if (ACTION_SHUTDOWN.equals(action)) {
             GuardRecovery.setUserShutdownActive(this, true);
+            if (adbRecovery != null) adbRecovery.close();
+            if (adbReminder != null) adbReminder.close();
             setAvasWakeLock(false, "explicit_shutdown");
             avasRecoveryDaemon.reconcile(false, "explicit_shutdown");
             stopRuntime(true);
@@ -708,6 +815,23 @@ public final class CameraHelperService extends Service {
             stopServiceFromRuntime(command.startId);
             return;
         }
+        // Rights are provisioned independently; feature execution still observes runtime gates.
+        if (ACTION_START.equals(action) || ACTION_ACTIVITY_OPEN.equals(action)
+                || ACTION_SETTINGS_RELOADED.equals(action)) {
+            if (LocalAdbClient.readAccessState(this).status == LocalAdbClient.AccessState.Status.OK) {
+                provisionAppPermissions("service_entry");
+            }
+        }
+        if (!userShutdown && (shouldRecover || activityVisible
+                || ACTION_ACTIVITY_OPEN.equals(action))) {
+            if (ACTION_ADB_WIFI_RETRY.equals(action)) adbRecovery.retryWifi();
+            else if (!ACTION_ADB_READY.equals(action)) adbRecovery.startOrReconfigure(
+                    command.reason.contains("BOOT_COMPLETED")
+                            ? AdbRecoveryRuntime.Reason.BOOT : AdbRecoveryRuntime.Reason.START);
+            publishAdbRecoveryUi();
+        }
+        if (ACTION_ADB_WIFI_RETRY.equals(action)
+                || ACTION_ADB_RECOVERY_CHANGED.equals(action)) return;
         // Keep the global Accessibility filter alive for every recovering runtime and for the
         // foreground Activity, including auto-start-off sessions.  Update presence before the
         // !shouldRecover branch so ordinary settings changes cannot disable it mid-UI.
@@ -897,7 +1021,7 @@ public final class CameraHelperService extends Service {
         }
         dispatchWeatherAccessibilityCallbacks(cancelledCallbacks, false);
         if (Boolean.FALSE.equals(previous)) return;
-        weatherAccessibilityExecutor.execute(() -> applyWeatherAccessibility(false, false));
+        // Stopping a feature/runtime cancels its work, but never revokes an app permission.
     }
 
     private void requestWeatherAccessibilityRecovery(String reason) {
@@ -990,6 +1114,7 @@ public final class CameraHelperService extends Service {
 
     private boolean applyWeatherAccessibility(
             boolean enabled, boolean forceRebind, long recoveryEpoch) {
+        if (!enabled) return true;
         LocalAdbClient.Result currentResult = LocalAdbClient.executeAuthorizedText(
                 this, "settings get secure enabled_accessibility_services", 8_192,
                 this::lifecycle);
@@ -1116,6 +1241,9 @@ public final class CameraHelperService extends Service {
 
     @Override
     public void onDestroy() {
+        LocalAdbClient.removeAccessStateListener(serviceAdbListener);
+        if (adbRecovery != null) adbRecovery.close();
+        if (adbReminder != null) adbReminder.close();
         RuntimeLifecycleGate.TeardownResult teardown =
                 runtimeLifecycle.beginTeardown(runtimeQueue, this::destroyRuntime);
         stopForegroundRuntime();
@@ -1278,14 +1406,7 @@ public final class CameraHelperService extends Service {
                 helperRuntimeStarted, GuardRecovery.isUserShutdownActive(this), anyProfile);
         setAvasWakeLock(wakeRequired, reason);
         if (avasRecoveryDaemon != null) avasRecoveryDaemon.reconcile(daemonRequired, reason);
-        if (permissionTrigger && AvasNotificationAccess.required(settings)) {
-            boolean granted = AvasNotificationAccess.ensureGranted(
-                    this, reason, this::avasRecoveryEvent);
-            lifecycle("avas_notification_access_startup", "reason", reason,
-                    "granted", granted);
-            AvasRecoveryJournal.event(this, "avas_notification_access_startup",
-                    "reason", reason, "granted", granted);
-        }
+        if (permissionTrigger) provisionAppPermissions(reason);
     }
 
     private void avasRecoveryEvent(String kind, Object[] fields) {

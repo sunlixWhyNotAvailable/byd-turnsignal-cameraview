@@ -2,7 +2,7 @@ package com.byd.extend;
 
 import android.service.notification.NotificationListenerService;
 
-/** System-managed AVAS recovery entry point. Notification contents are intentionally never read. */
+/** System-managed AVAS/ADB recovery entry. Notification contents are never read. */
 public final class RecoveryNotificationListener extends NotificationListenerService {
     private long createdElapsedMs;
 
@@ -38,7 +38,7 @@ public final class RecoveryNotificationListener extends NotificationListenerServ
 
     private void recover(String reason) {
         boolean needed = GuardRecovery.shouldRecover(this)
-                && AvasNotificationAccess.hasEnabledProfiles(
+                && AvasNotificationAccess.required(
                         getSharedPreferences("settings", MODE_PRIVATE));
         boolean accepted = needed && GuardRecovery.startService(this, reason);
         AvasRecoveryJournal.event(this, "notification_listener_recovery",

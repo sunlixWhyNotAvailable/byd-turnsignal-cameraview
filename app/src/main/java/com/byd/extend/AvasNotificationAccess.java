@@ -20,7 +20,8 @@ final class AvasNotificationAccess {
         if (preferences == null) return false;
         try {
             return preferences.getBoolean(GuardRecovery.KEY_AUTO_START, true)
-                    && hasEnabledProfiles(preferences);
+                    && (hasEnabledProfiles(preferences)
+                        || preferences.getBoolean("adb_recovery_enabled", true));
         } catch (RuntimeException ignored) {
             return false;
         }
@@ -54,10 +55,9 @@ final class AvasNotificationAccess {
             Context context, String reason, BiConsumer<String, Object[]> events) {
         if (context == null) return false;
         Context app = context.getApplicationContext();
-        SharedPreferences preferences = app.getSharedPreferences("settings", Context.MODE_PRIVATE);
         ComponentName listener = listener(app);
         int userId = userIdForUid(Process.myUid());
-        return ensureGranted(required(preferences), userId,
+        return ensureGranted(true, userId,
                 listener.flattenToString(), reason, events,
                 () -> readGranted(app),
                 command -> LocalAdbClient.executeAuthorized(app, command, events));

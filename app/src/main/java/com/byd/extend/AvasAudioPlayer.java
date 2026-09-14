@@ -107,20 +107,17 @@ final class AvasAudioPlayer implements AutoCloseable {
 
             int channelMask = header.channels == 1
                     ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
-            int minimum = AudioTrack.getMinBufferSize(
-                    header.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT);
-            if (minimum <= 0) throw new IllegalStateException("Invalid AudioTrack buffer " + minimum);
-            int bufferBytes = align(Math.max(minimum, header.frameSize * 256), header.frameSize);
+            int bufferBytes = Math.toIntExact(header.dataBytes);
             output = new AudioTrack.Builder().setAudioAttributes(attributes)
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(header.sampleRate)
                             .setChannelMask(channelMask).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                    .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(bufferBytes).build();
-            if (output.getState() != AudioTrack.STATE_INITIALIZED) {
+                    .setTransferMode(AudioTrack.MODE_STATIC).setBufferSizeInBytes(bufferBytes).build();
+            if (output.getState() == AudioTrack.STATE_UNINITIALIZED) {
                 throw new IllegalStateException("AudioTrack not initialized");
             }
             event(diagnostics, "avas_track_state", "phase", "created", "state",
                     safeTrackState(output), "play_state", safePlayState(output),
-                    "buffer_bytes", bufferBytes, "transfer_mode", "stream",
+                    "buffer_bytes", bufferBytes, "transfer_mode", "static",
                     "session_id", output.getAudioSessionId());
             synchronized (trackLock) {
                 if (ticket != generation.get()) return;
@@ -133,6 +130,27 @@ final class AvasAudioPlayer implements AutoCloseable {
                 activeFocusMaintainer = focusMaintainer;
             }
             session.bind(output);
+            // STATIC writes always start at buffer offset zero: preload the entire file once.
+            {
+                byte[] pcm = new byte[bufferBytes];
+                try (FileInputStream input = new FileInputStream(wav)) {
+                    skipFully(input, header.dataOffset);
+                    readFully(input, pcm, pcm.length);
+                }
+                if (cancelled(ticket, cancelled)) return;
+                int written = output.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING);
+                if (cancelled(ticket, cancelled)) return;
+                if (written != pcm.length || output.getState() != AudioTrack.STATE_INITIALIZED) {
+                    throw new IllegalStateException("Static PCM preload=" + written
+                            + "/" + pcm.length + " state=" + output.getState());
+                }
+                framesWritten = written / header.frameSize;
+                fileFrames = framesWritten;
+                session.exteriorPcm(pcm, 0, written);
+                session.positiveWrite(output, "wav", framesWritten);
+            }
+            event(diagnostics, "avas_track_state", "phase", "preloaded", "state",
+                    safeTrackState(output), "transfer_mode", "static", "file_frames", fileFrames);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
             synchronized (trackLock) {
@@ -156,23 +174,9 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags(),
                     "attributes", attributes.toString());
 
-            byte[] pcm = new byte[align(Math.max(bufferBytes, 4096), header.frameSize)];
-            try (FileInputStream input = new FileInputStream(wav)) {
-                skipFully(input, header.dataOffset);
-                long remaining = header.dataBytes;
-                while (remaining > 0 && !cancelled(ticket, cancelled)) {
-                    int wanted = (int) Math.min(pcm.length, remaining);
-                    readFully(input, pcm, wanted);
-                    int written = write(output, pcm, null, wanted, header.frameSize, ticket,
-                            cancelled, currentVolume, initialVolume, exteriorGain, "wav", session);
-                    long writtenFrames = written / header.frameSize;
-                    framesWritten += writtenFrames;
-                    fileFrames += writtenFrames;
-                    remaining -= written;
-                    if (written < wanted) break;
-                }
-            }
-            drain(output, framesWritten, ticket, cancelled, session, exteriorGain);
+            // Unlike STREAM's final buffered tail, STATIC still has the whole clip to play.
+            long playbackMillis = (framesWritten * 1000 + header.sampleRate - 1) / header.sampleRate;
+            drain(output, framesWritten, ticket, cancelled, session, exteriorGain, playbackMillis + 3000);
             event(diagnostics, "avas_play_end", "interrupted", cancelled(ticket, cancelled),
                     "framesWritten", framesWritten, "silenceFrames", 0,
                     "fileFrames", fileFrames,
@@ -382,13 +386,13 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     private void drain(AudioTrack output, long framesWritten, long ticket,
             BooleanSupplier externalCancellation, SessionDiagnostics diagnostics) throws Exception {
-        drain(output, framesWritten, ticket, externalCancellation, diagnostics, null);
+        drain(output, framesWritten, ticket, externalCancellation, diagnostics, null, 3000);
     }
 
     private void drain(AudioTrack output, long framesWritten, long ticket,
             BooleanSupplier externalCancellation, SessionDiagnostics diagnostics,
-            ExteriorGain exteriorGain) throws Exception {
-        long deadline = SystemClock.elapsedRealtime() + 3000;
+            ExteriorGain exteriorGain, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMillis;
         while (!cancelled(ticket, externalCancellation)
                 && Integer.toUnsignedLong(output.getPlaybackHeadPosition()) < framesWritten) {
             if (exteriorGain != null) exteriorGain.update();

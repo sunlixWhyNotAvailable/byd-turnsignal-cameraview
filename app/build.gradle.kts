@@ -13,6 +13,12 @@ android {
         compose = true
     }
 
+    packaging {
+        // BC modules duplicate this Java 9 OSGi descriptor; Android does not use it.
+        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        resources.merges += "META-INF/LICENSE.md"
+    }
+
     defaultConfig {
         applicationId = "com.byd.extend"
         minSdk = 26
@@ -51,6 +57,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.core:core:1.13.1")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

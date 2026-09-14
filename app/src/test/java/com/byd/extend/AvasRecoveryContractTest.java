@@ -28,7 +28,8 @@ public final class AvasRecoveryContractTest {
         assertTrue(listener.contains("onListenerConnected()"));
         assertTrue(listener.contains("onListenerDisconnected()"));
         assertTrue(listener.contains("GuardRecovery.startService"));
-        assertTrue(listener.contains("hasEnabledProfiles"));
+        assertTrue(listener.contains("AvasNotificationAccess.required"));
+        assertTrue(listener.contains("GuardRecovery.shouldRecover"));
         assertFalse(listener.contains("onNotificationPosted"));
         assertFalse(listener.contains("StatusBarNotification"));
     }

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +48,7 @@ internal fun SettingsScreen(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    sidebarScroll: androidx.compose.foundation.ScrollState,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
 ) {
     val focus = LocalFocusManager.current
@@ -62,7 +62,7 @@ internal fun SettingsScreen(
                 .padding(horizontal = 8.dp, vertical = 10.dp)) {
                 Text(strings.text("КАТЕГОРІЇ", "CATEGORIES"), color = colors.muted, fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).selectableGroup(),
+                Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(sidebarScroll).selectableGroup(),
                     verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     val icons = listOf(Icons.Outlined.Security, Icons.Outlined.Videocam, Icons.Outlined.BugReport)
                     strings.settingsCategories.forEachIndexed { index, title ->
@@ -249,7 +249,15 @@ private fun CameraOutputSettings(state: SettingsUiState, strings: UiStrings, col
 private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit) {
     Section(strings.settingsCategories[2], colors, bodyPadding = 0.dp) {
-        if (state.feedback.visible) Box(Modifier.padding(14.dp)) { StatusText(state.feedback, colors) }
+        val operationFeedbackHidden = state.feedbackOperation in setOf(
+            SettingsOperation.Logs,
+            SettingsOperation.Compatibility,
+            SettingsOperation.Preset,
+            SettingsOperation.Import,
+        )
+        if (state.feedback.visible && !operationFeedbackHidden) {
+            Box(Modifier.padding(14.dp)) { StatusText(state.feedback, colors) }
+        }
         SettingsActionRow(strings.text("Діагностичні логи", "Diagnostic logs"),
             strings.text("Поділитися або очистити локальну історію", "Share or clear local history"), colors) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -269,7 +277,7 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
             }
         }
         Divider(colors)
-        SettingsActionRow(strings.text("Пакет сумісності", "Compatibility package"),
+        SettingsActionRow(strings.text("Експорт конфігурації", "Export configuration", "导出配置"),
             strings.text("Дані системи для перевірки сумісності", "System details for compatibility checks"),
             colors, verticalPadding = 8.dp) {
             Row(Modifier.width(586.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

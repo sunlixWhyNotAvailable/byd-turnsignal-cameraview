@@ -31,7 +31,7 @@ enum class DisplayTarget { Tablet, Cluster }
 enum class CalibrationStage { Original, Correction, Output }
 enum class ReverseSource { Rear, Front }
 enum class DiagnosticMode { Signals, Direct, Avm }
-enum class SignalsCategory { TurnSignals, Music, Weather, Avas }
+enum class SignalsCategory { TurnSignals, Music, Weather, Avas, AdbRecovery }
 enum class SettingsCategory { Permissions, CameraOutput, Logs }
 enum class SettingsOperation { AutoStart, Adb, Update, Logs, Compatibility, Preset, Import }
 enum class DialogKind { Background, Update, Shutdown, Progress, Message, ReverseButtonCapture }
@@ -701,6 +701,7 @@ data class BydExtendUiState(
     val header: HeaderUiState = HeaderUiState(),
     val signals: SignalsUiState = SignalsUiState(),
     val avas: AvasUiState = AvasUiState(),
+    val adbRecovery: AdbRecoveryUiState = AdbRecoveryUiState(),
     val blind: BlindUiState = BlindUiState(),
     val parking: ParkingUiState = ParkingUiState(),
     val reverse: ReverseUiState = ReverseUiState(),
@@ -745,6 +746,7 @@ sealed interface SelectionTarget {
 }
 
 sealed interface BydExtendUiAction {
+    @Immutable data class AdbRecovery(val action: AdbRecoveryUiAction) : BydExtendUiAction
     @Immutable data class Avas(val action: AvasBackendAction) : BydExtendUiAction
     @Immutable data class SetProfileBorder(
         val profile: CameraProfileId, val width: String? = null, val argb: Int? = null,

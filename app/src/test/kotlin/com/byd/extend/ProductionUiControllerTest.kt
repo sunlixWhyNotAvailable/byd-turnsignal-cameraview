@@ -39,13 +39,21 @@ import com.byd.extend.ui.AvasProfileIds
 import com.byd.extend.ui.AvasProfileUiState
 import com.byd.extend.ui.AvasUiState
 import com.byd.extend.ui.SignalsCategory
+import com.byd.extend.ui.RuntimeUiSelections
+import com.byd.extend.ui.RuntimeUiSession
 import com.byd.extend.ui.steeringButtonLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class ProductionUiControllerTest {
+    @Before
+    fun clearProcessUiSession() {
+        RuntimeUiSession.clearProcessState()
+    }
+
     @Test
     fun legacyBlockedReloadKeepsEnrichedUpdateHintSettings() {
         val preferences = TestSharedPreferences()
@@ -114,6 +122,28 @@ class ProductionUiControllerTest {
         assertEquals(1, state.profile.calibration.outputMode)
         assertEquals(binding, state.sourceBinding)
         assertEquals(before, preferences.all)
+    }
+
+    @Test
+    fun newControllerRestoresCapturedProcessSelectionsBeforeItsFirstState() {
+        val firstPreferences = TestSharedPreferences()
+        val first = ProductionUiController(firstPreferences, FakeBackend(firstPreferences))
+        first.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        first.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.Widget.ordinal))
+        first.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseSource), ReverseSource.Front.ordinal))
+        RuntimeUiSession.INSTANCE.getOrCreate(RuntimeUiSelections.from(first.state))
+            .select(RuntimeUiSelections.from(first.state))
+
+        val recreatedPreferences = TestSharedPreferences()
+        val recreated = ProductionUiController(
+            recreatedPreferences, FakeBackend(recreatedPreferences))
+
+        assertEquals(RootTab.Reverse, recreated.state.activeTab)
+        assertEquals(ReverseElement.Widget, recreated.state.reverse.selectedElement)
+        assertEquals(ReverseSource.Front, recreated.state.reverse.selectedSource)
+        assertTrue(recreated.state.reverse.showFront)
     }
 
     @Test

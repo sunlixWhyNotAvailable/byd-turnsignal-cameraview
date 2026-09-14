@@ -748,8 +748,16 @@ public final class CameraProbeActivity extends ComponentActivity
     private long buttonLearningEpoch;
     private final SharedPreferences.OnSharedPreferenceChangeListener permissionsPreferenceListener =
             (prefs, key) -> mainHandler.post(() -> {
-                if (activityStarted && !activityDestroyed) refreshProductionHeader();
+                if (activityStarted && !activityDestroyed) {
+                    refreshProductionHeader();
+                    if (productionUi != null) productionUi.refreshAdbRecoveryState();
+                }
             });
+    private final Runnable adbRecoveryListener = () -> {
+        if (!activityStarted || activityDestroyed) return;
+        if (productionUi != null) productionUi.refreshAdbRecoveryState();
+        refreshProductionHeader();
+    };
     private final WeatherRefreshAccessibilityService.ConnectionListener accessibilityConnectionListener =
             connected -> mainHandler.post(() -> {
                 if (!activityStarted || activityDestroyed) return;
@@ -1132,10 +1140,12 @@ public final class CameraProbeActivity extends ComponentActivity
         updateCheckInFlight = UpdateHintRuntime.get(this).isChecking();
         publishReverseOwnerPresence();
         LocalAdbClient.setAccessStateListener(adbAccessListener);
+        CameraHelperService.addAdbRecoveryListener(adbRecoveryListener);
         preferences.registerOnSharedPreferenceChangeListener(permissionsPreferenceListener);
         WeatherRefreshAccessibilityService.addConnectionListener(accessibilityConnectionListener);
         refreshProductionHeader();
         invalidStockSurfaceRetryUsed = false;
+        productionUi.refreshAdbRecoveryState();
         CameraHelperService.activityOpened(this);
         if (!helperBound) startAndBindHelperService();
         enqueueHelperCallbackRegistration(helperCallbackRegistration.start());
@@ -1271,6 +1281,7 @@ public final class CameraProbeActivity extends ComponentActivity
         activityStarted = false;
         stopAvasListAudition(avasAudition.getSessionId());
         preferences.unregisterOnSharedPreferenceChangeListener(permissionsPreferenceListener);
+        CameraHelperService.removeAdbRecoveryListener(adbRecoveryListener);
         WeatherRefreshAccessibilityService.removeConnectionListener(accessibilityConnectionListener);
         clearReverseOwnerPresence();
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
@@ -1388,7 +1399,7 @@ public final class CameraProbeActivity extends ComponentActivity
         settingsTransferInProgress = true;
         activeSettingsOperation = operation;
         if (settingsPanel != null) settingsPanel.setSettingsTransferInProgress(true);
-        publishSettingsFeedback(runtimeText(R.string.runtime_status_operation_started), StatusTone.Warning);
+        recordOperationFeedback(runtimeText(R.string.runtime_status_operation_started));
         publishSettingsOperation(operation, runtimeText(R.string.runtime_status_operation_started), StatusTone.Warning, true);
         cancelPendingForegroundAdbAuthorization();
         cancelPendingBackgroundStartSettings();
@@ -1399,7 +1410,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private void showSettingsTransferProgress(String message) {
         dismissSettingsTransferDialog();
         if (settingsPanel != null) settingsPanel.setTransferStatus(message);
-        publishSettingsFeedback(message, StatusTone.Warning);
+        recordOperationFeedback(message);
         settingsTransferDialog = new AlertDialog.Builder(this)
                 .setTitle(runtimeText(R.string.runtime_settings_transfer))
                 .setMessage(message)
@@ -1435,7 +1446,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 ? error.getClass().getSimpleName() : error.getMessage();
         String failure = runtimeText(R.string.runtime_settings_transfer_failed_detail, detail);
         if (settingsPanel != null) settingsPanel.setTransferStatus(failure);
-        publishSettingsFeedback(failure, StatusTone.Error);
+        recordOperationFeedback(failure);
         if (operation != null) publishSettingsOperation(
                 operation, failure, StatusTone.Error, false);
         settingsTransferDialog = new AlertDialog.Builder(this)
@@ -1461,8 +1472,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     if (activityDestroyed || isFinishing()) return;
                     if (settingsPanel != null) settingsPanel.setTransferStatus(
                             runtimeText(R.string.runtime_preset_ready));
-                    publishSettingsFeedback(
-                            runtimeText(R.string.runtime_preset_ready), StatusTone.Ok);
+                    recordOperationFeedback(runtimeText(R.string.runtime_preset_ready));
                     if (!activityResumed) return;
                     try {
                         Uri uri = FileProvider.getUriForFile(
@@ -1491,7 +1501,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!beginSettingsTransfer(SettingsOperation.Preset)) return;
         if (settingsPanel != null) settingsPanel.setTransferStatus(
                 runtimeText(R.string.runtime_preset_choose));
-        publishSettingsFeedback(runtimeText(R.string.runtime_preset_choose), StatusTone.Warning);
+        recordOperationFeedback(runtimeText(R.string.runtime_preset_choose));
         try {
             Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                     .addCategory(Intent.CATEGORY_OPENABLE)
@@ -1520,7 +1530,7 @@ public final class CameraProbeActivity extends ComponentActivity
             String canceled = runtimeText(R.string.runtime_preset_load_canceled);
             if (settingsPanel != null) settingsPanel.setTransferStatus(
                     canceled);
-            publishSettingsFeedback(canceled, StatusTone.Warning);
+            recordOperationFeedback(canceled);
             return;
         }
         settingsTransferInProgress = true;
@@ -1580,9 +1590,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 status = runtimeText(R.string.runtime_legacy_restore_failed_detail, detail);
             }
             if (settingsPanel != null) settingsPanel.setTransferStatus(status);
-            publishSettingsFeedback(status, StatusTone.Error);
-            Toast.makeText(this, runtimeText(R.string.runtime_legacy_restore_failed),
-                    Toast.LENGTH_LONG).show();
+            recordOperationFeedback(status);
             return;
         }
         try {
@@ -1597,10 +1605,7 @@ public final class CameraProbeActivity extends ComponentActivity
             settingsPanel.setTransferStatus(
                     runtimeText(R.string.runtime_legacy_restore_success));
         }
-        publishSettingsFeedback(
-                runtimeText(R.string.runtime_legacy_restore_success), StatusTone.Ok);
-        Toast.makeText(this, runtimeText(R.string.runtime_legacy_restore_success),
-                Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_legacy_restore_success));
         recreate();
     }
 
@@ -1682,8 +1687,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     record("settings_transfer_applied", "legacy", legacy, "count", values.size());
                     finishSettingsTransfer();
                     if (activityDestroyed || isFinishing()) return;
-                    Toast.makeText(this, runtimeText(legacy ? R.string.runtime_imported_settings
-                            : R.string.runtime_preset_loaded), Toast.LENGTH_LONG).show();
+                    recordOperationFeedback(runtimeText(legacy ? R.string.runtime_imported_settings
+                            : R.string.runtime_preset_loaded));
                     recreate();
                 });
             } catch (Exception error) {
@@ -1878,7 +1883,7 @@ public final class CameraProbeActivity extends ComponentActivity
             publishSettingsOperation(SettingsOperation.Logs,
                     runtimeText(R.string.runtime_logs_failed), StatusTone.Error, false);
             if (activityResumed && !activityDestroyed) {
-                Toast.makeText(this, runtimeText(R.string.runtime_logs_failed), Toast.LENGTH_LONG).show();
+                recordOperationFeedback(runtimeText(R.string.runtime_logs_failed));
             }
             return;
         }
@@ -1914,7 +1919,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     "error", shareError.toString());
             publishSettingsOperation(SettingsOperation.Logs,
                     runtimeText(R.string.runtime_share_menu_failed), StatusTone.Error, false);
-            Toast.makeText(this, runtimeText(R.string.runtime_share_menu_failed), Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_share_menu_failed));
         }
     }
 
@@ -2016,7 +2021,7 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         publishSettingsOperation(compatibility ? SettingsOperation.Compatibility : SettingsOperation.Logs,
                 runtimeText(message), tone, false);
-        Toast.makeText(this, runtimeText(message), Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(message));
         if (activityResumed) advanceStartupAuthorizationFlow();
     }
 
@@ -2551,8 +2556,7 @@ public final class CameraProbeActivity extends ComponentActivity
             publishSettingsOperation(SettingsOperation.Compatibility,
                     runtimeText(R.string.runtime_car_compat_canceled), StatusTone.Warning, false);
             if (activityResumed && !activityDestroyed) {
-                Toast.makeText(this, runtimeText(R.string.runtime_car_compat_cancel_done),
-                        Toast.LENGTH_LONG).show();
+                recordOperationFeedback(runtimeText(R.string.runtime_car_compat_cancel_done));
             }
             return;
         }
@@ -2561,8 +2565,7 @@ public final class CameraProbeActivity extends ComponentActivity
             publishSettingsOperation(SettingsOperation.Compatibility,
                     runtimeText(R.string.runtime_car_compat_failed), StatusTone.Error, false);
             if (activityResumed && !activityDestroyed) {
-                Toast.makeText(this, runtimeText(R.string.runtime_car_compat_failed),
-                        Toast.LENGTH_LONG).show();
+                recordOperationFeedback(runtimeText(R.string.runtime_car_compat_failed));
             }
             return;
         }
@@ -2599,8 +2602,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     "error", shareError.toString());
             publishSettingsOperation(SettingsOperation.Compatibility,
                     runtimeText(R.string.runtime_share_menu_failed), StatusTone.Error, false);
-            Toast.makeText(this, runtimeText(R.string.runtime_share_menu_failed),
-                    Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_share_menu_failed));
         }
     }
 
@@ -2823,6 +2825,37 @@ public final class CameraProbeActivity extends ComponentActivity
     public boolean runtimeBlockedByLegacy() {
         legacyRuntimeBlocked = LegacySettingsImporter.blocksRuntime(this);
         return legacyRuntimeBlocked;
+    }
+
+    @Override
+    public com.byd.extend.ui.AdbRecoveryUiState productionAdbRecoveryState() {
+        return com.byd.extend.ui.AdbRecoveryUiBridge.state(
+                CameraHelperService.adbRecoverySnapshot(), new AdbReminderSettings(this));
+    }
+
+    @Override
+    public void onProductionAdbRecoveryAction(com.byd.extend.ui.AdbRecoveryUiAction action) {
+        if (shutdownRequested || activityDestroyed) return;
+        AdbReminderSettings settings = new AdbReminderSettings(this);
+        if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetRecoveryEnabled) {
+            settings.setRecoveryEnabled(
+                    ((com.byd.extend.ui.AdbRecoveryUiAction.SetRecoveryEnabled) action).getEnabled());
+        } else if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetReminderEnabled) {
+            settings.setReminderEnabled(
+                    ((com.byd.extend.ui.AdbRecoveryUiAction.SetReminderEnabled) action).getEnabled());
+        } else if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.UpdateReminderAppearance) {
+            settings.saveAppearance(
+                    ((com.byd.extend.ui.AdbRecoveryUiAction.UpdateReminderAppearance) action).getAppearance());
+        } else if (action == com.byd.extend.ui.AdbRecoveryUiAction.Retry.INSTANCE) {
+            record("adb_recovery_manual_retry");
+            CameraHelperService.retryAdbWifi(this);
+            return;
+        } else if (action == com.byd.extend.ui.AdbRecoveryUiAction.DismissReminder.INSTANCE) {
+            CameraHelperService.suppressAdbReminder();
+            return;
+        }
+        CameraHelperService.adbRecoverySettingsChanged(this);
+        refreshProductionHeader();
     }
 
     @Override
@@ -3292,8 +3325,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     break;
                 case LoadPreset:
                     if (preset == null) {
-                        Toast.makeText(this, runtimeText(R.string.runtime_preset_missing),
-                                Toast.LENGTH_LONG).show();
+                        recordOperationFeedback(runtimeText(R.string.runtime_preset_missing));
                         return;
                     }
                     calibration = preset;
@@ -3347,9 +3379,8 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             if (action.getKind() == MirrorBackendActionKind.SavePreset
                     || action.getKind() == MirrorBackendActionKind.LoadPreset) {
-                Toast.makeText(this, runtimeText(action.getKind() == MirrorBackendActionKind.SavePreset
-                        ? R.string.runtime_preset_saved : R.string.runtime_preset_loaded_short),
-                        Toast.LENGTH_LONG).show();
+                recordOperationFeedback(runtimeText(action.getKind() == MirrorBackendActionKind.SavePreset
+                        ? R.string.runtime_preset_saved : R.string.runtime_preset_loaded_short));
             }
             transientProfilePreviewId = null;
             transientProfilePreviewFov = null;
@@ -4356,8 +4387,18 @@ public final class CameraProbeActivity extends ComponentActivity
             SettingsOperation operation, String text, StatusTone tone,
             boolean pending, boolean claimFeedback) {
         String localized = localizedCameraStatus(localizedGuardStatus(text));
+        boolean diagnosticOnly = operation == SettingsOperation.Logs
+                || operation == SettingsOperation.Compatibility
+                || operation == SettingsOperation.Preset || operation == SettingsOperation.Import;
+        if (diagnosticOnly) record("settings_operation", "operation", operation.name(),
+                "pending", pending, "tone", tone.name(), "message", localized);
         if (productionUi != null) productionUi.setSettingsOperation(
-                operation, new StatusUiState(localized, tone, true), pending, claimFeedback);
+                operation, new StatusUiState(diagnosticOnly ? "" : localized, tone,
+                        !diagnosticOnly), pending, claimFeedback);
+    }
+
+    private void recordOperationFeedback(String message) {
+        record("settings_operation_feedback", "message", message);
     }
 
     private void publishAdbOperation(boolean pending) {
@@ -4378,9 +4419,10 @@ public final class CameraProbeActivity extends ComponentActivity
                         updateInstallRequested).satisfied(
                         checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
                         android.provider.Settings.canDrawOverlays(this),
-                        WeatherRefreshAccessibilityService.isConnected(),
+                        AppPermissionProvisioner.hasAccessibilityAccess(this),
                         android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls(),
-                        AvasNotificationAccess.isGranted(this))));
+                        AvasNotificationAccess.isGranted(this),
+                        AppPermissionProvisioner.hasWriteSecureSettings(this))));
     }
 
     static HeaderUiState productionHeader(LocalAdbClient.AccessState.Status access,
@@ -10716,14 +10758,14 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraCalibrationPreset.saveParking(preferences, profile);
             updateCalibrationCropReadouts();
             notifyCalibrationSettingsChanged();
-            Toast.makeText(this, runtimeText(R.string.runtime_preset_saved), Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_preset_saved));
             record("parking_calibration_preset_saved", "camera", profile.wireName);
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.saveCamera(preferences, profile);
         updateCalibrationCropReadouts();
-        Toast.makeText(this, runtimeText(R.string.runtime_preset_saved), Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_preset_saved));
         record("camera_calibration_preset_saved", "camera", profile.wireName);
     }
 
@@ -10732,22 +10774,20 @@ public final class CameraProbeActivity extends ComponentActivity
         if (calibrationParkingMode) {
             ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
             if (!CameraCalibrationPreset.loadParking(preferences, profile)) {
-                Toast.makeText(this, runtimeText(R.string.runtime_preset_missing),
-                        Toast.LENGTH_LONG).show();
+                recordOperationFeedback(runtimeText(R.string.runtime_preset_missing));
                 return;
             }
             refreshCalibrationSettings("parking_preset_loaded");
-            Toast.makeText(this, runtimeText(R.string.runtime_preset_loaded_short), Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_preset_loaded_short));
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         if (!CameraCalibrationPreset.loadCamera(preferences, profile)) {
-            Toast.makeText(this, runtimeText(R.string.runtime_preset_missing),
-                    Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_preset_missing));
             return;
         }
         refreshCalibrationSettings("camera_preset_loaded");
-        Toast.makeText(this, runtimeText(R.string.runtime_preset_loaded_short), Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_preset_loaded_short));
     }
 
     private void mirrorCameraCalibration() {
@@ -10756,15 +10796,13 @@ public final class CameraProbeActivity extends ComponentActivity
             ParkingCameraProfile profile = ParkingCameraProfile.of(calibrationParkingCameraId);
             if (!CameraCalibrationPreset.mirrorParking(preferences, profile)) return;
             refreshCalibrationSettings("parking_calibration_mirrored");
-            Toast.makeText(this, runtimeText(R.string.runtime_settings_mirrored),
-                    Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_settings_mirrored));
             return;
         }
         CameraProfile profile = CameraProfile.of(calibrationCameraId);
         CameraCalibrationPreset.mirrorCamera(preferences, profile);
         refreshCalibrationSettings("camera_calibration_mirrored");
-        Toast.makeText(this, runtimeText(R.string.runtime_settings_mirrored),
-                Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_settings_mirrored));
     }
 
     private void toggleCalibrationOutputMirror() {
@@ -10799,7 +10837,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     preferences, reverseCalibrationCameraIndex);
         }
         updateReverseCalibrationCropReadouts();
-        Toast.makeText(this, runtimeText(R.string.runtime_preset_saved), Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_preset_saved));
         record("reverse_calibration_preset_saved",
                 "camera_index", reverseCalibrationCameraIndex);
     }
@@ -10813,12 +10851,11 @@ public final class CameraProbeActivity extends ComponentActivity
                         : CameraCalibrationPreset.loadReverse(
                                 preferences, reverseCalibrationCameraIndex));
         if (!loaded) {
-            Toast.makeText(this, runtimeText(R.string.runtime_preset_missing),
-                    Toast.LENGTH_LONG).show();
+            recordOperationFeedback(runtimeText(R.string.runtime_preset_missing));
             return;
         }
         refreshCalibrationSettings("reverse_preset_loaded");
-        Toast.makeText(this, runtimeText(R.string.runtime_preset_loaded_short), Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_preset_loaded_short));
     }
 
     private void mirrorReverseCalibration() {
@@ -10831,8 +10868,7 @@ public final class CameraProbeActivity extends ComponentActivity
                                 preferences, reverseCalibrationCameraIndex));
         if (!mirrored) return;
         refreshCalibrationSettings("reverse_calibration_mirrored");
-        Toast.makeText(this, runtimeText(R.string.runtime_settings_mirrored),
-                Toast.LENGTH_LONG).show();
+        recordOperationFeedback(runtimeText(R.string.runtime_settings_mirrored));
     }
 
     private void refreshCalibrationSettings(String reason) {
@@ -11834,7 +11870,7 @@ public final class CameraProbeActivity extends ComponentActivity
         String clearing = runtimeText(R.string.runtime_logs_clearing);
         publishSettingsOperation(SettingsOperation.Logs,
                 clearing, StatusTone.Warning, true);
-        publishSettingsFeedback(clearing, StatusTone.Warning);
+        recordOperationFeedback(clearing);
         AsyncServiceLog log = activityLog;
         if (log != null) {
             log.flush(() -> logExportExecutor.execute(this::clearCaptureLogsOnWorker));
@@ -11862,7 +11898,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     : runtimeText(R.string.runtime_logs_clear_partial,
                             deletedCount, failedCount);
             StatusTone tone = failedCount == 0 ? StatusTone.Ok : StatusTone.Warning;
-            publishSettingsFeedback(message, tone);
+            recordOperationFeedback(message);
             publishSettingsOperation(SettingsOperation.Logs, message, tone, false);
         });
     }
@@ -13820,7 +13856,7 @@ public final class CameraProbeActivity extends ComponentActivity
             LocalAdbClient.Result result = LocalAdbClient.authorize(
                     getApplicationContext(), mode, this::record);
             if (result.ok) {
-                AvasNotificationAccess.ensureGranted(
+                AppPermissionProvisioner.ensure(
                         getApplicationContext(), operation, this::record);
             }
             mainHandler.post(() -> {
@@ -14353,7 +14389,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     publishAdbOperation(adbAuthPending);
                     if (json.optBoolean("ok")) {
                         ipcExecutor.execute(() -> {
-                            AvasNotificationAccess.ensureGranted(getApplicationContext(),
+                            AppPermissionProvisioner.ensure(getApplicationContext(),
                                     "adb_authorization_result", this::record);
                             mainHandler.post(() -> {
                                 if (activityStarted && !activityDestroyed) {
@@ -14365,9 +14401,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 } else if ("helper_launch".equals(kind) && !json.optBoolean("ok")) {
                     telemetryReady = false;
                     manualGearPark = false;
-                    publishSettingsFeedback(runtimeText(R.string.runtime_status_helper_error,
-                                    json.optString("error")),
-                            StatusTone.Error);
+                    record("helper_launch_ui_detail_suppressed", "error", json.optString("error"));
                 } else if ("helper_death".equals(kind)
                         || "helper_ping_failed".equals(kind)) {
                     if ("helper_death".equals(kind)
@@ -14381,8 +14415,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     manualGearPark = false;
                     publishGuardStatus("Helper відновлюється: "
                             + json.optString("error"), StatusTone.Error);
-                    publishSettingsFeedback("Helper відновлюється: "
-                            + json.optString("error"), StatusTone.Error);
+                    record("helper_recovery_ui_detail_suppressed", "error", json.optString("error"));
                 } else if ("guard_config".equals(kind)) {
                     if (json.optBoolean("active")) {
                         publishGuardStatus("Guard активний", StatusTone.Ok);

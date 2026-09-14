@@ -163,8 +163,11 @@ to the Reverse camera-section title; direct-camera readiness remains a separate 
 Global Auto-start controls autonomous startup and recovery; turning it off still permits manual
 Mirror use. An unavailable instrument cluster does not redirect the widget to the tablet.
 Blind and Mirror editors support bounded independent width/height and drag/resize, with 0.1%
-placement precision. Tab/subsection scroll positions are remembered within the application process
-and cleared on explicit Shutdown or process death.
+placement precision. Each tab/subsection has an independent scroll position, including Integrations
+and Settings categories and their separate sidebars. A data-only process session captures current
+selections and measured viewports on navigation and Activity pause/stop/destroy/disposal, then
+restores them after layout. Android saved-state restoration remains available when the system
+restores the task. Explicit Shutdown detaches the old session; scrolling never writes configuration.
 
 Fresh installations start in English regardless of the tablet language. Existing effective
 language choices are preserved, and the Chinese selector label remains `中文` in every language.
@@ -177,7 +180,23 @@ bug-icon-only button with a localized accessibility label.
 ## BYD integrations and exterior sounds
 
 BYD integrations uses the same category layout as Settings: Turn signals, Music and lighting,
-Weather, and AVAS (external speaker). Existing integration settings are preserved.
+Weather, AVAS (external speaker), and ADB recovery. Existing integration settings are preserved.
+
+ADB recovery restores previously opened and authorized local ADB; it cannot perform the first
+unlock or authorize an unknown key. It is enabled by default and runs in the app service before
+shell-helper startup. A working authenticated port5555 is left alone. Otherwise, previously granted
+WRITE_SECURE_SETTINGS access lets the app request system ADB/Wi-Fi debugging startup and discover
+the tablet's local TLS endpoint. The existing Extend RSA identity authenticates that endpoint;
+the app requests port5555, verifies it with a real command, and cleans up only TLS it enabled.
+No arbitrary port scan, test port5556, forced Wi-Fi0-to-1 bounce or new watchdog is used.
+
+While Wi-Fi is connected and recovery remains unresolved, the app requests Wi-Fi debugging every
+15 seconds only when its setting is0. Manual Retry is immediate. A setting value does not prove
+consent refusal, dialog visibility or successful ADB. The real status and Retry rows remain visible
+when disabled. An optional movable reminder starts after5 seconds waiting for Wi-Fi and disappears
+on connection or a one-second hold, without canceling recovery or returning in the same cycle.
+Its appearance and placement are configurable. Full daemon-OFF/reboot recovery on the vehicle
+remains unverified; this is not a guaranteed way around firmware restrictions.
 
 AVAS has separate Lock, Unlock, Power off and Power on profiles. Each starts disabled, with a
 protected one-second Test sound, random playback off and volume15%. Existing settings and
@@ -218,6 +237,10 @@ destroy the player. A helper restart starts from current telemetry without repla
 Explicit Shutdown stops playback and automatic recovery until BYD Extend is opened again.
 The exterior route uses device3 and the complete selected file without an added silent prefix;
 internal note audition also has no added silence. The existing80ms OEM preparation remains.
+This A/B candidate preloads the complete exterior PCM into a STATIC AudioTrack before playback;
+internal note audition remains STREAM. STATIC uses memory proportional to the decoded file
+length. The owner reports full playback of the actual composition with STATIC; the underlying
+cause of STREAM losing the beginning has not been established.
 NAV volume and mute are saved, NAV is muted during preparation, then volume1 and unmute are
 applied for exterior playback. Cleanup restores the original values. Transient-exclusive focus
 is requested again approximately every120ms only while an exterior sound is playing, including
@@ -226,7 +249,7 @@ Main-route rejection is not treated as success merely because an optional SDK or
 request succeeded. Partial preparation and interrupted older device3/CHANNEL0 sessions retain
 their matching cleanup. Saved user settings are not reset.
 
-With Auto-start and any automatic AVAS profile enabled, notification-listener access is required
+With Auto-start and either automatic AVAS profiles or ADB recovery enabled, notification-listener access is required
 for early recovery. The application provisions its own listener through already authorized local
 ADB and verifies access locally; the Permissions indicator does not need ADB for that readback.
 Notification contents are not read or recorded. Listener callbacks, a separate shell keepalive
@@ -238,7 +261,11 @@ lock even with the screen or ignition off. Disabling all profiles, explicit Shut
 teardown releases it. This may increase parked power consumption; the additional cost has not
 been measured. A wake lock does not survive kernel reboot: the recovery chain must restart the
 application and shell processes. Local ADB must still be available for a cold helper launch;
-this feature does not itself reopen a disabled ADB daemon.
+the separate app-owned ADB integration can request system recovery before that launch.
+When authorized ADB is available, the app provisions and locally reads back its own user's
+WRITE_SECURE_SETTINGS, exact notification listener and Accessibility access regardless of feature
+switches. Existing grants are not revoked when a feature is disabled, and other apps' components
+are retained. The accepted ADB authorization-expiry setting is read/written/read back as0.
 
 The combined Production path and recovery after kernel reboot still require vehicle validation;
 compatibility with other firmware is not established. Configure and audition at low volume while parked. AVAS does not

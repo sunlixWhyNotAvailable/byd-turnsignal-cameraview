@@ -22,6 +22,9 @@ import com.byd.extend.UpdateHintAppearance
 interface ProductionUiBackend {
     fun onProductionUiAction(action: BydExtendUiAction)
 
+    fun productionAdbRecoveryState(): AdbRecoveryUiState = AdbRecoveryUiState()
+    fun onProductionAdbRecoveryAction(action: AdbRecoveryUiAction) = Unit
+
     /** Current AVAS configuration and runtime playback state supplied by the Activity. */
     fun productionAvasState(): AvasUiState = AvasUiState()
 
@@ -98,7 +101,10 @@ class ProductionUiController @JvmOverloads constructor(
     private val flushedPreviewValues = linkedMapOf<NumberTarget, String>()
     private val flushedPreviewSessions = linkedMapOf<NumberTarget, Long>()
 
-    var state: BydExtendUiState by mutableStateOf(readState())
+    var state: BydExtendUiState by mutableStateOf(readState().let { fresh ->
+        val session = RuntimeUiSession.getOrCreate(RuntimeUiSelections.from(fresh))
+        if (fresh.legacyRuntimeBlocked) fresh else session.selections().applyTo(fresh)
+    })
         private set
 
     fun dispatch(action: BydExtendUiAction) {
@@ -162,6 +168,11 @@ class ProductionUiController @JvmOverloads constructor(
         }
         var typedBackendHandled = false
         when (action) {
+            is BydExtendUiAction.AdbRecovery -> {
+                typedBackendHandled = true
+                backend.onProductionAdbRecoveryAction(action.action)
+                refreshAdbRecoveryState()
+            }
             is BydExtendUiAction.Avas -> {
                 typedBackendHandled = true
                 backend.onProductionAvasAction(action.action)
@@ -169,6 +180,7 @@ class ProductionUiController @JvmOverloads constructor(
             }
             is BydExtendUiAction.Navigate -> {
                 state = state.copy(activeTab = action.tab)
+                RuntimeUiSession.updateSelections(RuntimeUiSelections.from(state))
                 preferences.edit().putInt("selected_tab", action.tab.legacyTab()).apply()
             }
             is BydExtendUiAction.SetLanguage -> {
@@ -584,6 +596,10 @@ class ProductionUiController @JvmOverloads constructor(
     /** Refresh helper/file-picker state without disturbing navigation, camera hosts, or feedback. */
     fun refreshAvasState() { state = state.copy(avas = backend.productionAvasState()) }
 
+    fun refreshAdbRecoveryState() {
+        state = state.copy(adbRecovery = backend.productionAdbRecoveryState())
+    }
+
     /** Opens the native-focusable HUD capture prompt after the Activity starts key learning. */
     fun showReverseButtonCaptureDialog() {
         showCameraButtonCaptureDialog(CameraButtonBindings.Action.ReverseSource)
@@ -730,6 +746,7 @@ class ProductionUiController @JvmOverloads constructor(
     fun selectInstallationSettings() {
         state = state.copy(activeTab = RootTab.Settings,
             settings = state.settings.copy(category = SettingsCategory.Permissions))
+        RuntimeUiSession.updateSelections(RuntimeUiSelections.from(state))
         preferences.edit().putInt("selected_tab", RootTab.Settings.legacyTab()).apply()
     }
 
@@ -960,7 +977,8 @@ class ProductionUiController @JvmOverloads constructor(
 
     private fun readState() = readProductionUiState(
         preferences, backend.automaticStartEnabled(), backend.legacyAccessRestoreVisible(),
-        backend::productionDisplayGeometry).copy(avas = backend.productionAvasState()).let { fresh ->
+        backend::productionDisplayGeometry).copy(avas = backend.productionAvasState(),
+            adbRecovery = backend.productionAdbRecoveryState()).let { fresh ->
         val mirror = fresh.mirror.copy(
             overlayPermissionGranted = backend.productionMirrorOverlayPermissionGranted(),
             clusterAvailable = backend.productionMirrorClusterAvailable(),
@@ -1000,6 +1018,7 @@ class ProductionUiController @JvmOverloads constructor(
     }
 
     private fun allowedWhileLegacyBlocked(action: BydExtendUiAction): Boolean = when (action) {
+        is BydExtendUiAction.AdbRecovery -> false
         is BydExtendUiAction.Avas -> false
         is BydExtendUiAction.Navigate -> action.tab == RootTab.Settings
         is BydExtendUiAction.SetLanguage, is BydExtendUiAction.SetTheme -> true
@@ -1112,6 +1131,7 @@ class ProductionUiController @JvmOverloads constructor(
                 avmOrientation = if (index == 0) AvmOrientation.Horizontal else AvmOrientation.Vertical))
             else -> Unit
         }
+        RuntimeUiSession.updateSelections(RuntimeUiSelections.from(state))
     }
 
     private fun cameraSection(tab: RootTab): CameraSection? = when (tab) {
