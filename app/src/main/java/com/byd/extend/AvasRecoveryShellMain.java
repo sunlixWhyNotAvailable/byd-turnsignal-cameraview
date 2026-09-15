@@ -37,8 +37,15 @@ public final class AvasRecoveryShellMain {
 
     public static void main(String[] args) throws Exception {
         if (Process.myUid() != 2000) throw new SecurityException("Shell UID required");
-        if (args.length != 2) throw new IllegalArgumentException(
-                "usage: AvasRecoveryShellMain <appUid> <apkIdentity>");
+        boolean clearLogcat = args.length == 3 && "--clear-logcat".equals(args[2]);
+        if (args.length != 2 && args.length != 4 && !clearLogcat) throw new IllegalArgumentException(
+                "usage: AvasRecoveryShellMain <appUid> <apkIdentity> [<recovery> <recording>|--clear-logcat]");
+        boolean recovery = args.length != 4 || "1".equals(args[2]);
+        boolean recording = args.length == 4 && "1".equals(args[3]);
+        if (args.length == 4 && (!("0".equals(args[2]) || "1".equals(args[2]))
+                || !("0".equals(args[3]) || "1".equals(args[3])))) {
+            throw new IllegalArgumentException("Expected boolean startup flags");
+        }
         int appUid = Integer.parseInt(args[0]);
         String apkIdentity = args[1];
         RandomAccessFile ownerFile = new RandomAccessFile(
@@ -46,6 +53,7 @@ public final class AvasRecoveryShellMain {
         FileLock owner = ownerFile.getChannel().tryLock();
         if (owner == null) {
             ownerFile.close();
+            if (clearLogcat) throw new IllegalStateException("Recovery daemon became active; retry Clear");
             return;
         }
         Looper.prepareMainLooper();
@@ -54,10 +62,23 @@ public final class AvasRecoveryShellMain {
         if (!installedIdentityMatches(context, appUid, apkIdentity)) {
             throw new SecurityException("Application identity mismatch");
         }
+        ContinuousLogcatRecorder logcat = new ContinuousLogcatRecorder(
+                "pid=" + Process.myPid() + " apk_identity=" + apkIdentity,
+                AvasRecoveryShellMain::journal);
+        if (clearLogcat) {
+            try { System.out.println("CLEARED " + logcat.clearStored()); }
+            finally { owner.release(); ownerFile.close(); }
+            return;
+        }
         AvasShellSettings settings = new AvasShellSettings(context);
-        RecoveryBinder binder = new RecoveryBinder(context, settings, appUid, apkIdentity);
+        RecoveryBinder binder = new RecoveryBinder(context, settings, appUid, apkIdentity, logcat);
+        binder.recoveryEnabled = recovery;
         binder.attachInterface(null, AvasRecoveryDaemonProtocol.DESCRIPTOR);
         try {
+            if (recording) logcat.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try { logcat.close(); } catch (Exception ignored) {}
+            }, "diagnostic-logcat-stop"));
             settings.putInt(AvasRecoveryDaemonProtocol.ENABLED_SETTING, 1);
             Method addService = Class.forName("android.os.ServiceManager")
                     .getMethod("addService", String.class, IBinder.class);
@@ -69,6 +90,9 @@ public final class AvasRecoveryShellMain {
             System.out.flush();
             Looper.loop();
         } finally {
+            try { logcat.close(); } catch (Exception failure) {
+                journal("diagnostic_logcat_stop_failed", "error", summary(failure));
+            }
             try { settings.putInt(AvasRecoveryDaemonProtocol.ENABLED_SETTING, 0); }
             catch (Throwable ignored) {}
             settings.close();
@@ -94,6 +118,8 @@ public final class AvasRecoveryShellMain {
                             "apk_identity", binder.apkIdentity);
                     break;
                 }
+                // Logging alone must neither launch AVAS nor revive the app when Auto-start is OFF.
+                if (binder.recoveryEnabled) {
                 java.lang.Process command = new ProcessBuilder(
                         "/system/bin/am", "broadcast", "--user",
                         Integer.toString(AvasRecoveryPolicy.userIdForUid(binder.appUid)),
@@ -115,6 +141,7 @@ public final class AvasRecoveryShellMain {
                     try { command.getInputStream().close(); } catch (Throwable ignored) {}
                     try { command.getErrorStream().close(); } catch (Throwable ignored) {}
                     try { command.getOutputStream().close(); } catch (Throwable ignored) {}
+                }
                 }
             } catch (Throwable failure) {
                 journal("recovery_request_failed", "error", summary(failure));
@@ -139,14 +166,17 @@ public final class AvasRecoveryShellMain {
         private final AvasShellSettings settings;
         private final int appUid;
         private final String apkIdentity;
+        private final ContinuousLogcatRecorder logcat;
         volatile boolean running = true;
+        volatile boolean recoveryEnabled;
 
         RecoveryBinder(Context context, AvasShellSettings settings,
-                int appUid, String apkIdentity) {
+                int appUid, String apkIdentity, ContinuousLogcatRecorder logcat) {
             this.context = context;
             this.settings = settings;
             this.appUid = appUid;
             this.apkIdentity = apkIdentity;
+            this.logcat = logcat;
         }
 
         @Override
@@ -171,8 +201,12 @@ public final class AvasRecoveryShellMain {
                 }
                 if (code == AvasRecoveryDaemonProtocol.TX_SET_ENABLED) {
                     boolean enabled = data.readInt() != 0;
-                    settings.putInt(AvasRecoveryDaemonProtocol.ENABLED_SETTING, enabled ? 1 : 0);
-                    running = enabled;
+                    boolean recording = data.readInt() != 0;
+                    recoveryEnabled = enabled;
+                    if (recording) logcat.start();
+                    else logcat.close();
+                    running = enabled || recording;
+                    settings.putInt(AvasRecoveryDaemonProtocol.ENABLED_SETTING, running ? 1 : 0);
                     reply.writeNoException();
                     return true;
                 }
@@ -180,6 +214,13 @@ public final class AvasRecoveryShellMain {
                     settings.putInt(AvasRecoveryDaemonProtocol.ENABLED_SETTING, 0);
                     running = false;
                     reply.writeNoException();
+                    return true;
+                }
+                if (code == AvasRecoveryDaemonProtocol.TX_CLEAR_LOGCAT) {
+                    int removed = logcat.clear();
+                    journal("diagnostic_logcat_cleared", "removed", removed);
+                    reply.writeNoException();
+                    reply.writeInt(removed);
                     return true;
                 }
             } catch (Throwable failure) {

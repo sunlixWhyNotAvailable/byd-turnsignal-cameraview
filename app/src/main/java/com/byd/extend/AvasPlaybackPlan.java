@@ -5,7 +5,7 @@ import java.util.function.BooleanSupplier;
 /** Pure per-request audio policy shared by playback and deterministic JVM tests. */
 final class AvasPlaybackPlan {
     interface FrameWriter { long write(long frames) throws Exception; }
-    static final int EXTERIOR_SILENCE_MILLIS = 500;
+    static final int EXTERIOR_SILENCE_MILLIS = 0;
     static final int NAVIGATION_SILENCE_MILLIS = 0;
 
     private AvasPlaybackPlan() {}

@@ -13,7 +13,7 @@ import java.nio.file.Files;
 import java.util.Arrays;
 
 public final class AvasWavTest {
-    @Test public void staticPreloadPreservesCompletePcmAfterHalfSecondOfZeros() throws Exception {
+    @Test public void staticPreloadPreservesCompletePcmWithoutArtificialSilence() throws Exception {
         for (int rate : new int[]{44_100, 48_000}) {
             for (int channels : new int[]{1, 2}) {
                 byte[] samples = pcm(12_345, -23_456, 1, -1);
@@ -25,7 +25,7 @@ public final class AvasWavTest {
                     int leading = Math.toIntExact(AvasPlaybackPlan.silenceBytes(rate,
                             header.frameSize, AvasPlaybackPlan.EXTERIOR_SILENCE_MILLIS));
                     byte[] preloaded = AvasWav.readPcm(file, header, leading);
-                    assertEquals(rate / 2 * header.frameSize, leading);
+                    assertEquals(0, leading);
                     assertEquals(leading + samples.length, preloaded.length);
                     assertArrayEquals(new byte[leading], Arrays.copyOf(preloaded, leading));
                     assertArrayEquals(samples, Arrays.copyOfRange(preloaded, leading, preloaded.length));

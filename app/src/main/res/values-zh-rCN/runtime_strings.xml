@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="runtime_archive_finalizing">正在完成归档…</string>
     <string name="ui_archive_save_as">另存为…</string>
     <string name="runtime_archive_save_title">保存压缩包</string>
     <string name="runtime_archive_choose_destination">请选择 ZIP 压缩包的保存位置</string>

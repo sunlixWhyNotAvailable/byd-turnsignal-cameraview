@@ -175,6 +175,7 @@ enum class ToggleId {
     Weather,
     AutoStart,
     AutomaticUpdate,
+    RecordLogcat,
     UpdateHintEnabled,
     BlindRear,
     BlindFront,
@@ -641,6 +642,7 @@ data class SettingsUiState(
     val adbOperation: OperationUiState = OperationUiState(),
     val cameraOutput: CameraOutputUiState = CameraOutputUiState(),
     val automaticUpdate: Boolean = true,
+    val recordLogcat: Boolean = false,
     val updateHintEnabled: Boolean = true,
     val updateHintAppearance: UpdateHintAppearance = UpdateHintAppearance(),
     val updateHintOverlayPermissionGranted: Boolean = false,
@@ -685,7 +687,16 @@ data class DialogUiState @JvmOverloads constructor(
     val markdown: String = "",
     val updatePresentation: Boolean = false,
     val captureAction: CameraButtonBindings.Action? = null,
+    val archiveProcessedBytes: Long? = null,
+    val archiveTotalBytes: Long? = null,
 ) {
+    fun withArchiveProgress(message: String, processed: Long, total: Long,
+        finalizing: Boolean, cancellable: Boolean, dismissLabel: String?): DialogUiState =
+        withRuntimeProgress(message, if (finalizing || total < 0) null
+            else if (total == 0L) 0f else (processed.toDouble() / total).toFloat().coerceIn(0f, .99f),
+            cancellable, dismissLabel).copy(archiveProcessedBytes = processed.coerceAtLeast(0),
+                archiveTotalBytes = total.takeIf { it >= 0 })
+
     fun withRuntimeProgress(message: String, progress: Float?, cancellable: Boolean,
         dismissLabel: String?): DialogUiState = copy(message = message, progress = progress,
         cancellable = cancellable, confirmEnabled = false, confirmVisible = false,

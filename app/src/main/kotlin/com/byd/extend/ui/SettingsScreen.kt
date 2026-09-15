@@ -277,6 +277,15 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
             }
         }
         Divider(colors)
+        Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            SwitchLine(strings.text("Записувати logcat", "Record logcat", "记录 logcat"),
+                strings.text("Розмір файлу швидко збільшується, використовуйте з обережністю та очищайте логи після відправки.",
+                    "The file size grows quickly. Use with caution and clear the logs after sending them.",
+                    "日志文件大小会快速增长，请谨慎使用，并在发送后清除日志。"),
+                state.recordLogcat, { onAction(BydExtendUiAction.Toggle(
+                    ToggleTarget.Simple(ToggleId.RecordLogcat), it)) }, colors, compactSwitch = false)
+        }
+        Divider(colors)
         SettingsActionRow(strings.text("Експорт конфігурації", "Export configuration", "导出配置"),
             strings.text("Дані системи для перевірки сумісності", "System details for compatibility checks"),
             colors, verticalPadding = 8.dp) {

@@ -154,16 +154,29 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "silence_frames", silenceFrames, "total_frames", framesWritten);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
+            long playCalledMs, playReturnedMs, capCalledMs, capReturnedMs,
+                    unmuteCalledMs, unmuteReturnedMs;
             synchronized (trackLock) {
                 if (cancelled(ticket, cancelled)) return;
+                playCalledMs = SystemClock.elapsedRealtime();
                 output.play();
+                playReturnedMs = SystemClock.elapsedRealtime();
                 focusMaintainer.start();
+                capCalledMs = SystemClock.elapsedRealtime();
                 manager.setStreamVolume(NAV_STREAM, 1, 0);
+                capReturnedMs = SystemClock.elapsedRealtime();
+                unmuteCalledMs = SystemClock.elapsedRealtime();
                 route.mute(false, diagnostics);
+                unmuteReturnedMs = SystemClock.elapsedRealtime();
                 if (manager.getStreamVolume(NAV_STREAM) != 1) {
                     throw new IllegalStateException("Exterior NAV cap was not applied");
                 }
             }
+            // Emit after unmute; diagnostic I/O must not delay these critical calls.
+            event(diagnostics, "avas_play_call_timing", "play_called_ms", playCalledMs,
+                    "play_returned_ms", playReturnedMs, "nav_cap_called_ms", capCalledMs,
+                    "nav_cap_returned_ms", capReturnedMs, "unmute_called_ms", unmuteCalledMs,
+                    "unmute_returned_ms", unmuteReturnedMs);
             event(diagnostics, "avas_track_state", "phase", "played", "state",
                     safeTrackState(output), "play_state", safePlayState(output));
             event(diagnostics, "avas_mute_volume", "phase", "exterior_playback",

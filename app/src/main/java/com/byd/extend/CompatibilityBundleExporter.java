@@ -721,7 +721,7 @@ final class CompatibilityBundleExporter {
                 + (message == null || message.isEmpty() ? "" : ": " + message);
     }
 
-    private static void checkCancelled(ExportControl control) throws CancellationException {
+    static void checkCancelled(ExportControl control) throws CancellationException {
         if (control != null && control.isCancellationRequested()) {
             throw new CancellationException();
         }
@@ -789,7 +789,7 @@ final class CompatibilityBundleExporter {
         }
     }
 
-    private static final class ProgressReporter {
+    static final class ProgressReporter {
         private final ExportControl control;
         private long lastEmit = Long.MIN_VALUE;
         private Progress last;

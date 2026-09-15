@@ -780,6 +780,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private File pendingArchiveDocument;
     private boolean pendingArchiveCompatibility;
     private volatile CompatibilityBundleExporter.ExportControl compatibilityExportControl;
+    private volatile CompatibilityBundleExporter.ExportControl diagnosticExportControl;
+    private CompatibilityBundleExporter.Progress diagnosticExportProgress;
+    private boolean diagnosticDocumentCopy;
     private boolean settingsTransferInProgress;
     private SettingsOperation activeSettingsOperation;
     private boolean settingsReloadPending;
@@ -1180,6 +1183,7 @@ public final class CameraProbeActivity extends ComponentActivity
             resumeSelectedCameraPreview();
         }
         resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
+        showDiagnosticExportProgress();
         showCachedUpdateIfAvailable();
         scheduleStartupUpdateCheck();
         if (backgroundStartSettingsActive) {
@@ -1324,6 +1328,7 @@ public final class CameraProbeActivity extends ComponentActivity
         CompatibilityBundleExporter.ExportControl exportControl =
                 compatibilityExportControl;
         if (exportControl != null) exportControl.cancel();
+        if (diagnosticExportControl != null) diagnosticExportControl.cancel();
         clearRuntimeDialog();
         resumeTabWarmup.clear();
         if (requestedOpen || cameraHandoffPending) closeCamera("activity_destroyed");
@@ -1764,7 +1769,8 @@ public final class CameraProbeActivity extends ComponentActivity
             return true;
         }
         Runnable action = confirm ? runtimeDialogConfirm : runtimeDialogDismiss;
-        boolean cancellingExport = !confirm && runtimeDialogOwner == RuntimeDialogOwner.COMPATIBILITY
+        boolean cancellingExport = !confirm && (runtimeDialogOwner == RuntimeDialogOwner.COMPATIBILITY
+                || runtimeDialogOwner == RuntimeDialogOwner.LOGS)
                 && dialog.getKind() == DialogKind.Progress;
         if (!cancellingExport) clearRuntimeDialog();
         if (action != null) action.run();
@@ -1812,9 +1818,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 || shutdownRequested || activityDestroyed) return;
         logExportInProgress = true;
         exportArchiveToDocument = saveAs;
-        showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Progress,
-                runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_logs_share_title),
-                runtimeText(R.string.runtime_logs_progress), false, null, null, "", null, null);
+        diagnosticDocumentCopy = false;
+        diagnosticExportProgress = null;
+        diagnosticExportControl = newDiagnosticExportControl();
+        showDiagnosticExportProgress();
         if (settingsPanel != null) settingsPanel.setLogExportInProgress(true);
         publishSettingsOperation(SettingsOperation.Logs,
                 runtimeText(R.string.runtime_logs_progress), StatusTone.Warning, true, true);
@@ -1831,8 +1838,58 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
+    private CompatibilityBundleExporter.ExportControl newDiagnosticExportControl() {
+        final WeakReference<CameraProbeActivity> owner = new WeakReference<>(this);
+        return new CompatibilityBundleExporter.ExportControl(progress -> {
+            CameraProbeActivity target = owner.get();
+            if (target == null || target.activityDestroyed) return;
+            target.mainHandler.post(() -> target.updateDiagnosticExportProgress(progress));
+        });
+    }
+
+    private void showDiagnosticExportProgress() {
+        if (!logExportInProgress || diagnosticExportControl == null) return;
+        if (runtimeDialogOwner == RuntimeDialogOwner.NONE) {
+            showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Progress,
+                    runtimeText(exportArchiveToDocument ? R.string.runtime_archive_save_title : R.string.runtime_logs_share_title),
+                    runtimeText(R.string.runtime_logs_progress), true, null,
+                    runtimeText(R.string.runtime_cancel), "", null, this::cancelDiagnosticExport);
+        }
+        updateDiagnosticExportProgress(diagnosticExportProgress == null
+                ? new CompatibilityBundleExporter.Progress(CompatibilityBundleExporter.Progress.Phase.PREPARING,
+                    "", 0, 0, 0, -1) : diagnosticExportProgress);
+    }
+
+    private void cancelDiagnosticExport() {
+        CompatibilityBundleExporter.ExportControl control = diagnosticExportControl;
+        if (control == null) return;
+        control.cancel();
+        updateRuntimeProgress(RuntimeDialogOwner.LOGS,
+                runtimeText(R.string.runtime_car_compat_canceling), false);
+    }
+
+    private void updateDiagnosticExportProgress(CompatibilityBundleExporter.Progress progress) {
+        if (activityDestroyed || !logExportInProgress || diagnosticExportControl == null
+                || diagnosticExportControl.isCancellationRequested()) return;
+        diagnosticExportProgress = progress;
+        if (productionUi == null || runtimeDialogOwner != RuntimeDialogOwner.LOGS) return;
+        DialogUiState dialog = productionUi.getState().getDialog();
+        if (dialog == null || dialog.getKind() != DialogKind.Progress) return;
+        boolean finalizing = progress.phase == CompatibilityBundleExporter.Progress.Phase.ZIP
+                || progress.phase == CompatibilityBundleExporter.Progress.Phase.COMPLETE;
+        String message = runtimeText(finalizing ? R.string.runtime_archive_finalizing
+                : diagnosticDocumentCopy ? R.string.runtime_archive_saving : R.string.runtime_logs_progress);
+        if (!progress.currentPath.isEmpty()) message += "\n" + progress.currentPath;
+        productionUi.showDialog(dialog.withArchiveProgress(message, progress.bytes, progress.totalBytes,
+                finalizing, !finalizing, finalizing ? null : runtimeText(R.string.runtime_cancel)));
+    }
+
     private void exportDiagnosticLogsAfterFlush() {
         if (!logExportInProgress) return;
+        if (diagnosticExportControl != null && diagnosticExportControl.isCancellationRequested()) {
+            finishDiagnosticLogExport(null, new CompatibilityBundleExporter.CancellationException());
+            return;
+        }
         if (activityDestroyed || shutdownRequested) {
             finishDiagnosticLogExport(null, null);
             return;
@@ -1844,6 +1901,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void exportDiagnosticLogsAfterActivityFlush() {
+        final CompatibilityBundleExporter.ExportControl control = diagnosticExportControl;
         try {
             logExportExecutor.execute(() -> {
                 File archive = null;
@@ -1853,7 +1911,7 @@ public final class CameraProbeActivity extends ComponentActivity
                             DiagnosticLogExporter.snapshot(this);
                     record("diagnostic_log_export", "state", "snapshot_ready",
                             "source_count", snapshot.sources.size());
-                    archive = DiagnosticLogExporter.export(this, snapshot);
+                    archive = DiagnosticLogExporter.export(this, snapshot, control);
                 } catch (Throwable error) {
                     failure = error;
                 }
@@ -1867,6 +1925,15 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void finishDiagnosticLogExport(File archive, Throwable error) {
+        boolean canceled = diagnosticExportControl != null
+                && diagnosticExportControl.isCancellationRequested();
+        diagnosticExportControl = null;
+        diagnosticExportProgress = null;
+        if (canceled) {
+            if (archive != null) archive.delete();
+            archive = null;
+            error = new CompatibilityBundleExporter.CancellationException();
+        }
         if (exportArchiveToDocument && archive != null && error == null
                 && activityResumed && !activityDestroyed && !shutdownRequested) {
             chooseArchiveDocument(archive, false);
@@ -1881,9 +1948,11 @@ public final class CameraProbeActivity extends ComponentActivity
         if (error != null) {
             record("diagnostic_log_export", "state", "failed", "error", error.toString());
             publishSettingsOperation(SettingsOperation.Logs,
-                    runtimeText(R.string.runtime_logs_failed), StatusTone.Error, false);
+                    runtimeText(canceled ? R.string.runtime_car_compat_canceled : R.string.runtime_logs_failed),
+                    canceled ? StatusTone.Warning : StatusTone.Error, false);
             if (activityResumed && !activityDestroyed) {
-                recordOperationFeedback(runtimeText(R.string.runtime_logs_failed));
+                recordOperationFeedback(runtimeText(canceled
+                        ? R.string.runtime_car_compat_canceled : R.string.runtime_logs_failed));
             }
             return;
         }
@@ -1980,15 +2049,25 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         publishSettingsOperation(compatibility ? SettingsOperation.Compatibility : SettingsOperation.Logs,
                 runtimeText(R.string.runtime_archive_saving), StatusTone.Warning, true);
+        if (!compatibility) {
+            exportArchiveToDocument = true;
+            diagnosticDocumentCopy = true;
+            diagnosticExportProgress = null;
+            diagnosticExportControl = newDiagnosticExportControl();
+            showDiagnosticExportProgress();
+        }
+        final CompatibilityBundleExporter.ExportControl copyControl = compatibility ? null : diagnosticExportControl;
         final Context appContext = getApplicationContext();
         try {
             logExportExecutor.execute(() -> {
                 Throwable failure = null;
                 try (OutputStream output = appContext.getContentResolver().openOutputStream(destination, "w")) {
-                    ArchiveDocumentWriter.copy(archive, output);
+                    ArchiveDocumentWriter.copy(archive, output, copyControl);
                 } catch (Exception error) {
                     failure = error;
                 }
+                final boolean canceled = copyControl != null && copyControl.isCancellationRequested();
+                if (canceled && failure == null) failure = new CompatibilityBundleExporter.CancellationException();
                 if (failure != null) {
                     // This URI is the new document just created by the picker, never an existing archive.
                     try {
@@ -2000,8 +2079,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 mainHandler.post(() -> {
                     record("archive_document_save", "state", error == null ? "saved" : "failed",
                             "compatibility", compatibility, "error", error == null ? "" : error.toString());
-                    finishArchiveDocument(compatibility, error == null ? R.string.runtime_archive_saved
-                            : R.string.runtime_archive_save_failed, error == null ? StatusTone.Ok : StatusTone.Error);
+                    finishArchiveDocument(compatibility, canceled ? R.string.runtime_archive_save_canceled
+                            : error == null ? R.string.runtime_archive_saved : R.string.runtime_archive_save_failed,
+                            canceled ? StatusTone.Warning : error == null ? StatusTone.Ok : StatusTone.Error);
                 });
             });
         } catch (RuntimeException error) {
@@ -2013,7 +2093,13 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void finishArchiveDocument(boolean compatibility, int message, StatusTone tone) {
         if (compatibility) compatibilityExportInProgress = false;
-        else logExportInProgress = false;
+        else {
+            logExportInProgress = false;
+            diagnosticExportControl = null;
+            diagnosticExportProgress = null;
+            diagnosticDocumentCopy = false;
+            if (runtimeDialogOwner == RuntimeDialogOwner.LOGS) clearRuntimeDialog();
+        }
         if (activityDestroyed) return;
         if (settingsPanel != null) {
             if (compatibility) settingsPanel.setCompatibilityExportInProgress(false);
@@ -4032,6 +4118,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 preferences.edit().putBoolean("update_auto_check_enabled", value).apply();
                 if (value) scheduleStartupUpdateCheck();
                 else mainHandler.removeCallbacks(runStartupUpdateCheck);
+            } else if (id == ToggleId.RecordLogcat) {
+                preferences.edit().putBoolean(ContinuousLogcatRecorder.PREF_ENABLED, value).apply();
+                CameraHelperService.diagnosticSettingsChanged(this);
             } else if (id == ToggleId.ReverseEnabled) {
                 preferences.edit().putBoolean(ReverseCameraController.PREF_ENABLED, value).apply();
                 CameraHelperService.reverseCameraSettingsChanged(this);
@@ -11888,6 +11977,12 @@ public final class CameraProbeActivity extends ComponentActivity
                 if (file.delete()) deleted++;
                 else failed++;
             }
+        }
+        try {
+            deleted += AvasRecoveryDaemonController.clearContinuousLogcat(this);
+        } catch (Exception failure) {
+            failed++;
+            record("continuous_logcat_clear_failed", "error", failure.toString());
         }
         record("logs_cleared", "deleted", deleted, "failed", failed);
         int deletedCount = deleted;

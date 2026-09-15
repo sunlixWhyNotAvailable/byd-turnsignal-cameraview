@@ -84,7 +84,12 @@ final class DiagnosticLogExporter {
                     "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log.1 2>/dev/null"),
             new CollectorSpec(
                     "system/bydextend_avas_keepalive_boot.log",
-                    "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null")
+                    "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null"),
+            new CollectorSpec(
+                    "system/logcat-continuous-status.txt",
+                    "cat " + ContinuousLogcatRecorder.STATUS_PATH + " 2>/dev/null"),
+            new CollectorSpec(
+                    "system/logcat-continuous.txt", ContinuousLogcatRecorder.SNAPSHOT_COMMAND, true)
     };
 
     private DiagnosticLogExporter() {}
@@ -122,6 +127,11 @@ final class DiagnosticLogExporter {
 
     /** Runs on a worker after {@link #snapshot(Context)} has captured source bounds. */
     static File export(Context context, Snapshot snapshot) throws IOException {
+        return export(context, snapshot, null);
+    }
+
+    static File export(Context context, Snapshot snapshot,
+            CompatibilityBundleExporter.ExportControl control) throws IOException {
         Identity identity = new Identity(
                 context.getPackageName(),
                 BuildConfig.VERSION_NAME,
@@ -140,13 +150,13 @@ final class DiagnosticLogExporter {
                 context.getCacheDir(),
                 snapshot,
                 identity,
-                command -> fromAdbResult(LocalAdbClient.executeAuthorized(
-                        context, command, (kind, fields) -> {})),
+                command -> fromAdbResult(LocalAdbClient.executeAuthorizedText(
+                        context, command, 16L * 1024 * 1024, 5_000, control, (kind, fields) -> {})),
                 (command, output) -> fromAdbResult(
                         LocalAdbClient.executeAuthorizedStreaming(
-                                context, command, output, Long.MAX_VALUE,
+                                context, command, output, Long.MAX_VALUE, 5_000, control,
                                 (kind, fields) -> {})),
-                System.currentTimeMillis());
+                System.currentTimeMillis(), control);
     }
 
     static File export(
@@ -172,6 +182,15 @@ final class DiagnosticLogExporter {
             CommandRunner commandRunner,
             StreamCommandRunner streamCommandRunner,
             long createdAtMillis) throws IOException {
+        return export(cacheDirectory, snapshot, identity, commandRunner, streamCommandRunner,
+                createdAtMillis, null);
+    }
+
+    static File export(File cacheDirectory, Snapshot snapshot, Identity identity,
+            CommandRunner commandRunner, StreamCommandRunner streamCommandRunner,
+            long createdAtMillis, CompatibilityBundleExporter.ExportControl control) throws IOException {
+        ProgressTracker progress = new ProgressTracker(control);
+        progress.stage("", -1);
         File outputDirectory = new File(cacheDirectory, ARCHIVE_DIRECTORY);
         if (!outputDirectory.isDirectory() && !outputDirectory.mkdirs()) {
             throw new IOException("Unable to create diagnostic archive directory");
@@ -185,11 +204,14 @@ final class DiagnosticLogExporter {
         List<SourceRecord> records = new ArrayList<>();
         try {
             writeArchive(partial, snapshot, identity, commandRunner,
-                    streamCommandRunner, createdAtMillis, records);
+                    streamCommandRunner, createdAtMillis, records, progress);
+            progress.check();
             if (!partial.renameTo(finished)) {
                 throw new IOException("Unable to finish diagnostic archive atomically");
             }
             deleteOlderArchives(outputDirectory, finished);
+            progress.reporter.report(CompatibilityBundleExporter.Progress.Phase.COMPLETE,
+                    "", 0, 0, progress.bytes, progress.bytes, true);
             return finished;
         } catch (Throwable error) {
             if (partial.exists()) partial.delete();
@@ -199,10 +221,12 @@ final class DiagnosticLogExporter {
     }
 
     static String[] fixedCommands() {
-        String[] commands = new String[SYSTEM_COLLECTORS.length];
+        String[] commands = new String[SYSTEM_COLLECTORS.length + 1];
         for (int i = 0; i < SYSTEM_COLLECTORS.length; i++) {
             commands[i] = SYSTEM_COLLECTORS[i].command;
         }
+        commands[SYSTEM_COLLECTORS.length - 1] = ContinuousLogcatRecorder.SIZE_COMMAND;
+        commands[SYSTEM_COLLECTORS.length] = ContinuousLogcatRecorder.SNAPSHOT_COMMAND;
         return commands;
     }
 
@@ -220,11 +244,12 @@ final class DiagnosticLogExporter {
             CommandRunner commandRunner,
             StreamCommandRunner streamCommandRunner,
             long createdAtMillis,
-            List<SourceRecord> records) throws IOException {
+            List<SourceRecord> records, ProgressTracker progress) throws IOException {
         Set<String> usedNames = new HashSet<>();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(partial))) {
             for (Source source : snapshot.sources) {
                 String entry = uniqueLogEntry(source.file.getName(), usedNames);
+                progress.stage(entry, -1);
                 SourceRecord record = new SourceRecord(
                         "app_jsonl", entry, source.file.getName(), source.length);
                 records.add(record);
@@ -234,7 +259,8 @@ final class DiagnosticLogExporter {
                     long completeBound = completeJsonlLength(source.file, readableBound);
                     record.droppedBytes = Math.max(0, source.length - completeBound);
                     zip.putNextEntry(new ZipEntry(entry));
-                    record.archivedBytes = copyBounded(source.file, completeBound, zip);
+                    record.archivedBytes = copyBounded(source.file, completeBound,
+                            new CountingOutputStream(zip, progress));
                     zip.closeEntry();
                     if (record.archivedBytes != source.length) {
                         record.status = "partial";
@@ -243,6 +269,7 @@ final class DiagnosticLogExporter {
                         record.status = "included";
                     }
                 } catch (Throwable error) {
+                    progress.check();
                     safelyCloseEntry(zip);
                     record.status = "error";
                     record.error = summary(error);
@@ -250,17 +277,30 @@ final class DiagnosticLogExporter {
             }
 
             for (CollectorSpec collector : SYSTEM_COLLECTORS) {
+                long bound = -1;
+                String command = collector.command;
+                progress.stage(collector.entry, -1);
+                if (collector.command.equals(ContinuousLogcatRecorder.SNAPSHOT_COMMAND)) {
+                    try {
+                        CommandResult size = commandRunner.run(ContinuousLogcatRecorder.SIZE_COMMAND);
+                        if (size != null && size.ok) bound = Long.parseLong(size.output.trim());
+                    } catch (Exception unavailable) { /* Keep truthful unknown progress and the original collector. */ }
+                    if (bound >= 0) command = ContinuousLogcatRecorder.snapshotCommand(bound);
+                    progress.stage(collector.entry, bound >= 0 ? Math.addExact(progress.bytes, bound) : -1);
+                }
                 SourceRecord record = new SourceRecord(
-                        "system", collector.entry, collector.entry, -1);
+                        "system", collector.entry, collector.entry, bound);
                 records.add(record);
                 CommandResult result;
                 if (collector.streaming) {
-                    CountingOutputStream output = new CountingOutputStream(zip);
+                    CountingOutputStream output = new CountingOutputStream(zip, progress);
                     zip.putNextEntry(new ZipEntry(collector.entry));
                     try {
-                        result = streamCommandRunner.run(collector.command, output);
+                        result = streamCommandRunner.run(command, output);
+                        progress.check();
                         if (result == null) throw new IOException("collector_returned_null");
                     } catch (Throwable error) {
+                        progress.check();
                         safelyCloseEntry(zip);
                         record.archivedBytes = output.count;
                         record.status = output.count > 0 ? "partial" : "error";
@@ -270,12 +310,18 @@ final class DiagnosticLogExporter {
                     zip.closeEntry();
                     record.archivedBytes = output.count;
                     applyCollectorResult(record, result, output.count > 0);
+                    if (bound >= 0 && result.ok && output.count != bound) {
+                        record.status = "partial";
+                        record.error = "source_shrank";
+                    }
                     continue;
                 }
                 try {
                     result = commandRunner.run(collector.command);
+                    progress.check();
                     if (result == null) throw new IOException("collector_returned_null");
                 } catch (Throwable error) {
+                    progress.check();
                     record.status = "error";
                     record.error = summary(error);
                     continue;
@@ -284,12 +330,16 @@ final class DiagnosticLogExporter {
                 if (output.length > 0) {
                     zip.putNextEntry(new ZipEntry(collector.entry));
                     zip.write(output);
+                    progress.add(output.length);
                     zip.closeEntry();
                     record.archivedBytes = output.length;
                 }
                 applyCollectorResult(record, result, output.length > 0);
             }
 
+            progress.check();
+            progress.reporter.report(CompatibilityBundleExporter.Progress.Phase.ZIP,
+                    "", 0, 0, progress.bytes, progress.total, true);
             byte[] manifest = manifest(identity, createdAtMillis, records)
                     .getBytes(StandardCharsets.UTF_8);
             zip.putNextEntry(new ZipEntry(MANIFEST_ENTRY));
@@ -321,7 +371,7 @@ final class DiagnosticLogExporter {
         }
     }
 
-    private static long copyBounded(File source, long bound, ZipOutputStream output)
+    private static long copyBounded(File source, long bound, OutputStream output)
             throws IOException {
         long remaining = bound;
         long copied = 0;
@@ -619,20 +669,63 @@ final class DiagnosticLogExporter {
 
     private static final class CountingOutputStream extends OutputStream {
         private final OutputStream output;
+        private final ProgressTracker progress;
         long count;
 
-        CountingOutputStream(OutputStream output) {
+        CountingOutputStream(OutputStream output, ProgressTracker progress) {
             this.output = output;
+            this.progress = progress;
         }
 
         @Override public void write(int value) throws IOException {
+            progress.check();
             output.write(value);
             count++;
+            progress.add(1);
         }
 
         @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+            progress.check();
             output.write(bytes, offset, length);
             count += length;
+            progress.add(length);
+        }
+    }
+
+    private static final class ProgressTracker {
+        final CompatibilityBundleExporter.ExportControl control;
+        final CompatibilityBundleExporter.ProgressReporter reporter;
+        long bytes;
+        long total = -1;
+        String path = "";
+
+        ProgressTracker(CompatibilityBundleExporter.ExportControl control) {
+            this.control = control;
+            reporter = new CompatibilityBundleExporter.ProgressReporter(control);
+        }
+
+        void check() throws IOException {
+            CompatibilityBundleExporter.checkCancelled(control);
+            if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException();
+        }
+
+        void stage(String path, long total) throws IOException {
+            check();
+            this.path = path;
+            this.total = total;
+            report(true);
+        }
+
+        void add(long count) throws IOException {
+            check();
+            bytes = Math.addExact(bytes, count);
+            if (total >= 0 && bytes > total) total = -1;
+            report(false);
+        }
+
+        void report(boolean force) {
+            reporter.report(CompatibilityBundleExporter.Progress.Phase.REMOTE,
+                    path, 0, 0, bytes, total, force);
         }
     }
 

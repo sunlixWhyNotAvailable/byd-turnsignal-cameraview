@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="runtime_archive_finalizing">Завершення архіву…</string>
     <string name="ui_archive_save_as">Зберегти як…</string>
     <string name="runtime_archive_save_title">Зберегти архів</string>
     <string name="runtime_archive_choose_destination">Виберіть місце для збереження ZIP-архіву</string>

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="runtime_archive_finalizing">Finalizing archive…</string>
     <string name="ui_archive_save_as">Save as…</string>
     <string name="runtime_archive_save_title">Save archive</string>
     <string name="runtime_archive_choose_destination">Choose where to save the ZIP archive</string>

@@ -118,7 +118,10 @@ public final class DiagnosticLogExporterTest {
                 "tail -c 1048576 /data/local/tmp/bydextend_avm.log 2>/dev/null",
                 "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log 2>/dev/null",
                 "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive.log.1 2>/dev/null",
-                "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null"
+                "tail -c 1048576 /data/local/tmp/bydextend_avas_keepalive_boot.log 2>/dev/null",
+                "cat " + ContinuousLogcatRecorder.STATUS_PATH + " 2>/dev/null",
+                ContinuousLogcatRecorder.SIZE_COMMAND,
+                ContinuousLogcatRecorder.SNAPSHOT_COMMAND
         };
         assertArrayEquals(expected, DiagnosticLogExporter.fixedCommands());
 
@@ -198,6 +201,91 @@ public final class DiagnosticLogExporterTest {
                 "\"entry\":\"system/dropbox-crash.txt\",\"status\":\"error\""));
         assertTrue(manifest.contains("\"error\":\"shell_exit_13\""));
         assertEquals(DiagnosticLogExporter.fixedCommands().length, commands.size());
+    }
+
+    @Test public void streamsContinuousHistoryWithoutOldOneMiBLimit() throws Exception {
+        byte[] part = new byte[65536];
+        java.util.Arrays.fill(part, (byte) 'x');
+        File archive = DiagnosticLogExporter.export(temporary.newFolder(),
+                new DiagnosticLogExporter.Snapshot(Collections.emptyList()), identity(),
+                command -> missing(), (command, output) -> {
+                    if (!command.equals(ContinuousLogcatRecorder.SNAPSHOT_COMMAND)) return missing();
+                    for (int index = 0; index < 40; index++) output.write(part);
+                    return DiagnosticLogExporter.CommandResult.success("");
+                }, 5200L);
+        assertEquals(40 * part.length, readEntry(archive, "system/logcat-continuous.txt").length());
+        assertTrue(readEntry(archive, "manifest.json").contains(
+                "\"entry\":\"system/logcat-continuous.txt\",\"status\":\"included\""));
+        assertTrue(ContinuousLogcatRecorder.SNAPSHOT_COMMAND.contains("stat -c %s"));
+        assertFalse(ContinuousLogcatRecorder.SNAPSHOT_COMMAND.contains("tail"));
+    }
+
+    @Test public void reportsActualSourceBytesWithOneFixedHistoryBoundAndFinalization() throws Exception {
+        List<CompatibilityBundleExporter.Progress> updates = new ArrayList<>();
+        CompatibilityBundleExporter.ExportControl control = new CompatibilityBundleExporter.ExportControl(updates::add);
+        File logs = temporary.newFolder();
+        write(new File(logs, "guard-camera-progress.jsonl"), "hello\n");
+        File cache = temporary.newFolder();
+        List<String> streams = new ArrayList<>();
+        File archive = DiagnosticLogExporter.export(cache, DiagnosticLogExporter.snapshot(logs), identity(),
+                command -> command.equals(ContinuousLogcatRecorder.SIZE_COMMAND)
+                        ? DiagnosticLogExporter.CommandResult.success("131072\n") : missing(),
+                (command, output) -> {
+                    streams.add(command);
+                    if (command.equals(ContinuousLogcatRecorder.snapshotCommand(131072))) {
+                        output.write(new byte[65536]);
+                        output.write(new byte[65536]);
+                    }
+                    return DiagnosticLogExporter.CommandResult.success("");
+                }, 5300L, control);
+        assertTrue(archive.isFile());
+        assertTrue(streams.contains(ContinuousLogcatRecorder.snapshotCommand(131072)));
+        assertEquals(131072, readEntry(archive, "system/logcat-continuous.txt").length());
+        assertTrue(updates.stream().anyMatch(p -> p.totalBytes == -1));
+        assertTrue(updates.stream().anyMatch(p -> p.totalBytes == 131078 && p.bytes == 6));
+        CompatibilityBundleExporter.Progress last = updates.get(updates.size() - 1);
+        assertEquals(CompatibilityBundleExporter.Progress.Phase.COMPLETE, last.phase);
+        assertEquals(131078, last.bytes);
+        assertEquals(last.bytes, last.totalBytes);
+        assertEquals(CompatibilityBundleExporter.Progress.Phase.ZIP, updates.get(updates.size() - 2).phase);
+    }
+
+    @Test public void cancellationDuringHistoryRemovesOnlyPartialArchiveAndNeverReportsComplete() throws Exception {
+        List<CompatibilityBundleExporter.Progress> updates = new ArrayList<>();
+        CompatibilityBundleExporter.ExportControl control = new CompatibilityBundleExporter.ExportControl(updates::add);
+        File cache = temporary.newFolder();
+        File exports = new File(cache, "shared_logs");
+        assertTrue(exports.mkdir());
+        File previous = new File(exports, "byd-extend-diagnostics-previous.zip");
+        write(previous, "previous");
+        try {
+            DiagnosticLogExporter.export(cache, new DiagnosticLogExporter.Snapshot(Collections.emptyList()), identity(),
+                    command -> missing(), (command, output) -> {
+                        if (command.equals(ContinuousLogcatRecorder.SNAPSHOT_COMMAND)) {
+                            output.write(new byte[128]);
+                            control.cancel();
+                            output.write(new byte[128]);
+                        }
+                        return missing();
+                    }, 5400L, control);
+            fail("Cancellation must escape the per-source partial-result handler");
+        } catch (CompatibilityBundleExporter.CancellationException expected) { }
+        assertTrue(previous.isFile());
+        assertEquals(1, exports.list().length);
+        assertFalse(updates.stream().anyMatch(p -> p.phase == CompatibilityBundleExporter.Progress.Phase.COMPLETE));
+    }
+
+    @Test public void unmeasuredHistoryRemainsIndeterminateUntilFinalization() throws Exception {
+        List<CompatibilityBundleExporter.Progress> updates = new ArrayList<>();
+        CompatibilityBundleExporter.ExportControl control = new CompatibilityBundleExporter.ExportControl(updates::add);
+        DiagnosticLogExporter.export(temporary.newFolder(), new DiagnosticLogExporter.Snapshot(Collections.emptyList()),
+                identity(), command -> missing(), (command, output) -> {
+                    if (command.equals(ContinuousLogcatRecorder.SNAPSHOT_COMMAND)) output.write(new byte[123]);
+                    return DiagnosticLogExporter.CommandResult.success("");
+                }, 5500L, control);
+        assertTrue(updates.stream().filter(p -> p.phase == CompatibilityBundleExporter.Progress.Phase.REMOTE)
+                .allMatch(p -> p.totalBytes == -1));
+        assertEquals(123, updates.get(updates.size() - 1).bytes);
     }
 
     @Test
@@ -284,9 +372,11 @@ public final class DiagnosticLogExporterTest {
                 },
                 5250L);
 
-        assertEquals(Collections.singletonList(
-                "logcat -b all -v threadtime -d 2>/dev/null"), streamed);
+        assertEquals(java.util.Arrays.asList(
+                "logcat -b all -v threadtime -d 2>/dev/null",
+                ContinuousLogcatRecorder.SNAPSHOT_COMMAND), streamed);
         assertEquals(65L * block.length, entrySize(archive, "system/logcat-all.txt"));
+        assertEquals(65L * block.length, entrySize(archive, "system/logcat-continuous.txt"));
         String manifest = readEntry(archive, "manifest.json");
         assertTrue(manifest.contains(
                 "\"entry\":\"system/logcat-all.txt\",\"status\":\"included\""));

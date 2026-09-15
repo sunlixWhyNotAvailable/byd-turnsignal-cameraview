@@ -239,8 +239,9 @@ The exterior route uses device3 and the complete selected file without an added 
 internal note audition also has no added silence. The existing80ms OEM preparation remains.
 This A/B candidate preloads the complete exterior PCM into a STATIC AudioTrack before playback;
 internal note audition remains STREAM. STATIC uses memory proportional to the decoded file
-length. The owner reports full playback of the actual composition with STATIC; the underlying
-cause of STREAM losing the beginning has not been established.
+length. Initial STATIC playback was audibly complete, but a later morning session still lost
+the beginning, including with an experimental 500 ms prefix. The remaining acoustic cause
+has not been established; complete PCM accounting is not proof of complete audible output.
 NAV volume and mute are saved, NAV is muted during preparation, then volume1 and unmute are
 applied for exterior playback. Cleanup restores the original values. Transient-exclusive focus
 is requested again approximately every120ms only while an exterior sound is playing, including
@@ -281,8 +282,31 @@ Individual text captures remain limited to 16 MiB. Data is streamed rather than 
 temporary files and ZIP overhead can require additional disk space beyond the source-data budget.
 
 Diagnostic archives also retain early AVAS listener/recovery events and current/previous shell
-keepalive journals. The full system Logcat is still captured as a snapshot at export time,
-not recorded continuously in the background by this feature.
+keepalive journals. Settings -> Logs -> **Record logcat** enables continuous capture of all buffers;
+the switch defaults OFF and remembers your choice. OFF stops recording without deleting history.
+While enabled, the recorder uses the existing shell daemon independently of AVAS profiles or
+Auto-start, including with ignition/screen off. Logging alone does not start audio or revive the
+app. Auto-start controls automatic startup/recovery, not ongoing recording; explicit Shutdown
+still stops it. No new AVAS profile or runtime setting is enabled by recording.
+It resumes after daemon recovery and replays the system buffers still available at that time;
+session markers distinguish that replay from new events. No process records while the kernel
+is stopped, and already-overwritten buffers from an unavailable interval cannot be recovered.
+
+History is appended without a size/time quota or rotating deletion. Recording pauses below
+512 MiB free space, retaining existing evidence, and resumes when space is available. It adds
+storage/I/O load and contains other apps' system messages; share only with the intended analyst.
+Clear logs stops the writer, clears its history and resumes without reimporting pre-clear records.
+The ZIP includes the complete bounded-at-export file as `system/logcat-continuous.txt` and writer
+state as `system/logcat-continuous-status.txt`, alongside the unchanged export-time snapshot.
+Both Share and Save as show an archive progress dialog: processed source volume, total and
+remaining bytes, and percentage once the total is known. Earlier system collectors show
+indeterminate progress because their output size is not yet known; continuous history uses one
+fixed size bound, so a growing Logcat cannot extend the export indefinitely. Save as then shows
+the actual ZIP-copy progress for the chosen destination. Finalization is separate from byte
+consumption; success is reported only after closing the ZIP/destination. Canceling preparation
+or copy leaves source logs intact and removes only the incomplete export where possible.
+This diagnostic build removes the experimental 500 ms exterior silent lead; player mode,
+gain, routing and focus policy remain unchanged. Complete audible playback is not yet verified.
 
 ## Compatibility and requirements
 

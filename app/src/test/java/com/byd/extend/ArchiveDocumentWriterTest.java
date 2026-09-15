@@ -69,4 +69,37 @@ public final class ArchiveDocumentWriterTest {
             assertEquals(0, output.size());
         } finally { Thread.interrupted(); }
     }
+
+    @Test public void copyReportsZipByteVolumeAndLeavesCompletionToDestinationClose() throws Exception {
+        File archive = temporary.newFile("progress.zip");
+        Files.write(archive.toPath(), new byte[150003]);
+        java.util.List<CompatibilityBundleExporter.Progress> updates = new java.util.ArrayList<>();
+        CompatibilityBundleExporter.ExportControl control = new CompatibilityBundleExporter.ExportControl(updates::add);
+        assertEquals(150003, ArchiveDocumentWriter.copy(archive, new ByteArrayOutputStream(), control));
+        assertEquals(0, updates.get(0).bytes);
+        assertEquals(150003, updates.get(0).totalBytes);
+        CompatibilityBundleExporter.Progress last = updates.get(updates.size() - 1);
+        assertEquals(150003, last.bytes);
+        assertEquals(CompatibilityBundleExporter.Progress.Phase.ZIP, last.phase);
+        assertFalse(updates.stream().anyMatch(p -> p.phase == CompatibilityBundleExporter.Progress.Phase.COMPLETE));
+    }
+
+    @Test public void cancelAfterFirstChunkDoesNotCopyNextChunkOrDeleteSource() throws Exception {
+        File archive = temporary.newFile("cancel.zip");
+        Files.write(archive.toPath(), new byte[150003]);
+        CompatibilityBundleExporter.ExportControl control = new CompatibilityBundleExporter.ExportControl();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public void write(byte[] bytes, int offset, int length) {
+                super.write(bytes, offset, length);
+                control.cancel();
+            }
+        };
+        try {
+            ArchiveDocumentWriter.copy(archive, output, control);
+            fail("Expected cancel");
+        } catch (CompatibilityBundleExporter.CancellationException expected) {
+            assertEquals(65536, output.size());
+            assertTrue(archive.isFile());
+        }
+    }
 }

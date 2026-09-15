@@ -817,7 +817,28 @@ private fun AppDialog(
                     Text(markdownText, color = colors.text,
                         fontSize = 14.sp, lineHeight = 21.sp)
                 }
-                if (!state.updatePresentation) state.progress?.let { progress ->
+                if (state.archiveProcessedBytes != null) {
+                    if (state.progress == null) LinearProgressIndicator(Modifier.fillMaxWidth(),
+                        color = colors.accent, trackColor = colors.border)
+                    else LinearProgressIndicator(progress = { state.progress }, Modifier.fillMaxWidth(),
+                        color = colors.accent, trackColor = colors.border)
+                    Text(state.progress?.let { "${(it * 100).toInt()}%" } ?: "—",
+                        color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    listOf(
+                        strings.text("Загальний обсяг", "Total size", "总大小") to state.archiveTotalBytes,
+                        strings.text("Оброблено", "Processed", "已处理") to state.archiveProcessedBytes,
+                        strings.text("Залишилось", "Remaining", "剩余") to state.archiveTotalBytes?.let {
+                            (it - state.archiveProcessedBytes).coerceAtLeast(0) },
+                    ).forEach { (label, bytes) ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(label, Modifier.weight(1f), color = colors.muted, fontSize = 15.sp)
+                            Text(bytes?.let { android.text.format.Formatter.formatFileSize(context, it) }
+                                ?: strings.text("Уточнюється…", "Determining…", "计算中…"),
+                                color = colors.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                } else if (!state.updatePresentation) state.progress?.let { progress ->
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }
             }

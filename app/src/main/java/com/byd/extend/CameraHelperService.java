@@ -88,6 +88,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.SHUTDOWN";
     private static final String ACTION_SETTINGS_RELOADED =
             "com.byd.extend.action.SETTINGS_RELOADED";
+    private static final String ACTION_DIAGNOSTICS_CHANGED =
+            "com.byd.extend.action.DIAGNOSTICS_CHANGED";
     private static final String ACTION_AVAS_CONFIGURE =
             "com.byd.extend.action.AVAS_CONFIGURE";
     private static final String ACTION_AVAS_START_MANUAL =
@@ -488,6 +490,12 @@ public final class CameraHelperService extends Service {
         else context.startService(intent);
     }
 
+    static void diagnosticSettingsChanged(Context context) {
+        Intent intent = new Intent(context, CameraHelperService.class).setAction(ACTION_DIAGNOSTICS_CHANGED);
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
+        else context.startService(intent);
+    }
+
     static void cameraWarningSettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_CAMERA_WARNING_SETTINGS_CHANGED));
@@ -813,6 +821,10 @@ public final class CameraHelperService extends Service {
                         runtimeText(this, R.string.runtime_finish_migration));
             }
             stopServiceFromRuntime(command.startId);
+            return;
+        }
+        if (ACTION_DIAGNOSTICS_CHANGED.equals(action)) {
+            reconcileAvasRecovery(false, "diagnostic_settings_changed");
             return;
         }
         // Rights are provisioned independently; feature execution still observes runtime gates.
@@ -1262,9 +1274,9 @@ public final class CameraHelperService extends Service {
         lifecycle("service_destroy", "recover", recover);
         setAvasWakeLock(false, "service_teardown");
         if (avasRecoveryDaemon != null) {
-            if (!avasDaemonRequired(getSharedPreferences("settings", MODE_PRIVATE))) {
-                avasRecoveryDaemon.reconcile(false, "service_teardown");
-            }
+            SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+            avasRecoveryDaemon.reconcile(avasDaemonRequired(settings),
+                    logcatRecordingRequested(settings), "service_teardown");
             avasRecoveryDaemon.close();
         }
         if (oemCameraVisibility != null) oemCameraVisibility.stopForTeardown();
@@ -1353,8 +1365,9 @@ public final class CameraHelperService extends Service {
         helper = null;
         helperRuntimeStarted = false;
         setAvasWakeLock(false, terminateShells ? "runtime_shutdown" : "runtime_stop");
-        if (avasRecoveryDaemon != null && !avasDaemonRequired(
-                getSharedPreferences("settings", MODE_PRIVATE))) {
+        if (avasRecoveryDaemon != null && (terminateShells || (!avasDaemonRequired(
+                getSharedPreferences("settings", MODE_PRIVATE)) && !logcatRecordingRequested(
+                getSharedPreferences("settings", MODE_PRIVATE))))) {
             avasRecoveryDaemon.reconcile(false, "runtime_stop");
         }
         mainHandler.post(this::stopForegroundRuntime);
@@ -1398,6 +1411,12 @@ public final class CameraHelperService extends Service {
                 AvasNotificationAccess.hasEnabledProfiles(settings));
     }
 
+    private boolean logcatRecordingRequested(SharedPreferences settings) {
+        return !LegacySettingsImporter.blocksRuntime(this)
+                && !GuardRecovery.isUserShutdownActive(this)
+                && settings.getBoolean(ContinuousLogcatRecorder.PREF_ENABLED, false);
+    }
+
     private void reconcileAvasRecovery(boolean permissionTrigger, String reason) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         boolean anyProfile = AvasNotificationAccess.hasEnabledProfiles(settings);
@@ -1405,7 +1424,8 @@ public final class CameraHelperService extends Service {
         boolean wakeRequired = AvasRecoveryPolicy.wakeRequired(
                 helperRuntimeStarted, GuardRecovery.isUserShutdownActive(this), anyProfile);
         setAvasWakeLock(wakeRequired, reason);
-        if (avasRecoveryDaemon != null) avasRecoveryDaemon.reconcile(daemonRequired, reason);
+        if (avasRecoveryDaemon != null) avasRecoveryDaemon.reconcile(
+                daemonRequired, logcatRecordingRequested(settings), reason);
         if (permissionTrigger) provisionAppPermissions(reason);
     }
 
