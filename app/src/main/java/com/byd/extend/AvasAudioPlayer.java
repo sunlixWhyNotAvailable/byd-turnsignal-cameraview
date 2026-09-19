@@ -19,6 +19,10 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -29,6 +33,8 @@ import java.util.function.IntConsumer;
 final class AvasAudioPlayer implements AutoCloseable {
     private static final int NAV_STREAM = 15;
     private static final int REQUESTED_ROUTE_FLAGS = 0x20000;
+    private static final long EXTERIOR_NAV_PREP_MS = 300;
+    private static final long NAV_STATE_SAMPLE_MS = 250;
     private final AudioManager manager;
     private final AvasShellSettings settings;
     private final AvasExteriorRoute route;
@@ -75,9 +81,12 @@ final class AvasAudioPlayer implements AutoCloseable {
         long framesWritten = 0;
         long fileFrames = 0;
         SessionDiagnostics session = new SessionDiagnostics(diagnostics);
+        NavStateMonitor navState = null;
         try {
             restore(null);
             if (cancelled(ticket, cancelled)) return;
+            navState = new NavStateMonitor(diagnostics);
+            navState.start();
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
                     SystemClock.elapsedRealtime(), "silence_planned_frames", silenceFrames);
             AudioAttributes attributes = new AudioAttributes.Builder()
@@ -103,9 +112,10 @@ final class AvasAudioPlayer implements AutoCloseable {
             route.naviFocus(true, diagnostics);
             int granted = manager.requestAudioFocus(focus);
             event(diagnostics, "avas_focus_request", "result", granted);
-            Thread.sleep(80); // Proven exterior NAV preflight, not a UI/startup delay.
+            Thread.sleep(EXTERIOR_NAV_PREP_MS);
             if (cancelled(ticket, cancelled)) return;
             route.prepare(focus, diagnostics, dirty -> settings.putInt(AvasShellSettings.DIRTY, dirty));
+            navState.phase("track_prepare");
             if (cancelled(ticket, cancelled)) return;
 
             int channelMask = header.channels == 1
@@ -177,6 +187,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "play_returned_ms", playReturnedMs, "nav_cap_called_ms", capCalledMs,
                     "nav_cap_returned_ms", capReturnedMs, "unmute_called_ms", unmuteCalledMs,
                     "unmute_returned_ms", unmuteReturnedMs);
+            navState.phase("playback");
             event(diagnostics, "avas_track_state", "phase", "played", "state",
                     safeTrackState(output), "play_state", safePlayState(output));
             event(diagnostics, "avas_mute_volume", "phase", "exterior_playback",
@@ -199,6 +210,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             playbackFailure = failure;
             throw failure;
         } finally {
+            if (navState != null) navState.phase("cleanup");
             stopFocusMaintainer(focusMaintainer);
             synchronized (trackLock) {
                 if (activeTrack == output) activeTrack = null;
@@ -212,6 +224,8 @@ final class AvasAudioPlayer implements AutoCloseable {
             } catch (Exception cleanupFailure) {
                 if (playbackFailure != null) playbackFailure.addSuppressed(cleanupFailure);
                 else throw cleanupFailure;
+            } finally {
+                if (navState != null) navState.finish();
             }
         }
     }
@@ -613,6 +627,45 @@ final class AvasAudioPlayer implements AutoCloseable {
             for (int i = 0; i + 1 < fields.length; i += 2) event.put(String.valueOf(fields[i]), fields[i + 1]);
             log.accept(event);
         } catch (Throwable ignored) {
+        }
+    }
+
+    private final class NavStateMonitor {
+        private final AvasAudioDiagnostics.Context diagnostics;
+        private final ScheduledExecutorService executor;
+        private volatile String phase = "preparation";
+        private ScheduledFuture<?> sampling;
+        private boolean finished;
+
+        NavStateMonitor(AvasAudioDiagnostics.Context diagnostics) {
+            this.diagnostics = diagnostics;
+            executor = Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "avas-nav-state");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+
+        void start() {
+            sampling = executor.scheduleWithFixedDelay(this::sample, 0,
+                    NAV_STATE_SAMPLE_MS, TimeUnit.MILLISECONDS);
+        }
+
+        void phase(String next) {
+            phase = next;
+        }
+
+        synchronized void finish() {
+            if (finished) return;
+            finished = true;
+            if (sampling != null) sampling.cancel(false);
+            phase = "post_cleanup";
+            executor.execute(this::sample);
+            executor.shutdown();
+        }
+
+        private void sample() {
+            route.logNavigationState(diagnostics, phase);
         }
     }
 

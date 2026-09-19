@@ -773,7 +773,19 @@ public final class CameraProbeActivity extends ComponentActivity
                 }
             });
     private boolean updateCheckInFlight;
-    private final UpdateHintRuntime.CheckListener updateCheckListener = this::onUpdateCheckFinished;
+    private final UpdateHintRuntime.CheckListener updateCheckListener = new UpdateHintRuntime.CheckListener() {
+        @Override public void onCheckStarted(boolean force) { onUpdateCheckStarted(force); }
+        @Override public void onCheckDiscarded() {
+            updateCheckInFlight = false;
+            if (activityDestroyed || isFinishing()) return;
+            publishSettingsOperation(SettingsOperation.Update, "", StatusTone.Neutral, false);
+            restoreUpdateButton();
+        }
+        @Override public void onCheckFinished(AppUpdateManager.UpdateInfo available,
+                Throwable error, boolean force) {
+            onUpdateCheckFinished(available, error, force);
+        }
+    };
     private boolean logExportInProgress;
     private boolean compatibilityExportInProgress;
     private boolean exportArchiveToDocument;
@@ -896,7 +908,6 @@ public final class CameraProbeActivity extends ComponentActivity
             this::handleProductionPreviewFirstFrameTimeout;
     private final Runnable copyCalibrationFrame = this::copyCalibrationFrame;
     private final Runnable copyReverseCalibrationFrame = this::copyReverseCalibrationFrame;
-    private final Runnable runStartupUpdateCheck = this::runStartupUpdateCheck;
     private final Runnable startBackgroundStartSettings = () -> {
         backgroundStartSettingsStartScheduled = false;
         if (shouldOpenBackgroundStartSettings(
@@ -1141,6 +1152,8 @@ public final class CameraProbeActivity extends ComponentActivity
         activityStarted = true;
         UpdateHintRuntime.get(this).setCheckListener(updateCheckListener);
         updateCheckInFlight = UpdateHintRuntime.get(this).isChecking();
+        if (updateCheckInFlight) showUpdateCheckProgress();
+        else restoreUpdateButton();
         publishReverseOwnerPresence();
         LocalAdbClient.setAccessStateListener(adbAccessListener);
         CameraHelperService.addAdbRecoveryListener(adbRecoveryListener);
@@ -1185,7 +1198,6 @@ public final class CameraProbeActivity extends ComponentActivity
         resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
         showDiagnosticExportProgress();
         showCachedUpdateIfAvailable();
-        scheduleStartupUpdateCheck();
         if (backgroundStartSettingsActive) {
             backgroundStartSettingsActive = false;
             record("background_start_settings_returned");
@@ -1203,7 +1215,6 @@ public final class CameraProbeActivity extends ComponentActivity
         cancelReverseButtonLearningIfVisible();
         stopCalibrationCopies(true);
         stopReverseCalibrationCopies(true);
-        mainHandler.removeCallbacks(runStartupUpdateCheck);
         cancelPendingBackgroundStartSettings();
         cancelPendingWeatherLocationPermission();
         super.onPause();
@@ -1334,7 +1345,6 @@ public final class CameraProbeActivity extends ComponentActivity
         if (requestedOpen || cameraHandoffPending) closeCamera("activity_destroyed");
         releaseAllProductionCameraHosts();
         clearResumeAutoPreview();
-        mainHandler.removeCallbacks(runStartupUpdateCheck);
         stopCalibrationCopies(true);
         stopReverseCalibrationCopies(true);
         detachHelperCallback();
@@ -1373,24 +1383,6 @@ public final class CameraProbeActivity extends ComponentActivity
         activeActivityInputGenerations = new int[0];
         pendingReversePreviewRequestId = 0;
         pendingReversePreviewGenerations = null;
-    }
-
-    private void scheduleStartupUpdateCheck() {
-        mainHandler.removeCallbacks(runStartupUpdateCheck);
-        if (!preferences.getBoolean("update_auto_check_enabled", true)) return;
-        long remainingMs = UpdateAutoCheckRuntime.remainingMs();
-        if (remainingMs >= 0L) mainHandler.postDelayed(runStartupUpdateCheck, remainingMs);
-    }
-
-    private void runStartupUpdateCheck() {
-        if (!activityResumed || activityDestroyed) return;
-        if (!preferences.getBoolean("update_auto_check_enabled", true)) return;
-        if (!UpdateAutoCheckRuntime.consumeIfReady()) {
-            scheduleStartupUpdateCheck();
-            return;
-        }
-        if (updateCheckInFlight) return;
-        runUpdateCheck(false);
     }
 
     void runManualUpdateCheck() {
@@ -2113,13 +2105,21 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void runUpdateCheck(boolean force) {
         if (updateCheckInFlight || updateDownloadInFlight || activityDestroyed) return;
-        if (!UpdateHintRuntime.get(this).check(force)) return;
+        UpdateHintRuntime.get(this).check(force);
+    }
+
+    private void onUpdateCheckStarted(boolean force) {
+        if (activityDestroyed || isFinishing()) return;
         updateCheckInFlight = true;
+        showUpdateCheckProgress();
+        record("update_check_started", "automatic", !force);
+    }
+
+    private void showUpdateCheckProgress() {
         publishSettingsOperation(SettingsOperation.Update,
                 runtimeText(R.string.runtime_update_checking), StatusTone.Warning, true);
         if (settingsPanel != null) settingsPanel.setUpdateButton(
                 runtimeText(R.string.runtime_update_check_button), false);
-        record("update_check_started", "automatic", !force);
     }
 
     private void onUpdateCheckFinished(AppUpdateManager.UpdateInfo available,
@@ -2185,6 +2185,7 @@ public final class CameraProbeActivity extends ComponentActivity
         updateInstallRequested = true;
         refreshProductionHeader();
         updateDownloadInFlight = true;
+        UpdateHintRuntime.get(this).setDownloadInFlight(true);
         downloadingUpdateVersion = info.version;
         downloadingUpdateNotes = ReleaseNotesSelector.select(info.releaseNotes, AppLanguage.read(preferences));
         record("update_download_started", "version", info.version);
@@ -2217,6 +2218,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void dismissUpdateProgress() {
         updateDownloadInFlight = false;
+        UpdateHintRuntime.get(this).setDownloadInFlight(false);
         if (runtimeDialogOwner == RuntimeDialogOwner.UPDATE) clearRuntimeDialog();
         restoreUpdateButton();
     }
@@ -4115,9 +4117,7 @@ public final class CameraProbeActivity extends ComponentActivity
             } else if (id == ToggleId.AutoStart) {
                 onSettingsAutoStartChanged(value);
             } else if (id == ToggleId.AutomaticUpdate) {
-                preferences.edit().putBoolean("update_auto_check_enabled", value).apply();
-                if (value) scheduleStartupUpdateCheck();
-                else mainHandler.removeCallbacks(runStartupUpdateCheck);
+                preferences.edit().putBoolean(UpdateHintRuntime.PREF_AUTO_CHECK, value).apply();
             } else if (id == ToggleId.RecordLogcat) {
                 preferences.edit().putBoolean(ContinuousLogcatRecorder.PREF_ENABLED, value).apply();
                 CameraHelperService.diagnosticSettingsChanged(this);

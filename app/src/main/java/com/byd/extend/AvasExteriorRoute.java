@@ -19,8 +19,12 @@ final class AvasExteriorRoute {
     private static final int NO_PRIMARY_DEVICE = -1;
     static final int EXTERIOR_DEVICE = 3;
     private static final int CHANNEL0_DEVICE = 1000;
+    static final long ROUTE_SETTLE_MS = 50;
     private static final int POSITION_FID = 0xAA000282;
     private static final int AUX_FID = 0x94E88A89;
+    private static final int NAV_STATE_DEVICE = 1002;
+    private static final int NAV_MUTE_FID = 1108344867;
+    private static final int NAV_SOURCE_FID = 1281359901;
     private static final String SDK = "android.hardware.bydauto.";
     private static final int[][] HAL = {{449, 14}, {433, 67}, {850, 4150}};
 
@@ -69,10 +73,12 @@ final class AvasExteriorRoute {
         boolean primary = acquirePrimary(marker,
                 () -> tryWrite(EXTERIOR_DEVICE, POSITION_FID, 1, "prepare", diagnostics));
         tryWrite(CHANNEL0_DEVICE, AUX_FID, 1, "prepare_aux", diagnostics);
+        Thread.sleep(ROUTE_SETTLE_MS);
         boolean optional = exteriorPath(true, diagnostics);
         naviFocus(true, diagnostics);
         int focusResult = manager.requestAudioFocus(focus);
         event(diagnostics, "avas_focus_request", "result", focusResult, "phase", "post_route");
+        Thread.sleep(ROUTE_SETTLE_MS);
         boolean ready = routeAccepted(primary, optional,
                 focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
         // Command acceptance only; physical amplifier readiness is not observable here.
@@ -80,6 +86,47 @@ final class AvasExteriorRoute {
                 "optionalSdkAccepted", optional, "focus_result", focusResult,
                 "accepted", ready, "amplifier_ready", "unknown");
         if (!ready) throw new IllegalStateException("Exterior route and focus were not accepted");
+    }
+
+    void logNavigationState(AvasAudioDiagnostics.Context diagnostics, String phase) {
+        logNavigationState(diagnostics, phase, "NAV_MUTE", NAV_MUTE_FID);
+        logNavigationState(diagnostics, phase, "NAV_SOURCE", NAV_SOURCE_FID);
+    }
+
+    private void logNavigationState(AvasAudioDiagnostics.Context diagnostics, String phase,
+            String parameter, int fid) {
+        long started = android.os.SystemClock.elapsedRealtime();
+        int status = Integer.MIN_VALUE;
+        int value = Integer.MIN_VALUE;
+        String error = null;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            IBinder service = service();
+            data.writeInterfaceToken(service.getInterfaceDescriptor());
+            data.writeInt(NAV_STATE_DEVICE);
+            data.writeInt(fid);
+            if (!service.transact(5, data, reply, 0)) {
+                error = "transact_false";
+            } else if (reply.dataAvail() < 8) {
+                error = "short_reply:" + reply.dataAvail();
+            } else {
+                status = reply.readInt();
+                value = reply.readInt();
+            }
+        } catch (Throwable failure) {
+            error = failure.toString();
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+        long finished = android.os.SystemClock.elapsedRealtime();
+        event(diagnostics, "avas_nav_state", "phase", phase, "parameter", parameter,
+                "device", NAV_STATE_DEVICE,
+                "fid", "0x" + Integer.toHexString(fid).toUpperCase(Locale.ROOT),
+                "status", status, "value", value, "error", error,
+                "read_started_ms", started, "read_finished_ms", finished,
+                "read_duration_ms", finished - started);
     }
 
     static boolean acquirePrimary(AvasNavigationRecovery.Marker marker,

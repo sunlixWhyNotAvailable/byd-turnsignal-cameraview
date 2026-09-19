@@ -156,7 +156,8 @@ public final class AvasNavigationAudioContractTest {
         assertEquals(1, exterior.split("output\\.play\\(", -1).length - 1);
         assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STATIC)"));
         assertFalse(exterior.contains("AudioTrack.MODE_STREAM"));
-        assertTrue(exterior.contains("Thread.sleep(80)"));
+        assertTrue(exterior.contains("Thread.sleep(EXTERIOR_NAV_PREP_MS)"));
+        assertTrue(player.contains("EXTERIOR_NAV_PREP_MS = 300"));
         assertEquals(1, exterior.split("Thread\\.sleep\\(", -1).length - 1);
         assertTrue(exterior.contains("drain(output, framesWritten, ticket, cancelled, session, exteriorGain, playbackMillis + 3000)"));
         assertTrue(exterior.indexOf("focusMaintainer.start()") > play);
@@ -209,6 +210,26 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(maintainer.contains("new Report(\"summary\""));
     }
 
+    @Test public void navStateTelemetryIsExteriorOnlyAndRunsOffThePlaybackWorker() throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String exterior = player.substring(player.indexOf("void play(File wav"),
+                player.indexOf("void playNavigation(File wav"));
+        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
+                player.indexOf("void stop()"));
+        String route = source("AvasExteriorRoute.java");
+        assertTrue(exterior.contains("new NavStateMonitor(diagnostics)"));
+        assertTrue(exterior.contains("navState.start()"));
+        assertTrue(exterior.contains("navState.finish()"));
+        assertFalse(navigation.contains("NavStateMonitor"));
+        assertTrue(player.contains("NAV_STATE_SAMPLE_MS = 250"));
+        assertTrue(player.contains("Executors.newSingleThreadScheduledExecutor"));
+        assertTrue(route.contains("NAV_STATE_DEVICE = 1002"));
+        assertTrue(route.contains("NAV_MUTE_FID = 1108344867"));
+        assertTrue(route.contains("NAV_SOURCE_FID = 1281359901"));
+        assertTrue(route.contains("service.transact(5, data, reply, 0)"));
+        assertTrue(route.contains("\"avas_nav_state\""));
+    }
+
     @Test public void exteriorEffectIsPrivateOptionalAndUpdatedOnlyWhenVolumeChanges() throws Exception {
         String player = source("AvasAudioPlayer.java");
         String gain = player.substring(player.indexOf("private final class ExteriorGain"),
@@ -251,6 +272,8 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(prepare.indexOf("acquirePrimary(") < prepare.indexOf("exteriorPath(true"));
         assertTrue(prepare.indexOf("exteriorPath(true") < prepare.indexOf("manager.requestAudioFocus"));
         assertTrue(prepare.indexOf("manager.requestAudioFocus") < prepare.indexOf("if (!ready)"));
+        assertEquals(2, prepare.split("Thread\\.sleep\\(ROUTE_SETTLE_MS\\)", -1).length - 1);
+        assertTrue(route.contains("ROUTE_SETTLE_MS = 50"));
         assertFalse(prepare.contains("if (primary"));
         assertTrue(prepare.contains("routeAccepted(primary, optional"));
         assertTrue(route.contains("if (naviFocusResolved) return"));
