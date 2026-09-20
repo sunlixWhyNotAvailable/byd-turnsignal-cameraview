@@ -19,6 +19,8 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -101,14 +103,18 @@ final class AvasAudioPlayer implements AutoCloseable {
                     .setOnAudioFocusChangeListener(focusCallback::accept,
                             new Handler(Looper.getMainLooper())).build();
 
+            AvasNavVolumePolicy.Snapshot navSnapshot = AvasNavVolumePolicy.capture(
+                    () -> manager.isStreamMute(NAV_STREAM),
+                    this::lastAudibleNavVolume,
+                    () -> manager.getStreamVolume(NAV_STREAM));
+            int savedVolume = navSnapshot.volume;
+            int savedMute = navSnapshot.muted ? 1 : 0;
+            AvasNavVolumePolicy.journal(navSnapshot,
+                    value -> settings.putInt(AvasShellSettings.SAVED_MUTE, value),
+                    value -> settings.putInt(AvasShellSettings.SAVED_NAV, value));
             settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED);
-            int savedVolume = manager.getStreamVolume(NAV_STREAM);
-            int savedMute = manager.isStreamMute(NAV_STREAM) ? 1 : 0;
-            settings.putInt(AvasShellSettings.SAVED_NAV, savedVolume);
-            settings.putInt(AvasShellSettings.SAVED_MUTE, savedMute);
             event(diagnostics, "avas_mute_volume", "phase", "saved", "volume", savedVolume,
                     "muted", savedMute == 1);
-            route.mute(true, diagnostics);
             route.naviFocus(true, diagnostics);
             int granted = manager.requestAudioFocus(focus);
             event(diagnostics, "avas_focus_request", "result", granted);
@@ -164,36 +170,33 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "silence_frames", silenceFrames, "total_frames", framesWritten);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
-            long playCalledMs, playReturnedMs, capCalledMs, capReturnedMs,
-                    unmuteCalledMs, unmuteReturnedMs;
+            long capCalledMs;
+            long[] timing = new long[3];
             synchronized (trackLock) {
-                if (cancelled(ticket, cancelled)) return;
-                playCalledMs = SystemClock.elapsedRealtime();
-                output.play();
-                playReturnedMs = SystemClock.elapsedRealtime();
-                focusMaintainer.start();
                 capCalledMs = SystemClock.elapsedRealtime();
-                manager.setStreamVolume(NAV_STREAM, 1, 0);
-                capReturnedMs = SystemClock.elapsedRealtime();
-                unmuteCalledMs = SystemClock.elapsedRealtime();
-                route.mute(false, diagnostics);
-                unmuteReturnedMs = SystemClock.elapsedRealtime();
-                if (manager.getStreamVolume(NAV_STREAM) != 1) {
-                    throw new IllegalStateException("Exterior NAV cap was not applied");
-                }
+                AudioTrack playbackOutput = output;
+                boolean played = AvasNavVolumePolicy.capAndPlay(value -> {
+                            manager.setStreamVolume(NAV_STREAM, value, 0);
+                            timing[0] = SystemClock.elapsedRealtime();
+                        }, () -> manager.getStreamVolume(NAV_STREAM),
+                        () -> cancelled(ticket, cancelled), () -> {
+                            timing[1] = SystemClock.elapsedRealtime();
+                            playbackOutput.play();
+                            timing[2] = SystemClock.elapsedRealtime();
+                        });
+                if (!played) return;
+                focusMaintainer.start();
             }
-            // Emit after unmute; diagnostic I/O must not delay these critical calls.
-            event(diagnostics, "avas_play_call_timing", "play_called_ms", playCalledMs,
-                    "play_returned_ms", playReturnedMs, "nav_cap_called_ms", capCalledMs,
-                    "nav_cap_returned_ms", capReturnedMs, "unmute_called_ms", unmuteCalledMs,
-                    "unmute_returned_ms", unmuteReturnedMs);
+            // Emit after playback; diagnostic I/O must not delay these critical calls.
+            event(diagnostics, "avas_play_call_timing", "nav_cap_called_ms", capCalledMs,
+                    "nav_cap_returned_ms", timing[0], "play_called_ms", timing[1],
+                    "play_returned_ms", timing[2]);
             navState.phase("playback");
             event(diagnostics, "avas_track_state", "phase", "played", "state",
                     safeTrackState(output), "play_state", safePlayState(output));
             event(diagnostics, "avas_mute_volume", "phase", "exterior_playback",
                     "saved_volume", savedVolume, "requested_volume", 1,
-                    "actual_volume", safeStreamVolume(), "requested_muted", false,
-                    "muted", safeStreamMute());
+                    "actual_volume", safeStreamVolume(), "muted", safeStreamMute());
             event(diagnostics, "avas_play_begin", "file", wav.getName(), "volume", initialVolume,
                     "sampleRate", header.sampleRate, "channels", header.channels,
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags(),
@@ -492,25 +495,23 @@ final class AvasAudioPlayer implements AutoCloseable {
         interrupted |= Thread.interrupted();
         try {
             int savedNav = settings.getInt(AvasShellSettings.SAVED_NAV, -1);
+            int savedMute = settings.getInt(AvasShellSettings.SAVED_MUTE, -1);
+            AvasNavVolumePolicy.restore(savedNav, savedMute,
+                    value -> manager.setStreamVolume(NAV_STREAM, value, 0),
+                    () -> settings.putInt(AvasShellSettings.SAVED_NAV, -1),
+                    () -> manager.isStreamMute(NAV_STREAM),
+                    muted -> route.mute(muted, diagnostics),
+                    () -> settings.putInt(AvasShellSettings.SAVED_MUTE, -1));
             if (savedNav >= 0) {
-                manager.setStreamVolume(NAV_STREAM, savedNav, 0);
-                settings.putInt(AvasShellSettings.SAVED_NAV, -1);
                 event(diagnostics, "avas_nav_restored", "volume", savedNav,
                         "actual", safeStreamVolume());
             }
-        } catch (Exception navFailure) {
-            failure = combine(failure, navFailure);
-        }
-        try {
-            int savedMute = settings.getInt(AvasShellSettings.SAVED_MUTE, -1);
             if (savedMute >= 0) {
-                route.mute(savedMute == 1, diagnostics);
-                settings.putInt(AvasShellSettings.SAVED_MUTE, -1);
                 event(diagnostics, "avas_mute_volume", "phase", "restored", "volume",
                         safeStreamVolume(), "muted", safeStreamMute());
             }
-        } catch (Exception muteFailure) {
-            failure = combine(failure, muteFailure);
+        } catch (Exception stateFailure) {
+            failure = combine(failure, stateFailure);
         }
         if (failure == null) {
             try {
@@ -549,6 +550,19 @@ final class AvasAudioPlayer implements AutoCloseable {
     private Object safeStreamMute() {
         try { return manager.isStreamMute(NAV_STREAM); }
         catch (Throwable failure) { return "unavailable:" + failure; }
+    }
+
+    private int lastAudibleNavVolume() throws Exception {
+        try {
+            Method method = AudioManager.class.getMethod(
+                    "getLastAudibleStreamVolume", int.class);
+            return (Integer) method.invoke(manager, NAV_STREAM);
+        } catch (InvocationTargetException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw failure;
+        }
     }
 
     private static long safePlaybackHead(AudioTrack output) {
