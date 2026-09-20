@@ -3,7 +3,6 @@ package com.byd.extend;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
@@ -33,8 +32,6 @@ import java.util.UUID;
 
 final class AppUpdateManager {
     static final int MAX_RELEASE_RESPONSE_BYTES = 512 * 1024;
-    private static final String PREFS_NAME = "app_updates";
-    private static final String KEY_LAST_CHECK_MS = "last_check_ms";
     private static final String RELEASE_API_HOST = "api.github.com";
     private static final String RELEASE_API_PATH =
             "/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest";
@@ -43,9 +40,7 @@ final class AppUpdateManager {
             "/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/download/";
     private static final String APK_NAME_PREFIX = "byd-extend-v";
     private static final String APK_MIME = "application/vnd.android.package-archive";
-    private static final long CHECK_THROTTLE_MS = 10 * 60 * 1000L;
     private static final long DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000L;
-    private static volatile UpdateInfo cachedAvailable;
 
     interface ProgressListener {
         void onProgress(int percent);
@@ -74,22 +69,13 @@ final class AppUpdateManager {
         }
     }
 
-    CheckResult checkForUpdate(Context context, boolean force) throws Exception {
-        SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        long now = System.currentTimeMillis();
-        long lastCheck = preferences.getLong(KEY_LAST_CHECK_MS, 0L);
-        if (isCheckThrottled(force, now, lastCheck)) {
-            return new CheckResult(cachedAvailable, false);
-        }
-        preferences.edit().putLong(KEY_LAST_CHECK_MS, now).apply();
-
+    CheckResult checkForUpdate() throws Exception {
         JSONObject release = new JSONObject(fetchLatestRelease());
         if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) {
             throw new IllegalStateException("GitHub latest release is not stable");
         }
         String version = normalizeVersion(release.optString("tag_name", ""));
         if (!isNewerVersion(version, BuildConfig.VERSION_NAME)) {
-            cachedAvailable = null;
             return new CheckResult(null, true);
         }
 
@@ -97,7 +83,6 @@ final class AppUpdateManager {
                 version,
                 findApkAssetUrl(release.optJSONArray("assets"), version),
                 release.optString("body", ""));
-        cachedAvailable = available;
         return new CheckResult(available, true);
     }
 
@@ -149,11 +134,6 @@ final class AppUpdateManager {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         context.startActivity(intent);
-    }
-
-    static boolean isCheckThrottled(boolean force, long nowMs, long lastCheckMs) {
-        return !force && lastCheckMs > 0L && nowMs >= lastCheckMs
-                && nowMs - lastCheckMs < CHECK_THROTTLE_MS;
     }
 
     static boolean isNewerVersion(String remote, String local) {

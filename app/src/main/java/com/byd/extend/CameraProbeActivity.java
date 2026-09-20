@@ -2104,7 +2104,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void runUpdateCheck(boolean force) {
-        if (updateCheckInFlight || updateDownloadInFlight || activityDestroyed) return;
+        if (updateDownloadInFlight || activityDestroyed) return;
         UpdateHintRuntime.get(this).check(force);
     }
 

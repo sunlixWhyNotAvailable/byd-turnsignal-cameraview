@@ -40,7 +40,7 @@ public class UpdateResultPresentationTest {
         assertFalse(state.accept("denied", false, false, true, true));
     }
 
-    @Test public void staleActionsAndThrottledEmptyResultDoNotInvalidateNewOffer() {
+    @Test public void staleActionsAndCachedEmptyResultDoNotInvalidateNewOffer() {
         UpdateResultPresentation state = new UpdateResultPresentation();
         state.accept("new", true, true, true, true);
         state.consume("old");
@@ -59,11 +59,4 @@ public class UpdateResultPresentationTest {
         assertFalse(state.accept("check1", false, false, true, true));
     }
 
-    @Test public void throttleKeepsTenMinutesWithoutTreatingCacheAsANewCheck() {
-        assertTrue(AppUpdateManager.isCheckThrottled(false, 600_999, 1_000));
-        assertFalse(AppUpdateManager.isCheckThrottled(false, 601_000, 1_000));
-        assertFalse(AppUpdateManager.isCheckThrottled(true, 1_001, 1_000));
-        assertFalse(AppUpdateManager.isCheckThrottled(false, 999, 1_000));
-        assertFalse(AppUpdateManager.isCheckThrottled(false, 1_000, 0));
-    }
 }

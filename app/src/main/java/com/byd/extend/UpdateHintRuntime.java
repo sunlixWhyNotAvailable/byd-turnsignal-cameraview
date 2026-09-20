@@ -2,12 +2,15 @@ package com.byd.extend;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -18,7 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Owns the startup check and its result independently of Activity visibility. */
+/** Owns update cycles and their results independently of Activity visibility. */
 public final class UpdateHintRuntime implements Application.ActivityLifecycleCallbacks {
     public static final String PREF_ENABLED = "update_hint_enabled";
     static final String PREF_AUTO_CHECK = "update_auto_check_enabled";
@@ -33,12 +36,15 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private final Set<Activity> started = Collections.newSetFromMap(new IdentityHashMap<>());
     private WeakReference<CheckListener> listener = new WeakReference<>(null);
     private AppUpdateManager.UpdateInfo available;
-    private boolean checking;
-    private boolean downloading;
     private boolean shutdown;
-    private long generation;
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener;
     private final UpdateAutoCheckRuntime autoCheck;
+    private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) autoCheck.sleep();
+            else runtimeWake(intent.getAction());
+        }
+    };
 
     interface CheckListener {
         void onCheckStarted(boolean force);
@@ -55,17 +61,30 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         this.context = context;
         preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         autoCheck = new UpdateAutoCheckRuntime(main::postDelayed, main::removeCallbacks,
-                () -> preferences.getBoolean(PREF_AUTO_CHECK, true), () -> check(false));
-        settingsListener = (prefs, key) -> main.post(() -> {
-            if (PREF_AUTO_CHECK.equals(key)) autoCheck.refresh();
-            else if (PREF_ENABLED.equals(key) && !enabled()) hide("disabled");
-            else if (AppLanguage.KEY.equals(key) || "ui_dark_theme".equals(key)) {
-                UpdateHintOverlay.refreshAppearance();
+                () -> preferences.getBoolean(PREF_AUTO_CHECK, true), this::startCheck,
+                detail -> Log.i("UpdateHintRuntime", "update_check " + detail));
+        settingsListener = (prefs, key) -> {
+            // SharedPreferences dispatches on main: do not coalesce a rapid OFF/ON pair.
+            if (PREF_AUTO_CHECK.equals(key)) {
+                autoCheck.refresh();
+                return;
             }
-        });
+            main.post(() -> {
+                if (PREF_ENABLED.equals(key) && !enabled()) hide("disabled");
+                else if (AppLanguage.KEY.equals(key) || "ui_dark_theme".equals(key)) {
+                    UpdateHintOverlay.refreshAppearance();
+                }
+            });
+        };
         preferences.registerOnSharedPreferenceChangeListener(settingsListener);
         UpdateHintOverlay.setCallback(this::openResult);
         ((Application) context).registerActivityLifecycleCallbacks(this);
+        IntentFilter wakeFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        wakeFilter.addAction(Intent.ACTION_SCREEN_ON);
+        context.registerReceiver(wakeReceiver, wakeFilter);
+        if (!interactive()) autoCheck.sleep();
+        shutdown = GuardRecovery.isUserShutdownActive(context);
+        if (shutdown) autoCheck.shutdown();
         autoCheck.refresh();
     }
 
@@ -73,28 +92,38 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     void removeCheckListener(CheckListener value) {
         if (listener.get() == value) listener.clear();
     }
-    boolean isChecking() { return checking; }
-    void setDownloadInFlight(boolean value) { downloading = value; }
+    boolean isChecking() { return autoCheck.isChecking(); }
+    void setDownloadInFlight(boolean value) { autoCheck.setDownloading(value); }
     boolean enabled() { return preferences.getBoolean(PREF_ENABLED, true); }
 
     boolean check(boolean force) {
-        if (checking || downloading || shutdown) return false;
-        checking = true;
-        final long ticket = generation;
+        if (shutdown) return false;
+        if (!force) {
+            autoCheck.refresh();
+            return autoCheck.isChecking();
+        }
+        boolean alreadyRunning = autoCheck.isChecking();
+        boolean accepted = autoCheck.requestManual();
+        if (accepted && alreadyRunning) {
+            CheckListener observer = listener.get();
+            if (observer != null) observer.onCheckStarted(true);
+        }
+        return accepted;
+    }
+
+    private void startCheck(UpdateAutoCheckRuntime.Request request) {
         CheckListener startedObserver = listener.get();
-        if (startedObserver != null) startedObserver.onCheckStarted(force);
-        Log.i("UpdateHintRuntime", "check_started automatic=" + !force);
+        if (startedObserver != null) startedObserver.onCheckStarted(request.manual);
         checks.execute(() -> {
             AppUpdateManager.CheckResult result = null;
             Throwable failure = null;
-            try { result = manager.checkForUpdate(context, force); }
+            try { result = manager.checkForUpdate(); }
             catch (Exception error) { failure = error; }
             final AppUpdateManager.CheckResult completed = result;
             final Throwable error = failure;
             main.post(() -> {
-                checking = false;
                 CheckListener observer = listener.get();
-                if (ticket != generation || shutdown) {
+                if (!autoCheck.complete(request, error == null && completed != null)) {
                     if (observer != null) observer.onCheckDiscarded();
                     return;
                 }
@@ -112,14 +141,13 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                 Log.i("UpdateHintRuntime", "check_finished result=" + (error != null ? "error"
                         : completed != null && completed.available != null ? "available" : "none"));
                 if (observer != null) observer.onCheckFinished(
-                        completed == null ? null : completed.available, error, force);
+                        completed == null ? null : completed.available, error, request.manual);
             });
         });
-        return true;
     }
 
     AppUpdateManager.UpdateInfo pendingOffer() {
-        return !checking && available != null && presentation.hasOffer(available.resultId)
+        return !isChecking() && available != null && presentation.hasOffer(available.resultId)
                 ? available : null;
     }
 
@@ -150,7 +178,6 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     void shutdown() {
         shutdown = true;
         autoCheck.shutdown();
-        generation++;
         presentation.invalidate();
         available = null;
         hide("shutdown");
@@ -158,10 +185,25 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
 
     private void hide(String reason) { UpdateHintOverlay.hide(reason); }
 
+    static void onRuntimeWake(Context context, String action) {
+        get(context).runtimeWake(action);
+    }
+
+    private void runtimeWake(String action) {
+        if (shutdown || GuardRecovery.isUserShutdownActive(context)
+                || LegacySettingsImporter.blocksRuntime(context)) return;
+        autoCheck.wake(action);
+    }
+
+    private boolean interactive() {
+        PowerManager power = context.getSystemService(PowerManager.class);
+        return power == null || power.isInteractive();
+    }
+
     @Override public void onActivityStarted(Activity activity) {
         started.add(activity);
         shutdown = false;
-        autoCheck.resume();
+        autoCheck.entry(interactive());
         hide("own_ui_visible");
     }
     @Override public void onActivityStopped(Activity activity) { started.remove(activity); }

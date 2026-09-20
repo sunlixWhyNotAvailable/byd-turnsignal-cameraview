@@ -320,18 +320,6 @@ public final class AdbCoreTest {
     }
 
     @Test
-    public void updateDelayAgesBeforeActivityOpensAndRunsOnce() {
-        UpdateAutoCheckRuntime.Scheduler scheduler =
-                new UpdateAutoCheckRuntime.Scheduler(30_000L);
-        scheduler.start(1_000L);
-        assertEquals(20_000L, scheduler.remainingMs(11_000L));
-        assertFalse(scheduler.consumeIfReady(30_999L));
-        assertTrue(scheduler.consumeIfReady(31_000L));
-        assertFalse(scheduler.consumeIfReady(61_000L));
-        assertEquals(-1L, scheduler.remainingMs(61_000L));
-    }
-
-    @Test
     public void updateVersionComparisonUsesStableSemanticVersions() {
         assertTrue(AppUpdateManager.isNewerVersion("0.35.0", "0.34.0"));
         assertTrue(AppUpdateManager.isNewerVersion("v1.0.0", "0.99.9"));
