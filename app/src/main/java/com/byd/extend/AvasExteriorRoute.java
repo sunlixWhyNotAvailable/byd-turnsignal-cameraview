@@ -25,6 +25,7 @@ final class AvasExteriorRoute {
     private static final int NAV_STATE_DEVICE = 1002;
     private static final int NAV_MUTE_FID = 1108344867;
     private static final int NAV_SOURCE_FID = 1281359901;
+    private static final int NAV_VOLUME_STATE_FID = 0x4FD00014;
     private static final String SDK = "android.hardware.bydauto.";
     private static final int[][] HAL = {{449, 14}, {433, 67}, {850, 4150}};
 
@@ -89,6 +90,9 @@ final class AvasExteriorRoute {
     }
 
     void logNavigationState(AvasAudioDiagnostics.Context diagnostics, String phase) {
+        // The owner AudioFlinger reads this OEM value, not Android's stream index.
+        // Read status matters: a failed GET must not be mistaken for physical mute.
+        logNavigationState(diagnostics, phase, "NAV_VOLUME_STATE", NAV_VOLUME_STATE_FID);
         logNavigationState(diagnostics, phase, "NAV_MUTE", NAV_MUTE_FID);
         logNavigationState(diagnostics, phase, "NAV_SOURCE", NAV_SOURCE_FID);
     }
@@ -125,6 +129,7 @@ final class AvasExteriorRoute {
                 "device", NAV_STATE_DEVICE,
                 "fid", "0x" + Integer.toHexString(fid).toUpperCase(Locale.ROOT),
                 "status", status, "value", value, "error", error,
+                "value_valid", error == null && status >= 0,
                 "read_started_ms", started, "read_finished_ms", finished,
                 "read_duration_ms", finished - started);
     }

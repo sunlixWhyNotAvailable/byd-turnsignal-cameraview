@@ -659,7 +659,8 @@ public final class CameraHelperService extends Service {
                     overlay.setReversePriority(value);
                     if (parkingCameras != null) parkingCameras.setReversePriority(value);
                 });
-        clusterFullscreen = new ClusterFullscreenController(this, settings, this::lifecycle);
+        clusterFullscreen = new ClusterFullscreenController(
+                this, settings, runtimeHandler, this::lifecycle);
         mirror = new RearviewMirrorController(this, runtimeHandler, this::lifecycle);
         mirror.appVisibility(activityVisible);
         controllersInitialized = true;

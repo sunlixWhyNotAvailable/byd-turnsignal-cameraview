@@ -228,8 +228,20 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(route.contains("NAV_STATE_DEVICE = 1002"));
         assertTrue(route.contains("NAV_MUTE_FID = 1108344867"));
         assertTrue(route.contains("NAV_SOURCE_FID = 1281359901"));
+        assertTrue(route.contains("NAV_VOLUME_STATE_FID = 0x4FD00014"));
+        assertTrue(route.contains("logNavigationState(diagnostics, phase, \"NAV_VOLUME_STATE\", NAV_VOLUME_STATE_FID)"));
         assertTrue(route.contains("service.transact(5, data, reply, 0)"));
         assertTrue(route.contains("\"avas_nav_state\""));
+        String read = route.substring(route.indexOf("private void logNavigationState("),
+                route.indexOf("static boolean acquirePrimary("));
+        assertTrue(read.contains("status = reply.readInt()"));
+        assertTrue(read.contains("value = reply.readInt()"));
+        assertTrue(read.contains("\"value_valid\", error == null && status >= 0"));
+        assertTrue(read.contains("\"read_started_ms\", started"));
+        assertTrue(read.contains("\"read_finished_ms\", finished"));
+        assertTrue(read.contains("\"read_duration_ms\", finished - started"));
+        assertFalse(read.contains("Thread.sleep"));
+        assertFalse(read.contains("transact(6"));
     }
 
     @Test public void exteriorEffectIsPrivateOptionalAndUpdatedOnlyWhenVolumeChanges() throws Exception {
