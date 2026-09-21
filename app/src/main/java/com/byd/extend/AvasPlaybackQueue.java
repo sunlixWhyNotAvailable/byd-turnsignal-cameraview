@@ -18,10 +18,12 @@ final class AvasPlaybackQueue {
         final String session;
         final boolean manual;
         final AvasAudioDiagnostics.Context diagnostics;
+        final AvasAudioDiagnostics.Context supersededAutomatic;
         final AtomicBoolean cancelled = new AtomicBoolean();
 
         private Request(long id, Kind kind, String profile, String asset, String session,
-                AvasAudioDiagnostics.Context diagnostics) {
+                AvasAudioDiagnostics.Context diagnostics,
+                AvasAudioDiagnostics.Context supersededAutomatic) {
             this.id = id;
             this.kind = kind;
             this.profile = profile;
@@ -29,6 +31,7 @@ final class AvasPlaybackQueue {
             this.session = session;
             this.manual = kind == Kind.MANUAL_EXTERIOR;
             this.diagnostics = diagnostics;
+            this.supersededAutomatic = supersededAutomatic;
         }
 
         boolean audition() { return kind == Kind.AUDITION_NAV; }
@@ -57,11 +60,13 @@ final class AvasPlaybackQueue {
         if (closed || manual && hasManual(profile)) return null;
         stopAllAuditionsLocked();
         Kind kind = manual ? Kind.MANUAL_EXTERIOR : Kind.AUTOMATIC_EXTERIOR;
+        AvasAudioDiagnostics.Context superseded = manual
+                ? null : removeReplaceableAutomaticLocked();
         long acceptedMs = clock.getAsLong();
         long id = ++nextId;
         Request request = new Request(id, kind, profile, "", "",
                 new AvasAudioDiagnostics.Context(id, profile, manual ? "manual" : "automatic",
-                        helperPid, acceptedMs, clock.getAsLong()));
+                        helperPid, acceptedMs, clock.getAsLong()), superseded);
         requests.addLast(request);
         notifyAll();
         return request;
@@ -75,7 +80,7 @@ final class AvasPlaybackQueue {
         long id = ++nextId;
         Request request = new Request(id, Kind.AUDITION_NAV, profile, asset, session,
                 new AvasAudioDiagnostics.Context(id, profile, "audition", helperPid,
-                        acceptedMs, clock.getAsLong()));
+                        acceptedMs, clock.getAsLong()), null);
         requests.addLast(request);
         notifyAll();
         return request;
@@ -165,6 +170,21 @@ final class AvasPlaybackQueue {
     private void stopAllAuditionsLocked() {
         requests.removeIf(Request::audition);
         if (active != null && active.audition()) active.cancelled.set(true);
+    }
+
+    private AvasAudioDiagnostics.Context removeReplaceableAutomaticLocked() {
+        // Before the worker takes an idle queue head, protect it as if it were active. This keeps
+        // two back-to-back events while still bounding every later automatic slot to the latest.
+        Request protectedHead = active == null ? requests.peekFirst() : null;
+        for (java.util.Iterator<Request> iterator = requests.iterator(); iterator.hasNext();) {
+            Request pending = iterator.next();
+            if (pending.automatic() && pending != protectedHead) {
+                iterator.remove();
+                pending.cancelled.set(true);
+                return pending.diagnostics;
+            }
+        }
+        return null;
     }
 
     private boolean hasManual(String profile) {

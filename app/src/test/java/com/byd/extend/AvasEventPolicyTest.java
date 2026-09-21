@@ -56,6 +56,17 @@ public class AvasEventPolicyTest {
         assertEquals(Collections.singletonList("lock"), policy.sample(600, 0, 2, true));
     }
 
+    @Test public void silentReconcileNeverEmitsOrArmsPowerSuppression() {
+        AvasEventPolicy policy = new AvasEventPolicy();
+        assertTrue(policy.reconcile(2, 2));
+        assertTrue(policy.reconcile(0, 2));
+        assertEquals(Collections.singletonList("unlock"),
+                policy.sample(100, 0, 1, true, true));
+        assertFalse(policy.wasEventSuppressed());
+        assertFalse(policy.reconcile(-1, 1));
+        assertTrue(policy.sample(200, 2, 2, true, true).isEmpty());
+    }
+
     @Test public void oneMissingSignalMakesWholeSampleSilentAndReseedsBoth() {
         AvasEventPolicy policy = new AvasEventPolicy();
         policy.sample(0, 1, 2, true);

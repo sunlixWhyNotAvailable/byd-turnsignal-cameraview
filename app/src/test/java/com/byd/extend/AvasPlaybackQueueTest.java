@@ -35,6 +35,103 @@ public class AvasPlaybackQueueTest {
         assertSame(lock, queue.take());
     }
 
+    @Test public void idleDoubleKeepsFirstAndSecondBeforeWorkerTake() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request first = queue.enqueue("power_on", false);
+        AvasPlaybackQueue.Request second = queue.enqueue("unlock", false);
+
+        assertEquals(2, queue.pendingCount());
+        assertSame(first, queue.take());
+        queue.finish(first);
+        assertSame(second, queue.take());
+        assertFalse(first.cancelled.get());
+        assertFalse(second.cancelled.get());
+        assertNull(second.supersededAutomatic);
+    }
+
+    @Test public void idleTripleKeepsFirstAndLatestBeforeWorkerTake() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request first = queue.enqueue("power_on", false);
+        AvasPlaybackQueue.Request second = queue.enqueue("unlock", false);
+        AvasPlaybackQueue.Request latest = queue.enqueue("lock", false);
+
+        assertEquals(2, queue.pendingCount());
+        assertFalse(first.cancelled.get());
+        assertTrue(second.cancelled.get());
+        assertEquals(second.id, latest.supersededAutomatic.requestId);
+        assertEquals("unlock", latest.supersededAutomatic.profile);
+        assertSame(first, queue.take());
+        queue.finish(first);
+        assertSame(latest, queue.take());
+    }
+
+    @Test public void activeAutomaticBurstKeepsActiveAndLatestThenRepeats() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request active = queue.enqueue("power_on", false);
+        assertSame(active, queue.take());
+        AvasPlaybackQueue.Request b = queue.enqueue("unlock", false);
+        AvasPlaybackQueue.Request c = queue.enqueue("power_off", false);
+        AvasPlaybackQueue.Request d = queue.enqueue("lock", false);
+
+        assertFalse(active.cancelled.get());
+        assertTrue(b.cancelled.get());
+        assertTrue(c.cancelled.get());
+        assertFalse(d.cancelled.get());
+        assertEquals(c.id, d.supersededAutomatic.requestId);
+        queue.finish(active);
+        assertSame(d, queue.take());
+
+        AvasPlaybackQueue.Request e = queue.enqueue("power_on", false);
+        AvasPlaybackQueue.Request f = queue.enqueue("unlock", false);
+        assertTrue(e.cancelled.get());
+        assertEquals(e.id, f.supersededAutomatic.requestId);
+        queue.finish(d);
+        assertSame(f, queue.take());
+    }
+
+    @Test public void automaticReplacementAppendsAfterManualWithoutMovingIt() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request active = queue.enqueue("power_on", false);
+        assertSame(active, queue.take());
+        AvasPlaybackQueue.Request oldAutomatic = queue.enqueue("unlock", false);
+        AvasPlaybackQueue.Request manual = queue.enqueue("lock", true);
+        AvasPlaybackQueue.Request latestAutomatic = queue.enqueue("power_off", false);
+
+        assertTrue(oldAutomatic.cancelled.get());
+        assertEquals("idle", queue.state("unlock"));
+        assertEquals("manual_queued", queue.state("lock"));
+        assertEquals("automatic_queued", queue.state("power_off"));
+        queue.finish(active);
+        assertSame(manual, queue.take());
+        queue.finish(manual);
+        assertSame(latestAutomatic, queue.take());
+    }
+
+    @Test public void manualAtIdleHeadDoesNotProtectOlderAutomatic() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request manual = queue.enqueue("lock", true);
+        AvasPlaybackQueue.Request oldAutomatic = queue.enqueue("power_on", false);
+        AvasPlaybackQueue.Request latestAutomatic = queue.enqueue("unlock", false);
+
+        assertTrue(oldAutomatic.cancelled.get());
+        assertSame(manual, queue.take());
+        queue.finish(manual);
+        assertSame(latestAutomatic, queue.take());
+    }
+
+    @Test public void disablingProfileClearsQueuedReplacementState() throws Exception {
+        AvasPlaybackQueue queue = new AvasPlaybackQueue();
+        AvasPlaybackQueue.Request active = queue.enqueue("power_on", false);
+        assertSame(active, queue.take());
+        queue.enqueue("unlock", false);
+
+        queue.retainAutomaticProfiles(Collections.singleton("power_on"));
+
+        assertEquals("idle", queue.state("unlock"));
+        assertEquals(0, queue.pendingCount());
+        assertFalse(active.cancelled.get());
+    }
+
     @Test public void stopOnlyTargetsOwnManualIncludingQueued() throws Exception {
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
         AvasPlaybackQueue.Request automatic = queue.enqueue("lock", false);

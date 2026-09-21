@@ -18,7 +18,7 @@ public final class AvasNavigationAudioContractTest {
         int recover = start.indexOf("player = new AvasAudioPlayer(context, this::emit)");
         assertTrue(recover >= 0);
         assertTrue(start.indexOf("playback.execute") > recover);
-        assertTrue(start.indexOf("updatePolling()") > recover);
+        assertTrue(start.indexOf("updateTelemetry()") > recover);
         assertTrue(start.indexOf("reportStatus()") > recover);
         assertTrue(start.contains("\"stage\", \"recovery\""));
     }

@@ -77,6 +77,22 @@ final class AvasEventPolicy {
         clearToken();
     }
 
+    /** Replaces the baseline without producing an event or arming power suppression. */
+    boolean reconcile(int rawPower, int rawLock) {
+        int nextPower = normalizedPower(rawPower);
+        int nextLock = rawLock == 1 || rawLock == 2 ? rawLock : -1;
+        clearSuppressionResult();
+        clearToken();
+        if (nextPower < 0 || nextLock < 0) {
+            power = -1;
+            lock = -1;
+            return false;
+        }
+        power = nextPower;
+        lock = nextLock;
+        return true;
+    }
+
     static int normalizedPower(int raw) { return raw == 0 ? 0 : raw >= 1 && raw <= 4 ? 1 : -1; }
 
     private void clearToken() { powerEventAt = -1; powerProfile = ""; }

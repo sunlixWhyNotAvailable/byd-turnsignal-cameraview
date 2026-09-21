@@ -1,8 +1,6 @@
 package com.byd.extend;
 
 import android.content.Context;
-import android.os.IBinder;
-import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.SystemClock;
@@ -38,29 +36,21 @@ import java.util.function.Consumer;
 final class AvasRuntime implements AutoCloseable {
     private static final File CACHE = new File("/data/local/tmp/bydextend_avas");
     private static final File CONFIG = new File(CACHE, "config.json");
-    private static final long POLL_MS = 250;
-    private static final int POWER_DEVICE = 1001;
-    private static final int POWER_FID = 315621418;
-    private static final int LOCK_DEVICE = 1032;
-    private static final int LOCK_FID = 1081081864;
-
     private final Context context;
     private final int ownerUid;
     private final Consumer<JSONObject> eventSink;
     private final AvasPlaybackQueue queue;
     private final AvasEventPolicy policy = new AvasEventPolicy();
-    private final VehicleReader vehicle = new VehicleReader();
+    private final AvasTelemetryController telemetryController;
     private final ExecutorService playback = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "avas-playback"));
     private final ScheduledExecutorService telemetry = Executors.newSingleThreadScheduledExecutor(r ->
             new Thread(r, "avas-telemetry"));
     private volatile AvasConfig config = AvasConfig.empty();
     private volatile AvasAudioPlayer player;
-    private ScheduledFuture<?> pollTask;
     private boolean started;
     private volatile boolean closed;
     private boolean configOwned;
-    private volatile int telemetryState = -1;
     private final Set<String> pendingPrune = new HashSet<>();
     private volatile String activeAssetId = "";
     private String auditionProfileId = "";
@@ -74,6 +64,32 @@ final class AvasRuntime implements AutoCloseable {
         this.ownerUid = ownerUid;
         this.eventSink = eventSink;
         queue = new AvasPlaybackQueue(SystemClock::elapsedRealtime, Process.myPid());
+        AvasVehicleTelemetryTransport transport = new AvasVehicleTelemetryTransport(context);
+        telemetryController = new AvasTelemetryController(SystemClock::elapsedRealtime,
+                new AvasTelemetryController.Executor() {
+                    @Override public void execute(Runnable task) { telemetry.execute(task); }
+                    @Override public AvasTelemetryController.Cancellable schedule(
+                            Runnable task, long delayMs) {
+                        ScheduledFuture<?> future = telemetry.schedule(task, delayMs,
+                                TimeUnit.MILLISECONDS);
+                        return () -> future.cancel(false);
+                    }
+                }, transport, new AvasTelemetryController.Sink() {
+                    @Override public boolean powerOnSuppressionEligible() {
+                        return skipEligible(config, "power_on");
+                    }
+                    @Override public boolean powerOffSuppressionEligible() {
+                        return skipEligible(config, "power_off");
+                    }
+                    @Override public void onProfile(String profile) { enqueueAutomatic(profile); }
+                    @Override public void onSuppressed(String profile, String powerProfile,
+                            long deltaMs) {
+                        event("avas_event_skipped", "profile", profile,
+                                "power_profile", powerProfile, "observed_delta_ms", deltaMs,
+                                "reason", "power_profile_concurrent_lock_unlock");
+                    }
+                    @Override public void log(String kind, Object... fields) { event(kind, fields); }
+                }, policy);
     }
 
     synchronized void start() {
@@ -88,7 +104,7 @@ final class AvasRuntime implements AutoCloseable {
             event("avas_error", "stage", "recovery", "error", failure.toString());
         }
         playback.execute(this::playbackLoop);
-        updatePolling();
+        updateTelemetry();
         event("avas_runtime_started", "ownerUid", ownerUid);
         reportStatus();
     }
@@ -100,10 +116,8 @@ final class AvasRuntime implements AutoCloseable {
         Set<String> deleted = assetIds(config);
         deleted.removeAll(assetIds(next));
         config = next;
-        synchronized (policy) {
-            policy.invalidateIneligible(skipEligible(next, "power_on"),
-                    skipEligible(next, "power_off"));
-        }
+        telemetryController.eligibilityChanged(skipEligible(next, "power_on"),
+                skipEligible(next, "power_off"));
         if (!deleted.isEmpty()) {
             queue.removeAuditionsForAssets(deleted);
             pendingPrune.addAll(deleted);
@@ -118,7 +132,7 @@ final class AvasRuntime implements AutoCloseable {
             queue.retainAutomaticProfiles(enabled);
             event("avas_configured", "automaticProfiles", enabled.size());
         }
-        updatePolling();
+        updateTelemetry();
         reportStatus();
     }
 
@@ -283,10 +297,9 @@ final class AvasRuntime implements AutoCloseable {
         synchronized (this) {
             if (closed) return;
             closed = true;
-            if (pollTask != null) pollTask.cancel(true);
-            pollTask = null;
             queue.close();
         }
+        telemetryController.close();
         telemetry.shutdownNow();
         AvasAudioPlayer current = player;
         if (current != null) current.stop();
@@ -392,55 +405,12 @@ final class AvasRuntime implements AutoCloseable {
         }
     }
 
-    private synchronized void updatePolling() {
+    private synchronized void updateTelemetry() {
         if (!started || closed) return;
         boolean enabled = false;
         for (AvasConfig.Profile profile : config.profiles) enabled |= profile.enabled;
-        if (enabled && pollTask == null) {
-            synchronized (policy) { policy.reset(); }
-            telemetryState = -1;
-            pollTask = telemetry.scheduleWithFixedDelay(this::poll, 0, POLL_MS, TimeUnit.MILLISECONDS);
-        } else if (!enabled && pollTask != null) {
-            pollTask.cancel(false);
-            pollTask = null;
-            synchronized (policy) { policy.reset(); }
-            telemetryState = -1;
-        }
-    }
-
-    private void poll() {
-        int power = vehicle.read(POWER_DEVICE, POWER_FID);
-        int lock = vehicle.read(LOCK_DEVICE, LOCK_FID);
-        boolean healthy = AvasEventPolicy.normalizedPower(power) >= 0 && (lock == 1 || lock == 2);
-        if (!healthy) {
-            synchronized (policy) {
-                policy.sample(SystemClock.elapsedRealtime(), power, lock, false);
-            }
-            if (telemetryState != 0) event("avas_telemetry_gap", "power", power, "lock", lock);
-            telemetryState = 0;
-            return;
-        }
-        if (telemetryState != 1) event("avas_telemetry_ready", "power", power, "lock", lock);
-        telemetryState = 1;
-        boolean onReady = skipEligible(config, "power_on");
-        boolean offReady = skipEligible(config, "power_off");
-        List<String> profiles;
-        String suppressedProfile;
-        String suppressionPowerProfile;
-        long suppressionDeltaMs;
-        synchronized (policy) {
-            profiles = policy.sample(SystemClock.elapsedRealtime(), power, lock, onReady, offReady);
-            suppressedProfile = policy.suppressedProfile();
-            suppressionPowerProfile = policy.suppressionPowerProfile();
-            suppressionDeltaMs = policy.suppressionDeltaMs();
-        }
-        for (String profile : profiles) enqueueAutomatic(profile);
-        if (!suppressedProfile.isEmpty()) {
-            event("avas_event_skipped", "profile", suppressedProfile,
-                    "power_profile", suppressionPowerProfile,
-                    "observed_delta_ms", suppressionDeltaMs,
-                    "reason", "power_profile_concurrent_lock_unlock");
-        }
+        if (enabled) telemetryController.activate();
+        else telemetryController.deactivate();
     }
 
     private void enqueueAutomatic(String profileId) {
@@ -450,6 +420,12 @@ final class AvasRuntime implements AutoCloseable {
         }
         AvasPlaybackQueue.Request request = queue.enqueueExterior(profileId, false);
         if (request != null) {
+            if (request.supersededAutomatic != null) {
+                AvasAudioDiagnostics.Context old = request.supersededAutomatic;
+                event("avas_queue_replaced", "old_request", old.requestId,
+                        "old_profile", old.profile, "new_request", request.diagnostics.requestId,
+                        "new_profile", request.profile);
+            }
             event(request, "avas_event_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
             event(request, "avas_request_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
             event(request, "avas_queue_enqueued", "pending", queue.pendingCount());
@@ -648,36 +624,4 @@ final class AvasRuntime implements AutoCloseable {
         try { descriptor.close(); } catch (IOException ignored) {}
     }
 
-    private static final class VehicleReader {
-        private IBinder service;
-
-        int read(int device, int fid) {
-            Parcel data = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
-            try {
-                IBinder autoservice = service();
-                data.writeInterfaceToken(autoservice.getInterfaceDescriptor());
-                data.writeInt(device);
-                data.writeInt(fid);
-                if (!autoservice.transact(5, data, reply, 0) || reply.dataAvail() < 8) return -1;
-                int status = reply.readInt();
-                int value = reply.readInt();
-                return status == 0 ? value : -1;
-            } catch (Exception ignored) {
-                return -1;
-            } finally {
-                data.recycle();
-                reply.recycle();
-            }
-        }
-
-        private synchronized IBinder service() throws Exception {
-            if (service == null || !service.isBinderAlive()) {
-                service = (IBinder) Class.forName("android.os.ServiceManager")
-                        .getMethod("getService", String.class).invoke(null, "autoservice");
-            }
-            if (service == null) throw new IllegalStateException("autoservice unavailable");
-            return service;
-        }
-    }
 }

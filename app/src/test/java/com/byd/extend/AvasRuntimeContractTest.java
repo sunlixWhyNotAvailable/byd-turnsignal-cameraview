@@ -17,10 +17,18 @@ public final class AvasRuntimeContractTest {
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
 
         assertTrue(text.contains("/data/local/tmp/bydextend_avas"));
-        assertTrue(text.contains("POWER_DEVICE = 1001"));
-        assertTrue(text.contains("POWER_FID = 315621418"));
-        assertTrue(text.contains("LOCK_DEVICE = 1032"));
-        assertTrue(text.contains("LOCK_FID = 1081081864"));
+        Path transport = Path.of("app/src/main/java/com/byd/extend/AvasVehicleTelemetryTransport.java");
+        if (!Files.exists(transport)) transport = Path.of(
+                "src/main/java/com/byd/extend/AvasVehicleTelemetryTransport.java");
+        String transportText = new String(Files.readAllBytes(transport), StandardCharsets.UTF_8);
+        Path controller = Path.of("app/src/main/java/com/byd/extend/AvasTelemetryController.java");
+        if (!Files.exists(controller)) controller = Path.of(
+                "src/main/java/com/byd/extend/AvasTelemetryController.java");
+        String controllerText = new String(Files.readAllBytes(controller), StandardCharsets.UTF_8);
+        assertTrue(controllerText.contains("POWER_DEVICE = 1001"));
+        assertTrue(controllerText.contains("POWER_FID = 315621418"));
+        assertTrue(controllerText.contains("LOCK_DEVICE = 1032"));
+        assertTrue(controllerText.contains("LOCK_FID = 1081081864"));
         assertTrue(text.contains("void installAsset(String assetId, ParcelFileDescriptor descriptor)"));
         assertTrue(text.contains("void startManual(String profileId)"));
         assertTrue(text.contains("void stopManual(String profileId)"));
@@ -35,13 +43,23 @@ public final class AvasRuntimeContractTest {
         assertTrue(text.contains("AvasBuiltinSounds.isBuiltinAsset(asset.id)"));
         assertTrue(text.contains("queue.removeAuditionsForAssets(deleted)"));
         assertTrue(text.contains("assetId.equals(activeAssetId)"));
-        assertTrue(text.contains("scheduleWithFixedDelay(this::poll, 0, POLL_MS"));
-        assertTrue(text.contains("POLL_MS = 250"));
+        assertTrue(text.contains("new AvasVehicleTelemetryTransport(context)"));
+        assertTrue(text.contains("telemetryController.activate()"));
+        assertTrue(text.contains("telemetryController.deactivate()"));
+        assertTrue(text.indexOf("telemetryController.close()")
+                < text.indexOf("telemetry.shutdownNow()"));
+        assertTrue(controllerText.contains("RECONCILE_MS = 60_000"));
+        assertTrue(controllerText.contains("FALLBACK_MS = 250"));
+        assertTrue(transportText.contains("context.getSystemService(\"auto\")"));
+        assertTrue(transportText.contains("registerListener"));
+        assertTrue(transportText.contains("enableDevice"));
+        assertTrue(transportText.contains("autoservice.transact(5"));
+        assertFalse(transportText.contains("BYDAutoBodyworkDevice"));
         assertTrue(text.contains("skipEligible(config, \"power_on\")"));
         assertTrue(text.contains("skipEligible(config, \"power_off\")"));
-        assertTrue(text.contains("policy.invalidateIneligible(skipEligible(next, \"power_on\")"));
-        assertTrue(text.contains("\"power_profile\", suppressionPowerProfile"));
-        assertTrue(text.contains("\"observed_delta_ms\", suppressionDeltaMs"));
+        assertTrue(text.contains("telemetryController.eligibilityChanged(skipEligible(next, \"power_on\")"));
+        assertTrue(text.contains("\"power_profile\", powerProfile"));
+        assertTrue(text.contains("\"observed_delta_ms\", deltaMs"));
         assertTrue(text.contains("\"reason\", \"power_profile_concurrent_lock_unlock\""));
         assertTrue(text.contains("StandardCopyOption.ATOMIC_MOVE"));
         assertTrue(text.contains("Os.chmod(CACHE.getAbsolutePath(), 0700)"));
