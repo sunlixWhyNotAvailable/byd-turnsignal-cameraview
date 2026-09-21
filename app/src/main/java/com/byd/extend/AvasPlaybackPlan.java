@@ -58,4 +58,11 @@ final class AvasPlaybackPlan {
         }
         return written;
     }
+
+    static long tailPaddingFrames(long submittedFrames, long startupFrames) {
+        if (submittedFrames < 0 || startupFrames < 0) {
+            throw new IllegalArgumentException("invalid frames");
+        }
+        return Math.max(0, startupFrames - submittedFrames);
+    }
 }

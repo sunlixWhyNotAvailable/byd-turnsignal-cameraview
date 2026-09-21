@@ -480,9 +480,9 @@ private fun AvasIntegration(
         Text(strings.text("Незалежні профілі з власними файлами, налаштуваннями та ручною перевіркою.",
             "Independent profiles with their own files, settings, and manual playback.",
             "各配置独立保存文件、设置并支持手动播放。"), color = colors.muted, fontSize = 13.sp)
-        Text(strings.text("Активний профіль «Вимкнення» замінює «Відкриття», спричинене вимкненням авто.",
-            "When enabled, Power off overrides Unlock caused by switching the vehicle off.",
-            "启用下电配置后，下电声音优先于车辆下电触发的自动解锁声音。"),
+        Text(strings.text("Пропускання одночасного звуку відкриття/закриття налаштовується окремо для увімкнення та вимкнення авто.",
+            "Skipping simultaneous lock/unlock sounds is configured separately for Power on and Power off.",
+            "可分别为上电和下电设置是否跳过同时触发的解锁/锁车声音。"),
             color = colors.muted, fontSize = 13.sp)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val columns = if (maxWidth >= 600.dp) 2 else 1
@@ -514,6 +514,16 @@ private fun AvasIntegration(
                                     }, colors, clearSemantics = true, label = title)
                                 }
                             }) {
+                                if (profile.id == AvasProfileIds.POWER_OFF
+                                    || profile.id == AvasProfileIds.POWER_ON) {
+                                    SwitchLine(strings.text("Пропускати одночасний звук\nвідкриття/закриття",
+                                        "Skip simultaneous lock/unlock sound",
+                                        "跳过同时触发的解锁/锁车声音"), "",
+                                        profile.skipConcurrentLockUnlock, {
+                                            send(profile.id, AvasActionKind.SetSkipConcurrentLockUnlock,
+                                                boolean = it)
+                                        }, colors)
+                                }
                                 Text(strings.text("Обраний аудіофайл", "Selected audio file", "已选音频文件"),
                                     color = colors.muted, fontSize = 12.sp)
                                 Text(selectedLabel ?: strings.text("Файл не обрано", "No file selected",

@@ -16,7 +16,7 @@ public final class AvasConfig {
     public static final List<String> PROFILE_IDS = Collections.unmodifiableList(Arrays.asList(
             "lock", "unlock", "power_off", "power_on"));
     private static final int MAX_JSON_LENGTH = 1_048_576;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     public final List<Profile> profiles;
 
@@ -43,7 +43,7 @@ public final class AvasConfig {
     public static AvasConfig empty() {
         List<Profile> profiles = new ArrayList<>();
         for (String id : PROFILE_IDS) {
-            profiles.add(new Profile(id, false, false, 15, "", Collections.emptyList()));
+            profiles.add(new Profile(id, false, false, 15, "", Collections.emptyList(), true));
         }
         return new AvasConfig(profiles);
     }
@@ -78,6 +78,7 @@ public final class AvasConfig {
                         .put("random", profile.random)
                         .put("volume", profile.volume)
                         .put("selectedAssetId", profile.selectedAssetId)
+                        .put("skipConcurrentLockUnlock", profile.skipConcurrentLockUnlock)
                         .put("assets", assets));
             }
             return root.put("profiles", values).toString();
@@ -93,7 +94,8 @@ public final class AvasConfig {
         try {
             JSONObject root = new JSONObject(json);
             requireKeys(root, "version", "profiles");
-            if (strictInt(root.get("version"), "version") != VERSION) {
+            int version = strictInt(root.get("version"), "version");
+            if (version != 1 && version != VERSION) {
                 throw new IllegalArgumentException("unsupported AVAS configuration");
             }
             JSONArray input = root.getJSONArray("profiles");
@@ -103,8 +105,13 @@ public final class AvasConfig {
             List<Profile> profiles = new ArrayList<>();
             for (int index = 0; index < input.length(); index++) {
                 JSONObject value = input.getJSONObject(index);
-                requireKeys(value, "id", "enabled", "random", "volume",
-                        "selectedAssetId", "assets");
+                if (version == 1) {
+                    requireKeys(value, "id", "enabled", "random", "volume",
+                            "selectedAssetId", "assets");
+                } else {
+                    requireKeys(value, "id", "enabled", "random", "volume",
+                            "selectedAssetId", "skipConcurrentLockUnlock", "assets");
+                }
                 JSONArray assetValues = value.getJSONArray("assets");
                 List<Asset> assets = new ArrayList<>();
                 for (int assetIndex = 0; assetIndex < assetValues.length(); assetIndex++) {
@@ -114,7 +121,8 @@ public final class AvasConfig {
                 }
                 profiles.add(new Profile(value.getString("id"), strictBoolean(value.get("enabled")),
                         strictBoolean(value.get("random")), strictInt(value.get("volume"), "volume"),
-                        value.getString("selectedAssetId"), assets));
+                        value.getString("selectedAssetId"), assets,
+                        version == 1 || strictBoolean(value.get("skipConcurrentLockUnlock"))));
             }
             return new AvasConfig(profiles);
         } catch (IllegalArgumentException error) {
@@ -159,9 +167,15 @@ public final class AvasConfig {
         public final int volume;
         public final String selectedAssetId;
         public final List<Asset> assets;
+        public final boolean skipConcurrentLockUnlock;
 
         public Profile(String id, boolean enabled, boolean random, int volume,
                 String selectedAssetId, List<Asset> assets) {
+            this(id, enabled, random, volume, selectedAssetId, assets, true);
+        }
+
+        public Profile(String id, boolean enabled, boolean random, int volume,
+                String selectedAssetId, List<Asset> assets, boolean skipConcurrentLockUnlock) {
             if (!PROFILE_IDS.contains(id)) throw new IllegalArgumentException("invalid profile id");
             if (volume < 0 || volume > 100) throw new IllegalArgumentException("invalid volume");
             if (selectedAssetId == null || assets == null) {
@@ -183,15 +197,24 @@ public final class AvasConfig {
             this.volume = volume;
             this.selectedAssetId = selectedAssetId;
             this.assets = copy;
+            this.skipConcurrentLockUnlock = skipConcurrentLockUnlock;
         }
 
         public Profile withSettings(boolean enabled, boolean random, int volume,
                 String selectedAssetId) {
-            return new Profile(id, enabled, random, volume, selectedAssetId, assets);
+            return new Profile(id, enabled, random, volume, selectedAssetId, assets,
+                    skipConcurrentLockUnlock);
+        }
+
+        public Profile withSettings(boolean enabled, boolean random, int volume,
+                String selectedAssetId, boolean skipConcurrentLockUnlock) {
+            return new Profile(id, enabled, random, volume, selectedAssetId, assets,
+                    skipConcurrentLockUnlock);
         }
 
         public Profile withAssets(List<Asset> assets, String selectedAssetId) {
-            return new Profile(id, enabled, random, volume, selectedAssetId, assets);
+            return new Profile(id, enabled, random, volume, selectedAssetId, assets,
+                    skipConcurrentLockUnlock);
         }
     }
 

@@ -22,9 +22,63 @@ public final class AvasConfigTest {
             assertFalse(profile.enabled);
             assertFalse(profile.random);
             assertEquals(15, profile.volume);
+            assertTrue(profile.skipConcurrentLockUnlock);
             assertEquals("", profile.selectedAssetId);
             assertTrue(profile.assets.isEmpty());
         }
+    }
+
+    @Test
+    public void versionTwoRoundTripsIndependentSkipFlags() {
+        AvasConfig config = AvasConfig.empty()
+                .withProfile(AvasConfig.empty().profile("power_on")
+                        .withSettings(true, false, 31, "", false))
+                .withProfile(AvasConfig.empty().profile("power_off")
+                        .withSettings(false, true, 62, "", true));
+
+        AvasConfig parsed = AvasConfig.parse(config.toJson());
+
+        assertTrue(parsed.toJson().contains("\"version\":2"));
+        assertFalse(parsed.profile("power_on").skipConcurrentLockUnlock);
+        assertTrue(parsed.profile("power_off").skipConcurrentLockUnlock);
+        assertTrue(parsed.profile("power_on").enabled);
+        assertTrue(parsed.profile("power_off").random);
+    }
+
+    @Test
+    public void versionOneMigratesToDefaultOnWithoutLosingProfilesOrAssets() {
+        AvasConfig.Asset asset = new AvasConfig.Asset(
+                "0123456789abcdef0123456789abcdef", "Legacy.wav");
+        AvasConfig.Profile legacy = AvasConfig.empty().profile("power_on")
+                .withAssets(List.of(asset), asset.id)
+                .withSettings(true, true, 88, asset.id, false);
+        String versionOne = AvasConfig.empty().withProfile(legacy).toJson()
+                .replace("\"version\":2", "\"version\":1")
+                .replace(",\"skipConcurrentLockUnlock\":false", "")
+                .replace(",\"skipConcurrentLockUnlock\":true", "");
+
+        AvasConfig migrated = AvasConfig.parse(versionOne);
+
+        AvasConfig.Profile result = migrated.profile("power_on");
+        assertTrue(result.skipConcurrentLockUnlock);
+        assertTrue(result.enabled);
+        assertTrue(result.random);
+        assertEquals(88, result.volume);
+        assertEquals(asset.id, result.selectedAssetId);
+        assertEquals("Legacy.wav", result.assets.get(0).name);
+    }
+
+    @Test
+    public void versionTwoRequiresStrictBooleanAndExactAllowlist() {
+        String valid = AvasConfig.empty().toJson();
+        assertThrows(IllegalArgumentException.class, () -> AvasConfig.parse(
+                valid.replace("\"skipConcurrentLockUnlock\":true",
+                        "\"skipConcurrentLockUnlock\":\"true\"")));
+        assertThrows(IllegalArgumentException.class, () -> AvasConfig.parse(
+                valid.replaceFirst(",\"skipConcurrentLockUnlock\":true", "")));
+        assertThrows(IllegalArgumentException.class, () -> AvasConfig.parse(
+                valid.replaceFirst("\"skipConcurrentLockUnlock\":true",
+                        "\"skipConcurrentLockUnlock\":true,\"extra\":false")));
     }
 
     @Test

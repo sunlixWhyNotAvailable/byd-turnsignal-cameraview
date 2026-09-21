@@ -38,6 +38,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     private static final long EXTERIOR_NAV_PREP_MS = 300;
     private static final long NAV_STATE_SAMPLE_MS = 250;
     private final AudioManager manager;
+    private final Context context;
     private final AvasShellSettings settings;
     private final AvasExteriorRoute route;
     private final AvasNavigationRoute navigationRoute;
@@ -48,6 +49,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     private AvasFocusMaintainer activeFocusMaintainer;
 
     AvasAudioPlayer(Context context, Consumer<JSONObject> log) throws Exception {
+        this.context = context;
         this.log = log;
         manager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) throw new IllegalStateException("AudioManager unavailable");
@@ -70,9 +72,6 @@ final class AvasAudioPlayer implements AutoCloseable {
             AvasAudioDiagnostics.Context diagnostics, AvasPlaybackQueue.Kind kind,
             IntSupplier currentVolume) throws Exception {
         AvasWav.Header header = AvasWav.read(wav);
-        long silenceFrames = AvasPlaybackPlan.silenceFrames(header.sampleRate,
-                AvasPlaybackPlan.silenceMillis(kind));
-        int silenceBytes = Math.toIntExact(silenceFrames * header.frameSize);
         int initialVolume = clamp(volume);
         long ticket = generation.incrementAndGet();
         AudioFocusRequest focus = null;
@@ -81,12 +80,18 @@ final class AvasAudioPlayer implements AutoCloseable {
         ExteriorGain exteriorGain = null;
         Exception playbackFailure = null;
         long framesWritten = 0;
+        long silenceFrames = 0;
         long fileFrames = 0;
+        long tailFrames = 0;
         SessionDiagnostics session = new SessionDiagnostics(diagnostics);
         NavStateMonitor navState = null;
+        AvasNavSourceGate navGate = null;
+        AvasNavSourcePlayback.Trace gateTrace = new AvasNavSourcePlayback.Trace();
         try {
             restore(null);
             if (cancelled(ticket, cancelled)) return;
+            navGate = newNavSourceGate();
+            navGate.start();
             navState = new NavStateMonitor(diagnostics);
             navState.start();
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
@@ -126,18 +131,20 @@ final class AvasAudioPlayer implements AutoCloseable {
 
             int channelMask = header.channels == 1
                     ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
-            int fileBytes = Math.toIntExact(header.dataBytes);
-            int bufferBytes = Math.addExact(silenceBytes, fileBytes);
+            int minimum = AudioTrack.getMinBufferSize(
+                    header.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT);
+            if (minimum <= 0) throw new IllegalStateException("Invalid AudioTrack buffer " + minimum);
+            int bufferBytes = align(Math.max(minimum, header.frameSize * 256), header.frameSize);
             output = new AudioTrack.Builder().setAudioAttributes(attributes)
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(header.sampleRate)
                             .setChannelMask(channelMask).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                    .setTransferMode(AudioTrack.MODE_STATIC).setBufferSizeInBytes(bufferBytes).build();
-            if (output.getState() == AudioTrack.STATE_UNINITIALIZED) {
+                    .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(bufferBytes).build();
+            if (output.getState() != AudioTrack.STATE_INITIALIZED) {
                 throw new IllegalStateException("AudioTrack not initialized");
             }
             event(diagnostics, "avas_track_state", "phase", "created", "state",
                     safeTrackState(output), "play_state", safePlayState(output),
-                    "buffer_bytes", bufferBytes, "transfer_mode", "static",
+                    "buffer_bytes", bufferBytes, "transfer_mode", "stream",
                     "session_id", output.getAudioSessionId());
             synchronized (trackLock) {
                 if (ticket != generation.get()) return;
@@ -150,31 +157,32 @@ final class AvasAudioPlayer implements AutoCloseable {
                 activeFocusMaintainer = focusMaintainer;
             }
             session.bind(output);
-            // STATIC writes start at offset zero: preload silence + the entire file in one write.
-            {
-                byte[] pcm = AvasWav.readPcm(wav, header, silenceBytes);
-                if (cancelled(ticket, cancelled)) return;
-                int written = output.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING);
-                if (cancelled(ticket, cancelled)) return;
-                if (written != pcm.length || output.getState() != AudioTrack.STATE_INITIALIZED) {
-                    throw new IllegalStateException("Static PCM preload=" + written
-                            + "/" + pcm.length + " state=" + output.getState());
-                }
-                framesWritten = written / header.frameSize;
-                fileFrames = fileBytes / header.frameSize;
-                session.exteriorPcm(pcm, silenceBytes, fileBytes);
-                session.staticPreload(output, silenceFrames, fileFrames);
-            }
-            event(diagnostics, "avas_track_state", "phase", "preloaded", "state",
-                    safeTrackState(output), "transfer_mode", "static", "file_frames", fileFrames,
-                    "silence_frames", silenceFrames, "total_frames", framesWritten);
             exteriorGain = new ExteriorGain(output, currentVolume, initialVolume, diagnostics);
             exteriorGain.prepare();
-            long capCalledMs;
-            long[] timing = new long[3];
-            synchronized (trackLock) {
-                capCalledMs = SystemClock.elapsedRealtime();
-                AudioTrack playbackOutput = output;
+            byte[] zeroPcm = AvasPlaybackPlan.zeroPcm(bufferBytes);
+            byte[] scaled = new byte[bufferBytes];
+            long[] timing = new long[4];
+            ExteriorGain playbackGain = exteriorGain;
+            AvasFocusMaintainer maintainedFocus = focusMaintainer;
+            AudioTrack playbackOutput = output;
+            AvasNavSourcePlayback.Result gateResult = AvasNavSourcePlayback.await(navGate,
+                    bufferBytes / header.frameSize,
+                    Math.max(1, Math.min(bufferBytes / header.frameSize, header.sampleRate / 50)),
+                    () -> cancelled(ticket, cancelled), new AvasNavSourcePlayback.ZeroWriter() {
+                        @Override public long prefill(long frames) throws Exception {
+                            return AvasAudioPlayer.this.prefill(playbackOutput, zeroPcm,
+                                    header.frameSize, ticket, cancelled, playbackGain, session)
+                                    / header.frameSize;
+                        }
+
+                        @Override public long write(long frames) {
+                            return writeZeros(playbackOutput, zeroPcm,
+                                    Math.toIntExact(frames * header.frameSize), header.frameSize,
+                                    ticket, cancelled, playbackGain, session) / header.frameSize;
+                        }
+                    }, () -> {
+                synchronized (trackLock) {
+                timing[3] = SystemClock.elapsedRealtime();
                 boolean played = AvasNavVolumePolicy.capAndPlay(value -> {
                             manager.setStreamVolume(NAV_STREAM, value, 0);
                             timing[0] = SystemClock.elapsedRealtime();
@@ -184,11 +192,16 @@ final class AvasAudioPlayer implements AutoCloseable {
                             playbackOutput.play();
                             timing[2] = SystemClock.elapsedRealtime();
                         });
-                if (!played) return;
-                focusMaintainer.start();
-            }
+                    if (!played) return -1;
+                    maintainedFocus.start();
+                    return timing[1];
+                }
+            }, SystemClock::elapsedRealtime, gateTrace);
+            silenceFrames = gateResult.silenceFrames;
+            framesWritten = silenceFrames;
+            if (gateResult.cancelled) return;
             // Emit after playback; diagnostic I/O must not delay these critical calls.
-            event(diagnostics, "avas_play_call_timing", "nav_cap_called_ms", capCalledMs,
+            event(diagnostics, "avas_play_call_timing", "nav_cap_called_ms", timing[3],
                     "nav_cap_returned_ms", timing[0], "play_called_ms", timing[1],
                     "play_returned_ms", timing[2]);
             navState.phase("playback");
@@ -201,19 +214,61 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "sampleRate", header.sampleRate, "channels", header.channels,
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags(),
                     "attributes", attributes.toString());
-
-            // Unlike STREAM's final buffered tail, STATIC still has the whole clip to play.
-            long playbackMillis = (framesWritten * 1000 + header.sampleRate - 1) / header.sampleRate;
-            drain(output, framesWritten, ticket, cancelled, session, exteriorGain, playbackMillis + 3000);
+            event(diagnostics, "avas_nav_source_gate", "phase", "initial", "status",
+                    gateResult.initial.status, "value", gateResult.initial.value,
+                    "ready", gateResult.initial.valid() && gateResult.initial.value == 0,
+                    "fallback_polling", navGate.fallbackPolling());
+            event(diagnostics, "avas_nav_source_gate", "phase", "final", "status",
+                    gateResult.finalSnapshot.status, "value", gateResult.finalSnapshot.value,
+                    "ready", true, "zero_output_started_ms", gateResult.zeroStartedMs,
+                    "gate_opened_ms", gateResult.gateOpenedMs);
+            logNavSourceDiagnostics(diagnostics, navGate, gateTrace);
+            byte[] pcm = new byte[align(Math.max(bufferBytes, 4096), header.frameSize)];
+            if (scaled.length < pcm.length) scaled = new byte[pcm.length];
+            try (FileInputStream input = new FileInputStream(wav)) {
+                skipFully(input, header.dataOffset);
+                long remaining = header.dataBytes;
+                while (remaining > 0 && !cancelled(ticket, cancelled)) {
+                    int wanted = (int) Math.min(pcm.length, remaining);
+                    readFully(input, pcm, wanted);
+                    int written = write(output, pcm, scaled, wanted, header.frameSize, ticket,
+                            cancelled, currentVolume, initialVolume, exteriorGain, "wav", session);
+                    fileFrames += written / header.frameSize;
+                    framesWritten += written / header.frameSize;
+                    remaining -= written;
+                    if (written < wanted) break;
+                }
+            }
+            long requiredTail = AvasPlaybackPlan.tailPaddingFrames(framesWritten,
+                    bufferBytes / header.frameSize);
+            if (requiredTail > 0 && !cancelled(ticket, cancelled)) {
+                int bytes = Math.toIntExact(requiredTail * header.frameSize);
+                byte[] tail = AvasPlaybackPlan.zeroPcm(bytes);
+                int written = write(output, tail, scaled, bytes, header.frameSize, ticket,
+                        cancelled, currentVolume, initialVolume, exteriorGain, "tail", session);
+                tailFrames = written / header.frameSize;
+                framesWritten += tailFrames;
+            }
+            drain(output, framesWritten, ticket, cancelled, session, exteriorGain, 3000);
             event(diagnostics, "avas_play_end", "interrupted", cancelled(ticket, cancelled),
                     "framesWritten", framesWritten, "silenceFrames", silenceFrames,
-                    "fileFrames", fileFrames,
+                    "fileFrames", fileFrames, "tailFrames", tailFrames,
+                    "nav_source_observed", navGate.value(),
                     "playbackHead", safePlaybackHead(output));
         } catch (Exception failure) {
+            if (navGate != null) logNavSourceDiagnostics(diagnostics, navGate, gateTrace);
             playbackFailure = failure;
             throw failure;
         } finally {
             if (navState != null) navState.phase("cleanup");
+            if (navGate != null) {
+                try { navGate.close(); }
+                catch (Exception cleanupFailure) {
+                    if (playbackFailure != null) playbackFailure.addSuppressed(cleanupFailure);
+                    event(diagnostics, "avas_nav_source_gate", "phase", "unregister_error",
+                            "error", cleanupFailure.toString());
+                }
+            }
             stopFocusMaintainer(focusMaintainer);
             synchronized (trackLock) {
                 if (activeTrack == output) activeTrack = null;
@@ -244,11 +299,17 @@ final class AvasAudioPlayer implements AutoCloseable {
         AudioTrack output = null;
         Exception playbackFailure = null;
         long framesWritten = 0;
+        long silenceFrames = 0;
         long fileFrames = 0;
+        long tailFrames = 0;
         SessionDiagnostics session = new SessionDiagnostics(diagnostics);
+        AvasNavSourceGate navGate = null;
+        AvasNavSourcePlayback.Trace gateTrace = new AvasNavSourcePlayback.Trace();
         try {
             restore(null);
             if (cancelled(ticket, cancelled)) return;
+            navGate = newNavSourceGate();
+            navGate.start();
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
                     SystemClock.elapsedRealtime(), "route", "navigation",
                     "silence_planned_frames", 0);
@@ -298,16 +359,50 @@ final class AvasAudioPlayer implements AutoCloseable {
             }
             session.bind(output);
             output.setVolume(1f);
-            output.play();
+            byte[] zeroPcm = AvasPlaybackPlan.zeroPcm(bufferBytes);
+            byte[] scaled = new byte[bufferBytes];
+            AudioTrack playbackOutput = output;
+            AvasNavSourcePlayback.Result gateResult = AvasNavSourcePlayback.await(navGate,
+                    bufferBytes / header.frameSize,
+                    Math.max(1, Math.min(bufferBytes / header.frameSize, header.sampleRate / 50)),
+                    () -> cancelled(ticket, cancelled), new AvasNavSourcePlayback.ZeroWriter() {
+                        @Override public long prefill(long frames) throws Exception {
+                            return AvasAudioPlayer.this.prefill(playbackOutput, zeroPcm,
+                                    header.frameSize, ticket, cancelled, null, session)
+                                    / header.frameSize;
+                        }
+
+                        @Override public long write(long frames) {
+                            return writeZeros(playbackOutput, zeroPcm,
+                                    Math.toIntExact(frames * header.frameSize), header.frameSize,
+                                    ticket, cancelled, null, session) / header.frameSize;
+                        }
+                    }, () -> {
+                        long playCalledMs = SystemClock.elapsedRealtime();
+                        playbackOutput.play();
+                        return playCalledMs;
+                    }, SystemClock::elapsedRealtime, gateTrace);
+            silenceFrames = gateResult.silenceFrames;
+            framesWritten = silenceFrames;
+            if (gateResult.cancelled) return;
             event(diagnostics, "avas_track_state", "phase", "played", "state",
                     safeTrackState(output), "play_state", safePlayState(output));
             event(diagnostics, "avas_play_begin", "file", wav.getName(), "volume", initialVolume,
                     "route", "navigation", "savedNav", previous, "navMax", maximum,
                     "sampleRate", header.sampleRate, "channels", header.channels,
                     "requestedFlags", "0x20000", "javaFlags", attributes.getFlags());
+            event(diagnostics, "avas_nav_source_gate", "phase", "initial", "status",
+                    gateResult.initial.status, "value", gateResult.initial.value,
+                    "ready", gateResult.initial.valid() && gateResult.initial.value == 0,
+                    "fallback_polling", navGate.fallbackPolling());
+            event(diagnostics, "avas_nav_source_gate", "phase", "final", "status",
+                    gateResult.finalSnapshot.status, "value", gateResult.finalSnapshot.value,
+                    "ready", true, "zero_output_started_ms", gateResult.zeroStartedMs,
+                    "gate_opened_ms", gateResult.gateOpenedMs);
+            logNavSourceDiagnostics(diagnostics, navGate, gateTrace);
 
             byte[] pcm = new byte[align(Math.max(bufferBytes, 4096), header.frameSize)];
-            byte[] scaled = new byte[pcm.length];
+            if (scaled.length < pcm.length) scaled = new byte[pcm.length];
             try (FileInputStream input = new FileInputStream(wav)) {
                 skipFully(input, header.dataOffset);
                 long remaining = header.dataBytes;
@@ -323,15 +418,36 @@ final class AvasAudioPlayer implements AutoCloseable {
                     if (written < wanted) break;
                 }
             }
+            long requiredTail = AvasPlaybackPlan.tailPaddingFrames(framesWritten,
+                    bufferBytes / header.frameSize);
+            if (requiredTail > 0 && !cancelled(ticket, cancelled)) {
+                int bytes = Math.toIntExact(requiredTail * header.frameSize);
+                byte[] tail = AvasPlaybackPlan.zeroPcm(bytes);
+                int written = write(output, tail, scaled, bytes, header.frameSize, ticket,
+                        cancelled, currentVolume, initialVolume, null, "tail", session);
+                tailFrames = written / header.frameSize;
+                framesWritten += tailFrames;
+            }
             drain(output, framesWritten, ticket, cancelled, session);
             event(diagnostics, "avas_play_end", "route", "navigation",
                     "interrupted", cancelled(ticket, cancelled), "framesWritten", framesWritten,
-                    "silenceFrames", 0, "fileFrames", fileFrames,
+                    "silenceFrames", silenceFrames, "fileFrames", fileFrames,
+                    "tailFrames", tailFrames,
+                    "nav_source_observed", navGate.value(),
                     "playbackHead", safePlaybackHead(output));
         } catch (Exception failure) {
+            if (navGate != null) logNavSourceDiagnostics(diagnostics, navGate, gateTrace);
             playbackFailure = failure;
             throw failure;
         } finally {
+            if (navGate != null) {
+                try { navGate.close(); }
+                catch (Exception cleanupFailure) {
+                    if (playbackFailure != null) playbackFailure.addSuppressed(cleanupFailure);
+                    event(diagnostics, "avas_nav_source_gate", "phase", "unregister_error",
+                            "error", cleanupFailure.toString());
+                }
+            }
             synchronized (trackLock) {
                 if (activeTrack == output) activeTrack = null;
             }
@@ -400,7 +516,9 @@ final class AvasAudioPlayer implements AutoCloseable {
             }
             if (count % frameSize != 0) throw new IllegalStateException("AudioTrack split a PCM frame");
             if (count > 0) {
-                if (exteriorGain != null) diagnostics.exteriorPcm(pcm, offset, count);
+                if (exteriorGain != null && "wav".equals(phase)) {
+                    diagnostics.exteriorPcm(pcm, offset, count);
+                }
                 diagnostics.positiveWrite(output, phase, count / frameSize);
                 offset += count;
                 lastProgress = SystemClock.elapsedRealtime();
@@ -413,6 +531,38 @@ final class AvasAudioPlayer implements AutoCloseable {
             }
         }
         return offset;
+    }
+
+    private int prefill(AudioTrack output, byte[] zeroPcm, int frameSize, long ticket,
+            BooleanSupplier externalCancellation, ExteriorGain exteriorGain,
+            SessionDiagnostics diagnostics) throws Exception {
+        if (cancelled(ticket, externalCancellation)) return 0;
+        if (exteriorGain != null) exteriorGain.update();
+        int written = output.write(zeroPcm, 0, zeroPcm.length, AudioTrack.WRITE_BLOCKING);
+        if (written < 0) throw new IllegalStateException("AudioTrack prefill=" + written);
+        if (written % frameSize != 0) throw new IllegalStateException("AudioTrack split a PCM frame");
+        if (written != zeroPcm.length && !cancelled(ticket, externalCancellation)) {
+            throw new IllegalStateException("AudioTrack partial prefill=" + written
+                    + "/" + zeroPcm.length);
+        }
+        if (written > 0) diagnostics.positiveWrite(output, "silence", written / frameSize);
+        return written;
+    }
+
+    /** One bounded non-blocking zero write so the absolute NAV_SOURCE deadline remains authoritative. */
+    private int writeZeros(AudioTrack output, byte[] zeroPcm, int length, int frameSize,
+            long ticket, BooleanSupplier externalCancellation, ExteriorGain exteriorGain,
+            SessionDiagnostics diagnostics) {
+        if (cancelled(ticket, externalCancellation)) return 0;
+        if (exteriorGain != null) exteriorGain.update();
+        int written = output.write(zeroPcm, 0, length, AudioTrack.WRITE_NON_BLOCKING);
+        if (written < 0) {
+            if (cancelled(ticket, externalCancellation)) return 0;
+            throw new IllegalStateException("AudioTrack zero write=" + written);
+        }
+        if (written % frameSize != 0) throw new IllegalStateException("AudioTrack split a PCM frame");
+        if (written > 0) diagnostics.positiveWrite(output, "silence", written / frameSize);
+        return written;
     }
 
     private void drain(AudioTrack output, long framesWritten, long ticket,
@@ -532,6 +682,43 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     private boolean cancelled(long ticket, BooleanSupplier external) {
         return ticket != generation.get() || external != null && external.getAsBoolean();
+    }
+
+    private AvasNavSourceGate newNavSourceGate() {
+        return new AvasNavSourceGate(new AvasNavSourceTransport(context),
+                new AvasNavSourceGate.Clock() {
+                    @Override public long now() { return SystemClock.elapsedRealtime(); }
+                    @Override public void sleep(long millis) throws InterruptedException {
+                        Thread.sleep(millis);
+                    }
+                });
+    }
+
+    private void logNavSourceDiagnostics(AvasAudioDiagnostics.Context diagnostics,
+            AvasNavSourceGate gate, AvasNavSourcePlayback.Trace trace) {
+        AvasNavSourceGate.Diagnostics state = gate.diagnostics();
+        event(diagnostics, "avas_nav_source_listener", "registration_failed",
+                state.registrationFailed, "registration_finished_ms", state.registrationFinishedMs,
+                "callback_count", state.callbacks, "callback_error_count", state.callbackErrors,
+                "last_callback_ms", state.lastCallbackMs,
+                "last_callback_value", state.lastCallbackValue, "last_error", state.lastError,
+                "zero_callback_count", state.zeroCallbacks,
+                "one_callback_count", state.oneCallbacks,
+                "first_zero_callback_ms", state.firstZeroCallbackMs,
+                "fallback_polling", gate.fallbackPolling());
+        event(diagnostics, "avas_nav_source_get", "read_started_ms", state.getStartedMs,
+                "read_finished_ms", state.getFinishedMs,
+                "read_duration_ms", state.getStartedMs < 0 || state.getFinishedMs < 0
+                        ? -1 : state.getFinishedMs - state.getStartedMs,
+                "stale", state.getStale, "observed_value", gate.value(),
+                "ready", gate.ready());
+        event(diagnostics, "avas_nav_source_gate_timeline", "outcome", trace.outcome,
+                "initial_status", trace.initialStatus, "initial_value", trace.initialValue,
+                "final_status", trace.finalStatus, "final_value", trace.finalValue,
+                "play_called_ms", trace.playCalledMs,
+                "zero_output_started_ms", trace.zeroStartedMs,
+                "gate_opened_ms", trace.gateOpenedMs,
+                "silence_frames", trace.silenceFrames);
     }
 
     private static int clamp(int volume) {
@@ -781,6 +968,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         private boolean finalSampled;
         private long silenceSubmittedFrames;
         private long fileSubmittedFrames;
+        private long tailSubmittedFrames;
         private AvasAudioDiagnostics.PcmLevels exteriorLevels;
         private boolean pcmLevelsFailed;
         private final AudioRouting.OnRoutingChangedListener routingListener = routing -> {
@@ -819,14 +1007,10 @@ final class AvasAudioPlayer implements AutoCloseable {
             }
         }
 
-        void staticPreload(AudioTrack output, long leadingFrames, long fileFrames) {
-            silenceSubmittedFrames = leadingFrames;
-            positiveWrite(output, "wav", fileFrames);
-        }
-
         void positiveWrite(AudioTrack output, String phase, long frames) {
             if ("silence".equals(phase)) silenceSubmittedFrames += frames;
             else if ("wav".equals(phase)) fileSubmittedFrames += frames;
+            else if ("tail".equals(phase)) tailSubmittedFrames += frames;
             if (!firstPositiveWrite) {
                 firstPositiveWrite = true;
                 event(context, "avas_first_positive_write", "phase", phase, "frames", frames,
@@ -906,7 +1090,8 @@ final class AvasAudioPlayer implements AutoCloseable {
                     "underrun_delta", underruns >= 0 && initialUnderruns >= 0
                             ? Math.max(0, underruns - initialUnderruns) : -1,
                     "silence_submitted_frames", silenceSubmittedFrames,
-                    "file_submitted_frames", fileSubmittedFrames);
+                    "file_submitted_frames", fileSubmittedFrames,
+                    "tail_submitted_frames", tailSubmittedFrames);
             if (!firstProgress && (head.available && head.playbackHead > 0
                     || timestampAvailable && timestampFrame > 0)) {
                 firstProgress = true;

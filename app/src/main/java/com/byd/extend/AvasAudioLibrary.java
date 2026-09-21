@@ -165,6 +165,11 @@ public final class AvasAudioLibrary {
     /** Applies optional profile fields to the latest configuration under the publication lock. */
     public AvasConfig updateProfileSettings(String profileId, Boolean enabled, Boolean random,
             Integer volume, String selectedAssetId) {
+        return updateProfileSettings(profileId, enabled, random, volume, selectedAssetId, null);
+    }
+
+    public AvasConfig updateProfileSettings(String profileId, Boolean enabled, Boolean random,
+            Integer volume, String selectedAssetId, Boolean skipConcurrentLockUnlock) {
         if (!AvasConfig.PROFILE_IDS.contains(profileId)) {
             throw new IllegalArgumentException("unknown AVAS profile");
         }
@@ -175,7 +180,9 @@ public final class AvasAudioLibrary {
                     enabled == null ? profile.enabled : enabled,
                     random == null ? profile.random : random,
                     volume == null ? profile.volume : volume,
-                    selectedAssetId == null ? profile.selectedAssetId : selectedAssetId);
+                    selectedAssetId == null ? profile.selectedAssetId : selectedAssetId,
+                    skipConcurrentLockUnlock == null
+                            ? profile.skipConcurrentLockUnlock : skipConcurrentLockUnlock);
             AvasConfig updated = latest.withProfile(updatedProfile);
             if (!updated.toJson().equals(latest.toJson())) saveConfigLocked(updated);
             return updated;

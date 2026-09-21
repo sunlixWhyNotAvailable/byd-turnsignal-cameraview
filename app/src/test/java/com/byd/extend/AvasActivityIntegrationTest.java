@@ -8,6 +8,9 @@ import org.junit.Rule;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
 
 public final class AvasActivityIntegrationTest {
@@ -75,5 +78,31 @@ public final class AvasActivityIntegrationTest {
                 true, "decoding", "lock", null));
         assertTrue(CameraProbeActivity.shouldClearAvasImportMarker(
                 false, "picker", "lock", null));
+    }
+
+    @Test
+    public void powerSwitchUiUsesApprovedLocalesPlacementAndBackendPath() throws Exception {
+        String ui = source("kotlin/com/byd/extend/ui/BydExtendApp.kt");
+        String activity = source("java/com/byd/extend/CameraProbeActivity.java");
+        int switchRow = ui.indexOf("SetSkipConcurrentLockUnlock");
+        int selectedFile = ui.indexOf("Обраний аудіофайл", switchRow);
+
+        assertTrue(ui.contains("profile.id == AvasProfileIds.POWER_OFF"));
+        assertTrue(ui.contains("|| profile.id == AvasProfileIds.POWER_ON"));
+        assertTrue(ui.contains("Пропускати одночасний звук\\nвідкриття/закриття"));
+        assertTrue(ui.contains("Skip simultaneous lock/unlock sound"));
+        assertTrue(ui.contains("跳过同时触发的解锁/锁车声音"));
+        assertTrue(switchRow >= 0 && switchRow < selectedFile);
+        assertTrue(ui.substring(ui.lastIndexOf("SwitchLine(", switchRow), switchRow)
+                .contains("profile.skipConcurrentLockUnlock"));
+        assertTrue(activity.contains("AvasActionKind.SetSkipConcurrentLockUnlock"));
+        assertTrue(activity.contains("profile.skipConcurrentLockUnlock"));
+        assertTrue(activity.contains("skipConcurrentLockUnlock);"));
+    }
+
+    private static String source(String relative) throws Exception {
+        Path path = Path.of("app/src/main/" + relative);
+        if (!Files.exists(path)) path = Path.of("src/main/" + relative);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 }

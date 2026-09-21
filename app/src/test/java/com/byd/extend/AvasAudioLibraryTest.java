@@ -80,7 +80,7 @@ public final class AvasAudioLibraryTest {
                 "0123456789abcdef0123456789abcdef", "Imported.ogg");
         AvasConfig.Profile lock = AvasConfig.empty().profile("lock")
                 .withAssets(List.of(imported), "")
-                .withSettings(true, true, 84, "");
+                .withSettings(true, true, 84, "", false);
         library.saveConfig(AvasConfig.empty().withProfile(lock));
 
         library.ensureBuiltins();
@@ -92,6 +92,7 @@ public final class AvasAudioLibraryTest {
         assertEquals("", result.selectedAssetId);
         assertEquals(2, result.assets.size());
         assertEquals(imported.id, result.assets.get(1).id);
+        assertFalse(result.skipConcurrentLockUnlock);
     }
 
     @Test
@@ -172,7 +173,7 @@ public final class AvasAudioLibraryTest {
         }
         AvasConfig latest = library.loadConfig();
         AvasConfig.Profile changed = latest.profile("power_on")
-                .withSettings(true, true, 91, latest.profile("power_on").selectedAssetId);
+                .withSettings(true, true, 91, latest.profile("power_on").selectedAssetId, false);
         library.saveConfig(latest.withProfile(changed));
 
         AvasConfig.Profile result = library.mergeImportedAssets("power_on",
@@ -183,6 +184,7 @@ public final class AvasAudioLibraryTest {
         assertTrue(result.enabled);
         assertTrue(result.random);
         assertEquals(91, result.volume);
+        assertFalse(result.skipConcurrentLockUnlock);
     }
 
     @Test
@@ -209,6 +211,8 @@ public final class AvasAudioLibraryTest {
                 "power_off", true, null, 67, null).profile("power_off");
         AvasConfig.Profile second = library.updateProfileSettings(
                 "power_off", null, true, null, selected).profile("power_off");
+        AvasConfig.Profile third = library.updateProfileSettings(
+                "power_off", null, null, null, null, false).profile("power_off");
 
         assertTrue(first.enabled);
         assertFalse(first.random);
@@ -217,8 +221,23 @@ public final class AvasAudioLibraryTest {
         assertTrue(second.random);
         assertEquals(67, second.volume);
         assertEquals(selected, second.selectedAssetId);
+        assertFalse(third.skipConcurrentLockUnlock);
+        assertTrue(third.enabled);
+        assertTrue(third.random);
+        assertEquals(67, third.volume);
         assertThrows(IllegalArgumentException.class,
                 () -> library.updateProfileSettings("power_off", null, null, 101, null));
+    }
+
+    @Test
+    public void deleteAndAssetCopyPreserveSkipFlag() throws Exception {
+        library.ensureBuiltins();
+        library.updateProfileSettings("power_off", null, null, null, null, false);
+        AvasConfig.Asset imported = addImport(
+                "power_off", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true);
+
+        assertTrue(library.removeAsset("power_off", imported.id));
+        assertFalse(library.loadConfig().profile("power_off").skipConcurrentLockUnlock);
     }
 
     @Test

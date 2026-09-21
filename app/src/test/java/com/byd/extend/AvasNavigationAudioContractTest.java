@@ -103,7 +103,7 @@ public final class AvasNavigationAudioContractTest {
                 player.indexOf("private void drain("));
         String runtime = source("AvasRuntime.java");
 
-        assertTrue(exterior.contains("session.exteriorPcm(pcm, silenceBytes, fileBytes)"));
+        assertTrue(exterior.contains("exteriorGain, \"wav\", session"));
         assertFalse(exterior.contains("AvasWav.scalePcm16"));
         assertTrue(exterior.contains("new ExteriorGain(output, currentVolume, initialVolume"));
         assertTrue(navigation.contains("currentVolume, initialVolume, null"));
@@ -123,7 +123,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
     }
 
-    @Test public void exteriorCapsBeforePlayWithoutForcedMuteAndPreloadsOnce()
+    @Test public void exteriorCapsBeforePlayAndStreamsZerosUntilNavSourceZero()
             throws Exception {
         String player = source("AvasAudioPlayer.java");
         String exterior = player.substring(player.indexOf("void play(File wav"),
@@ -134,36 +134,30 @@ public final class AvasNavigationAudioContractTest {
         int gain = exterior.indexOf("exteriorGain.prepare()");
         int play = exterior.indexOf("playbackOutput.play()");
         int cap = exterior.indexOf("manager.setStreamVolume(NAV_STREAM, value, 0)");
-        int fileRead = exterior.indexOf("AvasWav.readPcm(wav, header, silenceBytes)");
-        int preload = exterior.indexOf("output.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING)");
         assertTrue(focus >= 0 && focus < route && route < create);
-        assertTrue(create < fileRead && fileRead < preload && preload < gain && gain < cap);
+        assertTrue(create < gain && gain < cap);
         assertTrue(cap < play);
         assertFalse(exterior.contains("route.mute(true, diagnostics)"));
         assertFalse(exterior.contains("route.mute(false, diagnostics)"));
         assertFalse(exterior.contains("unmute_called_ms"));
         assertFalse(exterior.contains("unmute_returned_ms"));
         assertTrue(player.contains("\"getLastAudibleStreamVolume\", int.class"));
-        assertFalse(exterior.contains("writeSilence("));
-        assertFalse(exterior.contains("zeroPcm("));
-        assertFalse(exterior.contains("silenceWritten"));
-        assertTrue(exterior.contains("Math.toIntExact(header.dataBytes)"));
-        assertTrue(exterior.contains("Math.addExact(silenceBytes, fileBytes)"));
-        assertTrue(exterior.contains("AvasPlaybackPlan.silenceMillis(kind)"));
-        assertTrue(exterior.contains("session.staticPreload(output, silenceFrames, fileFrames)"));
-        assertTrue(exterior.contains("fileFrames = fileBytes / header.frameSize"));
+        assertTrue(exterior.contains("AvasPlaybackPlan.zeroPcm(bufferBytes)"));
+        assertTrue(exterior.contains("AvasNavSourcePlayback.await(navGate"));
+        String gate = source("AvasNavSourcePlayback.java");
+        assertTrue(gate.contains("gate.refresh()"));
+        assertTrue(gate.contains("gate.awaitChangeOrPoll"));
+        assertTrue(exterior.contains("skipFully(input, header.dataOffset)"));
         assertTrue(exterior.contains("\"silenceFrames\", silenceFrames"));
-        assertTrue(exterior.contains("written != pcm.length || output.getState() != AudioTrack.STATE_INITIALIZED"));
-        assertEquals(1, exterior.split("output\\.write\\(", -1).length - 1);
         assertEquals(1, exterior.split("new AudioTrack\\.Builder", -1).length - 1);
         assertEquals(1, exterior.split("playbackOutput\\.play\\(", -1).length - 1);
-        assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STATIC)"));
-        assertFalse(exterior.contains("AudioTrack.MODE_STREAM"));
+        assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
+        assertFalse(exterior.contains("AudioTrack.MODE_STATIC"));
         assertTrue(exterior.contains("Thread.sleep(EXTERIOR_NAV_PREP_MS)"));
         assertTrue(player.contains("EXTERIOR_NAV_PREP_MS = 300"));
         assertEquals(1, exterior.split("Thread\\.sleep\\(", -1).length - 1);
-        assertTrue(exterior.contains("drain(output, framesWritten, ticket, cancelled, session, exteriorGain, playbackMillis + 3000)"));
-        assertTrue(exterior.indexOf("focusMaintainer.start()") > play);
+        assertTrue(exterior.contains("drain(output, framesWritten, ticket, cancelled, session, exteriorGain, 3000)"));
+        assertTrue(exterior.indexOf("maintainedFocus.start()") > play);
         assertTrue(exterior.indexOf("drain(output, framesWritten, ticket, cancelled, session, exteriorGain,")
                 < exterior.indexOf("stopFocusMaintainer(focusMaintainer)"));
         assertTrue(exterior.indexOf("stopFocusMaintainer(focusMaintainer)")
@@ -172,7 +166,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(exterior.indexOf("release(output, true)") < exterior.indexOf("restore(focus, diagnostics)"));
     }
 
-    @Test public void staticWaitCoversTheWholeClipWhileNavigationKeepsStreaming() throws Exception {
+    @Test public void bothRoutesStreamAndDrainAllSubmittedFrames() throws Exception {
         String player = source("AvasAudioPlayer.java");
         String exterior = player.substring(player.indexOf("void play(File wav"),
                 player.indexOf("void playNavigation(File wav"));
@@ -180,10 +174,11 @@ public final class AvasNavigationAudioContractTest {
                 player.indexOf("void stop()"));
         String drain = player.substring(player.indexOf("private void drain("),
                 player.indexOf("private void restore(AudioFocusRequest focus)"));
-        assertTrue(exterior.contains("(framesWritten * 1000 + header.sampleRate - 1) / header.sampleRate"));
-        assertTrue(exterior.contains("playbackMillis + 3000"));
+        assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
         assertTrue(navigation.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
         assertFalse(navigation.contains("AudioTrack.MODE_STATIC"));
+        assertTrue(exterior.contains("tailPaddingFrames(framesWritten"));
+        assertTrue(navigation.contains("tailPaddingFrames(framesWritten"));
         assertTrue(drain.contains("diagnostics, null, 3000"));
         assertTrue(drain.contains("SystemClock.elapsedRealtime() + timeoutMillis"));
         assertTrue(drain.contains("exteriorGain.update()"));

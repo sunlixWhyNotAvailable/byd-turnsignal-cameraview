@@ -12,7 +12,21 @@ class AvasUiModelTest {
     fun fixedProfilesAndDefaultsMatchProductionContract() {
         assertEquals(listOf("lock", "unlock", "power_off", "power_on"), AvasProfileIds.ALL)
         assertTrue(AvasUiState().profiles.all { it.volume == 15 })
+        assertTrue(AvasUiState().profiles.all { it.skipConcurrentLockUnlock })
         assertEquals(AvasAuditionUiState(), AvasUiState().audition)
+    }
+
+    @Test
+    fun skipSwitchActionAndProfileValuesAreIndependent() {
+        val on = AvasProfileUiState(id = AvasProfileIds.POWER_ON,
+            skipConcurrentLockUnlock = false)
+        val off = AvasProfileUiState(id = AvasProfileIds.POWER_OFF)
+        val action = AvasBackendAction(on.id,
+            AvasActionKind.SetSkipConcurrentLockUnlock, booleanValue = true)
+
+        assertFalse(on.skipConcurrentLockUnlock)
+        assertTrue(off.skipConcurrentLockUnlock)
+        assertTrue(action.booleanValue == true)
     }
 
     @Test

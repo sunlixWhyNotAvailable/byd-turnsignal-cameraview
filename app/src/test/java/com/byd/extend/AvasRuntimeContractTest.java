@@ -36,6 +36,13 @@ public final class AvasRuntimeContractTest {
         assertTrue(text.contains("queue.removeAuditionsForAssets(deleted)"));
         assertTrue(text.contains("assetId.equals(activeAssetId)"));
         assertTrue(text.contains("scheduleWithFixedDelay(this::poll, 0, POLL_MS"));
+        assertTrue(text.contains("POLL_MS = 250"));
+        assertTrue(text.contains("skipEligible(config, \"power_on\")"));
+        assertTrue(text.contains("skipEligible(config, \"power_off\")"));
+        assertTrue(text.contains("policy.invalidateIneligible(skipEligible(next, \"power_on\")"));
+        assertTrue(text.contains("\"power_profile\", suppressionPowerProfile"));
+        assertTrue(text.contains("\"observed_delta_ms\", suppressionDeltaMs"));
+        assertTrue(text.contains("\"reason\", \"power_profile_concurrent_lock_unlock\""));
         assertTrue(text.contains("StandardCopyOption.ATOMIC_MOVE"));
         assertTrue(text.contains("Os.chmod(CACHE.getAbsolutePath(), 0700)"));
         assertTrue(text.contains("new ParcelFileDescriptor.AutoCloseInputStream(descriptor)"));

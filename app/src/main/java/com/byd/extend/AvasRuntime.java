@@ -100,6 +100,10 @@ final class AvasRuntime implements AutoCloseable {
         Set<String> deleted = assetIds(config);
         deleted.removeAll(assetIds(next));
         config = next;
+        synchronized (policy) {
+            policy.invalidateIneligible(skipEligible(next, "power_on"),
+                    skipEligible(next, "power_off"));
+        }
         if (!deleted.isEmpty()) {
             queue.removeAuditionsForAssets(deleted);
             pendingPrune.addAll(deleted);
@@ -418,16 +422,24 @@ final class AvasRuntime implements AutoCloseable {
         }
         if (telemetryState != 1) event("avas_telemetry_ready", "power", power, "lock", lock);
         telemetryState = 1;
-        boolean offReady = automaticEligible("power_off");
+        boolean onReady = skipEligible(config, "power_on");
+        boolean offReady = skipEligible(config, "power_off");
         List<String> profiles;
-        boolean unlockSuppressed;
+        String suppressedProfile;
+        String suppressionPowerProfile;
+        long suppressionDeltaMs;
         synchronized (policy) {
-            profiles = policy.sample(SystemClock.elapsedRealtime(), power, lock, offReady);
-            unlockSuppressed = policy.wasUnlockSuppressed();
+            profiles = policy.sample(SystemClock.elapsedRealtime(), power, lock, onReady, offReady);
+            suppressedProfile = policy.suppressedProfile();
+            suppressionPowerProfile = policy.suppressionPowerProfile();
+            suppressionDeltaMs = policy.suppressionDeltaMs();
         }
         for (String profile : profiles) enqueueAutomatic(profile);
-        if (unlockSuppressed) {
-            event("avas_event_skipped", "profile", "unlock", "reason", "power_off_priority");
+        if (!suppressedProfile.isEmpty()) {
+            event("avas_event_skipped", "profile", suppressedProfile,
+                    "power_profile", suppressionPowerProfile,
+                    "observed_delta_ms", suppressionDeltaMs,
+                    "reason", "power_profile_concurrent_lock_unlock");
         }
     }
 
@@ -448,6 +460,12 @@ final class AvasRuntime implements AutoCloseable {
     private boolean automaticEligible(String profileId) {
         AvasConfig.Profile profile = config.profile(profileId);
         return profile.enabled && automaticReady(profile) != null;
+    }
+
+    private boolean skipEligible(AvasConfig value, String profileId) {
+        AvasConfig.Profile profile = value.profile(profileId);
+        return profile.skipConcurrentLockUnlock && profile.enabled
+                && automaticReady(profile) != null;
     }
 
     private File selectedReady(AvasConfig.Profile profile) {

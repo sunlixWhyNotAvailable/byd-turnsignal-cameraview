@@ -461,7 +461,7 @@ object AvasProfileIds {
 
 enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPlaying, AutomaticQueued }
 enum class AvasActionKind {
-    SetEnabled, SetRandom, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
+    SetEnabled, SetRandom, SetSkipConcurrentLockUnlock, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
     DeleteAsset, StartAudition, StopAudition,
 }
 
@@ -494,6 +494,7 @@ data class AvasProfileUiState @JvmOverloads constructor(
     val volume: Int = 15,
     val playback: AvasPlaybackUiState = AvasPlaybackUiState.Idle,
     val selectedAssetId: String? = null,
+    val skipConcurrentLockUnlock: Boolean = true,
 ) {
     val hasReadySelection: Boolean get() = selectedAssetId != null &&
         assets.any { it.id == selectedAssetId && it.ready }

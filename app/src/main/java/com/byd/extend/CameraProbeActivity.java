@@ -2968,7 +2968,8 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             profiles.add(new AvasProfileUiState(profile.id, profile.enabled, profile.random,
                     selectedName, assets, profile.volume, avasPlayback(profile.id),
-                    profile.selectedAssetId.isEmpty() ? null : profile.selectedAssetId));
+                    profile.selectedAssetId.isEmpty() ? null : profile.selectedAssetId,
+                    profile.skipConcurrentLockUnlock));
         }
         String importing = preferences == null ? null
                 : preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
@@ -3055,18 +3056,23 @@ public final class CameraProbeActivity extends ComponentActivity
             Boolean random = null;
             Integer volume = null;
             String selected = null;
+            Boolean skipConcurrentLockUnlock = null;
             if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
                 enabled = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetRandom && action.getBooleanValue() != null) {
                 random = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetVolume && action.getIntValue() != null) {
                 volume = Math.max(0, Math.min(100, action.getIntValue()));
+            } else if (kind == AvasActionKind.SetSkipConcurrentLockUnlock
+                    && action.getBooleanValue() != null) {
+                skipConcurrentLockUnlock = action.getBooleanValue();
             } else if (kind == AvasActionKind.SelectAsset && action.getStringValue() != null) {
                 selected = action.getStringValue();
             } else {
                 return;
             }
-            avasLibrary.updateProfileSettings(profileId, enabled, random, volume, selected);
+            avasLibrary.updateProfileSettings(profileId, enabled, random, volume, selected,
+                    skipConcurrentLockUnlock);
             CameraHelperService.configureAvas(this);
         } catch (RuntimeException invalid) {
             if (action.getKind() == AvasActionKind.StartAudition) {

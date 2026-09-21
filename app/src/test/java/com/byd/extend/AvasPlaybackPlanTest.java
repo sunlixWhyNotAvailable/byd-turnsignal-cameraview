@@ -66,4 +66,11 @@ public final class AvasPlaybackPlanTest {
         assertEquals(2, partial);
         assertFalse(AvasPlaybackPlan.maySubmitFile(12, partial, false));
     }
+
+    @Test public void shortFileGetsOnlyNecessaryTailPadding() {
+        assertEquals(0, AvasPlaybackPlan.tailPaddingFrames(1024, 1024));
+        assertEquals(0, AvasPlaybackPlan.tailPaddingFrames(2048, 1024));
+        assertEquals(768, AvasPlaybackPlan.tailPaddingFrames(256, 1024));
+        assertEquals(0, AvasPlaybackPlan.tailPaddingFrames(1024 + 256, 1024));
+    }
 }
