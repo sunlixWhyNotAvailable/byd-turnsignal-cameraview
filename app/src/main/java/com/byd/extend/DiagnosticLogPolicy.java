@@ -28,7 +28,7 @@ final class DiagnosticLogPolicy {
             "avm_event", "parking_radar_snapshot", "music_metadata_publish", "music_journal_snapshot",
             "lifetime_counters"));
     private String lastError = "", lastKind = "";
-    private long firstAt, repeats;
+    private long firstAt, lastAt, repeats;
     private boolean suppressed;
 
     static void configure(boolean enabled) { extended = enabled; }
@@ -80,15 +80,16 @@ final class DiagnosticLogPolicy {
                     + '|' + value.optString("fid") + '|' + value.optString("stage");
         } catch (Exception ignored) { }
         if (signature.equals(lastError) && now - firstAt < 60_000) {
-            repeats++; suppressed = true; return null;
+            repeats++; lastAt = now; suppressed = true; return null;
         }
         String result = finish();
-        lastError = signature; lastKind = kind; firstAt = now;
+        lastError = signature; lastKind = kind; firstAt = now; lastAt = now;
         return result;
     }
     String finish() {
         String result = repeats == 0 ? null : "{\"kind\":\"log_error_repeated\",\"event\":\""
-                + lastKind + "\",\"count\":" + repeats + "}";
+                + lastKind + "\",\"count\":" + repeats + ",\"first_elapsed_ms\":" + firstAt
+                + ",\"last_elapsed_ms\":" + lastAt + "}";
         repeats = 0; lastError = "";
         return result;
     }

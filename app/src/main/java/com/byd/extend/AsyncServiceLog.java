@@ -10,6 +10,8 @@ import java.util.function.Supplier;
 /** Bounded non-blocking submission; a single drain owns all file I/O. */
 final class AsyncServiceLog {
     static final int MAX_BYTES = 1024 * 1024, MAX_RECORDS = 2048, BATCH_BYTES = 64 * 1024;
+    // Detail traffic may use at most 75% of each limit, including in-flight records.
+    static final int ESSENTIAL_RESERVE_BYTES = MAX_BYTES / 4, ESSENTIAL_RESERVE_RECORDS = MAX_RECORDS / 4;
     private final Supplier<File> fileFactory;
     private final long flushDelayMs;
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -17,8 +19,10 @@ final class AsyncServiceLog {
     });
     private final ArrayDeque<Entry> queue = new ArrayDeque<>();
     private final DiagnosticLogPolicy policy = new DiagnosticLogPolicy();
-    private int bufferedBytes, bufferedRecords;
-    private long dropped;
+    private int bufferedBytes, bufferedRecords, detailBytes, detailRecords;
+    private int peakBytes, peakRecords;
+    private long maxQueueAgeMs;
+    private Loss dropped;
     private boolean draining, accepting = true;
     private File file;
     private BufferedWriter writer;
@@ -29,9 +33,39 @@ final class AsyncServiceLog {
         final int bytes;
         final boolean detail;
         final Runnable barrier;
+        final long enqueuedAt = elapsedMs();
         Entry(String line, boolean detail, Runnable barrier) {
             this.line = line; this.detail = detail; this.barrier = barrier;
             bytes = line == null ? 0 : line.getBytes(StandardCharsets.UTF_8).length + 1;
+        }
+    }
+    private static long elapsedMs() { return System.nanoTime() / 1_000_000L; }
+
+    /** Fixed-size accounting: a failing disk cannot grow another queue of loss reports. */
+    private static final class Loss {
+        long detail, essential, capacity, oversized, writeFailure, from = Long.MAX_VALUE, to;
+        void add(Entry entry, String reason) {
+            if (entry.detail) detail++; else essential++;
+            if ("capacity".equals(reason)) capacity++;
+            else if ("oversized".equals(reason)) oversized++;
+            else writeFailure++;
+            from = Math.min(from, entry.enqueuedAt);
+            to = Math.max(to, elapsedMs());
+        }
+        void merge(Loss other) {
+            detail += other.detail; essential += other.essential;
+            capacity += other.capacity; oversized += other.oversized; writeFailure += other.writeFailure;
+            from = Math.min(from, other.from); to = Math.max(to, other.to);
+        }
+        String report(int peakBytes, int peakRecords, long maxAgeMs) {
+            return "{\"kind\":\"log_records_dropped\",\"count\":" + (detail + essential)
+                    + ",\"detail_count\":" + detail + ",\"essential_count\":" + essential
+                    + ",\"capacity_count\":" + capacity + ",\"oversized_count\":" + oversized
+                    + ",\"write_failure_count\":" + writeFailure
+                    + ",\"from_elapsed_ms\":" + from + ",\"to_elapsed_ms\":" + to
+                    + ",\"queue_peak_bytes\":" + peakBytes + ",\"queue_peak_records\":" + peakRecords
+                    + ",\"max_queue_age_ms\":" + maxAgeMs
+                    + ",\"essential_incomplete\":" + (essential != 0) + "}";
         }
     }
     AsyncServiceLog(Supplier<File> fileFactory, long flushDelayMs) {
@@ -57,23 +91,43 @@ final class AsyncServiceLog {
         } catch (Throwable ignored) { }
     }
     private void enqueue(Entry entry) {
-        // Keep JSON records intact: an oversized record is counted, never split across batches.
-        if (entry.bytes > BATCH_BYTES) { dropped++; scheduleDrain(); return; }
         if (entry.line != null) {
+            // Batch size is a drain target, not a record-size limit. Never fragment JSON.
+            int recordBudget = entry.detail ? MAX_BYTES - ESSENTIAL_RESERVE_BYTES : MAX_BYTES;
+            if (entry.bytes > recordBudget) {
+                recordLoss(entry, "oversized"); scheduleDrain(); return;
+            }
             Iterator<Entry> candidates = queue.iterator();
-            while ((bufferedBytes + entry.bytes > MAX_BYTES || bufferedRecords >= MAX_RECORDS)
-                    && candidates.hasNext()) {
+            while (!fits(entry) && candidates.hasNext()) {
                 Entry old = candidates.next();
                 if (old.line != null && old.detail) {
-                    candidates.remove(); bufferedBytes -= old.bytes; bufferedRecords--; dropped++;
+                    candidates.remove(); release(old); recordLoss(old, "capacity");
                 }
             }
-            if (bufferedBytes + entry.bytes > MAX_BYTES || bufferedRecords >= MAX_RECORDS) {
-                dropped++; scheduleDrain(); return;
+            if (!fits(entry)) {
+                recordLoss(entry, "capacity"); scheduleDrain(); return;
             }
             bufferedBytes += entry.bytes; bufferedRecords++;
+            if (entry.detail) { detailBytes += entry.bytes; detailRecords++; }
+            peakBytes = Math.max(peakBytes, bufferedBytes);
+            peakRecords = Math.max(peakRecords, bufferedRecords);
         }
         queue.add(entry); scheduleDrain();
+    }
+    private boolean fits(Entry entry) {
+        return bufferedBytes + entry.bytes <= MAX_BYTES && bufferedRecords < MAX_RECORDS
+                && (!entry.detail || (detailBytes + entry.bytes <= MAX_BYTES - ESSENTIAL_RESERVE_BYTES
+                && detailRecords < MAX_RECORDS - ESSENTIAL_RESERVE_RECORDS));
+    }
+    private void release(Entry entry) {
+        bufferedBytes -= entry.bytes; bufferedRecords--;
+        if (entry.detail) { detailBytes -= entry.bytes; detailRecords--; }
+        maxQueueAgeMs = Math.max(maxQueueAgeMs, elapsedMs() - entry.enqueuedAt);
+    }
+    private void recordLoss(Entry entry, String reason) {
+        if (dropped == null) dropped = new Loss();
+        dropped.add(entry, reason);
+        maxQueueAgeMs = Math.max(maxQueueAgeMs, elapsedMs() - entry.enqueuedAt);
     }
     private void scheduleDrain() {
         if (!draining) { draining = true; worker.execute(this::drain); }
@@ -97,7 +151,9 @@ final class AsyncServiceLog {
     private void drain() {
         while (true) {
             List<Entry> batch = new ArrayList<>();
-            long lost;
+            Loss lost;
+            int peakByteSnapshot, peakRecordSnapshot;
+            long maxAgeSnapshot;
             boolean closing;
             synchronized (this) {
                 int bytes = 0;
@@ -107,24 +163,33 @@ final class AsyncServiceLog {
                     batch.add(queue.remove()); bytes += next.bytes;
                     if (next.barrier != null || bytes >= BATCH_BYTES) break;
                 }
-                lost = dropped; dropped = 0;
+                if (!batch.isEmpty())
+                    maxQueueAgeMs = Math.max(maxQueueAgeMs, elapsedMs() - batch.get(0).enqueuedAt);
+                lost = dropped; dropped = null;
+                peakByteSnapshot = peakBytes; peakRecordSnapshot = peakRecords; maxAgeSnapshot = maxQueueAgeMs;
                 closing = !accepting;
-                if (batch.isEmpty() && lost == 0) draining = false;
+                if (batch.isEmpty() && lost == null) draining = false;
             }
-            if (batch.isEmpty() && lost == 0) {
+            if (batch.isEmpty() && lost == null) {
                 if (closing) { cancelScheduledFlush(); closeWriter(); worker.shutdown(); }
                 return;
             }
             // Counters include the in-flight batch until I/O completes. No I/O under the lock.
             boolean failed = false;
-            if (lost != 0 && !write("{\"kind\":\"log_records_dropped\",\"count\":" + lost + "}")) {
-                synchronized (this) { dropped += lost; } failed = true;
+            if (lost != null && !write(lost.report(peakByteSnapshot, peakRecordSnapshot, maxAgeSnapshot))) {
+                synchronized (this) {
+                    if (dropped == null) dropped = lost; else dropped.merge(lost);
+                }
+                failed = true;
             }
             for (Entry entry : batch) {
                 if (entry.barrier != null) { cancelScheduledFlush(); flushOnWorker(); complete(entry.barrier); }
                 else {
-                    if (!write(entry.line)) { synchronized (this) { dropped++; } failed = true; }
-                    synchronized (this) { bufferedBytes -= entry.bytes; bufferedRecords--; }
+                    if (!write(entry.line)) {
+                        synchronized (this) { recordLoss(entry, "write_failure"); }
+                        failed = true;
+                    }
+                    synchronized (this) { release(entry); }
                 }
             }
             if (failed) {
