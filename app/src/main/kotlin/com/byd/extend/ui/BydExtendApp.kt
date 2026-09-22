@@ -388,12 +388,12 @@ private fun SignalsScreen(
                 when (state.category) {
                     SignalsCategory.TurnSignals -> Column(Modifier.fillMaxSize()
                         .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Захист поворотника", "Turn-signal guard",
-                        "转向灯保护"), colors, trailing = {
-                    AppSwitch(state.guard.enabled,
+                        "转向灯保护"), colors) {
+                    SwitchLine(strings.text("Захист поворотника", "Turn-signal guard", "转向灯保护"), "",
+                        state.guard.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Guard), it)) }, colors,
                         pending = state.guard.operation.pending, enabled = state.guard.operation.enabled,
-                        label = strings.text("Захист поворотника", "Turn-signal guard"))
-                    }) {
+                        compactSwitch = true)
                         GuardNumber.entries.forEach { field ->
                             val value = when (field) {
                                 GuardNumber.OutwardAngle -> state.guard.outwardAngle

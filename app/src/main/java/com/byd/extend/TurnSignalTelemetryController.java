@@ -255,18 +255,16 @@ final class TurnSignalTelemetryController implements AutoCloseable {
             }
             return;
         }
-        boolean mismatch = seeded && source == Source.RECONCILE
+        boolean controlMismatch = seeded && source == Source.RECONCILE
                 && ((apply[0] && read.stalk != old.stalk)
-                        || (apply[1] && read.steering != old.steering)
-                        || (apply[2] && read.blink != old.blink)
-                        || (apply[3] && read.speed != old.speed));
+                        || (apply[2] && read.blink != old.blink));
         if (seeded && !all(apply)) {
-            // The raced field belongs to its newer callback. Non-racing GET differences remain a
-            // silent reconciliation conflict so runtime can cancel ambiguous in-flight control.
-            if (mismatch) sink.onSnapshot(combined, Source.RECONCILE, 0, true, now);
+            // The raced field belongs to its newer callback. Only non-racing stalk/blink changes
+            // make control history ambiguous; numeric steering/speed updates remain state only.
+            if (controlMismatch) sink.onSnapshot(combined, Source.RECONCILE, 0, true, now);
             return;
         }
-        boolean conflict = mismatch;
+        boolean conflict = controlMismatch;
         boolean first = !seeded;
         seeded = true;
         if (!subscribed) fallbackReadsWorking = true;

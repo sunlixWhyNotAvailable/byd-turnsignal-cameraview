@@ -100,6 +100,23 @@ public final class TurnSignalTelemetryControllerTest {
         assertTrue(rig.sink.conflicts.get(last));
     }
 
+    @Test public void numericReconciliationUpdatesStateWithoutCancelingControlHistory() {
+        Rig rig = new Rig();
+        rig.transport.reads.add(snapshot(3, 10.0f, 2, 20.0f));
+        rig.controller.start();
+        rig.transport.reads.add(snapshot(3, 12.5f, 2, 21.0f));
+        rig.clock.now = 1_000;
+        rig.controller.tick();
+
+        int last = rig.sink.sources.size() - 1;
+        assertEquals(TurnSignalTelemetryController.Source.RECONCILE,
+                rig.sink.sources.get(last));
+        assertFalse(rig.sink.conflicts.get(last));
+        assertEquals(Float.floatToIntBits(12.5f), rig.sink.snapshots.get(last).steering);
+        assertEquals(Float.floatToIntBits(21.0f), rig.sink.snapshots.get(last).speed);
+        assertEquals(0, (int) rig.sink.liveMasks.get(last));
+    }
+
     @Test public void invalidFallbackReadClearsFreshnessInsteadOfExtendingStaleState() {
         Rig rig = new Rig();
         rig.transport.failSubscriptions = 1;

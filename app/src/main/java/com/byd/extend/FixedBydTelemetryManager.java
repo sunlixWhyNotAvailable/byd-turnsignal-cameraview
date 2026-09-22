@@ -23,11 +23,18 @@ final class FixedBydTelemetryManager {
 
     interface Subscription { void close(); }
 
+    enum ValueType { INTEGER, FLOAT }
+
     static final class Request {
         final int device;
         final int[] fids;
+        final ValueType valueType;
         Request(int device, int... fids) {
+            this(device, ValueType.INTEGER, fids);
+        }
+        Request(int device, ValueType valueType, int... fids) {
             this.device = device;
+            this.valueType = valueType;
             this.fids = fids.clone();
         }
     }
@@ -84,10 +91,9 @@ final class FixedBydTelemetryManager {
                         case "onChanged":
                             if (values != null && values.length >= 3
                                     && values[0] instanceof Integer
-                                    && values[1] instanceof Integer
-                                    && values[2] instanceof Integer) {
-                                dispatchValue((Integer) values[0], (Integer) values[1],
-                                        (Integer) values[2], elapsedRealtime());
+                                    && values[1] instanceof Integer) {
+                                dispatchCallback((Integer) values[0], (Integer) values[1],
+                                        values[2], elapsedRealtime());
                             }
                             return null;
                         case "onError":
@@ -161,15 +167,33 @@ final class FixedBydTelemetryManager {
         }
     }
 
-    private synchronized void dispatchValue(int device, int fid, int value, long receivedMs) {
+    private synchronized void dispatchCallback(
+            int device, int fid, Object value, long receivedMs) {
         List<Client> snapshot = new ArrayList<>(clients.values());
         for (Client client : snapshot) {
-            if (client.active && client.accepts(device, fid)) {
-                try {
-                    client.listener.onValue(device, fid, value, receivedMs);
-                } catch (RuntimeException ignored) {}
+            if (!client.active || !client.accepts(device, fid)) continue;
+            ValueType expected = client.valueType(device, fid);
+            Integer raw = callbackRaw(expected, value);
+            try {
+                if (raw != null) {
+                    client.listener.onValue(device, fid, raw, receivedMs);
+                } else {
+                    client.listener.onError("callback_type_mismatch device=" + device
+                            + " fid=" + fid + " expected=" + expected
+                            + " actual=" + (value == null ? "null"
+                                    : value.getClass().getSimpleName()), receivedMs);
+                }
+            } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    static Integer callbackRaw(ValueType expected, Object value) {
+        if (expected == ValueType.FLOAT && value instanceof Float) {
+            return Float.floatToRawIntBits((Float) value);
+        }
+        if (expected == ValueType.INTEGER && value instanceof Integer) return (Integer) value;
+        return null;
     }
 
     private synchronized void dispatchError(String reason, long receivedMs) {
@@ -252,6 +276,15 @@ final class FixedBydTelemetryManager {
                 for (int accepted : request.fids) if (accepted == fid) return true;
             }
             return false;
+        }
+        ValueType valueType(int device, int fid) {
+            for (Request request : requests) {
+                if (request.device != device) continue;
+                for (int accepted : request.fids) {
+                    if (accepted == fid) return request.valueType;
+                }
+            }
+            throw new IllegalArgumentException("unsubscribed signal");
         }
     }
 }

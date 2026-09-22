@@ -8,8 +8,10 @@ import android.os.Parcel;
 final class TurnSignalTelemetryTransport implements TurnSignalTelemetryController.Transport {
     private static final FixedBydTelemetryManager.Request[] REQUESTS = {
             new FixedBydTelemetryManager.Request(1004, 321912876, 950009900),
-            new FixedBydTelemetryManager.Request(1001, 300941320),
-            new FixedBydTelemetryManager.Request(1013, -1807745016)
+            new FixedBydTelemetryManager.Request(1001,
+                    FixedBydTelemetryManager.ValueType.FLOAT, 300941320),
+            new FixedBydTelemetryManager.Request(1013,
+                    FixedBydTelemetryManager.ValueType.FLOAT, -1807745016)
     };
 
     private final Context context;

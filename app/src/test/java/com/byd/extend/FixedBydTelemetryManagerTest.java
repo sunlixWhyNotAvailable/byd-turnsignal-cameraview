@@ -17,6 +17,7 @@ import org.junit.Test;
 public final class FixedBydTelemetryManagerTest {
     private static final int POWER = AvasTelemetryController.POWER_FID;
     private static final int STEERING = TurnSignalTelemetryController.STEERING_FID;
+    private static final int SPEED = TurnSignalTelemetryController.SPEED_FID;
 
     @Test public void closeReconfiguresOverlappingDeviceWithoutDisablingOtherOwner()
             throws Exception {
@@ -87,13 +88,65 @@ public final class FixedBydTelemetryManagerTest {
         avas.close();
     }
 
+    @Test public void floatAndIntegerOverloadsReachMatchingConsumersWithoutConversionLoss()
+            throws Exception {
+        FakeManager backend = new FakeManager();
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+        RecordingListener guard = new RecordingListener();
+        RecordingListener avas = new RecordingListener();
+        FixedBydTelemetryManager.Subscription guardSubscription = owner.subscribe(
+                new FixedBydTelemetryManager.Request[]{
+                        new FixedBydTelemetryManager.Request(1001,
+                                FixedBydTelemetryManager.ValueType.FLOAT, STEERING),
+                        new FixedBydTelemetryManager.Request(1013,
+                                FixedBydTelemetryManager.ValueType.FLOAT, SPEED)}, guard);
+        FixedBydTelemetryManager.Subscription avasSubscription = owner.subscribe(
+                request(1001, POWER), avas);
+
+        backend.listener.onChanged(1001, STEERING, -2.4f, null);
+        assertEquals(Float.floatToRawIntBits(-2.4f), guard.lastValue);
+        backend.listener.onChanged(1013, SPEED, 21.5f, null);
+        assertEquals(Float.floatToRawIntBits(21.5f), guard.lastValue);
+        backend.listener.onChanged(1001, POWER, 2, null);
+
+        assertEquals(2, avas.lastValue);
+        assertEquals(0, guard.errors);
+        assertEquals(0, avas.errors);
+        guardSubscription.close();
+        avasSubscription.close();
+    }
+
+    @Test public void callbackTypeMismatchNotifiesOnlyConsumerOfThatSignal() throws Exception {
+        FakeManager backend = new FakeManager();
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+        RecordingListener guard = new RecordingListener();
+        RecordingListener avas = new RecordingListener();
+        FixedBydTelemetryManager.Subscription guardSubscription = owner.subscribe(
+                new FixedBydTelemetryManager.Request[]{
+                        new FixedBydTelemetryManager.Request(1001,
+                                FixedBydTelemetryManager.ValueType.FLOAT, STEERING)}, guard);
+        FixedBydTelemetryManager.Subscription avasSubscription = owner.subscribe(
+                request(1001, POWER), avas);
+
+        backend.listener.onChanged(1001, STEERING, 12, null);
+
+        assertEquals(1, guard.errors);
+        assertTrue(guard.lastError.contains("expected=FLOAT"));
+        assertEquals(0, avas.errors);
+        guardSubscription.close();
+        avasSubscription.close();
+    }
+
     private static FixedBydTelemetryManager.Request[] request(int device, int fid) {
         return new FixedBydTelemetryManager.Request[]{
                 new FixedBydTelemetryManager.Request(device, fid)};
     }
 
     public interface FakeOnAutoListener {
-        void onChanged(int device, int fid, int value);
+        void onChanged(int device, int fid, int value, Object client);
+        void onChanged(int device, int fid, float value, Object client);
         void onError(int code, String message);
     }
 
@@ -102,7 +155,8 @@ public final class FixedBydTelemetryManagerTest {
         final Queue<Integer> failDevices = new ArrayDeque<>();
         int disable1001Count;
         int unregisterCount;
-        public void registerListener(FakeOnAutoListener listener) {}
+        FakeOnAutoListener listener;
+        public void registerListener(FakeOnAutoListener listener) { this.listener = listener; }
         public void unregisterListener(FakeOnAutoListener listener) { unregisterCount++; }
         public int enableDevice(int device, int[] fids) {
             if (!failDevices.isEmpty() && failDevices.peek() == device) {
@@ -121,8 +175,11 @@ public final class FixedBydTelemetryManagerTest {
 
     private static final class RecordingListener implements FixedBydTelemetryManager.Listener {
         int errors;
+        int lastValue;
         String lastError = "";
-        @Override public void onValue(int device, int fid, int value, long receivedMs) {}
+        @Override public void onValue(int device, int fid, int value, long receivedMs) {
+            lastValue = value;
+        }
         @Override public void onError(String reason, long receivedMs) {
             errors++;
             lastError = reason;
