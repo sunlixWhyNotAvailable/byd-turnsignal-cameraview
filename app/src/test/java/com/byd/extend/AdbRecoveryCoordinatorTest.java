@@ -80,7 +80,11 @@ public final class AdbRecoveryCoordinatorTest {
                 AdbRecoverySnapshot.Stage.READY, true, true, true,
                 -1L, 1L, false, AdbRecoverySnapshot.ReadyOutcome.RESTORED);
         assertNotEquals(available, restored);
-        assertNotEquals(available.hashCode(), restored.hashCode());
+        // Hash collisions are legal; distinct outcomes must remain distinct keys.
+        java.util.Set<AdbRecoverySnapshot> outcomes = new java.util.HashSet<>();
+        outcomes.add(available);
+        outcomes.add(restored);
+        assertEquals(2, outcomes.size());
     }
 
     @Test public void wifiConnectionSuppressesHintForWholePersistedCycle() {

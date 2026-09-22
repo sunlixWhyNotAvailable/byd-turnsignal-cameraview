@@ -24,16 +24,13 @@ public final class BlindDisplayWaitTest {
     }
 
     @Test
-    public void onResumesOnceAndTargetsTransitionIndependently() {
-        boolean[] waiting = {true, false};
+    public void displayTransitionsDependOnWaitingStateAndAvailability() {
         assertEquals(BlindSpotOverlayController.DISPLAY_RESUME,
-                BlindSpotOverlayController.displayTransition(waiting[0], true));
-        waiting[0] = false;
+                BlindSpotOverlayController.displayTransition(true, true));
         assertEquals(BlindSpotOverlayController.DISPLAY_UNCHANGED,
-                BlindSpotOverlayController.displayTransition(waiting[0], true));
+                BlindSpotOverlayController.displayTransition(false, true));
         assertEquals(BlindSpotOverlayController.DISPLAY_WAIT,
-                BlindSpotOverlayController.displayTransition(waiting[1], false));
-        assertFalse(waiting[0]);
+                BlindSpotOverlayController.displayTransition(false, false));
     }
 
     @Test
@@ -82,48 +79,30 @@ public final class BlindDisplayWaitTest {
     }
 
     @Test
-    public void oneWaitingTargetDoesNotCancelAvailableTargetsPendingRetry() {
-        BlindSpotOverlayController.CameraRetryState retry =
-                new BlindSpotOverlayController.CameraRetryState();
-        assertTrue(retry.schedule("tablet_surface_timeout"));
-        boolean bothWaiting = BlindSpotOverlayController.allRequiredTargetsWaiting(
-                true, false, true, true);
-        if (bothWaiting) retry.cancel();
-        assertFalse(bothWaiting);
-        assertEquals("tablet_surface_timeout", retry.consume());
-        assertTrue(retry.schedule("surface_timeout"));
+    public void retryCancellationRequiresAllRequiredTargetsToWait() {
+        assertFalse(BlindSpotOverlayController.allRequiredTargetsWaiting(
+                true, false, true, true));
+        assertFalse(BlindSpotOverlayController.allRequiredTargetsWaiting(
+                true, true, true, false));
         assertTrue(BlindSpotOverlayController.allRequiredTargetsWaiting(
                 true, true, true, true));
-        if (BlindSpotOverlayController.allRequiredTargetsWaiting(true, true, true, true)) {
-            retry.cancel();
-        }
-        assertEquals(null, retry.consume());
         assertTrue(BlindSpotOverlayController.allRequiredTargetsWaiting(
                 true, true, false, false));
+        assertTrue(BlindSpotOverlayController.allRequiredTargetsWaiting(
+                false, false, true, true));
         assertFalse(BlindSpotOverlayController.allRequiredTargetsWaiting(
                 false, false, false, false));
     }
 
     @Test
-    public void crossedDisplayTransitionKeepsRetryUntilBothStatesAreRefreshed() throws Exception {
-        BlindSpotOverlayController.CameraRetryState retry =
-                new BlindSpotOverlayController.CameraRetryState();
-        retry.schedule("preparation_failed");
-        boolean[] waiting = {false, true};
-        waiting[0] = true; // Tablet OFF; the cached cluster state is not authoritative yet.
-        assertTrue(BlindSpotOverlayController.allRequiredTargetsWaiting(
-                true, waiting[0], true, waiting[1]));
-        waiting[1] = false; // Cluster ON in the same reconciliation pass.
-        if (BlindSpotOverlayController.allRequiredTargetsWaiting(
-                true, waiting[0], true, waiting[1])) retry.cancel();
-        assertEquals("preparation_failed", retry.consume());
-
+    public void sourceReconciliationUpdatesAllTargetsBeforeRetryCancellation() throws Exception {
         String controller = source("BlindSpotOverlayController.java");
         String reconcile = section(controller, "private void reconcileDisplays(",
                 "private void rebuild(");
-        assertTrue(reconcile.indexOf("if (changed)")
-                > reconcile.indexOf("invalidateTarget(target)"));
-        assertTrue(reconcile.indexOf("cancelCameraRetry(") > reconcile.indexOf("if (changed)"));
+        assertTrue(reconcile.indexOf("invalidateTarget(target)") >= 0
+                && reconcile.indexOf("if (changed)") > reconcile.indexOf("invalidateTarget(target)"));
+        assertTrue(reconcile.indexOf("if (changed)") >= 0
+                && reconcile.indexOf("cancelCameraRetry(") > reconcile.indexOf("if (changed)"));
         String invalidate = section(controller, "private void invalidateTarget(",
                 "private boolean invalidateTargetBinding(");
         assertFalse(invalidate.contains("cancelCameraRetry("));
@@ -152,8 +131,8 @@ public final class BlindDisplayWaitTest {
                 "private void cameraOpened(");
         String noAvailableTarget = section(openController, "if (expected <= 0)",
                 "int decision = preparationDecision");
-        assertTrue(noAvailableTarget.indexOf("if (!rebindRequired) return;")
-                < noAvailableTarget.indexOf("closeOverlayCamera"));
+        assertTrue(noAvailableTarget.indexOf("if (!rebindRequired) return;") >= 0
+                && noAvailableTarget.indexOf("closeOverlayCamera") > noAvailableTarget.indexOf("if (!rebindRequired) return;"));
         assertTrue(noAvailableTarget.contains("if (ready.isEmpty())"));
         assertTrue(noAvailableTarget.contains("expected = resolved = ready.size()"));
         assertFalse(noAvailableTarget.contains("destroyAll"));
@@ -162,8 +141,8 @@ public final class BlindDisplayWaitTest {
         assertTrue(evaluate.contains("!displayWaiting[pane.target]"));
         String timeout = section(controller, "private void surfaceTimedOut(",
                 "private void overlaySurfaceAvailable(");
-        assertTrue(timeout.indexOf("!CameraDisplayTarget.isValid(pane.target)")
-                < timeout.indexOf("displayWaiting[pane.target]"));
+        assertTrue(timeout.indexOf("!CameraDisplayTarget.isValid(pane.target)") >= 0
+                && timeout.indexOf("displayWaiting[pane.target]") > timeout.indexOf("!CameraDisplayTarget.isValid(pane.target)"));
 
         String helper = source("CameraHelperMain.java");
         String open = section(helper, "String openOverlayDirectCameras(",

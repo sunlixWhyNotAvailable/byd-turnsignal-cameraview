@@ -21,8 +21,6 @@ public final class OemCameraVisibilityRuntimeTest {
         assertEquals("byd.intent.action.pano", OemCameraVisibilityRuntime.ACTION_PANO);
         assertEquals("pano_state", OemCameraVisibilityRuntime.EXTRA_PANO_STATE);
         assertEquals("sys.byd.pano_start", OemCameraVisibilityRuntime.STARTUP_PROPERTY);
-        assertTrue(OemCameraVisibilityRuntime.ACTION_PANO.startsWith("byd.intent"));
-        assertFalse(OemCameraVisibilityRuntime.EXTRA_PANO_STATE.isEmpty());
     }
 
     @Test

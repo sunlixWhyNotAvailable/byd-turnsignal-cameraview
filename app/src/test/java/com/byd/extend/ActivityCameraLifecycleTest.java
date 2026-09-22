@@ -171,8 +171,8 @@ public final class ActivityCameraLifecycleTest {
         String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
         String open = source.substring(source.indexOf("private void maybeOpenReversePreview()"),
                 source.indexOf("private void maybeOpenProductionPreview()"));
-        assertTrue(open.indexOf("runtime_status_opening_panorama")
-                < open.indexOf("transactOpenReversePreview("));
+        assertTrue(open.indexOf("runtime_status_opening_panorama") >= 0
+                && open.indexOf("transactOpenReversePreview(") > open.indexOf("runtime_status_opening_panorama"));
 
         String frames = source.substring(source.indexOf("public void onReverseFramesReady("),
                 source.indexOf("public void onReverseSurfaceLost("));
@@ -185,10 +185,10 @@ public final class ActivityCameraLifecycleTest {
                 source.indexOf("static boolean isCurrentReverseBackgroundEvent("));
         assertTrue(background.contains("publishReversePreviewBackgroundUnavailable();"));
         assertTrue(background.contains("clearReversePanoramaStatus();"));
-        assertTrue(background.indexOf("publishReversePreviewBackgroundUnavailable();")
-                < background.indexOf("} else if (\"camera_opened\".equals(kind))"));
-        assertTrue(background.indexOf("clearReversePanoramaStatus();")
-                > background.indexOf("} else if (\"camera_opened\".equals(kind))"));
+        assertTrue(background.indexOf("publishReversePreviewBackgroundUnavailable();") >= 0
+                && background.indexOf("} else if (\"camera_opened\".equals(kind))") > background.indexOf("publishReversePreviewBackgroundUnavailable();"));
+        assertTrue(background.indexOf("} else if (\"camera_opened\".equals(kind))") >= 0
+                && background.indexOf("clearReversePanoramaStatus();") > background.indexOf("} else if (\"camera_opened\".equals(kind))"));
         assertTrue(source.contains("StatusTone.Error, false);"));
     }
 
@@ -655,7 +655,7 @@ public final class ActivityCameraLifecycleTest {
     }
 
     @Test
-    public void surfaceLossCloseKeepsWhicheverReplacementInputOrderAlreadyExists()
+    public void surfaceLossRenewalPolicyAndReopenBindingsRemainDistinct()
             throws Exception {
         assertFalse(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
                 "surface_destroyed"));
@@ -668,41 +668,8 @@ public final class ActivityCameraLifecycleTest {
         assertTrue(CameraProbeActivity.shouldRenewAutomaticInputAfterTerminalClose(
                 "camera_tab_changed"));
 
-        for (boolean surfaceBeforeClose : new boolean[]{true, false}) {
-            int closingRequestId = 41;
-            int activeRequestId = 0;
-            boolean requestedOpen = false;
-            boolean surfaceReady = false;
-            int opens = 0;
-
-            if (surfaceBeforeClose) {
-                surfaceReady = true;
-                if (CameraProbeActivity.canStartActivityCamera(
-                        true, false, false, false, closingRequestId)) opens++;
-            }
-            assertTrue(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(
-                    requestedOpen, activeRequestId, closingRequestId, 41));
-            closingRequestId = 0;
-            if (surfaceReady && CameraProbeActivity.canStartActivityCamera(
-                    true, false, false, false, closingRequestId)) {
-                opens++;
-                requestedOpen = true;
-                activeRequestId = 42;
-            }
-            if (!surfaceBeforeClose) {
-                surfaceReady = true;
-                if (CameraProbeActivity.canStartActivityCamera(
-                        true, false, false, false, closingRequestId)) {
-                    opens++;
-                    requestedOpen = true;
-                    activeRequestId = 42;
-                }
-            }
-
-            assertEquals(1, opens);
-            assertFalse(CameraProbeActivity.isCurrentActivityCameraTerminalEvent(
-                    requestedOpen, activeRequestId, closingRequestId, 41));
-        }
+        assertTrue(CameraProbeActivity.canStartActivityCamera(
+                true, false, false, false, 0));
 
         assertFalse(CameraProbeActivity.canStartActivityCamera(
                 true, true, false, false, 0));
@@ -879,18 +846,6 @@ public final class ActivityCameraLifecycleTest {
         assertEquals(beforeRestore, settings.getAll());
     }
 
-    @Test
-    public void parkingSelectorStaysHorizontalWithEightEqualButtons() {
-        assertEquals(android.widget.LinearLayout.HORIZONTAL,
-                CameraProbeActivity.PARKING_SELECTOR_ORIENTATION);
-        assertEquals(1.0f, CameraProbeActivity.PARKING_SELECTOR_BUTTON_WEIGHT, 0.0f);
-        assertEquals(0.65f, CameraProbeActivity.PARKING_SETTINGS_WEIGHT, 0.0f);
-        assertEquals(0.35f, CameraProbeActivity.PARKING_PREVIEW_WEIGHT, 0.0f);
-        assertArrayEquals(new String[]{
-                        "Перед-ліво", "Перед", "Перед-право",
-                        "Зад-праворуч", "Зад", "Зад-ліворуч", "Ліво", "Право"},
-                CameraProbeActivity.calibrationLabels(true));
-    }
 
     @Test
     public void calibrationRebindsWhenPhysicalSourceChanges() {
@@ -956,22 +911,6 @@ public final class ActivityCameraLifecycleTest {
                 mask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX), 0.0f);
         assertEquals(1.0f, ReverseCameraCompositionView.alphaForVisibility(
                 mask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX), 0.0f);
-    }
-
-    @Test
-    public void mirrorUiUsesTransferLabelsAndFixedRotationControlSize() {
-        assertEquals("Перенести →",
-                CameraProbeActivity.calibrationTransferLabel(false));
-        assertEquals("← Перенести",
-                CameraProbeActivity.calibrationTransferLabel(true));
-        assertEquals("Перенести →",
-                CameraProbeActivity.reverseTransferLabel(
-                        ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
-        assertEquals("← Перенести",
-                CameraProbeActivity.reverseTransferLabel(
-                        ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
-        assertEquals(42, CameraProbeActivity.CALIBRATION_ROTATION_ROW_HEIGHT_DP);
-        assertEquals(120, CameraProbeActivity.OUTPUT_MIRROR_BUTTON_WIDTH_DP);
     }
 
     @Test

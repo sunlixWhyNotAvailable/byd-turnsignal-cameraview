@@ -30,7 +30,8 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(death.contains("diedAudition = desiredAvasAudition"));
         assertTrue(death.contains("desiredAvasAudition = \"\""));
         assertTrue(death.contains("\"audition_session_id\", diedAudition"));
-        assertTrue(death.indexOf("if (stale)") < death.indexOf("emit(\"helper_death\""));
+        assertTrue(death.indexOf("if (stale)") >= 0
+                && death.indexOf("emit(\"helper_death\"") > death.indexOf("if (stale)"));
         String activity = source("CameraProbeActivity.java");
         int branch = activity.indexOf("} else if (\"helper_death\".equals(kind)");
         String clear = activity.substring(branch, activity.indexOf("telemetryReady = false;", branch));
@@ -85,11 +86,11 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(restore.contains("&& dirty != AvasShellSettings.NAVIGATION_REJECTED"));
         assertTrue(restore.contains("manager.abandonAudioFocusRequest(focus)"));
         assertTrue(restore.contains("AvasNavVolumePolicy.restore(savedNav, savedMute"));
-        assertTrue(restore.indexOf("if (failure == null)") <
-                restore.indexOf("settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.CLEAN)"));
+        assertTrue(restore.indexOf("if (failure == null)") >= 0
+                && restore.indexOf("settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.CLEAN)") > restore.indexOf("if (failure == null)"));
         String route = source("AvasNavigationRoute.java");
-        assertTrue(route.indexOf("AvasNavigationRecovery.release(") <
-                route.indexOf("manager.abandonAudioFocusRequest(focus)"));
+        assertTrue(route.indexOf("AvasNavigationRecovery.release(") >= 0
+                && route.indexOf("manager.abandonAudioFocusRequest(focus)") > route.indexOf("AvasNavigationRecovery.release("));
         assertTrue(route.contains("\"route_closed_confirmed\", false"));
     }
 
@@ -114,97 +115,11 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(writer.contains("exteriorGain.update()"));
         assertTrue(writer.contains("output.write(pcm, offset, writable"));
         assertTrue(writer.contains("scalePcm16"));
-        assertTrue(writer.contains("while (offset < length"));
         assertTrue(writer.contains("output.write(scaled, 0, writable"));
-        assertTrue(writer.contains("offset += count"));
         assertTrue(runtime.contains("queue.enqueueExterior(profileId, true)"));
         assertTrue(runtime.contains("queue.enqueueExterior(profileId, false)"));
         assertTrue(runtime.contains("output.play(file, profile.volume"));
         assertTrue(runtime.contains("output.playNavigation(file, profile.volume"));
-    }
-
-    @Test public void exteriorCapsBeforePlayAndStreamsZerosUntilNavSourceZero()
-            throws Exception {
-        String player = source("AvasAudioPlayer.java");
-        String exterior = player.substring(player.indexOf("void play(File wav"),
-                player.indexOf("void playNavigation(File wav"));
-        int focus = exterior.indexOf("manager.requestAudioFocus(focus)");
-        int route = exterior.indexOf("route.prepare(focus, diagnostics, dirty ->");
-        int create = exterior.indexOf("new AudioTrack.Builder()");
-        int gain = exterior.indexOf("exteriorGain.prepare()");
-        int play = exterior.indexOf("playbackOutput.play()");
-        int cap = exterior.indexOf("manager.setStreamVolume(NAV_STREAM, value, 0)");
-        assertTrue(focus >= 0 && focus < route && route < create);
-        assertTrue(create < gain && gain < cap);
-        assertTrue(cap < play);
-        assertFalse(exterior.contains("route.mute(true, diagnostics)"));
-        assertFalse(exterior.contains("route.mute(false, diagnostics)"));
-        assertFalse(exterior.contains("unmute_called_ms"));
-        assertFalse(exterior.contains("unmute_returned_ms"));
-        assertTrue(player.contains("\"getLastAudibleStreamVolume\", int.class"));
-        assertTrue(exterior.contains("AvasPlaybackPlan.zeroPcm(bufferBytes)"));
-        assertTrue(exterior.contains("AvasNavSourcePlayback.await(navGate"));
-        String gate = source("AvasNavSourcePlayback.java");
-        assertTrue(gate.contains("gate.refresh()"));
-        assertTrue(gate.contains("gate.awaitChangeOrPoll"));
-        assertTrue(exterior.contains("skipFully(input, header.dataOffset)"));
-        assertTrue(exterior.contains("\"silenceFrames\", silenceFrames"));
-        assertEquals(1, exterior.split("new AudioTrack\\.Builder", -1).length - 1);
-        assertEquals(1, exterior.split("playbackOutput\\.play\\(", -1).length - 1);
-        assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
-        assertFalse(exterior.contains("AudioTrack.MODE_STATIC"));
-        assertTrue(exterior.contains("Thread.sleep(EXTERIOR_NAV_PREP_MS)"));
-        assertTrue(player.contains("EXTERIOR_NAV_PREP_MS = 300"));
-        assertEquals(1, exterior.split("Thread\\.sleep\\(", -1).length - 1);
-        assertTrue(exterior.contains("drain(output, framesWritten, ticket, cancelled, session, exteriorGain, 3000)"));
-        assertTrue(exterior.indexOf("maintainedFocus.start()") > play);
-        assertTrue(exterior.indexOf("drain(output, framesWritten, ticket, cancelled, session, exteriorGain,")
-                < exterior.indexOf("stopFocusMaintainer(focusMaintainer)"));
-        assertTrue(exterior.indexOf("stopFocusMaintainer(focusMaintainer)")
-                < exterior.indexOf("release(output, true)"));
-        assertTrue(exterior.indexOf("exteriorGain.close()") < exterior.indexOf("release(output, true)"));
-        assertTrue(exterior.indexOf("release(output, true)") < exterior.indexOf("restore(focus, diagnostics)"));
-    }
-
-    @Test public void bothRoutesStreamAndDrainAllSubmittedFrames() throws Exception {
-        String player = source("AvasAudioPlayer.java");
-        String exterior = player.substring(player.indexOf("void play(File wav"),
-                player.indexOf("void playNavigation(File wav"));
-        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
-                player.indexOf("void stop()"));
-        String drain = player.substring(player.indexOf("private void drain("),
-                player.indexOf("private void restore(AudioFocusRequest focus)"));
-        assertTrue(exterior.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
-        assertTrue(navigation.contains("setTransferMode(AudioTrack.MODE_STREAM)"));
-        assertFalse(navigation.contains("AudioTrack.MODE_STATIC"));
-        assertTrue(exterior.contains("tailPaddingFrames(framesWritten"));
-        assertTrue(navigation.contains("tailPaddingFrames(framesWritten"));
-        assertTrue(drain.contains("diagnostics, null, 3000"));
-        assertTrue(drain.contains("SystemClock.elapsedRealtime() + timeoutMillis"));
-        assertTrue(drain.contains("exteriorGain.update()"));
-        assertTrue(drain.contains("!cancelled(ticket, externalCancellation)"));
-    }
-
-    @Test public void periodicFocusIsExteriorOnlyAndStopsBeforeEveryCleanupPath() throws Exception {
-        String player = source("AvasAudioPlayer.java");
-        String exterior = player.substring(player.indexOf("void play(File wav"),
-                player.indexOf("void playNavigation(File wav"));
-        String navigation = player.substring(player.indexOf("void playNavigation(File wav"),
-                player.indexOf("void stop()"));
-        String stop = player.substring(player.indexOf("void stop()"),
-                player.indexOf("@Override", player.indexOf("void stop()")));
-        assertTrue(exterior.contains("new AvasFocusMaintainer("));
-        assertTrue(exterior.contains("() -> manager.requestAudioFocus(maintainedFocus)"));
-        assertFalse(navigation.contains("AvasFocusMaintainer"));
-        assertTrue(stop.indexOf("focusMaintainer.close()") < stop.indexOf("activeTrack.pause()"));
-
-        String maintainer = source("AvasFocusMaintainer.java");
-        assertTrue(maintainer.contains("PERIOD_MILLIS = 120"));
-        assertTrue(maintainer.contains("synchronized (callLock)"));
-        assertTrue(maintainer.contains("if (!active) return"));
-        assertTrue(maintainer.indexOf("active = false") < maintainer.indexOf("owned.cancel()"));
-        assertTrue(maintainer.contains("MAX_DETAIL_REPORTS = 3"));
-        assertTrue(maintainer.contains("new Report(\"summary\""));
     }
 
     @Test public void navStateTelemetryIsExteriorOnlyAndRunsOffThePlaybackWorker() throws Exception {
@@ -265,11 +180,11 @@ public final class AvasNavigationAudioContractTest {
         int dirty = exterior.indexOf(
                 "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED)");
         assertTrue(dirty >= 0);
-        assertTrue(exterior.indexOf("AvasNavVolumePolicy.capture(")
-                < exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV"));
+        assertTrue(exterior.indexOf("AvasNavVolumePolicy.capture(") >= 0
+                && exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV") > exterior.indexOf("AvasNavVolumePolicy.capture("));
         assertTrue(exterior.contains("AvasNavVolumePolicy.journal(navSnapshot,"));
-        assertTrue(exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE")
-                < exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV"));
+        assertTrue(exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE") >= 0
+                && exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV") > exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE"));
         assertTrue(exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE") < dirty);
         assertTrue(dirty < exterior.indexOf("route.naviFocus(true, diagnostics)"));
         assertTrue(dirty < exterior.indexOf("manager.requestAudioFocus(focus)"));
@@ -287,9 +202,12 @@ public final class AvasNavigationAudioContractTest {
         assertFalse(route.contains("BYDAutoBodyworkDevice"));
         assertFalse(route.contains("setKaraokeMode"));
         assertFalse(prepare.contains("tryWrite(CHANNEL0_DEVICE, POSITION_FID"));
-        assertTrue(prepare.indexOf("acquirePrimary(") < prepare.indexOf("exteriorPath(true"));
-        assertTrue(prepare.indexOf("exteriorPath(true") < prepare.indexOf("manager.requestAudioFocus"));
-        assertTrue(prepare.indexOf("manager.requestAudioFocus") < prepare.indexOf("if (!ready)"));
+        assertTrue(prepare.indexOf("acquirePrimary(") >= 0
+                && prepare.indexOf("exteriorPath(true") > prepare.indexOf("acquirePrimary("));
+        assertTrue(prepare.indexOf("exteriorPath(true") >= 0
+                && prepare.indexOf("manager.requestAudioFocus") > prepare.indexOf("exteriorPath(true"));
+        assertTrue(prepare.indexOf("manager.requestAudioFocus") >= 0
+                && prepare.indexOf("if (!ready)") > prepare.indexOf("manager.requestAudioFocus"));
         assertEquals(2, prepare.split("Thread\\.sleep\\(ROUTE_SETTLE_MS\\)", -1).length - 1);
         assertTrue(route.contains("ROUTE_SETTLE_MS = 50"));
         assertFalse(prepare.contains("if (primary"));

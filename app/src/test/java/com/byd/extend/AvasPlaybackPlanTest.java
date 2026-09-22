@@ -22,12 +22,8 @@ public final class AvasPlaybackPlanTest {
     }
 
     @Test public void noRequestHasArtificialSilence() {
-        for (int request = 0; request < 3; request++) {
-            assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                    AvasPlaybackQueue.Kind.AUTOMATIC_EXTERIOR));
-            assertEquals(0, AvasPlaybackPlan.silenceMillis(
-                    AvasPlaybackQueue.Kind.MANUAL_EXTERIOR));
-            assertEquals(0, AvasPlaybackPlan.silenceMillis(AvasPlaybackQueue.Kind.AUDITION_NAV));
+        for (AvasPlaybackQueue.Kind kind : AvasPlaybackQueue.Kind.values()) {
+            assertEquals(0, AvasPlaybackPlan.silenceMillis(kind));
         }
     }
 

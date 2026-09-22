@@ -492,45 +492,35 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
     }
 
+    private static final AvasPcmTransfer.Clock PCM_CLOCK = new AvasPcmTransfer.Clock() {
+        @Override public long now() { return SystemClock.elapsedRealtime(); }
+        @Override public void sleep(long millis) throws InterruptedException { Thread.sleep(millis); }
+    };
+
     private int write(AudioTrack output, byte[] pcm, byte[] scaled, int length, int frameSize,
             long ticket, BooleanSupplier externalCancellation, IntSupplier currentVolume,
             int initialVolume, ExteriorGain exteriorGain, String phase, SessionDiagnostics diagnostics)
             throws Exception {
-        int offset = 0;
-        long lastProgress = SystemClock.elapsedRealtime();
-        while (offset < length && !cancelled(ticket, externalCancellation)) {
-            int writable = length - offset;
-            int count;
-            if (exteriorGain != null) {
-                exteriorGain.update();
-                // Keep original PCM peaks intact: amplification belongs to this track's effect.
-                count = output.write(pcm, offset, writable, AudioTrack.WRITE_NON_BLOCKING);
-            } else {
+        return AvasPcmTransfer.write(length, frameSize,
+                () -> cancelled(ticket, externalCancellation), new AvasPcmTransfer.Output() {
+            @Override public int write(int offset, int writable) {
+                if (exteriorGain != null) {
+                    exteriorGain.update();
+                    // Keep original PCM peaks intact: amplification belongs to this track's effect.
+                    return output.write(pcm, offset, writable, AudioTrack.WRITE_NON_BLOCKING);
+                }
                 int volume = currentVolume == null ? initialVolume : clamp(currentVolume.getAsInt());
                 AvasWav.scalePcm16(pcm, offset, scaled, 0, writable, volume);
-                count = output.write(scaled, 0, writable, AudioTrack.WRITE_NON_BLOCKING);
+                return output.write(scaled, 0, writable, AudioTrack.WRITE_NON_BLOCKING);
             }
-            if (count < 0) {
-                if (cancelled(ticket, externalCancellation)) return offset;
-                throw new IllegalStateException("AudioTrack.write=" + count);
-            }
-            if (count % frameSize != 0) throw new IllegalStateException("AudioTrack split a PCM frame");
-            if (count > 0) {
+            @Override public void written(int offset, int count) {
                 if (exteriorGain != null && "wav".equals(phase)) {
                     diagnostics.exteriorPcm(pcm, offset, count);
                 }
                 diagnostics.positiveWrite(output, phase, count / frameSize);
-                offset += count;
-                lastProgress = SystemClock.elapsedRealtime();
-            } else {
-                diagnostics.initialSample(output);
-                if (SystemClock.elapsedRealtime() - lastProgress > 3000) {
-                    throw new IllegalStateException("AudioTrack write stalled");
-                }
-                Thread.sleep(10);
             }
-        }
-        return offset;
+            @Override public void idle() { diagnostics.initialSample(output); }
+        }, PCM_CLOCK);
     }
 
     private int prefill(AudioTrack output, byte[] zeroPcm, int frameSize, long ticket,
@@ -573,17 +563,12 @@ final class AvasAudioPlayer implements AutoCloseable {
     private void drain(AudioTrack output, long framesWritten, long ticket,
             BooleanSupplier externalCancellation, SessionDiagnostics diagnostics,
             ExteriorGain exteriorGain, long timeoutMillis) throws Exception {
-        long deadline = SystemClock.elapsedRealtime() + timeoutMillis;
-        while (!cancelled(ticket, externalCancellation)
-                && Integer.toUnsignedLong(output.getPlaybackHeadPosition()) < framesWritten) {
-            if (exteriorGain != null) exteriorGain.update();
-            // Sampling is performed by the same playback worker; no timer or idle polling exists.
-            diagnostics.initialSample(output);
-            if (SystemClock.elapsedRealtime() >= deadline) {
-                throw new IllegalStateException("AudioTrack drain timeout");
-            }
-            Thread.sleep(10);
-        }
+        AvasPcmTransfer.drain(framesWritten, timeoutMillis,
+                () -> cancelled(ticket, externalCancellation),
+                () -> Integer.toUnsignedLong(output.getPlaybackHeadPosition()), () -> {
+                    if (exteriorGain != null) exteriorGain.update();
+                    diagnostics.initialSample(output);
+                }, PCM_CLOCK);
     }
 
     private void restore(AudioFocusRequest focus) throws Exception {

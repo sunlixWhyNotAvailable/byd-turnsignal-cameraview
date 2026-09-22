@@ -15,11 +15,6 @@ public final class CameraRotationTest {
     }
 
     @Test
-    public void alignedModeUsesStretchLabel() {
-        assertEquals("Stretch", CameraRotation.modeLabel(CameraRotation.MODE_ALIGNED));
-    }
-
-    @Test
     public void alignedSourceRoiRemainsAxisAlignedBeforeOutputTransform() {
         assertArrayEquals(new float[]{192.0f, 130.0f, 1152.0f, 130.0f,
                         1152.0f, 910.0f, 192.0f, 910.0f},

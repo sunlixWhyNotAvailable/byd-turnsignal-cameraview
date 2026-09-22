@@ -78,7 +78,9 @@ public class BlindHelperAttachmentTest {
         assertFalse(attach.contains("removeCallbacksAndMessages"));
         String teardown = text.substring(text.indexOf("void shutdown()"),
                 text.indexOf("private String cameraRetryBlockReason()"));
-        assertTrue(teardown.indexOf("cancelHelperAttachment();") > teardown.indexOf("shutdown = true;"));
-        assertTrue(teardown.indexOf("cancelHelperAttachment();") < teardown.indexOf("destroyAll("));
+        assertTrue(teardown.indexOf("shutdown = true;") >= 0
+                && teardown.indexOf("cancelHelperAttachment();") > teardown.indexOf("shutdown = true;"));
+        assertTrue(teardown.indexOf("cancelHelperAttachment();") >= 0
+                && teardown.indexOf("destroyAll(") > teardown.indexOf("cancelHelperAttachment();"));
     }
 }

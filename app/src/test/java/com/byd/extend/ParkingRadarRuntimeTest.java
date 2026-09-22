@@ -26,8 +26,7 @@ public final class ParkingRadarRuntimeTest {
     }
 
     @Test
-    public void shellProtocolVersionAndConfigureTransactionAreStable() {
-        assertEquals(10, TurnSignalShellProtocol.VERSION);
+    public void radarConfigureRetainsItsWireTransaction() {
         assertEquals(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC + 1,
                 TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR);
     }

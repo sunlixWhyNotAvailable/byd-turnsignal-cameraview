@@ -51,8 +51,8 @@ public final class AvasRuntimeContractTest {
         assertTrue(text.contains("new AvasVehicleTelemetryTransport(context)"));
         assertTrue(text.contains("telemetryController.activate()"));
         assertTrue(text.contains("telemetryController.deactivate()"));
-        assertTrue(text.indexOf("telemetryController.close()")
-                < text.indexOf("telemetry.shutdownNow()"));
+        assertTrue(text.indexOf("telemetryController.close()") >= 0
+                && text.indexOf("telemetry.shutdownNow()") > text.indexOf("telemetryController.close()"));
         assertTrue(controllerText.contains("RECONCILE_MS = 60_000"));
         assertTrue(controllerText.contains("FALLBACK_MS = 250"));
         assertTrue(transportText.contains("FixedBydTelemetryManager.get(context)"));

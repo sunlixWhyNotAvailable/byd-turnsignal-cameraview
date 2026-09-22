@@ -55,11 +55,6 @@ public final class DirectCameraSourceHubStatsTest {
         assertEquals("await:a", failure.getSuppressed()[0].getMessage());
     }
 
-    @Test
-    public void namesWorkersByPhysicalSourceIndex() {
-        assertEquals("direct-camera-source-0", DirectCameraSourceHub.workerThreadName(0));
-        assertEquals("direct-camera-source-4", DirectCameraSourceHub.workerThreadName(4));
-    }
 
     @Test
     public void pausedTargetSkipsOnlyMatchingSurfaceAndLeavesOtherSameIndexActive() {

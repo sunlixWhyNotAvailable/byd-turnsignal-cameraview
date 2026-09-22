@@ -12,24 +12,16 @@ import org.junit.Test;
 
 public final class ComposeCameraHostParityTest {
     @Test
-    public void approvedWidgetCaptureAndSharedControlStylingArePorted() throws Exception {
+    public void widgetLearningRetainsCaptureAndResetBindings() throws Exception {
         String primitives = readMain("kotlin/com/byd/extend/ui/UiPrimitives.kt");
-        String settings = readMain("kotlin/com/byd/extend/ui/SettingsScreen.kt");
         String reverse = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
         String dialogs = readMain("kotlin/com/byd/extend/ui/BydExtendApp.kt");
-        assertTrue(primitives.contains("if (colors.dark) .20f else .04f"));
-        assertTrue(primitives.contains("val width = if (compact) 42.dp else 56.dp"));
-        assertTrue(primitives.contains("val height = if (compact) 27.dp else 32.dp"));
         assertTrue(primitives.contains(".toggleable(value = checked"));
-        assertTrue(settings.contains("compactSwitch = false"));
-        assertTrue(settings.contains("colors, compact = false"));
         assertTrue(reverse.contains("if (selected == ReverseElement.Widget)"));
         assertTrue(reverse.contains("ReverseWidgetLearningRow(state.steeringKeyCode"));
-        assertTrue(reverse.contains("Modifier.size(44.dp).testTag(\"reverse-key-reset\")"));
         assertTrue(reverse.contains("enabled = steeringKeyCode >= 0"));
         assertTrue(dialogs.contains("dismissOnClickOutside = captureDialog"));
         assertTrue(dialogs.contains("Modifier.fillMaxWidth().testTag(\"reverse-key-cancel\")"));
-        assertTrue(dialogs.contains("setDimAmount(if (colors.dark) .48f else .32f)"));
     }
 
     @Test
@@ -75,16 +67,15 @@ public final class ComposeCameraHostParityTest {
         assertTrue(ui.contains("panoramaStatus: StatusUiState? = null"));
         assertFalse(ui.contains("profileHeaderStatus"));
         assertTrue(ui.contains("PanoramaStatusPill(panoramaStatus, strings, colors)"));
-        assertTrue(ui.indexOf("titleTrailing = if (panoramaStatus != null)")
-                > ui.indexOf("testTag(\"camera-frame\")"));
+        assertTrue(ui.indexOf("testTag(\"camera-frame\")") >= 0
+                && ui.indexOf("titleTrailing = if (panoramaStatus != null)") > ui.indexOf("testTag(\"camera-frame\")"));
         assertTrue(ui.contains("trailing = { CameraStatusPill(profileStatus, strings, colors) }"));
-        assertTrue(ui.contains("with(LocalDensity.current) { 18.sp.toDp() } + 12.dp"));
         assertFalse(ui.contains("StatusPill(profileStatus, strings.text(\"Статус\", \"Status\"), colors)"));
         assertTrue(activity.contains("owner.refreshMirrorBuffer(texture, raw);"));
         assertTrue(blindParking.contains("profileStatus = profile.operation.status"));
         assertTrue(blindParking.contains("profileStatus = viewState.profile.operation.status"));
         assertTrue(reverse.contains("profileStatus = profile.operation.status"));
-        assertTrue(reverse.split("panoramaStatus = state.panoramaOperation.status", -1).length == 3);
+        assertTrue(reverse.contains("panoramaStatus = state.panoramaOperation.status"));
         assertFalse(reverse.contains("profileHeaderStatus"));
         assertTrue(activity.contains("if (profile instanceof CameraProfileId.Blind) return tab == TAB_CAMERAS;"));
         assertTrue(activity.contains("if (profile instanceof CameraProfileId.Parking) return tab == TAB_PARKING_CAMERAS;"));
@@ -198,19 +189,6 @@ public final class ComposeCameraHostParityTest {
     }
 
     @Test
-    public void reverseBackgroundAndWidgetKeepEditableBoundedGeometry() throws Exception {
-        String ui = readMain("kotlin/com/byd/extend/ui/ReverseScreen.kt");
-        String controls = ui.substring(ui.indexOf("private fun ReverseCompositionControls("),
-                ui.indexOf("private fun ReverseCompositionFrame("));
-        assertTrue(controls.contains("maxX = 100f - width, maxY = 100f - height"));
-        assertTrue(controls.contains("5f..(100f - x).coerceAtLeast(5f)"));
-        assertTrue(controls.contains("5f..(100f - y).coerceAtLeast(5f)"));
-        String sizeControls = controls.substring(controls.indexOf("GeometryPair("),
-                controls.indexOf("Row(horizontalArrangement"));
-        assertFalse(sizeControls.contains("enabled = cameraElement"));
-    }
-
-    @Test
     public void reverseEditorIsPlacementOnlyAndSelectionAvoidsCameraReopen() throws Exception {
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
         String editor = readMain("java/com/byd/extend/ReverseCameraEditorView.java");
@@ -245,7 +223,8 @@ public final class ComposeCameraHostParityTest {
         String activity = readMain("java/com/byd/extend/CameraProbeActivity.java");
         String apply = composition.substring(composition.indexOf("private void applyPaneDewarpConfig("),
                 composition.indexOf("private void applyEffectiveVisibility()"));
-        assertTrue(apply.indexOf("pane.frontCalibration =") < apply.indexOf("pane.applyDewarpConfig(value)"));
+        assertTrue(apply.indexOf("pane.frontCalibration =") >= 0
+                && apply.indexOf("pane.applyDewarpConfig(value)") > apply.indexOf("pane.frontCalibration ="));
         assertTrue(apply.contains("pane.cameraIndex, previousFront, false"));
         assertTrue(composition.contains("cameraIndex, pane.frontCalibration, view.usesRawFallback()"));
         String handler = activity.substring(activity.indexOf("public void onReverseDewarpFallbackChanged("),

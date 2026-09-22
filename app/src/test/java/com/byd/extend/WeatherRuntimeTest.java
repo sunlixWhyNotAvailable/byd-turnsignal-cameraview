@@ -194,10 +194,10 @@ public final class WeatherRuntimeTest {
         String repair = activity.substring(
                 activity.indexOf("private void finishLegacyAccessRestore("),
                 activity.indexOf("private void readSettingsTransfer("));
-        assertTrue(repair.indexOf("legacyRuntimeBlocked =")
-                < repair.indexOf("finishSettingsTransfer()"));
-        assertTrue(repair.indexOf("recreate()")
-                > repair.indexOf("CameraHelperService.settingsReloaded("));
+        assertTrue(repair.indexOf("legacyRuntimeBlocked =") >= 0
+                && repair.indexOf("finishSettingsTransfer()") > repair.indexOf("legacyRuntimeBlocked ="));
+        assertTrue(repair.indexOf("CameraHelperService.settingsReloaded(") >= 0
+                && repair.indexOf("recreate()") > repair.indexOf("CameraHelperService.settingsReloaded("));
     }
 
     @Test

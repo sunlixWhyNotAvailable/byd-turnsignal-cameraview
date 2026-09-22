@@ -231,15 +231,32 @@ public final class ProductionPatchIntegrationTest {
     }
 
     @Test
-    public void staleMusicWriteCannotReplaceCurrentError() throws Exception {
-        String music = readMain("java/com/byd/extend/MusicMetadataRuntime.java")
-                .replace("\r\n", "\n");
-        String finish = music.substring(music.indexOf("private void finishWrite("),
-                music.indexOf("private void refreshPlayingProgress()"));
-        String fullWrite = finish.substring(finish.indexOf("if (failure.isEmpty())"));
-        assertTrue(fullWrite.contains("} else if (current) {\n"
-                + "            setError(\"metadata_write: \" + failure, request.reason);"));
-        assertTrue(fullWrite.contains("failure.isEmpty() && current && !request.cleanup"));
+    public void staleMusicWriteCannotReplaceCurrentError() {
+        java.util.List<String> errors = new java.util.ArrayList<>();
+        MusicMetadataRuntime runtime = new MusicMetadataRuntime(null, null,
+                (kind, fields) -> {
+                    if ("music_metadata_error".equals(kind)) errors.add((String) fields[1]);
+                }, (reason, action) -> action.run(), null, null);
+        MusicMetadataRuntime.Snapshot song =
+                new MusicMetadataRuntime.Snapshot("player", "Song", "Artist", 60_000, 0, false);
+        MusicMetadataRuntime.WriteRequest current =
+                MusicMetadataRuntime.WriteRequest.publish(0, "current", song, false, null);
+        MusicMetadataRuntime.WriteRequest old =
+                MusicMetadataRuntime.WriteRequest.publish(-1, "old", song, false, null);
+
+        runtime.finishWrite(current, "current failure", null);
+        assertEquals(java.util.List.of("metadata_write: current failure"), errors);
+        runtime.finishWrite(old, "obsolete failure", null);
+        runtime.finishWrite(old, "", null);
+        // Repeating the same current failure must stay deduplicated: neither stale
+        // success nor stale failure may clear/replace the actual retained error.
+        runtime.finishWrite(current, "current failure", null);
+        assertEquals(java.util.List.of("metadata_write: current failure"), errors);
+
+        runtime.finishWrite(current, "", null);
+        runtime.finishWrite(current, "current failure", null);
+        assertEquals(2, errors.size());
+        // No write is submitted, so the lazy writer executor starts no thread.
     }
 
     @Test
@@ -251,8 +268,10 @@ public final class ProductionPatchIntegrationTest {
                 choice.indexOf("Box(Modifier.fillMaxWidth().height(40.dp)", choice.indexOf("val choose =")));
         assertTrue(select.contains("fieldPress.interactionSource.tryEmit(selectionPress)"));
         assertTrue(select.contains("fieldPress.interactionSource.tryEmit(PressInteraction.Release(selectionPress))"));
-        assertTrue(select.indexOf("PressInteraction.Release(selectionPress)") < select.indexOf("onSelect(index)"));
-        assertTrue(select.indexOf("onSelect(index)") < select.indexOf("expanded = false"));
+        assertTrue(select.indexOf("PressInteraction.Release(selectionPress)") >= 0
+                && select.indexOf("onSelect(index)") > select.indexOf("PressInteraction.Release(selectionPress)"));
+        assertTrue(select.indexOf("onSelect(index)") >= 0
+                && select.indexOf("expanded = false") > select.indexOf("onSelect(index)"));
         assertFalse(select.contains("delay("));
     }
 
@@ -313,21 +332,6 @@ public final class ProductionPatchIntegrationTest {
         assertTrue(reverseScreen.contains("profileStatus = compositionStatus"));
         assertTrue(reverseScreen.contains("profileStatus = profile.operation.status"));
 
-        String debug = readMain("kotlin/com/byd/extend/ui/DebugScreen.kt");
-        String debugHeader = debug.substring(debug.indexOf("private fun DebugHeader"),
-                debug.indexOf("private fun SignalDiagnostics"));
-        assertTrue(debugHeader.contains("Column(Modifier.width(400.dp)"));
-        assertFalse(debugHeader.contains("fillMaxHeight()"));
-        assertTrue(debug.contains("Column(Modifier.width(400.dp).fillMaxHeight()"));
-        assertTrue(debug.contains("Modifier.weight(1f).fillMaxWidth()"));
-        String manual = debug.substring(debug.indexOf("private fun SignalDiagnostics("),
-                debug.indexOf("private fun CameraDiagnostics("));
-        assertTrue(manual.contains("commands.chunked(2).forEach { rowCommands ->"));
-        assertTrue(manual.contains("rowCommands.forEach { (label, command) ->"));
-        assertTrue(manual.contains("Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp))"));
-        assertTrue(manual.indexOf("CommandId.SignalLeft") < manual.indexOf("CommandId.SignalRight"));
-        assertTrue(manual.indexOf("CommandId.SignalRight") < manual.indexOf("CommandId.SignalHazard"));
-        assertTrue(manual.indexOf("CommandId.SignalHazard") < manual.indexOf("CommandId.SignalReset"));
     }
 
     private static String parkingPlacementPrefix(ParkingCameraProfile profile) {

@@ -316,8 +316,8 @@ public final class UpdateAutoCheckRuntimeTest {
         String receiver = source("GuardRecoveryReceiver.java");
         String activity = source("CameraProbeActivity.java");
         String manager = source("AppUpdateManager.java");
-        assertTrue(app.indexOf("UpdateAutoCheckRuntime.onProcessStarted()")
-                < app.indexOf("UpdateHintRuntime.get(this)"));
+        assertTrue(app.indexOf("UpdateAutoCheckRuntime.onProcessStarted()") >= 0
+                && app.indexOf("UpdateHintRuntime.get(this)") > app.indexOf("UpdateAutoCheckRuntime.onProcessStarted()"));
         assertTrue(runtime.contains("this::startCheck"));
         assertTrue(runtime.contains("Intent.ACTION_SCREEN_OFF"));
         assertTrue(runtime.contains("Intent.ACTION_SCREEN_ON"));
@@ -327,18 +327,19 @@ public final class UpdateAutoCheckRuntimeTest {
         assertTrue(runtime.contains("autoCheck.setDownloading(value)"));
         assertTrue(runtime.contains("autoCheck.shutdown()"));
         String preference = section(runtime, "settingsListener =", "preferences.register");
-        assertTrue(preference.indexOf("autoCheck.refresh()") < preference.indexOf("main.post"));
+        assertTrue(preference.indexOf("autoCheck.refresh()") >= 0
+                && preference.indexOf("main.post") > preference.indexOf("autoCheck.refresh()"));
         assertTrue(receiver.contains("UpdateHintRuntime.onRuntimeWake(context, action)"));
-        assertTrue(receiver.indexOf("UpdateHintRuntime.onRuntimeWake")
-                < receiver.indexOf("GuardRecovery.shouldRecover"));
+        assertTrue(receiver.indexOf("UpdateHintRuntime.onRuntimeWake") >= 0
+                && receiver.indexOf("GuardRecovery.shouldRecover") > receiver.indexOf("UpdateHintRuntime.onRuntimeWake"));
         String wake = section(runtime, "private void runtimeWake(", "private boolean interactive()");
         assertTrue(wake.contains("GuardRecovery.isUserShutdownActive"));
         assertFalse(wake.contains("isAutoStartEnabled"));
         assertTrue(runtime.contains("manager.checkForUpdate()"));
         String completion = section(runtime, "main.post(() -> {\n                CheckListener observer",
                 "AppUpdateManager.UpdateInfo pendingOffer()");
-        assertTrue(completion.indexOf("autoCheck.complete(request")
-                < completion.indexOf("presentation.accept("));
+        assertTrue(completion.indexOf("autoCheck.complete(request") >= 0
+                && completion.indexOf("presentation.accept(") > completion.indexOf("autoCheck.complete(request"));
         assertTrue(completion.contains("observer.onCheckDiscarded();\n                    return;"));
         assertTrue(completion.contains("error, request.manual"));
         assertFalse(manager.contains("last_check_ms"));

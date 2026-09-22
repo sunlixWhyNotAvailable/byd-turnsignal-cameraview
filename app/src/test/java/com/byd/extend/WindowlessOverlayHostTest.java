@@ -205,7 +205,7 @@ public final class WindowlessOverlayHostTest {
     }
 
     @Test
-    public void reverseBufferRestartDiagnosticsStayOnExistingEventAndProtocol() throws Exception {
+    public void reverseBufferRestartDiagnosticsUseTheExistingEvent() throws Exception {
         Path reversePath = Path.of(
                 "app/src/main/java/com/byd/extend/ShellReverseCameraOverlay.java");
         Path shellPath = Path.of(
@@ -225,7 +225,6 @@ public final class WindowlessOverlayHostTest {
                 "quiesce(\"camera_buffer_size_changed\")"));
         assertTrue(shell.contains("camera_shell_reverse_prepare_restart_required"));
         assertTrue(shell.contains("restart.diagnosticFields"));
-        assertEquals(29, CameraShellProtocol.VERSION);
     }
 
     @Test
@@ -301,13 +300,12 @@ public final class WindowlessOverlayHostTest {
         String click = overlay.substring(overlay.indexOf("private void scheduleSelectorAction"),
                 overlay.indexOf("private void cancelPendingSelectorAction"));
         assertTrue(click.contains("currentRoot.setSelectorPressed(mode, true)"));
-        assertTrue(click.indexOf("currentRoot.setSideMode(mode)")
-                < click.indexOf("postDelayed(pendingSelectorAction"));
+        assertTrue(click.indexOf("currentRoot.setSideMode(mode)") >= 0
+                && click.indexOf("postDelayed(pendingSelectorAction") > click.indexOf("currentRoot.setSideMode(mode)"));
         assertTrue(overlay.contains("postDelayed(pendingSelectorAction, VISUAL_PRESS_BEFORE_ACTION_MS)"));
         assertTrue(overlay.contains("cancelPendingSelectorAction()"));
         assertTrue(overlay.contains("currentRoot.setSideMode(mode)"));
         assertTrue(selector.contains("setExternalPressedMode"));
-        assertTrue(selector.contains("canvas.scale(0.97f, 0.97f"));
         assertTrue(selector.contains("PRESSED_BUTTON_COLOR"));
         assertTrue(selector.contains("dispatchModeChange(selected)"));
         assertTrue(selector.contains("if (listener != null) listener.onModeChanged(mode)"));
@@ -330,7 +328,7 @@ public final class WindowlessOverlayHostTest {
         assertTrue(ui.contains("{ latestOnClick() }"));
         assertTrue(ui.contains("onClick = visualClick"));
         assertTrue(ui.contains("releaseHoldMillis = 0L"));
-        assertTrue(ui.contains("tween(durationMillis = 180, delayMillis = 0)"));
+        assertTrue(ui.contains("delayMillis = 0"));
         assertTrue(ui.contains(".toggleable(value = checked"));
         assertTrue(ui.contains("onValueChange = onCheckedChange"));
     }

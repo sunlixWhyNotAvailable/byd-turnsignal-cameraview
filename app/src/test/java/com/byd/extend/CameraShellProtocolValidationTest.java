@@ -87,7 +87,7 @@ public final class CameraShellProtocolValidationTest {
     }
 
     @Test
-    public void parcelRoundTripCarriesOutputMirrorState() {
+    public void overlaySpecsCarryOutputMirrorState() {
         DirectCameraCrop crop = DirectCameraCrop.defaultFor(false)
                 .withMirrorHorizontally(true);
         CameraDewarpConfig left = CameraDewarpConfig.disabled(

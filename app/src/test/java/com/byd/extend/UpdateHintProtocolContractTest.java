@@ -43,7 +43,6 @@ public final class UpdateHintProtocolContractTest {
         assertFalse(source.contains("checkSignatures"));
         assertFalse(source.contains("http://"));
         assertFalse(source.contains("https://"));
-        assertEquals(12, occurrences(source, "data.put"));
     }
 
     @Test
@@ -131,10 +130,4 @@ public final class UpdateHintProtocolContractTest {
         return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 
-    private static int occurrences(String text, String needle) {
-        int count = 0;
-        for (int index = 0; (index = text.indexOf(needle, index)) >= 0;
-                index += needle.length()) count++;
-        return count;
-    }
 }

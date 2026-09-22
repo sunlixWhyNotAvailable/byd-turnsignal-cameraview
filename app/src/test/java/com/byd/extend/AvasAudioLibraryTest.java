@@ -96,13 +96,47 @@ public final class AvasAudioLibraryTest {
     }
 
     @Test
-    public void builtinSamplesExactlyMatchProbeToneContract() {
-        assertArrayEquals(expected(new int[]{880, 660}), AvasBuiltinSounds.samples("lock"));
-        assertArrayEquals(expected(new int[]{660, 880}), AvasBuiltinSounds.samples("unlock"));
-        assertArrayEquals(expected(new int[]{880, 660, 440}),
-                AvasBuiltinSounds.samples("power_off"));
-        assertArrayEquals(expected(new int[]{440, 660, 880}),
-                AvasBuiltinSounds.samples("power_on"));
+    public void builtinsHavePlayableStereoPcmAndTheExpectedToneOrder() throws Exception {
+        java.util.Map<String, int[]> frequencies = java.util.Map.of(
+                "lock", new int[]{880, 660}, "unlock", new int[]{660, 880},
+                "power_off", new int[]{880, 660, 440}, "power_on", new int[]{440, 660, 880});
+        for (java.util.Map.Entry<String, int[]> entry : frequencies.entrySet()) {
+            short[] pcm = AvasBuiltinSounds.samples(entry.getKey());
+            assertEquals(48_000 * 2, pcm.length); // one second, two channels
+            int peak = 0;
+            for (int frame = 0; frame < 48_000; frame++) {
+                assertEquals(pcm[frame * 2], pcm[frame * 2 + 1]);
+                peak = Math.max(peak, Math.abs((int) pcm[frame * 2]));
+            }
+            assertTrue("non-silent PCM without full-scale clipping", peak > 0 && peak < Short.MAX_VALUE);
+            int[] tones = entry.getValue();
+            for (int note = 0; note < tones.length; note++) {
+                int noteStart = note * (48_000 / tones.length);
+                assertEquals("fade at note boundary", 0, pcm[noteStart * 2]);
+                // Count measured positive zero crossings in 100 ms, away from fades.
+                // This oracle does not reproduce the sine/envelope generator.
+                int start = noteStart + 2400;
+                int crossings = 0;
+                for (int frame = start + 1; frame <= start + 4800; frame++) {
+                    if (pcm[(frame - 1) * 2] <= 0 && pcm[frame * 2] > 0) crossings++;
+                }
+                assertEquals(entry.getKey() + " note " + note,
+                        tones[note] / 10.0, crossings, 1.0);
+            }
+            assertEquals(0, pcm[pcm.length - 1]);
+            File wav = temporary.newFile(entry.getKey() + ".wav");
+            AvasBuiltinSounds.writeWav(entry.getKey(), wav);
+            AvasWav.Header header = AvasWav.read(wav);
+            assertEquals(48_000, header.sampleRate);
+            assertEquals(2, header.channels);
+            byte[] data = AvasWav.readPcm(wav, header, 0);
+            assertEquals(pcm.length * 2, data.length);
+            java.nio.ShortBuffer encoded = java.nio.ByteBuffer.wrap(data)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+            short[] decoded = new short[pcm.length];
+            encoded.get(decoded);
+            assertArrayEquals(pcm, decoded);
+        }
         assertThrows(IllegalArgumentException.class, () -> AvasBuiltinSounds.samples("test_2"));
     }
 
@@ -273,18 +307,4 @@ public final class AvasAudioLibraryTest {
         return false;
     }
 
-    private static short[] expected(int[] notes) {
-        int frames = 48_000;
-        int noteFrames = frames / notes.length;
-        short[] pcm = new short[frames * 2];
-        for (int frame = 0; frame < frames; frame++) {
-            double time = frame / 48_000.0;
-            double frequency = notes[frame / noteFrames];
-            double edge = Math.min(1, Math.min((frame % noteFrames) / 960.0,
-                    ((noteFrames - 1) - frame % noteFrames) / 960.0));
-            short sample = (short) (Math.sin(2 * Math.PI * frequency * time) * 16383 * edge);
-            pcm[frame * 2] = pcm[frame * 2 + 1] = sample;
-        }
-        return pcm;
-    }
 }

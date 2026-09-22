@@ -76,7 +76,8 @@ public final class ParkingCameraControllerGenerationTest {
         String clear = source.substring(source.indexOf("private void clearPaneState()"),
                 source.indexOf("static boolean controllerOwnsPreparedSurface("));
         assertTrue(clear.contains("controllerOwnsPreparedSurface(pane.submittedToHelper)"));
-        assertTrue(clear.indexOf("pane.surface.release()") < clear.indexOf("pane.surface = null"));
+        assertTrue(clear.indexOf("pane.surface.release()") >= 0
+                && clear.indexOf("pane.surface = null") > clear.indexOf("pane.surface.release()"));
         assertTrue(clear.contains("pane.submittedToHelper = false;"));
         assertFalse(clear.contains("if (pane.attached"));
     }

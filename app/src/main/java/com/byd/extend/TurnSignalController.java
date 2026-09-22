@@ -1678,13 +1678,8 @@ final class TurnSignalController {
             int protocol = reply.readInt();
             int build = reply.readInt();
             int pid = reply.readInt();
-            if (protocol != TurnSignalShellProtocol.VERSION) {
-                return new Ping(value, protocol, build, pid, "protocol_mismatch");
-            }
-            if (build != BuildConfig.VERSION_CODE) {
-                return new Ping(value, protocol, build, pid, "build_mismatch");
-            }
-            return new Ping(value, protocol, build, pid, "");
+            return new Ping(value, protocol, build, pid,
+                    TurnSignalShellProtocol.compatibilityError(protocol, build));
         } catch (Throwable error) {
             return Ping.failed("ping_failed: " + summary(error));
         } finally {

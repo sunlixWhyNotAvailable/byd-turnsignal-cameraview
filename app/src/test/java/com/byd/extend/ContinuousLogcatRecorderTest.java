@@ -66,7 +66,8 @@ public final class ContinuousLogcatRecorderTest {
                 "src/main/java/com/byd/extend/AvasRecoveryShellMain.java").toPath()), StandardCharsets.UTF_8);
         assertTrue(daemon.contains("if (recording) logcat.start();"));
         assertTrue(daemon.contains("else logcat.close();"));
-        assertTrue(daemon.indexOf("if (binder.recoveryEnabled)") < daemon.indexOf("new ProcessBuilder("));
+        assertTrue(daemon.indexOf("if (binder.recoveryEnabled)") >= 0
+                && daemon.indexOf("new ProcessBuilder(") > daemon.indexOf("if (binder.recoveryEnabled)"));
         assertTrue(AvasRecoveryDaemonController.launchCommand("/apk", 10001, "identity", false, true)
                 .contains("'identity' 0 1 </dev/null"));
         assertTrue(AvasRecoveryDaemonController.launchCommand("/apk", 10001, "identity", true, false)

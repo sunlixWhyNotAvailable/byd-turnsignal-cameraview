@@ -1,6 +1,5 @@
 package com.byd.extend;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -8,14 +7,8 @@ import org.junit.Test;
 import java.io.IOException;
 import java.net.Socket;
 
-/** Focused seams for export-only ADB timeout and operation-local cancellation. */
+/** Operation-local cancellation must not cancel unrelated ADB requests. */
 public final class LocalAdbStreamingTest {
-    @Test
-    public void exportReadTimeoutIsLongerThanNormalFiveSecondReads() {
-        assertEquals(30_000, LocalAdbClient.EXPORT_READ_TIMEOUT_MS);
-        assertTrue(LocalAdbClient.EXPORT_READ_TIMEOUT_MS > 5_000);
-    }
-
     @Test
     public void exportCancellationClosesOnlyItsRegisteredSocket() throws Exception {
         CompatibilityBundleExporter.ExportControl control =

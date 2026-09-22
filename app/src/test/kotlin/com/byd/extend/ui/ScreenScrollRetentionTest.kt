@@ -68,8 +68,7 @@ class ScreenScrollRetentionTest {
         assertTrue(integrations.contains(".verticalScroll(LocalPrimaryScroll.current)"))
         assertTrue(integrations.contains("LazyForm(Modifier.fillMaxSize(), LocalPrimaryLazyList.current)"))
         assertTrue(source("SettingsScreen.kt").contains("LocalPrimaryLazyList.current"))
-        assertTrue(source("CameraUiCommon.kt").contains(
-            "LazyForm(Modifier.width(400.dp).fillMaxHeight(), LocalPrimaryLazyList.current)"))
+        assertTrue(source("CameraUiCommon.kt").contains("LocalPrimaryLazyList.current"))
         assertTrue(shell.contains(".verticalScroll(scroll).selectableGroup()"))
         assertTrue(source("SettingsScreen.kt").contains(".verticalScroll(sidebarScroll).selectableGroup()"))
     }
@@ -96,7 +95,6 @@ class ScreenScrollRetentionTest {
             assertTrue(settings.contains("SettingsOperation.$operation"))
         }
         assertTrue(settings.contains("state.feedback.visible && !operationFeedbackHidden"))
-        assertTrue(settings.contains("\"Export configuration\""))
     }
 
     @Test

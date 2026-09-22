@@ -163,8 +163,8 @@ public final class CameraShellEpochReplayTest {
         String replay = text.substring(replayStart, replayEnd);
         assertTrue(replay.contains("if (stopped) return;"));
         assertTrue(replay.contains("cameraHelper, cameraHelperEpoch, avmShell, avmShellEpoch"));
-        assertTrue(replay.indexOf("if (stopped) return;")
-                < replay.indexOf("replayCameraShellState("));
+        assertTrue(replay.indexOf("if (stopped) return;") >= 0
+                && replay.indexOf("replayCameraShellState(") > replay.indexOf("if (stopped) return;"));
 
         int shutdownStart = text.indexOf("void shutdown(boolean terminateShells)");
         int shutdownLock = text.indexOf("synchronized (this)", shutdownStart);

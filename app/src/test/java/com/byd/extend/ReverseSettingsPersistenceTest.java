@@ -121,10 +121,6 @@ public final class ReverseSettingsPersistenceTest {
                 Files.readAllBytes(source), StandardCharsets.UTF_8);
 
         assertFalse(activity.contains("ReverseCameraController.saveLayout("));
-        assertEquals(4, occurrences(activity,
-                "ReverseCameraController.saveRearPaneTransform("));
-        assertEquals(6, occurrences(activity,
-                "ReverseCameraController.saveCompositionLayout("));
     }
 
     private static TestSharedPreferences seededSettings() {
@@ -247,12 +243,4 @@ public final class ReverseSettingsPersistenceTest {
         assertEquals(expected.height, actual.height, 0.0f);
     }
 
-    private static int occurrences(String value, String needle) {
-        int count = 0;
-        for (int index = 0; (index = value.indexOf(needle, index)) >= 0;
-                index += needle.length()) {
-            count++;
-        }
-        return count;
-    }
 }

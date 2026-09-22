@@ -86,7 +86,6 @@ public final class CameraRuntimeBorderTest {
     @Test public void protocolSerializationAndRenderingKeepFrameAndTouchBoundaries()
             throws Exception {
         String protocol = source("CameraShellProtocol.java");
-        assertTrue(protocol.contains("static final int VERSION = 30;"));
         assertTrue(protocol.contains("parcel.writeInt(borderDp[index]);\n"
                 + "                parcel.writeInt(borderArgb[index]);"));
         assertTrue(protocol.contains("result.setBorder(index, parcel.readInt(), parcel.readInt())"));
@@ -94,16 +93,16 @@ public final class CameraRuntimeBorderTest {
         String overlay = source("ShellCameraOverlay.java");
         String createWindow = overlay.substring(overlay.indexOf("private void createWindow("),
                 overlay.indexOf("private void updateWindow("));
-        assertTrue(createWindow.indexOf("applyBorder(nextRoot, spec);")
-                < createWindow.indexOf("if (CameraOverlayProfile.isMirror(cameraId)) {"));
+        assertTrue(createWindow.indexOf("applyBorder(nextRoot, spec);") >= 0
+                && createWindow.indexOf("if (CameraOverlayProfile.isMirror(cameraId)) {") > createWindow.indexOf("applyBorder(nextRoot, spec);"));
         assertTrue(createWindow.contains(
                 "nextRoot.setOnTouchListener((view, event) -> onMirrorTouch(event))"));
         String reverse = source("ReverseCameraCompositionView.java");
         assertTrue(reverse.contains("effectiveSourceIsFront(pane.sourceIndex, sideMode,"));
         assertTrue(reverse.contains("pane.setBorder(borderDp[index], borderArgb[index]);"));
         String editor = source("ReverseCameraEditorView.java");
-        assertTrue(editor.indexOf("drawConfiguredFrame(canvas, rect,")
-                < editor.indexOf("stroke.setColor(color);"));
+        assertTrue(editor.indexOf("drawConfiguredFrame(canvas, rect,") >= 0
+                && editor.indexOf("stroke.setColor(color);") > editor.indexOf("drawConfiguredFrame(canvas, rect,"));
     }
 
     private static void assertBorder(CameraShellProtocol.ReverseOverlaySpec spec,

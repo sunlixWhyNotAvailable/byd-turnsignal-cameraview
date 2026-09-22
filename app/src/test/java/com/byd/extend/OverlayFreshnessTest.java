@@ -61,23 +61,22 @@ public final class OverlayFreshnessTest {
     }
 
     @Test
-    public void stampedBufferTimeSurvivesDewarpAndDoesNotChangeTheWireProtocol() throws Exception {
+    public void stampedBufferTimeIsWiredThroughDewarp() throws Exception {
         String hub = source("DirectCameraSourceHub.java");
         String renderer = source("CameraDewarpRenderer.java");
         String overlay = source("ShellCameraOverlay.java");
         String view = source("BlindSpotCameraView.java");
-        assertTrue(hub.indexOf("acquiredFrameTimestampNanos = System.nanoTime()")
-                < hub.indexOf("texture.updateTexImage()"));
+        assertTrue(hub.indexOf("acquiredFrameTimestampNanos = System.nanoTime()") >= 0
+                && hub.indexOf("texture.updateTexImage()") > hub.indexOf("acquiredFrameTimestampNanos = System.nanoTime()"));
         assertTrue(hub.contains("draw(target, acquiredFrameTimestampNanos)"));
         assertTrue(hub.contains("display, target.eglSurface, acquiredFrameTimestampNanos)"));
         assertTrue(renderer.contains("preserveTimestamp ? inputTimestamp : 0L"));
-        assertTrue(renderer.indexOf("eglDisplay, surface, presentationTimestamp)")
-                < renderer.indexOf("EGL14.eglSwapBuffers(eglDisplay, surface)"));
+        assertTrue(renderer.indexOf("eglDisplay, surface, presentationTimestamp)") >= 0
+                && renderer.indexOf("EGL14.eglSwapBuffers(eglDisplay, surface)") > renderer.indexOf("eglDisplay, surface, presentationTimestamp)"));
         assertTrue(overlay.contains(
                 "setPreserveInputFrameTimestamp(cameraId < CameraOverlayProfile.BLIND_COUNT)"));
         assertTrue(view.contains("texture == getSurfaceTexture() && callback != null"));
         assertTrue(view.contains("? inputGeneration.current() : inputGeneration.frame()"));
-        assertEquals(29, CameraShellProtocol.VERSION);
     }
 
     private static String source(String name) throws Exception {

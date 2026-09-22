@@ -14,8 +14,7 @@ import static org.junit.Assert.assertTrue;
 
 public final class AvasShellProtocolTest {
     @Test
-    public void protocolTenAddsOnlyFixedTypedAvasAuditionTransactions() {
-        assertEquals(11, TurnSignalShellProtocol.VERSION);
+    public void avasWireSlotsAndInputAllowlistRemainCompatible() {
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 9,
                 TurnSignalShellProtocol.TX_CONFIGURE_AVAS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
@@ -184,10 +183,10 @@ public final class AvasShellProtocolTest {
         String registration = source.substring(source.indexOf(
                         "private synchronized void registerCallback"),
                 source.indexOf("private synchronized void clearCallback"));
-        assertTrue(registration.indexOf("value.linkToDeath(recipient, 0)") <
-                registration.indexOf("callback = value"));
-        assertTrue(registration.indexOf("callback = value") <
-                registration.indexOf("unlinkDeathRecipient(previous, previousRecipient)"));
+        assertTrue(registration.indexOf("value.linkToDeath(recipient, 0)") >= 0
+                && registration.indexOf("callback = value") > registration.indexOf("value.linkToDeath(recipient, 0)"));
+        assertTrue(registration.indexOf("callback = value") >= 0
+                && registration.indexOf("unlinkDeathRecipient(previous, previousRecipient)") > registration.indexOf("callback = value"));
 
         String clear = source.substring(source.indexOf(
                         "private synchronized void clearCallback"),

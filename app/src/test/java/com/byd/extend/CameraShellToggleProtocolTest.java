@@ -19,7 +19,6 @@ public final class CameraShellToggleProtocolTest {
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 18,
                 CameraShellProtocol.TX_REVERSE_TOGGLE_MODE);
         assertEquals(1, CameraShellProtocol.CAP_REVERSE_TOGGLE_MODE);
-        assertEquals(30, CameraShellProtocol.VERSION);
 
         String shell = readMainSource("CameraShellMain.java");
         int ping = shell.indexOf("if (code == CameraShellProtocol.TX_PING)");

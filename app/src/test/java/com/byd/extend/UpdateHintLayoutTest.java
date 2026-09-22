@@ -42,6 +42,7 @@ public final class UpdateHintLayoutTest {
 
         assertEquals(golden.getInt("expectedRows"), result.rows);
         assertEquals(golden.getInt("expectedColumns"), result.columns);
+        assertEquals(encodedCards.length(), result.placements.size());
         JSONArray x = golden.getJSONArray("expectedX");
         JSONArray y = golden.getJSONArray("expectedY");
         for (int i = 0; i < result.placements.size(); i++) {

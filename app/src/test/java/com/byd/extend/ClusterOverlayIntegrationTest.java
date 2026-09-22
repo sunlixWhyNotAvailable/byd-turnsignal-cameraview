@@ -34,12 +34,12 @@ public final class ClusterOverlayIntegrationTest {
                 "src/main/java/com/byd/extend/ShellCameraOverlay.java")), StandardCharsets.UTF_8);
         String ready = source.substring(source.indexOf("private void emitSurfaceReady("),
                 source.indexOf("private void requireCurrent("));
-        assertTrue(ready.indexOf("ensureClusterDestination();")
-                < ready.indexOf("\"state\", \"ready\""));
+        assertTrue(ready.indexOf("ensureClusterDestination();") >= 0
+                && ready.indexOf("\"state\", \"ready\"") > ready.indexOf("ensureClusterDestination();"));
         String acquire = source.substring(source.indexOf("SurfaceSnapshot acquireSurface("),
                 source.indexOf("void armFirstFrame("));
-        assertTrue(acquire.indexOf("ensureClusterDestination();")
-                < acquire.indexOf("return new SurfaceSnapshot("));
+        assertTrue(acquire.indexOf("ensureClusterDestination();") >= 0
+                && acquire.indexOf("return new SurfaceSnapshot(") > acquire.indexOf("ensureClusterDestination();"));
         assertTrue(source.contains("if (nextVisible) requireCurrentClusterDisplay();"));
         assertTrue(source.contains("\"stage\", \"cluster_destination_unavailable\""));
     }

@@ -21,8 +21,14 @@ final class TurnSignalTelemetryTransport implements TurnSignalTelemetryControlle
 
     @Override public TurnSignalTelemetryController.Subscription subscribe(
             TurnSignalTelemetryController.Listener listener) throws Exception {
+        return subscribe(FixedBydTelemetryManager.get(context), listener);
+    }
+
+    static TurnSignalTelemetryController.Subscription subscribe(
+            FixedBydTelemetryManager manager, TurnSignalTelemetryController.Listener listener)
+            throws Exception {
         FixedBydTelemetryManager.Subscription subscription =
-                FixedBydTelemetryManager.get(context).subscribe(REQUESTS,
+                manager.subscribe(REQUESTS,
                         new FixedBydTelemetryManager.Listener() {
                             @Override public void onValue(
                                     int device, int fid, int value, long receivedMs) {

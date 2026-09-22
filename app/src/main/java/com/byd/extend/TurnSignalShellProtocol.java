@@ -37,6 +37,12 @@ final class TurnSignalShellProtocol {
 
     private TurnSignalShellProtocol() {}
 
+    static String compatibilityError(int protocol, int build) {
+        if (protocol != VERSION) return "protocol_mismatch";
+        if (build != BuildConfig.VERSION_CODE) return "build_mismatch";
+        return "";
+    }
+
     static boolean isCallerAllowed(int actualUid, int appUid) {
         return actualUid == appUid;
     }

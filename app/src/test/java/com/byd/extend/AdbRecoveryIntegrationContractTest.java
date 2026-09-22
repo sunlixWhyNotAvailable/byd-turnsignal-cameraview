@@ -24,8 +24,8 @@ public final class AdbRecoveryIntegrationContractTest {
         String service = source("java/com/byd/extend/CameraHelperService.java");
         String handle = service.substring(service.indexOf("private void handleStartCommand("),
                 service.indexOf("private void stopServiceFromRuntime("));
-        assertTrue(handle.indexOf("adbRecovery.startOrReconfigure(")
-                < handle.indexOf("ensureHelperStarted()"));
+        assertTrue(handle.indexOf("adbRecovery.startOrReconfigure(") >= 0
+                && handle.indexOf("ensureHelperStarted()") > handle.indexOf("adbRecovery.startOrReconfigure("));
         assertTrue(service.contains("LocalAdbClient.addAccessStateListener(serviceAdbListener)"));
         assertTrue(service.contains("LocalAdbClient.removeAccessStateListener(serviceAdbListener)"));
         assertFalse(service.contains("LocalAdbClient.setAccessStateListener("));

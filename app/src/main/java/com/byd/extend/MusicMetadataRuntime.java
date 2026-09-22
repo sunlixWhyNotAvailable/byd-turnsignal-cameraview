@@ -113,14 +113,23 @@ final class MusicMetadataRuntime {
     MusicMetadataRuntime(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink,
             BiConsumer<String, Runnable> eventReconciler) {
+        this(context, handler, eventSink, eventReconciler,
+                (AudioManager) context.getSystemService(Context.AUDIO_SERVICE),
+                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE));
+    }
+
+    MusicMetadataRuntime(
+            Context context, Handler handler, BiConsumer<String, Object[]> eventSink,
+            BiConsumer<String, Runnable> eventReconciler,
+            AudioManager audioManager, ActivityManager activityManager) {
         this.context = context;
         this.handler = handler;
         this.eventSink = eventSink;
         this.eventReconciler = eventReconciler;
         sessionListener = controllers -> eventReconciler.accept("sessions_callback",
                 () -> replaceSessions(controllers, "sessions_callback"));
-        audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        this.audioManager = audioManager;
+        this.activityManager = activityManager;
     }
 
     void configure(boolean value) {
@@ -474,7 +483,7 @@ final class MusicMetadataRuntime {
         });
     }
 
-    private void finishWrite(
+    void finishWrite(
             WriteRequest request, String failure, ProgressWriteResult progressResult) {
         writeInFlight = false;
         boolean requestOwner = request.token == null
@@ -1044,7 +1053,7 @@ final class MusicMetadataRuntime {
         }
     }
 
-    private static final class WriteRequest {
+    static final class WriteRequest {
         final int generation;
         final int progressGeneration;
         final String reason;

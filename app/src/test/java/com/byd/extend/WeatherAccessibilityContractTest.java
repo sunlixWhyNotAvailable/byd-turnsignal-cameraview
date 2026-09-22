@@ -80,8 +80,8 @@ public final class WeatherAccessibilityContractTest {
         int route = helper.indexOf("static void requestReverseSteeringToggle(Context context)");
         int routeEnd = helper.indexOf("static void musicSettingsChanged", route);
         String routeBody = helper.substring(route, routeEnd);
-        assertTrue(routeBody.indexOf("dispatchReverseSteeringToggle()")
-                < routeBody.indexOf("reverseOwnerEpochSnapshot()"));
+        assertTrue(routeBody.indexOf("dispatchReverseSteeringToggle()") >= 0
+                && routeBody.indexOf("reverseOwnerEpochSnapshot()") > routeBody.indexOf("dispatchReverseSteeringToggle()"));
         assertTrue(routeBody.contains("reverseOwnerStillAbsent(ownerEpoch)"));
 
         String controller = readProjectFile(

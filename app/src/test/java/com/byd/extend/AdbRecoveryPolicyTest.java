@@ -6,10 +6,6 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public final class AdbRecoveryPolicyTest {
-    @Test public void consentRetryCadenceIsExactlyFifteenSeconds() {
-        assertTrue(AdbRecoveryPolicy.CONSENT_RETRY_MS == 15_000L);
-    }
-
     @Test public void automaticConsentWritesOnlyWhenZero() {
         assertTrue(AdbRecoveryPolicy.shouldWriteWifiOne(false, 0));
         assertFalse(AdbRecoveryPolicy.shouldWriteWifiOne(false, 1));

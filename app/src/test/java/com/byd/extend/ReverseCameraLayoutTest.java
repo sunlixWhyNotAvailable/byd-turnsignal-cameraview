@@ -2,6 +2,7 @@ package com.byd.extend;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -11,6 +12,54 @@ import java.util.HashMap;
 import java.util.Map;
 
 public final class ReverseCameraLayoutTest {
+    @Test
+    public void backgroundAndWidgetCanMoveAndResizeButNeverEscapeComposition() {
+        ReverseCameraLayout original = ReverseCameraLayout.defaults();
+        ReverseCameraLayout changed = ReverseCameraLayout.withBackground(original,
+                ReverseCameraLayout.destination(.1f, .2f, .3f, .4f));
+        changed = ReverseCameraLayout.withWidget(changed,
+                ReverseCameraLayout.widgetDestination(.5f, .6f, .2f, .3f));
+        assertEquals(.1f, changed.background.left, .00001f);
+        assertEquals(.2f, changed.background.top, .00001f);
+        assertEquals(.3f, changed.background.width, .00001f);
+        assertEquals(.4f, changed.background.height, .00001f);
+        assertEquals(.5f, changed.widget.left, .00001f);
+        assertEquals(.6f, changed.widget.top, .00001f);
+        assertEquals(.2f, changed.widget.width, .00001f);
+        assertEquals(.3f, changed.widget.height, .00001f);
+        for (ReverseCameraLayout.Pane expected : new ReverseCameraLayout.Pane[]{
+                original.rear, original.rearLeft, original.rearRight}) {
+            ReverseCameraLayout.Pane actual = changed.pane(expected.cameraIndex);
+            assertEquals(expected.name, actual.name);
+            assertEquals(expected.zOrder, actual.zOrder);
+            assertEquals(expected.rotationDegrees, actual.rotationDegrees);
+            assertEquals(expected.displayMode, actual.displayMode);
+            assertEquals(expected.mirrorHorizontally, actual.mirrorHorizontally);
+            assertArrayEquals(new float[]{expected.destination.left, expected.destination.top,
+                    expected.destination.width, expected.destination.height, expected.sourceCrop.left,
+                    expected.sourceCrop.top, expected.sourceCrop.width, expected.sourceCrop.height},
+                    new float[]{actual.destination.left, actual.destination.top,
+                    actual.destination.width, actual.destination.height, actual.sourceCrop.left,
+                    actual.sourceCrop.top, actual.sourceCrop.width, actual.sourceCrop.height}, 0f);
+        }
+
+        for (float position : new float[]{-2f, 0f, .9f, 2f}) {
+            for (float size : new float[]{-.5f, 0f, .5f, 2f}) {
+                ReverseCameraLayout bounded = ReverseCameraLayout.withBackground(changed,
+                        ReverseCameraLayout.destination(position, position, size, size));
+                bounded = ReverseCameraLayout.withWidget(bounded,
+                        ReverseCameraLayout.widgetDestination(position, position, size, size));
+                for (ReverseCameraLayout.Rect rect : new ReverseCameraLayout.Rect[]{
+                        bounded.background, bounded.widget}) {
+                    assertTrue(rect.left >= 0 && rect.top >= 0);
+                    assertTrue(rect.width > 0 && rect.height > 0);
+                    assertTrue(rect.left + rect.width <= 1.00001f);
+                    assertTrue(rect.top + rect.height <= 1.00001f);
+                }
+            }
+        }
+    }
+
     @Test
     public void editorSelectionSurvivesRecreationAndRejectsInvalidValues() {
         TestSharedPreferences settings = new TestSharedPreferences();

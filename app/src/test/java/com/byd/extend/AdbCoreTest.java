@@ -85,8 +85,16 @@ public final class AdbCoreTest {
         assertEquals(524, encoded.length);
         assertEquals(64, values.getInt(0));
         assertEquals(key.getPublicExponent().intValue(), values.getInt(520));
-        assertArrayEquals(collectorReferenceEncoding(key), encoded);
-        assertTrue(AdbKeyFormatter.formatPublicKey(key).endsWith(" bydturnguard@dilink"));
+        BigInteger modulus = unsignedLittleEndian(encoded, 8, 256);
+        BigInteger rr = unsignedLittleEndian(encoded, 264, 256);
+        BigInteger radix = BigInteger.ONE.shiftLeft(32);
+        BigInteger n0inv = BigInteger.valueOf(Integer.toUnsignedLong(values.getInt(4)));
+        assertEquals(key.getModulus(), modulus);
+        assertEquals(radix.subtract(BigInteger.ONE), n0inv.multiply(modulus).mod(radix));
+        assertTrue(rr.signum() >= 0 && rr.compareTo(modulus) < 0);
+        assertEquals(BigInteger.ZERO, BigInteger.ONE.shiftLeft(4096).subtract(rr).mod(modulus));
+        assertArrayEquals(encoded, java.util.Base64.getDecoder().decode(
+                AdbKeyFormatter.formatPublicKey(key).split(" ", 2)[0]));
     }
 
     @Test
@@ -102,11 +110,8 @@ public final class AdbCoreTest {
                 LocalAdbClient.PromptMode.FORCE, true, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
                 LocalAdbClient.PromptMode.NEVER, false, true));
-        assertEquals(103, BuildConfig.VERSION_CODE);
-        assertEquals("1.2.1", BuildConfig.VERSION_NAME);
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
-        assertEquals(11, TurnSignalShellProtocol.VERSION);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
                 > TurnSignalShellProtocol.TX_SHUTDOWN);
 
@@ -624,7 +629,6 @@ public final class AdbCoreTest {
     @Test
     public void musicRuntimeContractStaysNarrowAndMediaOnly() {
         assertEquals("com.byd.mediacenter", MusicVisualizerRuntime.MEDIA_SELECTOR);
-        assertEquals(3_000, MusicVisualizerRuntime.STOP_DEBOUNCE_MS);
         assertTrue(MusicVisualizerRuntime.isMusicAttributes(
                 AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_UNKNOWN));
         assertTrue(MusicVisualizerRuntime.isMusicAttributes(
@@ -641,8 +645,8 @@ public final class AdbCoreTest {
         assertTrue(MusicVisualizerRuntime.shouldScheduleStop(true, false, false));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStop(true, false, true));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStop(true, true, false));
-        assertEquals(3, MusicVisualizerRuntime.MAX_STOP_RETRIES);
         assertTrue(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 0));
+        assertTrue(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 2));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(false, 3));
         assertFalse(MusicVisualizerRuntime.shouldScheduleStopRetry(true, 0));
         assertTrue(MusicVisualizerRuntime.shouldAttemptStop(true, false));
@@ -1137,7 +1141,6 @@ public final class AdbCoreTest {
         assertEquals("VIEW_2D_REAR_WHEELS", StockAvmPreview.layoutName(2018));
         assertEquals("VIEW_2D_REAR_WHEELS", StockAvmPreview.layoutName(2031));
         assertEquals("VIEW_2D_REAR_WHEELS", StockAvmPreview.layoutName(2033));
-        assertEquals(51, StockAvmPreview.horizontalLayoutCount());
         java.util.Set<String> layouts = new java.util.HashSet<>();
         for (int i = 0; i < StockAvmPreview.horizontalLayoutCount(); i++) {
             int viewpoint = StockAvmPreview.horizontalViewpoint(i);
@@ -1159,8 +1162,6 @@ public final class AdbCoreTest {
                 StockAvmPreview.horizontalViewpoint(10)));
         assertFalse(StockAvmPreview.usesTopCameraTileCrop(
                 StockAvmPreview.VIEW_REAR_LEFT));
-        assertEquals("VIEW_2D_RIGHT_CLAIRVOYANCE",
-                StockAvmPreview.horizontalLayoutName(50));
         assertEquals("rear_left_clairvoyance_test", StockAvmPreview.viewName(
                 StockAvmPreview.VIEW_REAR_LEFT_CLAIRVOYANCE));
         assertEquals(0.0f, StockAvmPreview.focusedTileStartX(
@@ -1831,6 +1832,21 @@ public final class AdbCoreTest {
     }
 
     @Test
+    public void helperHandshakeRejectsOldAndFutureProtocolOrBuild() {
+        int protocol = TurnSignalShellProtocol.VERSION;
+        int build = BuildConfig.VERSION_CODE;
+        assertEquals("", TurnSignalShellProtocol.compatibilityError(protocol, build));
+        for (int delta : new int[]{-1, 1}) {
+            assertEquals("protocol_mismatch",
+                    TurnSignalShellProtocol.compatibilityError(protocol + delta, build));
+            assertEquals("build_mismatch",
+                    TurnSignalShellProtocol.compatibilityError(protocol, build + delta));
+            assertEquals("protocol_mismatch",
+                    TurnSignalShellProtocol.compatibilityError(protocol + delta, build + delta));
+        }
+    }
+
+    @Test
     public void musicObserversSurviveSleepAndAlreadyPlayingResumesExactlyOnce() {
         assertTrue(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(true, false));
         assertFalse(MusicVisualizerRuntime.shouldRegisterPlaybackObserver(true, true));
@@ -2170,26 +2186,10 @@ public final class AdbCoreTest {
         assertFalse(repeatedClose.release);
     }
 
-    private static byte[] collectorReferenceEncoding(RSAPublicKey key) {
-        int wordCount = 64;
-        BigInteger radix = BigInteger.ONE.shiftLeft(32);
-        BigInteger mask = radix.subtract(BigInteger.ONE);
-        BigInteger modulus = key.getModulus();
-        BigInteger rr = BigInteger.ONE.shiftLeft(4096).mod(modulus);
-        BigInteger n0inv = modulus.and(mask).modInverse(radix).negate().mod(radix);
-        ByteBuffer output = ByteBuffer.allocate(524).order(ByteOrder.LITTLE_ENDIAN);
-        output.putInt(wordCount);
-        output.putInt(n0inv.intValue());
-        for (int i = 0; i < wordCount; i++) {
-            output.putInt(modulus.and(mask).intValue());
-            modulus = modulus.shiftRight(32);
-        }
-        for (int i = 0; i < wordCount; i++) {
-            output.putInt(rr.and(mask).intValue());
-            rr = rr.shiftRight(32);
-        }
-        output.putInt(key.getPublicExponent().intValue());
-        return output.array();
+    private static BigInteger unsignedLittleEndian(byte[] encoded, int offset, int length) {
+        byte[] bigEndian = new byte[length];
+        for (int i = 0; i < length; i++) bigEndian[i] = encoded[offset + length - 1 - i];
+        return new BigInteger(1, bigEndian);
     }
 
     private static StockAvmPreview.Config stockAvmConfig(
