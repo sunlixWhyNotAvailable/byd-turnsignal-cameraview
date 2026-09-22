@@ -58,11 +58,11 @@ public final class TurnSignalShellMain {
             System.out.println("READY pid=" + Process.myPid()
                     + " protocol=" + TurnSignalShellProtocol.VERSION
                     + " build=" + versionCode);
-            System.out.flush();
+            DiagnosticLogPolicy.flushOutput();
             Looper.loop();
         } finally {
             binder.stop();
-            System.out.flush();
+            DiagnosticLogPolicy.flushOutput();
             owner.close();
         }
     }
@@ -195,6 +195,13 @@ public final class TurnSignalShellMain {
             }
             try {
                 data.enforceInterface(TurnSignalShellProtocol.DESCRIPTOR);
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_LOGGING) {
+                    int enabled = data.readInt();
+                    if (enabled != 0 && enabled != 1) throw new IllegalArgumentException("invalid logging flag");
+                    DiagnosticLogPolicy.configure(enabled == 1);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_PING) {
                     reply.writeNoException();
                     reply.writeInt(TurnSignalShellProtocol.VERSION);
@@ -892,6 +899,7 @@ public final class TurnSignalShellMain {
         }
 
         private void emit(String kind, Object... fields) {
+            if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
             String line;
             try {
                 JSONObject json = new JSONObject();
@@ -915,8 +923,10 @@ public final class TurnSignalShellMain {
         }
 
         private void forwardEventLine(String line) {
-            System.out.println(line);
-            scheduleStdoutFlush();
+            if (DiagnosticLogPolicy.shouldPersist(DiagnosticLogPolicy.kind(line))) {
+                DiagnosticLogPolicy.print(line);
+                scheduleStdoutFlush();
+            }
             IBinder target;
             synchronized (this) {
                 target = callback;
@@ -944,12 +954,12 @@ public final class TurnSignalShellMain {
                 synchronized (ShellBinder.this) {
                     stdoutFlushScheduled = false;
                 }
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
             }, LOG_FLUSH_DELAY_MS)) {
                 synchronized (this) {
                     stdoutFlushScheduled = false;
                 }
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
             }
         }
 
@@ -993,7 +1003,7 @@ public final class TurnSignalShellMain {
     }
 
     private static void terminateProcess() {
-        System.out.flush();
+        DiagnosticLogPolicy.flushOutput();
         Process.killProcess(Process.myPid());
     }
 

@@ -89,6 +89,7 @@
     <string name="runtime_car_compat_forming">Формування пакета…</string>
     <string name="runtime_car_compat_cancel_done">Скасування завершено; частковий пакет не поширено</string>
     <string name="runtime_car_compat_failed">Не вдалося створити пакет сумісності</string>
+    <string name="runtime_car_compat_low_space">Недостатньо вільного місця для експорту. Звільніть місце та повторіть спробу: під час експорту має залишатися щонайменше 512 МіБ вільного місця.</string>
     <string name="runtime_car_compat_empty">Пакет сумісності не створено</string>
     <string name="runtime_car_compat_inactive">Поширення пакета скасовано: застосунок неактивний</string>
     <string name="runtime_car_compat_share_title">Поділитися пакетом сумісності</string>

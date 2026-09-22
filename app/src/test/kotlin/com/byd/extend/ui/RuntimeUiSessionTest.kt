@@ -1,6 +1,9 @@
 package com.byd.extend.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class RuntimeUiSessionTest {
@@ -47,6 +50,42 @@ class RuntimeUiSessionTest {
             session.viewport("signals", RuntimeViewportKind.Sidebar))
         assertEquals(RuntimeViewport.Top,
             session.viewport("signals:Weather", RuntimeViewportKind.Sidebar))
+    }
+
+    @Test
+    fun lazyViewportRetainsIdentityIndexAndIntraItemOffset() {
+        val session = RuntimeUiSession().getOrCreate(RuntimeUiSelections.from(BydExtendUiState()))
+        val viewport = RuntimeViewport(offset = 37, index = 6, identity = "logs:record-logcat")
+        session.recordViewport("settings:Logs", RuntimeViewportKind.Main, viewport)
+        assertEquals(viewport, session.viewport("settings:Logs", RuntimeViewportKind.Main))
+    }
+
+    @Test
+    fun numericDraftOwnerSurvivesRowDisposalUntilCanonicalValueChanges() {
+        val store = NumericDraftStore()
+        val first = store.state("avas-volume-lock", "15", 0f..100f)
+        first.draft.value = "1."
+        first.invalid.value = true
+
+        val restored = store.state("avas-volume-lock", "15", 0f..100f)
+        assertSame(first, restored)
+        assertEquals("1.", restored.draft.value)
+        assertEquals(true, restored.invalid.value)
+
+        val refreshed = store.state("avas-volume-lock", "20", 0f..100f)
+        assertNotSame(first, refreshed)
+        assertEquals("20", refreshed.draft.value)
+        assertEquals(false, refreshed.invalid.value)
+    }
+
+    @Test
+    fun mirrorCalibrationDraftIdentityIsSourceSpecific() {
+        val target = NumberTarget.Profile(CameraProfileId.Mirror, ProfileNumber.Fov)
+        val rear = target.forMirrorSource(false)
+        val front = target.forMirrorSource(true)
+        assertEquals(false, (rear as NumberTarget.Profile).mirrorFront)
+        assertEquals(true, (front as NumberTarget.Profile).mirrorFront)
+        assertNotEquals(rear, front)
     }
 
     @Test

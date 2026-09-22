@@ -138,6 +138,37 @@ final class TurnSignalController {
         handler.postDelayed(pingRunnable, PING_MS);
     }
 
+    void configureLogging() {
+        if (stopped) return;
+        worker.execute(() -> {
+            if (stopped) return;
+            configureExistingLogger(helper, TurnSignalShellProtocol.DESCRIPTOR,
+                    TurnSignalShellProtocol.TX_CONFIGURE_LOGGING);
+            configureExistingLogger(cameraHelper, CameraShellProtocol.DESCRIPTOR,
+                    CameraShellProtocol.TX_CONFIGURE_LOGGING);
+            configureExistingLogger(avmShell, StockAvmShellProtocol.DESCRIPTOR,
+                    StockAvmShellProtocol.TX_CONFIGURE_LOGGING);
+        });
+    }
+
+    private void configureExistingLogger(IBinder value, String descriptor, int code) {
+        if (value == null) return;
+        try { transactLogging(value, descriptor, code); }
+        catch (Throwable failure) {
+            emit("logging_config_error", "source", descriptor, "error", summary(failure));
+        }
+    }
+
+    private void transactLogging(IBinder value, String descriptor, int code) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(descriptor);
+            data.writeInt(settings.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false) ? 1 : 0);
+            requireTransact(value, code, data, reply);
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     void shutdown(boolean terminateShells) {
         shutdown(terminateShells, false);
     }
@@ -1246,6 +1277,8 @@ final class TurnSignalController {
             }
         }
         try {
+            transactLogging(value, TurnSignalShellProtocol.DESCRIPTOR,
+                    TurnSignalShellProtocol.TX_CONFIGURE_LOGGING);
             transactAttach(value, GuardRecovery.shouldRecover(context));
             transactCallback(value);
             transactConfig(value);
@@ -1836,6 +1869,7 @@ final class TurnSignalController {
     }
 
     private void transactAvmCallback(IBinder value) throws Exception {
+        transactLogging(value, StockAvmShellProtocol.DESCRIPTOR, StockAvmShellProtocol.TX_CONFIGURE_LOGGING);
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -1886,6 +1920,7 @@ final class TurnSignalController {
     }
 
     private void transactCameraCallback(IBinder value) throws Exception {
+        transactLogging(value, CameraShellProtocol.DESCRIPTOR, CameraShellProtocol.TX_CONFIGURE_LOGGING);
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {

@@ -3,7 +3,6 @@ package com.byd.extend.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -51,38 +50,38 @@ internal fun ReverseScreen(
         ?: StatusUiState()
     val gearSwitchEnabled = state.hasAnyFrontIntegration()
     val sourceIndex = reverseSourceIndex(selected, state.selectedSource)
-    val profileControls: @Composable ColumnScope.() -> Unit = {
-        ChoiceField(strings.text("Елемент", "Element"), strings.reverseElements, selected.ordinal,
-            { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors)
-        SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors)
+    val profileControls: @Composable FormScope.() -> Unit = {
+        row("profile-element") { ChoiceField(strings.text("Елемент", "Element"), strings.reverseElements, selected.ordinal,
+            { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors) }
+        row("profile-enabled") { SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseEnabled), it)) }, colors) }
         if (cameraElement) {
-            SwitchLine(
+            row("profile-front-integration") { SwitchLine(
                 if (selected == ReverseElement.Rear) strings.text("Інтеграція передньої камери", "Integrate front camera")
                 else strings.text("Інтеграція передніх камер", "Integrate front cameras"), "",
                 state.frontIntegration[selected] == true,
                 { onAction(BydExtendUiAction.Toggle(
                     ToggleTarget.Reverse(ToggleId.ReverseFrontIntegration, selected), it)) }, colors,
-            )
+            ) }
         }
-        SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+        row("profile-switch-by-gear") { SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
             strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
             state.switchByGear,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
-            enabled = gearSwitchEnabled)
+            enabled = gearSwitchEnabled) }
         if (selected == ReverseElement.Widget) {
-            ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction)
+            row("profile-widget-key") { ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction) }
         }
         if (cameraElement && state.section == CameraSection.Calibration) {
-            Segmented(listOf(strings.text("Задня", "Rear"), strings.text("Передня", "Front")),
+            row("profile-source") { Segmented(listOf(strings.text("Задня", "Rear"), strings.text("Передня", "Front")),
                 state.selectedSource.ordinal, colors, Modifier.fillMaxWidth()) {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
-            }
+            } }
         }
-        ProfilePresetButtons(profileId, profile.presetAvailable,
+        row("profile-presets") { ProfilePresetButtons(profileId, profile.presetAvailable,
             selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
                 selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
-            strings, colors, onAction)
+            strings, colors, onAction) }
     }
     ScreenSurface(colors, scroll = false, compact = true) {
         if (state.section == CameraSection.Calibration && cameraElement) {
@@ -119,12 +118,12 @@ internal fun ReverseScreen(
                     if (state.section == CameraSection.Parameters) {
                         ReverseElement.entries.forEach { element ->
                             val visible = state.geometry[element]?.visible ?: true
-                            SwitchLine(strings.reverseElements[element.ordinal], "", visible,
+                            row("reverse-visible-${element.name}") { SwitchLine(strings.reverseElements[element.ordinal], "", visible,
                                 { onAction(BydExtendUiAction.Toggle(
                                     ToggleTarget.Reverse(ToggleId.ReverseElementVisible, element), it)) },
-                                colors)
+                                colors) }
                         }
-                        CameraBorderControls(profileId, profile, strings, colors, onAction)
+                        row("reverse-border") { CameraBorderControls(profileId, profile, strings, colors, onAction) }
                     } else {
                         ReverseCompositionControls(state, selected, cameraElement, strings, colors, onAction)
                     }
@@ -184,7 +183,7 @@ private fun ReverseWidgetLearningRow(
 }
 
 @Composable
-private fun ReverseCompositionControls(
+private fun FormScope.ReverseCompositionControls(
     state: ReverseUiState,
     selected: ReverseElement,
     cameraElement: Boolean,
@@ -200,21 +199,21 @@ private fun ReverseCompositionControls(
     val height = (geometry.height.toFloatOrNull() ?: 100f).coerceIn(5f, 100f)
     val x = (geometry.x.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     val y = (geometry.y.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
-    CoordinatePair(geometry.x, geometry.y, colors,
+    row("reverse-position") { CoordinatePair(geometry.x, geometry.y, colors,
         { commit(ReverseGeometryNumber.X, it) }, { commit(ReverseGeometryNumber.Y, it) },
         NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.X),
         NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y),
         maxX = 100f - width, maxY = 100f - height,
         horizontalTitle = strings.text("Горизонталь", "Horizontal"),
-        verticalTitle = strings.text("Вертикаль", "Vertical"))
-    GeometryPair(strings.text("Ширина", "Width"), geometry.width,
+        verticalTitle = strings.text("Вертикаль", "Vertical")) }
+    row("reverse-size") { GeometryPair(strings.text("Ширина", "Width"), geometry.width,
         { commit(ReverseGeometryNumber.Width, it) }, strings.text("Висота", "Height"), geometry.height,
         { commit(ReverseGeometryNumber.Height, it) }, colors,
         5f..(100f - x).coerceAtLeast(5f), "reverse-size-pair",
         secondRange = 5f..(100f - y).coerceAtLeast(5f),
         identityFirst = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width),
-        identitySecond = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        identitySecond = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height)) }
+    row("reverse-layer") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ActionButton(strings.text("Нижче шар", "Lower layer"), colors, Modifier.weight(1f), height = 32.dp,
             enabled = cameraElement && state.zOrder.indexOf(selected) > 0) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseLower))
@@ -223,12 +222,12 @@ private fun ReverseCompositionControls(
             enabled = cameraElement && state.zOrder.indexOf(selected) in 0 until state.zOrder.lastIndex) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseRaise))
         }
-    }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+    } }
+    row("reverse-reset") { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
         ActionButton(strings.text("Скинути композицію", "Reset layout"), colors, Modifier.width(260.dp), mainBackground = true) {
             onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout, reverseElement = selected))
         }
-    }
+    } }
 }
 
 @Composable

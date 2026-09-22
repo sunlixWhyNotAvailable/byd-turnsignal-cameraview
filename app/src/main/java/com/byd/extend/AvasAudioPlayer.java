@@ -816,6 +816,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     }
 
     private void event(AvasAudioDiagnostics.Context context, String kind, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         if (log == null) return;
         try {
             JSONObject event = new JSONObject().put("kind", kind);
@@ -848,6 +849,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
 
         void start() {
+            if (!DiagnosticLogPolicy.extended()) return;
             sampling = executor.scheduleWithFixedDelay(this::sample, 0,
                     NAV_STATE_SAMPLE_MS, TimeUnit.MILLISECONDS);
         }
@@ -1025,6 +1027,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
 
         void initialSample(AudioTrack output) {
+            if (!DiagnosticLogPolicy.extended()) return;
             long now = SystemClock.elapsedRealtime();
             if (gate == null) gate = new AvasAudioDiagnostics.SampleGate(now);
             if (!gate.initial(now)) return;
@@ -1044,6 +1047,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
 
         void exteriorPcm(byte[] pcm, int offset, int count) {
+            if (!DiagnosticLogPolicy.extended()) return;
             if (pcmLevelsFailed) return;
             try {
                 if (exteriorLevels == null) exteriorLevels = new AvasAudioDiagnostics.PcmLevels();

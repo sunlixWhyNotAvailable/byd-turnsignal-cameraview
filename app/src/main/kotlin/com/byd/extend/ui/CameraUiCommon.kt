@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.Icons
@@ -56,17 +56,17 @@ internal fun CameraWorkspace(
     onSection: (CameraSection) -> Unit,
     profileStatus: StatusUiState = StatusUiState(),
     panoramaStatus: StatusUiState? = null,
-    profileControls: @Composable ColumnScope.() -> Unit,
-    controls: @Composable ColumnScope.() -> Unit,
+    profileControls: @Composable FormScope.() -> Unit,
+    controls: @Composable FormScope.() -> Unit,
     preview: @Composable ColumnScope.() -> Unit,
 ) {
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Column(Modifier.width(400.dp).fillMaxHeight().verticalScroll(LocalPrimaryScroll.current),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            CameraPageHeader(pageTab, strings, colors)
-            Section(strings.text("Профіль", "Profile"), colors, Modifier.testTag("camera-profile"),
-                content = profileControls)
-            Section("", colors, Modifier.testTag("camera-settings"), header = {
+        LazyForm(Modifier.width(400.dp).fillMaxHeight(), LocalPrimaryLazyList.current) {
+            row("page-header") { CameraPageHeader(pageTab, strings, colors); Spacer(Modifier.height(8.dp)) }
+            FormSection(strings.text("Профіль", "Profile"), colors,
+                Modifier.testTag("camera-profile"), key = "profile", content = profileControls)
+            row("section-gap") { Spacer(Modifier.height(8.dp)) }
+            FormSection("", colors, Modifier.testTag("camera-settings"), key = "settings-${section.name}", header = {
                 Segmented(if (reverse) strings.reverseSections else strings.cameraSections, section.ordinal, colors,
                     Modifier.fillMaxWidth().padding(start = 6.dp, top = 6.dp, end = 6.dp),
                     enabled = { it != CameraSection.Calibration.ordinal || calibrationEnabled }) {
@@ -147,7 +147,7 @@ internal fun ProfilePresetButtons(
 }
 
 @Composable
-internal fun ColumnScope.CameraProfileControls(
+internal fun FormScope.CameraProfileControls(
     profile: CameraProfileId,
     state: CameraProfileUiState,
     section: CameraSection,
@@ -156,8 +156,9 @@ internal fun ColumnScope.CameraProfileControls(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
-    placementExtra: @Composable ColumnScope.() -> Unit = {},
-    parameters: @Composable ColumnScope.() -> Unit,
+    identityFor: (NumberTarget) -> Any = { it },
+    placementExtra: @Composable FormScope.() -> Unit = {},
+    parameters: @Composable FormScope.() -> Unit,
 ) {
     var stage by rememberSaveable(profile) { mutableStateOf(CalibrationStage.Original) }
     val calibration = state.calibration
@@ -178,18 +179,19 @@ internal fun ColumnScope.CameraProfileControls(
     when (section) {
         CameraSection.Parameters -> {
             parameters()
-            CameraBorderControls(profile, state, strings, colors, onAction)
+            row("profile-border") { CameraBorderControls(profile, state, strings, colors, onAction,
+                identityFor(NumberTarget.Profile(profile, ProfileNumber.Fov)) to "profile-border") }
         }
         CameraSection.Placement -> {
-            Segmented(if (clusterAllowed) listOf(strings.text("Планшет", "Tablet"), strings.text("Приборка", "Cluster"))
+            row("placement-target") { Segmented(if (clusterAllowed) listOf(strings.text("Планшет", "Tablet"), strings.text("Приборка", "Cluster"))
                 else listOf(strings.text("Планшет", "Tablet")), if (clusterAllowed) state.target.ordinal else 0,
                 colors, Modifier.fillMaxWidth()) {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Profile(SelectionId.ProfileTarget, profile), it))
-            }
+            } }
             if (profile is CameraProfileId.Blind || profile is CameraProfileId.Mirror) {
                 // Blind and Mirror use independent whole-display rectangles.  The old scalar
                 // Size remains readable for legacy Parking and Reverse only.
-                CoordinatePair(state.x, state.y, colors,
+                row("placement-position") { CoordinatePair(state.x, state.y, colors,
                     { placementNumber(ProfileNumber.X, MirrorNumber.X, it) },
                     { placementNumber(ProfileNumber.Y, MirrorNumber.Y, it) },
                     placementTarget(ProfileNumber.X, MirrorNumber.X),
@@ -197,81 +199,82 @@ internal fun ColumnScope.CameraProfileControls(
                     maxX = (100f - (state.width.toFloatOrNull() ?: 5f)).coerceAtLeast(0f),
                     maxY = (100f - (state.height.toFloatOrNull() ?: 5f)).coerceAtLeast(0f),
                     horizontalTitle = strings.text("Горизонталь", "Horizontal"),
-                    verticalTitle = strings.text("Вертикаль", "Vertical"))
-                GeometryPair(strings.text("Ширина", "Width"), state.width,
+                    verticalTitle = strings.text("Вертикаль", "Vertical")) }
+                row("placement-size") { GeometryPair(strings.text("Ширина", "Width"), state.width,
                     { placementNumber(ProfileNumber.Width, MirrorNumber.Width, it) },
                     strings.text("Висота", "Height"), state.height,
                     { placementNumber(ProfileNumber.Height, MirrorNumber.Height, it) },
                     colors, 5f..100f, "size-pair",
                     secondRange = 5f..100f,
                     identityFirst = placementTarget(ProfileNumber.Width, MirrorNumber.Width),
-                    identitySecond = placementTarget(ProfileNumber.Height, MirrorNumber.Height))
+                    identitySecond = placementTarget(ProfileNumber.Height, MirrorNumber.Height)) }
             } else {
-                NumericSetting(strings.text("Розмір", "Size"), state.size, "%", colors,
+                row("placement-size") { NumericSetting(strings.text("Розмір", "Size"), state.size, "%", colors,
                     { profileNumber(ProfileNumber.Size, it) }, 5f..60f, adjustable = true, slider = true,
-                    identity = NumberTarget.Profile(profile, ProfileNumber.Size),
+                    identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Size)),
                     onPreview = { value, session -> profilePreview(ProfileNumber.Size, value, session) },
-                    onCommitSession = { value, session -> profileNumber(ProfileNumber.Size, value, session) })
+                    onCommitSession = { value, session -> profileNumber(ProfileNumber.Size, value, session) }) }
             }
             placementExtra()
-            ResetProfileButton(strings.text("Скинути розташування", "Reset placement"),
+            row("placement-reset") { ResetProfileButton(strings.text("Скинути розташування", "Reset placement"),
                 command(CommandId.ResetProfilePlacement, CommandId.MirrorResetPlacement), profile,
-                colors, onAction)
+                colors, onAction) }
         }
         CameraSection.Calibration -> {
-            Segmented(strings.calibrationStages, stage.ordinal, colors, Modifier.fillMaxWidth()) {
+            row("calibration-stage") { Segmented(strings.calibrationStages, stage.ordinal, colors, Modifier.fillMaxWidth()) {
                 stage = CalibrationStage.entries[it]
-            }
+            } }
             when (stage) {
                 CalibrationStage.Original -> {
-                    CropControls(profile, calibration.original, ProfileNumber.OriginalX, ProfileNumber.OriginalY,
+                    row("calibration-original-crop") { CropControls(profile, calibration.original, ProfileNumber.OriginalX, ProfileNumber.OriginalY,
                         ProfileNumber.OriginalWidth, ProfileNumber.OriginalHeight, strings, colors, onAction,
-                        enabled = true)
-                    ResetProfileButton(strings.text("Скинути область", "Reset area"),
+                        identityFor, enabled = true) }
+                    row("calibration-original-reset") { ResetProfileButton(strings.text("Скинути область", "Reset area"),
                         command(CommandId.ResetProfileOriginal, CommandId.MirrorResetOriginal), profile,
-                        colors, onAction)
+                        colors, onAction) }
                 }
                 CalibrationStage.Correction -> {
-                    SwitchLine(strings.text("Корекція «риб’ячого ока»", "Fisheye correction"),
+                    row("calibration-correction-enabled") { SwitchLine(strings.text("Корекція «риб’ячого ока»", "Fisheye correction"),
                         if (calibration.rawFallback) strings.text("Тимчасово використовується RAW", "RAW fallback is active") else "",
                         calibration.correctionEnabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Profile(ToggleId.ProfileCorrection, profile), it)) },
-                        colors)
-                    NumericSetting(strings.text("Огляд", "FOV"), calibration.fov, "°", colors,
+                        colors) }
+                    row("calibration-fov") { NumericSetting(strings.text("Огляд", "FOV"), calibration.fov, "°", colors,
                         { profileNumber(ProfileNumber.Fov, it) }, 60f..170f, adjustable = true, slider = true,
                         enabled = true,
-                        identity = NumberTarget.Profile(profile, ProfileNumber.Fov),
+                        identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Fov)),
                         onPreview = { value, session -> profilePreview(ProfileNumber.Fov, value, session) },
-                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Fov, value, session) })
-                    ChoiceField(strings.text("Проєкція", "Projection"),
+                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Fov, value, session) }) }
+                    row("calibration-projection") { ChoiceField(strings.text("Проєкція", "Projection"),
                         listOf(strings.text("Прямолінійна", "Rectilinear"), strings.text("Циліндрична", "Cylindrical")),
                         calibration.projection, { onAction(BydExtendUiAction.Select(
                             SelectionTarget.Profile(SelectionId.ProfileProjection, profile), it)) }, colors,
-                        enabled = true)
-                    CropControls(profile, calibration.corrected, ProfileNumber.CorrectedX, ProfileNumber.CorrectedY,
+                        enabled = true) }
+                    row("calibration-corrected-crop") { CropControls(profile, calibration.corrected, ProfileNumber.CorrectedX, ProfileNumber.CorrectedY,
                         ProfileNumber.CorrectedWidth, ProfileNumber.CorrectedHeight, strings, colors, onAction,
-                        enabled = !calibration.rawFallback)
-                    ResetProfileButton(strings.text("Скинути корекцію", "Reset correction"),
+                        identityFor, enabled = !calibration.rawFallback) }
+                    row("calibration-correction-reset") { ResetProfileButton(strings.text("Скинути корекцію", "Reset correction"),
                         command(CommandId.ResetProfileCorrection, CommandId.MirrorResetCorrection), profile,
-                        colors, onAction)
+                        colors, onAction) }
                 }
                 CalibrationStage.Output -> {
-                    SwitchLine(strings.text("Віддзеркалити", "Mirror"), "", calibration.mirrored,
-                        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Profile(ToggleId.ProfileMirror, profile), it)) }, colors)
-                    ChoiceField(strings.text("Режим повороту", "Rotation mode"),
+                    row("calibration-mirror") { SwitchLine(strings.text("Віддзеркалити", "Mirror"), "", calibration.mirrored,
+                        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Profile(ToggleId.ProfileMirror, profile), it)) }, colors) }
+                    row("calibration-output-mode") { ChoiceField(strings.text("Режим повороту", "Rotation mode"),
                         listOf(strings.text("Вписати", "Fit"), strings.text("Заповнити", "Fill"),
                             strings.text("Розтягнути", "Stretch")), calibration.outputMode,
                         { onAction(BydExtendUiAction.Select(
-                            SelectionTarget.Profile(SelectionId.ProfileOutputMode, profile), it)) }, colors)
-                    NumericSetting(strings.text("Поворот", "Rotation"), calibration.rotation, "°", colors,
+                            SelectionTarget.Profile(SelectionId.ProfileOutputMode, profile), it)) }, colors) }
+                    row("calibration-rotation") { NumericSetting(strings.text("Поворот", "Rotation"), calibration.rotation, "°", colors,
                         { profileNumber(ProfileNumber.Rotation, it) }, -180f..180f, adjustable = true, slider = true,
-                        identity = NumberTarget.Profile(profile, ProfileNumber.Rotation),
+                        identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Rotation)),
                         onPreview = { value, session -> profilePreview(ProfileNumber.Rotation, value, session) },
-                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Rotation, value, session) })
-                    CameraBorderControls(profile, state, strings, colors, onAction)
-                    ResetProfileButton(strings.text("Скинути вивід", "Reset output"),
+                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Rotation, value, session) }) }
+                    row("calibration-border") { CameraBorderControls(profile, state, strings, colors, onAction,
+                        identityFor(NumberTarget.Profile(profile, ProfileNumber.Fov)) to "calibration-border") }
+                    row("calibration-output-reset") { ResetProfileButton(strings.text("Скинути вивід", "Reset output"),
                         command(CommandId.ResetProfileOutput, CommandId.MirrorResetOutput), profile,
-                        colors, onAction)
+                        colors, onAction) }
                 }
             }
         }
@@ -398,6 +401,7 @@ private fun CropControls(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    identityFor: (NumberTarget) -> Any = { it },
     enabled: Boolean = true,
 ) {
     fun commit(field: ProfileNumber, value: String) {
@@ -408,7 +412,8 @@ private fun CropControls(
     val x = (crop.x.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     val y = (crop.y.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     CoordinatePair(crop.x, crop.y, colors, { commit(xField, it) }, { commit(yField, it) },
-        NumberTarget.Profile(profile, xField), NumberTarget.Profile(profile, yField), enabled,
+        identityFor(NumberTarget.Profile(profile, xField)),
+        identityFor(NumberTarget.Profile(profile, yField)), enabled,
         maxX = 100f - width, maxY = 100f - height,
         horizontalTitle = strings.text("Горизонталь", "Horizontal"),
         verticalTitle = strings.text("Вертикаль", "Vertical"))
@@ -416,8 +421,8 @@ private fun CropControls(
         { commit(widthField, it) }, strings.text("Висота", "Height"), crop.height,
         { commit(heightField, it) }, colors, 1f..(100f - x).coerceAtLeast(1f), "size-pair",
         secondRange = 1f..(100f - y).coerceAtLeast(1f),
-        identityFirst = NumberTarget.Profile(profile, widthField),
-        identitySecond = NumberTarget.Profile(profile, heightField), enabled = enabled)
+        identityFirst = identityFor(NumberTarget.Profile(profile, widthField)),
+        identitySecond = identityFor(NumberTarget.Profile(profile, heightField)), enabled = enabled)
 }
 
 /** Known direct-camera source geometry (pano_h source). */

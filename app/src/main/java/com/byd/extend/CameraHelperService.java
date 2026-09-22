@@ -825,6 +825,9 @@ public final class CameraHelperService extends Service {
             return;
         }
         if (ACTION_DIAGNOSTICS_CHANGED.equals(action)) {
+            DiagnosticLogPolicy.configure(getSharedPreferences("settings", MODE_PRIVATE)
+                    .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
+            if (helper != null) helper.configureLogging();
             reconcileAvasRecovery(false, "diagnostic_settings_changed");
             return;
         }
@@ -1377,7 +1380,9 @@ public final class CameraHelperService extends Service {
 
     private void reloadSettings(boolean fullImport) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        DiagnosticLogPolicy.configure(settings.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
         if (helper != null) {
+            helper.configureLogging();
             RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
             helper.configureAvas();
         }

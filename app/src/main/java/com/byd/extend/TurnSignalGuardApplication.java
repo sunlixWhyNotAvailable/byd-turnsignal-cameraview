@@ -7,7 +7,10 @@ public final class TurnSignalGuardApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        CompatibilityExportArtifacts.checkAsync(this);
         SharedPreferences preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        DiagnosticLogPolicy.configure(preferences.getBoolean(
+                DiagnosticLogPolicy.PREF_ENABLED, false));
         // Inspect the untouched store before language initialization writes keys, then let
         // language keep its established fresh-install behavior before placement materializes.
         boolean existingInstall = DisplayPlacementPersistence.existingInstall(this, preferences);

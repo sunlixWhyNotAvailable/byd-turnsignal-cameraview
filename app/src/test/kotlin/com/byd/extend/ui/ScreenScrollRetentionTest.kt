@@ -37,13 +37,13 @@ class ScreenScrollRetentionTest {
     @Test
     fun onlyScrollStateIsKeyedAndSavedByAndroid() {
         val shell = source("BydExtendApp.kt")
-        val savedScope = shell.substringAfter("viewportPositions.SaveableStateProvider(\"main:\$scrollKey\") {")
-            .substringBefore("\n    }")
         assertTrue(shell.contains("val viewportPositions = rememberSaveableStateHolder()"))
-        assertTrue(savedScope.contains("primaryScroll = rememberScrollState("))
-        assertTrue(savedScope.contains("uiSession.viewport(scrollKey, RuntimeViewportKind.Main).offset"))
-        assertFalse(savedScope.contains("cameraHost"))
-        assertFalse(savedScope.contains("when (state.activeTab)"))
+        assertTrue(shell.contains("rememberSavedScrollState(viewportPositions, \"main-scroll:\$scrollKey\""))
+        assertTrue(shell.contains("rememberSavedLazyListState(viewportPositions, \"main-lazy:\$scrollKey\""))
+        assertTrue(shell.contains("LocalPrimaryLazyList provides primaryLazyViewport"))
+        assertTrue(source("UiPrimitives.kt").contains("identity = item?.key?.toString()"))
+        assertTrue(source("UiPrimitives.kt").contains("processFallback.identity?.let(rowKeys::indexOf)"))
+        assertTrue(source("UiPrimitives.kt").contains("layoutInfo.totalItemsCount == 0"))
         assertTrue(shell.contains("snapshotFlow { scroll.maxValue }.first { it != Int.MAX_VALUE }"))
         assertTrue(shell.contains("if (contentReady && !restored)"))
         assertTrue(shell.contains("Lifecycle.Event.ON_PAUSE"))
@@ -53,15 +53,39 @@ class ScreenScrollRetentionTest {
     }
 
     @Test
-    fun integrationsAndSettingsUseTheRetainedPrimaryScroll() {
+    fun lazyViewportRestorerIsStableAcrossSessionCaptureRecomposition() {
+        val shell = source("BydExtendApp.kt")
+        assertTrue(shell.contains("val initialLazyFallback = remember(primaryLazyList)"))
+        assertTrue(shell.contains("remember(primaryLazyList, contentReady)"))
+        assertFalse(shell.contains("remember(primaryLazyList, processMainViewport"))
+    }
+
+    @Test
+    fun longFormsUseRetainedLazyListsWhileShortFormsKeepScrollState() {
         val shell = source("BydExtendApp.kt")
         val integrations = shell.substringAfter("private fun SignalsScreen(")
             .substringBefore("private fun CategorySidebar(")
         assertTrue(integrations.contains(".verticalScroll(LocalPrimaryScroll.current)"))
-        assertFalse(integrations.contains(".padding(12.dp).verticalScroll(rememberScrollState())"))
-        assertTrue(source("SettingsScreen.kt").contains(".padding(12.dp).verticalScroll(LocalPrimaryScroll.current)"))
+        assertTrue(integrations.contains("LazyForm(Modifier.fillMaxSize(), LocalPrimaryLazyList.current)"))
+        assertTrue(source("SettingsScreen.kt").contains("LocalPrimaryLazyList.current"))
+        assertTrue(source("CameraUiCommon.kt").contains(
+            "LazyForm(Modifier.width(400.dp).fillMaxHeight(), LocalPrimaryLazyList.current)"))
         assertTrue(shell.contains(".verticalScroll(scroll).selectableGroup()"))
         assertTrue(source("SettingsScreen.kt").contains(".verticalScroll(sidebarScroll).selectableGroup()"))
+    }
+
+    @Test
+    fun onlyApprovedLongFormsSelectLazyMainViewport() {
+        val state = BydExtendUiState()
+        assertFalse(state.copy(activeTab = RootTab.Signals,
+            signals = state.signals.copy(category = SignalsCategory.Weather)).usesLazyMainViewport())
+        assertTrue(state.copy(activeTab = RootTab.Signals,
+            signals = state.signals.copy(category = SignalsCategory.Avas)).usesLazyMainViewport())
+        assertTrue(state.copy(activeTab = RootTab.Signals,
+            signals = state.signals.copy(category = SignalsCategory.AdbRecovery)).usesLazyMainViewport())
+        assertTrue(state.copy(activeTab = RootTab.Settings).usesLazyMainViewport())
+        assertTrue(state.copy(activeTab = RootTab.Blind).usesLazyMainViewport())
+        assertFalse(state.copy(activeTab = RootTab.Debug).usesLazyMainViewport())
     }
 
     @Test
@@ -73,6 +97,21 @@ class ScreenScrollRetentionTest {
         }
         assertTrue(settings.contains("state.feedback.visible && !operationFeedbackHidden"))
         assertTrue(settings.contains("\"Export configuration\""))
+    }
+
+    @Test
+    fun extendedLogsIsIndependentDefaultOffAndPrecedesLogcat() {
+        assertFalse(SettingsUiState().extendedLogs)
+        val settings = source("SettingsScreen.kt")
+        val extended = settings.indexOf("ToggleId.ExtendedLogs")
+        val logcat = settings.indexOf("ToggleId.RecordLogcat")
+        assertTrue(extended >= 0)
+        assertTrue(extended < logcat)
+        assertTrue(settings.contains("Зберігати розширені логи"))
+        assertTrue(settings.contains("May increase CPU load and storage use."))
+        assertTrue(settings.contains("可能会增加 CPU 负载和存储空间占用。"))
+        assertTrue(source("ProductionStateSnapshot.kt").contains(
+            "preferences.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false)"))
     }
 
     private fun source(name: String): String {

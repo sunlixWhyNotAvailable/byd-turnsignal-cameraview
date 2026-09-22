@@ -59,13 +59,13 @@ public final class CameraShellMain {
             System.out.println("READY pid=" + Process.myPid()
                     + " protocol=" + CameraShellProtocol.VERSION
                     + " build=" + versionCode);
-            System.out.flush();
+            DiagnosticLogPolicy.flushOutput();
             Looper.loop();
         } finally {
             try {
                 binder.closeAll("process_exit");
             } finally {
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
                 owner.close();
             }
         }
@@ -133,6 +133,13 @@ public final class CameraShellMain {
             }
             try {
                 data.enforceInterface(CameraShellProtocol.DESCRIPTOR);
+                if (code == CameraShellProtocol.TX_CONFIGURE_LOGGING) {
+                    int enabled = data.readInt();
+                    if (enabled != 0 && enabled != 1) throw new IllegalArgumentException("invalid logging flag");
+                    DiagnosticLogPolicy.configure(enabled == 1);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == CameraShellProtocol.TX_PING) {
                     reply.writeNoException();
                     reply.writeInt(CameraShellProtocol.VERSION);
@@ -499,6 +506,7 @@ public final class CameraShellMain {
         }
 
         private void emit(String kind, Object... fields) {
+            if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
             String line;
             try {
                 JSONObject json = new JSONObject();
@@ -520,8 +528,10 @@ public final class CameraShellMain {
             } catch (Throwable error) {
                 line = "{\"kind\":\"camera_shell_json_error\"}";
             }
-            System.out.println(line);
-            scheduleStdoutFlush();
+            if (DiagnosticLogPolicy.shouldPersist(kind)) {
+                DiagnosticLogPolicy.print(line);
+                scheduleStdoutFlush();
+            }
             IBinder target;
             synchronized (this) {
                 target = callback;
@@ -549,12 +559,12 @@ public final class CameraShellMain {
                 synchronized (ShellBinder.this) {
                     stdoutFlushScheduled = false;
                 }
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
             }, LOG_FLUSH_DELAY_MS)) {
                 synchronized (this) {
                     stdoutFlushScheduled = false;
                 }
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
             }
         }
     }
@@ -581,7 +591,7 @@ public final class CameraShellMain {
     }
 
     private static void terminateProcess() {
-        System.out.flush();
+        DiagnosticLogPolicy.flushOutput();
         Process.killProcess(Process.myPid());
     }
 

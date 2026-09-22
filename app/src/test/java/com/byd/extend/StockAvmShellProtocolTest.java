@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class StockAvmShellProtocolTest {
     @Test
     public void endpointIsolatedFromCameraOverlayShell() {
-        assertEquals(2, StockAvmShellProtocol.VERSION);
+        assertEquals(3, StockAvmShellProtocol.VERSION);
         assertFalse(StockAvmShellProtocol.SERVICE_NAME.equals(CameraShellProtocol.SERVICE_NAME));
         assertFalse(StockAvmShellProtocol.PROCESS_NAME.equals(CameraShellProtocol.PROCESS_NAME));
         assertTrue(StockAvmShellProtocol.HELPER_CLASS.contains("StockAvmShellMain"));

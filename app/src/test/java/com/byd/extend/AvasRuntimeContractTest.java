@@ -21,6 +21,11 @@ public final class AvasRuntimeContractTest {
         if (!Files.exists(transport)) transport = Path.of(
                 "src/main/java/com/byd/extend/AvasVehicleTelemetryTransport.java");
         String transportText = new String(Files.readAllBytes(transport), StandardCharsets.UTF_8);
+        Path manager = Path.of(
+                "app/src/main/java/com/byd/extend/FixedBydTelemetryManager.java");
+        if (!Files.exists(manager)) manager = Path.of(
+                "src/main/java/com/byd/extend/FixedBydTelemetryManager.java");
+        String managerText = new String(Files.readAllBytes(manager), StandardCharsets.UTF_8);
         Path controller = Path.of("app/src/main/java/com/byd/extend/AvasTelemetryController.java");
         if (!Files.exists(controller)) controller = Path.of(
                 "src/main/java/com/byd/extend/AvasTelemetryController.java");
@@ -50,9 +55,10 @@ public final class AvasRuntimeContractTest {
                 < text.indexOf("telemetry.shutdownNow()"));
         assertTrue(controllerText.contains("RECONCILE_MS = 60_000"));
         assertTrue(controllerText.contains("FALLBACK_MS = 250"));
-        assertTrue(transportText.contains("context.getSystemService(\"auto\")"));
-        assertTrue(transportText.contains("registerListener"));
-        assertTrue(transportText.contains("enableDevice"));
+        assertTrue(transportText.contains("FixedBydTelemetryManager.get(context)"));
+        assertTrue(managerText.contains("getSystemService(\"auto\")"));
+        assertTrue(managerText.contains("registerListener"));
+        assertTrue(managerText.contains("enableDevice"));
         assertTrue(transportText.contains("autoservice.transact(5"));
         assertFalse(transportText.contains("BYDAutoBodyworkDevice"));
         assertTrue(text.contains("skipEligible(config, \"power_on\")"));

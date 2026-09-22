@@ -11,44 +11,71 @@ import java.nio.file.Paths;
 import org.junit.Test;
 
 public final class TurnSignalGuardRecoveryIntegrationTest {
-    @Test
-    public void transientSamplesUseRecoveryWithoutMutatingSubscriptionHealth() throws Exception {
+    @Test public void runtimeUsesFixedCallbackControllerWithoutPerCycleSignalGets()
+            throws Exception {
         String source = runtimeSource();
-        String handler = between(source,
-                "private void handleListenerEvent", "private void listenerSampleFailed");
-        String transientFailure = between(source,
-                "private void listenerSampleFailed", "private void listenerFailed");
-        String hardFailure = between(source,
-                "private void listenerFailed", "private ReadResult read");
+        String scheduler = between(source,
+                "private void pollAndSchedule", "private void applyTelemetrySnapshot");
+        String snapshot = between(source,
+                "private void applyTelemetrySnapshot", "private void evaluateTelemetryDeadlines");
 
-        assertTrue(handler.contains("if (!listenerHealthy) return;"));
-        assertTrue(handler.contains("listenerSampleFailed("));
-        assertTrue(transientFailure.contains("listenerSampleRecovery.invalidate(signal)"));
-        assertTrue(transientFailure.contains("resetGesture()"));
-        assertTrue(transientFailure.contains("cancelSpeedDeferredSession("));
-        assertTrue(transientFailure.contains("suppress(\"telemetry_gap_or_invalid\")"));
-        assertFalse(transientFailure.contains("listenerHealthy = false"));
-        assertTrue(hardFailure.contains("listenerHealthy = false"));
-        assertFalse(hardFailure.contains("listenerSampleRecovery.reset()"));
+        assertTrue(source.contains("new TurnSignalTelemetryTransport(context)"));
+        assertTrue(scheduler.contains("telemetryController.tick()"));
+        assertFalse(scheduler.contains("read("));
+        assertFalse(snapshot.contains("read(STALK)"));
+        assertFalse(snapshot.contains("read(STEERING)"));
+        assertFalse(snapshot.contains("read(BLINK)"));
+        assertFalse(snapshot.contains("read(SPEED)"));
     }
 
-    @Test
-    public void recoveryUsesFreshPollAndOnlySubscriptionLifecycleResetsIt() throws Exception {
+    @Test public void reconciliationCannotInventGesturesOrCorrections() throws Exception {
         String source = runtimeSource();
-        String poll = between(source, "private void pollOnce", "private void evaluateStartup");
-        String stop = between(source, "private void stopOnHandler", "private void setManual");
-        String register = between(source, "private void registerListener", "private void prepareControl");
-        String configure = between(source, "private void configureOnHandler",
-                "private void vehiclePowerStateChangedOnHandler");
+        String snapshot = between(source,
+                "private void applyTelemetrySnapshot", "private void evaluateTelemetryDeadlines");
+        String conflict = between(source,
+                "private void cancelForReconciliationConflict", "private void telemetryModeChanged");
 
-        assertTrue(poll.contains("listenerSampleRecovery.validPoll(\n"
-                + "                pollFresh(SystemClock.elapsedRealtime(), lastPollAt), stalk.raw)"));
-        assertTrue(poll.contains("listenerSampleRecovery.acceptStalkObservation()"));
-        assertTrue(stop.contains("listenerSampleRecovery.reset()"));
-        assertTrue(stop.contains("resetGesture()"));
-        assertTrue(register.contains("listenerSampleRecovery.reset()"));
-        assertTrue(register.contains("resetGesture()"));
-        assertFalse(configure.contains("listenerSampleRecovery.reset()"));
+        assertTrue(snapshot.contains("Source.RECONCILE && conflict"));
+        assertTrue(snapshot.contains("boolean live = source == TurnSignalTelemetryController.Source.CALLBACK"));
+        assertTrue(snapshot.contains("if (live && listenerHealthy"));
+        assertTrue(snapshot.contains("liveMask & TurnSignalTelemetryController.LIVE_STALK"));
+        assertTrue(snapshot.contains("liveMask & TurnSignalTelemetryController.LIVE_STEERING"));
+        assertTrue(snapshot.contains("liveMask & TurnSignalTelemetryController.LIVE_BLINK"));
+        assertTrue(conflict.contains("resetGesture()"));
+        assertTrue(conflict.contains("suppress(\"reconciliation_conflict\")"));
+    }
+
+    @Test public void diagnosticSamplesAreGatedButVehicleStateRemainsFunctional()
+            throws Exception {
+        String source = runtimeSource();
+        String snapshot = between(source,
+                "private void applyTelemetrySnapshot", "private void evaluateTelemetryDeadlines");
+        String camera = between(source, "private void emitCameraState", "private void runOnHandler");
+
+        assertTrue(snapshot.contains("DiagnosticLogPolicy.extended()"));
+        assertTrue(snapshot.contains("emit(\"telemetry_sample\""));
+        assertTrue(camera.contains("emit(\"vehicle_state\""));
+        assertFalse(camera.contains("DiagnosticLogPolicy"));
+    }
+
+    @Test public void wakeAndSubscriptionLossInvalidateHistoricalControlOwnership()
+            throws Exception {
+        String source = runtimeSource();
+        String wake = between(source, "private void vehiclePowerStateChangedOnHandler",
+                "private void armStartupCleanupIfNeeded");
+        String mode = between(source, "private void telemetryModeChanged",
+                "private void invalidateTelemetryOwnership");
+        String invalidation = between(source, "private void invalidateTelemetryOwnership",
+                "private void evaluateStartupAwakeSessionCleanup");
+
+        int invalidate = wake.indexOf("invalidateTelemetryOwnership(\"wake_reseed\")");
+        int reseed = wake.indexOf("telemetryController.reseed()");
+        assertTrue(invalidate >= 0 && invalidate < reseed);
+        assertTrue(mode.contains("invalidateTelemetryOwnership(\"listener_error\")"));
+        assertTrue(invalidation.contains("resetGesture()"));
+        assertTrue(invalidation.contains("cancelHazardCleanup(reason)"));
+        assertTrue(invalidation.contains("cancelSpeedDeferredSession(reason)"));
+        assertTrue(invalidation.contains("suppress(reason)"));
     }
 
     private static String runtimeSource() throws Exception {

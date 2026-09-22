@@ -925,7 +925,7 @@ final class CameraDewarpRenderer {
                 completedWindowContext.generation, statsContext.generation,
                 completedWindowContext.viewWidth, statsContext.viewWidth,
                 completedWindowContext.viewHeight, statsContext.viewHeight);
-        Stats stats = new Stats(intervalNs, callbackCount, updateSamples, completedSwapCount,
+        Stats stats = !DiagnosticLogPolicy.extended() ? null : new Stats(intervalNs, callbackCount, updateSamples, completedSwapCount,
                 totalRenderNs, maxRenderNs, updateTotalNs, updateMaxNs,
                 preSwapTotalNs, preSwapMaxNs, swapWaitTotalNs, swapWaitMaxNs,
                 maxPrimarySwapNs,
@@ -962,7 +962,7 @@ final class CameraDewarpRenderer {
         maxCallbackGapNs = 0;
         maxFrameAgeNs = -1;
         try {
-            if (stableWindow) statsSink.accept(stats);
+            if (stableWindow && stats != null) statsSink.accept(stats);
         } catch (Throwable error) {
             Log.w(TAG, "Dewarp stats sink failed", error);
         }

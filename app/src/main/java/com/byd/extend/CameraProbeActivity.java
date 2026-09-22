@@ -2650,10 +2650,12 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (error != null) {
             record("compatibility_bundle_export", "state", "failed", "error", error.toString());
+            String message = runtimeText(CompatibilityExportSpace.isLowSpace(error)
+                    ? R.string.runtime_car_compat_low_space : R.string.runtime_car_compat_failed);
             publishSettingsOperation(SettingsOperation.Compatibility,
-                    runtimeText(R.string.runtime_car_compat_failed), StatusTone.Error, false);
+                    message, StatusTone.Error, false);
             if (activityResumed && !activityDestroyed) {
-                recordOperationFeedback(runtimeText(R.string.runtime_car_compat_failed));
+                recordOperationFeedback(message);
             }
             return;
         }
@@ -2769,6 +2771,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void onCalibrationDewarpStats(CameraDewarpRenderer.Stats stats) {
+        if (!DiagnosticLogPolicy.extended()) return;
         if (stats == null || calibrationPreview == null) return;
         if (!CameraDewarpStatsEvent.shouldRecord(
                 activityResumed, requestedOpen,
@@ -4124,6 +4127,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 onSettingsAutoStartChanged(value);
             } else if (id == ToggleId.AutomaticUpdate) {
                 preferences.edit().putBoolean(UpdateHintRuntime.PREF_AUTO_CHECK, value).apply();
+            } else if (id == ToggleId.ExtendedLogs) {
+                preferences.edit().putBoolean(DiagnosticLogPolicy.PREF_ENABLED, value).apply();
+                DiagnosticLogPolicy.configure(value);
+                CameraHelperService.diagnosticSettingsChanged(this);
             } else if (id == ToggleId.RecordLogcat) {
                 preferences.edit().putBoolean(ContinuousLogcatRecorder.PREF_ENABLED, value).apply();
                 CameraHelperService.diagnosticSettingsChanged(this);
@@ -12697,6 +12704,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onReverseDewarpStats(
             int cameraIndex, CameraDewarpRenderer.Stats stats) {
+        if (!DiagnosticLogPolicy.extended()) return;
         if (!CameraDewarpStatsEvent.shouldRecord(
                 activityResumed, requestedOpen,
                 activePreview == reverseCameraPreview, activeActivityCameraRequestId)
@@ -15606,6 +15614,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void record(String kind, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldPersist(kind)) return;
         try {
             JSONObject json = new JSONObject();
             json.put("kind", kind);

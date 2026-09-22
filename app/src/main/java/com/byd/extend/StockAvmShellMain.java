@@ -87,13 +87,13 @@ public final class StockAvmShellMain {
             System.out.println("READY pid=" + Process.myPid()
                     + " protocol=" + StockAvmShellProtocol.VERSION
                     + " build=" + versionCode);
-            System.out.flush();
+            DiagnosticLogPolicy.flushOutput();
             Looper.loop();
         } finally {
             try {
                 binder.closePreview("process_exit", 0);
             } finally {
-                System.out.flush();
+                DiagnosticLogPolicy.flushOutput();
                 owner.close();
             }
         }
@@ -136,6 +136,13 @@ public final class StockAvmShellMain {
             }
             try {
                 data.enforceInterface(StockAvmShellProtocol.DESCRIPTOR);
+                if (code == StockAvmShellProtocol.TX_CONFIGURE_LOGGING) {
+                    int enabled = data.readInt();
+                    if (enabled != 0 && enabled != 1) throw new IllegalArgumentException("invalid logging flag");
+                    DiagnosticLogPolicy.configure(enabled == 1);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == StockAvmShellProtocol.TX_PING) {
                     reply.writeNoException();
                     reply.writeInt(StockAvmShellProtocol.VERSION);
@@ -307,6 +314,7 @@ public final class StockAvmShellMain {
         }
 
         private void emit(String kind, Object... fields) {
+            if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
             try {
                 JSONObject json = new JSONObject().put("kind", kind).put("source", "stock_avm_shell")
                         .put("wall_time", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
@@ -314,7 +322,7 @@ public final class StockAvmShellMain {
                         .put("t_ms", SystemClock.elapsedRealtime());
                 for (int i = 0; i + 1 < fields.length; i += 2) json.put(String.valueOf(fields[i]), fields[i + 1]);
                 String line = json.toString();
-                System.out.println(line);
+                DiagnosticLogPolicy.print(line);
                 IBinder target;
                 synchronized (this) { target = callback; }
                 if (target == null) return;
@@ -337,7 +345,7 @@ public final class StockAvmShellMain {
         return context;
     }
 
-    private static void terminateProcess() { System.out.flush(); Process.killProcess(Process.myPid()); }
+    private static void terminateProcess() { DiagnosticLogPolicy.flushOutput(); Process.killProcess(Process.myPid()); }
 
     private static String summary(Throwable error) {
         Throwable current = error;

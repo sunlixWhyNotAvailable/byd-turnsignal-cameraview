@@ -545,6 +545,10 @@ final class DirectCameraSourceHub
                 reportSourceFailure(error);
                 return;
             }
+            if (!DiagnosticLogPolicy.extended()) {
+                stats.reset(callbackStartedNs);
+                return;
+            }
             Stats report = stats.record(
                     callbackStartedNs,
                     producerTimestampNs,

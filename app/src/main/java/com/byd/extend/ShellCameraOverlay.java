@@ -612,6 +612,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
     }
 
     private void emitDewarpStats(CameraDewarpRenderer.Stats stats) {
+        if (!DiagnosticLogPolicy.extended()) return;
         if (stats.requestId != requestId
                 || stats.contextGeneration != surfaceGeneration) return;
         emit("camera_dewarp_stats", CameraDewarpStatsEvent.overlay(

@@ -91,14 +91,14 @@ internal fun SettingsScreen(
                     }
                 }
             }
-            Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
+            LazyForm(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
                 .border(1.dp, colors.border, RoundedCornerShape(12.dp)).background(colors.surface)
-                .padding(12.dp).verticalScroll(LocalPrimaryScroll.current)) {
+                .padding(12.dp), LocalPrimaryLazyList.current) {
                 if (legacyRuntimeBlocked) {
-                    StatusText(StatusUiState(strings.text(
+                    row("runtime-blocked") { StatusText(StatusUiState(strings.text(
                         "Керування заблоковано до завершення переходу налаштувань.",
                         "Runtime controls are locked while settings transfer completes."),
-                        StatusTone.Warning, true), colors)
+                        StatusTone.Warning, true), colors) }
                 }
                 when (state.category) {
                     SettingsCategory.Permissions -> PermissionsSettings(state, strings, colors, onAction) {
@@ -122,10 +122,10 @@ internal fun SettingsScreen(
 }
 
 @Composable
-private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
+private fun FormScope.PermissionsSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit, onEditUpdateHint: () -> Unit) {
-    Section(strings.settingsCategories[0], colors, bodyPadding = 0.dp) {
-        SettingsActionRow(strings.text("Дозволи ADB", "ADB permissions"),
+    FormSection(strings.settingsCategories[0], colors, bodyPadding = 0.dp, key = "permissions") {
+        row("adb") { SettingsActionRow(strings.text("Дозволи ADB", "ADB permissions"),
             strings.text("Самоперевірка автоматично видає потрібні дозволи, коли ADB авторизований",
                 "Self-check grants required nav capture permissions automatically when ADB is authorized"),
             colors, verticalPadding = 14.dp) {
@@ -133,26 +133,26 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                 enabled = state.adbOperation.enabled && !state.adbOperation.pending) {
                 onAction(BydExtendUiAction.Run(CommandId.GrantAdb))
             }
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Робота у фоні", "Background apps"),
+        } }
+        row("divider-1") { Divider(colors) }
+        row("background") { SettingsActionRow(strings.text("Робота у фоні", "Background apps"),
             strings.text("Відкрити екран керування фоновою роботою", "Open background management screen"),
             colors, verticalPadding = 14.dp) {
             ActionButton(strings.text("Робота у фоні", "Disable BG Apps"), colors, Modifier.width(190.dp)) {
                 onAction(BydExtendUiAction.Run(CommandId.OpenBackgroundSettings))
             }
-        }
-        Divider(colors)
-        Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+        } }
+        row("divider-2") { Divider(colors) }
+        row("autostart") { Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             SwitchLine(strings.text("Авто-запуск", "Boot runtime service"),
                 strings.text("Запускати фонову службу BYD Extend після завантаження системи, розблокування, оновлення пакета та перевірки стану",
                     "Start the BYD Extend foreground service after boot and watchdog events"), state.automaticStart,
                 { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutoStart), it)) }, colors,
                 pending = state.automaticStartOperation.pending, enabled = state.automaticStartOperation.enabled,
                 compactSwitch = false)
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Перевіряти оновлення", "Check for updates"),
+        } }
+        row("divider-3") { Divider(colors) }
+        row("updates") { SettingsActionRow(strings.text("Перевіряти оновлення", "Check for updates"),
             strings.text("Перевіряти наявність нової версії та пропонувати оновитися",
                 "Check for new version and offer updating"), colors, verticalPadding = 14.dp) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -164,9 +164,9 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.AutomaticUpdate), it)) },
                     colors, compact = false)
             }
-        }
-        Divider(colors)
-        val hintPress = rememberPressFeedback()
+        } }
+        row("divider-4") { Divider(colors) }
+        row("update-hint") { val hintPress = rememberPressFeedback()
         SettingsActionRow(
             strings.text("Віджет-підказка нової версії", "New version hint widget", "新版本提示悬浮窗"),
             strings.text(
@@ -197,32 +197,32 @@ private fun PermissionsSettings(state: SettingsUiState, strings: UiStrings, colo
                     clearSemantics = true,
                 )
             }
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Вимкнути", "Shutdown", "关闭应用"),
+        } }
+        row("divider-5") { Divider(colors) }
+        row("shutdown") { SettingsActionRow(strings.text("Вимкнути", "Shutdown", "关闭应用"),
             strings.text("Завершити роботу застосунку до наступного відкриття",
                 "Stop the app until it is opened again", "停止应用，直到下次打开"),
             colors, verticalPadding = 8.dp) {
             ShutdownButton(strings.text("Вимкнути", "Shutdown", "关闭应用"), colors) {
                 onAction(BydExtendUiAction.Run(CommandId.Shutdown))
             }
-        }
+        } }
     }
 }
 
 @Composable
-private fun CameraOutputSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
+private fun FormScope.CameraOutputSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String?) {
-    Section(strings.settingsCategories[1], colors) {
-        Text(strings.text("Якість зображення", "Image quality"), color = colors.text,
-            fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Segmented(listOf(strings.text("Швидкодія", "Performance"), strings.text("Баланс", "Balanced"),
+    FormSection(strings.settingsCategories[1], colors, key = "camera-output") {
+        row("quality-title") { Text(strings.text("Якість зображення", "Image quality"), color = colors.text,
+            fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+        row("quality") { Segmented(listOf(strings.text("Швидкодія", "Performance"), strings.text("Баланс", "Balanced"),
             strings.text("Якість", "Quality"), strings.text("Оригінал", "Original")),
             state.cameraOutput.quality, colors, Modifier.fillMaxWidth()) {
             onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraQuality), it))
-        }
-        NumericSetting(strings.text("Заокруглення камер", "Camera corner radius"),
+        } }
+        row("corner-radius") { NumericSetting(strings.text("Заокруглення камер", "Camera corner radius"),
             state.cameraOutput.cornerRadius, "dp", colors,
             { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Output(OutputNumber.CornerRadius), it)) },
             0f..48f, adjustable = true, slider = true, sliderDots = true,
@@ -231,8 +231,8 @@ private fun CameraOutputSettings(state: SettingsUiState, strings: UiStrings, col
                 onPreview(NumberTarget.Output(OutputNumber.CornerRadius), value, session)
             },
             onCommitSession = { value, session -> onAction(BydExtendUiAction.CommitNumber(
-                NumberTarget.Output(OutputNumber.CornerRadius), value, session)) })
-        NumericSetting(strings.text("Прозорість камер", "Camera transparency"),
+                NumberTarget.Output(OutputNumber.CornerRadius), value, session)) }) }
+        row("transparency") { NumericSetting(strings.text("Прозорість камер", "Camera transparency"),
             state.cameraOutput.transparency, "%", colors,
             { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Output(OutputNumber.Transparency), it)) },
             0f..100f, adjustable = true, slider = true,
@@ -241,14 +241,14 @@ private fun CameraOutputSettings(state: SettingsUiState, strings: UiStrings, col
                 onPreview(NumberTarget.Output(OutputNumber.Transparency), value, session)
             },
             onCommitSession = { value, session -> onAction(BydExtendUiAction.CommitNumber(
-                NumberTarget.Output(OutputNumber.Transparency), value, session)) })
+                NumberTarget.Output(OutputNumber.Transparency), value, session)) }) }
     }
 }
 
 @Composable
-private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
+private fun FormScope.LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit) {
-    Section(strings.settingsCategories[2], colors, bodyPadding = 0.dp) {
+    FormSection(strings.settingsCategories[2], colors, bodyPadding = 0.dp, key = "logs") {
         val operationFeedbackHidden = state.feedbackOperation in setOf(
             SettingsOperation.Logs,
             SettingsOperation.Compatibility,
@@ -256,9 +256,9 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
             SettingsOperation.Import,
         )
         if (state.feedback.visible && !operationFeedbackHidden) {
-            Box(Modifier.padding(14.dp)) { StatusText(state.feedback, colors) }
+            row("feedback") { Box(Modifier.padding(14.dp)) { StatusText(state.feedback, colors) } }
         }
-        SettingsActionRow(strings.text("Діагностичні логи", "Diagnostic logs"),
+        row("actions") { SettingsActionRow(strings.text("Діагностичні логи", "Diagnostic logs"),
             strings.text("Поділитися або очистити локальну історію", "Share or clear local history"), colors) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ActionButton(strings.text("Поділитись", "Share"), colors, Modifier.width(190.dp),
@@ -275,18 +275,29 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
                     onAction(BydExtendUiAction.Run(CommandId.ClearLogs))
                 }
             }
-        }
-        Divider(colors)
-        Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+        } }
+        row("divider-1") { Divider(colors) }
+        row("extended-logs") { Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            SwitchLine(strings.text("Зберігати розширені логи", "Save extended logs", "保存扩展日志"),
+                strings.text(
+                    "Може збільшити навантаження на процесор і використання сховища.",
+                    "May increase CPU load and storage use.",
+                    "可能会增加 CPU 负载和存储空间占用。",
+                ),
+                state.extendedLogs, { onAction(BydExtendUiAction.Toggle(
+                    ToggleTarget.Simple(ToggleId.ExtendedLogs), it)) }, colors, compactSwitch = false)
+        } }
+        row("divider-2") { Divider(colors) }
+        row("record-logcat") { Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             SwitchLine(strings.text("Записувати logcat", "Record logcat", "记录 logcat"),
                 strings.text("Розмір файлу швидко збільшується, використовуйте з обережністю та очищайте логи після відправки.",
                     "The file size grows quickly. Use with caution and clear the logs after sending them.",
                     "日志文件大小会快速增长，请谨慎使用，并在发送后清除日志。"),
                 state.recordLogcat, { onAction(BydExtendUiAction.Toggle(
                     ToggleTarget.Simple(ToggleId.RecordLogcat), it)) }, colors, compactSwitch = false)
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Експорт конфігурації", "Export configuration", "导出配置"),
+        } }
+        row("divider-3") { Divider(colors) }
+        row("compatibility") { SettingsActionRow(strings.text("Експорт конфігурації", "Export configuration", "导出配置"),
             strings.text("Дані системи для перевірки сумісності", "System details for compatibility checks"),
             colors, verticalPadding = 8.dp) {
             Row(Modifier.width(586.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -301,9 +312,9 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
                     onAction(BydExtendUiAction.Run(CommandId.SaveCompatibilityPackage))
                 }
             }
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Пресети камер", "Camera presets"),
+        } }
+        row("divider-4") { Divider(colors) }
+        row("presets") { SettingsActionRow(strings.text("Пресети камер", "Camera presets"),
             strings.text("Експорт і завантаження налаштувань камер", "Export and load camera settings"),
             colors, verticalPadding = 8.dp) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -316,24 +327,24 @@ private fun LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPa
                     onAction(BydExtendUiAction.Run(CommandId.LoadCameraPresets))
                 }
             }
-        }
-        Divider(colors)
-        SettingsActionRow(strings.text("Імпортувати налаштування", "Import settings"),
+        } }
+        row("divider-5") { Divider(colors) }
+        row("import") { SettingsActionRow(strings.text("Імпортувати налаштування", "Import settings"),
             strings.text("Перенести налаштування з попереднього застосунку",
                 "Transfer settings from the previous application"), colors, verticalPadding = 8.dp) {
             ActionButton(strings.text("Імпортувати", "Import"), colors, Modifier.width(190.dp),
                 enabled = state.importOperation.enabled && !state.importOperation.pending, mainBackground = true) {
                 onAction(BydExtendUiAction.Run(CommandId.ImportLegacySettings))
             }
-        }
+        } }
         if (state.restoreLegacyAccessVisible) {
-            Divider(colors)
-            SettingsActionRow(strings.text("Відновити доступ", "Restore access"),
+            row("divider-6") { Divider(colors) }
+            row("restore-access") { SettingsActionRow(strings.text("Відновити доступ", "Restore access"),
                 strings.text("Відновити доступ без повторного імпорту", "Restore access without importing again"), colors) {
                 ActionButton(strings.text("Відновити", "Restore"), colors, Modifier.width(190.dp)) {
                     onAction(BydExtendUiAction.Run(CommandId.RestoreLegacyAccess))
                 }
-            }
+            } }
         }
     }
 }

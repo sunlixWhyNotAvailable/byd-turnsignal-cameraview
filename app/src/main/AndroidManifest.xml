@@ -86,6 +86,11 @@
         </service>
 
         <service
+            android:name="com.byd.extend.CompatibilityExportCleanupJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <service
             android:name="com.byd.extend.WeatherRefreshAccessibilityService"
             android:exported="true"
             android:label="@string/weather_accessibility_service_label"

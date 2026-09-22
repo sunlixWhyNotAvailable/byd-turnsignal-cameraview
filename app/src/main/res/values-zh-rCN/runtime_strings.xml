@@ -89,6 +89,7 @@
     <string name="runtime_car_compat_forming">正在创建数据包…</string>
     <string name="runtime_car_compat_cancel_done">取消完成；未分享部分数据包</string>
     <string name="runtime_car_compat_failed">无法创建兼容性数据包</string>
+    <string name="runtime_car_compat_low_space">存储空间不足，无法导出。请释放空间后重试；导出期间必须保留至少 512 MiB 的可用空间。</string>
     <string name="runtime_car_compat_empty">未创建兼容性数据包</string>
     <string name="runtime_car_compat_inactive">应用未激活，数据包分享已取消</string>
     <string name="runtime_car_compat_share_title">分享兼容性数据包</string>

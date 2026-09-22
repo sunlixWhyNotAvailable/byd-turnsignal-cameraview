@@ -91,13 +91,12 @@ internal fun MirrorScreen(
                 MirrorProfileHeader(state, strings, colors, sourceAction)
             },
             controls = {
-                key(state.activeFront) {
                 CameraProfileControls(profile, state.profile, state.section, true, strings, colors, sourceAction,
                     onPreview = sourcePreview,
+                    identityFor = { it.forMirrorSource(state.activeFront) },
                     parameters = {
                         MirrorParameters(state, strings, colors, onAction)
                     })
-                }
             },
             preview = {
                 if (state.section != CameraSection.Calibration) {
@@ -117,18 +116,18 @@ internal fun MirrorScreen(
 }
 
 @Composable
-private fun ColumnScope.MirrorProfileHeader(
+private fun FormScope.MirrorProfileHeader(
     state: MirrorUiState,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
-    SwitchLine(strings.text("Дзеркало заднього виду", "Rearview mirror"),
+    row("profile-enabled") { SwitchLine(strings.text("Дзеркало заднього виду", "Rearview mirror"),
         strings.text("Окремий віджет камери", "Independent camera widget", "独立摄像头悬浮窗"),
         state.enabled,
         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorEnabled), it)) },
-        colors, pending = state.operation.pending, enabled = state.operation.enabled)
-    SwitchLine(
+        colors, pending = state.operation.pending, enabled = state.operation.enabled) }
+    row("profile-panorama") { SwitchLine(
         strings.text(
             "Не показувати під час панорамного виду",
             "Do not show while panorama is open",
@@ -136,28 +135,28 @@ private fun ColumnScope.MirrorProfileHeader(
         ), strings.text("Тільки для планшету", "Tablet only", "仅限平板"), state.suppressWhilePanorama,
         { onAction(BydExtendUiAction.Toggle(
             ToggleTarget.Simple(ToggleId.MirrorSuppressWhilePanorama), it)) }, colors,
-    )
-    SwitchLine(strings.text("Інтеграція передньої камери", "Front camera integration", "前摄像头集成"),
+    ) }
+    row("profile-front-integration") { SwitchLine(strings.text("Інтеграція передньої камери", "Front camera integration", "前摄像头集成"),
         "", state.frontIntegrated,
-        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorFrontIntegration), it)) }, colors)
-    if (state.frontIntegrated) Segmented(
+        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorFrontIntegration), it)) }, colors) }
+    if (state.frontIntegrated) row("profile-source") { Segmented(
         listOf(strings.text("Задня", "Rear", "后"), strings.text("Передня", "Front", "前")),
         if (state.activeFront) 1 else 0, colors, Modifier.fillMaxWidth(),
-    ) { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.MirrorSource), it)) }
-    ProfilePresetButtons(CameraProfileId.Mirror, state.presetAvailable,
-        state.frontIntegrated && !state.activeFront, strings, colors, onAction)
+    ) { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.MirrorSource), it)) } }
+    row("profile-presets") { ProfilePresetButtons(CameraProfileId.Mirror, state.presetAvailable,
+        state.frontIntegrated && !state.activeFront, strings, colors, onAction) }
 }
 
 @Composable
-private fun ColumnScope.MirrorParameters(
+private fun FormScope.MirrorParameters(
     state: MirrorUiState,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
-    MirrorBindingRow(strings.text("Перемикання переднього / заднього виду", "Switch front / rear view", "切换前后视角"),
-        CameraButtonBindings.Action.MirrorSource, state.sourceBinding, state.frontIntegrated, strings, colors, onAction)
-    MirrorBindingRow(strings.text("Показати / приховати віджет", "Show / hide widget", "显示或隐藏悬浮窗"),
+    row("mirror-source-binding") { MirrorBindingRow(strings.text("Перемикання переднього / заднього виду", "Switch front / rear view", "切换前后视角"),
+        CameraButtonBindings.Action.MirrorSource, state.sourceBinding, state.frontIntegrated, strings, colors, onAction) }
+    row("mirror-visibility-binding") { MirrorBindingRow(strings.text("Показати / приховати віджет", "Show / hide widget", "显示或隐藏悬浮窗"),
         CameraButtonBindings.Action.MirrorVisibility, state.visibilityBinding, true, strings, colors, onAction) {
         SwitchLine(strings.text(
             "Повертати при відкритті застосунку",
@@ -167,30 +166,30 @@ private fun ColumnScope.MirrorParameters(
             onAction(BydExtendUiAction.Toggle(
                 ToggleTarget.Simple(ToggleId.MirrorReturnOnAppOpen), value))
         }, colors)
-    }
-    Text(strings.text(
+    } }
+    row("mirror-description") { Text(strings.text(
         "Постійний віджет камери поза BYD Extend. Поки застосунок відкритий, віджет приховано.",
         "A persistent camera widget outside BYD Extend. It is hidden while the application is open.",
         "在 BYD Extend 外持续显示摄像头悬浮窗。应用打开时隐藏悬浮窗。"),
-        color = colors.text, fontSize = 13.sp)
-    Text(strings.text(
+        color = colors.text, fontSize = 13.sp) }
+    row("mirror-gesture-hint") { Text(strings.text(
         "Перетягніть, щоб перемістити. Утримуйте, щоб приховати до наступного відкриття застосунку. Натискання крізь камеру не проходять.",
         "Drag to move. Touch and hold to hide until the next app opening. Taps do not pass through the camera.",
         "拖动可移动，长按可隐藏，直到下次打开应用。点击不会穿透摄像头窗口。"),
-        color = colors.muted, fontSize = 13.sp)
+        color = colors.muted, fontSize = 13.sp) }
     if (!state.overlayPermissionGranted) {
-        ActionButton(strings.text("Дозволити показ поверх інших застосунків",
+        row("mirror-overlay-permission") { ActionButton(strings.text("Дозволити показ поверх інших застосунків",
             "Allow display over other apps", "允许显示在其他应用上层"), colors,
             Modifier.fillMaxWidth(), maxLines = 2) {
             onAction(BydExtendUiAction.RequestMirrorOverlayPermission)
-        }
+        } }
     }
     if (state.target == DisplayTarget.Cluster && !state.clusterAvailable) {
-        Text(strings.text(
+        row("mirror-cluster-warning") { Text(strings.text(
             "Другий дисплей недоступний. Розташування на приборці показане лише тут; віджет не переноситься на планшет.",
             "No secondary display is available. Cluster placement is shown here only; the widget will not move to the tablet.",
             "无可用的第二显示屏。这里只模拟仪表屏布局，悬浮窗不会改在中控屏显示。"),
-            color = colors.yellow, fontSize = 12.sp)
+            color = colors.yellow, fontSize = 12.sp) }
     }
 }
 
@@ -240,11 +239,12 @@ private fun MirrorBindingRow(
 internal fun CameraBorderControls(
     profile: CameraProfileId, state: CameraProfileUiState, strings: UiStrings,
     colors: UiPalette, onAction: (BydExtendUiAction) -> Unit,
+    identity: Any = profile,
 ) {
     var pickingColor by rememberSaveable(profile) { mutableStateOf(false) }
     NumericSetting(strings.text("Товщина рамки", "Border width", "边框宽度"), state.borderWidth, "dp", colors,
         { onAction(BydExtendUiAction.SetProfileBorder(profile, width = it)) },
-        0f..16f, adjustable = true, slider = true, identity = profile to "border")
+        0f..16f, adjustable = true, slider = true, identity = identity to "border")
     Text(strings.text("0 — без рамки", "0 removes the border", "0 表示无边框"),
         color = colors.muted, fontSize = 12.sp)
     MirrorBorderColorLine(colors, strings, state.borderArgb) { pickingColor = true }

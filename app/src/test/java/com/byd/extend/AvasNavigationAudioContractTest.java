@@ -282,7 +282,10 @@ public final class AvasNavigationAudioContractTest {
         String prepare = route.substring(route.indexOf("void prepare("),
                 route.indexOf("static boolean acquirePrimary("));
         assertTrue(prepare.contains("tryWrite(EXTERIOR_DEVICE, POSITION_FID, 1"));
-        assertTrue(prepare.contains("tryWrite(CHANNEL0_DEVICE, AUX_FID, 1"));
+        assertFalse(prepare.contains("AUX_FID"));
+        assertFalse(route.contains("0x94E88A89"));
+        assertFalse(route.contains("BYDAutoBodyworkDevice"));
+        assertFalse(route.contains("setKaraokeMode"));
         assertFalse(prepare.contains("tryWrite(CHANNEL0_DEVICE, POSITION_FID"));
         assertTrue(prepare.indexOf("acquirePrimary(") < prepare.indexOf("exteriorPath(true"));
         assertTrue(prepare.indexOf("exteriorPath(true") < prepare.indexOf("manager.requestAudioFocus"));

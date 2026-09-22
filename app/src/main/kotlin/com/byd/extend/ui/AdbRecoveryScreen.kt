@@ -66,7 +66,7 @@ import com.byd.extend.AdbReminderAppearance
 import kotlin.math.roundToInt
 
 @Composable
-internal fun AdbRecoveryScreen(
+internal fun FormScope.AdbRecoveryScreen(
     state: AdbRecoveryUiState,
     strings: UiStrings,
     colors: UiPalette,
@@ -77,8 +77,9 @@ internal fun AdbRecoveryScreen(
     val update: (AdbReminderAppearance) -> Unit = {
         onAction(AdbRecoveryUiAction.UpdateReminderAppearance(it.normalized()))
     }
-    Section(strings.text("Відновлення ADB", "ADB recovery", "ADB 恢复"), colors) {
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+    FormSection(strings.text("Відновлення ADB", "ADB recovery", "ADB 恢复"), colors,
+        key = "adb-recovery") {
+        row("notice") { Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
             .background(colors.accent.copy(alpha = if (colors.dark) .22f else .12f))
             .border(1.dp, colors.yellow.copy(alpha = .55f), RoundedCornerShape(8.dp))
             .padding(14.dp)) {
@@ -88,66 +89,72 @@ internal fun AdbRecoveryScreen(
                 "恢复仅适用于先前已开启并授权的 ADB，无法完成首次开启或首次授权。",
             ), color = if (colors.dark) colors.yellow else colors.text, fontSize = 16.sp,
                 lineHeight = 22.sp)
-        }
-        SwitchLine(
+        } }
+        row("enabled") { SwitchLine(
             strings.text("Автоматичне відновлення", "Automatic recovery", "自动恢复"),
             strings.text("Відновлювати локальне підключення ADB на порту 5555",
                 "Restore the local ADB connection on port 5555", "恢复端口 5555 上的本地 ADB 连接"),
             state.enabled,
             { onAction(AdbRecoveryUiAction.SetRecoveryEnabled(it)) },
             colors,
-        )
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        ) }
+        row("status") { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(strings.text("Стан", "Status", "状态"), color = colors.muted, fontSize = 13.sp)
             StatusPill(stageState(state, strings), "ADB", colors)
-        }
-        ActionButton(
+        } }
+        row("retry") { ActionButton(
             strings.text("Повторити запит Wi-Fi", "Retry Wi-Fi request", "重试 Wi-Fi 请求"),
             colors, Modifier.fillMaxWidth(), icon = Icons.Outlined.Refresh,
             enabled = state.enabled && !state.authenticated5555,
-        ) { onAction(AdbRecoveryUiAction.Retry) }
+        ) { onAction(AdbRecoveryUiAction.Retry) } }
     }
-    Spacer(Modifier.height(12.dp))
-    Section(strings.text("Нагадування про Wi-Fi", "Wi-Fi reminder", "Wi-Fi 提醒"), colors) {
-        SwitchLine(
+    row("adb-gap") { Spacer(Modifier.height(12.dp)) }
+    FormSection(strings.text("Нагадування про Wi-Fi", "Wi-Fi reminder", "Wi-Fi 提醒"), colors,
+        key = "adb-reminder") {
+        row("enabled") { SwitchLine(
             strings.text("Показувати нагадування", "Show reminder", "显示提醒"),
             strings.text("Показати віджет під час очікування Wi-Fi",
                 "Show the widget while waiting for Wi-Fi", "等待 Wi-Fi 时显示悬浮窗"),
             state.appearance.widgetEnabled,
             { onAction(AdbRecoveryUiAction.SetReminderEnabled(it)) }, colors,
-        )
+        ) }
         val reminderEnabled = state.appearance.widgetEnabled
-        NumericSetting(strings.text("Затримка", "Delay", "延迟"),
+        row("delay") { NumericSetting(strings.text("Затримка", "Delay", "延迟"),
             state.appearance.delaySeconds.toString(), strings.text("с", "s", "秒"), colors,
             { update(state.appearance.copy(delaySeconds = it.toFloat().roundToInt())) },
-            0f..120f, enabled = reminderEnabled, adjustable = true)
-        NumericSetting(strings.text("Непрозорість", "Opacity", "不透明度"),
+            0f..120f, enabled = reminderEnabled, adjustable = true,
+            identity = "adb-reminder-delay") }
+        row("opacity") { NumericSetting(strings.text("Непрозорість", "Opacity", "不透明度"),
             state.appearance.opacityPercent.toString(), "%", colors,
             { update(state.appearance.copy(opacityPercent = it.toFloat().roundToInt())) },
-            0f..100f, enabled = reminderEnabled, slider = true)
-        NumericSetting(strings.text("Ширина", "Width", "宽度"),
+            0f..100f, enabled = reminderEnabled, slider = true,
+            identity = "adb-reminder-opacity") }
+        row("width") { NumericSetting(strings.text("Ширина", "Width", "宽度"),
             state.appearance.widthPercent.toString(), "%", colors,
             { update(state.appearance.copy(widthPercent = it.toFloat().roundToInt())) },
-            30f..95f, enabled = reminderEnabled, slider = true)
-        NumericSetting(strings.text("Радіус кутів", "Corner radius", "圆角半径"),
+            30f..95f, enabled = reminderEnabled, slider = true,
+            identity = "adb-reminder-width") }
+        row("radius") { NumericSetting(strings.text("Радіус кутів", "Corner radius", "圆角半径"),
             state.appearance.cornerRadiusDp.toString(), "dp", colors,
             { update(state.appearance.copy(cornerRadiusDp = it.toFloat().roundToInt())) },
-            0f..48f, enabled = reminderEnabled, slider = true)
-        SwitchLine(strings.text("Рамка", "Frame", "边框"), "", state.appearance.borderEnabled,
+            0f..48f, enabled = reminderEnabled, slider = true,
+            identity = "adb-reminder-radius") }
+        row("frame") { SwitchLine(strings.text("Рамка", "Frame", "边框"), "", state.appearance.borderEnabled,
             { update(state.appearance.copy(borderEnabled = it)) }, colors,
-            enabled = reminderEnabled)
+            enabled = reminderEnabled) }
         val frameEnabled = reminderEnabled && state.appearance.borderEnabled
-        NumericSetting(strings.text("Товщина рамки", "Frame thickness", "边框粗细"),
+        row("frame-width") { NumericSetting(strings.text("Товщина рамки", "Frame thickness", "边框粗细"),
             state.appearance.borderThicknessDp.toString(), "dp", colors,
             { update(state.appearance.copy(borderThicknessDp = it.toFloat().roundToInt())) },
-            1f..12f, enabled = frameEnabled, slider = true)
-        ReminderColorLine(strings, colors, state.appearance.borderArgb,
-            enabled = frameEnabled) { chooseColor = true }
-        ActionButton(strings.text("Вигляд і розташування віджета",
+            1f..12f, enabled = frameEnabled, slider = true,
+            identity = "adb-reminder-border-width") }
+        row("frame-color") { ReminderColorLine(strings, colors, state.appearance.borderArgb,
+            enabled = frameEnabled) { chooseColor = true } }
+        row("editor") { ActionButton(strings.text("Вигляд і розташування віджета",
             "Widget appearance and placement", "悬浮窗外观和位置"), colors,
             Modifier.fillMaxWidth(), icon = Icons.Outlined.OpenInFull,
-            enabled = state.enabled && reminderEnabled) { editAppearance = true }
+            enabled = state.enabled && reminderEnabled) { editAppearance = true } }
     }
     if (chooseColor) ReminderColorPicker(strings, colors, state.appearance.borderArgb,
         onDismiss = { chooseColor = false }) {

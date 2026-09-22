@@ -387,6 +387,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     @Override
     public void onReverseDewarpStats(
             int cameraIndex, CameraDewarpRenderer.Stats stats) {
+        if (!DiagnosticLogPolicy.extended()) return;
         int generation = cameraIndex >= 1 && cameraIndex <= surfaceGenerations.length
                 ? surfaceGenerations[cameraIndex - 1] : 0;
         if (stats.requestId != requestId || stats.contextGeneration != generation) return;

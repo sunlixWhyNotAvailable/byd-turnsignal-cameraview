@@ -86,7 +86,7 @@ public final class CameraRuntimeBorderTest {
     @Test public void protocolSerializationAndRenderingKeepFrameAndTouchBoundaries()
             throws Exception {
         String protocol = source("CameraShellProtocol.java");
-        assertTrue(protocol.contains("static final int VERSION = 29;"));
+        assertTrue(protocol.contains("static final int VERSION = 30;"));
         assertTrue(protocol.contains("parcel.writeInt(borderDp[index]);\n"
                 + "                parcel.writeInt(borderArgb[index]);"));
         assertTrue(protocol.contains("result.setBorder(index, parcel.readInt(), parcel.readInt())"));

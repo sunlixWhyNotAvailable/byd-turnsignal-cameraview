@@ -3,7 +3,6 @@ package com.byd.extend.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,7 +52,7 @@ internal fun BlindScreen(
             },
             profileStatus = profile.operation.status,
             profileControls = {
-                Row(Modifier.height(40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row("profile-selector") { Row(Modifier.height(40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Segmented(listOf(strings.text("Задні", "Rear"), strings.text("Передні", "Front")),
                         state.selectedGroup.ordinal, colors, Modifier.weight(1f), groupIndicatorPosition) {
                         onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindGroup), it))
@@ -62,9 +61,9 @@ internal fun BlindScreen(
                         state.selectedSide.ordinal, colors, Modifier.weight(1f), sideIndicatorPosition) {
                         onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindSide), it))
                     }
-                }
+                } }
                 val groupEnabled = if (state.selectedGroup == CameraGroup.Rear) state.rearEnabled else state.frontEnabled
-                SwitchLine(
+                row("profile-enabled") { SwitchLine(
                     strings.text(
                         if (state.selectedGroup == CameraGroup.Rear) "Включити задні камери" else "Включити передні камери",
                         if (state.selectedGroup == CameraGroup.Rear) "Enable rear cameras" else "Enable front cameras",
@@ -74,8 +73,8 @@ internal fun BlindScreen(
                             if (state.selectedGroup == CameraGroup.Rear) ToggleId.BlindRear else ToggleId.BlindFront,
                             state.selectedGroup), it))
                     }, colors,
-                )
-                SwitchLine(
+                ) }
+                row("profile-panorama") { SwitchLine(
                     strings.text(
                         "Не показувати під час панорамного виду",
                         "Do not show while panorama is open",
@@ -83,8 +82,9 @@ internal fun BlindScreen(
                     ), strings.text("Тільки для планшету", "Tablet only", "仅限平板"), rules.suppressWhilePanorama,
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
                         ToggleId.BlindSuppressWhilePanorama, state.selectedGroup), it)) }, colors,
-                )
-                ProfilePresetButtons(profileId, profile.presetAvailable, true, strings, colors, onAction)
+                ) }
+                row("profile-presets") { ProfilePresetButtons(
+                    profileId, profile.presetAvailable, true, strings, colors, onAction) }
             },
             controls = {
                 CameraProfileControls(profileId, profile, state.section, true, strings, colors, onAction,
@@ -98,42 +98,42 @@ internal fun BlindScreen(
 }
 
 @Composable
-private fun BlindParameters(
+private fun FormScope.BlindParameters(
     group: CameraGroup,
     rules: BlindRuleUiState,
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
-    NumericSetting(strings.text("Мінімальна швидкість", "Minimum speed"), rules.minimumSpeed,
+    row("blind-min-speed") { NumericSetting(strings.text("Мінімальна швидкість", "Minimum speed"), rules.minimumSpeed,
         strings.text("км/год", "km/h"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MinimumSpeed), it)) }, 0f..300f,
-        identity = NumberTarget.Blind(group, BlindNumber.MinimumSpeed))
-    NumericSetting(strings.text("Максимальна швидкість", "Maximum speed"), rules.maximumSpeed,
+        identity = NumberTarget.Blind(group, BlindNumber.MinimumSpeed)) }
+    row("blind-max-speed") { NumericSetting(strings.text("Максимальна швидкість", "Maximum speed"), rules.maximumSpeed,
         strings.text("км/год", "km/h"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MaximumSpeed), it)) }, 0f..300f,
-        identity = NumberTarget.Blind(group, BlindNumber.MaximumSpeed))
-    NumericSetting(
+        identity = NumberTarget.Blind(group, BlindNumber.MaximumSpeed)) }
+    row("blind-steering-angle") { NumericSetting(
         if (group == CameraGroup.Rear) strings.text("Кут різкого повороту", "Sharp-turn angle")
         else strings.text("Мінімальний кут керма", "Minimum steering angle"),
         rules.steeringAngle, "°", colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.SteeringAngle), it)) }, 0f..780f,
-        identity = NumberTarget.Blind(group, BlindNumber.SteeringAngle))
+        identity = NumberTarget.Blind(group, BlindNumber.SteeringAngle)) }
     if (group == CameraGroup.Rear) {
-        SwitchLine(strings.text("Протилежна камера\nрізкого повороту",
+        row("blind-sharp-turn") { SwitchLine(strings.text("Протилежна камера\nрізкого повороту",
             "Opposite camera\non sharp turns"), "",
             rules.sharpTurnEnabled,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindSharpTurn, group), it)) }, colors)
-        SwitchLine(strings.text("Показ лише за об’єкта у сліпій зоні", "Show only with a blind-spot object"), "",
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindSharpTurn, group), it)) }, colors) }
+        row("blind-object-only") { SwitchLine(strings.text("Показ лише за об’єкта у сліпій зоні", "Show only with a blind-spot object"), "",
             rules.blindSpotOnly,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindObjectOnly, group), it)) }, colors)
-        ChoiceField(strings.text("Підсвітка об’єкта у сліпій зоні", "Blind-spot object highlight"),
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindObjectOnly, group), it)) }, colors) }
+        row("blind-warning-mode") { ChoiceField(strings.text("Підсвітка об’єкта у сліпій зоні", "Blind-spot object highlight"),
             listOf(strings.text("Вимкнена", "Off"), strings.text("Постійно", "Steady"),
                 strings.text("Пульсація", "Pulse")), rules.warningMode,
-            { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindWarningMode), it)) }, colors)
+            { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindWarningMode), it)) }, colors) }
     } else {
-        SwitchLine(strings.text("Обов'язково поворотник", "Turn signal required"), "", rules.turnRequired,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindTurnRequired, group), it)) }, colors)
+        row("blind-turn-required") { SwitchLine(strings.text("Обов'язково поворотник", "Turn signal required"), "", rules.turnRequired,
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindTurnRequired, group), it)) }, colors) }
     }
 }
 
@@ -165,11 +165,11 @@ internal fun ParkingScreen(
             },
             profileStatus = viewState.profile.operation.status,
             profileControls = {
-                ChoiceField(strings.text("Вид камери", "Camera view"), strings.parkingViews, view.ordinal,
-                    { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ParkingView), it)) }, colors)
-                SwitchLine(strings.text("Увімкнути камеру", "Enable camera"), "", viewState.enabled,
-                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingView, view), it)) }, colors)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row("profile-view") { ChoiceField(strings.text("Вид камери", "Camera view"), strings.parkingViews, view.ordinal,
+                    { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ParkingView), it)) }, colors) }
+                row("profile-enabled") { SwitchLine(strings.text("Увімкнути камеру", "Enable camera"), "", viewState.enabled,
+                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingView, view), it)) }, colors) }
+                row("profile-bulk") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ActionButton(strings.text("Увімкнути всі камери", "Enable all cameras"), colors,
                         Modifier.weight(1f), height = 32.dp) {
                         onAction(BydExtendUiAction.Run(CommandId.EnableAllParking))
@@ -178,17 +178,18 @@ internal fun ParkingScreen(
                         Modifier.weight(1f), height = 32.dp) {
                         onAction(BydExtendUiAction.Run(CommandId.DisableAllParking))
                     }
-                }
-                ProfilePresetButtons(profileId, viewState.profile.presetAvailable, true, strings, colors, onAction)
+                } }
+                row("profile-presets") { ProfilePresetButtons(
+                    profileId, viewState.profile.presetAvailable, true, strings, colors, onAction) }
             },
             controls = {
                 CameraProfileControls(profileId, viewState.profile, state.section, false, strings, colors, onAction,
                     onPreview = onPreview,
                     placementExtra = {
-                        SwitchLine(strings.text("Синхронізувати розмір", "Synchronize size"), "",
+                        row("placement-sync-size") { SwitchLine(strings.text("Синхронізувати розмір", "Synchronize size"), "",
                             state.synchronizeSize,
                             { onAction(BydExtendUiAction.Toggle(
-                                ToggleTarget.Parking(ToggleId.ParkingSynchronizeSize), it)) }, colors)
+                                ToggleTarget.Parking(ToggleId.ParkingSynchronizeSize), it)) }, colors) }
                     },
                     parameters = { ParkingParameters(state, view, viewState, strings, colors, onAction) })
             },
@@ -200,7 +201,7 @@ internal fun ParkingScreen(
 }
 
 @Composable
-private fun ParkingParameters(
+private fun FormScope.ParkingParameters(
     state: ParkingUiState,
     view: ParkingView,
     viewState: ParkingViewUiState,
@@ -208,22 +209,22 @@ private fun ParkingParameters(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
-    NumericSetting(strings.text("Відстань спрацювання", "Trigger distance"), viewState.triggerDistance,
+    row("parking-trigger-distance") { NumericSetting(strings.text("Відстань спрацювання", "Trigger distance"), viewState.triggerDistance,
         strings.text("см", "cm"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(view, ParkingNumber.TriggerDistance), it)) }, 0f..150f,
-        identity = NumberTarget.Parking(view, ParkingNumber.TriggerDistance))
-    NumericSetting(strings.text("Макс. швидкість • усі види", "Max. speed • all views"), state.maximumSpeed,
+        identity = NumberTarget.Parking(view, ParkingNumber.TriggerDistance)) }
+    row("parking-max-speed") { NumericSetting(strings.text("Макс. швидкість • усі види", "Max. speed • all views"), state.maximumSpeed,
         strings.text("км/год", "km/h"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(null, ParkingNumber.MaximumSpeed), it)) }, 0f..300f,
-        identity = NumberTarget.Parking(null, ParkingNumber.MaximumSpeed))
+        identity = NumberTarget.Parking(null, ParkingNumber.MaximumSpeed)) }
     if (view in listOf(ParkingView.FrontLeft, ParkingView.FrontRight, ParkingView.RearRight, ParkingView.RearLeft)) {
         val central = if (view == ParkingView.FrontLeft || view == ParkingView.FrontRight) {
             strings.text("Передня", "Front")
         } else strings.text("Задня", "Rear")
-        SwitchLine(strings.text("Додати центральну камеру", "Add the central camera"), central,
+        row("parking-central") { SwitchLine(strings.text("Додати центральну камеру", "Add the central camera"), central,
             viewState.addCentralCamera,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingAddCentral, view), it)) }, colors)
+            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingAddCentral, view), it)) }, colors) }
     }
-    SwitchLine(strings.text("Разом із заднім ходом", "Alongside reverse"), "", state.alongsideReverse,
-        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingAlongsideReverse), it)) }, colors)
+    row("parking-alongside-reverse") { SwitchLine(strings.text("Разом із заднім ходом", "Alongside reverse"), "", state.alongsideReverse,
+        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingAlongsideReverse), it)) }, colors) }
 }

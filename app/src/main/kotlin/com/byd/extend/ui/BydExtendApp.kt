@@ -28,6 +28,10 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -125,25 +129,31 @@ fun BydExtendApp(
     val scrollKey = state.scrollKey()
     val sidebarKey = state.sidebarScrollKey()
     val viewportPositions = rememberSaveableStateHolder()
-    lateinit var primaryScroll: ScrollState
-    lateinit var sidebarScroll: ScrollState
-    // Save only the viewport position. Keying the screen itself would recreate camera hosts.
-    viewportPositions.SaveableStateProvider("main:$scrollKey") {
-        primaryScroll = rememberScrollState(
-            uiSession.viewport(scrollKey, RuntimeViewportKind.Main).offset)
+    val processMainViewport = uiSession.viewport(scrollKey, RuntimeViewportKind.Main)
+    // Save only viewport state. The screen and its camera hosts stay outside saveable containers.
+    val primaryScroll = rememberSavedScrollState(viewportPositions, "main-scroll:$scrollKey",
+        processMainViewport.offset)
+    val primaryLazyList = rememberSavedLazyListState(viewportPositions, "main-lazy:$scrollKey",
+        processMainViewport)
+    // Freeze the process fallback for this LazyListState lifetime. Session capture updates the
+    // stored bookmark while scrolling; it must not recreate the restorer and cancel a drag/fling.
+    val initialLazyFallback = remember(primaryLazyList) { processMainViewport }
+    val primaryLazyViewport = remember(primaryLazyList, contentReady) {
+        RetainedLazyViewport(primaryLazyList, initialLazyFallback, contentReady)
     }
-    viewportPositions.SaveableStateProvider("sidebar:$sidebarKey") {
-        sidebarScroll = rememberScrollState(
-            uiSession.viewport(sidebarKey, RuntimeViewportKind.Sidebar).offset)
-    }
+    val sidebarScroll = rememberSavedScrollState(viewportPositions, "sidebar:$sidebarKey",
+        uiSession.viewport(sidebarKey, RuntimeViewportKind.Sidebar).offset)
     // Android-restored state takes precedence over the process-only fallback.
-    val mainViewport = rememberSessionScrollRestore(primaryScroll, scrollKey, contentReady)
+    val mainScrollViewport = rememberSessionScrollRestore(primaryScroll, scrollKey, contentReady)
     val sidebarViewport = rememberSessionScrollRestore(sidebarScroll, sidebarKey, true)
+    val lazyMain = state.usesLazyMainViewport()
     val imeDismissalPolicy = remember { ImeDismissalPolicy() }
+    val numericDraftStore = remember { NumericDraftStore() }
     val latestState by rememberUpdatedState(state)
     fun captureUiSession() {
         uiSession.select(RuntimeUiSelections.from(latestState))
-        uiSession.recordViewport(scrollKey, RuntimeViewportKind.Main, mainViewport.position())
+        uiSession.recordViewport(scrollKey, RuntimeViewportKind.Main,
+            if (lazyMain) primaryLazyViewport.position() else mainScrollViewport.position())
         uiSession.recordViewport(sidebarKey, RuntimeViewportKind.Sidebar, sidebarViewport.position())
     }
     val latestCaptureUiSession by rememberUpdatedState(::captureUiSession)
@@ -152,11 +162,12 @@ fun BydExtendApp(
         latestCaptureUiSession()
         onAction(it)
     }
-    LaunchedEffect(uiSession, mainViewport, sidebarViewport, scrollKey, sidebarKey) {
+    LaunchedEffect(uiSession, mainScrollViewport, primaryLazyViewport, sidebarViewport, scrollKey, sidebarKey,
+        lazyMain) {
         snapshotFlow {
             Triple(
                 RuntimeUiSelections.from(latestState),
-                mainViewport.position(),
+                if (lazyMain) primaryLazyViewport.position() else mainScrollViewport.position(),
                 sidebarViewport.position(),
             )
         }.collect { latestCaptureUiSession() }
@@ -174,6 +185,8 @@ fun BydExtendApp(
     }
     CompositionLocalProvider(
         LocalPrimaryScroll provides primaryScroll,
+        LocalPrimaryLazyList provides primaryLazyViewport,
+        LocalNumericDraftStore provides numericDraftStore,
         LocalImeDismissalPolicy provides imeDismissalPolicy,
     ) {
         Box(Modifier.fillMaxSize().background(colors.background).semantics { testTagsAsResourceId = true }) {
@@ -200,6 +213,34 @@ fun BydExtendApp(
             state.dialog?.let { AppDialog(it, strings, colors, dispatchAction) }
         }
     }
+}
+
+@Composable
+private fun rememberSavedScrollState(
+    holder: androidx.compose.runtime.saveable.SaveableStateHolder,
+    key: String,
+    processOffset: Int,
+): ScrollState {
+    var initialized: ScrollState? = null
+    holder.SaveableStateProvider(key) {
+        // Android-restored state wins; the process value is only the initial fallback.
+        initialized = rememberScrollState(processOffset)
+    }
+    return checkNotNull(initialized)
+}
+
+@Composable
+private fun rememberSavedLazyListState(
+    holder: androidx.compose.runtime.saveable.SaveableStateHolder,
+    key: String,
+    processPosition: RuntimeViewport,
+): LazyListState {
+    var initialized: LazyListState? = null
+    holder.SaveableStateProvider(key) {
+        // LazyListState's Saver restores Android state before these process-only initial values.
+        initialized = rememberLazyListState(processPosition.index, processPosition.offset)
+    }
+    return checkNotNull(initialized)
 }
 
 private class SessionScrollState(
@@ -238,7 +279,7 @@ internal fun BydExtendUiState.scrollKey(): String = when (activeTab) {
     RootTab.Blind -> "blind:${blind.selectedGroup}:${blind.selectedSide}:${blind.section}"
     RootTab.Parking -> "parking:${parking.selectedView}:${parking.section}"
     RootTab.Reverse -> "reverse:${reverse.selectedElement}:${reverse.selectedSource}:${reverse.section}"
-    RootTab.Mirror -> "mirror:${mirror.target}:${mirror.section}"
+    RootTab.Mirror -> "mirror:${mirror.target}:${mirror.activeFront}:${mirror.section}"
     RootTab.Settings -> "settings:${settings.category}"
     RootTab.Debug -> "debug:${debug.mode}"
 }
@@ -247,6 +288,13 @@ internal fun BydExtendUiState.sidebarScrollKey(): String = when (activeTab) {
     RootTab.Signals -> "signals"
     RootTab.Settings -> "settings"
     else -> "none:${activeTab.name}"
+}
+
+internal fun BydExtendUiState.usesLazyMainViewport(): Boolean = when (activeTab) {
+    RootTab.Blind, RootTab.Parking, RootTab.Reverse, RootTab.Mirror, RootTab.Settings -> true
+    RootTab.Signals -> signals.category == SignalsCategory.Avas ||
+        signals.category == SignalsCategory.AdbRecovery
+    RootTab.Debug -> false
 }
 
 @Composable
@@ -333,11 +381,13 @@ private fun SignalsScreen(
                 onAction(BydExtendUiAction.Select(
                     SelectionTarget.Simple(SelectionId.SignalsCategory), it))
             }
-            Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp))
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp))
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                .background(colors.surface).padding(12.dp).verticalScroll(LocalPrimaryScroll.current)) {
+                .background(colors.surface).padding(12.dp)) {
+                val avasColumns = if (maxWidth >= 600.dp) 2 else 1
                 when (state.category) {
-                    SignalsCategory.TurnSignals -> Section(strings.text("Захист поворотника", "Turn-signal guard",
+                    SignalsCategory.TurnSignals -> Column(Modifier.fillMaxSize()
+                        .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Захист поворотника", "Turn-signal guard",
                         "转向灯保护"), colors, trailing = {
                     AppSwitch(state.guard.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Guard), it)) }, colors,
@@ -373,16 +423,18 @@ private fun SignalsScreen(
                                 enabled = state.guard.operation.enabled && !state.guard.operation.pending,
                                 identity = NumberTarget.Guard(field))
                         }
-                    }
-                    SignalsCategory.Music -> Section(strings.text("Музика та підсвітка", "Music and lighting",
+                    } }
+                    SignalsCategory.Music -> Column(Modifier.fillMaxSize()
+                        .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Музика та підсвітка", "Music and lighting",
                         "音乐与氛围灯"), colors) {
                     SwitchLine(strings.text("Підсвітка та метадані музики", "Ambient lighting and music metadata"),
                         strings.text("Штатна підсвітка під час відтворення", "Stock ambient lighting during playback"),
                         state.music.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Music), it)) }, colors,
                         pending = state.music.operation.pending, enabled = state.music.operation.enabled)
-                    }
-                    SignalsCategory.Weather -> Section(strings.text("Погода", "Weather", "天气"), colors) {
+                    } }
+                    SignalsCategory.Weather -> Column(Modifier.fillMaxSize()
+                        .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Погода", "Weather", "天气"), colors) {
                     SwitchLine(strings.text("Локальна погода", "Local weather"),
                         strings.text("Погода за координатами у штатній картці BYD",
                             "Coordinate-based weather in the stock BYD card"), state.weather.enabled,
@@ -407,10 +459,15 @@ private fun SignalsScreen(
                         colors,
                         Modifier.width(230.dp),
                     ) { onAction(BydExtendUiAction.Run(CommandId.OpenWeatherAttribution)) }
+                    } }
+                    SignalsCategory.Avas -> LazyForm(Modifier.fillMaxSize(), LocalPrimaryLazyList.current) {
+                        AvasIntegration(avas, strings, colors, onAction, avasColumns)
                     }
-                    SignalsCategory.Avas -> AvasIntegration(avas, strings, colors, onAction)
-                    SignalsCategory.AdbRecovery -> AdbRecoveryScreen(adbRecovery, strings, colors) {
-                        onAction(BydExtendUiAction.AdbRecovery(it))
+                    SignalsCategory.AdbRecovery -> LazyForm(
+                        Modifier.fillMaxSize(), LocalPrimaryLazyList.current) {
+                        AdbRecoveryScreen(adbRecovery, strings, colors) {
+                            onAction(BydExtendUiAction.AdbRecovery(it))
+                        }
                     }
                 }
             }
@@ -464,9 +521,10 @@ private fun avasTitle(id: String, strings: UiStrings) = when (id) {
 }
 
 @Composable
-private fun AvasIntegration(
+private fun FormScope.AvasIntegration(
     state: AvasUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
+    columns: Int,
 ) {
     var listing by remember { mutableStateOf<String?>(null) }
     fun send(profileId: String, kind: AvasActionKind, boolean: Boolean? = null,
@@ -474,7 +532,7 @@ private fun AvasIntegration(
         onAction(BydExtendUiAction.Avas(AvasBackendAction(profileId, kind, boolean, number, text)))
     }
     val exteriorBusy = state.profiles.any { it.playback != AvasPlaybackUiState.Idle }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    row("avas-intro") { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
             color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
         Text(strings.text("Незалежні профілі з власними файлами, налаштуваннями та ручною перевіркою.",
@@ -484,15 +542,14 @@ private fun AvasIntegration(
             "Skipping simultaneous lock/unlock sounds is configured separately for Power on and Power off.",
             "可分别为上电和下电设置是否跳过同时触发的解锁/锁车声音。"),
             color = colors.muted, fontSize = 13.sp)
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val columns = if (maxWidth >= 600.dp) 2 else 1
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                AvasProfileIds.ALL.map { id -> state.profiles.firstOrNull { it.id == id }
-                    ?: AvasProfileUiState(id = id) }
-                    .chunked(columns).forEach { row ->
+    } }
+    AvasProfileIds.ALL.map { id -> state.profiles.firstOrNull { it.id == id }
+        ?: AvasProfileUiState(id = id) }
+        .chunked(columns).forEachIndexed { pairIndex, pair ->
+            row("avas-profile-pair-$pairIndex") {
                     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        row.forEach { profile ->
+                        pair.forEach { profile ->
                             val importing = state.importingProfileId != null
                             val title = avasTitle(profile.id, strings)
                             val selectedAsset = profile.assets.firstOrNull {
@@ -573,12 +630,10 @@ private fun AvasIntegration(
                                 }
                             }
                         }
-                        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                        repeat(columns - pair.size) { Spacer(Modifier.weight(1f)) }
                     }
-                }
             }
         }
-    }
     listing?.let { profileId ->
         val profile = state.profiles.firstOrNull { it.id == profileId }
         if (profile == null) listing = null else Dialog(
@@ -607,13 +662,12 @@ private fun AvasIntegration(
                 Text(strings.text("Оберіть файл для цього профілю. Вибір не запускає звук.",
                     "Select a file for this profile. Selection does not play audio.",
                     "选择此配置的文件。选择文件不会播放声音。"), color = colors.muted, fontSize = 13.sp)
-                Column(Modifier.fillMaxWidth().weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState()).selectableGroup(),
+                LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).selectableGroup(),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (profile.assets.isEmpty()) Text(strings.text("Аудіофайлів ще немає. Додайте їх через системний вибір файлів.",
+                    if (profile.assets.isEmpty()) item(key = "empty") { Text(strings.text("Аудіофайлів ще немає. Додайте їх через системний вибір файлів.",
                         "No audio files yet. Add files using the system picker.",
-                        "暂无音频文件。请通过系统文件选择器添加。"), color = colors.muted, fontSize = 14.sp)
-                    profile.assets.forEach { asset ->
+                        "暂无音频文件。请通过系统文件选择器添加。"), color = colors.muted, fontSize = 14.sp) }
+                    items(profile.assets, key = { it.id }, contentType = { "audio-file" }) { asset ->
                         val selected = asset.id == profile.selectedAssetId
                         val audition = state.audition
                         val playing = audition.active && audition.profileId == profile.id &&

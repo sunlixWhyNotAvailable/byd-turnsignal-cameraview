@@ -583,6 +583,7 @@ final class AvasRuntime implements AutoCloseable {
     }
 
     private void event(String kind, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         try {
             JSONObject event = new JSONObject().put("kind", kind);
             for (int index = 0; index + 1 < fields.length; index += 2) {
@@ -594,6 +595,7 @@ final class AvasRuntime implements AutoCloseable {
     }
 
     private void event(AvasPlaybackQueue.Request request, String kind, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         if (request == null) {
             event(kind, fields);
             return;

@@ -15,7 +15,7 @@ import static org.junit.Assert.assertTrue;
 public final class AvasShellProtocolTest {
     @Test
     public void protocolTenAddsOnlyFixedTypedAvasAuditionTransactions() {
-        assertEquals(10, TurnSignalShellProtocol.VERSION);
+        assertEquals(11, TurnSignalShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 9,
                 TurnSignalShellProtocol.TX_CONFIGURE_AVAS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,

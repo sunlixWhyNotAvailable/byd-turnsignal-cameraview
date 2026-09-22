@@ -21,7 +21,6 @@ final class AvasExteriorRoute {
     private static final int CHANNEL0_DEVICE = 1000;
     static final long ROUTE_SETTLE_MS = 50;
     private static final int POSITION_FID = 0xAA000282;
-    private static final int AUX_FID = 0x94E88A89;
     private static final int NAV_STATE_DEVICE = 1002;
     private static final int NAV_MUTE_FID = 1108344867;
     private static final int NAV_SOURCE_FID = 1281359901;
@@ -73,7 +72,6 @@ final class AvasExteriorRoute {
             throws Exception {
         boolean primary = acquirePrimary(marker,
                 () -> tryWrite(EXTERIOR_DEVICE, POSITION_FID, 1, "prepare", diagnostics));
-        tryWrite(CHANNEL0_DEVICE, AUX_FID, 1, "prepare_aux", diagnostics);
         Thread.sleep(ROUTE_SETTLE_MS);
         boolean optional = exteriorPath(true, diagnostics);
         naviFocus(true, diagnostics);
@@ -90,6 +88,7 @@ final class AvasExteriorRoute {
     }
 
     void logNavigationState(AvasAudioDiagnostics.Context diagnostics, String phase) {
+        if (!DiagnosticLogPolicy.extended()) return;
         // The owner AudioFlinger reads this OEM value, not Android's stream index.
         // Read status matters: a failed GET must not be mistaken for physical mute.
         logNavigationState(diagnostics, phase, "NAV_VOLUME_STATE", NAV_VOLUME_STATE_FID);
@@ -224,7 +223,6 @@ final class AvasExteriorRoute {
             }
         }
         if (dirty != AvasShellSettings.EXTERIOR_UNACQUIRED) {
-            tryWrite(CHANNEL0_DEVICE, AUX_FID, 0, "release_aux", diagnostics);
             interrupted |= sleep(180);
             exteriorPath(false, diagnostics);
             interrupted |= sleep(60);
@@ -268,14 +266,9 @@ final class AvasExteriorRoute {
 
     private boolean exteriorPath(boolean on, AvasAudioDiagnostics.Context diagnostics) {
         int state = on ? 1 : 0;
-        Object body = device("bodywork.BYDAutoBodyworkDevice", diagnostics);
         boolean confirmed = false;
-        for (int command : new int[]{4150, 4160, 4159}) {
-            confirmed |= accepted(call(diagnostics, body, "set", 850, command, state));
-        }
         Object audio = device("audio.BYDAutoAudioDevice", diagnostics);
         for (int[] tuple : HAL) confirmed |= accepted(call(diagnostics, audio, "set", tuple[0], tuple[1], state));
-        confirmed |= accepted(call(diagnostics, audio, "setKaraokeMode", on ? 3 : 1));
         confirmed |= accepted(call(diagnostics, audio, "setChannel", on ? 2 : 1));
         Object special = device("special.BYDAutoSpecialDevice", diagnostics);
         for (int[] tuple : HAL) call(diagnostics, special, "postEvent", tuple[0], tuple[1], state, null);
@@ -399,6 +392,7 @@ final class AvasExteriorRoute {
     }
 
     private void event(AvasAudioDiagnostics.Context diagnostics, String kind, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         if (log == null) return;
         try {
             JSONObject event = new JSONObject().put("kind", kind);

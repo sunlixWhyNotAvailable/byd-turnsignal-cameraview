@@ -29,6 +29,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
@@ -48,20 +51,25 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -95,6 +103,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -122,8 +131,184 @@ internal data class UiPalette(
 )
 
 internal val LocalPrimaryScroll = staticCompositionLocalOf<ScrollState> { error("Primary scroll is missing") }
+internal val LocalPrimaryLazyList = staticCompositionLocalOf<RetainedLazyViewport> {
+    error("Primary lazy viewport is missing")
+}
+internal val LocalNumericDraftStore = staticCompositionLocalOf<NumericDraftStore?> { null }
 internal val LocalCompactControls = staticCompositionLocalOf { false }
 internal val LocalImeDismissalPolicy = staticCompositionLocalOf { ImeDismissalPolicy() }
+
+internal data class FormRow(
+    val key: String,
+    val content: @Composable ColumnScope.() -> Unit,
+)
+
+internal class FormScope {
+    internal val rows = mutableListOf<FormRow>()
+
+    fun row(key: String, content: @Composable ColumnScope.() -> Unit) {
+        rows += FormRow(key, content)
+    }
+}
+
+internal class NumericDraftStore {
+    private val values = mutableMapOf<Any, NumericDraftValues>()
+
+    fun state(identity: Any, canonical: String, range: ClosedFloatingPointRange<Float>): NumericDraftValues {
+        val current = values[identity]
+        if (current != null && current.canonical == canonical) return current
+        return NumericDraftValues(canonical, range).also { values[identity] = it }
+    }
+}
+
+internal class NumericDraftValues(
+    val canonical: String,
+    range: ClosedFloatingPointRange<Float>,
+) {
+    val draft = mutableStateOf(canonical)
+    val invalid = mutableStateOf(false)
+    val slider = mutableStateOf((canonical.toFloatOrNull() ?: range.start).coerceIn(range))
+}
+
+internal class RetainedLazyViewport(
+    val state: LazyListState,
+    private val processFallback: RuntimeViewport,
+    private val contentReady: Boolean,
+) {
+    private var restored by mutableStateOf(false)
+
+    @Composable
+    fun Bind(rowKeys: List<String>) {
+        LaunchedEffect(state, processFallback, contentReady, rowKeys) {
+            if (!contentReady || restored) return@LaunchedEffect
+            snapshotFlow { state.layoutInfo.totalItemsCount }.first { it > 0 }
+            val androidPositionChanged = state.firstVisibleItemIndex != processFallback.index ||
+                state.firstVisibleItemScrollOffset != processFallback.offset
+            if (!androidPositionChanged) {
+                val identityIndex = processFallback.identity?.let(rowKeys::indexOf)?.takeIf { it >= 0 }
+                val targetIndex = (identityIndex ?: processFallback.index)
+                    .coerceIn(0, rowKeys.lastIndex)
+                state.scrollToItem(targetIndex, processFallback.offset)
+            }
+            restored = true
+        }
+    }
+
+    fun position(): RuntimeViewport? {
+        if (!restored || state.layoutInfo.totalItemsCount == 0) return null
+        val item = state.layoutInfo.visibleItemsInfo.firstOrNull {
+            it.index == state.firstVisibleItemIndex
+        }
+        return RuntimeViewport(
+            offset = state.firstVisibleItemScrollOffset,
+            index = state.firstVisibleItemIndex,
+            identity = item?.key?.toString(),
+        )
+    }
+}
+
+/** Describes rows eagerly, but composes their controls only when the lazy viewport needs them. */
+@Composable
+internal fun LazyForm(
+    modifier: Modifier = Modifier,
+    viewport: RetainedLazyViewport,
+    content: @Composable FormScope.() -> Unit,
+) {
+    val form = FormScope()
+    form.content()
+    viewport.Bind(form.rows.map { it.key })
+    LazyColumn(modifier, state = viewport.state) {
+        items(form.rows, key = { it.key }, contentType = { "form-row" }) { row ->
+            Column(Modifier.fillMaxWidth()) { row.content(this) }
+        }
+    }
+}
+
+@Composable
+internal fun FormScope.FormSection(
+    title: String,
+    colors: UiPalette,
+    modifier: Modifier = Modifier,
+    bodyPadding: Dp = 14.dp,
+    contentSpacing: Dp? = null,
+    header: (@Composable () -> Unit)? = null,
+    headerModifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null,
+    key: String,
+    content: @Composable FormScope.() -> Unit,
+) {
+    val compact = LocalCompactControls.current
+    val inset = if (compact && bodyPadding == 14.dp) 6.dp else bodyPadding
+    val spacing = contentSpacing ?: if (inset == 0.dp) 0.dp else if (compact) 4.dp else 10.dp
+    val section = FormScope()
+    section.content()
+    row("$key:header") {
+        Column(modifier.fillMaxWidth().formSegment(colors, colors.panelAlt, top = true,
+            bottom = section.rows.isEmpty())) {
+            if (header != null) header() else Row(
+                Modifier.fillMaxWidth().then(headerModifier).padding(
+                    horizontal = if (compact) 10.dp else 14.dp,
+                    vertical = if (compact) 6.dp else 10.dp,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title.uppercase(), color = colors.muted, fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                trailing?.invoke()
+            }
+        }
+    }
+    section.rows.forEachIndexed { index, entry ->
+        row("$key:${entry.key}") {
+            Column(Modifier.fillMaxWidth().formSegment(colors, colors.panel, top = false,
+                bottom = index == section.rows.lastIndex).padding(
+                    start = inset,
+                    end = inset,
+                    top = if (index == 0) inset else spacing,
+                    bottom = if (index == section.rows.lastIndex) inset else 0.dp,
+                ), verticalArrangement = Arrangement.spacedBy(spacing)) {
+                entry.content(this)
+            }
+        }
+    }
+}
+
+/** Retains the old single-section outline while allowing each body row to recycle independently. */
+private fun Modifier.formSegment(
+    colors: UiPalette,
+    fill: Color,
+    top: Boolean,
+    bottom: Boolean,
+): Modifier {
+    val shape = RoundedCornerShape(
+        topStart = if (top) 8.dp else 0.dp,
+        topEnd = if (top) 8.dp else 0.dp,
+        bottomStart = if (bottom) 8.dp else 0.dp,
+        bottomEnd = if (bottom) 8.dp else 0.dp,
+    )
+    return clip(shape).background(fill).drawWithContent {
+        drawContent()
+        val stroke = 1.dp.toPx()
+        val half = stroke / 2f
+        val radius = 8.dp.toPx().coerceAtMost(size.height / 2f)
+        val path = Path().apply {
+            moveTo(half, if (top) radius else 0f)
+            if (top) {
+                quadraticTo(half, half, radius, half)
+                lineTo(size.width - radius, half)
+                quadraticTo(size.width - half, half, size.width - half, radius)
+            } else moveTo(size.width - half, 0f)
+            lineTo(size.width - half, if (bottom) size.height - radius else size.height)
+            if (bottom) {
+                quadraticTo(size.width - half, size.height - half, size.width - radius, size.height - half)
+                lineTo(radius, size.height - half)
+                quadraticTo(half, size.height - half, half, size.height - radius)
+            } else moveTo(half, size.height)
+            lineTo(half, if (top) radius else 0f)
+        }
+        drawPath(path, colors.border, style = Stroke(stroke))
+    }
+}
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
@@ -573,12 +758,21 @@ internal fun NumericSetting(
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    var draft by remember(identity, value) { mutableStateOf(value) }
-    var focused by remember { mutableStateOf(false) }
-    var invalid by remember(identity, value) { mutableStateOf(false) }
-    var sliderValue by remember(identity, value) {
+    val draftStore = LocalNumericDraftStore.current
+    val ownedDraft = remember(identity, value, range, draftStore) {
+        if (identity == Unit) null else draftStore?.state(identity, value, range)
+    }
+    val draftState: MutableState<String> = ownedDraft?.draft
+        ?: remember(identity, value) { mutableStateOf(value) }
+    val invalidState: MutableState<Boolean> = ownedDraft?.invalid
+        ?: remember(identity, value) { mutableStateOf(false) }
+    val sliderState: MutableState<Float> = ownedDraft?.slider ?: remember(identity, value) {
         mutableStateOf((value.toFloatOrNull() ?: range.start).coerceIn(range))
     }
+    var draft by draftState
+    var focused by remember { mutableStateOf(false) }
+    var invalid by invalidState
+    var sliderValue by sliderState
     var suppressBlurCommit by remember(identity) { mutableStateOf(false) }
     var lastPreview by remember(identity, value) { mutableStateOf<String?>(null) }
     val previewSession = remember(identity) { NumericPreviewSession() }

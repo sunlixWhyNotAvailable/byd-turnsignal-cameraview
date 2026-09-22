@@ -71,8 +71,15 @@ data class RuntimeUiSelections(
 
 enum class RuntimeViewportKind { Main, Sidebar }
 
-data class RuntimeViewport(val offset: Int) {
-    init { require(offset >= 0) }
+data class RuntimeViewport(
+    val offset: Int,
+    val index: Int = 0,
+    val identity: String? = null,
+) {
+    init {
+        require(offset >= 0)
+        require(index >= 0)
+    }
 
     companion object { val Top = RuntimeViewport(0) }
 }

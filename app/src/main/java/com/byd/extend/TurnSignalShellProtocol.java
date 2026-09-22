@@ -13,7 +13,7 @@ final class TurnSignalShellProtocol {
             "com.byd.extend.ITurnSignalShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_helper.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_helper.log";
-    static final int VERSION = 10;
+    static final int VERSION = 11;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -32,6 +32,7 @@ final class TurnSignalShellProtocol {
     static final int TX_SHUTDOWN_KEEPING_AVAS = IBinder.FIRST_CALL_TRANSACTION + 14;
     static final int TX_START_AVAS_AUDITION = IBinder.FIRST_CALL_TRANSACTION + 15;
     static final int TX_STOP_AVAS_AUDITION = IBinder.FIRST_CALL_TRANSACTION + 16;
+    static final int TX_CONFIGURE_LOGGING = IBinder.FIRST_CALL_TRANSACTION + 17;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
     private TurnSignalShellProtocol() {}

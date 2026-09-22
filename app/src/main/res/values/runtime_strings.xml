@@ -89,6 +89,7 @@
     <string name="runtime_car_compat_forming">Creating package…</string>
     <string name="runtime_car_compat_cancel_done">Cancellation complete; the partial package was not shared</string>
     <string name="runtime_car_compat_failed">Could not create compatibility package</string>
+    <string name="runtime_car_compat_low_space">Not enough free storage to export. Free up space and try again; at least 512 MiB must remain free during export.</string>
     <string name="runtime_car_compat_empty">No compatibility package was created</string>
     <string name="runtime_car_compat_inactive">Package sharing canceled: the app is inactive</string>
     <string name="runtime_car_compat_share_title">Share compatibility package</string>

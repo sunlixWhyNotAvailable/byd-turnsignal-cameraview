@@ -95,18 +95,23 @@ final class CompatibilityBundleExporter {
                 Build.MANUFACTURER, Build.MODEL, Build.PRODUCT, Build.DEVICE,
                 Build.VERSION.RELEASE, Build.VERSION.SDK_INT);
         ExportControl operation = control;
-        return export(context.getCacheDir(), preferences, identity,
-                (command, limit) -> fromAdbResult(LocalAdbClient.executeAuthorizedText(
-                        context, command, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
-                        operation, (kind, fields) -> {})),
-                (command, output, limit) -> {
-                    CountingOutputStream counted = new CountingOutputStream(output);
-                    LocalAdbClient.Result result = LocalAdbClient.executeAuthorizedStreaming(
-                        context, command, counted, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
-                        operation, (kind, fields) -> {});
-                    return fromAdbResult(result, counted.count);
-                },
-                System.currentTimeMillis(), operation);
+        CompatibilityExportArtifacts.checkBeforeExport(context);
+        try {
+            return export(context.getCacheDir(), preferences, identity,
+                    (command, limit) -> fromAdbResult(LocalAdbClient.executeAuthorizedText(
+                            context, command, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
+                            operation, (kind, fields) -> {})),
+                    (command, output, limit) -> {
+                        CountingOutputStream counted = new CountingOutputStream(output);
+                        LocalAdbClient.Result result = LocalAdbClient.executeAuthorizedStreaming(
+                            context, command, counted, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
+                            operation, (kind, fields) -> {});
+                        return fromAdbResult(result, counted.count);
+                    },
+                    System.currentTimeMillis(), operation);
+        } finally {
+            CompatibilityExportArtifacts.checkAsync(context);
+        }
     }
 
     static File export(
@@ -128,6 +133,20 @@ final class CompatibilityBundleExporter {
             StreamCommandRunner streamRunner,
             long createdAtMillis,
             ExportControl control) throws IOException {
+        return export(cacheDirectory, preferences, identity, textRunner, streamRunner,
+                createdAtMillis, control, new CompatibilityExportSpace.Guard(
+                        new File(cacheDirectory, ARCHIVE_DIRECTORY)));
+    }
+
+    static File export(
+            File cacheDirectory,
+            SharedPreferences preferences,
+            Identity identity,
+            TextCommandRunner textRunner,
+            StreamCommandRunner streamRunner,
+            long createdAtMillis,
+            ExportControl control,
+            CompatibilityExportSpace.Guard space) throws IOException {
         if (control == null) control = new ExportControl();
         ProgressReporter progress = new ProgressReporter(control);
         progress.report(Progress.Phase.PREPARING, "", 0, 0, 0L, 0L, true);
@@ -141,17 +160,34 @@ final class CompatibilityBundleExporter {
         if (!outputDirectory.isDirectory() && !outputDirectory.mkdirs()) {
             throw new IOException("Unable to create compatibility archive directory");
         }
-        File finished = nextAvailableFile(outputDirectory, archiveName(createdAtMillis));
-        File partial = new File(finished.getPath() + ".part");
-        if (partial.exists() && !partial.delete()) {
-            throw new IOException("Unable to replace incomplete compatibility archive");
+        CompatibilityExportArtifacts.checkDirectoryBeforeExport(
+                outputDirectory, System.currentTimeMillis());
+        space.check(0L);
+        File finished;
+        File partial;
+        synchronized (CompatibilityBundleExporter.class) {
+            finished = nextAvailableFile(outputDirectory, archiveName(createdAtMillis));
+            CompatibilityExportArtifacts.protect(finished);
+            partial = new File(finished.getPath() + ".part");
+            if (partial.exists() && !partial.delete()) {
+                CompatibilityExportArtifacts.unprotect(finished);
+                throw new IOException("Unable to replace incomplete compatibility archive");
+            }
+            if (!partial.createNewFile()) {
+                CompatibilityExportArtifacts.unprotect(finished);
+                throw new IOException("Unable to reserve compatibility archive");
+            }
         }
         File tempDirectory = new File(outputDirectory, ".compatibility-tmp-"
                 + Long.toHexString(createdAtMillis) + "-" + Long.toHexString(System.nanoTime()));
+        CompatibilityExportArtifacts.protect(tempDirectory);
         if (!tempDirectory.isDirectory() && !tempDirectory.mkdirs()) {
+            partial.delete();
+            CompatibilityExportArtifacts.unprotect(tempDirectory);
+            CompatibilityExportArtifacts.unprotect(finished);
             throw new IOException("Unable to create compatibility temporary directory");
         }
-
+        try {
         byte[] prefsBytes = sanitizedPreferences(preferences)
                 .getBytes(StandardCharsets.UTF_8);
         long reservedPrefsBytes = fitsBudget(
@@ -162,6 +198,7 @@ final class CompatibilityBundleExporter {
         long textTotal = 0L;
         List<TextSpec> textSpecs = textSpecs();
         try {
+            space.check(0L);
             for (int textIndex = 0; textIndex < textSpecs.size(); textIndex++) {
                 TextSpec spec = textSpecs.get(textIndex);
                 checkCancelled(control);
@@ -221,7 +258,18 @@ final class CompatibilityBundleExporter {
 
         List<SourceRecord> records = new ArrayList<>();
         long total = 0L;
-        try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(partial))) {
+        space.check(0L);
+        FileOutputStream zipFile = new FileOutputStream(partial);
+        CompatibilityExportSpace.CheckedOutputStream zipOutput;
+        try {
+            zipOutput = new CompatibilityExportSpace.CheckedOutputStream(zipFile, space);
+        } catch (IOException error) {
+            try { zipFile.close(); }
+            catch (IOException closeError) { error.addSuppressed(closeError); }
+            throw error;
+        }
+        try (CompatibilityExportSpace.CheckedOutputStream ownedZipOutput = zipOutput;
+                ZipOutputStream zip = new ZipOutputStream(ownedZipOutput)) {
             for (int textIndex = 0; textIndex < text.size(); textIndex++) {
                 TextCapture capture = text.get(textIndex);
                 checkCancelled(control);
@@ -290,18 +338,31 @@ final class CompatibilityBundleExporter {
                 }
                 File temp = new File(tempDirectory, Integer.toHexString(records.size()) + ".bin");
                 StreamResult result = null;
-                try (FileOutputStream output = new FileOutputStream(temp)) {
+                space.check(0L);
+                FileOutputStream tempFile = new FileOutputStream(temp);
+                CompatibilityExportSpace.CheckedOutputStream checked;
+                try {
+                    checked = new CompatibilityExportSpace.CheckedOutputStream(tempFile, space);
+                } catch (IOException error) {
+                    try { tempFile.close(); }
+                    catch (IOException closeError) { error.addSuppressed(closeError); }
+                    throw error;
+                }
+                try (CompatibilityExportSpace.CheckedOutputStream output = checked) {
                     long remaining = MAX_TOTAL_BYTES - total;
                     OutputStream monitored = new ProgressOutputStream(
                             output, control, progress, spec.path, remoteIndex + 1,
                             remote.size(), total);
                     result = streamRunner.run(catCommand(spec.path), monitored,
                             Math.min(MAX_FILE_BYTES, remaining));
+                    output.rethrowFailure();
                 } catch (Throwable error) {
                     if (error instanceof CancellationException) {
                         throw (CancellationException) error;
                     }
                     if (control.isCancellationRequested()) throw new CancellationException();
+                    try { checked.rethrowFailure(); }
+                    catch (IOException localFailure) { throw localFailure; }
                     result = StreamResult.failure(summary(error), -1, 0L);
                 }
                 checkCancelled(control);
@@ -314,6 +375,7 @@ final class CompatibilityBundleExporter {
                         record.sha256 = hashFile(temp, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                     } else {
+                        space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
                         record.sha256 = copyAndHash(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
@@ -334,6 +396,7 @@ final class CompatibilityBundleExporter {
                         record.sha256 = hashFile(temp, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                     } else {
+                        space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
                         record.sha256 = copyAndHash(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
@@ -362,6 +425,7 @@ final class CompatibilityBundleExporter {
             zip.putNextEntry(new ZipEntry(MANIFEST_ENTRY));
             writeChecked(zip, manifest, control, progress, MANIFEST_ENTRY, 1, 1, total);
             zip.closeEntry();
+            ownedZipOutput.rethrowFailure();
         } catch (Throwable error) {
             if (partial.exists()) partial.delete();
             deleteTree(tempDirectory);
@@ -382,13 +446,29 @@ final class CompatibilityBundleExporter {
             progress.cancelled();
             throw error;
         }
+        space.check(0L);
+        try {
+            CompatibilityExportArtifacts.completed(finished, System.currentTimeMillis());
+        } catch (IOException error) {
+            partial.delete();
+            CompatibilityExportArtifacts.discardMetadata(finished);
+            throw error;
+        }
         if (!partial.renameTo(finished)) {
             partial.delete();
+            CompatibilityExportArtifacts.discardMetadata(finished);
             throw new IOException("Unable to finish compatibility archive atomically");
         }
         progress.report(Progress.Phase.COMPLETE, finished.getName(), 1, 1,
                 finished.length(), finished.length(), true);
         return finished;
+        } finally {
+            CompatibilityExportArtifacts.unprotect(tempDirectory);
+            CompatibilityExportArtifacts.unprotect(finished);
+            if (!finished.isFile()) CompatibilityExportArtifacts.discardMetadata(finished);
+            CompatibilityExportArtifacts.checkDirectoryBeforeExport(
+                    outputDirectory, System.currentTimeMillis());
+        }
     }
 
     static String archiveName(long createdAtMillis) {

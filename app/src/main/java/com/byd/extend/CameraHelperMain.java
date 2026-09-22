@@ -137,6 +137,10 @@ final class CameraHelperMain {
             turnController.start();
         }
 
+        void configureLogging() {
+            turnController.configureLogging();
+        }
+
         void configureGuard(
                 boolean enabled, float outward, float center, int delayMs, int maxSpeedKph) {
             turnController.configure(enabled, outward, center, delayMs, maxSpeedKph);
@@ -1710,6 +1714,7 @@ final class CameraHelperMain {
 
                     @Override
                     public void onStats(int index, DirectCameraSourceHub.Stats stats) {
+                        if (!DiagnosticLogPolicy.extended()) return;
                         callbackHandler.post(() -> {
                             if (sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer) return;
@@ -3776,6 +3781,7 @@ final class CameraHelperMain {
         }
 
         private void emit(String kind, Object... fields) {
+            if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
             String line;
             try {
                 JSONObject json = new JSONObject();
