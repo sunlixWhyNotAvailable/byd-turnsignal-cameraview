@@ -1,11 +1,14 @@
 package com.byd.extend;
 
-import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ProtocolException;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.security.PrivateKey;
@@ -29,6 +32,20 @@ final class LocalAdbTlsClient implements AutoCloseable {
     private final InputStream input;
     private final OutputStream output;
 
+    enum TcpipResult {
+        NORMAL_CLOSE("response", "orderly_close"),
+        POSSIBLE_RESTART_EOF("possible_restart", "packet_boundary_eof"),
+        POSSIBLE_RESTART_DISCONNECT("possible_restart", "socket_disconnect");
+
+        final String category;
+        final String reason;
+
+        TcpipResult(String category, String reason) {
+            this.category = category;
+            this.reason = reason;
+        }
+    }
+
     private LocalAdbTlsClient(Socket socket) throws IOException {
         this.socket = socket;
         input = socket.getInputStream();
@@ -44,7 +61,7 @@ final class LocalAdbTlsClient implements AutoCloseable {
             plain.setTcpNoDelay(true);
             AdbPacket.write(plain.getOutputStream(), AdbPacket.A_CNXN,
                     AdbPacket.VERSION, AdbPacket.MAX_DATA, nul("host::"));
-            AdbPacket first = AdbPacket.read(plain.getInputStream());
+            AdbPacket first = AdbPacket.read(plain.getInputStream(), true);
             if (first.command != AdbPacket.A_STLS) {
                 throw new IOException("Discovered endpoint did not request STLS");
             }
@@ -57,13 +74,13 @@ final class LocalAdbTlsClient implements AutoCloseable {
             encrypted.startHandshake();
             LocalAdbTlsClient client = new LocalAdbTlsClient(encrypted);
             try {
-                AdbPacket packet = AdbPacket.read(client.input);
+                AdbPacket packet = AdbPacket.read(client.input, true);
                 if (packet.command == AdbPacket.A_AUTH
                         && packet.arg0 == AdbPacket.AUTH_TOKEN) {
                     AdbPacket.write(client.output, AdbPacket.A_AUTH,
                             AdbPacket.AUTH_SIGNATURE, 0,
                             LocalAdbClient.signToken(identity.keyPair.getPrivate(), packet.payload));
-                    packet = AdbPacket.read(client.input);
+                    packet = AdbPacket.read(client.input, true);
                 }
                 if (packet.command != AdbPacket.A_CNXN) {
                     throw new IOException("Existing Extend RSA key rejected by ADB TLS");
@@ -79,35 +96,68 @@ final class LocalAdbTlsClient implements AutoCloseable {
         }
     }
 
-    /** Returns after a normal close or expected restart EOF; only fresh classic proof is success. */
-    String requestTcpip5555() throws IOException {
+    /** A transport-ending result is only a possible restart; fresh classic proof remains success. */
+    TcpipResult requestTcpip5555() throws IOException {
+        return requestTcpip5555(input, output);
+    }
+
+    static TcpipResult requestTcpip5555(InputStream input, OutputStream output)
+            throws IOException {
         int local = 1;
         int remote = 0;
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        int responseBytes = 0;
         AdbPacket.write(output, AdbPacket.A_OPEN, local, 0, nul("tcpip:5555"));
         try {
             while (true) {
-                AdbPacket packet = AdbPacket.read(input);
+                AdbPacket packet = AdbPacket.read(input, true);
                 if (packet.arg1 != local || remote != 0 && packet.arg0 != remote) {
-                    throw new IOException("Unexpected ADB tcpip stream id");
+                    throw new ProtocolException("wrong_stream_id");
                 }
                 remote = packet.arg0;
                 if (packet.command == AdbPacket.A_WRTE) {
-                    if (bytes.size() + packet.payload.length > OUTPUT_LIMIT) {
-                        throw new IOException("ADB tcpip response too large");
+                    if (responseBytes + packet.payload.length > OUTPUT_LIMIT) {
+                        throw new ProtocolException("response_limit_exceeded");
                     }
-                    bytes.write(packet.payload);
+                    responseBytes += packet.payload.length;
                     AdbPacket.write(output, AdbPacket.A_OKAY, local, remote, new byte[0]);
                 } else if (packet.command == AdbPacket.A_CLSE) {
                     AdbPacket.write(output, AdbPacket.A_CLSE, local, remote, new byte[0]);
-                    return bytes.toString(StandardCharsets.UTF_8.name()).trim();
+                    return TcpipResult.NORMAL_CLOSE;
                 } else if (packet.command != AdbPacket.A_OKAY) {
-                    throw new IOException("Unexpected ADB tcpip response");
+                    throw new ProtocolException("unexpected_command");
                 }
             }
-        } catch (IOException expectedRestart) {
-            return "transport_ended_after_tcpip_request";
+        } catch (EOFException possibleRestart) {
+            return TcpipResult.POSSIBLE_RESTART_EOF;
+        } catch (SocketException possibleRestart) {
+            return TcpipResult.POSSIBLE_RESTART_DISCONNECT;
         }
+    }
+
+    static String failureCategory(Throwable error) {
+        if (error instanceof ProtocolException) return "protocol";
+        if (error instanceof SocketTimeoutException) return "timeout";
+        if (error instanceof EOFException) return "eof";
+        if (error instanceof IOException) return "transport";
+        return "unexpected";
+    }
+
+    static String failureReason(Throwable error) {
+        if (error instanceof ProtocolException && error.getMessage() != null) {
+            String reason = error.getMessage();
+            if ("invalid_payload_length".equals(reason)
+                    || "invalid_magic".equals(reason)
+                    || "truncated_header".equals(reason)
+                    || "truncated_payload".equals(reason)
+                    || "wrong_stream_id".equals(reason)
+                    || "response_limit_exceeded".equals(reason)
+                    || "unexpected_command".equals(reason)) return reason;
+            return "protocol_failure";
+        }
+        if (error instanceof SocketTimeoutException) return "read_timeout";
+        if (error instanceof EOFException) return "unexpected_eof";
+        if (error instanceof IOException) return "io_failure";
+        return "unexpected_failure";
     }
 
     private static SSLContext tlsContext(AdbTlsIdentity identity) throws Exception {

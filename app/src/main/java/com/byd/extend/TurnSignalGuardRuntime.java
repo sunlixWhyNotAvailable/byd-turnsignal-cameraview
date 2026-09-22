@@ -79,6 +79,7 @@ final class TurnSignalGuardRuntime {
     private boolean sessionActive;
     private int sessionDirection;
     private boolean outwardSeen;
+    private final CenterReturnTracker centerReturnTracker = new CenterReturnTracker();
     private boolean matchingBlinkSeen;
     private int corrections;
     private long offCandidateAt;
@@ -845,6 +846,8 @@ final class TurnSignalGuardRuntime {
         pendingNeutralizeReason = null;
         sessionDirection = direction;
         outwardSeen = towardAngle(direction, latestAngle) >= outwardDeg;
+        centerReturnTracker.reset();
+        centerReturnTracker.seed(latestAngle);
         matchingBlinkSeen = latestBlink == direction;
         corrections = 0;
         offCandidateAt = 0;
@@ -867,7 +870,7 @@ final class TurnSignalGuardRuntime {
             emit("guard_armed", "direction", directionName(sessionDirection),
                     "steering_deg", angle, "initial", false);
         }
-        if (outwardSeen && Math.abs(angle) <= centerDeg) {
+        if (centerReturnTracker.observe(sessionDirection, outwardSeen, centerDeg, angle)) {
             emit("guard_completed", "direction", directionName(sessionDirection),
                     "steering_deg", angle, "corrections", corrections);
             finishSessionForOff("maneuver_completed");
@@ -1235,6 +1238,7 @@ final class TurnSignalGuardRuntime {
         sessionActive = false;
         sessionDirection = 0;
         outwardSeen = false;
+        centerReturnTracker.reset();
         matchingBlinkSeen = false;
         corrections = 0;
         offCandidateAt = 0;
@@ -1310,7 +1314,7 @@ final class TurnSignalGuardRuntime {
         return validSpeedValue(value) ? value : null;
     }
 
-    private static boolean validThresholds(float outward, float center) {
+    static boolean validThresholds(float outward, float center) {
         return Float.isFinite(outward) && Float.isFinite(center)
                 && outward >= 0.0f && outward <= 360.0f
                 && center >= 0.0f && center <= 45.0f;
@@ -1483,6 +1487,30 @@ final class TurnSignalGuardRuntime {
     private static float towardAngle(int direction, float signedAngle) {
         return direction == BLINK_LEFT ? signedAngle
                 : direction == BLINK_RIGHT ? -signedAngle : Float.NEGATIVE_INFINITY;
+    }
+
+    static final class CenterReturnTracker {
+        private boolean hasPrevious;
+        private float previousAngle;
+
+        void seed(float angle) {
+            previousAngle = angle;
+            hasPrevious = true;
+        }
+
+        boolean observe(int direction, boolean armed, float centerDeg, float angle) {
+            boolean crossed = hasPrevious
+                    && ((direction == BLINK_LEFT && previousAngle > 0.0f && angle <= 0.0f)
+                    || (direction == BLINK_RIGHT && previousAngle < 0.0f && angle >= 0.0f));
+            previousAngle = angle;
+            hasPrevious = true;
+            return armed && (Math.abs(angle) <= centerDeg || crossed);
+        }
+
+        void reset() {
+            hasPrevious = false;
+            previousAngle = 0.0f;
+        }
     }
 
     private static int controlPayload(int direction) {

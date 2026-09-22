@@ -214,7 +214,7 @@ public class DiagnosticLoggingTest {
         assertEquals(1, loss.getLong("count"));
     }
 
-    @Test public void errorAggregationRetainsTimeRangeAndDistinctErrors() {
+    @Test public void errorAggregationRetainsTimeRangeAndDistinctErrors() throws Exception {
         DiagnosticLogPolicy policy = new DiagnosticLogPolicy();
         String first = "{\"kind\":\"camera_error\",\"error\":\"first\"}";
         String second = "{\"kind\":\"camera_error\",\"error\":\"second\"}";
@@ -285,9 +285,11 @@ public class DiagnosticLoggingTest {
         return Files.readAllLines(file.toPath());
     }
 
-    private static JSONObject loss(List<String> lines) {
-        return lines.stream().filter(line -> "log_records_dropped".equals(DiagnosticLogPolicy.kind(line)))
-                .map(JSONObject::new).findFirst().orElseThrow(() -> new AssertionError("missing loss report"));
+    private static JSONObject loss(List<String> lines) throws org.json.JSONException {
+        String report = lines.stream()
+                .filter(line -> "log_records_dropped".equals(DiagnosticLogPolicy.kind(line)))
+                .findFirst().orElseThrow(() -> new AssertionError("missing loss report"));
+        return new JSONObject(report);
     }
 
     private static String sizedRecord(String kind, int bytes) {

@@ -1,8 +1,11 @@
 package com.byd.extend;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ProtocolException;
+import java.net.SocketException;
 
 final class AdbPacket {
     static final int A_CNXN = command("CNXN");
@@ -69,30 +72,55 @@ final class AdbPacket {
     }
 
     static AdbPacket read(InputStream in) throws IOException {
+        return read(in, false);
+    }
+
+    static AdbPacket read(InputStream in, boolean validateMagic) throws IOException {
         byte[] header = new byte[24];
-        readFully(in, header);
+        readFully(in, header, true);
         int command = intLe(header, 0);
         int arg0 = intLe(header, 4);
         int arg1 = intLe(header, 8);
         int payloadLength = intLe(header, 12);
         intLe(header, 16);
-        intLe(header, 20);
         if (payloadLength < 0 || payloadLength > MAX_PAYLOAD) {
-            throw new IOException("ADB packet payload length out of range: " + payloadLength);
+            throw new ProtocolException("invalid_payload_length");
+        }
+        if (validateMagic && intLe(header, 20) != (command ^ 0xffffffff)) {
+            throw new ProtocolException("invalid_magic");
         }
         byte[] payload = new byte[payloadLength];
         if (payloadLength > 0) {
-            readFully(in, payload);
+            readFully(in, payload, false);
         }
         return new AdbPacket(command, arg0, arg1, payload);
     }
 
-    private static void readFully(InputStream in, byte[] buffer) throws IOException {
+    private static void readFully(InputStream in, byte[] buffer, boolean header)
+            throws IOException {
         int offset = 0;
         while (offset < buffer.length) {
-            int read = in.read(buffer, offset, buffer.length - offset);
+            int read;
+            try {
+                read = in.read(buffer, offset, buffer.length - offset);
+            } catch (EOFException ended) {
+                if (header && offset == 0) throw ended;
+                ProtocolException truncated = new ProtocolException(
+                        header ? "truncated_header" : "truncated_payload");
+                truncated.initCause(ended);
+                throw truncated;
+            } catch (SocketException disconnected) {
+                if (!header || offset > 0) {
+                    ProtocolException truncated = new ProtocolException(
+                            header ? "truncated_header" : "truncated_payload");
+                    truncated.initCause(disconnected);
+                    throw truncated;
+                }
+                throw disconnected;
+            }
             if (read < 0) {
-                throw new IOException("ADB stream closed");
+                if (header && offset == 0) throw new EOFException("packet_boundary_eof");
+                throw new ProtocolException(header ? "truncated_header" : "truncated_payload");
             }
             offset += read;
         }

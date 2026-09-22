@@ -62,11 +62,6 @@ final class AvasVehicleTelemetryTransport implements AvasTelemetryController.Tra
     }
 
     private synchronized IBinder service() throws Exception {
-        if (service == null || !service.isBinderAlive()) {
-            service = (IBinder) Class.forName("android.os.ServiceManager")
-                    .getMethod("getService", String.class).invoke(null, "autoservice");
-        }
-        if (service == null) throw new IllegalStateException("autoservice unavailable");
-        return service;
+        return service = AvasAutoService.resolve(service);
     }
 }

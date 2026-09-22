@@ -58,6 +58,10 @@ public final class WeatherAccessibilityContractTest {
         assertEquals(2, occurrences(recovery,
                 "WeatherRefreshAccessibilityService.awaitConnection("));
         assertFalse(helper.contains("settings put secure accessibility_enabled 0"));
+        assertTrue(helper.contains("provisionAppPermissions(\"service_entry\")"));
+        assertFalse(helper.contains("readAccessState(this).status =="));
+        assertTrue(helper.contains("settings --user \" + user"));
+        assertTrue(helper.contains("weather_accessibility_binding_readback"));
 
         String service = readProjectFile(
                 "app/src/main/java/com/byd/extend/WeatherRefreshAccessibilityService.java");

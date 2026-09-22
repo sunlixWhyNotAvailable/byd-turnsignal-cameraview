@@ -16,7 +16,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
@@ -128,7 +127,10 @@ public final class CompatibilityBundleExporterTest {
         assertFalse(prefs.contains("personal_vin"));
         String manifest = readEntry(archive, "manifest.json");
         assertTrue(manifest.contains("\"status\":\"included\""));
-        assertTrue(manifest.contains("\"sha256\":\""));
+        assertTrue(manifest.contains("\"schema_version\":2"));
+        assertFalse(manifest.contains("\"sha256\""));
+        assertEquals("binary\n", readEntry(archive,
+                "remote/data/app/~~abc/com.byd.avc-1/base.apk"));
     }
 
     @Test
@@ -237,7 +239,7 @@ public final class CompatibilityBundleExporterTest {
     }
 
     @Test
-    public void includesAndHashesNonzeroPartialBinaryOutput() throws Exception {
+    public void preservesNonzeroPartialBinaryOutputWithoutHash() throws Exception {
         byte[] partial = "partial".getBytes(StandardCharsets.UTF_8);
         File archive = CompatibilityBundleExporter.export(
                 temporary.newFolder("cache-partial-binary"), new TestSharedPreferences(), identity(),
@@ -264,8 +266,28 @@ public final class CompatibilityBundleExporterTest {
         assertTrue(manifest.contains("\"entry\":\"" + entry
                 + "\",\"source\":\"/system/framework/framework.jar\""
                 + ",\"status\":\"partial\",\"size_bytes\":7"
-                + ",\"sha256\":\"" + sha256(partial) + "\""
                 + ",\"error\":\"shell_exit_7\""));
+        assertFalse(manifest.contains("\"sha256\""));
+    }
+
+    @Test
+    public void skippedOversizedSourceKeepsSizeAndReasonWithoutHashOrZipEntry() throws Exception {
+        File archive = CompatibilityBundleExporter.export(
+                temporary.newFolder("cache-skipped-binary"), new TestSharedPreferences(), identity(),
+                (command, limit) -> CompatibilityBundleExporter.CommandResult.success(""),
+                (command, output, limit) -> {
+                    try { output.write(new byte[]{1, 2, 3, 4}); }
+                    catch (IOException error) { throw new AssertionError(error); }
+                    return CompatibilityBundleExporter.StreamResult.failure("too_large", -1, 4L);
+                }, 5500L);
+        try (ZipFile zip = new ZipFile(archive)) {
+            assertTrue(zip.getEntry("remote/system/framework/framework.jar") == null);
+        }
+        String manifest = readEntry(archive, "manifest.json");
+        assertTrue(manifest.contains("\"schema_version\":2"));
+        assertTrue(manifest.contains("\"source\":\"/system/framework/framework.jar\""
+                + ",\"status\":\"too_large\",\"size_bytes\":4,\"error\":\"too_large\""));
+        assertFalse(manifest.contains("\"sha256\""));
     }
 
     @Test
@@ -410,11 +432,4 @@ public final class CompatibilityBundleExporterTest {
         }
     }
 
-    private static String sha256(byte[] value) throws Exception {
-        StringBuilder result = new StringBuilder();
-        for (byte b : MessageDigest.getInstance("SHA-256").digest(value)) {
-            result.append(String.format("%02x", b & 0xff));
-        }
-        return result.toString();
-    }
 }

@@ -58,6 +58,24 @@ public final class AdbRecoveryRuntimeContractTest {
         assertTrue(method.contains("applyDisabled()"));
     }
 
+    @Test public void tlsTransportOutcomeNeverBypassesFreshClassicProof() throws Exception {
+        String source = source();
+        int start = source.indexOf("    private void tryTlsPort(int port)");
+        int end = source.indexOf("    private boolean freshClassicProof()", start);
+        assertTrue(start >= 0 && end > start);
+        String method = source.substring(start, end);
+        int request = method.indexOf("tls.requestTcpip5555()");
+        int verifying = method.indexOf("AdbRecoverySnapshot.Stage.VERIFYING_5555", request);
+        int proof = method.indexOf("if (freshClassicProof())", verifying);
+        int ready = method.indexOf("finishClassicRecovery()", proof);
+        assertTrue(request >= 0 && verifying > request && proof > verifying && ready > proof);
+        assertTrue(method.contains("adb_tls_tcpip_result"));
+        assertTrue(method.contains("\"category\", result.category"));
+        assertTrue(method.contains("LocalAdbTlsClient.failureCategory(error)"));
+        assertTrue(method.contains("LocalAdbTlsClient.failureReason(error)"));
+        assertTrue(method.contains("adb_5555_transition_unverified"));
+    }
+
     private static String source() throws Exception {
         Path path = Path.of("app/src/main/java/com/byd/extend/AdbRecoveryRuntime.java");
         if (!Files.exists(path)) path = Path.of("src/main/java/com/byd/extend/AdbRecoveryRuntime.java");

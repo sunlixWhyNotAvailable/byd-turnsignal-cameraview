@@ -12,7 +12,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,7 +35,7 @@ final class CompatibilityBundleExporter {
     static final long MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L;
     static final long MAX_TOTAL_BYTES = 4L * 1024L * 1024L * 1024L;
     static final long MAX_TEXT_BYTES = 16L * 1024L * 1024L;
-    static final int MANIFEST_SCHEMA_VERSION = 1;
+    static final int MANIFEST_SCHEMA_VERSION = 2;
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long PROGRESS_INTERVAL_MS = 250L;
     private static final String ARCHIVE_DIRECTORY = "shared_logs";
@@ -279,7 +278,6 @@ final class CompatibilityBundleExporter {
                         capture.spec.type, capture.spec.entry, capture.spec.command, -1);
                 byte[] value = capture.value;
                 record.sizeBytes = value.length;
-                record.sha256 = sha256(value);
                 if (value.length > 0 && total + value.length <= MAX_TOTAL_BYTES) {
                     zip.putNextEntry(new ZipEntry(capture.spec.entry));
                     writeChecked(zip, value, control, progress, capture.spec.entry,
@@ -309,7 +307,6 @@ final class CompatibilityBundleExporter {
             SourceRecord prefsRecord = new SourceRecord("sanitized_preferences", prefsEntry,
                     "local SharedPreferences", prefsBytes.length);
             prefsRecord.sizeBytes = prefsBytes.length;
-            prefsRecord.sha256 = sha256(prefsBytes);
             if (fitsBudget(prefsBytes.length, total, MAX_FILE_BYTES, MAX_TOTAL_BYTES)) {
                 zip.putNextEntry(new ZipEntry(prefsEntry));
                 writeChecked(zip, prefsBytes, control, progress, prefsEntry, 1, 1, total);
@@ -372,12 +369,10 @@ final class CompatibilityBundleExporter {
                     if (size > MAX_FILE_BYTES || size > MAX_TOTAL_BYTES - total) {
                         record.status = "too_large";
                         record.error = "size_limit";
-                        record.sha256 = hashFile(temp, control, progress, spec.path,
-                                remoteIndex + 1, remote.size(), total);
                     } else {
                         space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
-                        record.sha256 = copyAndHash(temp, zip, control, progress, spec.path,
+                        copyFile(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                         zip.closeEntry();
                         record.sizeBytes = size;
@@ -387,18 +382,14 @@ final class CompatibilityBundleExporter {
                 } else if (result != null && "too_large".equals(result.error)) {
                     record.status = "too_large";
                     record.error = result.error;
-                    if (temp.isFile()) record.sha256 = hashFile(temp, control, progress,
-                            spec.path, remoteIndex + 1, remote.size(), total);
                 } else if (result != null && size > 0L) {
                     if (size > MAX_FILE_BYTES || size > MAX_TOTAL_BYTES - total) {
                         record.status = "too_large";
                         record.error = "size_limit";
-                        record.sha256 = hashFile(temp, control, progress, spec.path,
-                                remoteIndex + 1, remote.size(), total);
                     } else {
                         space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
-                        record.sha256 = copyAndHash(temp, zip, control, progress, spec.path,
+                        copyFile(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                         zip.closeEntry();
                         record.status = "partial";
@@ -602,11 +593,7 @@ final class CompatibilityBundleExporter {
         return StreamResult.failure(error, result.exitCode, bytes);
     }
 
-    private static String copyAndHash(File source, OutputStream output) throws IOException {
-        return copyAndHash(source, output, null, null, "", 0, 0, 0L);
-    }
-
-    private static String copyAndHash(
+    private static void copyFile(
             File source,
             OutputStream output,
             ExportControl control,
@@ -615,9 +602,6 @@ final class CompatibilityBundleExporter {
             int index,
             int count,
             long total) throws IOException {
-        MessageDigest digest;
-        try { digest = MessageDigest.getInstance("SHA-256"); }
-        catch (Exception error) { throw new IOException("SHA-256 unavailable", error); }
         byte[] buffer = new byte[BUFFER_SIZE];
         long copied = 0L;
         try (FileInputStream input = new FileInputStream(source)) {
@@ -626,62 +610,12 @@ final class CompatibilityBundleExporter {
                 if (read == 0) continue;
                 checkCancelled(control);
                 output.write(buffer, 0, read);
-                digest.update(buffer, 0, read);
                 copied += read;
                 if (progress != null) {
                     progress.report(Progress.Phase.ZIP, path, index, count,
                             copied, total, false);
                 }
             }
-        }
-        return digestHex(digest.digest());
-    }
-
-    private static String sha256(byte[] value) {
-        try { return digestHex(MessageDigest.getInstance("SHA-256").digest(value)); }
-        catch (Exception error) { return "unavailable"; }
-    }
-
-    private static String hashFile(File source) {
-        try {
-            return hashFile(source, null, null, "", 0, 0, 0L);
-        } catch (IOException error) {
-            return "unavailable";
-        }
-    }
-
-    private static String hashFile(
-            File source,
-            ExportControl control,
-            ProgressReporter progress,
-            String path,
-            int index,
-            int count,
-            long total) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[BUFFER_SIZE];
-            long hashed = 0L;
-            try (FileInputStream input = new FileInputStream(source)) {
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    if (read > 0) {
-                        checkCancelled(control);
-                        digest.update(buffer, 0, read);
-                        hashed += read;
-                        if (progress != null) {
-                            progress.report(Progress.Phase.REMOTE, path, index, count,
-                                    hashed, total, false);
-                        }
-                    }
-                }
-            }
-            return digestHex(digest.digest());
-        } catch (CancellationException error) {
-            throw error;
-        } catch (Throwable error) {
-            if (error instanceof IOException) throw (IOException) error;
-            return "unavailable";
         }
     }
 
@@ -707,12 +641,6 @@ final class CompatibilityBundleExporter {
         }
     }
 
-    private static String digestHex(byte[] value) {
-        StringBuilder result = new StringBuilder(value.length * 2);
-        for (byte b : value) result.append(String.format(Locale.US, "%02x", b & 0xff));
-        return result.toString();
-    }
-
     private static String manifest(Identity identity, long createdAtMillis,
             List<SourceRecord> records) {
         StringBuilder json = new StringBuilder(2048);
@@ -735,7 +663,6 @@ final class CompatibilityBundleExporter {
                     .append(",\"source\":").append(quote(record.source))
                     .append(",\"status\":").append(quote(record.status))
                     .append(",\"size_bytes\":").append(record.sizeBytes)
-                    .append(",\"sha256\":").append(quote(record.sha256))
                     .append(",\"error\":").append(quote(record.error)).append('}');
         }
         return json.append("]}").toString();
@@ -1018,9 +945,9 @@ final class CompatibilityBundleExporter {
     private static final class RemoteSpec { final String path, type; RemoteSpec(String p, String t) { path = p; type = t; } }
     private static final class SourceRecord {
         final String type, entry, source; final long snapshotBytes; String status = "missing";
-        String error, sha256; long sizeBytes;
+        String error; long sizeBytes;
         SourceRecord(String t, String e, String s, long b) {
-            type = t; entry = e; source = s; snapshotBytes = b; sha256 = sha256(new byte[0]);
+            type = t; entry = e; source = s; snapshotBytes = b;
         }
     }
 }

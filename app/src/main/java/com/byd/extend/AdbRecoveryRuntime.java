@@ -299,10 +299,14 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
                 return;
             }
             log.log("adb_tls_authenticated", "port", port);
-            tls.requestTcpip5555();
+            LocalAdbTlsClient.TcpipResult result = tls.requestTcpip5555();
+            log.log("adb_tls_tcpip_result", "port", port,
+                    "category", result.category, "reason", result.reason);
         } catch (Throwable error) {
             log.log("adb_tls_failed", "port", port,
-                    "error", error.getClass().getSimpleName());
+                    "error", error.getClass().getSimpleName(),
+                    "category", LocalAdbTlsClient.failureCategory(error),
+                    "reason", LocalAdbTlsClient.failureReason(error));
             consentPaused = false;
             if (!settings.getBoolean(RECOVERY_ENABLED, true)) {
                 applyDisabled();

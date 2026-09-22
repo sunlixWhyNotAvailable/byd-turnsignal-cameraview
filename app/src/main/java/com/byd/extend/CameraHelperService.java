@@ -15,6 +15,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
 import android.widget.Toast;
@@ -834,9 +835,7 @@ public final class CameraHelperService extends Service {
         // Rights are provisioned independently; feature execution still observes runtime gates.
         if (ACTION_START.equals(action) || ACTION_ACTIVITY_OPEN.equals(action)
                 || ACTION_SETTINGS_RELOADED.equals(action)) {
-            if (LocalAdbClient.readAccessState(this).status == LocalAdbClient.AccessState.Status.OK) {
-                provisionAppPermissions("service_entry");
-            }
+            provisionAppPermissions("service_entry");
         }
         if (!userShutdown && (shouldRecover || activityVisible
                 || ACTION_ACTIVITY_OPEN.equals(action))) {
@@ -1131,58 +1130,59 @@ public final class CameraHelperService extends Service {
     private boolean applyWeatherAccessibility(
             boolean enabled, boolean forceRebind, long recoveryEpoch) {
         if (!enabled) return true;
-        LocalAdbClient.Result currentResult = LocalAdbClient.executeAuthorizedText(
-                this, "settings get secure enabled_accessibility_services", 8_192,
-                this::lifecycle);
-        if (!currentResult.ok) {
-            lifecycle("weather_accessibility_failed", "enabled", enabled,
-                    "error", currentResult.error);
-            clearWeatherAccessibilityTarget(enabled);
+        int user = AvasNotificationAccess.userIdForUid(Process.myUid());
+        AccessibilitySettingsWriter.Result result;
+        try {
+            result = AccessibilitySettingsWriter.ensureEnabled(new AccessibilitySettingsWriter.Access() {
+                    @Override public String readServices() {
+                        LocalAdbClient.Result read = LocalAdbClient.executeAuthorizedText(
+                                CameraHelperService.this, "settings --user " + user
+                                        + " get secure enabled_accessibility_services",
+                                8_192, CameraHelperService.this::lifecycle);
+                        if (!read.ok) throw new IllegalStateException(read.error);
+                        return read.output;
+                    }
+
+                    @Override public boolean writeServices(String value) {
+                        return runWeatherAccessibilityCommand("settings --user " + user
+                                + " put secure enabled_accessibility_services " + quote(value));
+                    }
+
+                    @Override public boolean enableAccessibility() {
+                        LocalAdbClient.Result read = LocalAdbClient.executeAuthorizedText(
+                                CameraHelperService.this, "settings --user " + user
+                                        + " get secure accessibility_enabled",
+                                64, CameraHelperService.this::lifecycle);
+                        if (!read.ok) return false;
+                        if ("1".equals(read.output == null ? "" : read.output.trim())) return true;
+                        if (!runWeatherAccessibilityCommand("settings --user " + user
+                                + " put secure accessibility_enabled 1")) return false;
+                        LocalAdbClient.Result readback = LocalAdbClient.executeAuthorizedText(
+                                CameraHelperService.this, "settings --user " + user
+                                        + " get secure accessibility_enabled",
+                                64, CameraHelperService.this::lifecycle);
+                        return readback.ok && "1".equals(readback.output == null
+                                ? "" : readback.output.trim());
+                    }
+                    }, forceRebind,
+                    () -> recoveryEpoch != 0
+                            && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch),
+                    CameraHelperService::pauseWeatherAccessibility,
+                    event -> lifecycle(event, "epoch", recoveryEpoch));
+        } catch (RuntimeException failure) {
+            lifecycle("weather_accessibility_failed", "enabled", true,
+                    "error", failure.getClass().getSimpleName());
+            clearWeatherAccessibilityTarget(true);
             return false;
         }
-        String current = currentResult.output == null ? "" : currentResult.output.trim();
-        if ("null".equalsIgnoreCase(current)) current = "";
-        if (enabled && recoveryEpoch != 0
-                && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch)) return false;
-        boolean installed = WeatherAccessibilitySettings.hasOwnService(current);
-        boolean legacyInstalled = WeatherAccessibilitySettings.hasLegacyService(current);
-        String value = WeatherAccessibilitySettings.transformEnabledAccessibilityServices(
-                current, enabled);
-        if (!enabled && !installed && !legacyInstalled) {
-            lifecycle("weather_accessibility_applied", "enabled", false,
-                    "other_services", value.isEmpty() ? 0 : 1);
-            return true;
-        }
-        boolean ok = true;
-        if (installed != enabled || legacyInstalled || forceRebind) {
-            if (enabled) {
-                String withoutOwn = WeatherAccessibilitySettings
-                        .transformEnabledAccessibilityServices(current, false);
-                ok = runWeatherAccessibilityCommand(
-                        "settings put secure enabled_accessibility_services ':" + withoutOwn + "'")
-                        && pauseWeatherAccessibility();
-                if (ok && recoveryEpoch != 0
-                        && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch)) return false;
-                ok = ok && runWeatherAccessibilityCommand(
-                        "settings put secure enabled_accessibility_services ':" + value + "'")
-                        && pauseWeatherAccessibility();
-            } else {
-                ok = runWeatherAccessibilityCommand(
-                        "settings put secure enabled_accessibility_services ':" + value + "'")
-                        && pauseWeatherAccessibility();
-            }
-        }
-        if (ok && enabled && (recoveryEpoch == 0
-                || weatherAccessibilityRecovery.isCurrent(recoveryEpoch))) {
-            ok = runWeatherAccessibilityCommand(
-                    "settings put secure accessibility_enabled 1");
-        }
-        lifecycle(ok ? "weather_accessibility_applied" : "weather_accessibility_failed",
-                "enabled", enabled, "listed", enabled && WeatherAccessibilitySettings
-                        .hasOwnService(value), "rebind", forceRebind,
-                "other_services", value.isEmpty() ? 0 : 1);
-        if (!ok) clearWeatherAccessibilityTarget(enabled);
-        return ok;
+        boolean bound = WeatherRefreshAccessibilityService.isConnected();
+        lifecycle(result.ok ? "weather_accessibility_applied" : "weather_accessibility_failed",
+                "enabled", true, "listed", result.listed, "rebind", forceRebind,
+                "granted", result.ok, "cancelled", result.cancelled);
+        lifecycle("weather_accessibility_binding_readback", "bound", bound,
+                "rebind", forceRebind);
+        if (!result.ok && !result.cancelled) clearWeatherAccessibilityTarget(true);
+        return result.ok;
     }
 
     private void clearWeatherAccessibilityTarget(boolean attemptedValue) {
@@ -1199,6 +1199,10 @@ public final class CameraHelperService extends Service {
             lifecycle("weather_accessibility_command_failed", "error", result.error);
         }
         return result.ok;
+    }
+
+    private static String quote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     private static boolean pauseWeatherAccessibility() {

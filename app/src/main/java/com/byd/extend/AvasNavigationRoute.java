@@ -72,12 +72,7 @@ final class AvasNavigationRoute {
     }
 
     private synchronized IBinder service() throws Exception {
-        if (autoservice == null || !autoservice.isBinderAlive()) {
-            autoservice = (IBinder) Class.forName("android.os.ServiceManager")
-                    .getMethod("getService", String.class).invoke(null, "autoservice");
-        }
-        if (autoservice == null) throw new IllegalStateException("autoservice unavailable");
-        return autoservice;
+        return autoservice = AvasAutoService.resolve(autoservice);
     }
 
     private void event(String kind, Object... fields) {
