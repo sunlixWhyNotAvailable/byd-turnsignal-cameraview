@@ -16,6 +16,7 @@ import java.util.function.BiConsumer;
 final class MusicVisualizerRuntime {
     static final String MEDIA_SELECTOR = "com.byd.mediacenter";
     static final long STOP_DEBOUNCE_MS = 3_000;
+    private static final int OEM_CONTENT_TYPE_NAVI = 6;
     private static final long STOP_RETRY_MS = 1_000;
     static final int MAX_STOP_RETRIES = 3;
 
@@ -395,6 +396,8 @@ final class MusicVisualizerRuntime {
     }
 
     static boolean isMusicAttributes(int usage, int contentType) {
+        if (usage == AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE
+                || contentType == OEM_CONTENT_TYPE_NAVI) return false;
         return usage == AudioAttributes.USAGE_MEDIA
                 || contentType == AudioAttributes.CONTENT_TYPE_MUSIC;
     }

@@ -9,11 +9,15 @@ import java.lang.reflect.Method;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Bounded app-side reconciliation for the shell recovery singleton. */
 final class AvasRecoveryDaemonController implements AutoCloseable {
     private static final long READY_TIMEOUT_MS = 3_000L;
+    private static final long READY_INTERVAL_MS = 100L;
     private static final long FAILURE_BACKOFF_MS = 30_000L;
 
     private final Context context;
@@ -91,35 +95,74 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             setOwnsRecovery(false);
             return;
         }
-        if (!launch.ok) {
+        if (!shouldAwaitReadiness(launch)) {
             retryAfterMs = now + FAILURE_BACKOFF_MS;
             emit("avas_recovery_daemon_launch", "ok", false,
                     "authorization_required", launch.authorizationRequired,
                     "error", launch.error, "output", launch.output);
             return;
         }
-        long deadline = SystemClock.elapsedRealtime() + READY_TIMEOUT_MS;
-        do {
-            if (!isCurrent(true, generation)) return;
-            DaemonPing started = ping(resolve());
-            if (started.healthy(apkIdentity)) {
-                retryAfterMs = 0L;
-                control(started.binder, recovery, false, recording);
-                setOwnsRecovery(recovery);
+        DaemonPing started;
+        try {
+            started = awaitReadiness(launch, apkIdentity, () -> ping(resolve()),
+                    SystemClock::elapsedRealtime, Thread::sleep,
+                    () -> mayAcceptReadiness(generation));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        if (started != null) {
+            if (!mayAcceptReadiness(generation)) return;
+            retryAfterMs = 0L;
+            control(started.binder, recovery, false, recording);
+            setOwnsRecovery(recovery);
+            if (launch.commandReadTimeout) {
+                emit("avas_recovery_daemon_launch", "ok", true,
+                        "pid", started.pid, "output", launch.output,
+                        "command_read_timeout", launch.error);
+            } else {
                 emit("avas_recovery_daemon_launch", "ok", true,
                         "pid", started.pid, "output", launch.output);
-                return;
             }
-            try {
-                Thread.sleep(100L);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        } while (SystemClock.elapsedRealtime() < deadline);
+            return;
+        }
+        if (!mayAcceptReadiness(generation)) return;
         retryAfterMs = SystemClock.elapsedRealtime() + FAILURE_BACKOFF_MS;
         emit("avas_recovery_daemon_launch", "ok", false,
                 "error", "readiness_timeout", "output", launch.output);
+    }
+
+    static boolean shouldAwaitReadiness(LocalAdbClient.Result launch) {
+        return launch.ok || launch.commandReadTimeout;
+    }
+
+    static DaemonPing awaitReadiness(LocalAdbClient.Result launch, String expectedIdentity,
+            Supplier<DaemonPing> probe, LongSupplier elapsedRealtime,
+            DaemonReadinessSleeper sleeper, BooleanSupplier mayContinue)
+            throws InterruptedException {
+        if (!shouldAwaitReadiness(launch)) return null;
+        long deadline = elapsedRealtime.getAsLong() + READY_TIMEOUT_MS;
+        do {
+            if (!mayContinue.getAsBoolean()) return null;
+            DaemonPing current = probe.get();
+            if (current.healthy(expectedIdentity)) {
+                return mayContinue.getAsBoolean() ? current : null;
+            }
+            if (!mayContinue.getAsBoolean()) return null;
+            sleeper.sleep(READY_INTERVAL_MS);
+        } while (elapsedRealtime.getAsLong() < deadline);
+        return null;
+    }
+
+    private boolean mayAcceptReadiness(long generation) {
+        synchronized (this) {
+            return !closed && desiredRequired && desiredGeneration == generation;
+        }
+    }
+
+    @FunctionalInterface
+    interface DaemonReadinessSleeper {
+        void sleep(long millis) throws InterruptedException;
     }
 
     boolean ownsRecovery() {
