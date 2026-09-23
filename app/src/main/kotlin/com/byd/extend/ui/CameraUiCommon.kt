@@ -56,8 +56,8 @@ internal fun CameraWorkspace(
     onSection: (CameraSection) -> Unit,
     profileStatus: StatusUiState = StatusUiState(),
     panoramaStatus: StatusUiState? = null,
-    profileControls: @Composable FormScope.() -> Unit,
-    controls: @Composable FormScope.() -> Unit,
+    profileControls: @Composable FormScope.() -> FormScope,
+    controls: @Composable FormScope.() -> FormScope,
     preview: @Composable ColumnScope.() -> Unit,
 ) {
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -157,9 +157,9 @@ internal fun FormScope.CameraProfileControls(
     onAction: (BydExtendUiAction) -> Unit,
     onPreview: (NumberTarget, String, Long) -> String? = { _, value, _ -> value },
     identityFor: (NumberTarget) -> Any = { it },
-    placementExtra: @Composable FormScope.() -> Unit = {},
-    parameters: @Composable FormScope.() -> Unit,
-) {
+    placementExtra: @Composable FormScope.() -> FormScope = { this },
+    parameters: @Composable FormScope.() -> FormScope,
+): FormScope {
     var stage by rememberSaveable(profile) { mutableStateOf(CalibrationStage.Original) }
     val calibration = state.calibration
     fun profileNumber(field: ProfileNumber, value: String, sessionId: Long? = null) {
@@ -279,6 +279,7 @@ internal fun FormScope.CameraProfileControls(
             }
         }
     }
+    return this
 }
 
 @Composable

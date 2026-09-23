@@ -18,7 +18,6 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
-import androidx.core.view.OneShotPreDrawListener
 import com.byd.extend.ui.UiLanguage
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
@@ -27,13 +26,31 @@ import kotlin.math.roundToInt
 
 /** Process-owned native window for the short-lived update hint. */
 object UpdateHintOverlay {
+    enum class DeliveryOutcome { SHOWN, DEFERRED, FAILED, CANCELLED }
+
     fun interface Callback {
         fun onOpen(eventId: String)
+    }
+
+    fun interface DeliveryCallback {
+        fun onDelivery(eventId: String, attemptId: Long, outcome: DeliveryOutcome)
+    }
+
+    private class DeliveryAttempt(
+        val eventId: String,
+        val attemptId: Long,
+        val requestId: Long,
+        val requestedAtElapsedNanos: Long
+    ) {
+        var outcome: DeliveryOutcome? = null
+        var attached = false
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val requestGeneration = AtomicLong()
     private var callback: Callback? = null
+    private var deliveryCallback: DeliveryCallback? = null
+    private var activeAttempt: DeliveryAttempt? = null
     private var appContext: Context? = null
     private var windowContext: Context? = null
     private var windows: WindowManager? = null
@@ -42,6 +59,7 @@ object UpdateHintOverlay {
     private var params: WindowManager.LayoutParams? = null
     private var animator: android.animation.ValueAnimator? = null
     private var eventId: String? = null
+    private var coordinationEventId: String? = null
     private var version: String? = null
     private var appearance = UpdateHintAppearance()
     private var language = UiLanguage.English
@@ -53,7 +71,6 @@ object UpdateHintOverlay {
     private var deadlineElapsedMs = 0L
     private var generation = 0L
     private var scheduledExpiry: Runnable? = null
-    private var preDrawListener: OneShotPreDrawListener? = null
     private var displays: DisplayManager? = null
     private var activeDisplayId = Display.INVALID_DISPLAY
     private var availableArea: Rect? = null
@@ -68,28 +85,50 @@ object UpdateHintOverlay {
         }
 
         override fun onDisplayRemoved(displayId: Int) {
-            if (displayId == activeDisplayId) dismissMain("display_removed", true)
+            if (displayId != activeDisplayId) return
+            val attempt = activeAttempt
+            if (root == null && attempt != null) {
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_removed")
+            } else {
+                dismissMain("display_removed", true)
+            }
         }
     }
 
     private val displayRefresh = Runnable {
         val context = appContext ?: return@Runnable
-        val manager = windows ?: return@Runnable
-        val display = displays?.getDisplay(activeDisplayId) ?: run {
-            dismissMain("display_unavailable", true)
+        val manager = windows ?: run {
+            failOrDismiss("display_state_unavailable")
+            return@Runnable
+        }
+        val display = try {
+            displays?.getDisplay(activeDisplayId)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "display_refresh_failed event=${eventId}", error)
+            failOrDismiss("display_refresh_failed")
+            return@Runnable
+        } ?: run {
+            val attempt = activeAttempt
+            if (root == null && attempt != null) {
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_unavailable")
+            } else {
+                dismissMain("display_unavailable", true)
+            }
+            return@Runnable
+        }
+        val attempt = activeAttempt
+        if (root == null && display.state != Display.STATE_ON) {
+            if (attempt != null) finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_off")
             return@Runnable
         }
         val density = windowContext?.resources?.displayMetrics?.density ?: 0f
-        if (usableArea(context, manager, display) != availableArea ||
-            abs(density - availableDensity) > 0.0001f
-        ) refreshAppearanceMain()
-    }
-
-    private val expire = Runnable {
-        if (eventId != null && deadlineElapsedMs > 0L &&
-            SystemClock.elapsedRealtime() >= deadlineElapsedMs
-        ) {
-            dismissMain("expired", true)
+        try {
+            if (usableArea(context, manager, display) != availableArea ||
+                abs(density - availableDensity) > 0.0001f
+            ) refreshAppearanceMain()
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "display_refresh_failed event=${eventId}", error)
+            failOrDismiss("display_refresh_failed")
         }
     }
 
@@ -100,13 +139,23 @@ object UpdateHintOverlay {
     }
 
     @JvmStatic
-    fun show(context: Context, eventId: String, version: String) {
+    fun setDeliveryCallback(value: DeliveryCallback?) {
+        if (Looper.myLooper() == Looper.getMainLooper()) deliveryCallback = value
+        else handler.post { deliveryCallback = value }
+    }
+
+    @JvmStatic
+    fun show(context: Context, eventId: String, version: String, attemptId: Long) {
         val request = requestGeneration.incrementAndGet()
-        val requestedAtNanos = SystemClock.elapsedRealtimeNanos()
+        val attempt = DeliveryAttempt(
+            eventId, attemptId, request, SystemClock.elapsedRealtimeNanos()
+        )
         val application = context.applicationContext
         val action = Runnable {
             if (requestGeneration.get() == request) {
-                showMain(application, eventId, version, requestedAtNanos)
+                showMain(application, version, attempt, request)
+            } else {
+                reportDelivery(attempt, DeliveryOutcome.CANCELLED)
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) action.run() else handler.post(action)
@@ -117,7 +166,11 @@ object UpdateHintOverlay {
     fun hide(reason: String = "hidden") {
         val request = requestGeneration.incrementAndGet()
         val action = Runnable {
-            if (requestGeneration.get() == request) dismissMain(reason, true)
+            if (requestGeneration.get() == request) {
+                val attempt = activeAttempt
+                dismissMain(reason, true)
+                if (attempt != null) reportDelivery(attempt, DeliveryOutcome.CANCELLED)
+            }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) action.run() else handler.post(action)
     }
@@ -128,24 +181,67 @@ object UpdateHintOverlay {
         else handler.post(::refreshAppearanceMain)
     }
 
-    private fun showMain(context: Context, newEventId: String, newVersion: String, requestedAtNanos: Long) {
-        if (newEventId.isBlank() || newVersion.isBlank()) {
-            dismissMain("invalid_result", true)
-            Log.w(TAG, "show_failed reason=invalid_result")
+    @JvmStatic
+    fun reconcileExpiry() {
+        if (Looper.myLooper() == Looper.getMainLooper()) reconcileExpiryMain()
+        else handler.post(::reconcileExpiryMain)
+    }
+
+    private fun showMain(
+        context: Context,
+        newVersion: String,
+        attempt: DeliveryAttempt,
+        request: Long
+    ) {
+        val newEventId = attempt.eventId
+        if (eventId == newEventId && activeAttempt?.outcome == DeliveryOutcome.SHOWN) {
+            reportDelivery(attempt, DeliveryOutcome.CANCELLED)
             return
         }
-        if (eventId == newEventId) return
-        dismissMain("replaced", eventId != null)
-        if (!Settings.canDrawOverlays(context)) {
-            UpdateHintCoordinator.get(context).clear("overlay_permission_missing")
-            Log.w(TAG, "show_failed event=$newEventId reason=overlay_permission_missing")
+
+        val replacedAttempt = activeAttempt
+        if (replacedAttempt != null || eventId != null) {
+            dismissMain("replaced", eventId != null)
+            if (replacedAttempt != null) {
+                reportDelivery(replacedAttempt, DeliveryOutcome.CANCELLED)
+            }
+            if (requestGeneration.get() != request) {
+                reportDelivery(attempt, DeliveryOutcome.CANCELLED)
+                return
+            }
+        }
+
+        activeAttempt = attempt
+        appContext = context
+        if (newEventId.isBlank() || newVersion.isBlank()) {
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "invalid_result")
+            Log.w(TAG, "show_failed reason=invalid_result")
             return
         }
 
         try {
+            if (!Settings.canDrawOverlays(context)) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "overlay_permission_missing")
+                Log.w(TAG, "show_cancelled event=$newEventId reason=overlay_permission_missing")
+                return
+            }
             val displayManager = context.getSystemService(DisplayManager::class.java)
+            if (displayManager == null) {
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_unavailable")
+                Log.i(TAG, "show_deferred event=$newEventId reason=display_unavailable")
+                return
+            }
             val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY)
-                ?: throw IllegalStateException("main_display_unavailable")
+            if (display == null) {
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_unavailable")
+                Log.i(TAG, "show_deferred event=$newEventId reason=display_unavailable")
+                return
+            }
+            if (display.state != Display.STATE_ON) {
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, "display_off")
+                Log.i(TAG, "show_deferred event=$newEventId reason=display_off")
+                return
+            }
             val displayContext = context.createDisplayContext(display)
             val overlayContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 displayContext.createWindowContext(
@@ -189,124 +285,258 @@ object UpdateHintOverlay {
             displayListenerRegistered = true
 
             val coordinator = UpdateHintCoordinator.get(context)
+            val coordinationId = UpdateResultPresentation.coordinationEventId(
+                newEventId, attempt.attemptId
+            )
+            if (requestGeneration.get() != attempt.requestId) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "superseded")
+                return
+            }
+            coordinationEventId = coordinationId
             coordinator.setListener { ownState, layout, ready ->
-                handler.post { onCoordinationChanged(ownState, layout, ready) }
+                handler.post {
+                    if (activeAttempt === attempt && eventId == attempt.eventId &&
+                        coordinationEventId == coordinationId
+                    ) {
+                        onCoordinationChanged(attempt, coordinationId, ownState, layout, ready)
+                    }
+                }
             }
             coordinator.updateAvailableArea(
                 display.displayId, area.left, area.top, area.width(), area.height(),
                 overlayContext.resources.displayMetrics.density
             )
+            val reservationDisplay = displayManager.getDisplay(Display.DEFAULT_DISPLAY)
+            if (reservationDisplay == null || reservationDisplay.state != Display.STATE_ON) {
+                val reason = if (reservationDisplay == null) {
+                    "display_unavailable"
+                } else {
+                    "display_off"
+                }
+                finishAttempt(attempt, DeliveryOutcome.DEFERRED, reason)
+                Log.i(TAG, "show_deferred event=$newEventId reason=$reason")
+                return
+            }
             coordinator.beginPending(
-                newEventId, requestedAtNanos, display.displayId,
+                coordinationId, attempt.requestedAtElapsedNanos, display.displayId,
                 newAppearance.sizePercent, width, height
             )
         } catch (error: RuntimeException) {
             Log.w(TAG, "show_failed event=$newEventId reason=${error.javaClass.simpleName}")
-            dismissMain("show_failed", true)
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "show_failed")
         }
     }
 
     private fun onCoordinationChanged(
+        attempt: DeliveryAttempt,
+        coordinationId: String,
         ownState: UpdateHintState,
         layout: UpdateHintLayout.Result,
         ready: Boolean
     ) {
+        if (activeAttempt !== attempt) {
+            reportDelivery(attempt, DeliveryOutcome.CANCELLED)
+            return
+        }
+        if (requestGeneration.get() != attempt.requestId) {
+            finishAttempt(attempt, DeliveryOutcome.CANCELLED, "superseded")
+            return
+        }
         val currentEvent = eventId ?: return
-        if (ownState.eventId != currentEvent || ownState.isNone()) return
-        val target = layout.find(PACKAGE_NAME, currentEvent)
+        if (coordinationEventId != coordinationId ||
+            ownState.eventId != coordinationId || ownState.isNone()
+        ) return
+        val target = layout.find(PACKAGE_NAME, coordinationId)
         if (target == null) {
             if (ready) {
                 Log.w(TAG, "show_failed event=$currentEvent reason=placement_unavailable")
-                dismissMain("placement_unavailable", true)
+                finishAttempt(attempt, DeliveryOutcome.FAILED, "placement_unavailable")
             }
             return
         }
         if (root == null) {
-            if (ready) attach(target)
+            if (ready) attach(attempt, target)
         } else {
             applyPlacement(target, true)
         }
     }
 
-    private fun attach(target: UpdateHintLayout.Placement) {
-        val manager = windows ?: return
-        val overlayContext = windowContext ?: return
-        val currentCard = card ?: return
-        if (!Settings.canDrawOverlays(overlayContext)) {
-            dismissMain("overlay_permission_lost", true)
+    private fun attach(attempt: DeliveryAttempt, target: UpdateHintLayout.Placement) {
+        if (activeAttempt !== attempt) {
+            reportDelivery(attempt, DeliveryOutcome.CANCELLED)
             return
         }
-        val frame = FrameLayout(overlayContext).apply {
-            clipChildren = false
-            clipToPadding = false
-            setOnApplyWindowInsetsListener { _, insets ->
-                scheduleDisplayRefresh()
-                insets
-            }
-            addView(currentCard, FrameLayout.LayoutParams(preferredWidthPx, preferredHeightPx))
+        if (requestGeneration.get() != attempt.requestId) {
+            finishAttempt(attempt, DeliveryOutcome.CANCELLED, "superseded")
+            return
         }
-        val layoutParams = WindowManager.LayoutParams(
-            target.widthPx,
-            target.heightPx,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            windowFlags(),
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.LEFT
-            x = target.xPx
-            y = target.yPx
-            alpha = 1f
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setFitInsetsTypes(0)
+        val context = appContext
+        val manager = windows
+        val overlayContext = windowContext
+        val currentCard = card
+        if (context == null || manager == null || overlayContext == null || currentCard == null) {
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_state_unavailable")
+            return
         }
-        val scale = target.effectiveScalePercent.toFloat() / appearance.sizePercent.coerceAtLeast(1)
-        currentCard.pivotX = 0f
-        currentCard.pivotY = 0f
-        currentCard.scaleX = scale
-        currentCard.scaleY = scale
-        currentCard.translationX = -target.widthPx.toFloat()
+
         try {
-            val activeGeneration = ++generation
-            root = frame
-            params = layoutParams
-            effectiveScalePercent = target.effectiveScalePercent
-            appliedScale = scale
-            manager.addView(frame, layoutParams)
-            frame.requestApplyInsets()
-            preDrawListener = OneShotPreDrawListener.add(frame) {
-                preDrawListener = null
-                if (generation == activeGeneration && root === frame) {
-                    startVisibleLifetime(overlayContext, currentCard, activeGeneration)
-                }
+            if (!Settings.canDrawOverlays(context)) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "overlay_permission_lost")
+                return
+            }
+            val display = displays?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (display == null || display.state != Display.STATE_ON) {
+                finishAttempt(
+                    attempt,
+                    DeliveryOutcome.DEFERRED,
+                    if (display == null) "display_unavailable" else "display_off"
+                )
+                return
             }
         } catch (error: RuntimeException) {
-            Log.w(TAG, "show_failed event=${eventId} reason=${error.javaClass.simpleName}")
-            dismissMain("attach_failed", true)
+            Log.w(TAG, "attach_preflight_failed event=${attempt.eventId}", error)
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_preflight_failed")
+            return
         }
+
+        var activeGeneration = 0L
+        val frame: FrameLayout
+        val layoutParams: WindowManager.LayoutParams
+        try {
+            frame = FrameLayout(overlayContext).apply {
+                clipChildren = false
+                clipToPadding = false
+                setOnApplyWindowInsetsListener { _, insets ->
+                    scheduleDisplayRefresh()
+                    insets
+                }
+                addView(currentCard, FrameLayout.LayoutParams(preferredWidthPx, preferredHeightPx))
+            }
+            layoutParams = WindowManager.LayoutParams(
+                target.widthPx,
+                target.heightPx,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                windowFlags(),
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.LEFT
+                x = target.xPx
+                y = target.yPx
+                alpha = 1f
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setFitInsetsTypes(0)
+            }
+            val scale = target.effectiveScalePercent.toFloat() /
+                appearance.sizePercent.coerceAtLeast(1)
+            currentCard.pivotX = 0f
+            currentCard.pivotY = 0f
+            currentCard.scaleX = scale
+            currentCard.scaleY = scale
+            currentCard.translationX = -target.widthPx.toFloat()
+
+            if (!Settings.canDrawOverlays(context)) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "overlay_permission_lost")
+                return
+            }
+            val readyDisplay = displays?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (readyDisplay == null || readyDisplay.state != Display.STATE_ON) {
+                finishAttempt(
+                    attempt,
+                    DeliveryOutcome.DEFERRED,
+                    if (readyDisplay == null) "display_unavailable" else "display_off"
+                )
+                return
+            }
+            if (requestGeneration.get() != attempt.requestId) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "superseded")
+                return
+            }
+
+            activeGeneration = ++generation
+            manager.addView(frame, layoutParams)
+            attempt.attached = true
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "show_failed event=${eventId} reason=${error.javaClass.simpleName}")
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_failed")
+            return
+        }
+
+        root = frame
+        params = layoutParams
+        effectiveScalePercent = target.effectiveScalePercent
+        appliedScale = currentCard.scaleX
+        try {
+            startVisibleLifetime(context, currentCard, activeGeneration)
+            frame.requestApplyInsets()
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "post_attach_failed event=${attempt.eventId}", error)
+            dismissMain("post_attach_failed", true)
+        }
+        reportDelivery(attempt, DeliveryOutcome.SHOWN)
     }
 
     private fun startVisibleLifetime(
-        overlayContext: Context,
+        context: Context,
         currentCard: View,
         activeGeneration: Long
     ) {
         val shownElapsedMs = SystemClock.elapsedRealtime()
-        deadlineElapsedMs = shownElapsedMs + DISPLAY_DURATION_MS
-        UpdateHintCoordinator.get(overlayContext).markVisible(shownElapsedMs)
+        deadlineElapsedMs = UpdateHintLifetime.deadlineAfter(shownElapsedMs, DISPLAY_DURATION_MS)
+        scheduleExpiry(activeGeneration, UpdateHintLifetime.remainingMs(
+            deadlineElapsedMs, shownElapsedMs
+        ))
+        UpdateHintCoordinator.get(context).markVisible(shownElapsedMs)
         currentCard.animate()
             .translationX(0f)
             .setDuration(ANIMATION_DURATION_MS)
             .setInterpolator(DecelerateInterpolator())
             .start()
+        Log.i(TAG, "shown event=${eventId} scale=$effectiveScalePercent")
+    }
+
+    private fun scheduleExpiry(activeGeneration: Long, delayMs: Long) {
+        scheduledExpiry?.let(handler::removeCallbacks)
         val expiry = Runnable {
-            if (generation == activeGeneration) expire.run()
+            if (generation == activeGeneration) reconcileExpiryMain()
         }
         scheduledExpiry = expiry
-        handler.postDelayed(expiry, DISPLAY_DURATION_MS)
-        Log.i(TAG, "shown event=${eventId} scale=$effectiveScalePercent")
+        handler.postDelayed(expiry, delayMs)
+    }
+
+    private fun reconcileExpiryMain() {
+        if (eventId == null || deadlineElapsedMs <= 0L) return
+        val remainingMs = UpdateHintLifetime.remainingMs(
+            deadlineElapsedMs, SystemClock.elapsedRealtime()
+        )
+        if (remainingMs == 0L) dismissMain("expired", true)
+        else scheduleExpiry(generation, remainingMs)
+    }
+
+    private fun finishAttempt(
+        attempt: DeliveryAttempt,
+        outcome: DeliveryOutcome,
+        reason: String
+    ) {
+        if (activeAttempt !== attempt) {
+            reportDelivery(attempt, DeliveryOutcome.CANCELLED)
+            return
+        }
+        dismissMain(reason, true)
+        reportDelivery(attempt, outcome)
+    }
+
+    private fun reportDelivery(attempt: DeliveryAttempt, outcome: DeliveryOutcome) {
+        if (attempt.outcome != null) return
+        val actualOutcome = if (attempt.attached) DeliveryOutcome.SHOWN else outcome
+        attempt.outcome = actualOutcome
+        try {
+            deliveryCallback?.onDelivery(attempt.eventId, attempt.attemptId, actualOutcome)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "delivery_callback_failed event=${attempt.eventId}", error)
+        }
     }
 
     private fun applyPlacement(target: UpdateHintLayout.Placement, animate: Boolean) {
@@ -391,18 +621,41 @@ object UpdateHintOverlay {
 
     private fun refreshAppearanceMain() {
         val context = appContext ?: return
+        try {
+            refreshAppearance(context)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "appearance_refresh_failed event=${eventId}", error)
+            failOrDismiss("appearance_refresh_failed")
+        }
+    }
+
+    private fun refreshAppearance(context: Context) {
         if (!Settings.canDrawOverlays(context)) {
-            dismissMain("overlay_permission_lost", true)
+            val attempt = activeAttempt
+            if (attempt != null) {
+                finishAttempt(attempt, DeliveryOutcome.CANCELLED, "overlay_permission_lost")
+            } else {
+                dismissMain("overlay_permission_lost", true)
+            }
             return
         }
-        val currentCard = card ?: return
-        val currentVersion = version ?: return
+        val currentCard = card ?: run {
+            failOrDismiss("appearance_state_unavailable")
+            return
+        }
+        val currentVersion = version ?: run {
+            failOrDismiss("appearance_state_unavailable")
+            return
+        }
         val settings = context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
         appearance = UpdateHintAppearance.read(UpdateHintAppearance.preferences(context))
         language = readLanguage(settings)
         darkTheme = settings.getBoolean(PREF_DARK_THEME, true)
         currentCard.bind(currentVersion, language, darkTheme, appearance)
-        val overlayContext = windowContext ?: return
+        val overlayContext = windowContext ?: run {
+            failOrDismiss("appearance_state_unavailable")
+            return
+        }
         preferredWidthPx = UpdateHintCardView.widthPx(overlayContext, appearance)
         preferredHeightPx = UpdateHintCardView.preferredHeightPx(
             overlayContext, currentVersion, language, darkTheme, appearance
@@ -434,7 +687,7 @@ object UpdateHintOverlay {
         }
         val coordinator = UpdateHintCoordinator.get(context)
         val display = context.getSystemService(DisplayManager::class.java)
-            .getDisplay(Display.DEFAULT_DISPLAY)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
         if (manager != null && display != null) {
             val area = usableArea(context, manager, display)
             availableArea = Rect(area)
@@ -449,18 +702,27 @@ object UpdateHintOverlay {
         )
     }
 
+    private fun failOrDismiss(reason: String) {
+        val attempt = activeAttempt
+        if (root == null && attempt != null) {
+            finishAttempt(attempt, DeliveryOutcome.FAILED, reason)
+        } else {
+            dismissMain(reason, true)
+        }
+    }
+
     private fun openCurrent() {
         val openedEvent = eventId ?: return
         requestGeneration.incrementAndGet()
+        val attempt = activeAttempt
         dismissMain("opened", true)
+        if (attempt != null) reportDelivery(attempt, DeliveryOutcome.CANCELLED)
         callback?.onOpen(openedEvent)
     }
 
     private fun dismissMain(reason: String, publishNone: Boolean) {
         scheduledExpiry?.let(handler::removeCallbacks)
         scheduledExpiry = null
-        preDrawListener?.removeListener()
-        preDrawListener = null
         handler.removeCallbacks(displayRefresh)
         generation++
         animator?.cancel()
@@ -475,6 +737,7 @@ object UpdateHintOverlay {
         windows = null
         windowContext = null
         eventId = null
+        coordinationEventId = null
         version = null
         preferredWidthPx = 0
         preferredHeightPx = 0
@@ -501,6 +764,7 @@ object UpdateHintOverlay {
         }
         if (dismissedEvent != null) Log.i(TAG, "hidden event=$dismissedEvent reason=$reason")
         appContext = null
+        activeAttempt = null
     }
 
     private fun windowFlags(): Int = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or

@@ -7,12 +7,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.hardware.display.DisplayManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.Display;
 
 import java.lang.ref.WeakReference;
 import java.util.Collections;
@@ -37,12 +39,25 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private WeakReference<CheckListener> listener = new WeakReference<>(null);
     private AppUpdateManager.UpdateInfo available;
     private boolean shutdown;
+    private final DisplayManager displays;
+    private boolean waitingForDisplay;
+    private final Runnable deliverHint = this::deliverPendingHint;
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener;
     private final UpdateAutoCheckRuntime autoCheck;
     private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) autoCheck.sleep();
-            else runtimeWake(intent.getAction());
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                autoCheck.sleep();
+                pauseHintForDisplay();
+            } else runtimeWake(intent.getAction());
+        }
+    };
+    private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
+        @Override public void onDisplayAdded(int id) { changed(id); }
+        @Override public void onDisplayRemoved(int id) { changed(id); }
+        @Override public void onDisplayChanged(int id) { changed(id); }
+        private void changed(int id) {
+            if (id == Display.DEFAULT_DISPLAY) reconcileDisplay();
         }
     };
 
@@ -59,6 +74,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
 
     private UpdateHintRuntime(Context context) {
         this.context = context;
+        displays = context.getSystemService(DisplayManager.class);
         preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         autoCheck = new UpdateAutoCheckRuntime(main::postDelayed, main::removeCallbacks,
                 () -> preferences.getBoolean(PREF_AUTO_CHECK, true), this::startCheck,
@@ -69,22 +85,27 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                 autoCheck.refresh();
                 return;
             }
+            if (PREF_ENABLED.equals(key) && !enabled()) {
+                hide("disabled");
+                return;
+            }
             main.post(() -> {
-                if (PREF_ENABLED.equals(key) && !enabled()) hide("disabled");
-                else if (AppLanguage.KEY.equals(key) || "ui_dark_theme".equals(key)) {
+                if (AppLanguage.KEY.equals(key) || "ui_dark_theme".equals(key)) {
                     UpdateHintOverlay.refreshAppearance();
                 }
             });
         };
         preferences.registerOnSharedPreferenceChangeListener(settingsListener);
         UpdateHintOverlay.setCallback(this::openResult);
+        UpdateHintOverlay.setDeliveryCallback(this::onHintDelivery);
         ((Application) context).registerActivityLifecycleCallbacks(this);
         IntentFilter wakeFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
         wakeFilter.addAction(Intent.ACTION_SCREEN_ON);
         context.registerReceiver(wakeReceiver, wakeFilter);
-        if (!interactive()) autoCheck.sleep();
         shutdown = GuardRecovery.isUserShutdownActive(context);
         if (shutdown) autoCheck.shutdown();
+        if (displays != null) displays.registerDisplayListener(displayListener, main);
+        autoCheck.onDisplayState(displayReady());
         autoCheck.refresh();
     }
 
@@ -132,11 +153,11 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                         hide("new_result");
                         available = completed.available;
                     }
-                    boolean show = presentation.accept(
+                    presentation.accept(
                             completed.available == null ? null : completed.available.resultId,
                             completed.fresh, !started.isEmpty(), enabled(),
                             Settings.canDrawOverlays(context));
-                    if (show) UpdateHintOverlay.show(context, available.resultId, available.version);
+                    queuePendingHint();
                 }
                 Log.i("UpdateHintRuntime", "check_finished result=" + (error != null ? "error"
                         : completed != null && completed.available != null ? "available" : "none"));
@@ -152,6 +173,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     }
 
     void consume(String resultId) {
+        if (!presentation.hasOffer(resultId)) return;
         presentation.consume(resultId);
         hide("offer_handled");
     }
@@ -183,7 +205,12 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         hide("shutdown");
     }
 
-    private void hide(String reason) { UpdateHintOverlay.hide(reason); }
+    private void hide(String reason) {
+        main.removeCallbacks(deliverHint);
+        if (presentation.cancelHint()) hintEvent("cancelled reason=" + reason);
+        waitingForDisplay = false;
+        UpdateHintOverlay.hide(reason);
+    }
 
     static void onRuntimeWake(Context context, String action) {
         get(context).runtimeWake(action);
@@ -192,19 +219,100 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private void runtimeWake(String action) {
         if (shutdown || GuardRecovery.isUserShutdownActive(context)
                 || LegacySettingsImporter.blocksRuntime(context)) return;
+        reconcileDisplay();
         autoCheck.wake(action);
     }
 
-    private boolean interactive() {
-        PowerManager power = context.getSystemService(PowerManager.class);
-        return power == null || power.isInteractive();
+    private boolean displayReady() {
+        Display display = displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
+        return display != null && display.getState() == Display.STATE_ON;
+    }
+
+    private void reconcileDisplay() {
+        boolean ready = displayReady();
+        if (!shutdown && !GuardRecovery.isUserShutdownActive(context)
+                && !LegacySettingsImporter.blocksRuntime(context)) autoCheck.onDisplayState(ready);
+        if (ready) UpdateHintOverlay.reconcileExpiry();
+        queuePendingHint();
+    }
+
+    private void pauseHintForDisplay() {
+        main.removeCallbacks(deliverHint);
+        if (!presentation.hasPendingHint()) return;
+        boolean preparing = presentation.isAttempting();
+        presentation.setDisplayReady(false);
+        if (preparing) UpdateHintOverlay.hide("display_wait");
+        if (!waitingForDisplay) hintEvent("waiting_display");
+        waitingForDisplay = true;
+    }
+
+    private boolean canDeliverHint() {
+        if (!presentation.hasPendingHint()) return false;
+        String reason = null;
+        if (available == null || !presentation.hasOffer(available.resultId)) reason = "stale_result";
+        else if (shutdown || GuardRecovery.isUserShutdownActive(context)) reason = "shutdown";
+        else if (LegacySettingsImporter.blocksRuntime(context)) reason = "startup_blocked";
+        else if (!started.isEmpty()) reason = "own_ui_visible";
+        else if (!enabled()) reason = "disabled";
+        else if (!Settings.canDrawOverlays(context)) reason = "overlay_permission_missing";
+        if (reason != null) {
+            hide(reason);
+            return false;
+        }
+        if (!displayReady()) {
+            pauseHintForDisplay();
+            return false;
+        }
+        presentation.setDisplayReady(true);
+        waitingForDisplay = false;
+        return true;
+    }
+
+    private void queuePendingHint() {
+        main.removeCallbacks(deliverHint);
+        if (!canDeliverHint()) return;
+        long delay = presentation.delayUntilAttempt(SystemClock.elapsedRealtime());
+        if (delay >= 0L) main.postDelayed(deliverHint, delay);
+    }
+
+    private void deliverPendingHint() {
+        if (!canDeliverHint()) return;
+        long attempt = presentation.beginAttempt(SystemClock.elapsedRealtime());
+        if (attempt == 0L) return;
+        hintEvent("attempt id=" + attempt + " failures=" + presentation.failureCount());
+        UpdateHintOverlay.show(context, available.resultId, available.version, attempt);
+    }
+
+    private void onHintDelivery(String id, long attempt, UpdateHintOverlay.DeliveryOutcome outcome) {
+        boolean accepted;
+        switch (outcome) {
+            case SHOWN: accepted = presentation.shown(id, attempt); break;
+            case DEFERRED: accepted = presentation.deferred(id, attempt); break;
+            case FAILED:
+                accepted = presentation.failed(id, attempt, SystemClock.elapsedRealtime());
+                break;
+            default: accepted = presentation.cancelled(id, attempt); break;
+        }
+        if (!accepted) return;
+        hintEvent("delivery outcome=" + outcome + " attempt=" + attempt
+                + " failures=" + presentation.failureCount());
+        if (outcome == UpdateHintOverlay.DeliveryOutcome.FAILED) queuePendingHint();
+        else if (outcome == UpdateHintOverlay.DeliveryOutcome.DEFERRED) pauseHintForDisplay();
+    }
+
+    private void hintEvent(String detail) {
+        Display display = displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
+        Log.i("UpdateHintRuntime", "hint " + detail + " result="
+                + (available == null ? "none" : available.resultId)
+                + " display_state=" + (display == null ? "missing" : display.getState()));
     }
 
     @Override public void onActivityStarted(Activity activity) {
         started.add(activity);
         shutdown = false;
-        autoCheck.entry(interactive());
         hide("own_ui_visible");
+        autoCheck.onDisplayState(displayReady());
+        autoCheck.entry(displayReady(), presentation.hasPendingOffer());
     }
     @Override public void onActivityStopped(Activity activity) { started.remove(activity); }
     @Override public void onActivityDestroyed(Activity activity) { started.remove(activity); }

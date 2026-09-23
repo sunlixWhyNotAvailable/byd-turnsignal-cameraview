@@ -123,7 +123,7 @@ internal fun SettingsScreen(
 
 @Composable
 private fun FormScope.PermissionsSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
-    onAction: (BydExtendUiAction) -> Unit, onEditUpdateHint: () -> Unit) {
+    onAction: (BydExtendUiAction) -> Unit, onEditUpdateHint: () -> Unit): FormScope {
     FormSection(strings.settingsCategories[0], colors, bodyPadding = 0.dp, key = "permissions") {
         row("adb") { SettingsActionRow(strings.text("Дозволи ADB", "ADB permissions"),
             strings.text("Самоперевірка автоматично видає потрібні дозволи, коли ADB авторизований",
@@ -208,12 +208,13 @@ private fun FormScope.PermissionsSettings(state: SettingsUiState, strings: UiStr
             }
         } }
     }
+    return this
 }
 
 @Composable
 private fun FormScope.CameraOutputSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-    onPreview: (NumberTarget, String, Long) -> String?) {
+    onPreview: (NumberTarget, String, Long) -> String?): FormScope {
     FormSection(strings.settingsCategories[1], colors, key = "camera-output") {
         row("quality-title") { Text(strings.text("Якість зображення", "Image quality"), color = colors.text,
             fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
@@ -243,11 +244,12 @@ private fun FormScope.CameraOutputSettings(state: SettingsUiState, strings: UiSt
             onCommitSession = { value, session -> onAction(BydExtendUiAction.CommitNumber(
                 NumberTarget.Output(OutputNumber.Transparency), value, session)) }) }
     }
+    return this
 }
 
 @Composable
 private fun FormScope.LogSettings(state: SettingsUiState, strings: UiStrings, colors: UiPalette,
-    onAction: (BydExtendUiAction) -> Unit) {
+    onAction: (BydExtendUiAction) -> Unit): FormScope {
     FormSection(strings.settingsCategories[2], colors, bodyPadding = 0.dp, key = "logs") {
         val operationFeedbackHidden = state.feedbackOperation in setOf(
             SettingsOperation.Logs,
@@ -346,5 +348,7 @@ private fun FormScope.LogSettings(state: SettingsUiState, strings: UiStrings, co
                 }
             } }
         }
+        this
     }
+    return this
 }

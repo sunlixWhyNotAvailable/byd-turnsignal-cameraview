@@ -104,7 +104,7 @@ private fun FormScope.BlindParameters(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-) {
+): FormScope {
     row("blind-min-speed") { NumericSetting(strings.text("Мінімальна швидкість", "Minimum speed"), rules.minimumSpeed,
         strings.text("км/год", "km/h"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Blind(group, BlindNumber.MinimumSpeed), it)) }, 0f..300f,
@@ -135,6 +135,7 @@ private fun FormScope.BlindParameters(
         row("blind-turn-required") { SwitchLine(strings.text("Обов'язково поворотник", "Turn signal required"), "", rules.turnRequired,
             { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(ToggleId.BlindTurnRequired, group), it)) }, colors) }
     }
+    return this
 }
 
 @Composable
@@ -208,7 +209,7 @@ private fun FormScope.ParkingParameters(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-) {
+): FormScope {
     row("parking-trigger-distance") { NumericSetting(strings.text("Відстань спрацювання", "Trigger distance"), viewState.triggerDistance,
         strings.text("см", "cm"), colors,
         { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Parking(view, ParkingNumber.TriggerDistance), it)) }, 0f..150f,
@@ -227,4 +228,5 @@ private fun FormScope.ParkingParameters(
     }
     row("parking-alongside-reverse") { SwitchLine(strings.text("Разом із заднім ходом", "Alongside reverse"), "", state.alongsideReverse,
         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Parking(ToggleId.ParkingAlongsideReverse), it)) }, colors) }
+    return this
 }

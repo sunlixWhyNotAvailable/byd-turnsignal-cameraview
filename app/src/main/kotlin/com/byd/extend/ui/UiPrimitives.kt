@@ -143,11 +143,13 @@ internal data class FormRow(
     val content: @Composable ColumnScope.() -> Unit,
 )
 
+/** Explicit FormScope returns prevent independent restarts from mutating a stale row list. */
 internal class FormScope {
     internal val rows = mutableListOf<FormRow>()
 
-    fun row(key: String, content: @Composable ColumnScope.() -> Unit) {
+    fun row(key: String, content: @Composable ColumnScope.() -> Unit): FormScope {
         rows += FormRow(key, content)
+        return this
     }
 }
 
@@ -212,7 +214,7 @@ internal class RetainedLazyViewport(
 internal fun LazyForm(
     modifier: Modifier = Modifier,
     viewport: RetainedLazyViewport,
-    content: @Composable FormScope.() -> Unit,
+    content: @Composable FormScope.() -> FormScope,
 ) {
     val form = FormScope()
     form.content()
@@ -235,8 +237,8 @@ internal fun FormScope.FormSection(
     headerModifier: Modifier = Modifier,
     trailing: (@Composable () -> Unit)? = null,
     key: String,
-    content: @Composable FormScope.() -> Unit,
-) {
+    content: @Composable FormScope.() -> FormScope,
+): FormScope {
     val compact = LocalCompactControls.current
     val inset = if (compact && bodyPadding == 14.dp) 6.dp else bodyPadding
     val spacing = contentSpacing ?: if (inset == 0.dp) 0.dp else if (compact) 4.dp else 10.dp
@@ -271,6 +273,7 @@ internal fun FormScope.FormSection(
             }
         }
     }
+    return this
 }
 
 /** Retains the old single-section outline while allowing each body row to recycle independently. */

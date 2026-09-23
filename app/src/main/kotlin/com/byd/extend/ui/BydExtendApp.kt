@@ -525,7 +525,7 @@ private fun FormScope.AvasIntegration(
     state: AvasUiState, strings: UiStrings, colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
     columns: Int,
-) {
+): FormScope {
     var listing by remember { mutableStateOf<String?>(null) }
     fun send(profileId: String, kind: AvasActionKind, boolean: Boolean? = null,
         number: Int? = null, text: String? = null) {
@@ -720,6 +720,7 @@ private fun FormScope.AvasIntegration(
             }
         }
     }
+    return this
 }
 
 private fun avasAssetLabel(asset: AvasAssetUiState, strings: UiStrings): String =

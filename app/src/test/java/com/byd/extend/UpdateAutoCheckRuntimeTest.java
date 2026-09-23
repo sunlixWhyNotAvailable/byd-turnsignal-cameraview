@@ -27,6 +27,75 @@ public final class UpdateAutoCheckRuntimeTest {
         assertEquals(1, f.requests.size());
     }
 
+    @Test public void entryRefreshRunsOnlyAtOneHourSinceSuccessfulCompletion() {
+        Fixture f = new Fixture();
+        f.advance(30_000);
+        assertTrue(f.done(true));
+        long successAt = f.now;
+        f.advance(successAt + 3_600_000 - 1);
+        assertNull(f.queued); // Stale age alone does not poll.
+        f.runtime.entry(true, false);
+        assertNull(f.queued);
+        f.advance(successAt + 3_600_000);
+        f.runtime.entry(true, false);
+        assertEquals(f.now + 30_000, f.deadline);
+        f.runtime.entry(true, false);
+        assertEquals(f.now + 30_000, f.deadline);
+    }
+
+    @Test public void entryRefreshSkipsPendingOfferManualRequestAndDownload() {
+        Fixture f = new Fixture();
+        f.advance(30_000);
+        assertTrue(f.done(true));
+        f.advance(f.now + 3_600_000);
+        f.runtime.entry(true, true);
+        assertNull(f.queued);
+
+        assertTrue(f.runtime.requestManual());
+        assertTrue(f.running.manual);
+        f.runtime.entry(true, false);
+        assertNull(f.queued);
+        assertTrue(f.done(true));
+
+        f.advance(f.now + 3_600_000);
+        f.runtime.setDownloading(true);
+        f.runtime.entry(true, false);
+        assertNull(f.queued);
+        f.runtime.setDownloading(false);
+        f.runtime.entry(true, false);
+        assertEquals(f.now + 30_000, f.deadline);
+    }
+
+    @Test public void entryRefreshSkipsAnActiveAutomaticRequest() {
+        Fixture f = new Fixture();
+        f.advance(30_000);
+        assertTrue(f.done(true));
+        f.advance(f.now + 3_600_000);
+        f.runtime.entry(true, false);
+        f.advance(f.deadline);
+        assertNotNull(f.running);
+        assertFalse(f.running.manual);
+        f.runtime.entry(true, false);
+        assertNull(f.queued);
+        assertTrue(f.done(true));
+    }
+
+    @Test public void staleEntryRefreshPreservesAnExistingFailureRetry() {
+        Fixture f = new Fixture();
+        f.advance(30_000);
+        assertTrue(f.done(true));
+        f.advance(f.now + 3_600_000);
+        f.runtime.entry(true, false);
+        f.advance(f.deadline);
+        assertTrue(f.done(false));
+        long retryDeadline = f.deadline;
+        f.runtime.entry(true, false);
+        assertEquals(retryDeadline, f.deadline);
+        f.advance(retryDeadline);
+        assertTrue(f.done(false));
+        assertEquals(f.now + 60_000, f.deadline);
+    }
+
     @Test public void failedChecksRetryFromCompletionTimeAndCapAtFiveMinutes() {
         Fixture f = new Fixture();
         f.advance(30_000);
@@ -189,6 +258,63 @@ public final class UpdateAutoCheckRuntimeTest {
         assertEquals(130_000, f.deadline);
     }
 
+    @Test public void delayedQuickbootResetsAnExistingFailureBackoff() {
+        Fixture f = new Fixture();
+        f.advance(30_000);
+        long[] retries = {30_000, 60_000, 120_000, 300_000};
+        for (int i = 0; i < retries.length; i++) {
+            assertTrue(f.done(false));
+            assertEquals(f.now + retries[i], f.deadline);
+            if (i + 1 < retries.length) f.advance(f.deadline);
+        }
+
+        f.now = 300_000; // Beyond the wake coalescing window, before the five-minute retry.
+        f.runtime.wake(QUICK);
+        assertEquals(f.now + 30_000, f.deadline);
+        f.advance(f.deadline);
+        assertTrue(f.done(false));
+        assertEquals(f.now + 30_000, f.deadline);
+    }
+
+    @Test public void knownScreenOffBlocksWakeBroadcastsUntilOneRealOffToOnTransition() {
+        Fixture f = new Fixture();
+        f.runtime.onDisplayState(false);
+        f.advance(100_000);
+        f.runtime.wake(QUICK);
+        f.runtime.wake("screen_on");
+        f.runtime.entry(false, false);
+        assertNull(f.queued);
+        assertEquals(0, f.requests.size());
+
+        f.runtime.onDisplayState(true);
+        long deadline = f.deadline;
+        f.runtime.onDisplayState(true);
+        f.runtime.wake("screen_on");
+        f.runtime.wake(QUICK);
+        f.runtime.entry(true, false);
+        assertEquals(f.now + 30_000, deadline);
+        assertEquals(deadline, f.deadline);
+        f.advance(deadline);
+        assertEquals(1, f.requests.size());
+    }
+
+    @Test public void immediateWakeDuplicatesDoNotInvalidateAValidManualRequest() {
+        Fixture f = new Fixture();
+        f.runtime.sleep();
+        f.now = 100_000;
+        f.runtime.wake("screen_on");
+        assertTrue(f.runtime.requestManual());
+        UpdateAutoCheckRuntime.Request request = f.running;
+        f.runtime.onDisplayState(true);
+        f.runtime.wake("screen_on");
+        f.runtime.wake(QUICK);
+        f.runtime.onDisplayState(true);
+        f.runtime.entry(true, false);
+        assertSame(request, f.running);
+        assertTrue(f.done(true));
+        assertEquals(1, f.requests.size());
+    }
+
     @Test public void oldAutomaticReplyCannotPublishOrOverlapNextWakeRequest() {
         Fixture f = new Fixture();
         f.advance(30_000);
@@ -323,7 +449,8 @@ public final class UpdateAutoCheckRuntimeTest {
         assertTrue(runtime.contains("Intent.ACTION_SCREEN_ON"));
         assertTrue(runtime.contains("autoCheck.sleep()"));
         assertTrue(runtime.contains("autoCheck.wake(action)"));
-        assertTrue(runtime.contains("autoCheck.entry(interactive())"));
+        assertTrue(runtime.contains("autoCheck.onDisplayState(displayReady())"));
+        assertTrue(runtime.contains("autoCheck.entry(displayReady(), presentation.hasPendingOffer())"));
         assertTrue(runtime.contains("autoCheck.setDownloading(value)"));
         assertTrue(runtime.contains("autoCheck.shutdown()"));
         String preference = section(runtime, "settingsListener =", "preferences.register");
@@ -332,8 +459,9 @@ public final class UpdateAutoCheckRuntimeTest {
         assertTrue(receiver.contains("UpdateHintRuntime.onRuntimeWake(context, action)"));
         assertTrue(receiver.indexOf("UpdateHintRuntime.onRuntimeWake") >= 0
                 && receiver.indexOf("GuardRecovery.shouldRecover") > receiver.indexOf("UpdateHintRuntime.onRuntimeWake"));
-        String wake = section(runtime, "private void runtimeWake(", "private boolean interactive()");
+        String wake = section(runtime, "private void runtimeWake(", "private boolean displayReady()");
         assertTrue(wake.contains("GuardRecovery.isUserShutdownActive"));
+        assertTrue(wake.contains("reconcileDisplay()"));
         assertFalse(wake.contains("isAutoStartEnabled"));
         assertTrue(runtime.contains("manager.checkForUpdate()"));
         String completion = section(runtime, "main.post(() -> {\n                CheckListener observer",

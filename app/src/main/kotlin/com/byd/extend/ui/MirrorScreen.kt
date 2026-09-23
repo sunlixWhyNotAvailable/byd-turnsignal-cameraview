@@ -121,7 +121,7 @@ private fun FormScope.MirrorProfileHeader(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-) {
+): FormScope {
     row("profile-enabled") { SwitchLine(strings.text("Дзеркало заднього виду", "Rearview mirror"),
         strings.text("Окремий віджет камери", "Independent camera widget", "独立摄像头悬浮窗"),
         state.enabled,
@@ -145,6 +145,7 @@ private fun FormScope.MirrorProfileHeader(
     ) { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.MirrorSource), it)) } }
     row("profile-presets") { ProfilePresetButtons(CameraProfileId.Mirror, state.presetAvailable,
         state.frontIntegrated && !state.activeFront, strings, colors, onAction) }
+    return this
 }
 
 @Composable
@@ -153,7 +154,7 @@ private fun FormScope.MirrorParameters(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-) {
+): FormScope {
     row("mirror-source-binding") { MirrorBindingRow(strings.text("Перемикання переднього / заднього виду", "Switch front / rear view", "切换前后视角"),
         CameraButtonBindings.Action.MirrorSource, state.sourceBinding, state.frontIntegrated, strings, colors, onAction) }
     row("mirror-visibility-binding") { MirrorBindingRow(strings.text("Показати / приховати віджет", "Show / hide widget", "显示或隐藏悬浮窗"),
@@ -191,6 +192,7 @@ private fun FormScope.MirrorParameters(
             "无可用的第二显示屏。这里只模拟仪表屏布局，悬浮窗不会改在中控屏显示。"),
             color = colors.yellow, fontSize = 12.sp) }
     }
+    return this
 }
 
 @Composable

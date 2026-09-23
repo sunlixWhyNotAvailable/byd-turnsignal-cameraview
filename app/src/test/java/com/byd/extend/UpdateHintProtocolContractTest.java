@@ -105,6 +105,24 @@ public final class UpdateHintProtocolContractTest {
     }
 
     @Test
+    public void retriedResultUsesANewCoordinationEventAfterPeerRetirement() {
+        UpdateHintState.SessionRecord peer = new UpdateHintState.SessionRecord();
+        String firstId = UpdateResultPresentation.coordinationEventId("same-result", 1);
+        String retryId = UpdateResultPresentation.coordinationEventId("same-result", 2);
+        UpdateHintState first = new UpdateHintState(1, "com.byd.extend", "session", 1,
+                firstId, UpdateHintState.PENDING, 1, 0, 0, 100, 400, 100);
+        assertTrue(peer.accept(first));
+        assertTrue(peer.accept(UpdateHintState.none("com.byd.extend", "session", 2)));
+        assertFalse(peer.accept(first.withGeometry(100, 400, 100, 3)));
+        UpdateHintState retry = new UpdateHintState(1, "com.byd.extend", "session", 3,
+                retryId, UpdateHintState.PENDING, 2_000_000_000L, 0, 0, 100, 400, 100);
+        assertTrue(peer.accept(retry));
+        assertTrue(peer.accept(retry.visible(2000, 4)));
+        assertEquals(retryId, peer.state().eventId);
+        assertEquals(12_000, peer.state().expiresAtElapsedMs);
+    }
+
+    @Test
     public void untrustedGeometryIsBoundedBeforeLayoutArithmetic() {
         assertFalse(new UpdateHintState(1, "com.bydhud.app", "s", 1, "e",
                 UpdateHintState.PENDING, 1, 0, 0, 1_001, 100, 50).isValid());

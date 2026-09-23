@@ -74,6 +74,36 @@ class ScreenScrollRetentionTest {
     }
 
     @Test
+    fun lazyFormStructuralBuildersReturnTheirOwningScope() {
+        val names = listOf(
+            "UiPrimitives.kt", "CameraUiCommon.kt", "BlindParkingScreens.kt", "MirrorScreen.kt",
+            "ReverseScreen.kt", "SettingsScreen.kt", "AdbRecoveryScreen.kt", "BydExtendApp.kt",
+        )
+        val sources = names.associateWith(::source)
+        for ((name, text) in sources) {
+            assertFalse("$name must not use Unit-returning FormScope callbacks",
+                text.contains("@Composable FormScope.() -> Unit"))
+            assertFormScopeBuildersReturnTheirScope(name, text)
+        }
+
+        val primitives = sources.getValue("UiPrimitives.kt")
+        assertTrue(primitives.contains(
+            "fun row(key: String, content: @Composable ColumnScope.() -> Unit): FormScope"))
+        val lazyForm = primitives.substringAfter("internal fun LazyForm(")
+            .substringBefore("internal fun FormScope.FormSection(")
+        assertTrue(lazyForm.contains("content: @Composable FormScope.() -> FormScope"))
+        val formSection = primitives.substringAfter("internal fun FormScope.FormSection(")
+        assertTrue(formSection.contains("content: @Composable FormScope.() -> FormScope"))
+
+        val camera = sources.getValue("CameraUiCommon.kt")
+        assertTrue(camera.contains("profileControls: @Composable FormScope.() -> FormScope"))
+        assertTrue(camera.contains("controls: @Composable FormScope.() -> FormScope"))
+        assertTrue(camera.contains("placementExtra: @Composable FormScope.() -> FormScope = { this }"))
+        assertTrue(camera.contains("parameters: @Composable FormScope.() -> FormScope"))
+        assertTrue(camera.contains("var stage by rememberSaveable(profile)"))
+    }
+
+    @Test
     fun onlyApprovedLongFormsSelectLazyMainViewport() {
         val state = BydExtendUiState()
         assertFalse(state.copy(activeTab = RootTab.Signals,
@@ -116,5 +146,28 @@ class ScreenScrollRetentionTest {
         val relative = Path.of("src/main/kotlin/com/byd/extend/ui", name)
         return String(Files.readAllBytes(if (Files.exists(relative)) relative else Path.of("app").resolve(relative)),
             Charsets.UTF_8)
+    }
+
+    private fun assertFormScopeBuildersReturnTheirScope(name: String, text: String) {
+        val declarations = Regex("\\bfun FormScope\\.(\\w+)\\s*\\(").findAll(text).toList()
+        assertTrue("$name contains structural FormScope builders", declarations.isNotEmpty())
+        for (declaration in declarations) {
+            val opening = text.indexOf('(', declaration.range.first)
+            var depth = 0
+            var cursor = opening
+            while (cursor < text.length) {
+                when (text[cursor]) {
+                    '(' -> depth++
+                    ')' -> if (--depth == 0) {
+                        cursor++
+                        break
+                    }
+                }
+                cursor++
+            }
+            assertTrue("$name.${declaration.groupValues[1]} has a complete signature", depth == 0)
+            assertTrue("$name.${declaration.groupValues[1]} must explicitly return FormScope",
+                text.substring(cursor).trimStart().startsWith(": FormScope"))
+        }
     }
 }

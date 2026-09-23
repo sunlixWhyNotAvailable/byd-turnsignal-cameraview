@@ -50,7 +50,7 @@ internal fun ReverseScreen(
         ?: StatusUiState()
     val gearSwitchEnabled = state.hasAnyFrontIntegration()
     val sourceIndex = reverseSourceIndex(selected, state.selectedSource)
-    val profileControls: @Composable FormScope.() -> Unit = {
+    val profileControls: @Composable FormScope.() -> FormScope = {
         row("profile-element") { ChoiceField(strings.text("Елемент", "Element"), strings.reverseElements, selected.ordinal,
             { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseElement), it)) }, colors) }
         row("profile-enabled") { SwitchLine(strings.text("Покращений задній вид", "Enhanced reverse view"), "", state.enabled,
@@ -82,6 +82,7 @@ internal fun ReverseScreen(
             selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
                 selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
             strings, colors, onAction) }
+        this
     }
     ScreenSurface(colors, scroll = false, compact = true) {
         if (state.section == CameraSection.Calibration && cameraElement) {
@@ -97,7 +98,7 @@ internal fun ReverseScreen(
                 controls = {
                     CameraProfileControls(profileId, profile, state.section, false, strings, colors, onAction,
                         onPreview = onPreview,
-                        parameters = {})
+                        parameters = { this })
                 },
                 preview = { CameraProfilePreview(
                     profileId, sourceIndex, profile, state.section, strings, colors, onAction, cameraHost) },
@@ -190,7 +191,7 @@ private fun FormScope.ReverseCompositionControls(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
-) {
+): FormScope {
     val geometry = state.geometry[selected] ?: ReverseGeometryUiState()
     fun commit(field: ReverseGeometryNumber, value: String) {
         onAction(BydExtendUiAction.CommitNumber(NumberTarget.ReverseGeometry(selected, field), value))
@@ -228,6 +229,7 @@ private fun FormScope.ReverseCompositionControls(
             onAction(BydExtendUiAction.Run(CommandId.ReverseResetLayout, reverseElement = selected))
         }
     } }
+    return this
 }
 
 @Composable

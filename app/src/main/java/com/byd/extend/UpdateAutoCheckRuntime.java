@@ -9,6 +9,7 @@ import java.util.function.LongSupplier;
 /** Main-thread, process-owned update cycle. Invalid HTTP work owns its slot until done. */
 final class UpdateAutoCheckRuntime implements Runnable {
     static final long AUTO_CHECK_DELAY_MS = 30_000L;
+    private static final long ENTRY_REFRESH_AGE_MS = 3_600_000L;
     private static long processStartedAt = -1L;
 
     static final class Request {
@@ -29,12 +30,15 @@ final class UpdateAutoCheckRuntime implements Runnable {
     private long sequence;
     private long dueAt;
     private long lastWake;
+    private long lastSuccessfulCheckAt = -1L;
     private int failures;
     private boolean automatic;
     private boolean sleeping;
     private boolean stopped;
     private boolean downloading;
     private boolean manualPending;
+    private boolean displayStateKnown;
+    private boolean displayReady;
 
     UpdateAutoCheckRuntime(BiConsumer<Runnable, Long> post, Consumer<Runnable> cancel,
             BooleanSupplier enabled, Consumer<Request> check, Consumer<String> event) {
@@ -103,8 +107,10 @@ final class UpdateAutoCheckRuntime implements Runnable {
         boolean accepted = request.valid && !stopped;
         if (accepted) {
             dueAt = -1L;
-            if (success) failures = 0;
-            else if (automatic && !sleeping) {
+            if (success) {
+                failures = 0;
+                lastSuccessfulCheckAt = clock.getAsLong();
+            } else if (automatic && !sleeping) {
                 long delay = retryDelay(failures);
                 failures = Math.min(4, failures + 1);
                 schedule(delay, "failure_" + failures);
@@ -140,10 +146,27 @@ final class UpdateAutoCheckRuntime implements Runnable {
     }
 
     void wake(String action) {
-        if (stopped) return;
+        wake(action, false);
+    }
+
+    void onDisplayState(boolean ready) {
+        boolean wasKnown = displayStateKnown;
+        boolean wasReady = displayReady;
+        displayStateKnown = true;
+        displayReady = ready;
+        if (!ready) {
+            sleep();
+        } else if (wasKnown && !wasReady) {
+            wake("screen_on", true);
+        }
+    }
+
+    private void wake(String action, boolean displayTransition) {
+        if (stopped || (displayStateKnown && !displayReady)) return;
         long now = clock.getAsLong();
         boolean quickBoot = "android.intent.action.QUICKBOOT_POWERON".equals(action);
-        if (!sleeping && (!quickBoot || now - lastWake < AUTO_CHECK_DELAY_MS)) return;
+        if (!displayTransition && !sleeping
+                && (!quickBoot || now - lastWake < AUTO_CHECK_DELAY_MS)) return;
         sleeping = false;
         lastWake = now;
         automatic = enabled.getAsBoolean();
@@ -157,12 +180,25 @@ final class UpdateAutoCheckRuntime implements Runnable {
     }
 
     void entry(boolean interactive) {
+        entry(interactive, false);
+    }
+
+    void entry(boolean displayReady, boolean offerPending) {
         if (stopped) {
             stopped = false;
             sleeping = true;
         }
-        if (interactive) wake("user_entry");
+        onDisplayState(displayReady);
+        if (displayReady) wake("user_entry");
         refresh();
+        long now = clock.getAsLong();
+        if (displayReady && !offerPending && automatic && !sleeping && !stopped
+                && lastSuccessfulCheckAt >= 0L
+                && now - lastSuccessfulCheckAt >= ENTRY_REFRESH_AGE_MS
+                && active == null && !manualPending && !downloading && dueAt < 0L) {
+            schedule(AUTO_CHECK_DELAY_MS, "entry_stale");
+        }
+        queue();
     }
 
     void shutdown() {

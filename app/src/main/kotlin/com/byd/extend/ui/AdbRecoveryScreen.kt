@@ -71,7 +71,7 @@ internal fun FormScope.AdbRecoveryScreen(
     strings: UiStrings,
     colors: UiPalette,
     onAction: (AdbRecoveryUiAction) -> Unit,
-) {
+): FormScope {
     var editAppearance by remember { mutableStateOf(false) }
     var chooseColor by remember { mutableStateOf(false) }
     val update: (AdbReminderAppearance) -> Unit = {
@@ -164,6 +164,7 @@ internal fun FormScope.AdbRecoveryScreen(
         AdbReminderEditor(strings, colors, state.appearance,
             onChange = update, onDismiss = { editAppearance = false })
     }
+    return this
 }
 
 private fun stageState(state: AdbRecoveryUiState, strings: UiStrings): StatusUiState {
