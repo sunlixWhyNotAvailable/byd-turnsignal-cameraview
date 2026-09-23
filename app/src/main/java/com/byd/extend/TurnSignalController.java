@@ -32,6 +32,8 @@ import java.util.function.Supplier;
 
 final class TurnSignalController {
     private static final long PING_MS = 5_000;
+    private static final long HELPER_READINESS_TIMEOUT_MS = 3_000;
+    private static final long HELPER_READINESS_INTERVAL_MS = 250;
     private static final long RETRY_BACKOFF_MS = 30_000;
     private static final Object LAUNCH_LOCK = new Object();
     static final String KEY_HELPER_NAMESPACE_MIGRATED = "helper_namespace_extend";
@@ -1184,29 +1186,50 @@ final class TurnSignalController {
                         "stage", "helper_launch");
                 return;
             }
-            if (!launch.ok) {
+            if (!shouldAwaitHelperReadiness(launch)) {
                 launchFailed("helper_launch_failed: " + launch.error
                         + (launch.output.isEmpty() ? "" : ": " + launch.output));
                 return;
             }
-            emit("helper_launch", "ok", true, "output", launch.output);
+            if (launch.commandReadTimeout) {
+                emit("helper_launch_read_timeout", "error", launch.error,
+                        "fingerprint", launch.fingerprint);
+            } else {
+                emit("helper_launch", "ok", true, "output", launch.output);
+            }
 
-            long deadline = SystemClock.elapsedRealtime() + 3_000;
-            do {
-                Ping started = ping(resolveHelper());
-                if (started.healthy() && started.pid != replacedPid) {
-                    lastLaunchFailureAt = 0;
-                    attach(started);
-                    return;
+            Ping started;
+            try {
+                started = awaitHelperReadiness(
+                        launch, replacedPid,
+                        () -> ping(resolveHelper()),
+                        SystemClock::elapsedRealtime,
+                        Thread::sleep,
+                        () -> mayContinueHelperReadiness(mode, cancellationToken));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (started == null) {
+                if (mayContinueHelperReadiness(mode, cancellationToken)) {
+                    launchFailed(launch.commandReadTimeout
+                            ? "helper_binder_timeout_after_command_read_timeout: " + launch.error
+                            : "helper_binder_timeout");
+                } else {
+                    reportHelperReadinessAbort(mode, cancellationToken);
                 }
-                try {
-                    Thread.sleep(250);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            } while (SystemClock.elapsedRealtime() < deadline);
-            launchFailed("helper_binder_timeout");
+                return;
+            }
+            if (!mayContinueHelperReadiness(mode, cancellationToken)) {
+                reportHelperReadinessAbort(mode, cancellationToken);
+                return;
+            }
+            lastLaunchFailureAt = 0;
+            if (launch.commandReadTimeout) {
+                emit("helper_launch", "ok", true, "output", launch.output,
+                        "command_read_timeout", launch.error, "helper_pid", started.pid);
+            }
+            attach(started);
         }
     }
 
@@ -1222,6 +1245,59 @@ final class TurnSignalController {
 
     static boolean shouldRecordLaunchFailure(LocalAdbClient.Result result) {
         return !result.ok && !result.superseded;
+    }
+
+    static boolean shouldAwaitHelperReadiness(LocalAdbClient.Result launch) {
+        return launch.ok || launch.commandReadTimeout;
+    }
+
+    static Ping awaitHelperReadiness(
+            LocalAdbClient.Result launch,
+            int replacedPid,
+            Supplier<Ping> probe,
+            LongSupplier elapsedRealtime,
+            HelperReadinessSleeper sleeper,
+            BooleanSupplier mayContinue) throws InterruptedException {
+        if (!shouldAwaitHelperReadiness(launch)) return null;
+        long deadline = elapsedRealtime.getAsLong() + HELPER_READINESS_TIMEOUT_MS;
+        do {
+            if (!mayContinue.getAsBoolean()) return null;
+            Ping current = probe.get();
+            if (current.healthy() && current.pid != replacedPid) {
+                return mayContinue.getAsBoolean() ? current : null;
+            }
+            if (!mayContinue.getAsBoolean()) return null;
+            sleeper.sleep(HELPER_READINESS_INTERVAL_MS);
+        } while (elapsedRealtime.getAsLong() < deadline);
+        return null;
+    }
+
+    private boolean mayContinueHelperReadiness(
+            LocalAdbClient.PromptMode mode, long cancellationToken) {
+        return !stopped
+                && !LegacySettingsImporter.blocksRuntime(context)
+                && LocalAdbClient.isCancellationTokenCurrent(cancellationToken)
+                && !isSupersededByRequest(mode, authorizationRequests.mode());
+    }
+
+    private void reportHelperReadinessAbort(
+            LocalAdbClient.PromptMode mode, long cancellationToken) {
+        if (stopped) return;
+        if (LegacySettingsImporter.blocksRuntime(context)) {
+            emit("runtime_blocked", "reason", "legacy_handover");
+            return;
+        }
+        if (!LocalAdbClient.isCancellationTokenCurrent(cancellationToken)
+                || isSupersededByRequest(mode, authorizationRequests.mode())) {
+            emit("authorization_superseded", "mode", mode.name(),
+                    "next_mode", modeName(authorizationRequests.mode()),
+                    "stage", "helper_binder_wait");
+        }
+    }
+
+    @FunctionalInterface
+    interface HelperReadinessSleeper {
+        void sleep(long millis) throws InterruptedException;
     }
 
     static boolean shouldRememberAutomaticAuthorizationBlock(
@@ -3103,7 +3179,7 @@ final class TurnSignalController {
         }
     }
 
-    private static final class Ping {
+    static final class Ping {
         final IBinder binder;
         final int protocol;
         final int build;

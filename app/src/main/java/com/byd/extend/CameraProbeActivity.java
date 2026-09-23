@@ -166,6 +166,12 @@ public final class CameraProbeActivity extends ComponentActivity
             "weather_enable_requested";
     private static final String STATE_WEATHER_REFRESH_AFTER_PERMISSION =
             "weather_refresh_after_permission";
+    private static final String STATE_STARTUP_ADB_AUTH_STARTED = "startup_adb_auth_started";
+    private static final String STATE_STARTUP_ADB_AUTH_FINISHED = "startup_adb_auth_finished";
+    private static final String STATE_STARTUP_OVERLAY_PERMISSION_ATTEMPTED =
+            "startup_overlay_permission_attempted";
+    private static final String STATE_STARTUP_OVERLAY_SETTINGS_IN_FLIGHT =
+            "startup_overlay_settings_in_flight";
     private static final String STATE_AVAS_IMPORT_PROFILE = "avas_import_profile";
     private static final String PREF_AVAS_IMPORT_PROFILE = "ui_avas_import_profile";
     private static final String PREF_AVAS_IMPORT_PHASE = "ui_avas_import_phase";
@@ -465,6 +471,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AppUpdateManager updateManager = new AppUpdateManager();
     private final CameraTransition cameraTransition = new CameraTransition();
+    private final StartupOverlayPermissionFlow startupOverlayPermissionFlow =
+            new StartupOverlayPermissionFlow();
     private final PreviewFreshnessGate productionPreviewFreshness =
             new PreviewFreshnessGate();
     private final PreviewFreshnessGate calibrationPreviewFreshness =
@@ -925,11 +933,16 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (shouldStartForegroundAdbAuthorization(cameraPermissionPending,
                 backgroundStartSettingsPending(), hasWindowFocus(),
-                helper != null || legacyRuntimeBlocked, adbAuthPending,
-                adbAuthorizationRequested)) {
-            requestAdbAuthorization(
+                foregroundAdbAuthorizationReady(), adbAuthPending,
+                adbAuthorizationRequested
+                        || startupOverlayPermissionFlow.foregroundAuthorizationStarted())
+                && startupOverlayPermissionFlow.beginForegroundAuthorizationAttempt(true)) {
+            if (!requestAdbAuthorization(
                     "adb_authorization_foreground_start",
-                    "foreground_adb_authorization", true);
+                    "foreground_adb_authorization", true)) {
+                startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
+                advanceStartupAuthorizationFlow();
+            }
         } else {
             // A skipped delayed authorization must still release the import-offer gate.
             // Otherwise only a later focus/lifecycle callback resumes onboarding.
@@ -993,6 +1006,7 @@ public final class CameraProbeActivity extends ComponentActivity
             adbAuthPending = false;
             adbAuthMode = null;
             adbAuthorizationRequested = false;
+            startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
             cancelPendingForegroundAdbAuthorization();
             telemetryReady = false;
             manualGearPark = false;
@@ -1045,12 +1059,21 @@ public final class CameraProbeActivity extends ComponentActivity
             activeReverseControllerRequestId = 0;
             record("helper_service_disconnected");
             updateControls();
+            advanceStartupAuthorizationFlow();
         }
     };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            startupOverlayPermissionFlow.restore(
+                    savedInstanceState.getBoolean(STATE_STARTUP_ADB_AUTH_STARTED),
+                    savedInstanceState.getBoolean(STATE_STARTUP_ADB_AUTH_FINISHED),
+                    savedInstanceState.getBoolean(STATE_STARTUP_OVERLAY_PERMISSION_ATTEMPTED),
+                    savedInstanceState.getBoolean(STATE_STARTUP_OVERLAY_SETTINGS_IN_FLIGHT),
+                    LegacySettingsImporter.blocksRuntime(this));
+        }
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
@@ -1129,6 +1152,14 @@ public final class CameraProbeActivity extends ComponentActivity
                 weatherEnableRequestedForPermission);
         outState.putBoolean(STATE_WEATHER_REFRESH_AFTER_PERMISSION,
                 weatherRefreshAfterPermission);
+        outState.putBoolean(STATE_STARTUP_ADB_AUTH_STARTED,
+                startupOverlayPermissionFlow.foregroundAuthorizationStarted());
+        outState.putBoolean(STATE_STARTUP_ADB_AUTH_FINISHED,
+                startupOverlayPermissionFlow.foregroundAuthorizationFinished());
+        outState.putBoolean(STATE_STARTUP_OVERLAY_PERMISSION_ATTEMPTED,
+                startupOverlayPermissionFlow.overlayPermissionAttempted());
+        outState.putBoolean(STATE_STARTUP_OVERLAY_SETTINGS_IN_FLIGHT,
+                startupOverlayPermissionFlow.overlaySettingsInFlight());
         outState.putString(STATE_AVAS_IMPORT_PROFILE,
                 preferences.getString(PREF_AVAS_IMPORT_PROFILE, null));
         if (pendingArchiveDocument != null) {
@@ -1170,6 +1201,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onResume() {
         super.onResume();
+        finishOverlaySettingsReturn();
         if (updateInstallerOpened) {
             updateInstallerOpened = false;
             updateInstallRequested = false;
@@ -1224,6 +1256,7 @@ public final class CameraProbeActivity extends ComponentActivity
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
+            finishOverlaySettingsReturn();
             advanceStartupAuthorizationFlow();
         } else {
             cancelPendingBackgroundStartSettings();
@@ -2252,6 +2285,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 && !cameraPermissionPending && !backgroundStartSettingsPending()
                 && !weatherLocationPermissionPending && !weatherLocationPermissionInFlight
                 && !adbAuthPending && !adbAuthorizationStartScheduled
+                && !startupOverlayPermissionFlow.foregroundAuthorizationInFlight()
+                && startupOverlayPermissionFlow.canPresentStartupDialogs(
+                        android.provider.Settings.canDrawOverlays(this))
                 && !settingsTransferInProgress && !settingsReloadPending
                 && legacyImportOfferDialog == null && settingsTransferDialog == null
                 && !logExportInProgress && !compatibilityExportInProgress
@@ -3292,18 +3328,59 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void requestProductionMirrorOverlayPermission() {
         if (android.provider.Settings.canDrawOverlays(this)) return;
+        if (!startupOverlayPermissionFlow.beginManualOverlayPermissionRequest(
+                false, startupOverlayPermissionBlocked())) return;
+        launchOverlayPermissionSettings(false);
+    }
+
+    private void launchOverlayPermissionSettings(boolean startup) {
         Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + getPackageName()));
         try {
             if (intent.resolveActivity(getPackageManager()) != null) {
                 startActivity(intent);
+                record(startup ? "startup_overlay_permission_opened"
+                                : "mirror_overlay_permission_opened",
+                        "action", android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION);
                 return;
             }
         } catch (RuntimeException unavailable) {
-            record("mirror_overlay_permission_unavailable", "error", unavailable.toString());
+            record(startup ? "startup_overlay_permission_unavailable"
+                            : "mirror_overlay_permission_unavailable",
+                    "error", unavailable.toString());
         }
-        Toast.makeText(this, runtimeText(R.string.runtime_overlay_permission_unavailable),
-                Toast.LENGTH_LONG).show();
+        startupOverlayPermissionFlow.finishOverlaySettings();
+        refreshProductionHeader();
+        if (!startup) {
+            Toast.makeText(this, runtimeText(R.string.runtime_overlay_permission_unavailable),
+                    Toast.LENGTH_LONG).show();
+        }
+        advanceStartupAuthorizationFlow();
+    }
+
+    private void finishOverlaySettingsReturn() {
+        if (!hasWindowFocus()) return;
+        if (!startupOverlayPermissionFlow.finishOverlaySettings()) return;
+        boolean granted = android.provider.Settings.canDrawOverlays(this);
+        record("overlay_permission_settings_returned", "granted", granted);
+        refreshProductionHeader();
+    }
+
+    private boolean startupOverlayPermissionBlocked() {
+        return !activityResumed || !hasWindowFocus() || activityDestroyed || isFinishing()
+                || shutdownRequested || cameraPermissionPending
+                || backgroundStartSettingsPending() || weatherLocationPermissionPending
+                || weatherLocationPermissionInFlight || weatherLocationPermissionStartScheduled
+                || adbAuthPending || adbAuthorizationStartScheduled
+                || startupOverlayPermissionFlow.foregroundAuthorizationInFlight()
+                || settingsTransferInProgress || settingsReloadPending
+                || logExportInProgress || compatibilityExportInProgress || updateDownloadInFlight
+                || settingsTransferDialog != null || legacyImportOfferDialog != null
+                || productionUi != null && productionUi.getState().getDialog() != null
+                || helperBound && helper == null && !legacyRuntimeBlocked
+                        && !startupOverlayPermissionFlow.foregroundAuthorizationFinished()
+                || helper != null && !helperCallbackRegistration.registered()
+                        && !startupOverlayPermissionFlow.foregroundAuthorizationFinished();
     }
 
     @Override
@@ -13228,6 +13305,16 @@ public final class CameraProbeActivity extends ComponentActivity
             }
         } catch (Throwable error) {
             record("ipc_error", "operation", "register_callback", "error", error.toString());
+            if (helperCallbackRegistration.isCurrent(operation)) {
+                mainHandler.post(() -> {
+                    if (activityDestroyed) return;
+                    startupOverlayPermissionFlow.skipForegroundAuthorizationAttempt();
+                    record("adb_authorization_skipped", "reason",
+                            "callback_registration_failed");
+                    updateControls();
+                    advanceStartupAuthorizationFlow();
+                });
+            }
         } finally {
             reply.recycle();
             data.recycle();
@@ -13796,8 +13883,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private void maybeStartForegroundAdbAuthorization() {
         if (!shouldStartForegroundAdbAuthorization(cameraPermissionPending,
                 backgroundStartSettingsPending(), hasWindowFocus(),
-                helper != null || legacyRuntimeBlocked,
-                adbAuthPending, adbAuthorizationRequested)) {
+                foregroundAdbAuthorizationReady(),
+                adbAuthPending, adbAuthorizationRequested
+                        || startupOverlayPermissionFlow.foregroundAuthorizationStarted())) {
             cancelPendingForegroundAdbAuthorization();
             return;
         }
@@ -13814,6 +13902,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void advanceStartupAuthorizationFlow() {
+        if (startupOverlayPermissionFlow.overlaySettingsInFlight()) return;
         if (settingsTransferInProgress || settingsReloadPending) return;
         if (productionUi != null && productionUi.getState().getDialog() != null) {
             cancelPendingBackgroundStartSettings();
@@ -13854,6 +13943,15 @@ public final class CameraProbeActivity extends ComponentActivity
             return;
         }
         maybeStartForegroundAdbAuthorization();
+        if (startupOverlayPermissionBlocked()) return;
+        boolean overlayPermissionGranted = android.provider.Settings.canDrawOverlays(this);
+        if (startupOverlayPermissionFlow.beginStartupOverlayPermissionRequest(
+                overlayPermissionGranted, false)) {
+            launchOverlayPermissionSettings(true);
+            if (startupOverlayPermissionFlow.overlaySettingsInFlight()) return;
+        }
+        if (!startupOverlayPermissionFlow.canPresentStartupDialogs(
+                android.provider.Settings.canDrawOverlays(this))) return;
         maybeShowLegacyImportOffer();
         presentPendingUpdateResult();
     }
@@ -13863,6 +13961,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 || backgroundStartSettingsPending() || weatherLocationPermissionPending
                 || weatherLocationPermissionInFlight || weatherLocationPermissionStartScheduled
                 || adbAuthPending || adbAuthorizationStartScheduled
+                || startupOverlayPermissionFlow.foregroundAuthorizationInFlight()
+                || !startupOverlayPermissionFlow.canPresentStartupDialogs(
+                        android.provider.Settings.canDrawOverlays(this))
                 || settingsTransferInProgress || settingsReloadPending
                 || logExportInProgress || compatibilityExportInProgress
                 || updateDownloadInFlight
@@ -13937,6 +14038,11 @@ public final class CameraProbeActivity extends ComponentActivity
                 || backgroundStartSettingsStartScheduled;
     }
 
+    private boolean foregroundAdbAuthorizationReady() {
+        return legacyRuntimeBlocked
+                || helper != null && helperCallbackRegistration.registered();
+    }
+
     boolean requestAdbAuthorization(
             String event, String operation, boolean automatic) {
         IBinder current = helper;
@@ -13973,6 +14079,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 adbAuthPending = false;
                 adbAuthMode = null;
                 adbAuthorizationRequested = result.ok;
+                startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
                 publishAdbOperation(false);
                 refreshProductionHeader();
                 updateControls();
@@ -14017,6 +14124,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     adbAuthMode = null;
                 }
                 if (automatic) adbAuthorizationRequested = false;
+                startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
                 publishAdbOperation(false);
                 updateControls();
                 advanceStartupAuthorizationFlow();
@@ -14487,10 +14595,16 @@ public final class CameraProbeActivity extends ComponentActivity
                     adbAuthPending = json.optBoolean("pending");
                     adbAuthMode = adbAuthPending
                             ? adbPromptMode(json.optString("mode")) : null;
+                    if (!adbAuthPending) {
+                        startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
+                    }
                     publishAdbOperation(adbAuthPending);
                 } else if ("authorization_superseded".equals(kind)) {
                     adbAuthMode = adbPromptMode(json.optString("next_mode"));
                     adbAuthPending = adbAuthMode != null;
+                    if (!adbAuthPending) {
+                        startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
+                    }
                     publishAdbOperation(adbAuthPending);
                 } else if ("adb_auth_auto_blocked".equals(kind)) {
                     publishAdbOperation(adbAuthPending);
@@ -15063,6 +15177,75 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
+    static final class StartupOverlayPermissionFlow {
+        private boolean foregroundAuthorizationStarted;
+        private boolean foregroundAuthorizationFinished;
+        private boolean overlayPermissionAttempted;
+        private boolean overlaySettingsInFlight;
+
+        void restore(boolean foregroundStarted, boolean foregroundFinished,
+                boolean overlayAttempted, boolean overlayInFlight, boolean localAuthorization) {
+            // A local request completes on the old Activity, unlike helper state callbacks.
+            // Reconcile via AUTO_ONCE: LocalAdbClient serializes with the old request and
+            // retains its authorization cache/RSA prompt-once marker.
+            foregroundAuthorizationStarted = foregroundStarted
+                    && (!localAuthorization || foregroundFinished);
+            foregroundAuthorizationFinished = foregroundStarted && foregroundFinished;
+            overlayPermissionAttempted = overlayAttempted;
+            overlaySettingsInFlight = overlayAttempted && overlayInFlight;
+        }
+
+        boolean beginForegroundAuthorizationAttempt(boolean eligible) {
+            if (!eligible || foregroundAuthorizationStarted) return false;
+            foregroundAuthorizationStarted = true;
+            return true;
+        }
+
+        void finishForegroundAuthorizationAttempt() {
+            if (foregroundAuthorizationStarted) foregroundAuthorizationFinished = true;
+        }
+
+        void skipForegroundAuthorizationAttempt() {
+            foregroundAuthorizationStarted = true;
+            foregroundAuthorizationFinished = true;
+        }
+
+        boolean beginStartupOverlayPermissionRequest(
+                boolean permissionGranted, boolean anotherStepActive) {
+            if (permissionGranted || anotherStepActive || foregroundAuthorizationInFlight()
+                    || overlayPermissionAttempted || overlaySettingsInFlight) return false;
+            overlayPermissionAttempted = true;
+            overlaySettingsInFlight = true;
+            return true;
+        }
+
+        boolean beginManualOverlayPermissionRequest(
+                boolean permissionGranted, boolean anotherStepActive) {
+            if (permissionGranted || anotherStepActive || overlaySettingsInFlight) return false;
+            overlayPermissionAttempted = true;
+            overlaySettingsInFlight = true;
+            return true;
+        }
+
+        boolean finishOverlaySettings() {
+            if (!overlaySettingsInFlight) return false;
+            overlaySettingsInFlight = false;
+            return true;
+        }
+
+        boolean canPresentStartupDialogs(boolean permissionGranted) {
+            return !overlaySettingsInFlight && (permissionGranted || overlayPermissionAttempted);
+        }
+
+        boolean foregroundAuthorizationStarted() { return foregroundAuthorizationStarted; }
+        boolean foregroundAuthorizationFinished() { return foregroundAuthorizationFinished; }
+        boolean foregroundAuthorizationInFlight() {
+            return foregroundAuthorizationStarted && !foregroundAuthorizationFinished;
+        }
+        boolean overlayPermissionAttempted() { return overlayPermissionAttempted; }
+        boolean overlaySettingsInFlight() { return overlaySettingsInFlight; }
+    }
+
     static final class HelperCallbackRegistration<T> {
         static final class Operation<T> {
             final T connection;
@@ -15125,6 +15308,11 @@ public final class CameraProbeActivity extends ComponentActivity
                     || desiredGeneration != operation.generation) return false;
             completedGeneration = operation.generation;
             return true;
+        }
+
+        synchronized boolean isCurrent(Operation<T> operation) {
+            return desired && operation != null && connection == operation.connection
+                    && desiredGeneration == operation.generation;
         }
 
         synchronized void detached(Operation<T> operation) {

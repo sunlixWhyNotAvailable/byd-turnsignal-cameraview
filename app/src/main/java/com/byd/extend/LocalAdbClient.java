@@ -184,14 +184,22 @@ final class LocalAdbClient {
                     if (!isCancellationTokenCurrent(cancellationToken)) {
                         result = Result.superseded();
                     } else {
-                        ShellResult shell = connection.shell(fixedCommand);
-                        if (!isCancellationTokenCurrent(cancellationToken)) {
-                            result = Result.superseded();
-                        } else {
-                            result = shell.exitCode == 0
-                                    ? Result.ok(shell.output, shell.exitCode, open.fingerprint, false)
-                                    : Result.failed("shell_exit_" + shell.exitCode, shell.output,
-                                            shell.exitCode, open.fingerprint);
+                        try {
+                            ShellResult shell = connection.shell(fixedCommand);
+                            if (!isCancellationTokenCurrent(cancellationToken)) {
+                                result = Result.superseded();
+                            } else {
+                                result = shell.exitCode == 0
+                                        ? Result.ok(shell.output, shell.exitCode,
+                                                open.fingerprint, false)
+                                        : Result.failed("shell_exit_" + shell.exitCode,
+                                                shell.output, shell.exitCode, open.fingerprint);
+                            }
+                        } catch (SocketTimeoutException timeout) {
+                            result = isCancellationTokenCurrent(cancellationToken)
+                                    ? Result.commandReadTimeout(
+                                            summary(timeout), open.fingerprint)
+                                    : Result.superseded();
                         }
                     }
                 }
@@ -780,18 +788,20 @@ final class LocalAdbClient {
         final boolean authorizationRequired;
         final boolean publicKeySent;
         final boolean superseded;
+        final boolean commandReadTimeout;
         final String output;
         final int exitCode;
         final String error;
         final String fingerprint;
 
         private Result(boolean ok, boolean authorizationRequired, boolean publicKeySent,
-                boolean superseded,
+                boolean superseded, boolean commandReadTimeout,
                 String output, int exitCode, String error, String fingerprint) {
             this.ok = ok;
             this.authorizationRequired = authorizationRequired;
             this.publicKeySent = publicKeySent;
             this.superseded = superseded;
+            this.commandReadTimeout = commandReadTimeout;
             this.output = output;
             this.exitCode = exitCode;
             this.error = error;
@@ -799,28 +809,33 @@ final class LocalAdbClient {
         }
 
         static Result ok(String output, int exitCode, String fingerprint, boolean publicKeySent) {
-            return new Result(true, false, publicKeySent, false,
+            return new Result(true, false, publicKeySent, false, false,
                     output, exitCode, "", fingerprint);
         }
 
         static Result authorizationRequired(
                 String error, boolean publicKeySent, String fingerprint) {
-            return new Result(false, true, publicKeySent, false, "", -1,
+            return new Result(false, true, publicKeySent, false, false, "", -1,
                     error, fingerprint);
         }
 
         static Result superseded() {
-            return new Result(false, false, false, true,
+            return new Result(false, false, false, true, false,
                     "", -1, "authorization_superseded", "unavailable");
         }
 
         static Result cancelled() {
-            return new Result(false, false, false, false,
+            return new Result(false, false, false, false, false,
                     "", -1, "cancelled", "unavailable");
         }
 
+        static Result commandReadTimeout(String error, String fingerprint) {
+            return new Result(false, false, false, false, true,
+                    "", -1, error, fingerprint);
+        }
+
         static Result failed(String error, String output, int exitCode, String fingerprint) {
-            return new Result(false, false, false, false,
+            return new Result(false, false, false, false, false,
                     output, exitCode, error, fingerprint);
         }
     }

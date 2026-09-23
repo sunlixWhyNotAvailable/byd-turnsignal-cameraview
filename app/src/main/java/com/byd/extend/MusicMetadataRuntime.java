@@ -1108,7 +1108,7 @@ final class MusicMetadataRuntime {
         }
     }
 
-    private static final class BydMediaWriter {
+    static final class BydMediaWriter {
         private final BiConsumer<String, Object[]> eventSink;
         private final Object autoManager;
         private final Method setInt;
@@ -1122,30 +1122,53 @@ final class MusicMetadataRuntime {
         private final int progressFid;
         private final int[] timeFids;
 
-        @SuppressLint("WrongConstant")
         BydMediaWriter(Context context, BiConsumer<String, Object[]> eventSink) throws Exception {
+            this(requireAutoManager(context), eventSink,
+                    feature("INSTRUMENT_MUSIC_SOURCE_SET"),
+                    feature("INSTRUMENT_MUSIC_STATE_SET"),
+                    feature("INSTRUMENT_RADIO_STATE_SET"),
+                    feature("INSTRUMENT_MUSIC_INFO_SET"),
+                    feature("AUDIO_ARMREST_SCREEN_SINGER_NAME_SET"),
+                    feature("INSTRUMENT_MUSIC_PLAYBACK_PROGRESS_SET"),
+                    new int[]{
+                            feature("AUDIO_PLAY_TIME_HOUR_SET"),
+                            feature("AUDIO_PLAY_TIME_MINUTE_SET"),
+                            feature("AUDIO_PLAY_TIME_SECOND_SET"),
+                            feature("AUDIO_TOTAL_TIME_HOUR_SET"),
+                            feature("AUDIO_TOTAL_TIME_MINUTE_SET"),
+                            feature("AUDIO_TOTAL_TIME_SECOND_SET")});
+        }
+
+        @SuppressLint("WrongConstant")
+        private static Object requireAutoManager(Context context) {
+            Object manager = context.getSystemService("auto");
+            if (manager == null) throw new IllegalStateException("BYDAutoManager unavailable");
+            return manager;
+        }
+
+        BydMediaWriter(
+                Object autoManager, BiConsumer<String, Object[]> eventSink,
+                int sourceFid, int musicStateFid, int radioStateFid,
+                int titleFid, int singerFid, int progressFid, int[] timeFids)
+                throws Exception {
             this.eventSink = eventSink;
-            autoManager = context.getSystemService("auto");
-            if (autoManager == null) throw new IllegalStateException("BYDAutoManager unavailable");
+            this.autoManager = autoManager;
+            if (this.autoManager == null) {
+                throw new IllegalStateException("BYDAutoManager unavailable");
+            }
             setInt = autoManager.getClass().getMethod(
                     "setInt", int.class, int.class, int.class);
             setBuffer = autoManager.getClass().getMethod(
                     "setBuffer", int.class, int.class, byte[].class);
             setIntArray = autoManager.getClass().getMethod(
                     "setIntArray", int.class, int[].class, int[].class);
-            sourceFid = feature("INSTRUMENT_MUSIC_SOURCE_SET");
-            musicStateFid = feature("INSTRUMENT_MUSIC_STATE_SET");
-            radioStateFid = feature("INSTRUMENT_RADIO_STATE_SET");
-            titleFid = feature("INSTRUMENT_MUSIC_INFO_SET");
-            singerFid = feature("AUDIO_ARMREST_SCREEN_SINGER_NAME_SET");
-            progressFid = feature("INSTRUMENT_MUSIC_PLAYBACK_PROGRESS_SET");
-            timeFids = new int[]{
-                    feature("AUDIO_PLAY_TIME_HOUR_SET"),
-                    feature("AUDIO_PLAY_TIME_MINUTE_SET"),
-                    feature("AUDIO_PLAY_TIME_SECOND_SET"),
-                    feature("AUDIO_TOTAL_TIME_HOUR_SET"),
-                    feature("AUDIO_TOTAL_TIME_MINUTE_SET"),
-                    feature("AUDIO_TOTAL_TIME_SECOND_SET")};
+            this.sourceFid = sourceFid;
+            this.musicStateFid = musicStateFid;
+            this.radioStateFid = radioStateFid;
+            this.titleFid = titleFid;
+            this.singerFid = singerFid;
+            this.progressFid = progressFid;
+            this.timeFids = timeFids;
         }
 
         void publish(Snapshot snapshot, boolean claimSource) throws Exception {
@@ -1153,8 +1176,8 @@ final class MusicMetadataRuntime {
                 writeInt(DEVICE_INSTRUMENT, sourceFid, SOURCE_THIRD_PARTY, "source");
                 writeInt(DEVICE_INSTRUMENT, radioStateFid, RADIO_OFF, "radio_state");
             }
-            writeBytes(DEVICE_INSTRUMENT, titleFid, utf16Le(snapshot.title), "title");
-            writeBytes(DEVICE_AUDIO, singerFid, utf16Le(snapshot.artist), "artist");
+            writeBytes(DEVICE_INSTRUMENT, titleFid, metadataBuffer(snapshot.title), "title");
+            writeBytes(DEVICE_AUDIO, singerFid, metadataBuffer(snapshot.artist), "artist");
             writeIntArray(DEVICE_AUDIO, timeFids, snapshot.timeline, "timeline");
             writeInt(DEVICE_INSTRUMENT, progressFid, snapshot.progress, "progress");
             writeInt(DEVICE_INSTRUMENT, musicStateFid,
@@ -1248,6 +1271,10 @@ final class MusicMetadataRuntime {
                 throws Exception {
             invoke(setBuffer, new Object[]{device, fid, value}, device, new int[]{fid},
                     field, "bytes", value.length);
+        }
+
+        private static byte[] metadataBuffer(String value) {
+            return utf16Le(value.isEmpty() ? " " : value);
         }
 
         private void writeIntArray(
