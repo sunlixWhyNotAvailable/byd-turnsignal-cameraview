@@ -631,6 +631,8 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 "enabled", event.enabled,
                 "fov_degrees", event.fovDegrees,
                 "projection", CameraDewarpConfig.projectionLabel(event.projection),
+                "strength_selected", event.selectedStrength, "strength_effective", event.effectiveStrength,
+                "horizontal_fov_precise", event.horizontalFov, "diagonal_fov", event.diagonalFov,
                 "mesh_vertices", event.vertexCount,
                 "generation_ms", event.generationMs,
                 "error", event.error);

@@ -757,6 +757,8 @@ internal fun NumericSetting(
     identity: Any = Unit,
     onPreview: (String, Long) -> String? = { value, _ -> value },
     onCommitSession: ((String, Long) -> Unit)? = null,
+    decimalPlaces: Int = 0,
+    labelWidth: Dp? = null,
 ) {
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -778,14 +780,15 @@ internal fun NumericSetting(
     var sliderValue by sliderState
     var suppressBlurCommit by remember(identity) { mutableStateOf(false) }
     var lastPreview by remember(identity, value) { mutableStateOf<String?>(null) }
-    val previewSession = remember(identity) { NumericPreviewSession() }
+    val previewSession = remember(identity, enabled) { NumericPreviewSession() }
     var gestureSessionId by remember(identity) { mutableStateOf<Long?>(null) }
     var suppressNextSliderFinish by remember(identity) { mutableStateOf(false) }
     var activeDragStart by remember(identity) { mutableStateOf<DragInteraction.Start?>(null) }
-    DisposableEffect(identity) {
+    DisposableEffect(previewSession) {
         onDispose { previewSession.dispose() }
     }
     fun commit(raw: String = draft, sessionId: Long? = null) {
+        if (!enabled) return
         val result = NumericDraftPolicy.resolve(raw, value, range)
         invalid = !result.valid
         draft = result.draft
@@ -797,6 +800,7 @@ internal fun NumericSetting(
         }
     }
     fun adjust(delta: Float) {
+        if (!enabled) return
         val next = ((draft.toFloatOrNull() ?: range.start) + delta).coerceIn(range)
         draft = if (next % 1f == 0f) next.roundToInt().toString() else next.toString()
         invalid = false
@@ -810,6 +814,7 @@ internal fun NumericSetting(
     }
     ImeDismissalEffect(focused, ::finishEditing)
     fun finishSliderGesture() {
+        if (!enabled) { previewSession.dispose(); gestureSessionId = null; return }
         // Material's slider may report both DragInteraction.Cancel and
         // onValueChangeFinished for one pointer sequence.  Make either callback the one
         // finalization point and suppress the paired callback; the next gesture clears this bit.
@@ -818,7 +823,7 @@ internal fun NumericSetting(
             return
         }
         activeDragStart = null
-        val raw = sliderText(sliderValue)
+        val raw = if (decimalPlaces == 1) cameraFovText(sliderValue.toDouble()) else sliderText(sliderValue)
         draft = raw
         val sessionId = gestureSessionId
         if (sessionId != null) {
@@ -831,6 +836,16 @@ internal fun NumericSetting(
     }
     val sliderInteractionSource = remember(identity) { MutableInteractionSource() }
     val latestFinishSliderGesture by rememberUpdatedState(::finishSliderGesture)
+    LaunchedEffect(enabled) {
+        if (!enabled) {
+            previewSession.dispose()
+            gestureSessionId = null
+            draft = value
+            invalid = false
+            suppressBlurCommit = true
+            if (focused) { focused = false; keyboard?.hide(); focusManager.clearFocus() }
+        }
+    }
     LaunchedEffect(sliderInteractionSource) {
         sliderInteractionSource.interactions.collect { interaction ->
             when (interaction) {
@@ -847,18 +862,22 @@ internal fun NumericSetting(
     }
     Row(if (inlineLabel) Modifier else Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 8.dp)) {
-        if (showLabel) Text(title, color = colors.text, fontSize = if (compact) 14.sp else 16.sp,
+        if (showLabel) Text(title, color = if (enabled) colors.text else colors.muted.copy(alpha = .62f), fontSize = if (compact) 14.sp else 16.sp,
             fontWeight = FontWeight.SemiBold,
-            modifier = if (slider) Modifier.width(if (compact) 60.dp else 200.dp)
+            modifier = if (slider) Modifier.width(labelWidth ?: if (compact) 60.dp else 200.dp)
                 else if (inlineLabel) Modifier else Modifier.weight(1f), maxLines = 2)
         if (slider) {
             val sliderColors = SliderDefaults.colors(
                 thumbColor = if (colors.dark) Color(0xFFD9ECFF) else Color.White,
                 activeTrackColor = colors.accent, inactiveTrackColor = colors.borderStrong,
+                disabledThumbColor = colors.muted,
+                disabledActiveTrackColor = colors.muted.copy(alpha = .62f),
+                disabledInactiveTrackColor = colors.borderStrong,
             )
             Slider(sliderValue, {
-                val normalized = normalizeSliderValue(it, range)
-                if (normalized != sliderValue) {
+                val normalized = if (decimalPlaces == 1) (it * 10).roundToInt().div(10f).coerceIn(range)
+                    else normalizeSliderValue(it, range)
+                if (enabled && normalized != sliderValue) {
                     val sessionId = gestureSessionId ?: previewSession.begin().also {
                         // Dedupe only within one pointer gesture.  If the backend rejects a
                         // gesture and the canonical value is unchanged, a later gesture must
@@ -868,7 +887,7 @@ internal fun NumericSetting(
                         gestureSessionId = it
                     }
                     sliderValue = normalized
-                    val raw = sliderText(normalized)
+                    val raw = if (decimalPlaces == 1) cameraFovText(normalized.toDouble()) else sliderText(normalized)
                     draft = raw
                     invalid = false
                     suppressBlurCommit = false
@@ -889,8 +908,8 @@ internal fun NumericSetting(
                 interactionSource = sliderInteractionSource,
                 steps = if (sliderDots) ((range.endInclusive - range.start).roundToInt() - 1).coerceAtLeast(0) else 0,
                 colors = sliderColors, track = { state ->
-                    if (sliderDots) SliderDefaults.Track(state, colors = sliderColors)
-                    else SliderDefaults.Track(state, colors = sliderColors, drawStopIndicator = null)
+                    if (sliderDots) SliderDefaults.Track(state, colors = sliderColors, enabled = enabled)
+                    else SliderDefaults.Track(state, colors = sliderColors, enabled = enabled, drawStopIndicator = null)
                 }, modifier = Modifier.weight(1f).height(32.dp))
         }
         beforeInput?.invoke()
@@ -905,7 +924,7 @@ internal fun NumericSetting(
         }, enabled = enabled, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { finishEditing() }),
-            cursorBrush = SolidColor(colors.accent), textStyle = TextStyle(colors.text, fontSize = 14.sp,
+            cursorBrush = SolidColor(colors.accent), textStyle = TextStyle(if (enabled) colors.text else colors.muted.copy(alpha = .62f), fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center),
             modifier = (if (narrowInput) Modifier.width(if (compact) 52.dp else 64.dp)
                 else Modifier.width(if (compact) 64.dp else 80.dp)).height(if (compact) 36.dp else 44.dp)
@@ -948,7 +967,7 @@ private fun NumberStep(symbol: String, title: String, colors: UiPalette, enabled
         .clickable(interactionSource = press.interactionSource, indication = null,
             enabled = enabled, role = Role.Button, onClick = visualClick)
         .semantics { contentDescription = "$title $symbol" }, contentAlignment = Alignment.Center) {
-        Text(symbol, color = colors.text, fontSize = 20.sp)
+        Text(symbol, color = if (enabled) colors.text else colors.muted, fontSize = 20.sp)
     }
 }
 

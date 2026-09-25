@@ -1652,7 +1652,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(30, CameraShellProtocol.VERSION);
+        assertEquals(31, CameraShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
                 CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);
@@ -1728,7 +1728,7 @@ public final class AdbCoreTest {
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL, decoded.projection);
         int[] dewarpWire = CameraShellProtocol.encodeDewarp(decoded);
         assertArrayEquals(new int[]{CameraDewarpConfig.LENS_RIGHT, 1, 115,
-                CameraDewarpConfig.PROJECTION_CYLINDRICAL}, dewarpWire);
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL, 100, Float.floatToIntBits(Float.NaN)}, dewarpWire);
         CameraDewarpConfig roundTrip = CameraShellProtocol.decodeDewarp(dewarpWire);
         assertEquals(decoded.lens, roundTrip.lens);
         assertEquals(decoded.enabled, roundTrip.enabled);

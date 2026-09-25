@@ -309,6 +309,7 @@ final class RearviewMirrorController {
         return new Object[]{settings.activeFront(), settings.target, settings.placement,
                 calibration.raw, calibration.corrected, calibration.enabled,
                 calibration.fovDegrees, calibration.projection, calibration.mirrored,
+                calibration.strengthPercent, calibration.preciseFovDegrees,
                 calibration.rotationDegrees, calibration.rotationMode,
                 border.borderDp, border.borderArgb,
                 BlindSpotOverlayController.readCornerRadius(preferences),

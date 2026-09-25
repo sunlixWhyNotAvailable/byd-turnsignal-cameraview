@@ -514,7 +514,7 @@ public final class CameraSettingsTransferTest {
 
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
-        assertEquals(4, parsed.get("version"));
+        assertEquals(5, parsed.get("version"));
         @SuppressWarnings("unchecked") Map<String, Object> values =
                 (Map<String, Object>) parsed.get("settings");
         for (CameraProfile profile : CameraProfile.values()) {
@@ -734,7 +734,7 @@ public final class CameraSettingsTransferTest {
 
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
-        assertEquals(4, parsed.get("version"));
+        assertEquals(5, parsed.get("version"));
         TestSharedPreferences target = new TestSharedPreferences();
         CameraSettingsTransfer.applyCameraPreset(target, parsed, GEOMETRY);
         assertEquals(3, CameraBorderSettings.forBlind(target, CameraProfile.FRONT_LEFT).borderDp);

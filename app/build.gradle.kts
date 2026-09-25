@@ -23,8 +23,8 @@ android {
         applicationId = "com.byd.extend"
         minSdk = 26
         targetSdk = 29
-        versionCode = 106
-        versionName = "1.3.2"
+        versionCode = 107
+        versionName = "1.3.3"
         buildConfigField(
             "String",
             "UPDATE_RELEASE_API_URL",
@@ -41,6 +41,16 @@ android {
     lint {
         // Sideloaded DiLink probe; target 29 preserves the known hidden-API behavior.
         disable += "ExpiredTargetSdkVersion"
+    }
+
+    buildTypes {
+        create("performance") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
 }
 
@@ -63,13 +73,13 @@ dependencies {
     testImplementation("org.json:json:20240303")
 }
 
-val copyDebugApkToBuildOutput by tasks.registering(Copy::class) {
-    dependsOn("packageDebug")
-    from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+val copyPerformanceApkToBuildOutput by tasks.registering(Copy::class) {
+    dependsOn("packagePerformance")
+    from(layout.buildDirectory.file("outputs/apk/performance/app-performance.apk"))
     into(rootProject.layout.projectDirectory.dir("build_output"))
     rename { "byd-extend-v${android.defaultConfig.versionName}.apk" }
 }
 
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-    finalizedBy(copyDebugApkToBuildOutput)
+tasks.matching { it.name == "assemblePerformance" }.configureEach {
+    finalizedBy(copyPerformanceApkToBuildOutput)
 }

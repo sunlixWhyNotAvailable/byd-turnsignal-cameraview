@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="correction_strength">"Сила"</string>
+    <string name="diagonal_fov">"Діагональний огляд"</string>
     <string name="signals_integrations">"Інтеграції BYD"</string>
     <string name="blind_zone_cameras">"Камери сліпих зон"</string>
     <string name="parking_cameras">"Камери паркування"</string>

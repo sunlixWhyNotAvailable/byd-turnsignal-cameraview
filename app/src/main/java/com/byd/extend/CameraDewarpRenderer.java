@@ -151,6 +151,10 @@ final class CameraDewarpRenderer {
         final boolean enabled;
         final int fovDegrees;
         final int projection;
+        final int selectedStrength;
+        final int effectiveStrength;
+        final float horizontalFov;
+        final double diagonalFov;
         final int vertexCount;
         final double generationMs;
         final String error;
@@ -158,6 +162,12 @@ final class CameraDewarpRenderer {
         Event(
                 String kind, MappingRequest request, int vertexCount,
                 long generationNs, Throwable error) {
+            this(kind, request, vertexCount, generationNs, error,
+                    CameraFisheyeMapping.SOURCE_WIDTH, CameraFisheyeMapping.SOURCE_HEIGHT);
+        }
+
+        Event(String kind, MappingRequest request, int vertexCount,
+                long generationNs, Throwable error, int width, int height) {
             this.kind = kind;
             CameraDewarpConfig config = request == null ? null : request.config;
             mapping = config;
@@ -167,6 +177,10 @@ final class CameraDewarpRenderer {
             fovDegrees = config == null ? 0 : config.fovDegrees;
             projection = config == null
                     ? CameraDewarpConfig.DEFAULT_PROJECTION : config.projection;
+            selectedStrength = config == null ? 100 : config.strengthPercent;
+            effectiveStrength = config == null ? 100 : CameraCorrectionGeometry.effectiveStrength(config, width / (double) height);
+            horizontalFov = config == null ? 0 : config.horizontalFovDegrees();
+            diagonalFov = CameraCorrectionGeometry.diagonalFov(horizontalFov, width / (double) height);
             this.vertexCount = vertexCount;
             generationMs = generationNs < 0 ? -1.0 : generationNs / 1_000_000.0;
             this.error = error == null ? null
@@ -850,7 +864,7 @@ final class CameraDewarpRenderer {
         pendingMeshVertexCount = 0;
         pendingMeshGenerationNs = -1;
         emitEvent(new Event(
-                eventKind, pending, vertexCount, generationNs, null));
+                eventKind, pending, vertexCount, generationNs, null, width, height));
     }
 
     static boolean shouldEmitAppliedMesh(

@@ -81,6 +81,7 @@ interface ProductionUiBackend {
     fun automaticStartEnabled(): Boolean
     fun legacyAccessRestoreVisible(): Boolean
     fun runtimeBlockedByLegacy(): Boolean
+    fun productionMappingAspect(profile: CameraProfileId): Double = 1920.0 / 1300.0
 
     /** Activity supplies real display pixels and tablet chrome insets when available. */
     fun productionDisplayGeometry(target: DisplayTarget): CameraDisplayGeometry =
@@ -930,6 +931,7 @@ class ProductionUiController @JvmOverloads constructor(
             ProfileNumber.OriginalHeight -> current.copy(calibration = current.calibration.copy(
                 original = current.calibration.original.copy(height = value)))
             ProfileNumber.Fov -> current.copy(calibration = current.calibration.copy(fov = value))
+            ProfileNumber.Strength -> current.copy(calibration = current.calibration.copy(strength = value.toIntOrNull() ?: current.calibration.strength))
             ProfileNumber.CorrectedX -> current.copy(calibration = current.calibration.copy(
                 corrected = current.calibration.corrected.copy(x = value)))
             ProfileNumber.CorrectedY -> current.copy(calibration = current.calibration.copy(
@@ -986,7 +988,11 @@ class ProductionUiController @JvmOverloads constructor(
         val hintAppearance = context?.let { UpdateHintAppearance.read(UpdateHintAppearance.preferences(it)) }
             ?: UpdateHintAppearance()
         val withMirrorAvailability = fresh.copy(
-            mirror = mirror,
+            mirror = mirror.copy(profile = withMappingAspect(CameraProfileId.Mirror, mirror.profile)),
+            blind = fresh.blind.copy(profiles = fresh.blind.profiles.mapValues { (id, profile) -> withMappingAspect(id, profile) }),
+            parking = fresh.parking.copy(views = fresh.parking.views.mapValues { (view, item) ->
+                item.copy(profile = withMappingAspect(CameraProfileId.Parking(view), item.profile)) }),
+            reverse = fresh.reverse.copy(profiles = fresh.reverse.profiles.mapValues { (id, profile) -> withMappingAspect(id, profile) }),
             settings = fresh.settings.copy(
                 updateHintAppearance = hintAppearance,
                 updateHintOverlayPermissionGranted = backend.productionUpdateHintOverlayPermissionGranted(),
@@ -1004,6 +1010,23 @@ class ProductionUiController @JvmOverloads constructor(
     private fun syncLegacyRuntimeBlock() {
         val blocked = backend.runtimeBlockedByLegacy()
         if (blocked != state.legacyRuntimeBlocked) setLegacyRuntimeBlocked(blocked)
+    }
+
+    private fun withMappingAspect(id: CameraProfileId, profile: CameraProfileUiState): CameraProfileUiState {
+        // Background/widget are composition rectangles, not camera buffers.
+        if (id is CameraProfileId.Reverse && (id.element == ReverseElement.Background || id.element == ReverseElement.Widget)) return profile
+        return profile.copy(calibration = profile.calibration.copy(mappingAspect = backend.productionMappingAspect(id)))
+    }
+
+    /** Buffer creation/resize only: retain drafts, operations and profile selection. */
+    fun refreshMappingAspects() {
+        state = state.copy(
+            mirror = state.mirror.copy(profile = withMappingAspect(CameraProfileId.Mirror, state.mirror.profile)),
+            blind = state.blind.copy(profiles = state.blind.profiles.mapValues { (id, profile) -> withMappingAspect(id, profile) }),
+            parking = state.parking.copy(views = state.parking.views.mapValues { (view, item) ->
+                item.copy(profile = withMappingAspect(CameraProfileId.Parking(view), item.profile)) }),
+            reverse = state.reverse.copy(profiles = state.reverse.profiles.mapValues { (id, profile) -> withMappingAspect(id, profile) }),
+        )
     }
 
     private fun showLegacyHandoverBlock() {

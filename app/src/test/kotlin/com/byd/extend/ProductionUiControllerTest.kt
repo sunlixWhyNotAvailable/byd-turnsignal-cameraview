@@ -49,6 +49,29 @@ import org.junit.Before
 import org.junit.Test
 
 class ProductionUiControllerTest {
+    @Test
+    fun bufferGeometryRefreshPreservesDraftsSelectionAndPreferences() {
+        val preferences = TestSharedPreferences()
+        val backend = FakeBackend(preferences)
+        val controller = ProductionUiController(preferences, backend)
+        val before = controller.state
+        val saved = preferences.all
+        backend.mappingAspect = 1.25
+        controller.refreshMappingAspects()
+        assertEquals(before.activeTab, controller.state.activeTab)
+        assertEquals(before.blind.selectedSide, controller.state.blind.selectedSide)
+        controller.state.blind.profiles.values.forEach { assertEquals(1.25, it.calibration.mappingAspect, 0.0) }
+        controller.state.parking.views.values.forEach { assertEquals(1.25, it.profile.calibration.mappingAspect, 0.0) }
+        controller.state.reverse.profiles.forEach { (id, profile) ->
+            val expected = if (id.element == ReverseElement.Background || id.element == ReverseElement.Widget) 1920.0 / 1300.0 else 1.25
+            assertEquals(expected, profile.calibration.mappingAspect, 0.0)
+        }
+        assertEquals(1.25, controller.state.mirror.profile.calibration.mappingAspect, 0.0)
+        assertEquals(saved, preferences.all)
+        assertTrue(backend.actions.isEmpty())
+        assertTrue(backend.previews.isEmpty())
+    }
+
     @Before
     fun clearProcessUiSession() {
         RuntimeUiSession.clearProcessState()
@@ -1137,6 +1160,12 @@ class ProductionUiControllerTest {
 
     private class FakeBackend(private val preferences: TestSharedPreferences) : ProductionUiBackend {
         var blocked = false
+        var mappingAspect = 1920.0 / 1300.0
+        override fun productionMappingAspect(profile: CameraProfileId): Double {
+            require(profile !is CameraProfileId.Reverse ||
+                profile.element != ReverseElement.Background && profile.element != ReverseElement.Widget)
+            return mappingAspect
+        }
         val actions = mutableListOf<BydExtendUiAction>()
         var effect: (BydExtendUiAction) -> Unit = {}
         var previewResolver: (NumberTarget, String) -> String? = { _, _ -> null }

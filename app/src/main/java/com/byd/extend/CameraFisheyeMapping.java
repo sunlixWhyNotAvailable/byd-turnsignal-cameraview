@@ -26,6 +26,7 @@ final class CameraFisheyeMapping {
         Calibration calibration = calibration(config.lens);
         Basis basis = basisForSource(
                 calibration, config.roiCenterX, config.roiCenterY);
+        RadialProjection radial = radialProjection(config, calibration, outputWidth, outputHeight);
         int vertexCount = MESH_COLUMNS * MESH_ROWS;
         float[] vertices = new float[vertexCount * 4];
         boolean[] validRays = new boolean[vertexCount];
@@ -35,9 +36,9 @@ final class CameraFisheyeMapping {
             for (int column = 0; column < MESH_COLUMNS; column++) {
                 double outputX = column / (double) (MESH_COLUMNS - 1);
                 double[] source = mapOutputToSource(
-                        calibration, config.projection, config.fovDegrees,
+                        calibration, config.projection, config.horizontalFovDegrees(),
                         outputWidth, outputHeight, basis,
-                        outputX, outputY);
+                        outputX, outputY, radial);
                 vertices[cursor++] = (float) (outputX * 2.0 - 1.0);
                 vertices[cursor++] = (float) (1.0 - outputY * 2.0);
                 vertices[cursor++] = (float) (source[0] / calibration.width);
@@ -85,7 +86,7 @@ final class CameraFisheyeMapping {
         Calibration calibration = calibration(lens);
         return mapOutputToSource(
                 calibration, projection, fovDegrees, outputWidth, outputHeight,
-                basisForSource(calibration, 0.5, 0.5), outputX, outputY);
+                basisForSource(calibration, 0.5, 0.5), outputX, outputY, null);
     }
 
     static double[] mapOutputToSource(
@@ -94,16 +95,16 @@ final class CameraFisheyeMapping {
         if (config == null) throw new IllegalArgumentException("dewarp config is required");
         Calibration calibration = calibration(config.lens);
         return mapOutputToSource(
-                calibration, config.projection, config.fovDegrees,
+                calibration, config.projection, config.horizontalFovDegrees(),
                 outputWidth, outputHeight,
                 basisForSource(calibration, config.roiCenterX, config.roiCenterY),
-                outputX, outputY);
+                outputX, outputY, radialProjection(config, calibration, outputWidth, outputHeight));
     }
 
     private static double[] mapOutputToSource(
-            Calibration calibration, int projection, int fovDegrees,
+            Calibration calibration, int projection, double fovDegrees,
             int outputWidth, int outputHeight, Basis basis,
-            double outputX, double outputY) {
+            double outputX, double outputY, RadialProjection radial) {
         double fovRadians = Math.toRadians(fovDegrees);
         if (projection == CameraDewarpConfig.PROJECTION_CYLINDRICAL) {
             double yaw = (outputX - 0.5) * fovRadians;
@@ -115,10 +116,56 @@ final class CameraFisheyeMapping {
         if (projection != CameraDewarpConfig.PROJECTION_RECTILINEAR) {
             throw new IllegalArgumentException("invalid camera projection");
         }
+        if (radial != null) {
+            double x = (outputX - 0.5) * outputWidth;
+            double y = (outputY - 0.5) * outputHeight;
+            double radius = Math.hypot(x, y);
+            double theta = radial.angle(radius / (Math.hypot(outputWidth, outputHeight) / 2));
+            double scale = radius <= 1.0e-12 ? 0 : Math.sin(theta) / radius;
+            return mapLocalRayToSource(calibration, basis, x * scale, y * scale, Math.cos(theta));
+        }
         double outputFocal = outputWidth / (2.0 * Math.tan(fovRadians / 2.0));
         double x = (outputX * outputWidth - outputWidth / 2.0) / outputFocal;
         double y = (outputY * outputHeight - outputHeight / 2.0) / outputFocal;
         return mapLocalRayToSource(calibration, basis, x, y, 1.0);
+    }
+
+    private static RadialProjection radialProjection(
+            CameraDewarpConfig config, Calibration calibration, int width, int height) {
+        int strength = CameraCorrectionGeometry.effectiveStrength(config, width / (double) height);
+        // Preserve the existing endpoint exactly, including wide-angle/cylindrical output.
+        if (strength == 100) return null;
+        double alpha = Math.toRadians(CameraCorrectionGeometry.diagonalFov(
+                config.horizontalFovDegrees(), width / (double) height)) / 2;
+        return new RadialProjection(calibration, alpha, strength / 100.0);
+    }
+
+    /** Inverse of the recovered OEM radial blend, built once per mesh, not per frame. */
+    private static final class RadialProjection {
+        private final double[] angles = new double[1025];
+
+        RadialProjection(Calibration calibration, double alpha, double strength) {
+            double lensEnd = distortedTheta(calibration, alpha);
+            double tangentEnd = Math.tan(alpha);
+            angles[1024] = alpha;
+            for (int index = 1; index < 1024; index++) {
+                double radius = index / 1024.0;
+                double low = angles[index - 1], high = alpha;
+                for (int step = 0; step < INVERSE_ITERATIONS; step++) {
+                    double theta = (low + high) / 2;
+                    double mapped = (1 - strength) * distortedTheta(calibration, theta) / lensEnd
+                            + strength * Math.tan(theta) / tangentEnd;
+                    if (mapped < radius) low = theta; else high = theta;
+                }
+                angles[index] = (low + high) / 2;
+            }
+        }
+
+        double angle(double normalizedRadius) {
+            double position = Math.max(0, Math.min(1, normalizedRadius)) * 1024;
+            int index = Math.min(1023, (int) position);
+            return angles[index] + (angles[index + 1] - angles[index]) * (position - index);
+        }
     }
 
     private static double[] mapLocalRayToSource(

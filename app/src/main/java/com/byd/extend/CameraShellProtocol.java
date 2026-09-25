@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 30;
+    static final int VERSION = 31;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -919,20 +919,24 @@ final class CameraShellProtocol {
 
     private static CameraDewarpConfig readDewarp(Parcel parcel) {
         return decodeDewarp(new int[]{
-                parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt()});
+                parcel.readInt(), parcel.readInt(), parcel.readInt(), parcel.readInt(),
+                parcel.readInt(), parcel.readInt()});
     }
 
     static int[] encodeDewarp(CameraDewarpConfig value) {
         if (value == null) throw new IllegalArgumentException("dewarp config required");
         return new int[]{
-                value.lens, value.enabled ? 1 : 0, value.fovDegrees, value.projection};
+                value.lens, value.enabled ? 1 : 0, value.fovDegrees, value.projection,
+                value.strengthPercent, Float.floatToIntBits(value.preciseFovDegrees)};
     }
 
     static CameraDewarpConfig decodeDewarp(int[] wire) {
-        if (wire == null || wire.length != 4) {
+        if (wire == null || (wire.length != 4 && wire.length != 6)) {
             throw new IllegalArgumentException("invalid dewarp wire record");
         }
-        return decodeDewarp(wire[0], wire[1], wire[2], wire[3]);
+        CameraDewarpConfig legacy = decodeDewarp(wire[0], wire[1], wire[2], wire[3]);
+        return wire.length == 4 ? legacy : CameraDewarpConfig.of(legacy.lens, legacy.enabled,
+                legacy.fovDegrees, legacy.projection, wire[4], Float.intBitsToFloat(wire[5]));
     }
 
     static CameraDewarpConfig decodeDewarp(

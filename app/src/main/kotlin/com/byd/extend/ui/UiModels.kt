@@ -75,7 +75,7 @@ enum class GuardNumber { OutwardAngle, CentreTolerance, CorrectionDelayMs, Maxim
 enum class BlindNumber { MinimumSpeed, MaximumSpeed, SteeringAngle }
 enum class ParkingNumber { TriggerDistance, MaximumSpeed }
 enum class OutputNumber { CornerRadius, Transparency }
-enum class ProfileNumber { Size, X, Y, Width, Height, OriginalX, OriginalY, OriginalWidth, OriginalHeight, Fov, CorrectedX, CorrectedY, CorrectedWidth, CorrectedHeight, Rotation }
+enum class ProfileNumber { Size, X, Y, Width, Height, OriginalX, OriginalY, OriginalWidth, OriginalHeight, Fov, Strength, CorrectedX, CorrectedY, CorrectedWidth, CorrectedHeight, Rotation }
 enum class MirrorNumber { X, Y, Width, Height, BorderWidth }
 enum class ReverseGeometryNumber { X, Y, Width, Height }
 
@@ -337,7 +337,23 @@ data class CalibrationUiState(
     val outputMode: Int = 0,
     val rotation: String = "0",
     val rawFallback: Boolean = false,
+    val strength: Int = 100,
+    val mappingAspect: Double = 1920.0 / 1300.0,
 )
+
+internal val CalibrationUiState.strengthEditable: Boolean get() =
+    com.byd.extend.CameraCorrectionGeometry.strengthEditable(correctionEnabled, projection,
+        fov.toDoubleOrNull() ?: 100.0, mappingAspect)
+
+internal fun CalibrationUiState.displayFov(horizontal: String = fov): String =
+    cameraFovText(if (projection == 0) com.byd.extend.CameraCorrectionGeometry.diagonalFov(
+        horizontal.toDouble(), mappingAspect) else horizontal.toDouble())
+
+internal fun cameraFovText(value: Double): String = "%.1f".format(java.util.Locale.ROOT, value).removeSuffix(".0")
+
+internal fun CalibrationUiState.horizontalFov(display: String): String =
+    if (projection == 0) com.byd.extend.CameraCorrectionGeometry.horizontalFov(display.toDouble(), mappingAspect).toString()
+    else display
 
 internal object UiSelectionPreferences {
     const val SIGNALS_CATEGORY = "ui_signals_category"

@@ -26,7 +26,8 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
+    private static final int BORDER_VERSION = 4;
     private static final int LEGACY_GEOMETRY_VERSION = 3;
     private static final int PREVIOUS_VERSION = 2;
     private static final int LEGACY_VERSION = 1;
@@ -59,12 +60,12 @@ public final class CameraSettingsTransfer {
 
     private CameraSettingsTransfer() {}
 
-    /** Serializes every effective camera visual setting, including defaults. */
+    /** Legacy v2 export without destination geometry or the v5 correction controls. */
     public static String exportCameraPreset(SharedPreferences preferences) {
         return exportCameraPreset(preferences, null, PREVIOUS_VERSION);
     }
 
-    /** Serializes v3 with both effective tablet/cluster placement slots. */
+    /** Serializes the current format with both effective tablet/cluster placement slots. */
     public static String exportCameraPreset(
             Context context, SharedPreferences preferences) {
         if (context == null) throw new IllegalArgumentException("context is null");
@@ -86,6 +87,8 @@ public final class CameraSettingsTransfer {
             result.put("schema", SCHEMA).put("version", version);
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
+                if (version < 5 && (entry.getKey().endsWith("_strength_percent")
+                        || entry.getKey().endsWith("_fov_precise"))) continue;
                 settings.put(entry.getKey(), entry.getValue());
             }
             result.put(SETTINGS, settings);
@@ -201,8 +204,13 @@ public final class CameraSettingsTransfer {
                 : null;
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : cameraClearKeys(preserveMirror)) if (preferences.contains(key)) editor.remove(key);
+        // Optional front calibration is independent; a supplied old calibration must not
+        // inherit the destination's newer strength/FOV, while an omitted group stays intact.
+        if (settings.containsKey("mirror_front_fov")) {
+            editor.remove("mirror_front_strength_percent").remove("mirror_front_fov_precise");
+        }
         preserveMissingBorders(editor, preferences, settings);
-        if (version < VERSION && settings.containsKey(RearviewMirrorSettings.PREF_BORDER_DP)) {
+        if (version < BORDER_VERSION && settings.containsKey(RearviewMirrorSettings.PREF_BORDER_DP)) {
             CameraBorderSettings.Border shared = new CameraBorderSettings.Border(
                     integer(settings, RearviewMirrorSettings.PREF_BORDER_DP),
                     integer(settings, RearviewMirrorSettings.PREF_BORDER_ARGB));
@@ -668,6 +676,7 @@ public final class CameraSettingsTransfer {
         out.put(valuePrefix + "correction", value.enabled);
         out.put(valuePrefix + "fov", value.fovDegrees);
         out.put(valuePrefix + "projection", value.projection);
+        putCorrectionControls(out, valuePrefix, value.strengthPercent, value.preciseFovDegrees);
         out.put(correctedPrefix + "x", value.corrected.x * 100.0f);
         out.put(correctedPrefix + "y", value.corrected.y * 100.0f);
         out.put(correctedPrefix + "width", value.corrected.width * 100.0f);
@@ -761,6 +770,12 @@ public final class CameraSettingsTransfer {
     private static void putDewarp(Map<String, Object> out, String prefix, CameraDewarpConfig value) {
         out.put(prefix + "enabled", value.enabled); out.put(prefix + "fov", value.fovDegrees);
         out.put(prefix + "projection", value.projection);
+        putCorrectionControls(out, prefix, value.strengthPercent, value.preciseFovDegrees);
+    }
+
+    private static void putCorrectionControls(Map<String, Object> out, String prefix, int strength, float precise) {
+        out.put(prefix + "strength_percent", strength);
+        if (!Float.isNaN(precise)) out.put(prefix + "fov_precise", precise);
     }
 
     private static Map<String, Object> cameraSettingsMap(Map<String, Object> parsed) {
@@ -865,6 +880,7 @@ public final class CameraSettingsTransfer {
         if (isBooleanKey(key)) { if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key); return; }
         if (isIntegerKey(key)) {
             int number = intValue(value, key);
+            if (key.endsWith("_strength_percent")) requireRange(number, 1, 100, key);
             if ((key.endsWith("_scale") || key.endsWith("_scale_percent"))
                     && (number < BlindSpotOverlayController.MIN_SCALE_PERCENT
                     || number > BlindSpotOverlayController.MAX_SCALE_PERCENT)) throw new IllegalArgumentException("invalid scale");
@@ -890,6 +906,8 @@ public final class CameraSettingsTransfer {
             return;
         }
         float number = floatValue(value, key);
+        if (key.endsWith("_fov_precise")) requireRange(number,
+                CameraDewarpConfig.MIN_FOV_DEGREES, CameraDewarpConfig.MAX_FOV_DEGREES, key);
         if (key.startsWith("mirror_")
                 && (key.endsWith("_x") || key.endsWith("_y") || key.endsWith("_width")
                 || key.endsWith("_height"))
@@ -1147,6 +1165,8 @@ public final class CameraSettingsTransfer {
         addBorderKeys(keys, CameraBorderSettings.mirrorPrefix(true));
         keys.add(RearviewMirrorSettings.PREF_FRONT_INTEGRATED);
         keys.add(RearviewMirrorSettings.PREF_SHOW_FRONT);
+        addCorrectionKeys(keys, "mirror_");
+        addCorrectionKeys(keys, "mirror_front_");
         for (String key : new String[]{"mirror_original_x", "mirror_original_y",
                 "mirror_original_width", "mirror_original_height", "mirror_correction",
                 "mirror_fov", "mirror_projection", "mirror_corrected_x",
@@ -1218,7 +1238,8 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
         return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
-                || version < VERSION && isBorderKey(key)
+                || version < BORDER_VERSION && isBorderKey(key)
+                || key.endsWith("_strength_percent") || key.endsWith("_fov_precise")
                 || key.endsWith("_frame_aspect")
                 || isLegacyBlindSizeKey(key)
                 || version < LEGACY_GEOMETRY_VERSION && isDisplayPlacementKey(key)
@@ -1288,6 +1309,11 @@ public final class CameraSettingsTransfer {
 
     private static void addDewarpKeys(Set<String> keys, String prefix) {
         keys.add(prefix + "enabled"); keys.add(prefix + "fov"); keys.add(prefix + "projection");
+        addCorrectionKeys(keys, prefix);
+    }
+
+    private static void addCorrectionKeys(Set<String> keys, String prefix) {
+        keys.add(prefix + "strength_percent"); keys.add(prefix + "fov_precise");
     }
 
     private static void addBorderKeys(Set<String> keys, String prefix) {
@@ -1378,7 +1404,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isIntegerKey(String key) {
-        return (!key.endsWith("_frame_aspect") && key.endsWith("_aspect"))
+        return key.endsWith("_strength_percent") || (!key.endsWith("_frame_aspect") && key.endsWith("_aspect"))
                 || key.endsWith("_rotation") || key.endsWith("_rotation_mode")
                 || key.endsWith("_rotation_degrees") || key.endsWith("_display_mode") || key.endsWith("_fov")
                 || key.endsWith("_projection") || key.endsWith("_scale") || key.endsWith("_target")
@@ -1441,6 +1467,9 @@ public final class CameraSettingsTransfer {
             if (!key.endsWith("_frame_aspect") && key.endsWith("_aspect")) requireRange(n, 0, 3, key);
             if (key.endsWith("_fov")) requireRange(n, CameraDewarpConfig.MIN_FOV_DEGREES,
                     CameraDewarpConfig.MAX_FOV_DEGREES, key);
+            if (key.endsWith("_fov_precise")) requireRange(n, CameraDewarpConfig.MIN_FOV_DEGREES,
+                    CameraDewarpConfig.MAX_FOV_DEGREES, key);
+            if (key.endsWith("_strength_percent")) requireRange(n, 1, 100, key);
             if (key.endsWith("_projection")) requireRange(n, 0, 1, key);
             if (key.endsWith("_frame_aspect")) requireRange(n, Float.MIN_NORMAL, 100, key);
             if (key.endsWith("_version")) requireRange(n, 1, 1, key);

@@ -20,12 +20,15 @@ final class CameraDewarpConfig {
     final boolean enabled;
     final int fovDegrees;
     final int projection;
+    final int strengthPercent;
+    // NaN means the legacy integer FOV has never been explicitly edited with precision.
+    final float preciseFovDegrees;
     final float roiCenterX;
     final float roiCenterY;
 
     private CameraDewarpConfig(
             int lens, boolean enabled, int fovDegrees, int projection,
-            float roiCenterX, float roiCenterY) {
+            float roiCenterX, float roiCenterY, int strengthPercent, float preciseFovDegrees) {
         if (!isValidLens(lens)) throw new IllegalArgumentException("invalid camera lens");
         if (!isValidProjection(projection)) {
             throw new IllegalArgumentException("invalid camera projection");
@@ -39,6 +42,15 @@ final class CameraDewarpConfig {
         this.enabled = enabled;
         this.fovDegrees = clamp(fovDegrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES);
         this.projection = projection;
+        if (strengthPercent < 1 || strengthPercent > 100) {
+            throw new IllegalArgumentException("invalid correction strength");
+        }
+        if (!Float.isNaN(preciseFovDegrees) && (!Float.isFinite(preciseFovDegrees)
+                || preciseFovDegrees < MIN_FOV_DEGREES || preciseFovDegrees > MAX_FOV_DEGREES)) {
+            throw new IllegalArgumentException("invalid precise horizontal FOV");
+        }
+        this.strengthPercent = strengthPercent;
+        this.preciseFovDegrees = preciseFovDegrees;
         this.roiCenterX = roiCenterX;
         this.roiCenterY = roiCenterY;
     }
@@ -54,7 +66,33 @@ final class CameraDewarpConfig {
     static CameraDewarpConfig of(
             int lens, boolean enabled, int fovDegrees, int projection) {
         return new CameraDewarpConfig(
-                lens, enabled, fovDegrees, projection, 0.5f, 0.5f);
+                lens, enabled, fovDegrees, projection, 0.5f, 0.5f, 100, Float.NaN);
+    }
+
+    static CameraDewarpConfig of(int lens, boolean enabled, int fovDegrees, int projection,
+            int strengthPercent, float preciseFovDegrees) {
+        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection,
+                0.5f, 0.5f, strengthPercent, preciseFovDegrees);
+    }
+
+    float horizontalFovDegrees() {
+        return Float.isNaN(preciseFovDegrees) ? fovDegrees : preciseFovDegrees;
+    }
+
+    static CameraDewarpConfig readControls(SharedPreferences p, String prefix, CameraDewarpConfig value) {
+        int strength = 100;
+        float precise = Float.NaN;
+        try { strength = p.getInt(prefix + "strength_percent", 100); } catch (ClassCastException ignored) { }
+        try { precise = p.getFloat(prefix + "fov_precise", Float.NaN); } catch (ClassCastException ignored) { }
+        if (strength < 1 || strength > 100) strength = 100;
+        if (!Float.isFinite(precise) || precise < MIN_FOV_DEGREES || precise > MAX_FOV_DEGREES) precise = Float.NaN;
+        return of(value.lens, value.enabled, value.fovDegrees, value.projection, strength, precise);
+    }
+
+    static void writeControls(SharedPreferences.Editor editor, String prefix, CameraDewarpConfig value) {
+        editor.putInt(prefix + "strength_percent", value.strengthPercent);
+        if (Float.isNaN(value.preciseFovDegrees)) editor.remove(prefix + "fov_precise");
+        else editor.putFloat(prefix + "fov_precise", value.preciseFovDegrees);
     }
 
     static CameraDewarpConfig load(SharedPreferences preferences, int lens) {
@@ -66,8 +104,8 @@ final class CameraDewarpConfig {
                     || !isValidProjection(projection)) {
                 return disabled(lens);
             }
-            return of(lens, preferences.getBoolean(prefix + "enabled", false),
-                    fov, projection);
+            return readControls(preferences, prefix, of(lens, preferences.getBoolean(prefix + "enabled", false),
+                    fov, projection));
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -89,8 +127,8 @@ final class CameraDewarpConfig {
             int projection = preferences.getInt(scopedPrefix + "projection", fallback.projection);
             if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
                     || !isValidProjection(projection)) return disabled(lens);
-            return of(lens, preferences.getBoolean(scopedPrefix + "enabled", fallback.enabled),
-                    fov, projection);
+            return readControls(preferences, scopedPrefix, of(lens, preferences.getBoolean(scopedPrefix + "enabled", fallback.enabled),
+                    fov, projection));
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -112,8 +150,8 @@ final class CameraDewarpConfig {
             int projection = preferences.getInt(prefix + "projection", fallback.projection);
             if (fov < MIN_FOV_DEGREES || fov > MAX_FOV_DEGREES
                     || !isValidProjection(projection)) return disabled(lens);
-            return of(lens, preferences.getBoolean(prefix + "enabled", fallback.enabled),
-                    fov, projection);
+            return readControls(preferences, prefix, of(lens, preferences.getBoolean(prefix + "enabled", fallback.enabled),
+                    fov, projection));
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -182,7 +220,7 @@ final class CameraDewarpConfig {
                 return disabled(lens);
             }
             // Legacy fallback stays read-only; an explicit scoped edit writes all three fields.
-            return of(lens, enabled, fov, projection);
+            return readControls(preferences, scopedPrefix, of(lens, enabled, fov, projection));
         } catch (RuntimeException invalidPreferences) {
             return disabled(lens);
         }
@@ -228,6 +266,7 @@ final class CameraDewarpConfig {
 
     static void write(SharedPreferences.Editor editor, CameraDewarpConfig value) {
         String prefix = prefix(value.lens);
+        writeControls(editor, prefix, value);
         editor.putBoolean(prefix + "enabled", value.enabled)
                 .putInt(prefix + "fov", value.fovDegrees)
                 .putInt(prefix + "projection", value.projection);
@@ -317,27 +356,39 @@ final class CameraDewarpConfig {
 
     CameraDewarpConfig withEnabled(boolean value) {
         return new CameraDewarpConfig(
-                lens, value, fovDegrees, projection, roiCenterX, roiCenterY);
+                lens, value, fovDegrees, projection, roiCenterX, roiCenterY, strengthPercent, preciseFovDegrees);
     }
 
     CameraDewarpConfig withFov(int value) {
         return new CameraDewarpConfig(
-                lens, enabled, value, projection, roiCenterX, roiCenterY);
+                lens, enabled, value, projection, roiCenterX, roiCenterY, strengthPercent, Float.NaN);
     }
 
     CameraDewarpConfig withProjection(int value) {
         return new CameraDewarpConfig(
-                lens, enabled, fovDegrees, value, roiCenterX, roiCenterY);
+                lens, enabled, fovDegrees, value, roiCenterX, roiCenterY, strengthPercent, preciseFovDegrees);
     }
 
     CameraDewarpConfig withRoiCenter(float x, float y) {
-        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection, x, y);
+        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection, x, y, strengthPercent, preciseFovDegrees);
+    }
+
+    CameraDewarpConfig withStrength(int value) {
+        return new CameraDewarpConfig(lens, enabled, fovDegrees, projection,
+                roiCenterX, roiCenterY, value, preciseFovDegrees);
+    }
+
+    CameraDewarpConfig withHorizontalFov(float value) {
+        if (!Float.isFinite(value)) throw new IllegalArgumentException("invalid precise FOV");
+        return new CameraDewarpConfig(lens, enabled, Math.round(value), projection,
+                roiCenterX, roiCenterY, strengthPercent, value);
     }
 
     boolean sameMapping(CameraDewarpConfig other) {
         if (other == null || lens != other.lens || enabled != other.enabled) return false;
         if (!enabled) return true;
-        return fovDegrees == other.fovDegrees
+        return Float.floatToIntBits(horizontalFovDegrees()) == Float.floatToIntBits(other.horizontalFovDegrees())
+                && (projection != PROJECTION_RECTILINEAR || strengthPercent == other.strengthPercent)
                 && projection == other.projection
                 && Float.floatToIntBits(roiCenterX)
                         == Float.floatToIntBits(other.roiCenterX)
@@ -357,6 +408,7 @@ final class CameraDewarpConfig {
             SharedPreferences.Editor editor, int lens, String scopedPrefix,
             CameraDewarpConfig value) {
         if (value.lens != lens) throw new IllegalArgumentException("dewarp lens mismatch");
+        writeControls(editor, scopedPrefix, value);
         return editor.putBoolean(scopedPrefix + "enabled", value.enabled)
                 .putInt(scopedPrefix + "fov", value.fovDegrees)
                 .putInt(scopedPrefix + "projection", value.projection);

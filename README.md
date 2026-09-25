@@ -7,11 +7,24 @@
 
 ## Project status
 
-Current source target: `1.3.2` (version code `106`), with Ukrainian, English and Simplified Chinese
+Current source target: `1.3.3` (version code `107`), with Ukrainian, English and Simplified Chinese
 interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 
 The source target and published release are separate states; a local test APK is not a publication.
+
+## Building
+
+Use `./gradlew :app:assemblePerformance` (`.\gradlew.bat :app:assemblePerformance` on Windows)
+for all distributable APKs. The release-based `performance` variant is non-debuggable,
+with code minification, obfuscation and resource shrinking disabled. Debug-only Compose tooling
+is not included. The APK is copied to `build_output/byd-extend-v<versionName>.apk`;
+debug builds are not distribution artifacts and do not populate that path.
+
+The variant retains the existing `debug` signing configuration for update continuity; this
+signing-configuration name does not enable debugging. Use the same existing signing key when
+updating installed copies. In-app diagnostics and log export remain available; debugger attachment,
+private-file `run-as` access and debug-only AVM diagnostic Intent commands are not available.
 
 ## Features
 

@@ -243,7 +243,7 @@ public final class RearviewMirrorSettings {
     public static CameraDewarpConfig dewarp(SharedPreferences preferences, boolean front) {
         Calibration value = calibration(preferences, front);
         return CameraDewarpConfig.of(lens(front), value.enabled, value.fovDegrees,
-                value.projection);
+                value.projection, value.strengthPercent, value.preciseFovDegrees);
     }
 
     public static boolean frontIntegrated(SharedPreferences preferences) {
@@ -441,7 +441,9 @@ public final class RearviewMirrorSettings {
             int mode = preferences.getInt(valuePrefix + "output_mode", CameraRotation.MODE_FIT);
             return new Calibration(raw, corrected,
                     correction, fov, projection, mirrored, rotation,
-                    CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT);
+                    CameraRotation.isValidMode(mode) ? mode : CameraRotation.MODE_FIT)
+                    .withControls(CameraDewarpConfig.readControls(preferences, valuePrefix,
+                            CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR, correction, fov, projection)));
         } catch (RuntimeException invalid) { return fallback; }
     }
 
@@ -449,6 +451,7 @@ public final class RearviewMirrorSettings {
             SharedPreferences.Editor editor, String prefix, Calibration value) {
         String correctedPrefix = correctedPrefix(prefix);
         String valuePrefix = valuePrefix(prefix);
+        CameraDewarpConfig.writeControls(editor, valuePrefix, value.dewarp(CameraDewarpConfig.LENS_REAR));
         editor.putFloat(prefix + "x", value.raw.x * 100.0f)
                 .putFloat(prefix + "y", value.raw.y * 100.0f)
                 .putFloat(prefix + "width", value.raw.width * 100.0f)
@@ -480,7 +483,7 @@ public final class RearviewMirrorSettings {
     private static void removeCalibration(SharedPreferences.Editor editor, String prefix) {
         for (String suffix : new String[]{"x", "y", "width", "height", "corrected_x",
                 "corrected_y", "corrected_width", "corrected_height", "correction", "fov",
-                "projection", "mirrored", "rotation", "output_mode"}) editor.remove(prefix + suffix);
+                "projection", "mirrored", "rotation", "output_mode", "strength_percent", "fov_precise"}) editor.remove(prefix + suffix);
     }
 
     private boolean readBoolean(String key, boolean fallback) {
@@ -644,6 +647,8 @@ public final class RearviewMirrorSettings {
         public final boolean enabled;
         public final int fovDegrees;
         public final int projection;
+        public final int strengthPercent;
+        public final float preciseFovDegrees;
         public final boolean mirrored;
         public final int rotationDegrees;
         public final int rotationMode;
@@ -651,6 +656,13 @@ public final class RearviewMirrorSettings {
         public Calibration(CameraPlacement raw, CameraPlacement corrected, boolean enabled,
                 int fovDegrees, int projection, boolean mirrored,
                 int rotationDegrees, int rotationMode) {
+            this(raw, corrected, enabled, fovDegrees, projection, mirrored,
+                    rotationDegrees, rotationMode, 100, Float.NaN);
+        }
+
+        public Calibration(CameraPlacement raw, CameraPlacement corrected, boolean enabled,
+                int fovDegrees, int projection, boolean mirrored, int rotationDegrees, int rotationMode,
+                int strengthPercent, float preciseFovDegrees) {
             if (raw == null || corrected == null) throw new IllegalArgumentException("crop required");
             CameraPlacement.source(raw.x, raw.y, raw.width, raw.height);
             CameraPlacement.source(corrected.x, corrected.y,
@@ -660,10 +672,27 @@ public final class RearviewMirrorSettings {
             this.enabled = enabled;
             this.fovDegrees = clamp(fovDegrees, 60, 170);
             this.projection = projection == 1 ? 1 : 0;
+            CameraDewarpConfig checked = CameraDewarpConfig.of(CameraDewarpConfig.LENS_REAR,
+                    enabled, fovDegrees, this.projection, strengthPercent, preciseFovDegrees);
+            this.strengthPercent = checked.strengthPercent;
+            this.preciseFovDegrees = checked.preciseFovDegrees;
             this.mirrored = mirrored;
             this.rotationDegrees = CameraRotation.clamp(rotationDegrees);
             this.rotationMode = CameraRotation.isValidMode(rotationMode)
                     ? rotationMode : CameraRotation.MODE_FIT;
+        }
+
+        CameraDewarpConfig dewarp(int lens) {
+            return CameraDewarpConfig.of(lens, enabled, fovDegrees, projection, strengthPercent, preciseFovDegrees);
+        }
+
+        Calibration withControls(CameraDewarpConfig config) {
+            return new Calibration(raw, corrected, enabled, config.fovDegrees, projection, mirrored,
+                    rotationDegrees, rotationMode, config.strengthPercent, config.preciseFovDegrees);
+        }
+
+        public float horizontalFovDegrees() {
+            return Float.isNaN(preciseFovDegrees) ? fovDegrees : preciseFovDegrees;
         }
     }
 }

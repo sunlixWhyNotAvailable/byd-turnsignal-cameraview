@@ -819,7 +819,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private Integer transientCornerRadiusDp;
     private Integer transientTransparencyPercent;
     private CameraProfileId transientProfilePreviewId;
-    private Integer transientProfilePreviewFov;
+    private Float transientProfilePreviewFov;
+    private Integer transientProfilePreviewStrength;
     private Integer transientProfilePreviewRotation;
     private int selectedParkingCameraId = ParkingCameraProfile.FL;
     private boolean parkingUiUpdating;
@@ -2398,6 +2399,7 @@ public final class CameraProbeActivity extends ComponentActivity
     public void onCameraSurfaceAvailable(
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != calibrationPreview && view != cameraPreview) return;
+        if (productionUi != null) productionUi.refreshMappingAspects();
         if (view == calibrationPreview) {
             calibrationSurfaceReady = surface.isValid();
             if (calibrationPreviewCover != null) {
@@ -2435,6 +2437,7 @@ public final class CameraProbeActivity extends ComponentActivity
     public void onCameraSurfaceSizeChanged(
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != calibrationPreview && view != cameraPreview) return;
+        if (productionUi != null) productionUi.refreshMappingAspects();
         if (view == calibrationPreview) {
             calibrationSurfaceReady = surface.isValid();
             record("surface_changed", "target", "camera_calibration",
@@ -2798,6 +2801,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 "kind", event.kind, "lens", event.lens,
                 "fov", event.fovDegrees,
                 "projection", CameraDewarpConfig.projectionLabel(event.projection),
+                "strength_selected", event.selectedStrength, "strength_effective", event.effectiveStrength,
+                "horizontal_fov_precise", event.horizontalFov, "diagonal_fov", event.diagonalFov,
                 "error", event.error);
         if (activePreview != view) return;
         CameraProfileId failedProfile = activeActivityCameraProfile;
@@ -2834,6 +2839,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onReverseSurfacesReady(int[] generations) {
         reverseCameraSurfacesReady = true;
+        if (productionUi != null) productionUi.refreshMappingAspects();
         record("reverse_preview_surfaces", "state", "ready",
                 "generations", java.util.Arrays.toString(generations));
         maybeOpenReversePreview();
@@ -2897,6 +2903,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 "kind", event.kind, "lens", event.lens,
                 "fov", event.fovDegrees,
                 "projection", CameraDewarpConfig.projectionLabel(event.projection),
+                "strength_selected", event.selectedStrength, "strength_effective", event.effectiveStrength,
+                "horizontal_fov_precise", event.horizontalFov, "diagonal_fov", event.diagonalFov,
                 "error", event.error);
         if (cameraIndex == reverseCalibrationCameraIndex
                 && ("dewarp_mesh_applied".equals(event.kind)
@@ -3525,7 +3533,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     calibration = new RearviewMirrorSettings.Calibration(calibration.raw,
                             calibration.corrected, calibration.enabled, calibration.fovDegrees,
                             calibration.projection, outputDefaults.mirrored, outputDefaults.rotationDegrees,
-                            outputDefaults.rotationMode);
+                            outputDefaults.rotationMode, calibration.strengthPercent, calibration.preciseFovDegrees);
                     break;
             }
             CameraBorderSettings.Border requestedBorder =
@@ -3558,6 +3566,7 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             transientProfilePreviewId = null;
             transientProfilePreviewFov = null;
+            transientProfilePreviewStrength = null;
             transientProfilePreviewRotation = null;
             notifyProductionProfileChanged(CameraProfileId.Mirror.INSTANCE);
             refreshProductionMirrorState();
@@ -3579,7 +3588,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         RearviewMirrorSettings.calibration(preferences, front), action);
                 applyTransientDewarpConfig(CameraProfileId.Mirror.INSTANCE,
                         CameraDewarpConfig.of(RearviewMirrorSettings.lens(front),
-                                c.enabled, c.fovDegrees, c.projection));
+                                c.enabled, c.fovDegrees, c.projection, c.strengthPercent, c.preciseFovDegrees));
                 applyTransientCalibrationCrop(CameraProfileId.Mirror.INSTANCE,
                         mirrorDirectCrop(c.raw, c), mirrorDirectCrop(c.corrected, c));
             }
@@ -3614,11 +3623,11 @@ public final class CameraProbeActivity extends ComponentActivity
         return CameraPlacement.of(Math.min(before.x, 1 - width), Math.min(before.y, 1 - height), width, height);
     }
 
-    private static RearviewMirrorSettings.Calibration mergeMirrorCalibration(
+    private RearviewMirrorSettings.Calibration mergeMirrorCalibration(
             RearviewMirrorSettings.Calibration before, MirrorBackendAction action) {
         if (action.getProfileField() != null || action.getCalibrationField() != null) {
             return mergeMirrorCalibration(before, action.getProfileField(),
-                    action.getCalibrationField(), action.getValue());
+                    action.getCalibrationField(), action.getValue(), productionMappingAspect(CameraProfileId.Mirror.INSTANCE));
         }
         if (action.getCalibration() != null) return mirrorCalibration(action.getCalibration());
         throw new IllegalArgumentException("Mirror calibration field required");
@@ -3628,6 +3637,12 @@ public final class CameraProbeActivity extends ComponentActivity
     static RearviewMirrorSettings.Calibration mergeMirrorCalibration(
             RearviewMirrorSettings.Calibration before, ProfileNumber field,
             com.byd.extend.ui.MirrorCalibrationField selection, String value) {
+        return mergeMirrorCalibration(before, field, selection, value, 1920.0 / 1300.0);
+    }
+
+    private static RearviewMirrorSettings.Calibration mergeMirrorCalibration(
+            RearviewMirrorSettings.Calibration before, ProfileNumber field,
+            com.byd.extend.ui.MirrorCalibrationField selection, String value, double aspect) {
         if ((field == null) == (selection == null) || value == null) {
             throw new IllegalArgumentException("One Mirror calibration field required");
         }
@@ -3636,6 +3651,8 @@ public final class CameraProbeActivity extends ComponentActivity
         boolean enabled = before.enabled;
         boolean mirrored = before.mirrored;
         int fov = before.fovDegrees;
+        float preciseFov = before.preciseFovDegrees;
+        int strength = before.strengthPercent;
         int projection = before.projection;
         int rotation = before.rotationDegrees;
         int mode = before.rotationMode;
@@ -3660,8 +3677,11 @@ public final class CameraProbeActivity extends ComponentActivity
                     break;
             }
         } else if (field == ProfileNumber.Fov) {
-            fov = Math.round(mirrorNumber(value));
-            if (fov < 60 || fov > 170) throw new IllegalArgumentException("Invalid FOV");
+            preciseFov = mirrorNumber(value);
+            if (preciseFov < 60 || preciseFov > 170) throw new IllegalArgumentException("Invalid FOV");
+            fov = Math.round(preciseFov);
+        } else if (field == ProfileNumber.Strength) {
+            strength = checkedStrength(before.dewarp(CameraDewarpConfig.LENS_REAR), mirrorNumber(value), aspect);
         } else if (field == ProfileNumber.Rotation) {
             rotation = Math.round(mirrorNumber(value));
             if (rotation != CameraRotation.clamp(rotation)) throw new IllegalArgumentException("Invalid rotation");
@@ -3687,7 +3707,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (isCorrected) corrected = accepted; else raw = accepted;
         }
         return new RearviewMirrorSettings.Calibration(raw, corrected, enabled, fov, projection,
-                mirrored, rotation, mode);
+                mirrored, rotation, mode, strength, preciseFov);
     }
 
     private static CameraPlacement mirrorCrop(CropUiState value) {
@@ -3700,14 +3720,16 @@ public final class CameraProbeActivity extends ComponentActivity
         return new RearviewMirrorSettings.Calibration(mirrorCrop(value.getOriginal()),
                 mirrorCrop(value.getCorrected()), value.getCorrectionEnabled(),
                 Math.round(mirrorNumber(value.getFov())), value.getProjection(), value.getMirrored(),
-                Math.round(mirrorNumber(value.getRotation())), value.getOutputMode());
+                Math.round(mirrorNumber(value.getRotation())), value.getOutputMode(),
+                value.getStrength(), mirrorNumber(value.getFov()));
     }
 
     private static RearviewMirrorSettings.Calibration mirrorCalibrationWithCrop(
             RearviewMirrorSettings.Calibration value, boolean corrected, CameraPlacement crop) {
         return new RearviewMirrorSettings.Calibration(corrected ? value.raw : crop,
                 corrected ? crop : value.corrected, value.enabled, value.fovDegrees,
-                value.projection, value.mirrored, value.rotationDegrees, value.rotationMode);
+                value.projection, value.mirrored, value.rotationDegrees, value.rotationMode,
+                value.strengthPercent, value.preciseFovDegrees);
     }
 
     private static DirectCameraCrop mirrorDirectCrop(
@@ -3938,6 +3960,16 @@ public final class CameraProbeActivity extends ComponentActivity
             }
             int minimum;
             int maximum;
+            if (field == ProfileNumber.Fov || field == ProfileNumber.Strength) {
+                try {
+                    if (field == ProfileNumber.Fov && (parsed < 60 || parsed > 170)) return null;
+                    if (field == ProfileNumber.Strength) checkedStrength(
+                            loadProductionCalibrationDewarp(profileTarget.getProfile()), parsed,
+                            productionMappingAspect(profileTarget.getProfile()));
+                    applyTransientProductionProfileNumber(profileTarget.getProfile(), field, parsed);
+                    return field == ProfileNumber.Strength ? Integer.toString((int) parsed) : Float.toString(parsed);
+                } catch (IllegalArgumentException invalid) { return null; }
+            }
             if (field == ProfileNumber.Size) {
                 minimum = 5;
                 maximum = 60;
@@ -4014,30 +4046,34 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void applyTransientProductionProfileNumber(
-            CameraProfileId id, ProfileNumber field, int value) {
+            CameraProfileId id, ProfileNumber field, float value) {
         if (field == ProfileNumber.Size) {
             // Compose's placement geometry is derived from the accepted state value; no native
             // camera transform or preference write is needed for this field.
             return;
         }
-        if (field == ProfileNumber.Fov) {
+        if (field == ProfileNumber.Fov || field == ProfileNumber.Strength) {
             transientProfilePreviewId = id;
-            transientProfilePreviewFov = value;
+            if (field == ProfileNumber.Fov) transientProfilePreviewFov = value;
+            else transientProfilePreviewStrength = (int) value;
             CameraDewarpConfig current = loadProductionCalibrationDewarp(id);
-            applyTransientDewarpConfig(id, current.withFov(value));
+            if (transientProfilePreviewFov != null) current = current.withHorizontalFov(transientProfilePreviewFov);
+            if (transientProfilePreviewStrength != null) current = current.withStrength(transientProfilePreviewStrength);
+            applyTransientDewarpConfig(id, current);
             return;
         }
         if (field != ProfileNumber.Rotation) return;
         transientProfilePreviewId = id;
-        transientProfilePreviewRotation = value;
-        applyTransientOutputRotation(id, value);
+        transientProfilePreviewRotation = Math.round(value);
+        applyTransientOutputRotation(id, Math.round(value));
     }
 
     private void clearTransientProfilePreview(CameraProfileId id, ProfileNumber field) {
         if (id == null || !id.equals(transientProfilePreviewId)) return;
         if (field == ProfileNumber.Fov) transientProfilePreviewFov = null;
+        else if (field == ProfileNumber.Strength) transientProfilePreviewStrength = null;
         else if (field == ProfileNumber.Rotation) transientProfilePreviewRotation = null;
-        if (transientProfilePreviewFov == null && transientProfilePreviewRotation == null) {
+        if (transientProfilePreviewFov == null && transientProfilePreviewStrength == null && transientProfilePreviewRotation == null) {
             transientProfilePreviewId = null;
         }
     }
@@ -5092,7 +5128,10 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         try {
             if (field == ProfileNumber.Fov) {
-                saveProductionFov(id, Math.round(value));
+                saveProductionFov(id, value);
+            } else if (field == ProfileNumber.Strength) {
+                CameraDewarpConfig current = loadProductionCalibrationDewarp(id);
+                saveProductionDewarp(id, current.withStrength(checkedStrength(current, value, productionMappingAspect(id))));
             } else if (field == ProfileNumber.Rotation) {
                 saveProductionOutputTransform(id, Math.round(value), null);
             } else {
@@ -5155,27 +5194,31 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
-    private void saveProductionFov(CameraProfileId id, int fov) {
+    private void saveProductionFov(CameraProfileId id, float fov) {
         if (fov < CameraDewarpConfig.MIN_FOV_DEGREES
                 || fov > CameraDewarpConfig.MAX_FOV_DEGREES) {
             throw new IllegalArgumentException("FOV має бути 60..170°");
         }
+        saveProductionDewarp(id, loadProductionCalibrationDewarp(id).withHorizontalFov(fov));
+    }
+
+    private void saveProductionDewarp(CameraProfileId id, CameraDewarpConfig value) {
         if (id instanceof CameraProfileId.Blind) {
             CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
             CameraDewarpConfig.saveForProfile(preferences, profile,
-                    CameraDewarpConfig.loadForProfile(preferences, profile).withFov(fov));
+                    value);
         } else if (id instanceof CameraProfileId.Parking) {
             ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
             CameraDewarpConfig.saveForParking(preferences, profile,
-                    CameraDewarpConfig.loadForParking(preferences, profile).withFov(fov));
+                    value);
         } else {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
             int index = reverseProfileIndex(reverse);
             if (reverse.getSource() == ReverseSource.Front) {
                 CameraDewarpConfig.saveForReverseFront(preferences, index,
-                        CameraDewarpConfig.loadForReverseFront(preferences, index).withFov(fov));
+                        value);
             } else CameraDewarpConfig.saveForReverse(preferences, index,
-                    CameraDewarpConfig.loadForReverse(preferences, index).withFov(fov));
+                    value);
         }
     }
 
@@ -5474,8 +5517,9 @@ public final class CameraProbeActivity extends ComponentActivity
         // recomposition from re-reading stale persisted FOV/rotation over the live gesture.
         if (id.equals(transientProfilePreviewId)) {
             if (transientProfilePreviewFov != null) {
-                dewarp = dewarp.withFov(transientProfilePreviewFov);
+                dewarp = dewarp.withHorizontalFov(transientProfilePreviewFov);
             }
+            if (transientProfilePreviewStrength != null) dewarp = dewarp.withStrength(transientProfilePreviewStrength);
             if (transientProfilePreviewRotation != null) {
                 raw = raw.withOutputTransformPreservingGeometry(
                         transientProfilePreviewRotation, raw.rotationMode,
@@ -6189,6 +6233,7 @@ public final class CameraProbeActivity extends ComponentActivity
         transientTransparencyPercent = null;
         transientProfilePreviewId = null;
         transientProfilePreviewFov = null;
+        transientProfilePreviewStrength = null;
         transientProfilePreviewRotation = null;
     }
 
@@ -6360,6 +6405,25 @@ public final class CameraProbeActivity extends ComponentActivity
         return CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
     }
 
+    @Override public double productionMappingAspect(CameraProfileId profile) {
+        if (profile instanceof CameraProfileId.Reverse && reverseCameraPreview != null) {
+            return reverseCameraPreview.editorMappingAspect(reverseProfileIndex((CameraProfileId.Reverse) profile));
+        }
+        BlindSpotCameraView view = profile.equals(calibrationHostProfile) ? calibrationPreview
+                : profile.equals(selectedProductionProfile()) ? cameraPreview : null;
+        return view != null && view.cameraBufferHeight() > 0
+                ? view.cameraBufferWidth() / (double) view.cameraBufferHeight() : 1920.0 / 1300.0;
+    }
+
+    private static int checkedStrength(CameraDewarpConfig config, float value, double aspect) {
+        if (!Float.isFinite(value) || value < 1 || value > 100 || value != Math.round(value)
+                || !CameraCorrectionGeometry.strengthEditable(config.enabled, config.projection,
+                        config.horizontalFovDegrees(), aspect)) {
+            throw new IllegalArgumentException("Correction strength unavailable or outside 1..100%");
+        }
+        return (int) value;
+    }
+
     private void updateProductionCalibrationOverlays(
             CameraProfileId profile, CameraDewarpConfig dewarp, boolean rawFallback) {
         if (profile == null || dewarp == null) return;
@@ -6502,7 +6566,8 @@ public final class CameraProbeActivity extends ComponentActivity
             RearviewMirrorSettings.Calibration c = before.calibration(before.activeFront());
             RearviewMirrorSettings.Calibration calibration = new RearviewMirrorSettings.Calibration(
                     c.raw, c.corrected, c.enabled, c.fovDegrees, c.projection,
-                    crop.mirrorHorizontally, crop.rotationDegrees, crop.rotationMode);
+                    crop.mirrorHorizontally, crop.rotationDegrees, crop.rotationMode,
+                    c.strengthPercent, c.preciseFovDegrees);
             model.save(before.withCalibration(before.activeFront(), calibration));
             notifyProductionProfileChanged(profile);
             if (productionUi != null) productionUi.reload();
@@ -10272,8 +10337,10 @@ public final class CameraProbeActivity extends ComponentActivity
         int projection = projectionInput == null
                 ? CameraDewarpConfig.DEFAULT_PROJECTION
                 : projectionInput.getSelectedItemPosition();
-        return CameraDewarpConfig.of(lens, toggle != null && toggle.isChecked(),
-                CameraDewarpConfig.MIN_FOV_DEGREES + slider.getProgress(), projection);
+        CameraDewarpConfig current = loadSelectedDewarpConfig(reverse);
+        int fov = CameraDewarpConfig.MIN_FOV_DEGREES + slider.getProgress();
+        if (fov != current.fovDegrees) current = current.withFov(fov);
+        return current.withEnabled(toggle != null && toggle.isChecked()).withProjection(projection);
     }
 
     private void updateDewarpUi(boolean reverse, CameraDewarpConfig value) {

@@ -191,7 +191,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.correctedAspect, value.border));
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees), value.correctedAspect, value.border));
     }
 
     static int parkingMirrorTarget(ParkingCameraProfile source) {
@@ -218,7 +218,7 @@ final class CameraCalibrationPreset {
                 value.raw.mirrored(), value.corrected.mirrored(),
                 CameraDewarpConfig.of(CameraDewarpConfig.lensFor(target),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.correctedAspect, value.border));
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees), value.correctedAspect, value.border));
         return true;
     }
 
@@ -432,7 +432,7 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection),
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees),
                 targetVisible, value.mirrorHorizontally, value.border));
         return true;
     }
@@ -481,7 +481,7 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseSideCamera(targetCameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection), value.mirrorHorizontally, value.border));
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees), value.mirrorHorizontally, value.border));
         return true;
     }
 
@@ -493,7 +493,7 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection),
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees),
                 value.mirrorHorizontally, value.border));
         return true;
     }
@@ -555,7 +555,7 @@ final class CameraCalibrationPreset {
                 value.correctedAspect);
         CameraDewarpConfig.writeForProfile(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
-                value.dewarp.fovDegrees, value.dewarp.projection));
+                value.dewarp.fovDegrees, value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees));
         if (value.border != null) {
             CameraBorderSettings.write(editor, CameraBorderSettings.blindPrefix(profile), value.border);
         }
@@ -572,7 +572,7 @@ final class CameraCalibrationPreset {
                 value.correctedAspect);
         CameraDewarpConfig.writeForParking(editor, profile, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensFor(profile), value.dewarp.enabled,
-                value.dewarp.fovDegrees, value.dewarp.projection));
+                value.dewarp.fovDegrees, value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees));
         if (value.border != null) {
             CameraBorderSettings.write(editor, CameraBorderSettings.parkingPrefix(profile), value.border);
         }
@@ -629,7 +629,7 @@ final class CameraCalibrationPreset {
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
         CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
                 CameraDewarpConfig.lensForReverseCamera(cameraIndex),
-                value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection));
+                value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees));
         if (value.border != null) {
             CameraBorderSettings.write(editor,
                     CameraBorderSettings.reversePrefix(cameraIndex, false), value.border);
@@ -654,7 +654,7 @@ final class CameraCalibrationPreset {
                 CameraDewarpConfig.of(
                         CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex),
                         value.dewarp.enabled, value.dewarp.fovDegrees,
-                        value.dewarp.projection));
+                        value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees));
         if (value.border != null) {
             CameraBorderSettings.write(editor,
                     CameraBorderSettings.reversePrefix(cameraIndex, true), value.border);
@@ -848,6 +848,7 @@ final class CameraCalibrationPreset {
 
     private static void writeDewarp(
             SharedPreferences.Editor editor, String prefix, CameraDewarpConfig value) {
+        CameraDewarpConfig.writeControls(editor, prefix, value);
         editor.putBoolean(prefix + "correction", value.enabled)
                 .putInt(prefix + "fov", value.fovDegrees)
                 .putInt(prefix + "projection", value.projection);
@@ -865,8 +866,8 @@ final class CameraCalibrationPreset {
                 || !CameraDewarpConfig.isValidProjection(projection)) {
             throw new IllegalArgumentException("invalid preset correction");
         }
-        return CameraDewarpConfig.of(lens,
-                preferences.getBoolean(prefix + "correction", false), fov, projection);
+        return CameraDewarpConfig.readControls(preferences, prefix, CameraDewarpConfig.of(lens,
+                preferences.getBoolean(prefix + "correction", false), fov, projection));
     }
 
     private static float readFloat(SharedPreferences preferences, String key) {
