@@ -86,7 +86,7 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
-    public void producerBootstrapsKnownGoodSidePairBeforeAnyLogicalConsumer()
+    public void producerStartsOnlyDemandedSourcesBeforeLogicalConsumers()
             throws Exception {
         Trace calibrationTrace = new Trace();
         CameraHelperMain.HelperBinder.PersistentSession calibration = session();
@@ -94,9 +94,8 @@ public final class PersistentCameraSessionTest {
                 new FakeFanout(calibrationTrace), calibration.activityGroup,
                 surfaces(1), new int[]{2}, 1, "calibration", false, false);
 
+        assertFalse(calibrationTrace.values.contains("add:3"));
         assertTrue(calibrationTrace.values.indexOf("add:2")
-                < calibrationTrace.values.indexOf("add:3"));
-        assertTrue(calibrationTrace.values.indexOf("add:3")
                 < calibrationTrace.values.indexOf("start"));
         assertTrue(calibrationTrace.values.indexOf("start")
                 < calibrationTrace.values.indexOf("target-add:2"));
@@ -112,8 +111,9 @@ public final class PersistentCameraSessionTest {
                 < reverseTrace.values.indexOf("start"));
         assertTrue(reverseTrace.values.indexOf("start")
                 < reverseTrace.values.indexOf("add:0"));
-        assertTrue(reverseTrace.values.indexOf("start")
-                < reverseTrace.values.indexOf("add:1"));
+        assertTrue(reverseTrace.values.indexOf("add:1")
+                < reverseTrace.values.indexOf("start"));
+        assertFalse(reverseTrace.values.contains("add:4"));
     }
 
     @Test
@@ -126,11 +126,11 @@ public final class PersistentCameraSessionTest {
         session.startProducer(camera, fanout, session.activityGroup,
                 surfaces(1), new int[]{0}, 17, "stock_avm_input", true, true, true);
 
-        // Producer startup retains its stable 2/3 bootstrap sources; only the requested
-        // stock input is attached directly and no fanout target is required.
-        assertEquals(3, camera.addCalls);
+        assertEquals(1, camera.addCalls);
         assertEquals(0, fanout.activeTargets);
-        assertEquals(1, fanout.attachCalls);
+        assertEquals(0, fanout.attachCalls);
+        assertFalse(trace.values.contains("source:2"));
+        assertFalse(trace.values.contains("source:3"));
         assertTrue(trace.values.contains("add:0"));
         assertTrue(session.activityGroup.firstSurfaceDirect);
     }
@@ -163,7 +163,7 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
-    public void lifecycleCloseAndReopenNeverReattachesVendorSource() throws Exception {
+    public void lifecycleCloseReleasesUnownedSourceAndReopenAcquiresItAgain() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
         FakeFanout fanout = new FakeFanout(trace);
@@ -179,17 +179,208 @@ public final class PersistentCameraSessionTest {
         assertFalse(session.activityGroup.has());
         assertEquals(0, fanout.activeTargets);
         assertEquals(1, count(trace.values, "add:2"));
-        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(1, count(trace.values, "remove:2"));
+        assertEquals(1, count(trace.values, "source-release:2"));
 
         session.attach(camera, session.activityGroup,
                 surfaces(1), new int[]{2}, 12, "camera", false, false,
                 events, new FakeShellClose(trace), 7, 1);
 
-        assertEquals(1, count(trace.values, "source:2"));
-        assertEquals(1, count(trace.values, "add:2"));
-        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(2, count(trace.values, "source:2"));
+        assertEquals(2, count(trace.values, "add:2"));
+        assertEquals(1, count(trace.values, "remove:2"));
         assertEquals(2, count(trace.values, "target-add:2"));
         assertEquals(1, fanout.activeTargets);
+    }
+
+    @Test
+    public void hiddenBlindStandbyAndMirrorKeepOnlyTheirSharedSources() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.setBlindStandbyDemand(camera, CameraSourceDemand.bit(2) | CameraSourceDemand.bit(3));
+        session.startProducer(camera, new FakeFanout(trace), session.activityGroup,
+                surfaces(1), new int[]{1}, 101, "camera", false, false);
+        session.setMirrorDemand(camera, CameraSourceDemand.mirror(true, true));
+        session.close(camera, session.activityGroup, "activity_stopped", 101,
+                new FakeEventSink(trace, session), new FakeShellClose(trace), 7, 1);
+
+        assertEquals(0, count(trace.values, "remove:1"));
+        session.setMirrorDemand(camera, 0);
+        assertEquals(1, count(trace.values, "remove:1"));
+        assertEquals(1, count(trace.values, "remove:4"));
+        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(0, count(trace.values, "remove:3"));
+        session.setBlindStandbyDemand(camera, 0);
+        for (int index = 1; index <= 4; index++) {
+            assertEquals(1, count(trace.values, "remove:" + index));
+            assertTrue(trace.values.indexOf("remove:" + index)
+                    < trace.values.indexOf("source-release:" + index));
+        }
+        assertFalse(session.hasSourceDemand());
+    }
+
+    @Test
+    public void reverseReopenRejectsOldExpiryAndNextCloseGetsFreshLease() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        session.startProducer(camera, new FakeFanout(trace), session.reverseGroup,
+                surfaces(1), new int[]{1}, 201, "reverse_overlay", false, false);
+        CameraHelperMain.HelperBinder.CloseOutcome first = session.close(
+                camera, session.reverseGroup, "closed", 201, events, shell, 7, 5);
+        assertTrue(first.reverseWarmArmed);
+        assertEquals(0, count(trace.values, "remove:1"));
+        session.attach(camera, session.reverseGroup, surfaces(1), new int[]{1},
+                202, "reverse_overlay", false, false, events, shell, 7, 5);
+        assertFalse(session.expireReverseDemand(camera, first.reverseWarmGeneration, 201, 5));
+        assertEquals(0, session.reverseWarmLease.sourceMask());
+
+        CameraHelperMain.HelperBinder.CloseOutcome second = session.close(
+                camera, session.reverseGroup, "closed", 202, events, shell, 7, 5);
+        assertTrue(second.reverseWarmGeneration != first.reverseWarmGeneration);
+        assertFalse(session.expireReverseDemand(camera, second.reverseWarmGeneration, 201, 5));
+        assertFalse(session.expireReverseDemand(camera, second.reverseWarmGeneration, 202, 4));
+        assertTrue(session.expireReverseDemand(camera, second.reverseWarmGeneration, 202, 5));
+        assertEquals(1, count(trace.values, "add:1"));
+        assertEquals(1, count(trace.values, "remove:1"));
+        assertEquals(1, count(trace.values, "source-release:1"));
+        assertFalse(session.hasSourceDemand());
+    }
+
+    @Test
+    public void disablingReverseClearsLeaseAndLiveDemandWithoutClosingBlindSources() throws Exception {
+        for (boolean closed : new boolean[]{false, true}) {
+            assertDisablingReverseReleasesOnlyUnownedSources(closed);
+        }
+    }
+
+    private void assertDisablingReverseReleasesOnlyUnownedSources(boolean closed) throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.setBlindStandbyDemand(camera, CameraSourceDemand.bit(2) | CameraSourceDemand.bit(3));
+        session.startProducer(camera, new FakeFanout(trace), session.reverseGroup,
+                surfaces(3), new int[]{1, 2, 4}, 301, "reverse_overlay", false, false);
+        if (closed) {
+            session.close(camera, session.reverseGroup, "closed", 301,
+                    new FakeEventSink(trace, session), new FakeShellClose(trace), 7, 6);
+            assertTrue(session.reverseWarmLease.sourceMask() != 0);
+        }
+
+        session.disableReverseDemand(camera);
+
+        assertEquals(0, session.reverseWarmLease.sourceMask());
+        assertEquals(0, session.reverseGroup.sourceDemandMask);
+        assertEquals(1, count(trace.values, "remove:1"));
+        assertEquals(1, count(trace.values, "remove:4"));
+        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(0, count(trace.values, "remove:3"));
+        assertTrue(session.hasSourceDemand());
+    }
+
+    @Test
+    public void rejectedVendorRemovalDoesNotReleaseItsSourceSurface() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.startProducer(camera, new FakeFanout(trace), session.activityGroup,
+                surfaces(1), new int[]{1}, 401, "camera", false, false);
+        camera.removeResult = false;
+
+        try {
+            session.close(camera, session.activityGroup, "closed", 401,
+                    new FakeEventSink(trace, session), new FakeShellClose(trace), 7, 7);
+            fail("unconfirmed source removal must enter the existing fatal teardown path");
+        } catch (CameraHelperMain.HelperBinder.PersistentSessionFailure expected) {
+            assertTrue(expected.fatal);
+            assertEquals("source_demand_reconcile_failed", expected.reason);
+            assertEquals("rmPreviewSurface returned false for idle RAW source index 1",
+                    expected.getCause().getMessage());
+        }
+        assertTrue(session.sourceAttached[1]);
+        assertEquals(1, count(trace.values, "remove:1"));
+        assertEquals(0, count(trace.values, "source-release:1"));
+    }
+
+    @Test
+    public void preemptedBlindRestoresItsDesiredVisibilityWithoutReopeningSources() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        Surface[] blind = testSurfaces(2);
+        session.startProducer(camera, fanout, session.overlayGroup,
+                blind, new int[]{2, 3}, 501, "blind", false, false);
+        session.setActive(session.overlayGroup, blind[1], false);
+        session.attach(camera, session.activityGroup, testSurfaces(1), new int[]{1},
+                502, "calibration", true, false, events, shell, 7, 8);
+        assertFalse(session.overlayGroup.attached);
+        session.close(camera, session.activityGroup, "closed", 502, events, shell, 7, 8);
+
+        assertTrue(session.overlayGroup.attached);
+        assertTrue(session.overlayGroup.active[0]);
+        assertFalse(session.overlayGroup.active[1]);
+        assertEquals(1, count(trace.values, "add:2"));
+        assertEquals(1, count(trace.values, "add:3"));
+        assertEquals(0, count(trace.values, "remove:2"));
+        assertEquals(0, count(trace.values, "remove:3"));
+    }
+
+    @Test
+    public void temporaryDemandRemovalKeepsDesiredVisibilityForReactivation() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        session.startProducer(camera, new FakeFanout(trace), session.activityGroup,
+                testSurfaces(1), new int[]{1}, 601, "camera", false, false);
+        session.setGroupSourceDemand(camera, session.activityGroup, 0);
+        assertFalse(session.activityGroup.fanoutAttached[0]);
+        assertTrue(session.activityGroup.active[0]);
+        session.setGroupSourceDemand(camera, session.activityGroup, CameraSourceDemand.bit(1));
+        assertTrue(session.activityGroup.fanoutAttached[0]);
+        assertTrue(session.activityGroup.active[0]);
+        assertEquals(2, count(trace.values, "add:1"));
+        assertEquals(1, count(trace.values, "source-release:1"));
+    }
+
+    @Test
+    public void producerFailureRetainsOwnerDemandButInvalidatesReverseLease() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        int blindMask = CameraSourceDemand.blindStandby(true, false);
+        int mirrorMask = CameraSourceDemand.mirror(true, true);
+        session.setBlindStandbyDemand(camera, blindMask);
+        session.setMirrorDemand(camera, mirrorMask);
+        session.startProducer(camera, new FakeFanout(trace), session.reverseGroup,
+                testSurfaces(1), new int[]{1}, 701, "reverse_overlay", false, false);
+        CameraHelperMain.HelperBinder.CloseOutcome closed = session.close(
+                camera, session.reverseGroup, "closed", 701, events, shell, 7, 9);
+        session.tearDown(camera, "raw_source_failed", new IllegalStateException("source lost"),
+                false, 0, false, shell, events, 9);
+
+        assertFalse(session.producerOpen);
+        assertEquals(blindMask | mirrorMask, session.retainedSourceDemandMask());
+        assertFalse(session.expireReverseDemand(camera, closed.reverseWarmGeneration, 701, 9));
+        session.startProducer(camera, new FakeFanout(trace), session.overlayGroup,
+                testSurfaces(1), new int[]{2}, 702, "blind", false, false);
+        for (int index = 1; index <= 4; index++) {
+            assertEquals(2, count(trace.values, "add:" + index));
+        }
+        session.setMirrorDemand(camera, 0);
+        session.close(camera, session.overlayGroup, "closed", 702, events, shell, 7, 10);
+        assertEquals(blindMask, session.retainedSourceDemandMask());
+        assertTrue(session.sourceAttached[2]);
+        assertTrue(session.sourceAttached[3]);
+        session.setBlindStandbyDemand(camera, 0);
+        assertFalse(session.hasSourceDemand());
     }
 
     @Test
@@ -557,6 +748,34 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void forgottenFailedTargetDoesNotTearDownOtherOwners() throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        FakeFanout fanout = new FakeFanout(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        Surface failed = new TestSurface();
+        session.startProducer(camera, fanout, session.overlayGroup,
+                new Surface[]{failed}, new int[]{2}, 74, "blind", false, false);
+        session.attach(camera, session.parkingGroup, testSurfaces(1), new int[]{3},
+                75, "parking", false, false, events, new FakeShellClose(trace), 7, 7);
+        fanout.forgottenTarget = failed;
+
+        assertTrue(session.failConsumer(camera, failed, 2,
+                new IllegalStateException("swap failed"), events,
+                new FakeShellClose(trace), 7, 7));
+
+        assertFalse(session.overlayGroup.has());
+        assertTrue(session.parkingGroup.attached);
+        assertTrue(session.parkingGroup.active[0]);
+        assertEquals(1, fanout.activeTargets);
+        assertEquals(0, count(trace.values, "stop"));
+        assertEquals(1, count(trace.values, "remove:2"));
+        assertEquals(1, count(trace.values, "source-release:2"));
+        assertEquals(0, count(trace.values, "remove:3"));
+    }
+
+    @Test
     public void downstreamDrawFailureClearsOnlyOwningConsumer() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
@@ -573,7 +792,8 @@ public final class PersistentCameraSessionTest {
         assertFalse(session.overlayGroup.has());
         assertTrue(session.producerOpen);
         assertEquals(0, fanout.activeTargets);
-        assertEquals(0, countPrefix(trace.values, "remove:"));
+        assertEquals(1, count(trace.values, "remove:2"));
+        assertEquals(1, count(trace.values, "source-release:2"));
         assertEquals(0, count(trace.values, "stop"));
         Event error = events.byKind("camera_error");
         assertEquals("raw_fanout_consumer", error.field("stage"));
@@ -780,7 +1000,7 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
-    public void shellOwnedLogicalCloseQueuesShellButKeepsVendorSource() throws Exception {
+    public void shellOwnedLogicalCloseQueuesShellAndReleasesUnownedFanoutSource() throws Exception {
         Trace trace = new Trace();
         FakeCameraPort camera = new FakeCameraPort(trace);
         CameraHelperMain.HelperBinder.PersistentSession session = session();
@@ -793,7 +1013,9 @@ public final class PersistentCameraSessionTest {
 
         assertTrue(outcome.shellCloseQueued);
         assertTrue(session.producerOpen);
-        assertEquals(0, count(trace.values, "remove:0"));
+        assertEquals(1, count(trace.values, "remove:0"));
+        assertTrue(trace.values.indexOf("remove:0")
+                < trace.values.indexOf("source-release:0"));
         assertTrue(trace.values.contains("shell:manual_stop:81"));
     }
 
@@ -1697,6 +1919,7 @@ public final class PersistentCameraSessionTest {
         int failDetachCall;
         int setActiveCalls;
         int failSetActiveCall;
+        Surface forgottenTarget;
 
         FakeFanout(Trace trace) {
             this.trace = trace;
@@ -1731,10 +1954,18 @@ public final class PersistentCameraSessionTest {
         @Override
         public void setActive(Surface value, boolean active) {
             setActiveCalls++;
+            if (forgottenTarget != null && value == forgottenTarget) {
+                throw new IllegalStateException("downstream Surface is not attached");
+            }
             if (setActiveCalls == failSetActiveCall) {
                 throw new IllegalStateException("setActive failed");
             }
             trace.values.add("target-active:" + System.identityHashCode(value) + ":" + active);
+        }
+
+        @Override
+        public void releaseSource(int index) {
+            trace.values.add("source-release:" + index);
         }
 
         @Override

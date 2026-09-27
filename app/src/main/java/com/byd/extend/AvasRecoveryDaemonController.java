@@ -9,7 +9,6 @@ import java.lang.reflect.Method;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -93,6 +92,8 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             DaemonPing staleLaunch = ping(resolve());
             if (staleLaunch.binder != null) control(staleLaunch.binder, false, true);
             setOwnsRecovery(false);
+            String cancellation = readinessCancellationReason(generation);
+            if (cancellation != null) emitReadinessCancelled(cancellation);
             return;
         }
         if (!shouldAwaitReadiness(launch)) {
@@ -103,16 +104,24 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             return;
         }
         DaemonPing started;
+        boolean[] cancellationReported = {false};
         try {
             started = awaitReadiness(launch, apkIdentity, () -> ping(resolve()),
                     SystemClock::elapsedRealtime, Thread::sleep,
-                    () -> mayAcceptReadiness(generation));
+                    () -> readinessCancellationReason(generation), cancellationReason -> {
+                        cancellationReported[0] = true;
+                        emitReadinessCancelled(cancellationReason);
+                    });
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            emitReadinessCancelled("interrupted");
             return;
         }
         if (started != null) {
-            if (!mayAcceptReadiness(generation)) return;
+            if (!mayAcceptReadiness(generation)) {
+                reportReadinessCancellation(generation, cancellationReported[0]);
+                return;
+            }
             retryAfterMs = 0L;
             control(started.binder, recovery, false, recording);
             setOwnsRecovery(recovery);
@@ -126,7 +135,10 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             }
             return;
         }
-        if (!mayAcceptReadiness(generation)) return;
+        if (!mayAcceptReadiness(generation)) {
+            reportReadinessCancellation(generation, cancellationReported[0]);
+            return;
+        }
         retryAfterMs = SystemClock.elapsedRealtime() + FAILURE_BACKOFF_MS;
         emit("avas_recovery_daemon_launch", "ok", false,
                 "error", "readiness_timeout", "output", launch.output);
@@ -138,26 +150,60 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
 
     static DaemonPing awaitReadiness(LocalAdbClient.Result launch, String expectedIdentity,
             Supplier<DaemonPing> probe, LongSupplier elapsedRealtime,
-            DaemonReadinessSleeper sleeper, BooleanSupplier mayContinue)
+            DaemonReadinessSleeper sleeper, Supplier<String> cancellationReason,
+            Consumer<String> onCancelled)
             throws InterruptedException {
         if (!shouldAwaitReadiness(launch)) return null;
         long deadline = elapsedRealtime.getAsLong() + READY_TIMEOUT_MS;
         do {
-            if (!mayContinue.getAsBoolean()) return null;
+            if (reportCancellation(cancellationReason, onCancelled)) return null;
             DaemonPing current = probe.get();
             if (current.healthy(expectedIdentity)) {
-                return mayContinue.getAsBoolean() ? current : null;
+                return reportCancellation(cancellationReason, onCancelled) ? null : current;
             }
-            if (!mayContinue.getAsBoolean()) return null;
+            if (reportCancellation(cancellationReason, onCancelled)) return null;
             sleeper.sleep(READY_INTERVAL_MS);
         } while (elapsedRealtime.getAsLong() < deadline);
         return null;
+    }
+
+    private static boolean reportCancellation(
+            Supplier<String> cancellationReason, Consumer<String> onCancelled) {
+        String reason = cancellationReason.get();
+        if (reason == null || reason.isEmpty()) return false;
+        onCancelled.accept(reason);
+        return true;
     }
 
     private boolean mayAcceptReadiness(long generation) {
         synchronized (this) {
             return !closed && desiredRequired && desiredGeneration == generation;
         }
+    }
+
+    private String readinessCancellationReason(long generation) {
+        synchronized (this) {
+            return readinessCancellationReason(
+                    closed, desiredRequired, desiredGeneration == generation, false);
+        }
+    }
+
+    static String readinessCancellationReason(
+            boolean stopped, boolean required, boolean currentGeneration, boolean interrupted) {
+        if (interrupted) return "interrupted";
+        if (stopped) return "stopped";
+        if (!required) return "not_required";
+        return currentGeneration ? null : "superseded";
+    }
+
+    private void reportReadinessCancellation(long generation, boolean alreadyReported) {
+        if (alreadyReported) return;
+        String reason = readinessCancellationReason(generation);
+        if (reason != null) emitReadinessCancelled(reason);
+    }
+
+    private void emitReadinessCancelled(String reason) {
+        emit("avas_recovery_daemon_readiness_cancelled", "reason", reason);
     }
 
     @FunctionalInterface

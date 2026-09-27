@@ -47,6 +47,7 @@
     <string name="runtime_apply_preset">正在应用摄像头预设…</string>
     <string name="runtime_imported_settings">设置已导入。旧应用已停止；其数据和图标已保留。</string>
     <string name="runtime_preset_loaded">摄像头预设已加载。</string>
+    <string name="runtime_preset_load_failed">无法完成摄像头预设的加载。</string>
     <string name="runtime_preset_export_progress">正在生成摄像头预设…</string>
     <string name="runtime_preset_ready">摄像头预设已准备好分享。</string>
     <string name="runtime_preset_choose">请选择摄像头预设 JSON 文件。</string>
@@ -62,7 +63,8 @@
     <string name="runtime_logs_ready">日志归档已准备好</string>
     <string name="runtime_share_menu_failed">无法打开分享菜单</string>
     <string name="runtime_logs_clearing">正在清除日志…</string>
-    <string name="runtime_logs_cleared">已清除旧 JSONL 日志：%1$d</string>
+    <string name="runtime_logs_cleared">已清除日志：%1$d</string>
+    <string name="runtime_logs_clear_failed">无法清除日志。</string>
     <string name="runtime_logs_clear_partial">已清除 %1$d 个；有 %2$d 个无法删除</string>
     <string name="runtime_update_available">有可用更新</string>
     <string name="runtime_update">更新</string>

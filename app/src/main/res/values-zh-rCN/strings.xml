@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="correction_strength">"强度"</string>
-    <string name="diagonal_fov">"对角视场角"</string>
+    <string name="horizontal_fov">"水平视场角"</string>
     <string name="signals_integrations">"BYD 集成"</string>
     <string name="blind_zone_cameras">"盲区摄像头"</string>
     <string name="parking_cameras">"泊车摄像头"</string>

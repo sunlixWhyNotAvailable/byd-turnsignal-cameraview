@@ -42,15 +42,17 @@ public class CameraCorrectionStrengthTest {
         }
         CameraDewarpConfig value = selected();
         for (CameraDewarpConfig inert : new CameraDewarpConfig[]{value.withEnabled(false),
-                value.withProjection(1), value.withHorizontalFov(170)}) {
+                value.withProjection(1)}) {
             assertMeshEquals(inert.withStrength(100), inert);
         }
-        assertFalse(java.util.Arrays.equals(CameraFisheyeMapping.buildMesh(value, 1920, 1300).vertices,
-                CameraFisheyeMapping.buildMesh(value.withStrength(100), 1920, 1300).vertices));
+        CameraDewarpConfig wide = value.withHorizontalFov(170);
+        assertEquals(37, CameraCorrectionGeometry.effectiveStrength(wide));
+        assertFalse(java.util.Arrays.equals(CameraFisheyeMapping.buildMesh(wide, 1920, 1300).vertices,
+                CameraFisheyeMapping.buildMesh(wide.withStrength(100), 1920, 1300).vertices));
     }
 
     @Test public void inverseMatchesOemRadialEquationNotUvInterpolation() {
-        for (int strength : new int[]{1, 37, 75, 99}) {
+        for (int strength : new int[]{1, 10, 37, 50, 75, 99, 100}) {
             CameraDewarpConfig config = selected().withStrength(strength);
             double alpha = Math.toRadians(CameraCorrectionGeometry.diagonalFov(config.horizontalFovDegrees(), ASPECT)) / 2;
             double theta = alpha * .53;
@@ -66,20 +68,69 @@ public class CameraCorrectionStrengthTest {
         }
     }
 
-    @Test public void diagonalBoundaryPreservesSelectionAndUsesBufferAspect() {
-        CameraDewarpConfig value = selected();
-        for (double aspect : new double[]{1, ASPECT, 2.5}) {
-            float at = CameraCorrectionGeometry.horizontalFov(160, aspect);
-            assertEquals(160, CameraCorrectionGeometry.diagonalFov(at, aspect), .00001);
-            assertEquals(37, CameraCorrectionGeometry.effectiveStrength(value.withHorizontalFov(at), aspect));
-            CameraDewarpConfig wide = value.withHorizontalFov(CameraCorrectionGeometry.horizontalFov(160.1, aspect));
-            assertEquals(100, CameraCorrectionGeometry.effectiveStrength(wide, aspect));
-            assertEquals(37, wide.strengthPercent);
-            assertEquals(37, CameraCorrectionGeometry.effectiveStrength(wide.withHorizontalFov(at), aspect));
+    @Test public void formerDiagonalBoundaryDoesNotChangeSelectedStrength() {
+        double horizontalAt160Diagonal = Math.toDegrees(2 * Math.atan(
+                Math.tan(Math.toRadians(80)) / Math.hypot(1, 1 / ASPECT)));
+        assertEquals(160, CameraCorrectionGeometry.diagonalFov(horizontalAt160Diagonal, ASPECT), .00001);
+        CameraDewarpConfig value = selected().withStrength(10);
+        for (double horizontal : new double[]{
+                horizontalAt160Diagonal - .01,
+                horizontalAt160Diagonal,
+                horizontalAt160Diagonal + .01,
+                170
+        }) {
+            CameraDewarpConfig updated = value.withHorizontalFov((float) horizontal);
+            assertEquals(10, updated.strengthPercent);
+            assertEquals(10, CameraCorrectionGeometry.effectiveStrength(updated));
         }
         assertTrue(CameraCorrectionGeometry.diagonalFov(170, ASPECT) > 170);
+        assertTrue(CameraCorrectionGeometry.strengthEditable(true, CameraDewarpConfig.PROJECTION_RECTILINEAR));
+        assertFalse(CameraCorrectionGeometry.strengthEditable(false, CameraDewarpConfig.PROJECTION_RECTILINEAR));
+        assertFalse(CameraCorrectionGeometry.strengthEditable(true, CameraDewarpConfig.PROJECTION_CYLINDRICAL));
+        assertEquals(100, CameraCorrectionGeometry.effectiveStrength(value.withEnabled(false)));
+        assertEquals(100, CameraCorrectionGeometry.effectiveStrength(value.withProjection(
+                CameraDewarpConfig.PROJECTION_CYLINDRICAL)));
         assertThrows(IllegalArgumentException.class, () -> value.withHorizontalFov(Float.NaN));
         assertThrows(IllegalArgumentException.class, () -> value.withStrength(0));
+    }
+
+    @Test public void wideHorizontalRangeHasFiniteMonotonicMeshesForEveryStrength() {
+        int[][] outputSizes = {
+                {1920, 1300}, {1920, 1080}, {1600, 900},
+                {1280, 1024}, {1024, 768}, {800, 600}
+        };
+        int[] fovs = {60, 150, 155, 156, 170};
+        int[] strengths = {1, 10, 50, 99, 100};
+        for (int[] size : outputSizes) {
+            for (int fov : fovs) {
+                for (int strength : strengths) {
+                    CameraDewarpConfig config = CameraDewarpConfig.of(
+                            CameraDewarpConfig.LENS_LEFT, true, fov,
+                            CameraDewarpConfig.PROJECTION_RECTILINEAR).withStrength(strength);
+                    assertEquals(strength, CameraCorrectionGeometry.effectiveStrength(config));
+                    CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(
+                            config, size[0], size[1]);
+                    boolean finite = true;
+                    for (float vertex : mesh.vertices) finite &= Float.isFinite(vertex);
+                    assertTrue(finite);
+
+                    double previousRadius = 0;
+                    for (int sample = 1; sample <= 4; sample++) {
+                        int column = 48 + sample * 12;
+                        int row = 32 + sample * 8;
+                        int offset = (row * CameraFisheyeMapping.MESH_COLUMNS + column) * 4;
+                        double sourceX = mesh.vertices[offset + 2] * CameraFisheyeMapping.SOURCE_WIDTH;
+                        double sourceY = (1 - mesh.vertices[offset + 3]) * CameraFisheyeMapping.SOURCE_HEIGHT;
+                        assertTrue(Double.isFinite(sourceX));
+                        assertTrue(Double.isFinite(sourceY));
+                        double radius = Math.hypot(sourceX - 960, sourceY - 650);
+                        assertTrue(Double.isFinite(radius));
+                        assertTrue(radius > previousRadius);
+                        previousRadius = radius;
+                    }
+                }
+            }
+        }
     }
 
     @Test public void wireRoundTripAndMappingIdentityIncludeNewControls() {

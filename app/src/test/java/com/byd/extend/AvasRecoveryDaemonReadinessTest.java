@@ -10,6 +10,7 @@ import android.os.IBinder;
 import org.junit.Test;
 
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,7 +32,8 @@ public final class AvasRecoveryDaemonReadinessTest {
                                 ? new AvasRecoveryDaemonController.DaemonPing(
                                         binder, 41, "apk-old", "")
                                 : ready,
-                        () -> now[0], millis -> now[0] += millis, () -> true);
+                        () -> now[0], millis -> now[0] += millis,
+                        () -> null, reason -> { });
 
         assertSame(ready, result);
         assertEquals(2, probes.get());
@@ -55,7 +57,8 @@ public final class AvasRecoveryDaemonReadinessTest {
         AvasRecoveryDaemonController.DaemonPing result =
                 AvasRecoveryDaemonController.awaitReadiness(timeout, "apk-current", () ->
                         unusable[probes.getAndIncrement() % unusable.length],
-                        () -> now[0], millis -> now[0] += millis, () -> true);
+                        () -> now[0], millis -> now[0] += millis,
+                        () -> null, reason -> { });
 
         assertNull(result);
         assertEquals(30, probes.get());
@@ -76,7 +79,7 @@ public final class AvasRecoveryDaemonReadinessTest {
             assertFalse(AvasRecoveryDaemonController.shouldAwaitReadiness(failure));
             assertNull(AvasRecoveryDaemonController.awaitReadiness(failure, "apk-current",
                     () -> { probes.incrementAndGet(); return null; },
-                    () -> 0L, millis -> { }, () -> true));
+                    () -> 0L, millis -> { }, () -> null, reason -> { }));
         }
 
         assertEquals(0, probes.get());
@@ -88,6 +91,7 @@ public final class AvasRecoveryDaemonReadinessTest {
                 "SocketTimeoutException: Read timed out", "key-a");
         AtomicBoolean mayContinue = new AtomicBoolean(true);
         AtomicInteger probes = new AtomicInteger();
+        List<String> cancellations = new ArrayList<>();
 
         AvasRecoveryDaemonController.DaemonPing result =
                 AvasRecoveryDaemonController.awaitReadiness(timeout, "apk-current", () -> {
@@ -95,11 +99,45 @@ public final class AvasRecoveryDaemonReadinessTest {
                     mayContinue.set(false);
                     return new AvasRecoveryDaemonController.DaemonPing(
                             fakeBinder(), 42, "apk-current", "");
-                }, () -> 0L, millis -> { }, mayContinue::get);
+                }, () -> 0L, millis -> { },
+                        () -> mayContinue.get() ? null : "superseded", cancellations::add);
 
         assertNull(result);
         assertEquals(1, probes.get());
         assertFalse(mayContinue.get());
+        assertEquals(List.of("superseded"), cancellations);
+    }
+
+    @Test
+    public void cancellationBeforeProbeReportsCurrentEligibilityOnlyOnce() throws Exception {
+        LocalAdbClient.Result timeout = LocalAdbClient.Result.commandReadTimeout(
+                "SocketTimeoutException: Read timed out", "key-a");
+        AtomicInteger probes = new AtomicInteger();
+        List<String> cancellations = new ArrayList<>();
+
+        AvasRecoveryDaemonController.DaemonPing result =
+                AvasRecoveryDaemonController.awaitReadiness(timeout, "apk-current", () -> {
+                    probes.incrementAndGet();
+                    return null;
+                }, () -> 0L, millis -> { }, () -> "not_required", cancellations::add);
+
+        assertNull(result);
+        assertEquals(0, probes.get());
+        assertEquals(List.of("not_required"), cancellations);
+    }
+
+    @Test
+    public void cancellationReasonsDistinguishStopSupersessionAndInterruption() {
+        assertEquals("stopped", AvasRecoveryDaemonController.readinessCancellationReason(
+                true, true, false, false));
+        assertEquals("not_required", AvasRecoveryDaemonController.readinessCancellationReason(
+                false, false, false, false));
+        assertEquals("superseded", AvasRecoveryDaemonController.readinessCancellationReason(
+                false, true, false, false));
+        assertEquals("interrupted", AvasRecoveryDaemonController.readinessCancellationReason(
+                false, true, true, true));
+        assertNull(AvasRecoveryDaemonController.readinessCancellationReason(
+                false, true, true, false));
     }
 
     private static IBinder fakeBinder() {

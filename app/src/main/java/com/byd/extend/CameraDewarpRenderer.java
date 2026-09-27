@@ -178,7 +178,7 @@ final class CameraDewarpRenderer {
             projection = config == null
                     ? CameraDewarpConfig.DEFAULT_PROJECTION : config.projection;
             selectedStrength = config == null ? 100 : config.strengthPercent;
-            effectiveStrength = config == null ? 100 : CameraCorrectionGeometry.effectiveStrength(config, width / (double) height);
+            effectiveStrength = config == null ? 100 : CameraCorrectionGeometry.effectiveStrength(config);
             horizontalFov = config == null ? 0 : config.horizontalFovDegrees();
             diagonalFov = CameraCorrectionGeometry.diagonalFov(horizontalFov, width / (double) height);
             this.vertexCount = vertexCount;

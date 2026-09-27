@@ -498,6 +498,28 @@ final class CameraCalibrationPreset {
         return true;
     }
 
+    static boolean copyCentralReverseFrontToRear(SharedPreferences preferences) {
+        int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseFrontValue value = activeReverseFront(preferences, cameraIndex);
+        // Copy calibration only: the shared destination and visibility belong to the pane.
+        SharedPreferences.Editor editor = preferences.edit()
+                .putInt(ReverseCameraController.paneSettingKey(
+                        cameraIndex, "rotation_degrees"), value.rotationDegrees)
+                .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode)
+                .putBoolean(ReverseCameraController.mirrorKey(cameraIndex),
+                        value.mirrorHorizontally);
+        ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.raw, false);
+        ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
+        CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(
+                CameraDewarpConfig.lensForReverseCamera(cameraIndex),
+                value.dewarp.enabled, value.dewarp.fovDegrees, value.dewarp.projection,
+                value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees));
+        CameraBorderSettings.write(editor,
+                CameraBorderSettings.reversePrefix(cameraIndex, false), value.border);
+        editor.apply();
+        return true;
+    }
+
     private static void preserveCorrectedOnAspectReset(
             SharedPreferences.Editor editor, SharedPreferences preferences, String marker,
             DirectCameraCrop raw, DirectCameraCrop resetRaw, DirectCameraCrop corrected,

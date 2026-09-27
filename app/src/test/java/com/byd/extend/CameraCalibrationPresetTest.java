@@ -1193,6 +1193,71 @@ public final class CameraCalibrationPresetTest {
         assertFalse(ReverseCameraController.loadFrontIntegrated(preferences, center));
     }
 
+    @Test
+    public void centralFrontCopiesCalibrationAndFrameToRearWithoutChangingOtherSettings() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int center = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(.17f, .23f, .61f, .54f);
+        ReverseCameraLayout.Rect raw = ReverseCameraLayout.sourceCrop(.13f, .19f, .47f, .53f);
+        ReverseCameraLayout.Rect corrected = ReverseCameraLayout.sourceCrop(.21f, .11f, .39f, .43f);
+        ReverseCameraController.saveLayout(preferences, ReverseCameraLayout.withPane(
+                ReverseCameraLayout.defaults(), center, destination,
+                ReverseCameraLayout.sourceCrop(0f, 0f, 1f, 1f), 0));
+        ReverseCameraController.saveVisibility(preferences, center, false);
+        ReverseCameraController.saveFrontIntegrated(preferences, center, true);
+        ReverseCameraController.saveFrontSourceCrop(preferences, center, raw, false);
+        ReverseCameraController.saveFrontSourceCrop(preferences, center, corrected, true);
+        ReverseCameraController.saveFrontPaneTransform(preferences, center, 37,
+                ReverseCameraLayout.DISPLAY_MODE_STRETCH, true);
+        CameraDewarpConfig frontConfig = CameraDewarpConfig.of(CameraDewarpConfig.LENS_FRONT,
+                true, 151, CameraDewarpConfig.PROJECTION_RECTILINEAR)
+                .withHorizontalFov(151.37f).withStrength(42);
+        CameraDewarpConfig.saveForReverseFront(preferences, center, frontConfig);
+        CameraBorderSettings.writeReverse(preferences, center, true,
+                new CameraBorderSettings.Border(7, 0xFF123456));
+        preferences.putBoolean("reverse_camera_switch_by_gear", true);
+        preferences.putString("unrelated_setting", "keep");
+        Map<String, ?> before = preferences.getAll();
+
+        assertTrue(CameraCalibrationPreset.copyCentralReverseFrontToRear(preferences));
+
+        ReverseCameraLayout.Pane rear = ReverseCameraController.loadRawLayout(preferences).pane(center);
+        assertRect(destination, rear.destination);
+        assertRect(raw, rear.sourceCrop);
+        assertRect(corrected, ReverseCameraController.loadCorrectedSourceCrop(
+                preferences, center, rear.sourceCrop));
+        assertEquals(37, rear.rotationDegrees);
+        assertEquals(ReverseCameraLayout.DISPLAY_MODE_STRETCH, rear.displayMode);
+        assertTrue(rear.mirrorHorizontally);
+        CameraDewarpConfig rearConfig = CameraDewarpConfig.loadForReverse(preferences, center);
+        assertEquals(CameraDewarpConfig.LENS_REAR, rearConfig.lens);
+        assertTrue(rearConfig.enabled);
+        assertEquals(frontConfig.projection, rearConfig.projection);
+        assertEquals(151.37f, rearConfig.horizontalFovDegrees(), 0f);
+        assertEquals(42, rearConfig.strengthPercent);
+        assertEquals(7, CameraBorderSettings.forReverse(preferences, center, false).borderDp);
+        assertEquals(0xFF123456, CameraBorderSettings.forReverse(preferences, center, false).borderArgb);
+
+        Set<String> allowed = new HashSet<>();
+        allowed.add(ReverseCameraController.paneSettingKey(center, "rotation_degrees"));
+        allowed.add(ReverseCameraController.displayModeKey(center));
+        allowed.add(ReverseCameraController.mirrorKey(center));
+        for (String field : new String[]{"left", "top", "width", "height"}) {
+            allowed.add(ReverseCameraController.sourceCropKey(center, field, false));
+            allowed.add("reverse_camera_" + center + "_corrected_v3_crop_" + field);
+        }
+        for (String field : new String[]{"enabled", "fov", "projection", "strength_percent", "fov_precise"}) {
+            allowed.add("camera_dewarp_v3_reverse_" + center + "_" + field);
+        }
+        String borderPrefix = CameraBorderSettings.reversePrefix(center, false);
+        allowed.add(CameraBorderSettings.widthKey(borderPrefix));
+        allowed.add(CameraBorderSettings.colorKey(borderPrefix));
+        Map<String, Object> untouchedBefore = new HashMap<>(before);
+        Map<String, Object> untouchedAfter = new HashMap<>(preferences.getAll());
+        allowed.forEach(key -> { untouchedBefore.remove(key); untouchedAfter.remove(key); });
+        assertEquals(untouchedBefore, untouchedAfter);
+    }
+
     private static void assertInvalidReversePreset(String suffix, Object invalidValue) {
         int cameraIndex = ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX;
         TestSharedPreferences preferences = new TestSharedPreferences();

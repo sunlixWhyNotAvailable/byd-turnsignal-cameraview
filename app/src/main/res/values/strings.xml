@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="correction_strength">"Strength"</string>
-    <string name="diagonal_fov">"Diagonal FOV"</string>
+    <string name="horizontal_fov">"Horizontal FOV"</string>
     <string name="signals_integrations">"BYD integrations"</string>
     <string name="blind_zone_cameras">"Blind-zone cameras"</string>
     <string name="parking_cameras">"Parking cameras"</string>

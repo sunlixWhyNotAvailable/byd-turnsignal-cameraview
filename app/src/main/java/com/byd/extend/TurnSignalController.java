@@ -92,6 +92,7 @@ final class TurnSignalController {
     private IBinder.DeathRecipient helperDeathRecipient;
     private IBinder avasSyncedBinder;
     private final Set<String> transferredAvasAssets = new HashSet<>();
+    private final PendingAvasOperations pendingAvas = new PendingAvasOperations();
     private volatile String desiredAvasAudition = "";
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private IBinder.DeathRecipient avmShellDeathRecipient;
@@ -184,6 +185,7 @@ final class TurnSignalController {
             stopped = true;
             desiredAvasAudition = "";
         }
+        pendingAvas.clear();
         handler.removeCallbacks(pingRunnable);
         LocalAdbClient.cancelPendingAuthorization();
         StockAvmOpenState canceledOpen = cancelStockAvmOpen(0);
@@ -289,12 +291,15 @@ final class TurnSignalController {
 
     void configureAvas() {
         worker.execute(() -> {
+            if (stopped) return;
             IBinder value = healthyHelper();
             if (value == null) {
                 ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
                 value = healthyHelper();
             }
             if (value == null) {
+                if (stopped) return;
+                if (deferPendingAvasConfiguration()) return;
                 emitAvasError("config", null, null, "helper_unavailable");
                 return;
             }
@@ -384,8 +389,11 @@ final class TurnSignalController {
 
     void reportAvasStatus() {
         worker.execute(() -> {
+            if (stopped) return;
             IBinder value = healthyHelper();
             if (value == null) {
+                if (stopped) return;
+                if (deferPendingAvasStatus()) return;
                 emitAvasError("status", null, null, "helper_unavailable");
                 return;
             }
@@ -1030,6 +1038,9 @@ final class TurnSignalController {
             } finally {
                 authorizationRequests.finish(mode);
                 syncRequestedAuthorizationState();
+                if (!stopped && !authorizationPending && healthyHelper() == null) {
+                    failPendingAvas("helper_unavailable");
+                }
             }
         });
         return action;
@@ -1238,6 +1249,7 @@ final class TurnSignalController {
         clearHelper(null);
         primaryError = error;
         lastLaunchFailureAt = SystemClock.elapsedRealtime();
+        failPendingAvas(error);
         emit("helper_launch", "ok", false, "error", error);
         emit("telemetry_ready", "ok", false, "listener_ok", false,
                 "poll_ok", false, "control_ready", false, "error", error);
@@ -1375,8 +1387,12 @@ final class TurnSignalController {
             emit("helper_attach", "ok", false, "error", primaryError);
             emit("telemetry_ready", "ok", false, "listener_ok", false,
                     "poll_ok", false, "control_ready", false, "error", primaryError);
+            failPendingAvas(primaryError);
         }
-        if (healthy && helper == value) syncAvas(value);
+        if (healthy && helper == value) {
+            syncAvas(value);
+            if (pendingAvas.completeAttachSync()) reportAvasStatus(value);
+        }
     }
 
     private void helperDied(IBinder deadHelper, int deadPid) {
@@ -1536,6 +1552,66 @@ final class TurnSignalController {
     private IBinder healthyHelper() {
         IBinder value = helper;
         return healthy && value != null && value.isBinderAlive() ? value : null;
+    }
+
+    private boolean deferPendingAvasConfiguration() {
+        synchronized (this) {
+            return !stopped && (authorizationPending || authorizationRequests.active())
+                    && pendingAvas.deferConfigurationIf(true);
+        }
+    }
+
+    private boolean deferPendingAvasStatus() {
+        synchronized (this) {
+            return !stopped && (authorizationPending || authorizationRequests.active())
+                    && pendingAvas.deferStatusIf(true);
+        }
+    }
+
+    private void failPendingAvas(String error) {
+        for (String stage : pendingAvas.takeFailureStages()) {
+            emitAvasError(stage, null, null, error);
+        }
+    }
+
+    static final class PendingAvasOperations {
+        private boolean configuration;
+        private boolean status;
+
+        synchronized boolean deferConfigurationIf(boolean readinessPending) {
+            if (!readinessPending) return false;
+            configuration = true;
+            return true;
+        }
+
+        synchronized boolean deferStatusIf(boolean readinessPending) {
+            if (!readinessPending) return false;
+            status = true;
+            return true;
+        }
+
+        synchronized boolean completeAttachSync() {
+            configuration = false;
+            boolean reportStatus = status;
+            status = false;
+            return reportStatus;
+        }
+
+        synchronized String[] takeFailureStages() {
+            String[] stages;
+            if (configuration && status) stages = new String[] {"config", "status"};
+            else if (configuration) stages = new String[] {"config"};
+            else if (status) stages = new String[] {"status"};
+            else stages = new String[0];
+            configuration = false;
+            status = false;
+            return stages;
+        }
+
+        synchronized void clear() {
+            configuration = false;
+            status = false;
+        }
     }
 
     private void reportAvasStatus(IBinder value) {

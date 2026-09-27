@@ -136,7 +136,11 @@ final class RearviewMirrorController {
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
         if (helper == value) return;
-        if (helper != null) stop("helper_changed", false);
+        if (helper != null) {
+            CameraHelperMain.HelperBinder previous = helper;
+            stop("helper_changed", false);
+            previous.setMirrorSourceDemand(false, false);
+        }
         helper = value;
         freshCycle();
         evaluate();
@@ -230,12 +234,19 @@ final class RearviewMirrorController {
     }
 
     private void evaluate() {
-        if (!wanted() || helper == null) {
+        boolean visibleDemand = wanted() && helper != null;
+        if (!visibleDemand) {
+            if (helper != null) helper.setMirrorSourceDemand(false, false);
             readiness.freshCycle();
             stop("not_visible", false);
             return;
         }
-        if (readiness.blocked()) return;
+        if (readiness.blocked()) {
+            helper.setMirrorSourceDemand(false, false);
+            return;
+        }
+        helper.setMirrorSourceDemand(true,
+                RearviewMirrorSettings.frontIntegrated(preferences));
         if (stopping) {
             reconcileAfterStop = true;
             return;
@@ -321,6 +332,9 @@ final class RearviewMirrorController {
                 || surface.requestId != expected || surface.cameraId != CameraOverlayProfile.MIRROR_ID
                 || !readiness.surfaceAttached(expected)) {
             surface.surface.release();
+            if (expected == requestId && !wanted() && helper != null) {
+                helper.setMirrorSourceDemand(false, false);
+            }
             return;
         }
         generation = surface.surfaceGeneration;
@@ -355,12 +369,14 @@ final class RearviewMirrorController {
                 if (!TurnSignalController.isCurrentCameraShellEpoch(shellEpoch, epoch)
                         || !recovery.isNewDeath(epoch)) return;
                 recovery.onDeath(epoch, wanted());
+                if (helper != null) helper.setMirrorSourceDemand(false, false);
                 stop("camera_shell_died", false);
             } else if ("camera_shell_attached".equals(kind)) {
                 shellEpoch = event.optLong("camera_shell_epoch", shellEpoch);
                 if (recovery.claim(shellEpoch, wanted())) evaluate();
             } else if ("camera_shell_recovery_failed".equals(kind)) {
                 recovery.clear();
+                if (helper != null) helper.setMirrorSourceDemand(false, false);
                 stop("camera_shell_recovery_failed", false);
             } else if (ClusterDisplayLifecycle.isUnavailableError(event)) {
                 if (ClusterDisplayLifecycle.matchesUnavailableError(event,
@@ -458,6 +474,7 @@ final class RearviewMirrorController {
         if (requestId == 0) return;
         readiness.failure(reconcile);
         emit("mirror_error", "stage", reason, "request_id", requestId);
+        if (helper != null) helper.setMirrorSourceDemand(false, false);
         stop(reason, reconcile);
     }
 
@@ -478,6 +495,7 @@ final class RearviewMirrorController {
         target = null;
         CameraHelperMain.HelperBinder closingHelper = helper;
         if (closingHelper == null) return;
+        if (!wanted() || shutdown) closingHelper.setMirrorSourceDemand(false, false);
         stopping = true;
         reconcileAfterStop = reconcile;
         Runnable finish = () -> {
@@ -511,6 +529,7 @@ final class RearviewMirrorController {
         runtimeAllowed = false;
         recovery.clear();
         readiness.freshCycle();
+        if (helper != null) helper.setMirrorSourceDemand(false, false);
         if (displays != null) displays.unregisterDisplayListener(displayListener);
         stop("shutdown", false);
     }

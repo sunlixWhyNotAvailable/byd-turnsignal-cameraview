@@ -1469,6 +1469,10 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void reportSettingsTransferFailure(Throwable error) {
+        reportSettingsTransferFailure(error, false);
+    }
+
+    private void reportSettingsTransferFailure(Throwable error, boolean presetImport) {
         record("settings_transfer_failed", "error", error.toString());
         SettingsOperation operation = activeSettingsOperation;
         finishSettingsTransfer();
@@ -1480,6 +1484,11 @@ public final class CameraProbeActivity extends ComponentActivity
         recordOperationFeedback(failure);
         if (operation != null) publishSettingsOperation(
                 operation, failure, StatusTone.Error, false);
+        if (presetImport) {
+            showSettingsResultToast(runtimeText(R.string.runtime_preset_load_failed));
+            if (settingsReloadPending) recreate();
+            return;
+        }
         settingsTransferDialog = new AlertDialog.Builder(this)
                 .setTitle(runtimeText(R.string.runtime_settings_transfer_failed))
                 .setMessage(detail)
@@ -1539,7 +1548,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     .setType("*/*");
             startActivityForResult(open, CAMERA_PRESET_REQUEST);
         } catch (Exception error) {
-            reportSettingsTransferFailure(error);
+            reportSettingsTransferFailure(error, true);
         }
     }
 
@@ -1664,7 +1673,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     else confirmSettingsTransfer(legacy, values);
                 });
             } catch (Exception error) {
-                mainHandler.post(() -> reportSettingsTransferFailure(error));
+                mainHandler.post(() -> reportSettingsTransferFailure(error, !legacy));
             }
         });
     }
@@ -1720,10 +1729,11 @@ public final class CameraProbeActivity extends ComponentActivity
                     if (activityDestroyed || isFinishing()) return;
                     recordOperationFeedback(runtimeText(legacy ? R.string.runtime_imported_settings
                             : R.string.runtime_preset_loaded));
+                    if (!legacy) showSettingsResultToast(runtimeText(R.string.runtime_preset_loaded));
                     recreate();
                 });
             } catch (Exception error) {
-                mainHandler.post(() -> reportSettingsTransferFailure(error));
+                mainHandler.post(() -> reportSettingsTransferFailure(error, !legacy));
             }
         });
     }
@@ -2399,7 +2409,6 @@ public final class CameraProbeActivity extends ComponentActivity
     public void onCameraSurfaceAvailable(
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != calibrationPreview && view != cameraPreview) return;
-        if (productionUi != null) productionUi.refreshMappingAspects();
         if (view == calibrationPreview) {
             calibrationSurfaceReady = surface.isValid();
             if (calibrationPreviewCover != null) {
@@ -2437,7 +2446,6 @@ public final class CameraProbeActivity extends ComponentActivity
     public void onCameraSurfaceSizeChanged(
             BlindSpotCameraView view, Surface surface, int width, int height) {
         if (view != calibrationPreview && view != cameraPreview) return;
-        if (productionUi != null) productionUi.refreshMappingAspects();
         if (view == calibrationPreview) {
             calibrationSurfaceReady = surface.isValid();
             record("surface_changed", "target", "camera_calibration",
@@ -2839,7 +2847,6 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onReverseSurfacesReady(int[] generations) {
         reverseCameraSurfacesReady = true;
-        if (productionUi != null) productionUi.refreshMappingAspects();
         record("reverse_preview_surfaces", "state", "ready",
                 "generations", java.util.Arrays.toString(generations));
         maybeOpenReversePreview();
@@ -3627,7 +3634,7 @@ public final class CameraProbeActivity extends ComponentActivity
             RearviewMirrorSettings.Calibration before, MirrorBackendAction action) {
         if (action.getProfileField() != null || action.getCalibrationField() != null) {
             return mergeMirrorCalibration(before, action.getProfileField(),
-                    action.getCalibrationField(), action.getValue(), productionMappingAspect(CameraProfileId.Mirror.INSTANCE));
+                    action.getCalibrationField(), action.getValue());
         }
         if (action.getCalibration() != null) return mirrorCalibration(action.getCalibration());
         throw new IllegalArgumentException("Mirror calibration field required");
@@ -3637,12 +3644,6 @@ public final class CameraProbeActivity extends ComponentActivity
     static RearviewMirrorSettings.Calibration mergeMirrorCalibration(
             RearviewMirrorSettings.Calibration before, ProfileNumber field,
             com.byd.extend.ui.MirrorCalibrationField selection, String value) {
-        return mergeMirrorCalibration(before, field, selection, value, 1920.0 / 1300.0);
-    }
-
-    private static RearviewMirrorSettings.Calibration mergeMirrorCalibration(
-            RearviewMirrorSettings.Calibration before, ProfileNumber field,
-            com.byd.extend.ui.MirrorCalibrationField selection, String value, double aspect) {
         if ((field == null) == (selection == null) || value == null) {
             throw new IllegalArgumentException("One Mirror calibration field required");
         }
@@ -3681,7 +3682,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (preciseFov < 60 || preciseFov > 170) throw new IllegalArgumentException("Invalid FOV");
             fov = Math.round(preciseFov);
         } else if (field == ProfileNumber.Strength) {
-            strength = checkedStrength(before.dewarp(CameraDewarpConfig.LENS_REAR), mirrorNumber(value), aspect);
+            strength = checkedStrength(before.dewarp(CameraDewarpConfig.LENS_REAR), mirrorNumber(value));
         } else if (field == ProfileNumber.Rotation) {
             rotation = Math.round(mirrorNumber(value));
             if (rotation != CameraRotation.clamp(rotation)) throw new IllegalArgumentException("Invalid rotation");
@@ -3964,8 +3965,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 try {
                     if (field == ProfileNumber.Fov && (parsed < 60 || parsed > 170)) return null;
                     if (field == ProfileNumber.Strength) checkedStrength(
-                            loadProductionCalibrationDewarp(profileTarget.getProfile()), parsed,
-                            productionMappingAspect(profileTarget.getProfile()));
+                            loadProductionCalibrationDewarp(profileTarget.getProfile()), parsed);
                     applyTransientProductionProfileNumber(profileTarget.getProfile(), field, parsed);
                     return field == ProfileNumber.Strength ? Integer.toString((int) parsed) : Float.toString(parsed);
                 } catch (IllegalArgumentException invalid) { return null; }
@@ -5131,7 +5131,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 saveProductionFov(id, value);
             } else if (field == ProfileNumber.Strength) {
                 CameraDewarpConfig current = loadProductionCalibrationDewarp(id);
-                saveProductionDewarp(id, current.withStrength(checkedStrength(current, value, productionMappingAspect(id))));
+                saveProductionDewarp(id, current.withStrength(checkedStrength(current, value)));
             } else if (field == ProfileNumber.Rotation) {
                 saveProductionOutputTransform(id, Math.round(value), null);
             } else {
@@ -5629,9 +5629,10 @@ public final class CameraProbeActivity extends ComponentActivity
                         preferences, parkingProfile((CameraProfileId.Parking) id));
             } else if (id instanceof CameraProfileId.Reverse) {
                 CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
-                if (reverse.getElement() == ReverseElement.Rear
-                        && reverse.getSource() == ReverseSource.Rear) {
-                    transferred = CameraCalibrationPreset.copyCentralReverseRearToFront(preferences);
+                if (reverse.getElement() == ReverseElement.Rear) {
+                    transferred = reverse.getSource() == ReverseSource.Rear
+                            ? CameraCalibrationPreset.copyCentralReverseRearToFront(preferences)
+                            : CameraCalibrationPreset.copyCentralReverseFrontToRear(preferences);
                 } else {
                     transferred = reverse.getSource() == ReverseSource.Front
                             ? CameraCalibrationPreset.mirrorReverseFront(
@@ -5663,9 +5664,10 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (id instanceof CameraProfileId.Reverse) {
             CameraProfileId.Reverse reverse = (CameraProfileId.Reverse) id;
-            if (reverse.getElement() == ReverseElement.Rear
-                    && reverse.getSource() == ReverseSource.Rear) {
-                return new CameraProfileId.Reverse(ReverseElement.Rear, ReverseSource.Front);
+            if (reverse.getElement() == ReverseElement.Rear) {
+                return new CameraProfileId.Reverse(ReverseElement.Rear,
+                        reverse.getSource() == ReverseSource.Rear
+                                ? ReverseSource.Front : ReverseSource.Rear);
             }
             if (reverse.getElement() != ReverseElement.RearLeft
                     && reverse.getElement() != ReverseElement.RearRight) return null;
@@ -5752,6 +5754,11 @@ public final class CameraProbeActivity extends ComponentActivity
                 "outcome", success ? "success" : "failure",
                 "profile", profile == null ? "unknown" : profile.toString());
         showProductionTopToast(success ? successMessage : failureMessage);
+    }
+
+    private void showSettingsResultToast(String message) {
+        // Application-owned text toast survives the import's Activity recreation.
+        Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show();
     }
 
     @SuppressWarnings("deprecation")
@@ -6405,20 +6412,9 @@ public final class CameraProbeActivity extends ComponentActivity
         return CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
     }
 
-    @Override public double productionMappingAspect(CameraProfileId profile) {
-        if (profile instanceof CameraProfileId.Reverse && reverseCameraPreview != null) {
-            return reverseCameraPreview.editorMappingAspect(reverseProfileIndex((CameraProfileId.Reverse) profile));
-        }
-        BlindSpotCameraView view = profile.equals(calibrationHostProfile) ? calibrationPreview
-                : profile.equals(selectedProductionProfile()) ? cameraPreview : null;
-        return view != null && view.cameraBufferHeight() > 0
-                ? view.cameraBufferWidth() / (double) view.cameraBufferHeight() : 1920.0 / 1300.0;
-    }
-
-    private static int checkedStrength(CameraDewarpConfig config, float value, double aspect) {
+    private static int checkedStrength(CameraDewarpConfig config, float value) {
         if (!Float.isFinite(value) || value < 1 || value > 100 || value != Math.round(value)
-                || !CameraCorrectionGeometry.strengthEditable(config.enabled, config.projection,
-                        config.horizontalFovDegrees(), aspect)) {
+                || !CameraCorrectionGeometry.strengthEditable(config.enabled, config.projection)) {
             throw new IllegalArgumentException("Correction strength unavailable or outside 1..100%");
         }
         return (int) value;
@@ -12125,34 +12121,58 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void clearCaptureLogsOnWorker() {
         File captures = logFile == null ? null : logFile.getParentFile();
-        File[] logs = captures == null ? null
-                : captures.listFiles((directory, name) -> name.endsWith(".jsonl"));
-        int deleted = 0;
-        int failed = 0;
-        if (logs != null) {
-            for (File file : logs) {
-                if (file.delete()) deleted++;
-                else failed++;
-            }
-        }
+        LogClearResult result = deleteCaptureLogFiles(captures);
         try {
-            deleted += AvasRecoveryDaemonController.clearContinuousLogcat(this);
+            result.deleted += AvasRecoveryDaemonController.clearContinuousLogcat(this);
         } catch (Exception failure) {
-            failed++;
+            result.failed++;
             record("continuous_logcat_clear_failed", "error", failure.toString());
         }
-        record("logs_cleared", "deleted", deleted, "failed", failed);
-        int deletedCount = deleted;
-        int failedCount = failed;
+        record("logs_cleared", "deleted", result.deleted, "failed", result.failed);
         mainHandler.post(() -> {
-            String message = failedCount == 0
-                    ? runtimeText(R.string.runtime_logs_cleared, deletedCount)
-                    : runtimeText(R.string.runtime_logs_clear_partial,
-                            deletedCount, failedCount);
-            StatusTone tone = failedCount == 0 ? StatusTone.Ok : StatusTone.Warning;
+            if (activityDestroyed || isFinishing()) return;
+            String message = runtimeText(result.messageResource(), result.deleted, result.failed);
+            StatusTone tone = result.failed == 0 ? StatusTone.Ok
+                    : result.deleted > 0 ? StatusTone.Warning : StatusTone.Error;
             recordOperationFeedback(message);
             publishSettingsOperation(SettingsOperation.Logs, message, tone, false);
+            showSettingsResultToast(message);
         });
+    }
+
+    static final class LogClearResult {
+        int deleted;
+        int failed;
+
+        int messageResource() {
+            return failed == 0 ? R.string.runtime_logs_cleared
+                    : deleted > 0 ? R.string.runtime_logs_clear_partial
+                    : R.string.runtime_logs_clear_failed;
+        }
+    }
+
+    static LogClearResult deleteCaptureLogFiles(File captures) {
+        LogClearResult result = new LogClearResult();
+        File[] logs;
+        try {
+            logs = captures == null ? null
+                    : captures.listFiles((directory, name) -> name.endsWith(".jsonl"));
+        } catch (SecurityException unreadable) {
+            logs = null;
+        }
+        if (logs == null) {
+            result.failed++;
+            return result;
+        }
+        for (File file : logs) {
+            try {
+                if (file.delete()) result.deleted++;
+                else result.failed++;
+            } catch (SecurityException denied) {
+                result.failed++;
+            }
+        }
+        return result;
     }
 
     private Thresholds readThresholds() {

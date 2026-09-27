@@ -89,6 +89,8 @@ final class ReverseCameraController {
         if (!enabled()) {
             sessionPolicy.eligible = false;
             pendingAutomaticMode = -1;
+            CameraHelperMain.HelperBinder activeHelper = helper;
+            if (activeHelper != null) activeHelper.clearReverseSourceDemand();
             stop("disabled", false);
             return;
         }
@@ -275,6 +277,8 @@ final class ReverseCameraController {
 
     void shutdown() {
         shutdown = true;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) activeHelper.clearReverseSourceDemand();
         cancelTimers();
         clearCleanupRetry();
         shellRecovery.clear();

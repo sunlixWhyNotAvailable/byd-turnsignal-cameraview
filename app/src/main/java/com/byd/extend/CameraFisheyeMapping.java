@@ -132,7 +132,7 @@ final class CameraFisheyeMapping {
 
     private static RadialProjection radialProjection(
             CameraDewarpConfig config, Calibration calibration, int width, int height) {
-        int strength = CameraCorrectionGeometry.effectiveStrength(config, width / (double) height);
+        int strength = CameraCorrectionGeometry.effectiveStrength(config);
         // Preserve the existing endpoint exactly, including wide-angle/cylindrical output.
         if (strength == 100) return null;
         double alpha = Math.toRadians(CameraCorrectionGeometry.diagonalFov(

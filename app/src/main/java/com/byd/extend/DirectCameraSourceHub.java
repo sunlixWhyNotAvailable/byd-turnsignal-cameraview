@@ -175,6 +175,24 @@ final class DirectCameraSourceHub
     }
 
     @Override
+    public void releaseSource(int index) throws Exception {
+        requireIndex(index);
+        call(() -> {
+            SourceWorker existing = workers[index];
+            if (existing == null) return null;
+            synchronized (targets) {
+                for (Target target : targets.values()) {
+                    require(target.worker != existing,
+                            "camera source still has an attached downstream Surface");
+                }
+            }
+            existing.closeFinal();
+            if (workers[index] == existing) workers[index] = null;
+            return null;
+        });
+    }
+
+    @Override
     public void setActive(Surface surface, boolean active) throws Exception {
         call(() -> {
             Target target;
@@ -275,6 +293,10 @@ final class DirectCameraSourceHub
         }
     }
 
+    private boolean isCurrentWorker(SourceWorker worker) {
+        return !closed && !worker.released && workers[worker.index] == worker;
+    }
+
     static boolean shouldRenderTarget(int sourceIndex, int targetIndex, boolean active) {
         return active && sourceIndex == targetIndex;
     }
@@ -312,6 +334,7 @@ final class DirectCameraSourceHub
         int pendingFrameSignals;
         long firstPendingSignalNs = -1L;
         SerializedCall<Void> closeCall;
+        volatile boolean released;
 
         SourceWorker(int index) {
             this.index = index;
@@ -372,6 +395,7 @@ final class DirectCameraSourceHub
         @Override
         public void dispatchClose() throws Exception {
             if (closeCall != null) return;
+            released = true;
             SerializedCall<Void> call = new SerializedCall<>();
             if (!handler.post(() -> {
                 try {
@@ -447,6 +471,7 @@ final class DirectCameraSourceHub
         }
 
         private void signalFrame() {
+            if (released || closed) return;
             long nowNs = SystemClock.elapsedRealtimeNanos();
             boolean post;
             synchronized (frameState) {
@@ -470,7 +495,7 @@ final class DirectCameraSourceHub
                 firstPendingSignalNs = -1L;
                 renderQueued = false;
             }
-            if (closed || sourceFailureReported || texture == null) return;
+            if (closed || released || sourceFailureReported || texture == null) return;
             long updatedNs;
             long updateNs;
             long producerTimestampNs;
@@ -573,17 +598,22 @@ final class DirectCameraSourceHub
                     1920,
                     index == 0 ? 990 : 1300,
                     workerThreadName(index));
-            if (report != null) listener.onStats(index, report);
+            if (report != null) {
+                Stats completed = report;
+                postCoordinator(() -> listener.onStats(index, completed));
+            }
         }
 
         private void postCoordinator(Runnable action) {
-            if (!coordinatorHandler.post(action)) {
+            if (!coordinatorHandler.post(() -> {
+                if (isCurrentWorker(this)) action.run();
+            })) {
                 Log.w(LOG_TAG, "camera source coordinator stopped before failure callback");
             }
         }
 
         private void reportSourceFailure(Throwable error) {
-            if (sourceFailureReported) return;
+            if (sourceFailureReported || released) return;
             sourceFailureReported = true;
             postCoordinator(() -> listener.onSourceFailure(index, error));
         }
@@ -626,7 +656,8 @@ final class DirectCameraSourceHub
                     && swapStartedNs - target.lastStallReportNs >= STALL_REPORT_INTERVAL_NS) {
                 target.lastStallReportNs = swapStartedNs;
                 try {
-                    listener.onTargetStall(target.surface, target.index, swapWaitNs);
+                    postCoordinator(() -> listener.onTargetStall(
+                            target.surface, target.index, swapWaitNs));
                 } catch (Throwable error) {
                     Log.w(LOG_TAG, "target stall listener failed", error);
                 }

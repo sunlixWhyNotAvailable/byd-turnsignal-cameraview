@@ -610,11 +610,6 @@ final class ReverseCameraCompositionView extends FrameLayout {
         return paneForCamera(cameraIndex).texture.usesRawFallback();
     }
 
-    double editorMappingAspect(int cameraIndex) {
-        BlindSpotCameraView texture = paneForCamera(cameraIndex).texture;
-        return texture.cameraBufferWidth() / (double) texture.cameraBufferHeight();
-    }
-
     private PaneView paneForCamera(int cameraIndex) {
         // During Front calibration the logical center pane (index 1) is backed
         // by the independent physical pano_h index 4 source.  Route editor

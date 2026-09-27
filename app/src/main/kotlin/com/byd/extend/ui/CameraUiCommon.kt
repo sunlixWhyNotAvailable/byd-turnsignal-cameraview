@@ -240,23 +240,23 @@ internal fun FormScope.CameraProfileControls(
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Profile(ToggleId.ProfileCorrection, profile), it)) },
                         colors) }
                     row("calibration-strength") { NumericSetting(strings.text("Сила", "Strength"),
-                        (if (calibration.projection == 0) calibration.strength else 100).toString(), "%", colors,
+                        calibration.strength.toString(), "%", colors,
                         { profileNumber(ProfileNumber.Strength, it) }, 1f..100f, adjustable = true, slider = true,
                         enabled = calibration.strengthEditable,
                         identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Strength)) to calibration.strengthEditable,
                         onPreview = { value, session -> profilePreview(ProfileNumber.Strength, value, session) },
                         onCommitSession = { value, session -> profileNumber(ProfileNumber.Strength, value, session) }) }
                     row("calibration-fov") { NumericSetting(
-                        if (calibration.projection == 0) strings.text("Діагональний огляд", "Diagonal FOV") else strings.text("Огляд", "FOV"),
-                        calibration.displayFov(), "°", colors,
-                        { profileNumber(ProfileNumber.Fov, calibration.horizontalFov(it)) },
-                        calibration.displayFov("60").toFloat()..calibration.displayFov("170").toFloat(), adjustable = true, slider = true,
-                        decimalPlaces = if (calibration.projection == 0) 1 else 0,
-                        labelWidth = if (calibration.projection == 0) 96.dp else null,
+                        strings.text("Горизонтальний огляд", "Horizontal FOV", "水平视场角"),
+                        cameraFovText(calibration.fov.toDouble()), "°", colors,
+                        { profileNumber(ProfileNumber.Fov, it) },
+                        60f..170f, adjustable = true, slider = true,
+                        decimalPlaces = 1,
+                        labelWidth = 96.dp,
                         enabled = true,
-                        identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Fov)) to calibration.projection to calibration.mappingAspect,
-                        onPreview = { value, session -> profilePreview(ProfileNumber.Fov, calibration.horizontalFov(value), session)?.let { calibration.displayFov(it) } },
-                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Fov, calibration.horizontalFov(value), session) }) }
+                        identity = identityFor(NumberTarget.Profile(profile, ProfileNumber.Fov)) to calibration.projection,
+                        onPreview = { value, session -> profilePreview(ProfileNumber.Fov, value, session)?.let { cameraFovText(it.toDouble()) } },
+                        onCommitSession = { value, session -> profileNumber(ProfileNumber.Fov, value, session) }) }
                     row("calibration-projection") { ChoiceField(strings.text("Проєкція", "Projection"),
                         listOf(strings.text("Прямолінійна", "Rectilinear"), strings.text("Циліндрична", "Cylindrical")),
                         calibration.projection, { onAction(BydExtendUiAction.Select(

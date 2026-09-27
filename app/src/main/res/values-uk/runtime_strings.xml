@@ -47,6 +47,7 @@
     <string name="runtime_apply_preset">Застосування пресету камер…</string>
     <string name="runtime_imported_settings">Налаштування імпортовано. Старий застосунок зупинено; дані та значок збережено.</string>
     <string name="runtime_preset_loaded">Пресет камер завантажено.</string>
+    <string name="runtime_preset_load_failed">Не вдалося завершити завантаження пресету камер.</string>
     <string name="runtime_preset_export_progress">Формування пресету камер…</string>
     <string name="runtime_preset_ready">Пресет камер готовий до поширення.</string>
     <string name="runtime_preset_choose">Виберіть JSON-файл пресету камер.</string>
@@ -62,7 +63,8 @@
     <string name="runtime_logs_ready">Архів логів готовий</string>
     <string name="runtime_share_menu_failed">Не вдалося відкрити меню поширення</string>
     <string name="runtime_logs_clearing">Очищення логів…</string>
-    <string name="runtime_logs_cleared">Старі JSONL очищено: %1$d</string>
+    <string name="runtime_logs_cleared">Логи очищено: %1$d</string>
+    <string name="runtime_logs_clear_failed">Не вдалося очистити логи.</string>
     <string name="runtime_logs_clear_partial">Очищено %1$d; не видалено %2$d</string>
     <string name="runtime_update_available">Доступне оновлення</string>
     <string name="runtime_update">Оновити</string>

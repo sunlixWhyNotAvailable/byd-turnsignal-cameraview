@@ -47,6 +47,7 @@
     <string name="runtime_apply_preset">Applying camera preset…</string>
     <string name="runtime_imported_settings">Settings imported. The old app was stopped; its data and icon were kept.</string>
     <string name="runtime_preset_loaded">Camera preset loaded.</string>
+    <string name="runtime_preset_load_failed">Could not finish loading the camera preset.</string>
     <string name="runtime_preset_export_progress">Preparing camera preset…</string>
     <string name="runtime_preset_ready">Camera preset is ready to share.</string>
     <string name="runtime_preset_choose">Choose a camera preset JSON file.</string>
@@ -62,7 +63,8 @@
     <string name="runtime_logs_ready">Log archive is ready</string>
     <string name="runtime_share_menu_failed">Could not open the share menu</string>
     <string name="runtime_logs_clearing">Clearing logs…</string>
-    <string name="runtime_logs_cleared">Old JSONL logs cleared: %1$d</string>
+    <string name="runtime_logs_cleared">Logs cleared: %1$d</string>
+    <string name="runtime_logs_clear_failed">Could not clear the logs.</string>
     <string name="runtime_logs_clear_partial">Cleared %1$d; could not delete %2$d</string>
     <string name="runtime_update_available">Update available</string>
     <string name="runtime_update">Update</string>

@@ -5,19 +5,24 @@ import org.junit.Test
 
 class NumericPreviewUiPolicyTest {
     @Test
-    fun diagonalEditorRoundTripsAndDisabledModesRetainSelectedStrength() {
+    fun horizontalEditorShowsStoredAngleAndRetainsStrengthAtWideAngles() {
         val value = CalibrationUiState(correctionEnabled = true, fov = "120.25", strength = 37)
-        assertEquals(120.25f, value.horizontalFov(value.displayFov()).toFloat(), .1f)
+        assertEquals("120.3", cameraFovText(value.fov.toDouble()))
         assertEquals(true, value.strengthEditable)
-        val wide = value.copy(fov = value.horizontalFov("160.1"))
-        assertEquals(false, wide.strengthEditable)
+        val split = value.copy(fov = "155.9576", strength = 10)
+        assertEquals("156", cameraFovText(split.fov.toDouble()))
+        assertEquals(true, split.strengthEditable)
+        assertEquals(10, split.strength)
+        val wide = value.copy(fov = "170")
+        assertEquals("170", cameraFovText(wide.fov.toDouble()))
+        assertEquals(true, wide.strengthEditable)
         assertEquals(37, wide.strength)
-        assertEquals(true, wide.copy(fov = value.horizontalFov("160")).strengthEditable)
-        assertEquals(false, value.copy(correctionEnabled = false).strengthEditable)
-        assertEquals(false, value.copy(projection = 1).strengthEditable)
-        assertEquals("120.3", value.copy(projection = 1).displayFov())
-        assertEquals(37, value.copy(projection = 1).copy(projection = 0).strength)
-        assertEquals(true, value.copy(fov = "170").displayFov().toFloat() > 170f)
+        val off = value.copy(correctionEnabled = false)
+        val cylindrical = value.copy(projection = 1)
+        assertEquals(false, off.strengthEditable)
+        assertEquals(false, cylindrical.strengthEditable)
+        assertEquals(37, off.strength)
+        assertEquals(37, cylindrical.strength)
     }
 
     @Test

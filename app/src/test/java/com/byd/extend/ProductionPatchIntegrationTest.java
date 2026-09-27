@@ -227,7 +227,7 @@ public final class ProductionPatchIntegrationTest {
                 ((CameraProfileId.Reverse) centralFront).getSource());
         assertEquals("Передня", CameraProbeActivity.productionProfileLabel(centralFront, false));
         assertEquals("Front", CameraProbeActivity.productionProfileLabel(centralFront, true));
-        assertEquals(null, CameraProbeActivity.oppositeProductionProfile(centralFront));
+        assertEquals(centralRear, CameraProbeActivity.oppositeProductionProfile(centralFront));
     }
 
     @Test

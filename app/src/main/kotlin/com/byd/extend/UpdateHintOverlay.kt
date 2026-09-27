@@ -36,14 +36,20 @@ object UpdateHintOverlay {
         fun onDelivery(eventId: String, attemptId: Long, outcome: DeliveryOutcome)
     }
 
-    private class DeliveryAttempt(
+    internal class DeliveryAttempt(
         val eventId: String,
         val attemptId: Long,
         val requestId: Long,
         val requestedAtElapsedNanos: Long
     ) {
         var outcome: DeliveryOutcome? = null
-        var attached = false
+            private set
+
+        fun complete(outcome: DeliveryOutcome): DeliveryOutcome? {
+            if (this.outcome != null) return null
+            this.outcome = outcome
+            return outcome
+        }
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -457,7 +463,6 @@ object UpdateHintOverlay {
 
             activeGeneration = ++generation
             manager.addView(frame, layoutParams)
-            attempt.attached = true
         } catch (error: RuntimeException) {
             Log.w(TAG, "show_failed event=${eventId} reason=${error.javaClass.simpleName}")
             finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_failed")
@@ -473,7 +478,8 @@ object UpdateHintOverlay {
             frame.requestApplyInsets()
         } catch (error: RuntimeException) {
             Log.w(TAG, "post_attach_failed event=${attempt.eventId}", error)
-            dismissMain("post_attach_failed", true)
+            finishAttempt(attempt, DeliveryOutcome.FAILED, "post_attach_failed")
+            return
         }
         reportDelivery(attempt, DeliveryOutcome.SHOWN)
     }
@@ -529,9 +535,7 @@ object UpdateHintOverlay {
     }
 
     private fun reportDelivery(attempt: DeliveryAttempt, outcome: DeliveryOutcome) {
-        if (attempt.outcome != null) return
-        val actualOutcome = if (attempt.attached) DeliveryOutcome.SHOWN else outcome
-        attempt.outcome = actualOutcome
+        val actualOutcome = attempt.complete(outcome) ?: return
         try {
             deliveryCallback?.onDelivery(attempt.eventId, attempt.attemptId, actualOutcome)
         } catch (error: RuntimeException) {

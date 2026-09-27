@@ -597,6 +597,8 @@ final class BlindSpotOverlayController {
     void attachHelper(CameraHelperMain.HelperBinder value) {
         if (shutdown) return;
         cancelHelperAttachment();
+        CameraHelperMain.HelperBinder old = helper;
+        if (old != null && old != value) old.setBlindSourceDemand(false, false);
         pendingHelperAttachment = new PendingHelperAttachment(() -> {
             if (shutdown) return;
             helper = value;
@@ -819,6 +821,8 @@ final class BlindSpotOverlayController {
 
     void shutdown() {
         shutdown = true;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) activeHelper.setBlindSourceDemand(false, false);
         cancelHelperAttachment();
         handler.removeCallbacks(staleState);
         cancelCameraRetry("overlay_shutdown");
@@ -829,8 +833,14 @@ final class BlindSpotOverlayController {
     }
 
     private void applySettingsOnMain() {
-        if (isHardBlocked()) return;
         migrateOverlayPreferences(settings);
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) {
+            activeHelper.setBlindSourceDemand(
+                    settings.getBoolean(PREF_ENABLED, false),
+                    settings.getBoolean(PREF_FRONT_ENABLED, false));
+        }
+        if (isHardBlocked()) return;
         if (cameraUnavailableReason() != null) {
             destroyAll(cameraUnavailableReason());
             return;
