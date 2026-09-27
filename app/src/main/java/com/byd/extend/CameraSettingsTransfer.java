@@ -218,7 +218,7 @@ public final class CameraSettingsTransfer {
             CameraBorderSettings.write(editor, CameraBorderSettings.mirrorPrefix(true), shared);
         }
         preserveMissingFrameAspects(editor, preferences, settings);
-        preserveMissingPanoramaSuppression(editor, preferences, settings);
+        preserveMissingDefaultOnCameraOptions(editor, preferences, settings);
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
         }
@@ -267,7 +267,7 @@ public final class CameraSettingsTransfer {
             if (isLegacyAllowedKey(key)) editor.remove(key);
         }
         preserveMissingFrameAspects(editor, preferences, copy);
-        preserveMissingPanoramaSuppression(editor, preferences, copy);
+        preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
         if (placements != null) placements.write(editor);
         if (!editor.commit()) throw new IllegalStateException("legacy settings commit failed");
@@ -283,12 +283,14 @@ public final class CameraSettingsTransfer {
         }
     }
 
-    private static void preserveMissingPanoramaSuppression(
+    private static void preserveMissingDefaultOnCameraOptions(
             SharedPreferences.Editor editor, SharedPreferences preferences,
             Map<String, Object> imported) {
         for (String key : new String[]{
                 BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA,
                 BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA,
+                BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN,
+                BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN,
                 RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA}) {
             if (!imported.containsKey(key)) editor.putBoolean(key, bool(preferences, key, true));
         }
@@ -434,6 +436,10 @@ public final class CameraSettingsTransfer {
                 BlindSpotOverlayController.readPanoramaSuppression(p, false));
         out.put(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA,
                 BlindSpotOverlayController.readPanoramaSuppression(p, true));
+        out.put(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN,
+                bool(p, BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN, true));
+        out.put(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN,
+                bool(p, BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN, true));
         out.put(BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, bool(p, BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, true));
         out.put(BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, bool(p, BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false));
         out.put(BlindSpotOverlayController.PREF_REAR_BSD_ONLY, bool(p, BlindSpotOverlayController.PREF_REAR_BSD_ONLY, false));
@@ -1141,6 +1147,8 @@ public final class CameraSettingsTransfer {
         keys.add(BlindSpotOverlayController.PREF_ENABLED); keys.add(BlindSpotOverlayController.PREF_FRONT_ENABLED);
         keys.add(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA);
         keys.add(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA);
+        keys.add(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN);
+        keys.add(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN);
         keys.add(BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED); keys.add(BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED);
         keys.add(BlindSpotOverlayController.PREF_REAR_BSD_ONLY); keys.add(BlindSpotOverlayController.PREF_WARNING_MODE);
         keys.add(BlindSpotOverlayController.PREF_CORNER_RADIUS); keys.add(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT);
@@ -1247,6 +1255,8 @@ public final class CameraSettingsTransfer {
                 || key.startsWith("camera_dewarp_v3_reverse_front_1_")
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
+                || key.equals(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN)
+                || key.equals(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN)
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
                 || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
@@ -1399,6 +1409,8 @@ public final class CameraSettingsTransfer {
                 || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
+                || key.equals(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN)
+                || key.equals(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN)
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)
                 || key.equals("mirror_correction") || key.equals("mirror_mirrored");
     }

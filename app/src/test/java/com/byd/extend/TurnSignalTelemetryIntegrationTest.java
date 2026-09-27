@@ -9,6 +9,29 @@ import org.junit.Test;
 
 /** Real OEM proxy + production subscription requests + controller, without Android Binder GET. */
 public final class TurnSignalTelemetryIntegrationTest {
+    @Test public void productionCallbacksCarryShortCompletionWithoutGuardControl() throws Exception {
+        Rig rig = new Rig();
+        try {
+            rig.controller.start();
+            rig.now = 10;
+            rig.backend.listener.onChanged(1004, 321912876, 2, null);
+            rig.flush();
+            rig.now = 20;
+            rig.backend.listener.onChanged(1004, 950009900, 2, null);
+            rig.flush();
+            rig.now = 30;
+            rig.backend.listener.onChanged(1004, 321912876, 1, null);
+            rig.flush();
+            assertEquals(0, rig.shortTurn.endedDirection());
+            rig.now = 40;
+            rig.backend.listener.onChanged(1004, 950009900, 1, null);
+            rig.flush();
+            assertEquals(2, rig.shortTurn.endedDirection());
+        } finally {
+            rig.controller.close();
+        }
+    }
+
     @Test public void productionSubscriptionDeliversBothFloatSignalsAndIntegerControls()
             throws Exception {
         Rig rig = new Rig();
@@ -72,6 +95,7 @@ public final class TurnSignalTelemetryIntegrationTest {
         final List<TurnSignalTelemetryController.Snapshot> states = new ArrayList<>();
         final List<Integer> masks = new ArrayList<>();
         final TurnSignalTelemetryController controller;
+        final BlindShortTurnSignal shortTurn = new BlindShortTurnSignal();
         TurnSignalTelemetryController.Source lastSource;
         long now;
 
@@ -95,6 +119,7 @@ public final class TurnSignalTelemetryIntegrationTest {
             states.add(state);
             masks.add(mask);
             lastSource = source;
+            shortTurn.observe(state.stalk, state.blink, source, mask, conflict, now);
         }
         @Override public void onMode(boolean subscribed, boolean seeded, String reason) { }
     }

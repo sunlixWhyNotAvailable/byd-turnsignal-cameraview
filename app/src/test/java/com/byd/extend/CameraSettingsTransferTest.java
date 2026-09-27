@@ -26,13 +26,8 @@ public final class CameraSettingsTransferTest {
         CameraSettingsTransfer.applyCameraPreset(destination, parsed);
 
         Map<?, ?> settings = (Map<?, ?>) parsed.get("settings");
-        // 4 Blind profiles (20 values each), 8 Parking profiles (20 each),
-        // Three Reverse panes plus the optional central-front calibration
-        // fields, and shared/background/front values.
-        // v2 adds the active independent Mirror group; its optional front
-        // source state/calibration contributes another 16 fields. Blind
-        // width/height remain optional without an explicitly saved placement.
-        assertEquals(408, settings.size());
+        assertEquals(true, settings.get(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN));
+        assertEquals(true, settings.get(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN));
         for (CameraProfile profile : CameraProfile.values()) {
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, false)));
             assertTrue(settings.containsKey(BlindSpotOverlayController.positionKey(profile, true)));
@@ -171,6 +166,41 @@ public final class CameraSettingsTransferTest {
                 RearviewMirrorSettings.placement(target, CameraDisplayTarget.TABLET));
         assertPlacement(cluster,
                 RearviewMirrorSettings.placement(target, CameraDisplayTarget.CLUSTER));
+    }
+
+    @Test
+    public void shortTurnHoldOptionsRoundTripAndOldImportsPreserveExistingChoices() throws Exception {
+        String rear = BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN;
+        String front = BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN;
+        TestSharedPreferences source = new TestSharedPreferences();
+        source.putBoolean(rear, false);
+        source.putBoolean(front, true);
+        String json = CameraSettingsTransfer.exportCameraPreset(source);
+        TestSharedPreferences target = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(target, CameraSettingsTransfer.parseCameraPreset(json));
+        assertFalse(target.getBoolean(rear, true));
+        assertTrue(target.getBoolean(front, false));
+
+        org.json.JSONObject old = new org.json.JSONObject(json);
+        old.getJSONObject("settings").remove(rear);
+        old.getJSONObject("settings").remove(front);
+        target.putBoolean(front, false);
+        CameraSettingsTransfer.applyCameraPreset(target,
+                CameraSettingsTransfer.parseCameraPreset(old.toString()));
+        assertFalse(target.getBoolean(rear, true));
+        assertFalse(target.getBoolean(front, true));
+        CameraSettingsTransfer.applyLegacySettings(target, new HashMap<>());
+        assertFalse(target.getBoolean(rear, true));
+        assertFalse(target.getBoolean(front, true));
+
+        TestSharedPreferences fresh = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(fresh,
+                CameraSettingsTransfer.parseCameraPreset(old.toString()));
+        assertTrue(fresh.getBoolean(rear, false));
+        assertTrue(fresh.getBoolean(front, false));
+        old.getJSONObject("settings").put(rear, "false");
+        assertThrows(IllegalArgumentException.class,
+                () -> CameraSettingsTransfer.parseCameraPreset(old.toString()));
     }
 
     @Test

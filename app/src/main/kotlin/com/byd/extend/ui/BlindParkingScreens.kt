@@ -83,6 +83,13 @@ internal fun BlindScreen(
                     { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
                         ToggleId.BlindSuppressWhilePanorama, state.selectedGroup), it)) }, colors,
                 ) }
+                row("profile-short-turn-hold") { SwitchLine(
+                    strings.text("Утримувати камеру", "Keep camera visible", "延时隐藏摄像头"),
+                    strings.text("3 с після короткого поворотника", "3 s after a short turn signal",
+                        "短转向结束后保持 3 秒"), rules.holdAfterShortTurn,
+                    { onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
+                        ToggleId.BlindHoldAfterShortTurn, state.selectedGroup), it)) }, colors,
+                ) }
                 row("profile-presets") { ProfilePresetButtons(
                     profileId, profile.presetAvailable, true, strings, colors, onAction) }
             },

@@ -24,6 +24,7 @@ final class TurnSignalGuardRuntime {
     private static final int CORRECTION_CONFIRM_MS = 1_500;
     private static final int TELEMETRY_ERROR_REPEAT_MS = 5_000;
     private static final int CAMERA_STATE_PERIOD_MS = 200;
+    private final BlindShortTurnSignal cameraShortTurn = new BlindShortTurnSignal();
     private static final int TURN_SIGNAL_SET_FID = 871366669;
     private static final int LATCH_UNKNOWN = -1;
 
@@ -222,6 +223,7 @@ final class TurnSignalGuardRuntime {
         resetSession();
         resetGesture();
         telemetryController.close();
+        cameraShortTurn.reset();
         listenerHealthy = false;
         pollHealthy = false;
         listenerSampleRecovery.reset();
@@ -517,6 +519,8 @@ final class TurnSignalGuardRuntime {
             }
         }
         boolean live = source == TurnSignalTelemetryController.Source.CALLBACK;
+        boolean cameraShortTurnEnded = cameraShortTurn.observe(
+                stalk.raw, blink.raw, source, liveMask, conflict, observedMs);
         if (source == TurnSignalTelemetryController.Source.RECONCILE && conflict) {
             cancelForReconciliationConflict();
         }
@@ -538,7 +542,7 @@ final class TurnSignalGuardRuntime {
         if (startupCleanupArmedGeneration == awakeSessionGeneration) {
             startupCleanupFreshGeneration = awakeSessionGeneration;
         }
-        if (now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
+        if (cameraShortTurnEnded || now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
             emitCameraState(now);
         }
         evaluateSpeedDeferredSession(now);
@@ -618,6 +622,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void invalidateTelemetryOwnership(String reason) {
+        cameraShortTurn.reset();
         resetGesture();
         if (hazardCleanupPending) cancelHazardCleanup(reason);
         if (speedDeferredDirection != 0) cancelSpeedDeferredSession(reason);
@@ -1294,7 +1299,9 @@ final class TurnSignalGuardRuntime {
                 && telemetryController.dataFresh(now);
         emit("vehicle_state", "valid", valid, "blink", latestBlink,
                 "speed_kph", valid ? latestSpeedKph : "unknown",
-                "steering_angle_deg", valid ? latestAngle : "unknown");
+                "steering_angle_deg", valid ? latestAngle : "unknown",
+                "short_turn_end_ms", valid ? cameraShortTurn.endedAt() : 0,
+                "short_turn_end_direction", valid ? cameraShortTurn.endedDirection() : 0);
     }
 
     private void runOnHandler(Runnable action) {

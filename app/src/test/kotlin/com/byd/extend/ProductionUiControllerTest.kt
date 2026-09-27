@@ -347,6 +347,39 @@ class ProductionUiControllerTest {
     }
 
     @Test
+    fun blindShortTurnHoldDefaultsOnAndKeepsRearFrontAndSideSelectionsIndependent() {
+        val preferences = TestSharedPreferences()
+        val before = preferences.all.toMap()
+        val snapshot = readProductionUiState(preferences, false, false)
+        assertTrue(snapshot.blind.rules.getValue(CameraGroup.Rear).holdAfterShortTurn)
+        assertTrue(snapshot.blind.rules.getValue(CameraGroup.Front).holdAfterShortTurn)
+        assertEquals(before, preferences.all)
+        val backend = FakeBackend(preferences).apply {
+            effect = { action ->
+                val toggle = action as? BydExtendUiAction.Toggle
+                val blind = toggle?.target as? ToggleTarget.Blind
+                if (toggle != null && blind?.id == ToggleId.BlindHoldAfterShortTurn) {
+                    preferences.edit().putBoolean(
+                        if (blind.group == CameraGroup.Rear)
+                            BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN
+                        else BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN,
+                        toggle.value).apply()
+                }
+            }
+        }
+        val controller = ProductionUiController(preferences, backend)
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Blind(ToggleId.BlindHoldAfterShortTurn, CameraGroup.Rear), false))
+        assertFalse(controller.state.blind.rules.getValue(CameraGroup.Rear).holdAfterShortTurn)
+        assertTrue(controller.state.blind.rules.getValue(CameraGroup.Front).holdAfterShortTurn)
+        controller.dispatch(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.BlindSide), 1))
+        controller.reload()
+        assertFalse(controller.state.blind.rules.getValue(CameraGroup.Rear).holdAfterShortTurn)
+        assertTrue(controller.state.blind.rules.getValue(CameraGroup.Front).holdAfterShortTurn)
+        assertEquals(CameraSide.Right, controller.state.blind.selectedSide)
+    }
+
+    @Test
     fun disabledGearSwitchActionPreservesSavedPreferenceAndNeverReachesBackend() {
         val preferences = TestSharedPreferences().apply {
             edit().putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, true).apply()

@@ -120,6 +120,8 @@ private fun readBlind(
                     BlindSpotOverlayController.DEFAULT_REAR_SHARP_TURN_ANGLE_DEG)),
                 suppressWhilePanorama = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, true),
+                holdAfterShortTurn = preferences.getBoolean(
+                    BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN, true),
                 sharpTurnEnabled = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false),
                 blindSpotOnly = preferences.getBoolean(
@@ -136,6 +138,8 @@ private fun readBlind(
                     BlindSpotOverlayController.DEFAULT_FRONT_MIN_ANGLE_DEG)),
                 suppressWhilePanorama = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, true),
+                holdAfterShortTurn = preferences.getBoolean(
+                    BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN, true),
                 turnRequired = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, true),
             ),

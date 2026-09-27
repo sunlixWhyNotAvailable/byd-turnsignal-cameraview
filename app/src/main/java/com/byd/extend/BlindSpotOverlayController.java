@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.display.DisplayManager;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.Display;
 import android.view.Surface;
 import android.view.WindowManager;
@@ -23,6 +24,8 @@ final class BlindSpotOverlayController {
     static final String PREF_FRONT_ENABLED = "camera_front_enabled";
     static final String PREF_FRONT_SUPPRESS_WHILE_PANORAMA =
             "camera_front_suppress_while_panorama";
+    static final String PREF_REAR_HOLD_AFTER_SHORT_TURN = "camera_rear_hold_after_short_turn";
+    static final String PREF_FRONT_HOLD_AFTER_SHORT_TURN = "camera_front_hold_after_short_turn";
     static final String PREF_FRONT_MIN_SPEED = "camera_front_min_speed_kph";
     static final String PREF_FRONT_MAX_SPEED = "camera_front_max_speed_kph";
     static final String PREF_FRONT_MIN_ANGLE = "camera_front_min_angle_deg";
@@ -123,6 +126,9 @@ final class BlindSpotOverlayController {
     private final boolean[] displayWaiting = new boolean[2];
     private final int[] targetDisplayIds = {-1, -1};
     private final CameraRetryState cameraRetry = new CameraRetryState();
+    private final BlindCameraHold shortTurnHold = new BlindCameraHold();
+    private final Runnable holdExpired = this::evaluate;
+    private int normalVisibleMask;
     private final CameraShellRecoveryGate shellRecovery = new CameraShellRecoveryGate();
     private final DisplayManager.DisplayListener displayListener =
             new DisplayManager.DisplayListener() {
@@ -734,8 +740,16 @@ final class BlindSpotOverlayController {
                         ? event.optDouble("steering_angle_deg", Double.NaN)
                         : event.optDouble("angle_deg", Double.NaN);
                 float nextAngle = valid ? (float) angleValue : Float.NaN;
+                long shortTurnEnd = event.optLong("short_turn_end_ms", 0);
+                int shortTurnDirection = event.optInt("short_turn_end_direction", 0);
                 handler.post(() -> acceptVehicleState(
-                        valid, nextBlink, nextSpeed, nextAngle));
+                        valid, nextBlink, nextSpeed, nextAngle, shortTurnEnd, shortTurnDirection));
+            } else if ("telemetry_stopped".equals(kind)) {
+                handler.post(() -> {
+                    stateValid = false;
+                    handler.removeCallbacks(staleState);
+                    evaluate();
+                });
             } else if ("bsd_state".equals(kind)) {
                 boolean listenerOk = event.optBoolean("listener_ok");
                 boolean nextLeftValid = listenerOk && event.optBoolean("left_valid");
@@ -1019,6 +1033,8 @@ final class BlindSpotOverlayController {
     private void invalidateTarget(int target) {
         for (PaneState pane : panes) {
             if (!pane.expected || pane.target != target) continue;
+            shortTurnHold.cancel(pane.profile.id);
+            normalVisibleMask &= ~pane.profile.bit();
             pane.visibilityToken++;
             pane.visibilityPending = false;
             pane.activationPending = false;
@@ -1368,6 +1384,7 @@ final class BlindSpotOverlayController {
     }
 
     private void cameraUnavailable(String reason) {
+        clearShortTurnHold();
         for (PaneState pane : panes) {
             pane.visibilityToken++;
             pane.visibilityPending = false;
@@ -1402,6 +1419,7 @@ final class BlindSpotOverlayController {
     private void cameraShellDied(long epoch) {
         if (!TurnSignalController.isCurrentCameraShellEpoch(cameraShellEpoch, epoch)
                 || !shellRecovery.isNewDeath(epoch)) return;
+        clearShortTurnHold();
         cancelCameraRetry("camera_shell_died");
         boolean pending = shellRecovery.onDeath(epoch, cameraRetryBlockReason() == null);
         for (PaneState pane : panes) {
@@ -1427,8 +1445,17 @@ final class BlindSpotOverlayController {
     }
 
     private void acceptVehicleState(
-            boolean valid, int nextBlink, float nextSpeed, float nextAngle) {
+            boolean valid, int nextBlink, float nextSpeed, float nextAngle,
+            long shortTurnEnd, int shortTurnDirection) {
         stateValid = valid && validBlink(nextBlink) && Float.isFinite(nextSpeed);
+        int shownNormal = 0;
+        for (PaneState pane : panes) {
+            if (pane.visible && pane.requestedVisible) shownNormal |= pane.profile.bit();
+        }
+        // Consume end markers even while blocked so an old event cannot arm a later camera.
+        shortTurnHold.acceptEnd(shortTurnEnd, shortTurnDirection, blink,
+                stateValid && !isHardBlocked() && !shutdown ? shownNormal & normalVisibleMask : 0,
+                SystemClock.elapsedRealtime());
         blink = nextBlink;
         speedKph = nextSpeed;
         steeringAngle = nextAngle;
@@ -1467,19 +1494,43 @@ final class BlindSpotOverlayController {
                         DEFAULT_REAR_SHARP_TURN_ANGLE_DEG),
                 settings.getBoolean(PREF_REAR_BSD_ONLY, false),
                 leftBsdValid, leftBsdRaw, rightBsdValid, rightBsdRaw);
-        if (isHardBlocked()) desired = 0;
+        boolean blocked = isHardBlocked() || !stateValid || shutdown || helper == null;
+        if (blocked) {
+            desired = 0;
+            clearShortTurnHold();
+        }
         boolean rearPanoramaSuppression = readPanoramaSuppression(settings, false);
         boolean frontPanoramaSuppression = readPanoramaSuppression(settings, true);
+        int availableMask = 0;
+        int allowedHoldMask = 0;
         for (PaneState pane : panes) {
-            boolean requested = (desired & pane.profile.bit()) != 0
-                    && pane.expected && !pane.failed
+            boolean available = !blocked && pane.expected && !pane.failed
+                    && settings.getBoolean(pane.profile.rear() ? PREF_ENABLED : PREF_FRONT_ENABLED, false)
                     && !displayWaiting[pane.target]
                     && !panoramaSuppresses(pane.target,
                             oemPanoramaKnown, oemPanoramaVisible,
                             pane.profile.rear()
                                     ? rearPanoramaSuppression : frontPanoramaSuppression);
+            if (available) {
+                availableMask |= pane.profile.bit();
+                if (settings.getBoolean(pane.profile.rear()
+                        ? PREF_REAR_HOLD_AFTER_SHORT_TURN : PREF_FRONT_HOLD_AFTER_SHORT_TURN, true)) {
+                    allowedHoldMask |= pane.profile.bit();
+                }
+            }
+        }
+        normalVisibleMask = desired & availableMask;
+        long now = SystemClock.elapsedRealtime();
+        int retained = shortTurnHold.retainedMask(blink, normalVisibleMask, allowedHoldMask, now);
+        desired = normalVisibleMask | retained;
+        handler.removeCallbacks(holdExpired);
+        long deadline = shortTurnHold.nextDeadline();
+        if (deadline > now) handler.postDelayed(holdExpired, deadline - now);
+        for (PaneState pane : panes) {
+            boolean requested = (desired & pane.profile.bit()) != 0;
             setVisible(pane, requested,
-                    requested ? "trigger_active" : "trigger_inactive");
+                    (retained & pane.profile.bit()) != 0 ? "short_turn_hold"
+                            : requested ? "trigger_active" : "trigger_inactive");
         }
         applyWarnings();
     }
@@ -1608,6 +1659,7 @@ final class BlindSpotOverlayController {
     }
 
     private void destroyAll(String reason) {
+        clearShortTurnHold();
         handler.removeCallbacks(staleState);
         hideAll(reason);
         if (helper != null) {
@@ -1624,6 +1676,12 @@ final class BlindSpotOverlayController {
         clusterChangePending = false;
         rebindRequired = false;
         for (PaneState pane : panes) pane.reset();
+    }
+
+    private void clearShortTurnHold() {
+        shortTurnHold.clear();
+        normalVisibleMask = 0;
+        handler.removeCallbacks(holdExpired);
     }
 
     static boolean matchesCameraOpenEvent(

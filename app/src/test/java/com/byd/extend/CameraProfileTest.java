@@ -2,9 +2,6 @@ package com.byd.extend;
 
 import org.junit.Test;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -102,27 +99,22 @@ public final class CameraProfileTest {
     }
 
     @Test
-    public void evaluateUsesEachPreparedPaneTargetForPanoramaSuppression() throws Exception {
-        String source = sourceText("java/com/byd/extend/BlindSpotOverlayController.java");
-        int evaluate = source.indexOf("private void evaluate() {");
-        int desired = source.indexOf("int desired = desiredCameraMask(", evaluate);
-        int hardBlock = source.indexOf("if (isHardBlocked()) desired = 0;", desired);
-        String desiredInputs = source.substring(desired, hardBlock);
-        assertTrue(desiredInputs.contains("settings.getBoolean(PREF_ENABLED, false),\n"));
-        assertTrue(desiredInputs.contains("settings.getBoolean(PREF_FRONT_ENABLED, false),\n"));
-        assertFalse(desiredInputs.contains("panoramaSuppresses"));
-        assertFalse(desiredInputs.contains("PanoramaSuppression"));
-        assertFalse(desiredInputs.contains("rearSuppressed"));
-        assertFalse(desiredInputs.contains("frontSuppressed"));
-        int panes = source.indexOf("for (PaneState pane : panes) {", evaluate);
-        int target = source.indexOf("!panoramaSuppresses(pane.target,", panes);
-        int group = source.indexOf("pane.profile.rear()", target);
-        int options = source.indexOf(
-                "? rearPanoramaSuppression : frontPanoramaSuppression", group);
-        int visible = source.indexOf("setVisible(pane, requested,", options);
-        assertTrue(evaluate >= 0 && desired > evaluate && hardBlock > desired
-                && panes > hardBlock && target > panes
-                && group > target && options > group && visible > options);
+    public void panoramaCancelsTabletHoldWithoutCancelingClusterOrResurrectingOldHold() {
+        CameraProfile tablet = CameraProfile.of(CameraProfile.REAR_LEFT);
+        CameraProfile cluster = CameraProfile.of(CameraProfile.FRONT_LEFT);
+        int both = tablet.bit() | cluster.bit();
+        BlindCameraHold hold = new BlindCameraHold();
+        hold.retainedMask(2, both, both, 10);
+        hold.acceptEnd(100, 2, 2, both, 100);
+        assertEquals(both, hold.retainedMask(1, 0, both, 100));
+        int allowed = both;
+        if (BlindSpotOverlayController.panoramaSuppresses(
+                CameraDisplayTarget.TABLET, true, true, true)) allowed &= ~tablet.bit();
+        if (BlindSpotOverlayController.panoramaSuppresses(
+                CameraDisplayTarget.CLUSTER, true, true, true)) allowed &= ~cluster.bit();
+        assertEquals(cluster.bit(), hold.retainedMask(1, 0, allowed, 200));
+        assertEquals(cluster.bit(), hold.retainedMask(1, 0, both, 300));
+        assertEquals(0, hold.retainedMask(1, 0, both, 3100));
     }
 
     @Test
@@ -180,10 +172,4 @@ public final class CameraProfileTest {
                 BlindSpotOverlayController.readPanoramaSuppression(settings, profile.front()));
     }
 
-    private static String sourceText(String relative) throws java.io.IOException {
-        Path path = Path.of("src/main", relative);
-        if (!Files.exists(path)) path = Path.of("app").resolve(path);
-        return new String(Files.readAllBytes(path),
-                java.nio.charset.StandardCharsets.UTF_8).replace("\r\n", "\n");
-    }
 }

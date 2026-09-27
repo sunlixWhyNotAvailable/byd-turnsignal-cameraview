@@ -4267,6 +4267,14 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (target instanceof ToggleTarget.Blind) {
             ToggleTarget.Blind blind = (ToggleTarget.Blind) target;
+            if (blind.getId() == ToggleId.BlindHoldAfterShortTurn) {
+                String key = blind.getGroup() == CameraGroup.Front
+                        ? BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN
+                        : BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN;
+                preferences.edit().putBoolean(key, value).apply();
+                CameraHelperService.cameraTriggerSettingsChanged(this);
+                return;
+            }
             if (blind.getId() == ToggleId.BlindSuppressWhilePanorama) {
                 String key = blind.getGroup() == CameraGroup.Front
                         ? BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA
