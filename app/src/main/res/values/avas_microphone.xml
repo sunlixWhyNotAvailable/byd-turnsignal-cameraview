@@ -12,4 +12,8 @@
     <string name="avas_mic_stop">Stop microphone</string>
     <string name="avas_mic_broadcast_indicator">Microphone: audio is being broadcast externally</string>
     <string name="avas_mic_indicator_unavailable">Microphone is active, but its on-screen indicator could not be shown.</string>
+    <string name="avas_mic_noise_suppression">Noise suppression</string>
+    <string name="avas_mic_echo_cancellation">Echo cancellation</string>
+    <string name="avas_mic_effect_unsupported">Not supported on this device</string>
+    <string name="avas_mic_effect_failed">%1$s could not be applied. Microphone speech continues.</string>
 </resources>

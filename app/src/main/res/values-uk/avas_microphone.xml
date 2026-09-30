@@ -12,4 +12,8 @@
     <string name="avas_mic_stop">Зупинити мікрофон</string>
     <string name="avas_mic_broadcast_indicator">Мікрофон: звук транслюється назовні</string>
     <string name="avas_mic_indicator_unavailable">Мікрофон активний, але індикатор на екрані не вдалося показати.</string>
+    <string name="avas_mic_noise_suppression">Шумодавлення</string>
+    <string name="avas_mic_echo_cancellation">Приглушення відлуння</string>
+    <string name="avas_mic_effect_unsupported">Не підтримується на цьому пристрої</string>
+    <string name="avas_mic_effect_failed">Не вдалося застосувати «%1$s». Мовлення через мікрофон триває.</string>
 </resources>

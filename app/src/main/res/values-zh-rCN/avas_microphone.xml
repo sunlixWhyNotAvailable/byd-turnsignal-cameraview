@@ -12,4 +12,8 @@
     <string name="avas_mic_stop">停止麦克风</string>
     <string name="avas_mic_broadcast_indicator">麦克风：声音正在向外广播</string>
     <string name="avas_mic_indicator_unavailable">麦克风已启动，但无法显示屏幕指示器。</string>
+    <string name="avas_mic_noise_suppression">降噪</string>
+    <string name="avas_mic_echo_cancellation">回声消除</string>
+    <string name="avas_mic_effect_unsupported">此设备不支持</string>
+    <string name="avas_mic_effect_failed">无法应用%1$s。麦克风播音继续。</string>
 </resources>

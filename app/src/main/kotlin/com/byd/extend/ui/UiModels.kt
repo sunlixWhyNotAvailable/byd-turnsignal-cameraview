@@ -471,7 +471,7 @@ object AvasProfileIds {
 enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPlaying, AutomaticQueued }
 enum class AvasActionKind {
     SetEnabled, SetRandom, SetSkipConcurrentLockUnlock, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
-    DeleteAsset, StartAudition, StopAudition,
+    DeleteAsset, StartAudition, StopAudition, SetNoiseSuppression, SetEchoCancellation,
 }
 
 @Immutable
@@ -530,6 +530,10 @@ data class AvasMicrophoneUiState @JvmOverloads constructor(
     val volume: Int = 15,
     val binding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
     val state: String = "stopped",
+    val noiseSuppression: Boolean = true,
+    val echoCancellation: Boolean = true,
+    val noiseSuppressionSupported: Boolean = false,
+    val echoCancellationSupported: Boolean = false,
 ) {
     val busy: Boolean get() = state == "starting" || state == "active"
 }

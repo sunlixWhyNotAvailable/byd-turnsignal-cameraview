@@ -12,4 +12,8 @@
     <string name="avas_mic_stop">Остановить микрофон</string>
     <string name="avas_mic_broadcast_indicator">Микрофон: звук транслируется наружу</string>
     <string name="avas_mic_indicator_unavailable">Микрофон активен, но экранный индикатор не удалось показать.</string>
+    <string name="avas_mic_noise_suppression">Шумоподавление</string>
+    <string name="avas_mic_echo_cancellation">Подавление эха</string>
+    <string name="avas_mic_effect_unsupported">Не поддерживается на этом устройстве</string>
+    <string name="avas_mic_effect_failed">Не удалось применить «%1$s». Трансляция через микрофон продолжается.</string>
 </resources>

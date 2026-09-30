@@ -41,6 +41,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                             && GuardRecovery.isUserShutdownActive(this))) microphone.stop(false);
                     if (AvasMicrophoneSettings.VOLUME.equals(key))
                         microphone.volume(AvasMicrophoneSettings.volume(preferences));
+                    if (AvasMicrophoneSettings.NOISE_SUPPRESSION.equals(key)
+                            || AvasMicrophoneSettings.ECHO_CANCELLATION.equals(key))
+                        microphone.processing(preferences);
                 }
                 if (!isSteeringPreference(key)) return;
                 steeringGestures.bindingsChanged(currentAssignments(preferences));

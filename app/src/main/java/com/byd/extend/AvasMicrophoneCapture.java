@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
@@ -52,6 +53,8 @@ final class AvasMicrophoneCapture {
         volatile boolean cancelled;
         volatile AudioRecord recorder;
         volatile OutputStream output;
+        volatile boolean noiseSuppression;
+        volatile boolean echoCancellation;
         View indicator;
         WindowManager indicatorWindows;
         Runnable timeout;
@@ -83,6 +86,7 @@ final class AvasMicrophoneCapture {
         }
         Session current = new Session();
         session = current;
+        processing(service.getSharedPreferences("settings", 0));
         setState("starting");
         try {
             notification(R.string.avas_mic_starting);
@@ -97,6 +101,7 @@ final class AvasMicrophoneCapture {
     private void capture(Session current) {
         AudioRecord recorder = null;
         ParcelFileDescriptor readEnd = null;
+        AvasMicrophoneEffects effects = null;
         try {
             int minimum = AudioRecord.getMinBufferSize(16_000, AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT);
@@ -107,6 +112,15 @@ final class AvasMicrophoneCapture {
             current.recorder = recorder;
             if (recorder.getState() != AudioRecord.STATE_INITIALIZED)
                 throw new IOException("capture_not_initialized");
+            if (current.cancelled) return;
+            effects = new AvasMicrophoneEffects(recorder.getAudioSessionId(),
+                    label -> main.post(() -> {
+                        if (session != current || current.cancelled) return;
+                        Context locale = localized();
+                        Toast.makeText(service, locale.getString(R.string.avas_mic_effect_failed,
+                                locale.getString(label)), Toast.LENGTH_LONG).show();
+                    }));
+            effects.apply(current.noiseSuppression, current.echoCancellation);
             if (current.cancelled) return;
             if (Build.VERSION.SDK_INT >= 29) {
                 recorder.registerAudioRecordingCallback(main::post,
@@ -143,6 +157,7 @@ final class AvasMicrophoneCapture {
                 throw new IOException("helper_unavailable");
             byte[] pcm = new byte[640]; // 20 ms; pipe backpressure bounds all queued voice data.
             while (!current.cancelled) {
+                effects.apply(current.noiseSuppression, current.echoCancellation);
                 int count = recorder.read(pcm, 0, pcm.length, AudioRecord.READ_BLOCKING);
                 if (count <= 0) throw new IOException("capture_read_" + count);
                 if (!current.cancelled) current.output.write(pcm, 0, count);
@@ -153,6 +168,7 @@ final class AvasMicrophoneCapture {
             close(readEnd);
             close(current.output);
             current.output = null;
+            if (effects != null) effects.close();
             if (recorder != null) {
                 try { recorder.stop(); } catch (RuntimeException ignored) {}
                 try { recorder.release(); } catch (RuntimeException ignored) {}
@@ -187,6 +203,14 @@ final class AvasMicrophoneCapture {
     void volume(int volume) {
         Session current = session;
         if (current != null) CameraHelperService.setAvasMicrophoneVolume(current.id, volume);
+    }
+
+    void processing(SharedPreferences preferences) {
+        Session current = session;
+        if (current != null) {
+            current.noiseSuppression = AvasMicrophoneSettings.noiseSuppression(preferences);
+            current.echoCancellation = AvasMicrophoneSettings.echoCancellation(preferences);
+        }
     }
 
     void unavailable(String sessionId) {

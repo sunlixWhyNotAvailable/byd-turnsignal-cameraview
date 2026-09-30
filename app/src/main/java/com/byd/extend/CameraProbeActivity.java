@@ -3222,7 +3222,11 @@ public final class CameraProbeActivity extends ComponentActivity
                         AvasMicrophoneSettings.enabled(preferences),
                         AvasMicrophoneSettings.volume(preferences),
                         CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasMicrophone),
-                        AvasMicrophoneCapture.state()));
+                        AvasMicrophoneCapture.state(),
+                        AvasMicrophoneSettings.noiseSuppression(preferences),
+                        AvasMicrophoneSettings.echoCancellation(preferences),
+                        AvasMicrophoneEffects.supportsNoiseSuppression(),
+                        AvasMicrophoneEffects.supportsEchoCancellation()));
     }
 
     @Override
@@ -3361,7 +3365,15 @@ public final class CameraProbeActivity extends ComponentActivity
         } else if (action.getKind() == AvasActionKind.StopManual) {
             WeatherRefreshAccessibilityService.stopMicrophone();
         } else if (AvasMicrophoneSettings.enabled(preferences)) {
-            if (action.getKind() == AvasActionKind.SetVolume && action.getIntValue() != null) {
+            if (action.getKind() == AvasActionKind.SetNoiseSuppression && action.getBooleanValue() != null
+                    && AvasMicrophoneEffects.supportsNoiseSuppression()) {
+                preferences.edit().putBoolean(AvasMicrophoneSettings.NOISE_SUPPRESSION,
+                        action.getBooleanValue()).apply();
+            } else if (action.getKind() == AvasActionKind.SetEchoCancellation && action.getBooleanValue() != null
+                    && AvasMicrophoneEffects.supportsEchoCancellation()) {
+                preferences.edit().putBoolean(AvasMicrophoneSettings.ECHO_CANCELLATION,
+                        action.getBooleanValue()).apply();
+            } else if (action.getKind() == AvasActionKind.SetVolume && action.getIntValue() != null) {
                 preferences.edit().putInt(AvasMicrophoneSettings.VOLUME,
                         Math.max(0, Math.min(100, action.getIntValue()))).apply();
             } else if (action.getKind() == AvasActionKind.StartManual) {
