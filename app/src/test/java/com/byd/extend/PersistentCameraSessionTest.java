@@ -1340,6 +1340,36 @@ public final class PersistentCameraSessionTest {
     }
 
     @Test
+    public void sparseDirectReversePreviewClosesWithoutStockShellAndKeepsOnlyItsWarmSources()
+            throws Exception {
+        Trace trace = new Trace();
+        FakeCameraPort camera = new FakeCameraPort(trace);
+        CameraHelperMain.HelperBinder.PersistentSession session = session();
+        FakeEventSink events = new FakeEventSink(trace, session);
+        FakeShellClose shell = new FakeShellClose(trace);
+        session.startProducer(camera, new FakeFanout(trace), session.activityGroup,
+                testSurfaces(2), new int[]{2, 4}, 98,
+                "reverse_preview_direct", false, false);
+        assertFalse(trace.values.contains("add:0"));
+        assertFalse(trace.values.contains("add:1"));
+        assertFalse(trace.values.contains("add:3"));
+        assertTrue(trace.values.contains("add:2"));
+        assertTrue(trace.values.contains("add:4"));
+
+        CameraHelperMain.HelperBinder.CloseOutcome outcome = session.close(
+                camera, session.activityGroup, "display_changed", 98,
+                events, shell, 7, 8);
+        assertFalse(outcome.shellCloseQueued);
+        assertEquals(0, countPrefix(trace.values, "shell:"));
+        assertFalse(session.activityGroup.has());
+        assertTrue(outcome.reverseWarmArmed);
+        assertEquals(CameraSourceDemand.bit(2) | CameraSourceDemand.bit(4),
+                session.reverseWarmLease.sourceMask());
+        assertTrue(session.expireReverseDemand(camera, outcome.reverseWarmGeneration, 98, 8));
+        assertFalse(session.hasSourceDemand());
+    }
+
+    @Test
     public void reverseVisibilitySourceLookupWorksBeforeAndAfterStockInput() {
         CameraHelperMain.HelperBinder.ConsumerGroup group =
                 new CameraHelperMain.HelperBinder.ConsumerGroup(

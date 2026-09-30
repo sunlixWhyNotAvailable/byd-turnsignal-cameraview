@@ -762,6 +762,7 @@ internal fun NumericSetting(
     onCommitSession: ((String, Long) -> Unit)? = null,
     decimalPlaces: Int = 0,
     labelWidth: Dp? = null,
+    inputWidth: Dp? = null,
 ) {
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -929,7 +930,8 @@ internal fun NumericSetting(
             keyboardActions = KeyboardActions(onDone = { finishEditing() }),
             cursorBrush = SolidColor(colors.accent), textStyle = TextStyle(if (enabled) colors.text else colors.muted.copy(alpha = .62f), fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center),
-            modifier = (if (narrowInput) Modifier.width(if (compact) 52.dp else 64.dp)
+            modifier = (if (inputWidth != null) Modifier.width(inputWidth)
+                else if (narrowInput) Modifier.width(if (compact) 52.dp else 64.dp)
                 else Modifier.width(if (compact) 64.dp else 80.dp)).height(if (compact) 36.dp else 44.dp)
                 .onPreviewKeyEvent {
                     if (it.key == Key.Enter || it.key == Key.NumPadEnter) {

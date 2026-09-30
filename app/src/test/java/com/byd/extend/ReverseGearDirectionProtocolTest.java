@@ -91,6 +91,73 @@ public final class ReverseGearDirectionProtocolTest {
     }
 
     @Test
+    public void technicalRetryRestoresManualModeUntilANewGearEdgeOrSessionReset() {
+        ReverseCameraController.DirectionState state = new ReverseCameraController.DirectionState();
+        assertFalse(ReverseCameraController.switchByGear(new TestSharedPreferences()));
+        state.accept(ReverseGearSessionPolicy.MODE_FRONT, false, false);
+        state.rememberForRetry();
+
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+        state.resetRequest();
+        state.rememberForRetry();
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+        assertFalse(state.acceptGearTarget(ReverseGearSessionPolicy.MODE_REAR, false));
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+        assertTrue(state.acceptGearTarget(ReverseGearSessionPolicy.MODE_REAR, true));
+        assertEquals(ReverseGearSessionPolicy.MODE_REAR,
+                state.modeAfterTargetsReady(ReverseGearSessionPolicy.MODE_REAR));
+
+        state.rememberForRetry();
+        state.reset();
+        assertFalse(state.hasRetryMode());
+    }
+
+    @Test
+    public void invalidTelemetryInEligibleSessionPreservesManualModeForHelperRestart() {
+        ReverseCameraController.DirectionState state = new ReverseCameraController.DirectionState();
+        state.accept(ReverseGearSessionPolicy.MODE_FRONT, false, false);
+
+        assertFalse(state.rememberForTelemetryLoss(false, false));
+        assertTrue(state.rememberForTelemetryLoss(true, false));
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+        assertFalse(state.acceptGearTarget(ReverseGearSessionPolicy.MODE_REAR, false));
+
+        // A later helper-death stop must not overwrite the selection with the request default.
+        state.rememberForRetry();
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+        assertFalse(state.rememberForTelemetryLoss(true, true));
+        assertEquals(ReverseGearSessionPolicy.MODE_FRONT, state.modeAfterTargetsReady(-1));
+
+        // A confirmed new gear edge overrides retry intent; an actual session reset clears it.
+        assertTrue(state.acceptGearTarget(ReverseGearSessionPolicy.MODE_REAR, true));
+        state.reset();
+        assertFalse(state.hasRetryMode());
+    }
+
+    @Test
+    public void reverseTargetIdentityRequiresCurrentRequestDisplaySourceAndGeneration() {
+        assertTrue(ReverseCameraController.matchesReverseTarget(
+                12, 12, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.CLUSTER,
+                3, 3, 41, 41));
+        assertFalse(ReverseCameraController.matchesReverseTarget(
+                11, 12, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.CLUSTER,
+                3, 3, 41, 41));
+        assertFalse(ReverseCameraController.matchesReverseTarget(
+                12, 12, CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER,
+                3, 3, 41, 41));
+        assertFalse(ReverseCameraController.matchesReverseTarget(
+                12, 12, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.CLUSTER,
+                2, 3, 41, 41));
+        assertFalse(ReverseCameraController.matchesReverseTarget(
+                12, 12, CameraDisplayTarget.CLUSTER, CameraDisplayTarget.CLUSTER,
+                3, 3, 40, 41));
+        assertTrue(ReverseCameraController.matchesCameraShellEventEpoch(41, 0));
+        assertTrue(ReverseCameraController.matchesCameraShellEventEpoch(41, 41));
+        assertFalse(ReverseCameraController.matchesCameraShellEventEpoch(41, 40));
+        assertFalse(ReverseCameraController.matchesCameraShellEventEpoch(41, -1));
+    }
+
+    @Test
     public void controllerRecordsOnlyAcceptedRequestsBeforeSelectorCallbacks() throws Exception {
         String source = read("ReverseCameraController.java");
         assertTrue(source.contains("if (!activeHelper.setReverseSideMode(activeRequestId, mode)) return;"));

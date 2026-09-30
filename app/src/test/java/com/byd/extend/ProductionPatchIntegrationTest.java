@@ -300,7 +300,6 @@ public final class ProductionPatchIntegrationTest {
         assertTrue(activity.contains("resetProductionReverseLayout(action.getReverseElement(),"));
         assertTrue(activity.contains("reverseCompositionStatusProfile()"));
         assertTrue(activity.contains("selectedTab == TAB_REVERSE_CAMERAS"));
-        assertTrue(activity.contains("inputGenerations.length == 4 || inputGenerations.length == 5"));
 
         String helper = readMain("java/com/byd/extend/CameraHelperMain.java");
         assertTrue(helper.contains("updateActivityReverseVisibility("));
@@ -312,7 +311,7 @@ public final class ProductionPatchIntegrationTest {
                 activity.indexOf("public String onProductionUiPreview"));
         assertTrue(queuedVisibility.contains("current != helper || !requestedOpen"));
         assertTrue(queuedVisibility.contains("requestId != activeActivityCameraRequestId"));
-        assertTrue(queuedVisibility.contains("bundleGenerations != activeActivityInputGenerations"));
+        assertTrue(queuedVisibility.contains("generations != activeReversePreviewDirectGenerations"));
         String mirror = activity.substring(activity.indexOf("private TextureView createProductionMirror"),
                 activity.indexOf("private CameraDewarpConfig loadProductionCalibrationDewarp"));
         assertTrue(mirror.contains("if (!calibrationHostBundle.acceptMirror(owner, mirror, raw)) return;"));

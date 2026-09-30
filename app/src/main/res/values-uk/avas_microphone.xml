@@ -10,4 +10,6 @@
     <string name="avas_mic_stopped">Мікрофон зупинено</string>
     <string name="avas_mic_error">Мікрофон недоступний</string>
     <string name="avas_mic_stop">Зупинити мікрофон</string>
+    <string name="avas_mic_broadcast_indicator">Мікрофон: звук транслюється назовні</string>
+    <string name="avas_mic_indicator_unavailable">Мікрофон активний, але індикатор на екрані не вдалося показати.</string>
 </resources>

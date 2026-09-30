@@ -908,6 +908,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private int productionPreviewFrameUpdates;
     private int pendingReversePreviewRequestId;
     private int[] pendingReversePreviewGenerations;
+    private int activeReversePreviewDisplayTarget = CameraDisplayTarget.TABLET;
+    private int[] activeReversePreviewSourceIndexes = new int[0];
+    private volatile int[] activeReversePreviewDirectGenerations = new int[0];
     private int reversePreviewBackgroundFailureRequestId;
     private Bitmap calibrationCaptureBitmap;
     private Bitmap calibrationResultBitmap;
@@ -3020,7 +3023,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     @Override
     public void onReverseSurfacesReady(int[] generations) {
-        reverseCameraSurfacesReady = true;
+        reverseCameraSurfacesReady = reverseCameraPreview != null
+                && reverseCameraPreview.previewSurfacesReady();
         record("reverse_preview_surfaces", "state", "ready",
                 "generations", java.util.Arrays.toString(generations));
         maybeOpenReversePreview();
@@ -3070,6 +3074,17 @@ public final class CameraProbeActivity extends ComponentActivity
         pendingReversePreviewGenerations = null;
         if (activePreview == reverseCameraPreview) closeCamera("reverse_surface_destroyed");
         updateControls();
+    }
+
+    @Override
+    public void onReverseOutputSetChanged(int displayTarget, int[] sourceIndexes) {
+        reverseCameraSurfacesReady = false;
+        if (activePreview == reverseCameraPreview && requestedOpen
+                && (activeReversePreviewDisplayTarget != displayTarget
+                || !java.util.Arrays.equals(activeReversePreviewSourceIndexes, sourceIndexes))
+                && !cameraTransition.pending()) {
+            closeCameraForTransition("reverse_output_set_changed");
+        }
     }
 
     static boolean reverseSurfaceLossIsTerminal(
@@ -4106,7 +4121,16 @@ public final class CameraProbeActivity extends ComponentActivity
     private void syncProductionReverseDisplayTarget(com.byd.extend.ui.DisplayTarget target) {
         int displayTarget = target == com.byd.extend.ui.DisplayTarget.Cluster
                 ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
-        if (reverseCameraPreview != null) reverseCameraPreview.setDisplayTarget(displayTarget);
+        if (reverseCameraPreview != null) {
+            if (reverseCameraPreview.displayTarget() != displayTarget) {
+                reverseCameraSurfacesReady = false;
+                if (activePreview == reverseCameraPreview && requestedOpen
+                        && !cameraTransition.pending()) {
+                    closeCameraForTransition("reverse_display_changed");
+                }
+            }
+            reverseCameraPreview.setDisplayTarget(displayTarget);
+        }
         if (productionReverseEditor != null) {
             productionReverseEditor.setDisplayTarget(displayTarget);
             productionReverseEditor.setLanguage(runtimeLanguage());
@@ -4122,21 +4146,17 @@ public final class CameraProbeActivity extends ComponentActivity
         if (helper == null || !helper.isBinderAlive()
                 || !requestedOpen || activePreview != reverseCameraPreview
                 || activeActivityCameraRequestId <= 0
-                || (activeActivityInputGenerations.length != 4
-                && activeActivityInputGenerations.length != 5)) return;
+                || activeReversePreviewDirectGenerations.length == 0) return;
         final IBinder current = helper;
         final int requestId = activeActivityCameraRequestId;
         // Each request publishes a new immutable generation array. Keep that bundle identity
         // through the IPC queue; a close/rebind makes an already queued update stale.
-        final int[] bundleGenerations = activeActivityInputGenerations;
-        // The existing transaction carries direct-pane generations, without the stock base.
-        final int[] generations = java.util.Arrays.copyOfRange(
-                bundleGenerations, 1, bundleGenerations.length);
+        final int[] generations = activeReversePreviewDirectGenerations;
         final int visibilityMask = ReverseCameraController.loadVisibilityMask(preferences);
         final boolean widgetVisible = ReverseCameraController.loadWidgetVisible(preferences);
         ipcExecutor.execute(() -> {
             if (current != helper || !requestedOpen || requestId != activeActivityCameraRequestId
-                    || bundleGenerations != activeActivityInputGenerations) return;
+                    || generations != activeReversePreviewDirectGenerations) return;
             Parcel data = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
@@ -12595,24 +12615,32 @@ public final class CameraProbeActivity extends ComponentActivity
     private void maybeOpenReversePreview() {
         if (!canAutoOpenSelectedPreview()
                 || selectedTab != TAB_REVERSE_CAMERAS || helper == null || !cameraDiscovered
+                || isProductionCalibrationSection()
                 || reverseCameraPreview == null
                 || checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED
                 || requestedOpen || cameraHandoffPending || cameraTransition.pending()) {
             return;
         }
-        if (prepareAutomaticResumeInputIfNeeded() || !reverseCameraSurfacesReady) return;
+        if (reverseCameraPreview.previewSourceIndexes().length == 0) {
+            clearReversePanoramaStatus();
+            return;
+        }
+        if (prepareAutomaticResumeInputIfNeeded() || !reverseCameraSurfacesReady
+                || !reverseCameraPreview.previewSurfacesReady()) return;
         int requestId = nextActivityCameraRequestId();
         ReverseCameraCompositionView.SurfaceBundle bundle;
         try {
             bundle = reverseCameraPreview.acquirePreviewSurfaces(requestId);
-            beginActivityCameraRequest(true, requestId, bundle.generations);
+            beginActivityCameraRequest(true, requestId, bundle.frameGenerations);
+            activeReversePreviewDisplayTarget = reverseCameraPreview.displayTarget();
+            activeReversePreviewSourceIndexes = bundle.sourceIndexes.clone();
+            activeReversePreviewDirectGenerations = bundle.generations.clone();
             reversePreviewBackgroundFailureRequestId = 0;
             reverseCameraPreview.setDewarpStatsContext(
-                    requestId, java.util.Arrays.copyOfRange(
-                            bundle.generations, 1, bundle.generations.length));
+                    requestId, bundle.generations);
             pendingReversePreviewRequestId = requestId;
-            pendingReversePreviewGenerations = bundle.generations.clone();
+            pendingReversePreviewGenerations = bundle.frameGenerations.clone();
         } catch (Throwable error) {
             activeActivityCameraRequestId = 0;
             activeActivityCameraProfile = null;
@@ -12633,9 +12661,11 @@ public final class CameraProbeActivity extends ComponentActivity
         activePreviewCover = null;
         activeCameraViewpoint = -1;
         requestedOpen = true;
-        publishReversePanoramaStatus(
-                runtimeText(R.string.runtime_status_opening_panorama),
-                StatusTone.Warning, true);
+        if (bundle.panoramaSurface != null) {
+            publishReversePanoramaStatus(
+                    runtimeText(R.string.runtime_status_opening_panorama),
+                    StatusTone.Warning, true);
+        } else clearReversePanoramaStatus();
         publishCameraStatus(activeActivityCameraProfile, null,
                 "Відкриття камер заднього ходу...", StatusTone.Warning, true);
         record("camera_status", "profile", "reverse", "text",
@@ -12645,12 +12675,15 @@ public final class CameraProbeActivity extends ComponentActivity
         record("reverse_preview_open",
                 "camera_owner", CameraHelperMain.CAMERA_OWNER_ACTIVITY,
                 "request_id", requestId, "consumer_generation", 0,
-                "input_generations", java.util.Arrays.toString(bundle.generations),
+                "display_target", activeReversePreviewDisplayTarget,
+                "source_indexes", java.util.Arrays.toString(bundle.sourceIndexes),
+                "panorama", bundle.panoramaSurface != null,
+                "input_generations", java.util.Arrays.toString(bundle.frameGenerations),
                 "generations", java.util.Arrays.toString(bundle.generations));
         updateControls();
         IBinder current = helper;
         ipcExecutor.execute(() -> transactOpenReversePreview(
-                current, bundle.surfaces, requestId));
+                current, bundle, requestId));
     }
 
     private void maybeOpenProductionPreview() {
@@ -12810,8 +12843,7 @@ public final class CameraProbeActivity extends ComponentActivity
         // owner.  Reverse composition is one combined frame, so its status remains anchored to
         // the canonical Rear pane even when Background, Widget, or another pane is selected.
         boolean combinedReverseComposition = selectedTab == TAB_REVERSE_CAMERAS
-                && inputGenerations != null
-                && (inputGenerations.length == 4 || inputGenerations.length == 5);
+                && !isProductionCalibrationSection();
         activeActivityCameraProfile = automatic
                 ? combinedReverseComposition
                         ? reverseCompositionStatusProfile() : selectedProductionProfile()
@@ -13138,10 +13170,13 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!CameraDewarpStatsEvent.shouldRecord(
                 activityResumed, requestedOpen,
                 activePreview == reverseCameraPreview, activeActivityCameraRequestId)
-                || stats.requestId != activeActivityCameraRequestId
-                || cameraIndex < 1
-                || cameraIndex >= activeActivityInputGenerations.length
-                || stats.contextGeneration != activeActivityInputGenerations[cameraIndex]) return;
+                || stats.requestId != activeActivityCameraRequestId) return;
+        int sourceOffset = -1;
+        for (int i = 0; i < activeReversePreviewSourceIndexes.length; i++) {
+            if (activeReversePreviewSourceIndexes[i] == cameraIndex) sourceOffset = i;
+        }
+        if (sourceOffset < 0
+                || stats.contextGeneration != activeReversePreviewDirectGenerations[sourceOffset]) return;
         record("camera_dewarp_stats", CameraDewarpStatsEvent.reverse(
                 stats.requestId, cameraIndex, stats));
     }
@@ -13817,20 +13852,27 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void transactOpenReversePreview(
-            IBinder current, Surface[] surfaces, int requestId) {
+            IBinder current, ReverseCameraCompositionView.SurfaceBundle bundle, int requestId) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraHelperMain.DESCRIPTOR);
-            data.writeInt(surfaces.length);
-            for (Surface surface : surfaces) surface.writeToParcel(data, 0);
             data.writeInt(requestId);
-            requireTransaction(current, CameraHelperMain.TX_OPEN_REVERSE_PREVIEW, data, reply);
+            data.writeInt(bundle.panoramaSurface != null ? 1 : 0);
+            if (bundle.panoramaSurface != null) bundle.panoramaSurface.writeToParcel(data, 0);
+            data.writeInt(bundle.sourceIndexes.length);
+            for (int i = 0; i < bundle.sourceIndexes.length; i++) {
+                data.writeInt(bundle.sourceIndexes[i]);
+                bundle.surfaces[i].writeToParcel(data, 0);
+            }
+            requireTransaction(current, CameraHelperMain.TX_OPEN_REVERSE_PREVIEW_TARGETED, data, reply);
             String result = reply.readString();
             record("ipc_reply", "operation", "open_reverse_preview",
                     "request_id", requestId, "reply", result);
             JSONObject json = new JSONObject(result);
-            if (!"reverse_preview_shell_open_queued".equals(json.optString("kind"))) {
+            String acceptedKind = bundle.panoramaSurface != null
+                    ? "reverse_preview_shell_open_queued" : "camera_opened";
+            if (!acceptedKind.equals(json.optString("kind"))) {
                 throw new IllegalStateException(json.optString("error", json.optString("kind")));
             }
         } catch (Throwable error) {
@@ -14692,8 +14734,8 @@ public final class CameraProbeActivity extends ComponentActivity
                             invalidStockSurfaceRetryUsed = false;
                         }
                         if (activePreview == reverseCameraPreview
-                                && "reverse_preview_with_stock_base".equals(
-                                        json.optString("view"))) {
+                                && ("reverse_preview_with_stock_base".equals(json.optString("view"))
+                                || "reverse_preview_direct".equals(json.optString("view")))) {
                             if (reversePreviewBackgroundFailureRequestId == requestId) {
                                 publishReversePreviewBackgroundUnavailable();
                             } else {
@@ -15744,6 +15786,8 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void clearPreview(String reason) {
+        activeReversePreviewSourceIndexes = new int[0];
+        activeReversePreviewDirectGenerations = new int[0];
         if (activePreview == cameraPreview) cancelProductionPreviewFirstFrameWait();
         if (activePreview == reverseCameraPreview && reverseCameraPreview != null) {
             stopReverseCalibrationCopies(true);

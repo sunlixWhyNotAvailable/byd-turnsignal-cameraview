@@ -47,6 +47,7 @@ final class CameraHelperMain {
     static final int TX_OPEN_REVERSE_PREVIEW = IBinder.FIRST_CALL_TRANSACTION + 9;
     static final int TX_UPDATE_VISUALS = IBinder.FIRST_CALL_TRANSACTION + 10;
     static final int TX_UPDATE_REVERSE_VISIBILITY = IBinder.FIRST_CALL_TRANSACTION + 11;
+    static final int TX_OPEN_REVERSE_PREVIEW_TARGETED = IBinder.FIRST_CALL_TRANSACTION + 12;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
     static final int ADB_AUTH_MODE_AUTO_ONCE = 0;
     static final int ADB_AUTH_MODE_FORCE = 1;
@@ -368,6 +369,17 @@ final class CameraHelperMain {
                     reply.writeString(result);
                     return true;
                 }
+                if (code == TX_OPEN_REVERSE_PREVIEW_TARGETED) {
+                    int requestId = data.readInt();
+                    requireActivityRequestId(requestId);
+                    ReversePreviewRequest requested = readTargetedReversePreview(data);
+                    String result = openReversePreview(
+                            requested.panoOutput, requested.directSurfaces,
+                            requested.directIndexes, requestId);
+                    reply.writeNoException();
+                    reply.writeString(result);
+                    return true;
+                }
                 if (code == TX_UPDATE_VISUALS) {
                     if (!CameraShellProtocol.isCallerAllowed(
                             Binder.getCallingUid(), Process.myUid())) {
@@ -393,9 +405,9 @@ final class CameraHelperMain {
                     int requestId = data.readInt();
                     requireActivityRequestId(requestId);
                     int count = data.readInt();
-                    if (count != 3 && count != 4) {
+                    if (count < 1 || count > 4) {
                         throw new IllegalArgumentException(
-                                "three or four reverse generations required");
+                                "one to four reverse generations required");
                     }
                     int[] generations = new int[count];
                     for (int i = 0; i < count; i++) {
@@ -737,8 +749,23 @@ final class CameraHelperMain {
             int directCount = requestedSurfaces.length - 1;
             Surface[] directSurfaces = Arrays.copyOfRange(
                     requestedSurfaces, 1, requestedSurfaces.length);
+            return openReversePreview(
+                    panoOutput, directSurfaces, reverseIndexes(directCount), requestId);
+        }
+
+        private synchronized String openReversePreview(
+                Surface panoOutput, Surface[] directSurfaces,
+                int[] directIndexes, int requestId) {
+            String validation = validateReversePreviewTargets(
+                    panoOutput, directSurfaces, directIndexes);
+            if (requestId <= 0 || validation != null) {
+                releaseSurface(panoOutput);
+                releaseSurfaces(directSurfaces);
+                throw new IllegalArgumentException(validation == null
+                        ? "reverse request id required" : validation);
+            }
             if (reverseGroup.has()) {
-                panoOutput.release();
+                releaseSurface(panoOutput);
                 releaseSurfaces(directSurfaces);
                 emit("camera_error", "stage", "reverse_preview_owner_busy",
                         "camera_tag", "pano_h", "camera_owner", CAMERA_OWNER_ACTIVITY,
@@ -746,6 +773,12 @@ final class CameraHelperMain {
                         "producer_epoch", producerEpoch,
                         "error", "reverse camera owns AVM");
                 return result("camera_busy", "reverse camera owns AVM", -1, "pano_h");
+            }
+            if (panoOutput == null) {
+                return attachPersistentGroup(
+                        activityGroup, directSurfaces, directIndexes, requestId,
+                        "reverse_preview_direct", false, false,
+                        null, "reverse_preview_direct_open");
             }
             // A prior stock shell failure is terminal for that request only.  Do not let a
             // delayed error from it be mistaken for a newly opened background request.
@@ -757,18 +790,17 @@ final class CameraHelperMain {
             String directResult;
             try {
                 directResult = attachPersistentGroup(
-                        activityGroup, directSurfaces,
-                        reverseIndexes(directCount), requestId,
+                        activityGroup, directSurfaces, directIndexes, requestId,
                         "reverse_preview_with_stock_base", false, false,
                         null, "reverse_preview_direct_open");
             } catch (RuntimeException | Error error) {
                 // attachPersistentGroup owns the direct array on validation/open failure;
                 // panoOutput is intentionally separate until the stock request is queued.
-                panoOutput.release();
+                releaseSurface(panoOutput);
                 throw error;
             }
             if (isCameraErrorResult(directResult) || isCameraBusyResult(directResult)) {
-                panoOutput.release();
+                releaseSurface(panoOutput);
                 return directResult;
             }
             reverseStockActive = true;
@@ -786,10 +818,43 @@ final class CameraHelperMain {
                             inputSurface, requestId, callbackProducerEpoch));
             emit("camera_shell_request", "action", "open_reverse_preview_base",
                     "view", "VIEW_2D_REAR", "request_id", requestId,
-                    "preview_indexes", previewIndexes(directCount),
+                    "preview_indexes", previewIndexes(true, directIndexes),
                     "component", "reverse_preview_background",
                     "producer_epoch", callbackProducerEpoch);
             return result("reverse_preview_shell_open_queued", null);
+        }
+
+        private static String validateReversePreviewTargets(
+                Surface panoOutput, Surface[] directSurfaces, int[] directIndexes) {
+            if (directSurfaces == null || directIndexes == null
+                    || directSurfaces.length < 1 || directSurfaces.length > 4
+                    || directSurfaces.length != directIndexes.length) {
+                return "one to four direct reverse Surface/index pairs required";
+            }
+            if (panoOutput != null && !panoOutput.isValid()) {
+                return "Pano base Surface is invalid";
+            }
+            boolean[] seen = new boolean[5];
+            for (int i = 0; i < directIndexes.length; i++) {
+                int sourceIndex = directIndexes[i];
+                Surface surface = directSurfaces[i];
+                if (sourceIndex < 1 || sourceIndex > 4 || seen[sourceIndex]) {
+                    return "direct reverse source indexes must be a unique subset of 1..4";
+                }
+                if (surface == null || !surface.isValid()) {
+                    return "direct reverse Surface is invalid";
+                }
+                seen[sourceIndex] = true;
+            }
+            return null;
+        }
+
+        private static String previewIndexes(boolean hasPano, int[] directIndexes) {
+            int[] indexes = new int[directIndexes.length + (hasPano ? 1 : 0)];
+            int offset = 0;
+            if (hasPano) indexes[offset++] = 0;
+            System.arraycopy(directIndexes, 0, indexes, offset, directIndexes.length);
+            return Arrays.toString(indexes);
         }
 
         private synchronized void attachReversePreviewInputSurface(
@@ -1167,41 +1232,49 @@ final class CameraHelperMain {
                 boolean widgetVisible) throws Exception {
             if (!activityGroup.attached || !activityGroup.has()) return false;
             if (activityGroup.requestId != requestId
-                    || !"reverse_preview_with_stock_base".equals(activityGroup.view)
+                    || !isActivityReversePreviewView(activityGroup.view)
                     || activityGroup.indexes.length != activityGroup.surfaces.length
-                    || generations.length < 3 || generations.length > 4) {
+                    || generations == null || generations.length < 1
+                    || generations.length > 4) {
                 throw new IllegalStateException("reverse visibility request is stale");
             }
-            boolean[] seen = new boolean[generations.length + 1];
+            boolean hasPanoBase =
+                    "reverse_preview_with_stock_base".equals(activityGroup.view);
+            boolean[] seen = new boolean[5];
             boolean stockInput = false;
+            int directCount = 0;
             for (int sourceIndex : activityGroup.indexes) {
                 if (sourceIndex == 0) {
-                    if (stockInput) throw new IllegalStateException(
+                    if (!hasPanoBase || stockInput) throw new IllegalStateException(
                             "reverse visibility request is stale");
                     stockInput = true;
                     continue;
                 }
-                if (sourceIndex < 1 || sourceIndex > generations.length
-                        || seen[sourceIndex]) {
+                if (sourceIndex < 1 || sourceIndex > 4 || seen[sourceIndex]) {
                     throw new IllegalStateException("reverse visibility request is stale");
                 }
                 seen[sourceIndex] = true;
+                directCount++;
             }
-            for (int i = 0; i < generations.length; i++) {
-                int sourceIndex = i + 1;
-                int position = activityGroup.indexOfIndex(sourceIndex);
-                if (!seen[sourceIndex] || position < 0 || activityGroup.surfaces[position] == null
-                        || !activityGroup.surfaces[position].isValid()) {
+            if (directCount != generations.length) {
+                throw new IllegalStateException("reverse visibility request is stale");
+            }
+            for (int generation : generations) {
+                if (generation <= 0) {
                     throw new IllegalStateException("reverse visibility request is stale");
                 }
             }
             // Source indexes are stable whether the optional stock input 0 is attached.  Only
             // the three mask-backed direct targets change here; optional Front (index 4) keeps
             // its selector-owned state.
-            for (int sourceIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
-                    sourceIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
-                    sourceIndex++) {
+            for (int sourceIndex : activityGroup.indexes) {
+                if (sourceIndex < ReverseCameraLayout.REAR_CAMERA_INDEX
+                        || sourceIndex > ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) continue;
                 int position = activityGroup.indexOfIndex(sourceIndex);
+                if (position < 0 || activityGroup.surfaces[position] == null
+                        || !activityGroup.surfaces[position].isValid()) {
+                    throw new IllegalStateException("reverse visibility request is stale");
+                }
                 persistentSession.setActive(
                         activityGroup, activityGroup.surfaces[position],
                         ReverseCameraLayout.isVisible(visibilityMask, sourceIndex));
@@ -1803,7 +1876,12 @@ final class CameraHelperMain {
         private static boolean isReverseGroup(ConsumerGroup target, String view) {
             return target != null && (CAMERA_OWNER_REVERSE.equals(target.owner)
                     || CAMERA_OWNER_ACTIVITY.equals(target.owner)
-                    && "reverse_preview_with_stock_base".equals(view));
+                    && isActivityReversePreviewView(view));
+        }
+
+        private static boolean isActivityReversePreviewView(String view) {
+            return "reverse_preview_with_stock_base".equals(view)
+                    || "reverse_preview_direct".equals(view);
         }
 
         private String openPersistentProducer(
@@ -3537,7 +3615,7 @@ final class CameraHelperMain {
                         && group.indexes[failedPosition] == 4
                         && (group == reverseGroup
                         || group == activityGroup
-                        && "reverse_preview_with_stock_base".equals(group.view))) {
+                        && isActivityReversePreviewView(group.view))) {
                     Surface detached = removeTarget(group, failedPosition);
                     rememberDetached(detached, group.owner, group.requestId, epoch);
                     if (detached != null) detached.release();
@@ -3884,7 +3962,7 @@ final class CameraHelperMain {
 
             private boolean isReverseOwner(ConsumerGroup group) {
                 return group == reverseGroup || group == activityGroup
-                        && "reverse_preview_with_stock_base".equals(group.view);
+                        && isActivityReversePreviewView(group.view);
             }
 
             private void ensureSources(PersistentCameraPort port, int[] indexes)
@@ -4240,6 +4318,53 @@ final class CameraHelperMain {
             }
         }
 
+        private static final class ReversePreviewRequest {
+            final Surface panoOutput;
+            final Surface[] directSurfaces;
+            final int[] directIndexes;
+
+            ReversePreviewRequest(
+                    Surface panoOutput, Surface[] directSurfaces, int[] directIndexes) {
+                this.panoOutput = panoOutput;
+                this.directSurfaces = directSurfaces;
+                this.directIndexes = directIndexes;
+            }
+        }
+
+        private static ReversePreviewRequest readTargetedReversePreview(Parcel data) {
+            int hasPanorama = data.readInt();
+            if (hasPanorama != 0 && hasPanorama != 1) {
+                throw new IllegalArgumentException("invalid Pano-base flag");
+            }
+            Surface panoOutput = null;
+            Surface[] directSurfaces = new Surface[0];
+            int[] directIndexes = new int[0];
+            try {
+                if (hasPanorama == 1) {
+                    panoOutput = Surface.CREATOR.createFromParcel(data);
+                }
+                int count = data.readInt();
+                if (count < 1 || count > 4) {
+                    throw new IllegalArgumentException(
+                            "one to four direct reverse Surface/index pairs required");
+                }
+                directSurfaces = new Surface[count];
+                directIndexes = new int[count];
+                for (int i = 0; i < count; i++) {
+                    directIndexes[i] = data.readInt();
+                    directSurfaces[i] = Surface.CREATOR.createFromParcel(data);
+                }
+                String validation = validateReversePreviewTargets(
+                        panoOutput, directSurfaces, directIndexes);
+                if (validation != null) throw new IllegalArgumentException(validation);
+                return new ReversePreviewRequest(panoOutput, directSurfaces, directIndexes);
+            } catch (RuntimeException | Error error) {
+                releaseSurface(panoOutput);
+                releaseSurfaces(directSurfaces);
+                throw error;
+            }
+        }
+
         private static Surface[] readReverseSurfaces(Parcel data) {
             int count = data.readInt();
             if (count != 4 && count != 5) {
@@ -4256,10 +4381,6 @@ final class CameraHelperMain {
                 releaseSurfaces(values);
                 throw error;
             }
-        }
-
-        private static String previewIndexes(int directCount) {
-            return directCount == 4 ? "[0, 1, 2, 3, 4]" : "[0, 1, 2, 3]";
         }
 
         private static int[] reverseIndexes(int directCount) {
@@ -4291,6 +4412,10 @@ final class CameraHelperMain {
             for (Surface value : values) {
                 if (value != null) value.release();
             }
+        }
+
+        private static void releaseSurface(Surface value) {
+            if (value != null) value.release();
         }
 
         private InvocationHandler eventHandler() {
@@ -4696,9 +4821,6 @@ final class CameraHelperMain {
                 forwardedLine = scopeReverseStockEvent(event);
                 event = new JSONObject(forwardedLine);
                 key = lifetimeCounterKey(kind);
-                if ("reverse_overlay_target".equals(kind)) {
-                    applyReverseTargetEvent(event);
-                }
                 if (isMusicJournalEvent(kind)) {
                     synchronized (musicJournal) {
                         appendBounded(musicJournal, line, 20);
@@ -4860,32 +4982,6 @@ final class CameraHelperMain {
             reverseStockClosePending = false;
             reverseStockCloseRequestId = 0;
             reverseStockCloseProducerEpoch = 0;
-        }
-
-        private synchronized void applyReverseTargetEvent(JSONObject event) {
-            int requestId = event.optInt("request_id", 0);
-            int sourceIndex = event.optInt("camera_index", -1);
-            if (!reverseGroup.attached || requestId <= 0
-                    || reverseGroup.requestId != requestId
-                    || sourceIndex < 1 || sourceIndex > 4) return;
-            Surface target = null;
-            for (int i = 0; i < reverseGroup.indexes.length; i++) {
-                if (reverseGroup.indexes[i] == sourceIndex) {
-                    target = reverseGroup.surfaces[i];
-                    break;
-                }
-            }
-            if (target == null) return;
-            boolean active = event.optBoolean("active", false);
-            try {
-                persistentSession.setActive(reverseGroup, target, active);
-                emit("reverse_target_state", "request_id", requestId,
-                        "camera_index", sourceIndex, "active", active);
-            } catch (Throwable error) {
-                emit("reverse_camera_error", "stage", "set_target_active",
-                        "request_id", requestId, "camera_index", sourceIndex,
-                        "active", active, "error", summary(error));
-            }
         }
 
         private void emitMusicJournalSnapshot() {

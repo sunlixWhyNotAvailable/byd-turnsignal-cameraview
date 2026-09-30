@@ -10,4 +10,6 @@
     <string name="avas_mic_stopped">麦克风已停止</string>
     <string name="avas_mic_error">麦克风不可用</string>
     <string name="avas_mic_stop">停止麦克风</string>
+    <string name="avas_mic_broadcast_indicator">麦克风：声音正在向外广播</string>
+    <string name="avas_mic_indicator_unavailable">麦克风已启动，但无法显示屏幕指示器。</string>
 </resources>

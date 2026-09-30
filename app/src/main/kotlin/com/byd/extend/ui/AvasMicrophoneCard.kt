@@ -47,10 +47,16 @@ internal fun AvasMicrophoneCard(
             MirrorBindingRow(strings.resource(R.string.avas_mic_toggle_hint),
                 CameraButtonBindings.Action.AvasMicrophone, state.binding, state.enabled,
                 strings, colors, onAction, showPress = false)
-            NumericSetting(strings.text("Гучність", "Volume", "音量"), state.volume.toString(),
-                "%", colors, { send(AvasActionKind.SetVolume, volume = it.toFloat().toInt()) },
-                0f..100f, enabled = state.enabled, adjustable = true, slider = true,
-                narrowInput = true, compactSuffix = true, identity = "avas-microphone-volume")
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val volumeTitle = strings.resource(R.string.avas_volume)
+                Text(volumeTitle, color = colors.text, fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold)
+                NumericSetting(volumeTitle, state.volume.toString(), "%", colors,
+                    { send(AvasActionKind.SetVolume, volume = it.toFloat().toInt()) },
+                    0f..100f, enabled = state.enabled, adjustable = true, slider = true,
+                    showLabel = false, compactSuffix = true, inputWidth = 52.dp,
+                    identity = "avas-microphone-volume")
+            }
             Text(strings.resource(when (state.state) {
                 "starting" -> R.string.avas_mic_starting
                 "active" -> R.string.avas_mic_active

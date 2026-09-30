@@ -5,6 +5,7 @@ import org.junit.Test;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 
 public final class ReverseFrameBarrierTest {
     @Test public void surfaceAcquisitionWaitsForPrepareButNotUnavailableCluster() {
@@ -67,6 +68,74 @@ public final class ReverseFrameBarrierTest {
         barrier.arm(REQUEST, 0, new int[0], new int[0], 0, false);
         assertTrue(barrier.recordReadyEvent(REQUEST, 0, new int[0]));
         assertTrue(barrier.reveal(REQUEST, 0, new int[0]));
+    }
+
+    @Test public void previewPanoramaBaseIsTabletOnlyAndRequiresDirectOutput() {
+        assertTrue(ReverseCameraCompositionView.shouldAttachPreviewBase(
+                CameraDisplayTarget.TABLET, 1));
+        assertFalse(ReverseCameraCompositionView.shouldAttachPreviewBase(
+                CameraDisplayTarget.TABLET, 0));
+        assertFalse(ReverseCameraCompositionView.shouldAttachPreviewBase(
+                CameraDisplayTarget.CLUSTER, 3));
+    }
+
+    @Test public void previewOutputsAndPreRevealEligibilityStayOnTheirDisplay() {
+        ReverseCameraLayout layout = ReverseCameraLayout.withTarget(
+                ReverseCameraLayout.defaults(), ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDisplayTarget.CLUSTER);
+        assertArrayEquals(new int[]{1, 3},
+                ReverseCameraCompositionView.outputSourceIndexesForDisplay(
+                        layout, CameraDisplayTarget.TABLET,
+                        ReverseCameraLayout.VISIBILITY_ALL, false, false));
+        assertArrayEquals(new int[]{2},
+                ReverseCameraCompositionView.outputSourceIndexesForDisplay(
+                        layout, CameraDisplayTarget.CLUSTER,
+                        ReverseCameraLayout.VISIBILITY_ALL, false, false));
+        assertFalse(ReverseCameraCompositionView.isPaneEligibleOnDisplay(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDisplayTarget.TABLET, ReverseCameraLayout.VISIBILITY_ALL));
+        assertTrue(ReverseCameraCompositionView.isPaneEligibleOnDisplay(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDisplayTarget.CLUSTER, ReverseCameraLayout.VISIBILITY_ALL));
+        assertFalse(ReverseCameraCompositionView.shouldActivatePane(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDisplayTarget.TABLET, ReverseCameraLayout.VISIBILITY_ALL, true, false));
+        assertTrue(ReverseCameraCompositionView.shouldActivatePane(
+                layout, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                CameraDisplayTarget.CLUSTER, ReverseCameraLayout.VISIBILITY_ALL, true, false));
+    }
+
+    @Test public void optionalTabletPanoramaFrameDoesNotDelayDirectReveal() {
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, BASE, new int[]{2}, new int[]{12}, 1, false);
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD,
+                barrier.frame(REQUEST, 2, 12));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.READY,
+                barrier.frame(REQUEST, 2, 12));
+        assertTrue(barrier.recordReadyEvent(REQUEST, BASE, new int[]{12}));
+        assertTrue(barrier.reveal(REQUEST, BASE, new int[]{12}));
+    }
+
+    @Test public void clusterPreviewRetiredInputCannotSatisfyFreshFrameBarrier() {
+        BlindSpotCameraView.InputGeneration input = new BlindSpotCameraView.InputGeneration();
+        int retired = input.next();
+        input.frame();
+        int current = input.next();
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, 0, new int[]{2}, new int[]{current}, 1, false);
+        int queuedFrame = input.frame();
+        assertEquals(retired, queuedFrame);
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_STALE,
+                barrier.frame(REQUEST, 2, queuedFrame));
+        assertFalse(barrier.readyPending(REQUEST, 0, new int[]{current}));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.BLOCKED_GUARD,
+                barrier.frame(REQUEST, 2, input.frame()));
+        assertFalse(barrier.readyPending(REQUEST, 0, new int[]{current}));
+        assertEquals(ReverseCameraCompositionView.FrameBarrier.FrameResult.READY,
+                barrier.frame(REQUEST, 2, input.frame()));
+        assertTrue(barrier.recordReadyEvent(REQUEST, 0, new int[]{current}));
     }
 
     @Test

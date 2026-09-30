@@ -10,4 +10,6 @@
     <string name="avas_mic_stopped">Microphone stopped</string>
     <string name="avas_mic_error">Microphone unavailable</string>
     <string name="avas_mic_stop">Stop microphone</string>
+    <string name="avas_mic_broadcast_indicator">Microphone: audio is being broadcast externally</string>
+    <string name="avas_mic_indicator_unavailable">Microphone is active, but its on-screen indicator could not be shown.</string>
 </resources>

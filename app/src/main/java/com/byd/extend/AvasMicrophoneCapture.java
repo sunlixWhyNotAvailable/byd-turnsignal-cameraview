@@ -9,6 +9,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.graphics.Color;
+import android.graphics.PixelFormat;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
@@ -19,6 +24,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.widget.TextView;
 import android.widget.Toast;
 import org.json.JSONObject;
 import java.io.Closeable;
@@ -42,6 +52,8 @@ final class AvasMicrophoneCapture {
         volatile boolean cancelled;
         volatile AudioRecord recorder;
         volatile OutputStream output;
+        View indicator;
+        WindowManager indicatorWindows;
         Runnable timeout;
     }
 
@@ -161,7 +173,11 @@ final class AvasMicrophoneCapture {
                 main.removeCallbacks(current.timeout);
                 setState("active");
                 try { notification(R.string.avas_mic_active); }
-                catch (RuntimeException failure) { fail(current, failure); }
+                catch (RuntimeException failure) {
+                    fail(current, failure);
+                    return;
+                }
+                showBroadcastIndicator(current);
             } else if ("error".equals(next)) {
                 fail(current, new IOException("helper_microphone_error"));
             } else if ("stopped".equals(next) || "stopping".equals(next)) stop(false);
@@ -187,6 +203,7 @@ final class AvasMicrophoneCapture {
         if (current != null) {
             current.cancelled = true;
             if (current.timeout != null) main.removeCallbacks(current.timeout);
+            removeBroadcastIndicator(current);
             CameraHelperService.stopAvasMicrophone(current.id);
             close(current.output);
             AudioRecord recorder = current.recorder;
@@ -246,6 +263,83 @@ final class AvasMicrophoneCapture {
             service.startForeground(NOTIFICATION, notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         else service.startForeground(NOTIFICATION, notification);
+    }
+
+    private void showBroadcastIndicator(Session current) {
+        if (session != current || current.cancelled || current.indicator != null) return;
+        try {
+            Context locale = localized();
+            TextView indicator = new TextView(locale);
+            indicator.setText(locale.getString(R.string.avas_mic_broadcast_indicator));
+            indicator.setTextColor(Color.WHITE);
+            indicator.setTextSize(14);
+            indicator.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            indicator.setGravity(Gravity.CENTER_VERTICAL);
+            int horizontal = dp(16);
+            indicator.setPadding(horizontal, dp(8), horizontal, dp(8));
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xE620242B);
+            background.setCornerRadius(dp(24));
+            indicator.setBackground(background);
+            Drawable microphone = service.getDrawable(android.R.drawable.ic_btn_speak_now).mutate();
+            microphone.setTint(Color.WHITE);
+            indicator.setCompoundDrawablesRelativeWithIntrinsicBounds(microphone, null, null, null);
+            indicator.setCompoundDrawablePadding(dp(8));
+
+            WindowManager windows = service.getSystemService(WindowManager.class);
+            if (windows == null) throw new IllegalStateException("window_manager_unavailable");
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT);
+            params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            params.y = topInset(windows) + dp(8);
+            params.setTitle("BYD Extend microphone broadcast indicator");
+            current.indicator = indicator;
+            current.indicatorWindows = windows;
+            windows.addView(indicator, params);
+        } catch (RuntimeException failure) {
+            removeBroadcastIndicator(current);
+            Log.w("BydAvasMicrophone", "Broadcast indicator window failed", failure);
+            try { toast(R.string.avas_mic_indicator_unavailable); }
+            catch (RuntimeException toastFailure) {
+                Log.w("BydAvasMicrophone", "Indicator failure toast unavailable", toastFailure);
+            }
+        }
+    }
+
+    private void removeBroadcastIndicator(Session current) {
+        View indicator = current.indicator;
+        WindowManager windows = current.indicatorWindows;
+        current.indicator = null;
+        current.indicatorWindows = null;
+        if (indicator == null || windows == null) return;
+        try {
+            windows.removeViewImmediate(indicator);
+        } catch (IllegalArgumentException notAdded) {
+            // addView may have failed before WindowManager registered the view.
+        } catch (RuntimeException failure) {
+            Log.w("BydAvasMicrophone", "Broadcast indicator removal failed", failure);
+        }
+    }
+
+    private int topInset(WindowManager windows) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return windows.getMaximumWindowMetrics().getWindowInsets()
+                    .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars()
+                            | WindowInsets.Type.displayCutout()).top;
+        }
+        int id = service.getResources().getIdentifier("status_bar_height", "dimen", "android");
+        return id == 0 ? 0 : service.getResources().getDimensionPixelSize(id);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * service.getResources().getDisplayMetrics().density);
     }
 
     private static void close(Closeable value) {
