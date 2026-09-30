@@ -19,6 +19,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     private final Context context;
     private final BiConsumer<String, Object[]> eventSink;
+    private final int displayTarget;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private WindowlessOverlayHost windowless;
@@ -27,6 +28,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private ReverseCameraCompositionView root;
     private float imageAlpha = 1.0f;
     private int requestId;
+    private int activeDisplayId = -1;
     private int[] surfaceGenerations = new int[0];
     private boolean centralFrontSourceEnabled;
     private int completedFrameRequestId;
@@ -41,7 +43,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private Runnable pendingSelectorAction;
 
     ShellReverseCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
+        this(context, CameraDisplayTarget.TABLET, eventSink);
+    }
+
+    ShellReverseCameraOverlay(
+            Context context, int displayTarget, BiConsumer<String, Object[]> eventSink) {
+        if (!CameraDisplayTarget.isValid(displayTarget)) {
+            throw new IllegalArgumentException("invalid Reverse display target");
+        }
         this.context = context;
+        this.displayTarget = displayTarget;
         this.eventSink = eventSink;
     }
 
@@ -51,10 +62,14 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         if (root == null && (frontControl != null || rearControl != null)) {
             throw new CameraShellProtocol.PrepareRestartRequired("selector_attach_failed");
         }
-        Display display = CameraDisplayTarget.resolve(context, CameraDisplayTarget.TABLET);
-        if (display == null) throw new IllegalStateException("tablet display unavailable");
+        Display display = CameraDisplayTarget.resolve(context, displayTarget);
+        if (display == null) {
+            throw new IllegalStateException(
+                    CameraDisplayTarget.name(displayTarget) + " display unavailable");
+        }
+        activeDisplayId = display.getDisplayId();
         Point size = new Point();
-        display.getSize(size);
+        display.getRealSize(size);
         spec.validate(size.x, size.y);
         centralFrontSourceEnabled = spec.requiresCentralFrontSource();
         widgetVisible = spec.widgetVisible;
@@ -132,13 +147,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             // A new automatic session starts from the safe Rear baseline.  The controller may
             // immediately select Front for D/N/P when gear switching is enabled.
             root.setSideMode(ReverseSideSelectorView.MODE_REAR);
-            configureControls(display, size, spec.widgetVisible);
+            configureControls(display, size,
+                    spec.widgetVisible && spec.layout.targetFor(
+                            ReverseCameraLayout.WIDGET_PANE_ID) == displayTarget);
             windowless.setVisible(false, imageAlpha);
         }
         active = true;
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
         emit("reverse_overlay_prepare", "request_id", requestId,
+                "display_target", displayTarget,
                 "width", size.x, "height", size.y,
                 "rear_dewarp", spec.rearDewarp.enabled,
                 "left_dewarp", spec.leftDewarp.enabled,
@@ -158,7 +176,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         requireRequest(expectedRequestId);
         ReverseCameraCompositionView.SurfaceBundle bundle = root.acquireSurfaces(requestId);
         onReverseSurfacesReady(bundle.generations);
-        return new SurfaceSnapshot(bundle.requestId, bundle.generations, bundle.surfaces);
+        return new SurfaceSnapshot(
+                bundle.requestId, displayTarget, bundle.sourceIndexes,
+                bundle.generations, bundle.surfaces);
     }
 
     void armFrames(int expectedRequestId, int[] expectedGenerations) {
@@ -168,6 +188,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         blockedRevealReported = false;
         emit("reverse_overlay_frame", "state", "armed",
                 "request_id", requestId,
+                "display_target", displayTarget,
                 "surface_generations", Arrays.toString(expectedGenerations));
     }
 
@@ -180,6 +201,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                     blockedRevealReported = true;
                     emit("reverse_overlay_frame", "state", "reveal_blocked",
                             "request_id", requestId,
+                            "display_target", displayTarget,
                             "surface_generations", Arrays.toString(expectedGenerations));
                 }
                 throw new IllegalStateException("reverse first frames not confirmed");
@@ -201,6 +223,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         visible = nextVisible;
         emit("reverse_overlay_visibility", "visible", nextVisible,
                 "request_id", requestId,
+                "display_target", displayTarget,
                 "surface_generations", Arrays.toString(expectedGenerations));
     }
 
@@ -236,6 +259,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             setControlsVisible(true);
         }
         emit("reverse_overlay_visibility_mask", "request_id", requestId,
+                "display_target", displayTarget,
                 "surface_generations", Arrays.toString(surfaceGenerations),
                 "visibility_mask", visibilityMask,
                 "widget_visible", widgetVisible);
@@ -283,6 +307,18 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "automatic", true, "state", "changed");
     }
 
+    boolean isOpenForRequest(int expectedRequestId) {
+        return root != null && active && !closing && requestId == expectedRequestId;
+    }
+
+    void notifySurfacesReadyForAcquire(int expectedRequestId) {
+        if (!isOpenForRequest(expectedRequestId) || !root.surfacesReady()) return;
+        emit("reverse_overlay_surface", "state", "ready",
+                "request_id", requestId,
+                "display_target", displayTarget,
+                "surface_generations", Arrays.toString(surfaceGenerations));
+    }
+
     private void quiesce(String reason) {
         ReverseCameraCompositionView activeRoot = root;
         if (activeRoot == null || !active) return;
@@ -320,6 +356,32 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         return root != null && active;
     }
 
+    boolean surfacesReady() {
+        return root != null && root.surfacesReady();
+    }
+
+    void onClusterDisplayChanged(int displayId, boolean removed) {
+        if (displayTarget != CameraDisplayTarget.CLUSTER || !active
+                || activeDisplayId != displayId) return;
+        try {
+            Display current = removed ? null
+                    : CameraDisplayTarget.resolve(context, CameraDisplayTarget.CLUSTER);
+            if (current == null || current.getDisplayId() != activeDisplayId) {
+                throw new IllegalStateException("cluster display unavailable or replaced");
+            }
+            if (windowless == null) throw new IllegalStateException("cluster host unavailable");
+            windowless.ensureClusterAttachment();
+        } catch (Throwable error) {
+            int failedRequest = requestId;
+            close("cluster_destination_unavailable");
+            emit("reverse_overlay_display_unavailable",
+                    "request_id", failedRequest,
+                    "display_target", displayTarget,
+                    "display_id", displayId,
+                    "error", summary(error));
+        }
+    }
+
     @Override
     public void onReverseSurfacesReady(int[] generations) {
         if (root == null) return;
@@ -330,6 +392,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         emit("reverse_overlay_surface", "state", "ready",
                 "request_id", requestId,
+                "display_target", displayTarget,
                 "surface_generations", Arrays.toString(surfaceGenerations));
     }
 
@@ -338,6 +401,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         if (frameRequestId != requestId || !Arrays.equals(generations, surfaceGenerations)) return;
         completedFrameRequestId = frameRequestId;
         emit("reverse_overlay_first_frames", "request_id", requestId,
+                "display_target", displayTarget,
                 "surface_generations", Arrays.toString(generations));
     }
 
@@ -345,6 +409,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     public void onReverseTargetActive(int sourceIndex, int generation, boolean active) {
         emit("reverse_overlay_target", "state", "active",
                 "request_id", requestId,
+                "display_target", displayTarget,
                 "camera_index", sourceIndex,
                 "surface_generation", generation,
                 "active", active);
@@ -364,7 +429,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     public void onReverseSurfaceLost(int cameraIndex, int generation) {
         if (cameraIndex == 4 && centralFrontSourceEnabled) {
             emit("reverse_overlay_surface", "state", "optional_destroyed",
-                    "request_id", requestId, "camera_index", cameraIndex,
+                    "request_id", requestId, "display_target", displayTarget,
+                    "camera_index", cameraIndex,
                     "surface_generation", generation);
             return;
         }
@@ -380,7 +446,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             }
         }
         emit("reverse_overlay_surface", "state", "destroyed",
-                "request_id", requestId, "camera_index", cameraIndex,
+                "request_id", requestId, "display_target", displayTarget,
+                "camera_index", cameraIndex,
                 "surface_generation", generation);
     }
 
@@ -443,6 +510,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         Context windowContext = context.createDisplayContext(display);
 
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
+        nextRoot.setDisplayTarget(displayTarget);
         nextRoot.setCallback(this);
         nextRoot.setCornerRadiusDp(spec.cornerRadiusDp);
         nextRoot.setBorders(spec.borderDp, spec.borderArgb);
@@ -476,7 +544,9 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextHost.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
         try {
             nextHost.attach(nextRoot, size.x, size.y, 0, 0, WINDOW_TITLE);
-            configureControls(display, size, spec.widgetVisible);
+            configureControls(display, size,
+                    spec.widgetVisible && spec.layout.targetFor(
+                            ReverseCameraLayout.WIDGET_PANE_ID) == displayTarget);
         } catch (Throwable error) {
             releaseControlsQuietly();
             windowless = null;
@@ -487,7 +557,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             throw new CameraShellProtocol.PrepareRestartRequired("reverse_attach_failed");
         }
         emit("reverse_overlay_window", "state", "added",
-                "request_id", requestId, "width", size.x, "height", size.y,
+                "request_id", requestId, "display_target", displayTarget,
+                "width", size.x, "height", size.y,
                 "layer", nextHost.layer(), "alpha", 0.0f,
                 "trusted_api", nextHost.trustedApi(),
                 "transparency_percent", spec.transparencyPercent);
@@ -496,6 +567,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private void configureControls(Display display, Point size, boolean enabled)
             throws Exception {
         if (root == null) return;
+        widgetAvailable = enabled;
         root.setWidgetAvailable(enabled);
         if (!enabled) {
             setControlsVisible(false);
@@ -610,6 +682,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         // for the BYD-HUD 90 ms feedback window; cancellation/hide still clears it below.
         currentRoot.setSideMode(mode);
         emit("reverse_overlay_selector", "request_id", requestId,
+                "display_target", displayTarget,
                 "mode", mode == ReverseSideSelectorView.MODE_FRONT ? "front" : "rear");
         currentRoot.setSelectorPressed(mode, true);
         final long generation = ++selectorActionGeneration;
@@ -664,7 +737,16 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     private void emit(String kind, Object... fields) {
-        eventSink.accept(kind, fields);
+        for (int index = 0; index + 1 < fields.length; index += 2) {
+            if ("display_target".equals(String.valueOf(fields[index]))) {
+                eventSink.accept(kind, fields);
+                return;
+            }
+        }
+        Object[] targeted = Arrays.copyOf(fields, fields.length + 2);
+        targeted[fields.length] = "display_target";
+        targeted[fields.length + 1] = displayTarget;
+        eventSink.accept(kind, targeted);
     }
 
     private static String safe(String reason) {
@@ -678,11 +760,17 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     static final class SurfaceSnapshot {
         final int requestId;
+        final int displayTarget;
+        final int[] sourceIndexes;
         final int[] generations;
         final Surface[] surfaces;
 
-        SurfaceSnapshot(int requestId, int[] generations, Surface[] surfaces) {
+        SurfaceSnapshot(
+                int requestId, int displayTarget, int[] sourceIndexes,
+                int[] generations, Surface[] surfaces) {
             this.requestId = requestId;
+            this.displayTarget = displayTarget;
+            this.sourceIndexes = sourceIndexes;
             this.generations = generations;
             this.surfaces = surfaces;
         }

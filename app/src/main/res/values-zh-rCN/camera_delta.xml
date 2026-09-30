@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reverse_target_tablet">平板</string>
+    <string name="reverse_target_cluster">仪表盘</string>
+    <string name="camera_hold_duration">保持时长</string>
+    <string name="camera_hold_duration_hint">短转向灯结束后继续显示</string>
+    <string name="camera_hold_enabled">延长摄像头显示</string>
+    <string name="camera_seconds_suffix">秒</string>
+</resources>

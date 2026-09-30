@@ -32,6 +32,7 @@ final class AvasTelemetryController implements AutoCloseable {
         boolean powerOnSuppressionEligible();
         boolean powerOffSuppressionEligible();
         void onProfile(String profile);
+        default void onPowerOffObserved() {}
         void onSuppressed(String profile, String powerProfile, long deltaMs);
         void log(String kind, Object... fields);
     }
@@ -150,6 +151,9 @@ final class AvasTelemetryController implements AutoCloseable {
                 invalidCallback(receivedMs);
                 return;
             }
+            if (AvasEventPolicy.normalizedPower(value) == 0) {
+                sink.onPowerOffObserved();
+            }
         } else if (device == LOCK_DEVICE && fid == LOCK_FID) {
             if (sequence <= listenerArrivals.lockApplied) return;
             listenerArrivals.lockApplied = sequence;
@@ -237,7 +241,13 @@ final class AvasTelemetryController implements AutoCloseable {
                 if (applyPower) power = snapshot.power;
                 if (applyLock) lock = snapshot.lock;
             }
+            if (applyPower && AvasEventPolicy.normalizedPower(snapshot.power) == 0) {
+                sink.onPowerOffObserved();
+            }
             return;
+        }
+        if (AvasEventPolicy.normalizedPower(snapshot.power) == 0) {
+            sink.onPowerOffObserved();
         }
         reconcileSnapshot(snapshot, silent, source, oldPower, oldLock);
     }

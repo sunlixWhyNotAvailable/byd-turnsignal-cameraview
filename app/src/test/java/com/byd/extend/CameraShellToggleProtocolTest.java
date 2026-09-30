@@ -36,7 +36,15 @@ public final class CameraShellToggleProtocolTest {
         assertTrue(transaction > capability);
         assertTrue(branch.contains("requestId <= 0"));
         assertTrue(branch.contains("runOnMain"));
-        assertTrue(branch.contains("reverseOverlay.toggleSideMode(requestId)"));
+        assertTrue(branch.contains("for (ShellReverseCameraOverlay output : reverseOverlays)"));
+        assertTrue(branch.contains("output.toggleSideMode(requestId)"));
+
+        int sync = shell.indexOf("private void synchronizeReverseSideMode");
+        String syncMethod = shell.substring(sync,
+                shell.indexOf("private boolean deferReverseSurfaceReady", sync));
+        assertTrue(syncMethod.contains("values.containsKey(\"automatic\")"));
+        assertTrue(syncMethod.contains("output.isOpenForRequest(requestId)"));
+        assertTrue(syncMethod.contains("output.setSideMode(requestId, nextMode)"));
     }
 
     @Test

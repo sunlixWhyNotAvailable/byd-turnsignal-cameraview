@@ -65,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -87,6 +88,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
@@ -320,11 +322,8 @@ private fun AppHeader(
                 if (state.header.location.visible || state.header.weatherEnabled) {
                     HeaderStatusPill(state.header.location, strings.text("Геолокація", "Location"), strings, colors)
                 }
-                Segmented(when (state.language) {
-                    UiLanguage.Ukrainian -> listOf("Укр", "Англ", "中文")
-                    UiLanguage.Chinese -> listOf("У克", "英", "中文")
-                    UiLanguage.English -> listOf("UA", "ENG", "中文")
-                }, state.language.ordinal, colors, Modifier.width(190.dp)) {
+                Segmented(listOf("Укр", "ENG", "中文", "Рус"),
+                    state.language.ordinal, colors, Modifier.width(252.dp)) {
                     onAction(BydExtendUiAction.SetLanguage(UiLanguage.entries[it]))
                 }
                 Segmented(listOf(strings.text("Темна", "Dark"), strings.text("Світла", "Light")),
@@ -531,7 +530,7 @@ private fun FormScope.AvasIntegration(
         number: Int? = null, text: String? = null) {
         onAction(BydExtendUiAction.Avas(AvasBackendAction(profileId, kind, boolean, number, text)))
     }
-    val exteriorBusy = state.profiles.any { it.playback != AvasPlaybackUiState.Idle }
+    val exteriorBusy = state.microphone.busy || state.profiles.any { it.playback != AvasPlaybackUiState.Idle }
     row("avas-intro") { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(strings.text("AVAS (зовнішній динамік)", "AVAS (external speaker)", "AVAS（车外扬声器）"),
             color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
@@ -571,6 +570,8 @@ private fun FormScope.AvasIntegration(
                                     }, colors, clearSemantics = true, label = title)
                                 }
                             }) {
+                                Column(Modifier.fillMaxWidth().alpha(if (profile.enabled) 1f else .45f),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 if (profile.id == AvasProfileIds.POWER_OFF
                                     || profile.id == AvasProfileIds.POWER_ON) {
                                     SwitchLine(strings.text("Пропускати одночасний звук\nвідкриття/закриття",
@@ -579,7 +580,7 @@ private fun FormScope.AvasIntegration(
                                         profile.skipConcurrentLockUnlock, {
                                             send(profile.id, AvasActionKind.SetSkipConcurrentLockUnlock,
                                                 boolean = it)
-                                        }, colors)
+                                        }, colors, enabled = profile.enabled)
                                 }
                                 Text(strings.text("Обраний аудіофайл", "Selected audio file", "已选音频文件"),
                                     color = colors.muted, fontSize = 12.sp)
@@ -593,16 +594,18 @@ private fun FormScope.AvasIntegration(
                                     ActionButton(strings.text(if (importing) "Імпортування…" else "Додати файли…",
                                         if (importing) "Importing…" else "Add files…",
                                         if (importing) "正在导入…" else "添加文件…"), colors,
-                                        Modifier.weight(1f).testTag("avas-add-${profile.id}"), enabled = !importing,
+                                        Modifier.weight(1f).testTag("avas-add-${profile.id}"), enabled = profile.enabled && !importing,
                                         maxLines = 2) { send(profile.id, AvasActionKind.ImportFiles) }
                                     ActionButton(strings.format("Аудіофайли (%1\$s)", "Audio files (%1\$s)",
                                         "音频文件（%1\$s）", profile.assets.size.toString()), colors,
-                                        Modifier.weight(1f).testTag("avas-list-${profile.id}"), maxLines = 2) {
+                                        Modifier.weight(1f).testTag("avas-list-${profile.id}"), maxLines = 2,
+                                        enabled = profile.enabled) {
                                         listing = profile.id
                                     }
                                 }
                                 SwitchLine(strings.text("Випадкова мелодія", "Random melody", "随机旋律"), "",
-                                    profile.random, { send(profile.id, AvasActionKind.SetRandom, boolean = it) }, colors)
+                                    profile.random, { send(profile.id, AvasActionKind.SetRandom, boolean = it) }, colors,
+                                    enabled = profile.enabled)
                                 Text(strings.text("Лише для цієї автоматизації. «Старт» відтворює вибраний файл через зовнішній динамік.",
                                     "Only for this automation. Start plays the selected file through the exterior speaker.",
                                     "仅用于此自动化。“开始”通过车外扬声器播放所选文件。"),
@@ -613,20 +616,21 @@ private fun FormScope.AvasIntegration(
                                 NumericSetting(strings.text("Гучність", "Volume", "音量"),
                                     profile.volume.coerceIn(0, 100).toString(), "%", colors,
                                     { send(profile.id, AvasActionKind.SetVolume, number = it.toFloat().toInt()) },
-                                    0f..100f, adjustable = true, slider = true, showLabel = false,
+                                    0f..100f, enabled = profile.enabled, adjustable = true, slider = true, showLabel = false,
                                     compactSuffix = true, narrowInput = true,
                                     identity = "avas-volume-${profile.id}")
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     ActionButton(strings.text("Старт", "Start", "开始"), colors,
                                         Modifier.weight(1f).testTag("avas-start-${profile.id}"),
                                         icon = Icons.Outlined.PlayArrow, primary = true,
-                                        enabled = profile.manualStartAllowed) {
+                                        enabled = profile.enabled && profile.manualStartAllowed) {
                                         send(profile.id, AvasActionKind.StartManual)
                                     }
                                     ActionButton(strings.text("Стоп", "Stop", "停止"), colors,
                                         Modifier.weight(1f).testTag("avas-stop-${profile.id}"),
                                         icon = Icons.Outlined.Stop, mainBackground = true,
-                                        enabled = profile.manualStopAllowed) { send(profile.id, AvasActionKind.StopManual) }
+                                        enabled = profile.enabled && profile.manualStopAllowed) { send(profile.id, AvasActionKind.StopManual) }
+                                }
                                 }
                             }
                         }
@@ -634,9 +638,15 @@ private fun FormScope.AvasIntegration(
                     }
             }
         }
+    row("avas-microphone") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AvasMicrophoneCard(state.microphone, strings, colors, onAction, Modifier.weight(1f))
+            if (columns > 1) Spacer(Modifier.weight(1f))
+        }
+    }
     listing?.let { profileId ->
         val profile = state.profiles.firstOrNull { it.id == profileId }
-        if (profile == null) listing = null else Dialog(
+        if (profile == null || !profile.enabled) listing = null else Dialog(
             onDismissRequest = { listing = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
@@ -736,7 +746,7 @@ internal fun avasDurationLabel(durationMs: Long?): String {
 }
 
 @Composable
-private fun Modifier.avasSwitchRow(
+internal fun Modifier.avasSwitchRow(
     checked: Boolean, onCheckedChange: (Boolean) -> Unit, colors: UiPalette,
 ): Modifier {
     val press = rememberPressFeedback()
@@ -839,7 +849,7 @@ private fun AppDialog(
     )) {
         val focusRequester = remember { FocusRequester() }
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-        if (captureDialog) {
+        if (captureDialog || state.updatePresentation) {
             SideEffect { dialogWindow?.setDimAmount(if (colors.dark) .48f else .32f) }
         }
         LaunchedEffect(captureDialog) {
@@ -854,7 +864,7 @@ private fun AppDialog(
             .focusRequester(focusRequester).focusable() else Modifier),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(state.title, color = colors.text,
-                fontSize = if (state.kind == DialogKind.Background) 20.sp else 22.sp,
+                fontSize = if (state.kind == DialogKind.Background || state.updatePresentation) 20.sp else 22.sp,
                 fontWeight = if (captureDialog) FontWeight.SemiBold else FontWeight.Bold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.kind == DialogKind.Background) {
@@ -871,6 +881,30 @@ private fun AppDialog(
                 }
             } else if (captureDialog) {
                 Text(state.message, color = colors.muted, fontSize = 13.sp, lineHeight = 19.sp)
+            } else if (state.updatePresentation) {
+                Text(state.message, color = colors.muted, fontSize = 14.sp)
+                Column(Modifier.fillMaxWidth().weight(1f, fill = true)
+                    .clip(RoundedCornerShape(8.dp)).background(colors.field)
+                    .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                    .padding(14.dp).verticalScroll(notesScroll),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    state.updateStatus?.let { status ->
+                        Text(status,
+                            color = if (state.updateStatusIsError) colors.red else colors.text,
+                            fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    state.updateAvailableVersion?.let { version ->
+                        Text(version, color = colors.text, fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                    state.updateHistoryWarning?.let { warning ->
+                        Text(warning, color = colors.yellow, fontSize = 13.sp)
+                    }
+                    if (state.updateAvailableVersion != null) {
+                        MarkdownPatchNotesText(state.markdown, colors)
+                    }
+                }
+                if (state.kind == DialogKind.Progress) UpdateProgressBar(state.progress, colors)
             } else Column(Modifier.fillMaxWidth().weight(1f, fill = state.updatePresentation)
                 .clip(RoundedCornerShape(8.dp)).background(colors.field)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp))
@@ -906,11 +940,6 @@ private fun AppDialog(
                 } else if (!state.updatePresentation) state.progress?.let { progress ->
                     Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = colors.muted, fontSize = 13.sp)
                 }
-            }
-            if (state.updatePresentation && state.kind == DialogKind.Progress) {
-                Text(state.message, color = colors.muted, fontSize = 13.sp)
-                LinearProgressIndicator(progress = { state.progress ?: 0f }, Modifier.fillMaxWidth(),
-                    color = colors.accent, trackColor = colors.field)
             }
             if (captureDialog) {
                 if (state.cancellable) ActionButton(
@@ -959,6 +988,18 @@ private fun AppDialog(
     }
 }
 
+@Composable
+private fun UpdateProgressBar(progress: Float?, colors: UiPalette) {
+    val value = (progress ?: 0f).coerceIn(0f, 1f)
+    Box(Modifier.fillMaxWidth().height(22.dp).clip(RoundedCornerShape(8.dp))
+        .background(colors.disabled).border(1.dp, colors.border, RoundedCornerShape(8.dp))) {
+        Box(Modifier.fillMaxWidth(value.coerceAtLeast(.02f)).fillMaxHeight()
+            .align(Alignment.CenterStart).background(colors.accent))
+        Text("${(value * 100).toInt()}%", Modifier.align(Alignment.Center),
+            color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
 private fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotatedString {
     ReleaseNotesMarkdown.parseBlocks(markdown).forEachIndexed { index, block ->
         if (index > 0) append('\n')
@@ -981,6 +1022,85 @@ private fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotated
         }
     }
 }
+
+@Composable
+private fun MarkdownPatchNotesText(text: String, colors: UiPalette) {
+    val lines = remember(text) {
+        text.replace("\r\n", "\n").lines()
+            .map { it.trimEnd() }
+            .dropWhile { it.isBlank() }
+            .dropLastWhile { it.isBlank() }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (lines.isEmpty()) {
+            Text("", color = colors.muted, fontSize = 13.sp)
+        } else {
+            lines.forEach { rawLine ->
+                val line = rawLine.trim()
+                when {
+                    line.isBlank() -> Spacer(Modifier.height(6.dp))
+                    line == "---" -> Box(Modifier.fillMaxWidth().height(1.dp)
+                        .background(colors.border))
+                    line.startsWith("### ") -> UpdateMarkdownTextLine(
+                        line.removePrefix("### ").trim(), colors, 13.sp, FontWeight.Bold)
+                    line.startsWith("## ") -> Text(
+                        updateMarkdownInline(line.removePrefix("## ").trim(), colors),
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = colors.text)
+                    line.startsWith("# ") -> UpdateMarkdownTextLine(
+                        line.removePrefix("# ").trim(), colors, 15.sp, FontWeight.Bold)
+                    line.startsWith("- ") || line.startsWith("* ") -> UpdateMarkdownBulletLine(
+                        "•", line.drop(2).trim(), colors)
+                    UPDATE_ORDERED_LIST_REGEX.containsMatchIn(line) -> {
+                        val match = UPDATE_ORDERED_LIST_REGEX.find(line)
+                        UpdateMarkdownBulletLine(
+                            (match?.groupValues?.getOrNull(1) ?: "") + ".",
+                            line.replaceFirst(UPDATE_ORDERED_LIST_REGEX, "").trim(), colors)
+                    }
+                    else -> UpdateMarkdownTextLine(
+                        line, colors, 13.sp, FontWeight.Normal)
+                }
+            }
+        }
+    }
+}
+
+private val UPDATE_ORDERED_LIST_REGEX = Regex("""^(\d+)\.\s+""")
+
+@Composable
+private fun UpdateMarkdownBulletLine(bullet: String, text: String, colors: UiPalette) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(bullet, color = colors.text, fontSize = 13.sp, lineHeight = 18.sp)
+        Text(updateMarkdownInline(text, colors), color = colors.text, fontSize = 13.sp,
+            lineHeight = 18.sp, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun UpdateMarkdownTextLine(
+    text: String,
+    colors: UiPalette,
+    fontSize: TextUnit,
+    fontWeight: FontWeight,
+) {
+    Text(updateMarkdownInline(text, colors), color = colors.text,
+        fontSize = fontSize, fontWeight = fontWeight, lineHeight = 18.sp)
+}
+
+private fun updateMarkdownInline(text: String, colors: UiPalette): AnnotatedString =
+    buildAnnotatedString {
+        ReleaseNotesMarkdown.parseInline(text).forEach { inline ->
+            when (inline.type()) {
+                ReleaseNotesMarkdown.InlineType.BOLD ->
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline.text()) }
+                ReleaseNotesMarkdown.InlineType.CODE -> withStyle(SpanStyle(
+                    fontFamily = FontFamily.Monospace,
+                    background = colors.disabled,
+                    color = colors.text,
+                )) { append(inline.text()) }
+                else -> append(inline.text())
+            }
+        }
+    }
 
 private fun AnnotatedString.Builder.appendMarkdownInline(text: String) {
     ReleaseNotesMarkdown.parseInline(text).forEach { inline ->

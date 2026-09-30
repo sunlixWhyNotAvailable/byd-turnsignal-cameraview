@@ -77,7 +77,8 @@ public final class CameraShellMain {
         private final int versionCode;
         private final ShellCameraOverlay[] overlays =
                 new ShellCameraOverlay[CameraOverlayProfile.COUNT];
-        private final ShellReverseCameraOverlay reverseOverlay;
+        private final ShellReverseCameraOverlay[] reverseOverlays =
+                new ShellReverseCameraOverlay[2];
         private final Runnable processTerminator;
         private final DisplayManager displayManager;
         private final DisplayManager.DisplayListener displayListener =
@@ -95,6 +96,10 @@ public final class CameraShellMain {
         private IBinder callback;
         private boolean stdoutFlushScheduled;
         private boolean processTerminationRequested;
+        private boolean reversePrepareInProgress;
+        private int preparingReverseRequestId;
+        private boolean preparingReverseClusterExpected;
+        private int deferredReverseSurfaceReadyRequestId;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
             this(context, handler, appUid, versionCode, CameraShellMain::terminateProcess);
@@ -113,7 +118,10 @@ public final class CameraShellMain {
             for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 overlays[profile.id] = new ShellCameraOverlay(context, profile.id, this::emit);
             }
-            reverseOverlay = new ShellReverseCameraOverlay(context, this::emit);
+            reverseOverlays[CameraDisplayTarget.TABLET] = new ShellReverseCameraOverlay(
+                    context, CameraDisplayTarget.TABLET, this::emit);
+            reverseOverlays[CameraDisplayTarget.CLUSTER] = new ShellReverseCameraOverlay(
+                    context, CameraDisplayTarget.CLUSTER, this::emit);
             displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
             if (displayManager != null) displayManager.registerDisplayListener(displayListener, handler);
         }
@@ -122,6 +130,8 @@ public final class CameraShellMain {
             for (ShellCameraOverlay overlay : overlays) {
                 overlay.onClusterDisplayChanged(displayId, removed);
             }
+            reverseOverlays[CameraDisplayTarget.CLUSTER]
+                    .onClusterDisplayChanged(displayId, removed);
         }
 
         @Override
@@ -175,7 +185,7 @@ public final class CameraShellMain {
                 if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
                     CameraShellProtocol.OverlaySpec spec =
                             CameraShellProtocol.OverlaySpec.readFromParcel(data);
-                    if (reverseOverlay.isOpen()
+                    if (isReverseOverlayOpen()
                             && !overlayAllowedWhileReverseActive(spec.cameraId)) {
                         throw new IllegalStateException("reverse overlay has camera priority");
                     }
@@ -262,11 +272,41 @@ public final class CameraShellMain {
                     int prepareResult;
                     try {
                         runOnMain(() -> {
-                            closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
-                            reverseOverlay.prepare(spec);
-                            return null;
+                            deferredReverseSurfaceReadyRequestId = 0;
+                            reversePrepareInProgress = true;
+                            preparingReverseRequestId = spec.requestId;
+                            preparingReverseClusterExpected =
+                                    spec.layout.containsTarget(CameraDisplayTarget.CLUSTER);
+                            try {
+                                closeOverlays("reverse_priority", CameraOverlayProfile.BLIND_COUNT);
+                                reverseOverlay(CameraDisplayTarget.TABLET).prepare(spec);
+                                ShellReverseCameraOverlay cluster =
+                                        reverseOverlay(CameraDisplayTarget.CLUSTER);
+                                if (spec.layout.containsTarget(CameraDisplayTarget.CLUSTER)) {
+                                    try {
+                                        cluster.prepare(spec);
+                                    } catch (Throwable clusterError) {
+                                        cluster.close("cluster_prepare_unavailable");
+                                        if (clusterError instanceof CameraShellProtocol.PrepareRestartRequired) {
+                                            throw (CameraShellProtocol.PrepareRestartRequired) clusterError;
+                                        }
+                                        emit("reverse_overlay_display_unavailable",
+                                                "request_id", spec.requestId,
+                                                "display_target", CameraDisplayTarget.CLUSTER,
+                                                "error", summary(clusterError));
+                                    }
+                                } else {
+                                    cluster.close("composition_empty");
+                                }
+                                return null;
+                            } finally {
+                                reversePrepareInProgress = false;
+                                preparingReverseRequestId = 0;
+                                preparingReverseClusterExpected = false;
+                            }
                         });
                         prepareResult = CameraShellProtocol.PREPARE_OK;
+                        releaseDeferredReverseTabletReady(spec.requestId);
                     } catch (CameraShellProtocol.PrepareRestartRequired restart) {
                         prepareResult = CameraShellProtocol.PREPARE_RESTART_REQUIRED;
                         Object[] fields = new Object[4 + restart.diagnosticFields.length];
@@ -285,20 +325,38 @@ public final class CameraShellMain {
                 }
                 if (code == CameraShellProtocol.TX_REVERSE_ACQUIRE_SURFACES) {
                     int requestId = data.readInt();
-                    ShellReverseCameraOverlay.SurfaceSnapshot snapshot = runOnMain(
-                            () -> reverseOverlay.acquireSurfaces(requestId));
+                    boolean forceTabletFallback = data.readInt() != 0;
+                    ReverseSurfaceBundle snapshot = runOnMain(
+                            () -> acquireReverseSurfaceBundle(requestId, forceTabletFallback));
                     reply.writeNoException();
                     reply.writeInt(snapshot.requestId);
-                    reply.writeInt(snapshot.generations.length);
-                    for (int generation : snapshot.generations) reply.writeInt(generation);
-                    for (Surface surface : snapshot.surfaces) surface.writeToParcel(reply, 0);
+                    reply.writeInt(snapshot.preparedDisplayTargets.length);
+                    int offset = 0;
+                    for (int displayTarget : snapshot.preparedDisplayTargets) {
+                        int count = 0;
+                        while (offset + count < snapshot.displayTargets.length
+                                && snapshot.displayTargets[offset + count] == displayTarget) {
+                            count++;
+                        }
+                        reply.writeInt(displayTarget);
+                        reply.writeInt(count);
+                        for (int index = offset; index < offset + count; index++) {
+                            reply.writeInt(snapshot.sourceIndexes[index]);
+                            reply.writeInt(snapshot.generations[index]);
+                        }
+                        for (int index = offset; index < offset + count; index++) {
+                            snapshot.surfaces[index].writeToParcel(reply, 0);
+                        }
+                        offset += count;
+                    }
                     return true;
                 }
                 if (code == CameraShellProtocol.TX_REVERSE_ARM_FRAMES) {
                     int requestId = data.readInt();
+                    int displayTarget = readReverseDisplayTarget(data);
                     int[] generations = readReverseGenerations(data);
                     runOnMain(() -> {
-                        reverseOverlay.armFrames(requestId, generations);
+                        reverseOverlay(displayTarget).armFrames(requestId, generations);
                         return null;
                     });
                     reply.writeNoException();
@@ -306,10 +364,12 @@ public final class CameraShellMain {
                 }
                 if (code == CameraShellProtocol.TX_REVERSE_SET_VISIBLE) {
                     int requestId = data.readInt();
+                    int displayTarget = readReverseDisplayTarget(data);
                     int[] generations = readReverseGenerations(data);
                     boolean visible = data.readInt() != 0;
                     runOnMain(() -> {
-                        reverseOverlay.setVisible(requestId, generations, visible);
+                        reverseOverlay(displayTarget).setVisible(
+                                requestId, generations, visible);
                         return null;
                     });
                     reply.writeNoException();
@@ -317,11 +377,12 @@ public final class CameraShellMain {
                 }
                 if (code == CameraShellProtocol.TX_REVERSE_UPDATE_VISIBILITY) {
                     int requestId = data.readInt();
+                    int displayTarget = readReverseDisplayTarget(data);
                     int[] generations = readReverseGenerations(data);
                     int visibilityMask = data.readInt();
                     boolean widgetVisible = data.readInt() != 0;
                     runOnMain(() -> {
-                        reverseOverlay.updateVisibility(
+                        reverseOverlay(displayTarget).updateVisibility(
                                 requestId, generations, visibilityMask, widgetVisible);
                         return null;
                     });
@@ -334,7 +395,9 @@ public final class CameraShellMain {
                         throw new IllegalArgumentException("invalid reverse request id");
                     }
                     runOnMain(() -> {
-                        reverseOverlay.toggleSideMode(requestId);
+                        for (ShellReverseCameraOverlay output : reverseOverlays) {
+                            if (output.isOpen()) output.toggleSideMode(requestId);
+                        }
                         return null;
                     });
                     reply.writeNoException();
@@ -348,7 +411,9 @@ public final class CameraShellMain {
                         throw new IllegalArgumentException("invalid reverse direction request");
                     }
                     runOnMain(() -> {
-                        reverseOverlay.setSideMode(requestId, mode);
+                        for (ShellReverseCameraOverlay output : reverseOverlays) {
+                            if (output.isOpen()) output.setSideMode(requestId, mode);
+                        }
                         return null;
                     });
                     reply.writeNoException();
@@ -357,7 +422,7 @@ public final class CameraShellMain {
                 if (code == CameraShellProtocol.TX_REVERSE_CLOSE) {
                     String reason = data.readString();
                     runOnMain(() -> {
-                        reverseOverlay.close(reason);
+                        closeReverseOverlays(reason);
                         return null;
                     });
                     reply.writeNoException();
@@ -377,10 +442,12 @@ public final class CameraShellMain {
                                 if (failure[0] == null) failure[0] = error;
                             }
                         }
-                        try {
-                            reverseOverlay.updateVisuals(cornerRadiusDp, transparencyPercent);
-                        } catch (Throwable error) {
-                            if (failure[0] == null) failure[0] = error;
+                        for (ShellReverseCameraOverlay output : reverseOverlays) {
+                            try {
+                                output.updateVisuals(cornerRadiusDp, transparencyPercent);
+                            } catch (Throwable error) {
+                                if (failure[0] == null) failure[0] = error;
+                            }
                         }
                         if (failure[0] != null) throw new IllegalStateException(
                                 summary(failure[0]), failure[0]);
@@ -405,19 +472,21 @@ public final class CameraShellMain {
             } catch (Throwable error) {
                 failure = error;
             }
-            try {
-                reverseOverlay.close(reason);
-            } catch (Throwable error) {
-                if (failure == null) failure = error;
+            for (ShellReverseCameraOverlay output : reverseOverlays) {
+                try {
+                    output.close(reason);
+                } catch (Throwable error) {
+                    if (failure == null) failure = error;
+                }
             }
             if (failure != null) throw new IllegalStateException(summary(failure), failure);
         }
 
         private static int[] readReverseGenerations(Parcel data) {
             int count = data.readInt();
-            if (count != 3 && count != 4) {
+            if (count < 0 || count > 4) {
                 throw new IllegalArgumentException(
-                        "three or four reverse generations required");
+                        "zero to four reverse generations required");
             }
             int[] values = new int[count];
             for (int i = 0; i < count; i++) {
@@ -427,6 +496,191 @@ public final class CameraShellMain {
                 }
             }
             return values;
+        }
+
+        private static int readReverseDisplayTarget(Parcel data) {
+            int target = data.readInt();
+            if (!CameraDisplayTarget.isValid(target)) {
+                throw new IllegalArgumentException("invalid Reverse display target");
+            }
+            return target;
+        }
+
+        private boolean isReverseOverlayOpen() {
+            for (ShellReverseCameraOverlay output : reverseOverlays) {
+                if (output.isOpen()) return true;
+            }
+            return false;
+        }
+
+        private ShellReverseCameraOverlay reverseOverlay(int displayTarget) {
+            if (!CameraDisplayTarget.isValid(displayTarget)) {
+                throw new IllegalArgumentException("invalid Reverse display target");
+            }
+            return reverseOverlays[displayTarget];
+        }
+
+        private void closeReverseOverlays(String reason) {
+            Throwable failure = null;
+            for (ShellReverseCameraOverlay output : reverseOverlays) {
+                try {
+                    output.close(reason);
+                } catch (Throwable error) {
+                    if (failure == null) failure = error;
+                }
+            }
+            if (failure != null) throw new IllegalStateException(summary(failure), failure);
+        }
+
+        private ReverseSurfaceBundle acquireReverseSurfaceBundle(
+                int requestId, boolean forceTabletFallback) {
+            ShellReverseCameraOverlay.SurfaceSnapshot tablet =
+                    reverseOverlay(CameraDisplayTarget.TABLET).acquireSurfaces(requestId);
+            ShellReverseCameraOverlay.SurfaceSnapshot cluster = null;
+            ShellReverseCameraOverlay clusterOutput = reverseOverlay(CameraDisplayTarget.CLUSTER);
+            if (clusterOutput.isOpen()) {
+                try {
+                    if (clusterOutput.surfacesReady()) {
+                        cluster = clusterOutput.acquireSurfaces(requestId);
+                    } else if (forceTabletFallback) {
+                        clusterOutput.close("cluster_surface_timeout");
+                        emit("reverse_overlay_display_unavailable",
+                                "request_id", requestId,
+                                "display_target", CameraDisplayTarget.CLUSTER,
+                                "reason", "surface_timeout");
+                    } else {
+                        emit("reverse_overlay_display_unavailable",
+                                "request_id", requestId,
+                                "display_target", CameraDisplayTarget.CLUSTER,
+                                "reason", "surfaces_not_ready");
+                    }
+                } catch (Throwable clusterError) {
+                    clusterOutput.close("cluster_surface_unavailable");
+                    emit("reverse_overlay_display_unavailable",
+                            "request_id", requestId,
+                            "display_target", CameraDisplayTarget.CLUSTER,
+                            "error", summary(clusterError));
+                }
+            }
+            int clusterCount = cluster == null ? 0 : cluster.surfaces.length;
+            int count = tablet.surfaces.length + clusterCount;
+            int[] preparedDisplayTargets = cluster == null
+                    ? new int[]{CameraDisplayTarget.TABLET}
+                    : new int[]{CameraDisplayTarget.TABLET, CameraDisplayTarget.CLUSTER};
+            int[] targets = new int[count];
+            int[] sourceIndexes = new int[count];
+            int[] generations = new int[count];
+            Surface[] surfaces = new Surface[count];
+            appendReverseSurfaces(tablet, targets, sourceIndexes, generations, surfaces, 0);
+            if (cluster != null) {
+                appendReverseSurfaces(
+                        cluster, targets, sourceIndexes, generations, surfaces,
+                        tablet.surfaces.length);
+            }
+            return new ReverseSurfaceBundle(requestId, preparedDisplayTargets, targets, sourceIndexes,
+                    generations, surfaces);
+        }
+
+        private static void appendReverseSurfaces(
+                ShellReverseCameraOverlay.SurfaceSnapshot snapshot,
+                int[] targets, int[] sourceIndexes, int[] generations,
+                Surface[] surfaces, int offset) {
+            for (int index = 0; index < snapshot.surfaces.length; index++) {
+                targets[offset + index] = snapshot.displayTarget;
+                sourceIndexes[offset + index] = snapshot.sourceIndexes[index];
+                generations[offset + index] = snapshot.generations[index];
+                surfaces[offset + index] = snapshot.surfaces[index];
+            }
+        }
+
+        private void synchronizeReverseSideMode(String kind, Object[] fields) {
+            if (!"reverse_overlay_selector".equals(kind)) return;
+            Map<String, Object> values = eventFieldMap(fields);
+            if (values.containsKey("automatic")) return;
+            Object targetValue = values.get("display_target");
+            Object requestValue = values.get("request_id");
+            Object modeValue = values.get("mode");
+            if (!(targetValue instanceof Number) || !(requestValue instanceof Number)
+                    || !(modeValue instanceof String)) return;
+            int origin = ((Number) targetValue).intValue();
+            int requestId = ((Number) requestValue).intValue();
+            String mode = (String) modeValue;
+            int nextMode = "front".equals(mode) ? ReverseSideSelectorView.MODE_FRONT
+                    : "rear".equals(mode) ? ReverseSideSelectorView.MODE_REAR : -1;
+            if (!CameraDisplayTarget.isValid(origin) || nextMode < 0) return;
+            handler.post(() -> {
+                int other = origin == CameraDisplayTarget.TABLET
+                        ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
+                ShellReverseCameraOverlay output = reverseOverlay(other);
+                if (output.isOpenForRequest(requestId)) output.setSideMode(requestId, nextMode);
+            });
+        }
+
+        private boolean deferReverseSurfaceReady(String kind, Object[] fields) {
+            if (!"reverse_overlay_surface".equals(kind)) return false;
+            // Acquire after both opened display roots have produced their Surface inputs.
+            Map<String, Object> values = eventFieldMap(fields);
+            if (!(values.get("request_id") instanceof Number)
+                    || !(values.get("display_target") instanceof Number)
+                    || !"ready".equals(values.get("state"))) return false;
+            int requestId = ((Number) values.get("request_id")).intValue();
+            int displayTarget = ((Number) values.get("display_target")).intValue();
+            if (!CameraDisplayTarget.isValid(displayTarget)) return true;
+            ShellReverseCameraOverlay cluster = reverseOverlay(CameraDisplayTarget.CLUSTER);
+            if (displayTarget == CameraDisplayTarget.CLUSTER && !cluster.isOpenForRequest(requestId)) {
+                return true;
+            }
+            ShellReverseCameraOverlay tablet = reverseOverlay(CameraDisplayTarget.TABLET);
+            boolean preparing = reversePrepareInProgress
+                    && preparingReverseRequestId == requestId;
+            boolean clusterExpected = cluster.isOpenForRequest(requestId)
+                    || preparing && preparingReverseClusterExpected;
+            boolean tabletReady = tablet.isOpenForRequest(requestId) && tablet.surfacesReady();
+            boolean clusterReady = !clusterExpected
+                    || cluster.isOpenForRequest(requestId) && cluster.surfacesReady();
+            if (shouldDeferReverseSurfaceReady(
+                    preparing, clusterExpected, tabletReady, clusterReady)) {
+                deferredReverseSurfaceReadyRequestId = requestId;
+                return true;
+            }
+            if (deferredReverseSurfaceReadyRequestId == requestId) {
+                deferredReverseSurfaceReadyRequestId = 0;
+            }
+            return false;
+        }
+
+        static boolean shouldDeferReverseSurfaceReady(
+                boolean preparing, boolean clusterExpected,
+                boolean tabletReady, boolean clusterReady) {
+            return preparing || clusterExpected && (!tabletReady || !clusterReady);
+        }
+
+        private boolean isClusterUnavailableForDeferredReverse(String kind, Object[] fields) {
+            if (!"reverse_overlay_display_unavailable".equals(kind)) return false;
+            Map<String, Object> values = eventFieldMap(fields);
+            return values.get("request_id") instanceof Number
+                    && values.get("display_target") instanceof Number
+                    && ((Number) values.get("request_id")).intValue()
+                            == deferredReverseSurfaceReadyRequestId
+                    && ((Number) values.get("display_target")).intValue()
+                            == CameraDisplayTarget.CLUSTER;
+        }
+
+        private void releaseDeferredReverseTabletReady(int requestId) {
+            handler.post(() -> {
+                if (deferredReverseSurfaceReadyRequestId != requestId) return;
+                ShellReverseCameraOverlay cluster = reverseOverlay(CameraDisplayTarget.CLUSTER);
+                ShellReverseCameraOverlay tablet = reverseOverlay(CameraDisplayTarget.TABLET);
+                boolean preparing = reversePrepareInProgress
+                        && preparingReverseRequestId == requestId;
+                boolean clusterExpected = cluster.isOpenForRequest(requestId);
+                boolean tabletReady = tablet.isOpenForRequest(requestId) && tablet.surfacesReady();
+                boolean clusterReady = !clusterExpected || cluster.surfacesReady();
+                if (shouldDeferReverseSurfaceReady(
+                        preparing, clusterExpected, tabletReady, clusterReady)) return;
+                deferredReverseSurfaceReadyRequestId = 0;
+                tablet.notifySurfacesReadyForAcquire(requestId);
+            });
         }
 
         private ShellCameraOverlay overlay(int cameraId) {
@@ -506,6 +760,15 @@ public final class CameraShellMain {
         }
 
         private void emit(String kind, Object... fields) {
+            synchronizeReverseSideMode(kind, fields);
+            if (deferReverseSurfaceReady(kind, fields)) return;
+            boolean releaseDeferredTablet = isClusterUnavailableForDeferredReverse(kind, fields);
+            if (releaseDeferredTablet) {
+                Object requestValue = eventFieldMap(fields).get("request_id");
+                if (requestValue instanceof Number) {
+                    releaseDeferredReverseTabletReady(((Number) requestValue).intValue());
+                }
+            }
             if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
             String line;
             try {
@@ -547,6 +810,27 @@ public final class CameraShellMain {
                 handler.post(() -> callbackDied(target));
             } finally {
                 parcel.recycle();
+            }
+        }
+
+        private static final class ReverseSurfaceBundle {
+            final int requestId;
+            final int[] preparedDisplayTargets;
+            final int[] displayTargets;
+            final int[] sourceIndexes;
+            final int[] generations;
+            final Surface[] surfaces;
+
+            ReverseSurfaceBundle(
+                    int requestId, int[] preparedDisplayTargets,
+                    int[] displayTargets, int[] sourceIndexes,
+                    int[] generations, Surface[] surfaces) {
+                this.requestId = requestId;
+                this.preparedDisplayTargets = preparedDisplayTargets;
+                this.displayTargets = displayTargets;
+                this.sourceIndexes = sourceIndexes;
+                this.generations = generations;
+                this.surfaces = surfaces;
             }
         }
 

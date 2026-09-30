@@ -1652,7 +1652,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(31, CameraShellProtocol.VERSION);
+        assertEquals(33, CameraShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
                 CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);

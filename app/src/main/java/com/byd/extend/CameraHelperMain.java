@@ -199,6 +199,20 @@ final class CameraHelperMain {
             turnController.reportAvasStatus();
         }
 
+        void startAvasMicrophone(String sessionId, android.os.ParcelFileDescriptor pcm,
+                int volume) {
+            turnController.startAvasMicrophone(sessionId, pcm,
+                    TurnSignalShellProtocol.AVAS_MIC_FORMAT_PCM_S16LE_MONO_16KHZ, volume);
+        }
+
+        void stopAvasMicrophone(String sessionId) {
+            turnController.stopAvasMicrophone(sessionId);
+        }
+
+        void setAvasMicrophoneVolume(String sessionId, int volume) {
+            turnController.setAvasMicrophoneVolume(sessionId, volume);
+        }
+
         void setRecoveryEnabled(boolean enabled) {
             turnController.setRecoveryEnabled(enabled);
         }
@@ -697,7 +711,19 @@ final class CameraHelperMain {
                 releaseSurfaces(requestedSurfaces);
                 throw new IllegalArgumentException("reverse request id required");
             }
-            return openReverseCamera(requestedSurfaces, CAMERA_OWNER_REVERSE, requestId);
+            return openReverseCamera(requestedSurfaces,
+                    reverseIndexes(requestedSurfaces == null ? 0 : requestedSurfaces.length),
+                    requestId);
+        }
+
+        String openReverseCamera(
+                Surface[] requestedSurfaces, int[] requestedIndexes, int requestId) {
+            if (requestId <= 0) {
+                releaseSurfaces(requestedSurfaces);
+                throw new IllegalArgumentException("reverse request id required");
+            }
+            return openReverseCamera(
+                    requestedSurfaces, requestedIndexes, CAMERA_OWNER_REVERSE, requestId);
         }
 
         private synchronized String openReversePreview(Surface[] requestedSurfaces, int requestId) {
@@ -820,17 +846,23 @@ final class CameraHelperMain {
         }
 
         private synchronized String openReverseCamera(
-                Surface[] requestedSurfaces, String requestedOwner, int requestId) {
-            if (requestedSurfaces == null
-                    || (requestedSurfaces.length != 3 && requestedSurfaces.length != 4)) {
+                Surface[] requestedSurfaces, int[] requestedIndexes,
+                String requestedOwner, int requestId) {
+            if (requestedSurfaces == null || requestedIndexes == null
+                    || requestedSurfaces.length == 0
+                    || requestedSurfaces.length != requestedIndexes.length) {
                 releaseSurfaces(requestedSurfaces);
-                throw new IllegalArgumentException(
-                        "three or four reverse Surfaces required");
+                throw new IllegalArgumentException("reverse Surface mappings required");
             }
-            int[] indexes = new int[requestedSurfaces.length];
-            for (int i = 0; i < indexes.length; i++) indexes[i] = i + 1;
+            for (int index : requestedIndexes) {
+                if (index < ReverseCameraLayout.REAR_CAMERA_INDEX
+                        || index > 4) {
+                    releaseSurfaces(requestedSurfaces);
+                    throw new IllegalArgumentException("invalid reverse source index");
+                }
+            }
             return attachPersistentGroup(
-                    reverseGroup, requestedSurfaces, indexes, requestId,
+                    reverseGroup, requestedSurfaces, requestedIndexes, requestId,
                     CAMERA_OWNER_REVERSE.equals(requestedOwner)
                             ? "reverse_overlay" : "reverse_preview",
                     true, false, null, "reverse_open");
@@ -1239,15 +1271,31 @@ final class CameraHelperMain {
             turnController.prepareReverseOverlay(spec, surfaceSink, preparedSink);
         }
 
+        void acquireReverseSurfacesForFallback(int requestId) {
+            turnController.acquireReverseSurfacesForFallback(requestId);
+        }
+
         void armReverseOverlayFrames(int requestId, int[] generations) {
-            turnController.armReverseOverlayFrames(requestId, generations);
+            armReverseOverlayFrames(requestId, CameraDisplayTarget.TABLET, generations);
+        }
+
+        void armReverseOverlayFrames(
+                int requestId, int displayTarget, int[] generations) {
+            turnController.armReverseOverlayFrames(requestId, displayTarget, generations);
         }
 
         void setReverseOverlayVisible(
                 int requestId, int[] generations, boolean visible,
                 Consumer<Boolean> completion) {
+            setReverseOverlayVisible(requestId, CameraDisplayTarget.TABLET,
+                    generations, visible, completion);
+        }
+
+        void setReverseOverlayVisible(
+                int requestId, int displayTarget, int[] generations, boolean visible,
+                Consumer<Boolean> completion) {
             turnController.setReverseOverlayVisible(
-                    requestId, generations, visible, completion);
+                    requestId, displayTarget, generations, visible, completion);
         }
 
         void closeReverseOverlayWindow(String reason, Consumer<Boolean> completion) {

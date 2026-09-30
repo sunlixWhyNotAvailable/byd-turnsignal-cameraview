@@ -10,15 +10,18 @@ final class RequiredPermissions {
     final boolean install;
     final boolean notificationAccess;
     final boolean writeSecureSettings;
+    final boolean microphone;
 
     private RequiredPermissions(boolean camera, boolean overlay, boolean accessibility,
-            boolean install, boolean notificationAccess, boolean writeSecureSettings) {
+            boolean install, boolean notificationAccess, boolean writeSecureSettings,
+            boolean microphone) {
         this.camera = camera;
         this.overlay = overlay;
         this.accessibility = accessibility;
         this.install = install;
         this.notificationAccess = notificationAccess;
         this.writeSecureSettings = writeSecureSettings;
+        this.microphone = microphone;
     }
 
     static RequiredPermissions read(SharedPreferences preferences, boolean previewRequested,
@@ -37,7 +40,7 @@ final class RequiredPermissions {
         boolean adbReminder = adbRecovery && preferences.getBoolean("adb_reminder_enabled", true);
         // These three accesses are provisioned and read back independently of runtime switches.
         return new RequiredPermissions(camera, mirror || hint || adbReminder, true, installRequested,
-                true, true);
+                true, true, AvasMicrophoneSettings.enabled(preferences));
     }
 
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,
@@ -55,10 +58,19 @@ final class RequiredPermissions {
     boolean satisfied(boolean cameraGranted, boolean overlayGranted,
             boolean accessibilityConnected, boolean installGranted,
             boolean notificationAccessGranted, boolean writeSecureSettingsGranted) {
+        return satisfied(cameraGranted, overlayGranted, accessibilityConnected, installGranted,
+                notificationAccessGranted, writeSecureSettingsGranted, false);
+    }
+
+    boolean satisfied(boolean cameraGranted, boolean overlayGranted,
+            boolean accessibilityConnected, boolean installGranted,
+            boolean notificationAccessGranted, boolean writeSecureSettingsGranted,
+            boolean microphoneGranted) {
         return (!camera || cameraGranted) && (!overlay || overlayGranted)
                 && (!accessibility || accessibilityConnected) && (!install || installGranted)
                 && (!notificationAccess || notificationAccessGranted)
-                && (!writeSecureSettings || writeSecureSettingsGranted);
+                && (!writeSecureSettings || writeSecureSettingsGranted)
+                && (!microphone || microphoneGranted);
     }
 
 }

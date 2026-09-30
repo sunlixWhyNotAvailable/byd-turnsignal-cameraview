@@ -6,7 +6,7 @@ import com.byd.extend.CameraButtonBindings
 import com.byd.extend.UpdateHintAppearance
 import java.util.concurrent.atomic.AtomicLong
 
-enum class UiLanguage { Ukrainian, English, Chinese }
+enum class UiLanguage { Ukrainian, English, Chinese, Russian }
 enum class UiTheme { Dark, Light }
 /** Stable persisted IDs intentionally differ from enum ordinals after Mirror was inserted. */
 enum class RootTab(val legacyId: Int) {
@@ -215,6 +215,7 @@ enum class SelectionId {
     BlindWarningMode,
     ParkingView,
     ReverseElement,
+    ReverseTarget,
     ReverseSource,
     MirrorTarget,
     MirrorSource,
@@ -520,7 +521,18 @@ data class AvasUiState @JvmOverloads constructor(
     val profiles: List<AvasProfileUiState> = AvasProfileIds.ALL.map { AvasProfileUiState(id = it) },
     val importingProfileId: String? = null,
     val audition: AvasAuditionUiState = AvasAuditionUiState(),
+    val microphone: AvasMicrophoneUiState = AvasMicrophoneUiState(),
 )
+
+@Immutable
+data class AvasMicrophoneUiState @JvmOverloads constructor(
+    val enabled: Boolean = false,
+    val volume: Int = 15,
+    val binding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
+    val state: String = "stopped",
+) {
+    val busy: Boolean get() = state == "starting" || state == "active"
+}
 
 @Immutable
 data class AvasBackendAction @JvmOverloads constructor(
@@ -538,6 +550,7 @@ data class BlindRuleUiState(
     val steeringAngle: String = "10",
     val suppressWhilePanorama: Boolean = true,
     val holdAfterShortTurn: Boolean = true,
+    val holdDurationSeconds: String = "3",
     val sharpTurnEnabled: Boolean = false,
     val blindSpotOnly: Boolean = false,
     val turnRequired: Boolean = true,
@@ -589,11 +602,14 @@ data class ReverseUiState(
     val panoramaOperation: OperationUiState = OperationUiState(),
     val section: CameraSection = CameraSection.Parameters,
     val selectedElement: ReverseElement = ReverseElement.RearLeft,
+    val selectedTarget: DisplayTarget = DisplayTarget.Tablet,
     val selectedSource: ReverseSource = ReverseSource.Rear,
     val showFront: Boolean = false,
     val steeringKeyCode: Int = -1,
     val frontIntegration: Map<ReverseElement, Boolean> = emptyMap(),
     val geometry: Map<ReverseElement, ReverseGeometryUiState> = emptyMap(),
+    val geometryByTarget: Map<DisplayTarget, Map<ReverseElement, ReverseGeometryUiState>> = emptyMap(),
+    val elementTargets: Map<ReverseElement, DisplayTarget> = emptyMap(),
     val profiles: Map<CameraProfileId.Reverse, CameraProfileUiState> = emptyMap(),
     val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val zOrder: List<ReverseElement> = listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight),
@@ -700,6 +716,10 @@ data class DialogUiState @JvmOverloads constructor(
     val captureAction: CameraButtonBindings.Action? = null,
     val archiveProcessedBytes: Long? = null,
     val archiveTotalBytes: Long? = null,
+    val updateStatus: String? = null,
+    val updateStatusIsError: Boolean = false,
+    val updateAvailableVersion: String? = null,
+    val updateHistoryWarning: String? = null,
 ) {
     fun withArchiveProgress(message: String, processed: Long, total: Long,
         finalizing: Boolean, cancellable: Boolean, dismissLabel: String?): DialogUiState =
@@ -737,6 +757,7 @@ sealed interface NumberTarget {
     @Immutable data class Guard(val field: GuardNumber) : NumberTarget
     data object WeatherInterval : NumberTarget
     @Immutable data class Blind(val group: CameraGroup, val field: BlindNumber) : NumberTarget
+    @Immutable data class BlindHoldDuration(val group: CameraGroup) : NumberTarget
     @Immutable data class Parking(val view: ParkingView?, val field: ParkingNumber) : NumberTarget
     @Immutable data class Mirror @JvmOverloads constructor(
         val field: MirrorNumber, val displayTarget: DisplayTarget? = null,
@@ -746,7 +767,10 @@ sealed interface NumberTarget {
         val displayTarget: DisplayTarget? = null,
         val mirrorFront: Boolean? = null,
     ) : NumberTarget
-    @Immutable data class ReverseGeometry(val element: ReverseElement, val field: ReverseGeometryNumber) : NumberTarget
+    @Immutable data class ReverseGeometry @JvmOverloads constructor(
+        val element: ReverseElement, val field: ReverseGeometryNumber,
+        val displayTarget: DisplayTarget? = null,
+    ) : NumberTarget
     @Immutable data class Output(val field: OutputNumber) : NumberTarget
 }
 
@@ -839,11 +863,12 @@ internal fun BydExtendUiAction.forMirrorSource(front: Boolean): BydExtendUiActio
 enum class CameraHostKind { Placement, CalibrationOriginal, CalibrationCorrected, CalibrationOutput, ReverseComposition, Mirror, Direct, Avm }
 
 @Immutable
-data class CameraHostSlot(
+data class CameraHostSlot @JvmOverloads constructor(
     val kind: CameraHostKind,
     val profile: CameraProfileId? = null,
     val reverseElement: ReverseElement? = null,
     val sourceIndex: Int? = null,
     val modeIndex: Int? = null,
     val editable: Boolean = false,
+    val displayTarget: DisplayTarget? = null,
 )

@@ -191,4 +191,5 @@
     <string name="runtime_status_avm_ready">AVM camera ready</string>
     <string name="runtime_status_camera_discovery_failed">Camera discovery failed: %1$s</string>
     <string name="runtime_status_detected">Detected %1$s</string>
+    <string name="runtime_recovery_service_label">BYD Extend recovery</string>
 </resources>

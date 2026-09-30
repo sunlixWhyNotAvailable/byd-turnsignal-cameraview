@@ -20,10 +20,12 @@ public final class AppLanguage {
     public static final String ENGLISH = "en";
     public static final String UKRAINIAN = "uk";
     public static final String CHINESE = "zh-CN";
+    public static final String RUSSIAN = "ru";
 
     private AppLanguage() {}
 
     public static String normalize(String value) {
+        if (RUSSIAN.equalsIgnoreCase(value)) return RUSSIAN;
         if (CHINESE.equals(value) || "zh".equalsIgnoreCase(value) || "zh-rCN".equals(value)) {
             return CHINESE;
         }
@@ -98,5 +100,6 @@ public final class AppLanguage {
     }
 
     public static boolean isChinese(String language) { return CHINESE.equals(normalize(language)); }
+    public static boolean isRussian(String language) { return RUSSIAN.equals(normalize(language)); }
     public static boolean isUkrainian(String language) { return UKRAINIAN.equals(normalize(language)); }
 }

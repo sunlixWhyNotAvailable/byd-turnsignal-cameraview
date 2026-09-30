@@ -46,6 +46,8 @@ final class AvasRuntime implements AutoCloseable {
             new Thread(r, "avas-playback"));
     private final ScheduledExecutorService telemetry = Executors.newSingleThreadScheduledExecutor(r ->
             new Thread(r, "avas-telemetry"));
+    private final ExecutorService microphone = Executors.newSingleThreadExecutor(r ->
+            new Thread(r, "avas-microphone"));
     private volatile AvasConfig config = AvasConfig.empty();
     private volatile AvasAudioPlayer player;
     private boolean started;
@@ -56,6 +58,7 @@ final class AvasRuntime implements AutoCloseable {
     private String auditionProfileId = "";
     private String auditionAssetId = "";
     private volatile String auditionSessionId = "";
+    private volatile MicrophoneSession microphoneSession;
 
     AvasRuntime(Context context, int ownerUid, Consumer<JSONObject> eventSink) {
         if (context == null) throw new IllegalArgumentException("context is null");
@@ -82,6 +85,9 @@ final class AvasRuntime implements AutoCloseable {
                         return skipEligible(config, "power_off");
                     }
                     @Override public void onProfile(String profile) { enqueueAutomatic(profile); }
+                    @Override public void onPowerOffObserved() {
+                        stopCurrentMicrophone("vehicle_power_off");
+                    }
                     @Override public void onSuppressed(String profile, String powerProfile,
                             long deltaMs) {
                         event("avas_event_skipped", "profile", profile,
@@ -216,6 +222,13 @@ final class AvasRuntime implements AutoCloseable {
             reportStatus();
             return;
         }
+        MicrophoneSession microphone = microphoneSession;
+        if (microphone != null && !microphone.terminal()) {
+            auditionError(profileId, assetId, sessionId,
+                    "exterior microphone audio is active");
+            reportStatus();
+            return;
+        }
         AvasConfig.Profile profile;
         try {
             profile = config.profile(profileId);
@@ -267,6 +280,157 @@ final class AvasRuntime implements AutoCloseable {
         reportStatus();
     }
 
+    synchronized void startMicrophone(String sessionId, ParcelFileDescriptor pcm,
+            int format, int volume) throws IOException {
+        if (!validSessionId(sessionId)
+                || !TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(format)
+                || !TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)) {
+            closeDescriptor(pcm);
+            throw new IllegalArgumentException("invalid AVAS microphone request");
+        }
+        if (pcm == null) throw new IOException("AVAS microphone pipe unavailable");
+        MicrophoneSession current = microphoneSession;
+        if (closed || current != null && !current.terminal()) {
+            closeDescriptor(pcm);
+            throw new IllegalStateException(closed ? "AVAS runtime is closed"
+                    : "AVAS microphone session already active");
+        }
+        MicrophoneSession next = new MicrophoneSession(sessionId, pcm, format, volume);
+        microphoneSession = next;
+        microphoneStatus(next, "starting", "");
+        updateTelemetry();
+        reportStatus();
+        try {
+            microphone.execute(() -> runMicrophone(next));
+        } catch (RuntimeException failure) {
+            closeDescriptor(pcm);
+            next.state = "error";
+            microphoneStatus(next, "error", failure.toString());
+            updateTelemetry();
+            reportStatus();
+            throw new IllegalStateException("AVAS microphone could not start", failure);
+        }
+    }
+
+    void stopMicrophone(String sessionId, String reason) {
+        if (!validSessionId(sessionId)) return;
+        MicrophoneSession current = microphoneSession;
+        if (current == null || !current.id.equals(sessionId)) return;
+        stopMicrophone(current, reason);
+    }
+
+    void stopCurrentMicrophone(String reason) {
+        MicrophoneSession current = microphoneSession;
+        if (current != null) stopMicrophone(current, reason);
+    }
+
+    void setMicrophoneVolume(String sessionId, int volume) throws Exception {
+        if (!validSessionId(sessionId)
+                || !TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)) {
+            throw new IllegalArgumentException("invalid AVAS microphone volume");
+        }
+        MicrophoneSession current = microphoneSession;
+        if (current == null || !current.id.equals(sessionId) || current.terminal()) return;
+        current.volume = volume;
+        AvasAudioPlayer output = player;
+        if (output != null) output.setMicrophoneVolume(sessionId, volume);
+        microphoneStatus(current, current.state, "");
+        reportStatus();
+    }
+
+    String microphoneSessionId() {
+        MicrophoneSession current = microphoneSession;
+        return current == null || current.terminal() ? "" : current.id;
+    }
+
+    private void stopMicrophone(MicrophoneSession session, String reason) {
+        synchronized (session) {
+            if (session.terminal() || session.stopRequested) return;
+            session.stopRequested = true;
+            session.state = "stopping";
+        }
+        microphoneStatus(session, "stopping", reason);
+        AvasAudioPlayer output = player;
+        if (output != null) output.stopMicrophone(session.id);
+        closeDescriptor(session.pcm);
+        updateTelemetry();
+        reportStatus();
+    }
+
+    private void runMicrophone(MicrophoneSession session) {
+        String failure = "";
+        try {
+            AvasAudioPlayer output = audioPlayer();
+            AvasAudioPlayer microphonePlayer = output;
+            microphonePlayer.playMicrophone(session.id, session.pcm, session.format,
+                    session::stopped, () -> session.volume,
+                    () -> setMicrophoneActive(session));
+        } catch (Exception error) {
+            if (!session.stopped()) failure = error.toString();
+        } finally {
+            closeDescriptor(session.pcm);
+            String terminalState = failure.isEmpty() ? "stopped" : "error";
+            synchronized (session) {
+                session.state = terminalState;
+                session.stopRequested = true;
+            }
+            if (failure.isEmpty()) microphoneStatus(session, "stopped", "");
+            else microphoneStatus(session, "error", failure);
+            updateTelemetry();
+            reportStatus();
+        }
+    }
+
+    /** Event and microphone workers must share the route-owning player instance. */
+    private synchronized AvasAudioPlayer audioPlayer() throws Exception {
+        if (closed) throw new IllegalStateException("AVAS runtime is closed");
+        AvasAudioPlayer current = player;
+        if (current == null) {
+            current = new AvasAudioPlayer(context, this::emit);
+            player = current;
+        }
+        return current;
+    }
+
+    private void setMicrophoneActive(MicrophoneSession session) {
+        synchronized (session) {
+            if (session.stopRequested || microphoneSession != session) return;
+            session.state = "active";
+        }
+        microphoneStatus(session, "active", "");
+        reportStatus();
+    }
+
+    private void microphoneStatus(MicrophoneSession session, String state, String error) {
+        try {
+            JSONObject event = new JSONObject().put("kind", "avas_microphone_status")
+                    .put("session_id", session.id).put("state", state)
+                    .put("format", session.format).put("volume", session.volume);
+            if (error != null && !error.isEmpty()) event.put("error", error);
+            emit(event);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static final class MicrophoneSession {
+        final String id;
+        final ParcelFileDescriptor pcm;
+        final int format;
+        volatile int volume;
+        volatile String state = "starting";
+        volatile boolean stopRequested;
+
+        MicrophoneSession(String id, ParcelFileDescriptor pcm, int format, int volume) {
+            this.id = id;
+            this.pcm = pcm;
+            this.format = format;
+            this.volume = volume;
+        }
+
+        boolean stopped() { return stopRequested; }
+        boolean terminal() { return "stopped".equals(state) || "error".equals(state); }
+    }
+
     /** Lock-free helper-death snapshot; callers stop only this captured session. */
     String auditionSessionId() { return auditionSessionId; }
 
@@ -286,8 +450,13 @@ final class AvasRuntime implements AutoCloseable {
             JSONObject audition = new JSONObject().put("profileId", profile)
                     .put("assetId", asset).put("sessionId", session)
                     .put("state", queue.auditionState(session));
+            MicrophoneSession microphone = microphoneSession;
+            JSONObject microphoneStatus = microphone == null ? new JSONObject()
+                    : new JSONObject().put("session_id", microphone.id)
+                            .put("state", microphone.state).put("format", microphone.format)
+                            .put("volume", microphone.volume);
             emit(new JSONObject().put("kind", "avas_status").put("profiles", profiles)
-                    .put("audition", audition));
+                    .put("audition", audition).put("microphone", microphoneStatus));
         } catch (Exception ignored) {
         }
     }
@@ -301,10 +470,20 @@ final class AvasRuntime implements AutoCloseable {
         }
         telemetryController.close();
         telemetry.shutdownNow();
+        boolean interrupted = false;
+        stopCurrentMicrophone("helper_shutdown");
+        microphone.shutdown();
+        while (!microphone.isTerminated()) {
+            try {
+                if (microphone.awaitTermination(1, TimeUnit.SECONDS)) break;
+            } catch (InterruptedException ignored) {
+                interrupted = true;
+                stopCurrentMicrophone("helper_shutdown");
+            }
+        }
         AvasAudioPlayer current = player;
         if (current != null) current.stop();
         playback.shutdown();
-        boolean interrupted = false;
         while (true) {
             try {
                 if (playback.awaitTermination(1, TimeUnit.SECONDS)) break;
@@ -367,11 +546,7 @@ final class AvasRuntime implements AutoCloseable {
             return;
         }
         try {
-            AvasAudioPlayer output = player;
-            if (output == null) {
-                output = new AvasAudioPlayer(context, this::emit);
-                player = output;
-            }
+            AvasAudioPlayer output = audioPlayer();
             event(request, "avas_play_start", "asset", assetId(file),
                     "gain", profile.volume);
             reportStatus();
@@ -409,6 +584,8 @@ final class AvasRuntime implements AutoCloseable {
         if (!started || closed) return;
         boolean enabled = false;
         for (AvasConfig.Profile profile : config.profiles) enabled |= profile.enabled;
+        MicrophoneSession microphone = microphoneSession;
+        enabled |= microphone != null && !microphone.terminal();
         if (enabled) telemetryController.activate();
         else telemetryController.deactivate();
     }

@@ -451,7 +451,8 @@ public final class UpdateAutoCheckRuntimeTest {
         assertTrue(runtime.contains("autoCheck.wake(action)"));
         assertTrue(runtime.contains("autoCheck.onDisplayState(displayReady())"));
         assertTrue(runtime.contains("autoCheck.entry(displayReady(), presentation.hasPendingOffer())"));
-        assertTrue(runtime.contains("autoCheck.setDownloading(value)"));
+        assertTrue(runtime.contains("autoCheck.setDownloading(true)"));
+        assertTrue(runtime.contains("autoCheck.setDownloading(false)"));
         assertTrue(runtime.contains("autoCheck.shutdown()"));
         String preference = section(runtime, "settingsListener =", "preferences.register");
         assertTrue(preference.indexOf("autoCheck.refresh()") >= 0
@@ -478,7 +479,11 @@ public final class UpdateAutoCheckRuntimeTest {
         assertFalse(activity.contains("UpdateAutoCheckRuntime"));
         assertFalse(section(activity, "private void runUpdateCheck(", "private void onUpdateCheckStarted(")
                 .contains("updateCheckInFlight ||"));
-        assertTrue(activity.contains("setDownloadInFlight(false)"));
+        String download = section(runtime, "private void finishDownload(",
+                "private void notifyDownloadListener(");
+        assertTrue(download.indexOf("autoCheck.setDownloading(false)") >= 0
+                && download.indexOf("notifyDownloadListener(current)")
+                    > download.indexOf("autoCheck.setDownloading(false)"));
         assertFalse(runtime.substring(runtime.indexOf("@Override public void onActivityStopped"))
                 .contains("autoCheck"));
     }

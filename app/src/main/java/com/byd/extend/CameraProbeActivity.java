@@ -91,6 +91,7 @@ import com.byd.extend.ui.ParkingNumber;
 import com.byd.extend.ui.ProfileNumber;
 import com.byd.extend.ui.ReverseElement;
 import com.byd.extend.ui.ReverseGeometryNumber;
+import com.byd.extend.ui.ReverseUiState;
 import com.byd.extend.ui.ReverseSource;
 import com.byd.extend.ui.ParkingView;
 import com.byd.extend.ui.ProductionUiBackend;
@@ -138,11 +139,17 @@ public final class CameraProbeActivity extends ComponentActivity
     private static final String TAG = "BydExtend";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
+    private static final int MICROPHONE_PERMISSION_REQUEST = 12;
     private static final int CAMERA_PRESET_REQUEST = 12;
     private static final int AVAS_AUDIO_REQUEST = 13;
     private static final int ARCHIVE_SAVE_REQUEST = 14;
     private static final String STATE_ARCHIVE_SAVE_NAME = "archive_save_name";
     private static final String STATE_ARCHIVE_SAVE_COMPATIBILITY = "archive_save_compatibility";
+    private static final String STATE_UPDATE_CHECK_DIALOG_REQUESTED = "update_check_dialog_requested";
+    private static final String STATE_UPDATE_CHECK_DIALOG_RESULT = "update_check_dialog_result";
+    private static final int UPDATE_CHECK_RESULT_NONE = 0;
+    private static final int UPDATE_CHECK_RESULT_ERROR = 1;
+    private static final int UPDATE_CHECK_RESULT_LATEST = 2;
     private static final float DEFAULT_OUTWARD_DEG = 90.0f;
     private static final float DEFAULT_CENTER_DEG = 10.0f;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
@@ -349,6 +356,19 @@ public final class CameraProbeActivity extends ComponentActivity
         });
     }
 
+    static void publishAvasMicrophoneChanged() {
+        CameraProbeActivity owner;
+        synchronized (REVERSE_OWNER_LOCK) {
+            owner = reverseOwner == null ? null : reverseOwner.get();
+        }
+        if (owner != null) owner.mainHandler.post(() -> {
+            if (!owner.activityDestroyed && owner.productionUi != null) {
+                owner.productionUi.refreshAvasState();
+                owner.refreshProductionHeader();
+            }
+        });
+    }
+
     private void refreshProductionMirrorState() {
         if (productionUi == null || activityDestroyed || shutdownRequested) return;
         boolean changed = productionUi.getState().getMirror().getActiveFront()
@@ -465,11 +485,9 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private final ExecutorService ipcExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService logExportExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService avasImportExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final AppUpdateManager updateManager = new AppUpdateManager();
     private final CameraTransition cameraTransition = new CameraTransition();
     private final StartupOverlayPermissionFlow startupOverlayPermissionFlow =
             new StartupOverlayPermissionFlow();
@@ -781,11 +799,24 @@ public final class CameraProbeActivity extends ComponentActivity
                 }
             });
     private boolean updateCheckInFlight;
+    private boolean updateCheckDialogRequested;
+    private int updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
     private final UpdateHintRuntime.CheckListener updateCheckListener = new UpdateHintRuntime.CheckListener() {
         @Override public void onCheckStarted(boolean force) { onUpdateCheckStarted(force); }
         @Override public void onCheckDiscarded() {
             updateCheckInFlight = false;
+            updateCheckDialogRequested = false;
+            updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+            UpdateHintRuntime.get(CameraProbeActivity.this)
+                    .setManualCheckDialogRequested(false);
             if (activityDestroyed || isFinishing()) return;
+            DialogUiState dialog = productionUi == null ? null
+                    : productionUi.getState().getDialog();
+            if (runtimeDialogOwner == RuntimeDialogOwner.UPDATE && dialog != null
+                    && runtimeText(R.string.runtime_update_checking).equals(
+                            dialog.getUpdateStatus())) {
+                clearRuntimeDialog();
+            }
             publishSettingsOperation(SettingsOperation.Update, "", StatusTone.Neutral, false);
             restoreUpdateButton();
         }
@@ -901,17 +932,12 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean activityColdResetFailed;
     private int activeReverseControllerRequestId;
     private boolean updateDownloadInFlight;
+    private final UpdateHintRuntime.DownloadListener updateDownloadListener =
+            this::onUpdateDownloadChanged;
     private enum RuntimeDialogOwner { NONE, BACKGROUND, LOGS, COMPATIBILITY, UPDATE }
     private RuntimeDialogOwner runtimeDialogOwner = RuntimeDialogOwner.NONE;
     private Runnable runtimeDialogConfirm;
     private Runnable runtimeDialogDismiss;
-    private String pendingUpdateTitle;
-    private String pendingUpdateMessage;
-    private String pendingUpdateNotes = "";
-    private String downloadingUpdateVersion;
-    private String downloadingUpdateNotes = "";
-    private File pendingUpdateFile;
-    private AppUpdateManager.UpdateInfo pendingUpdateInstall;
     private final Runnable finishCameraHandoff = this::openPendingStockAvm;
     private final Runnable productionPreviewFirstFrameTimeout =
             this::handleProductionPreviewFirstFrameTimeout;
@@ -1068,6 +1094,10 @@ public final class CameraProbeActivity extends ComponentActivity
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if (savedInstanceState != null) {
+            updateCheckDialogRequested = savedInstanceState.getBoolean(
+                    STATE_UPDATE_CHECK_DIALOG_REQUESTED);
+            updateCheckDialogResult = savedInstanceState.getInt(
+                    STATE_UPDATE_CHECK_DIALOG_RESULT, UPDATE_CHECK_RESULT_NONE);
             startupOverlayPermissionFlow.restore(
                     savedInstanceState.getBoolean(STATE_STARTUP_ADB_AUTH_STARTED),
                     savedInstanceState.getBoolean(STATE_STARTUP_ADB_AUTH_FINISHED),
@@ -1161,6 +1191,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 startupOverlayPermissionFlow.overlayPermissionAttempted());
         outState.putBoolean(STATE_STARTUP_OVERLAY_SETTINGS_IN_FLIGHT,
                 startupOverlayPermissionFlow.overlaySettingsInFlight());
+        outState.putBoolean(STATE_UPDATE_CHECK_DIALOG_REQUESTED, updateCheckDialogRequested);
+        outState.putInt(STATE_UPDATE_CHECK_DIALOG_RESULT, updateCheckDialogResult);
         outState.putString(STATE_AVAS_IMPORT_PROFILE,
                 preferences.getString(PREF_AVAS_IMPORT_PROFILE, null));
         if (pendingArchiveDocument != null) {
@@ -1182,8 +1214,10 @@ public final class CameraProbeActivity extends ComponentActivity
     protected void onStart() {
         super.onStart();
         activityStarted = true;
-        UpdateHintRuntime.get(this).setCheckListener(updateCheckListener);
-        updateCheckInFlight = UpdateHintRuntime.get(this).isChecking();
+        UpdateHintRuntime updateRuntime = UpdateHintRuntime.get(this);
+        updateRuntime.setCheckListener(updateCheckListener);
+        updateRuntime.setDownloadListener(updateDownloadListener);
+        updateCheckInFlight = updateRuntime.isChecking();
         if (updateCheckInFlight) showUpdateCheckProgress();
         else restoreUpdateButton();
         publishReverseOwnerPresence();
@@ -1230,6 +1264,7 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         resumeActivityCameraAfterShellRecovery("activity_resumed", 0);
         showDiagnosticExportProgress();
+        restoreManualUpdateCheckDialog();
         showCachedUpdateIfAvailable();
         if (backgroundStartSettingsActive) {
             backgroundStartSettingsActive = false;
@@ -1269,7 +1304,15 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+        if (requestCode == MICROPHONE_PERMISSION_REQUEST) {
+            boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted && !shutdownRequested)
+                preferences.edit().putBoolean(AvasMicrophoneSettings.ENABLED, true).apply();
+            if (!granted) Toast.makeText(this, runtimeText(R.string.avas_mic_permission),
+                    Toast.LENGTH_LONG).show();
+            if (productionUi != null) productionUi.refreshAvasState();
+            refreshProductionHeader();
+        } else if (requestCode == CAMERA_PERMISSION_REQUEST) {
             cameraPermissionPending = false;
             refreshProductionHeader();
             boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
@@ -1328,6 +1371,7 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     protected void onStop() {
         activityStarted = false;
+        UpdateHintRuntime.get(this).removeDownloadListener(updateDownloadListener);
         stopAvasListAudition(avasAudition.getSessionId());
         preferences.unregisterOnSharedPreferenceChangeListener(permissionsPreferenceListener);
         CameraHelperService.removeAdbRecoveryListener(adbRecoveryListener);
@@ -1368,6 +1412,7 @@ public final class CameraProbeActivity extends ComponentActivity
         clearReverseOwnerPresence();
         activityDestroyed = true;
         UpdateHintRuntime.get(this).removeCheckListener(updateCheckListener);
+        UpdateHintRuntime.get(this).removeDownloadListener(updateDownloadListener);
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
         cancelPendingWeatherLocationPermission();
         CompatibilityBundleExporter.ExportControl exportControl =
@@ -1387,7 +1432,6 @@ public final class CameraProbeActivity extends ComponentActivity
             helperBound = false;
         }
         ipcExecutor.shutdown();
-        updateExecutor.shutdownNow();
         logExportExecutor.shutdownNow();
         avasImportExecutor.shutdown();
         if (activityLog != null) activityLog.close();
@@ -2148,14 +2192,25 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void runUpdateCheck(boolean force) {
-        if (updateDownloadInFlight || activityDestroyed) return;
-        UpdateHintRuntime.get(this).check(force);
+        if (activityDestroyed) return;
+        UpdateHintRuntime runtime = UpdateHintRuntime.get(this);
+        UpdateHintRuntime.DownloadSnapshot operation = runtime.downloadOperation();
+        if (operation != null && operation.phase != UpdateHintRuntime.DownloadPhase.FAILED) {
+            runtime.showDownloadOperation();
+            return;
+        }
+        if (operation != null) runtime.dismissDownloadOperation();
+        runtime.check(force);
     }
 
     private void onUpdateCheckStarted(boolean force) {
         if (activityDestroyed || isFinishing()) return;
         updateCheckInFlight = true;
         showUpdateCheckProgress();
+        updateCheckDialogRequested = force;
+        updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+        UpdateHintRuntime.get(this).setManualCheckDialogRequested(force);
+        if (force) restoreManualUpdateCheckDialog();
         record("update_check_started", "automatic", !force);
     }
 
@@ -2164,6 +2219,44 @@ public final class CameraProbeActivity extends ComponentActivity
                 runtimeText(R.string.runtime_update_checking), StatusTone.Warning, true);
         if (settingsPanel != null) settingsPanel.setUpdateButton(
                 runtimeText(R.string.runtime_update_check_button), false);
+    }
+
+    private void restoreManualUpdateCheckDialog() {
+        if (!updateCheckDialogRequested || !activityResumed || activityDestroyed || isFinishing()) return;
+        DialogUiState current = productionUi == null ? null
+                : productionUi.getState().getDialog();
+        boolean ownUpdateDialog = runtimeDialogOwner == RuntimeDialogOwner.UPDATE
+                && current != null;
+        boolean currentIsChecking = ownUpdateDialog
+                && runtimeText(R.string.runtime_update_checking).equals(current.getUpdateStatus());
+        if (ownUpdateDialog && !currentIsChecking) return;
+        if (updateCheckInFlight) {
+            if (!currentIsChecking) showUpdateCheckDialog();
+            return;
+        }
+        if (updateCheckDialogResult == UPDATE_CHECK_RESULT_ERROR) {
+            showUpdateStatus(runtimeText(R.string.runtime_update_check_error), true);
+        } else if (updateCheckDialogResult == UPDATE_CHECK_RESULT_LATEST) {
+            showUpdateStatus(runtimeText(R.string.runtime_up_to_date), false);
+        } else {
+            AppUpdateManager.UpdateInfo pending = UpdateHintRuntime.get(this).pendingOffer();
+            if (pending == null) {
+                updateCheckDialogRequested = false;
+                UpdateHintRuntime.get(this).setManualCheckDialogRequested(false);
+            } else if (showUpdateOffer(pending)) {
+                updateCheckDialogRequested = false;
+            }
+        }
+    }
+
+    private void showUpdateCheckDialog() {
+        showUpdateRuntimeDialog(DialogKind.Update,
+                runtimeText(R.string.update_dialog_current_version, BuildConfig.VERSION_NAME),
+                "", null, false, () -> {}, () -> {
+                    updateCheckDialogRequested = false;
+                    updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+                    UpdateHintRuntime.get(this).setManualCheckDialogRequested(false);
+                }, runtimeText(R.string.runtime_update_checking), false, null, null);
     }
 
     private void onUpdateCheckFinished(AppUpdateManager.UpdateInfo available,
@@ -2175,42 +2268,73 @@ public final class CameraProbeActivity extends ComponentActivity
             record("update_check_finished", "result", "error", "error", error.toString());
             publishSettingsOperation(SettingsOperation.Update,
                     runtimeText(R.string.runtime_update_check_error), StatusTone.Error, false);
-            if (force) showUpdateError(error);
+            if (force && updateCheckDialogRequested) {
+                updateCheckDialogResult = UPDATE_CHECK_RESULT_ERROR;
+                restoreManualUpdateCheckDialog();
+            } else updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
         } else if (available == null) {
             publishSettingsOperation(SettingsOperation.Update,
                     runtimeText(R.string.runtime_up_to_date), StatusTone.Ok, false);
             record("update_check_finished", "result", "up_to_date");
-            if (force) showUpdateMessage(runtimeText(R.string.runtime_update),
-                    runtimeText(R.string.runtime_up_to_date));
+            if (force && updateCheckDialogRequested) {
+                updateCheckDialogResult = UPDATE_CHECK_RESULT_LATEST;
+                restoreManualUpdateCheckDialog();
+            } else updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
         } else {
             publishSettingsOperation(SettingsOperation.Update,
                     runtimeText(R.string.runtime_update_available_version, available.version),
                     StatusTone.Ok, false);
             record("update_check_finished", "result", "available", "version", available.version);
-            showCachedUpdateIfAvailable();
+            updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+            if (force) {
+                if (updateCheckDialogRequested) {
+                    if (activityResumed && showUpdateOffer(available)) {
+                        updateCheckDialogRequested = false;
+                    }
+                } else UpdateHintRuntime.get(this).consume(available.resultId);
+            } else showCachedUpdateIfAvailable();
         }
     }
 
     private void restoreUpdateButton() {
         if (settingsPanel == null) return;
         settingsPanel.setUpdateButton(
-                runtimeText(R.string.runtime_update),
-                !activityDestroyed && !updateDownloadInFlight && !updateCheckInFlight);
+                runtimeText(R.string.update_dialog_action),
+                !activityDestroyed && !updateCheckInFlight);
     }
 
-    private void showCachedUpdateIfAvailable() {
-        AppUpdateManager.UpdateInfo available = UpdateHintRuntime.get(this).pendingOffer();
-        if (!canPresentUpdateResult() || available == null || updateDownloadInFlight) return;
-        showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Update,
-                runtimeText(R.string.runtime_update_available),
-                runtimeText(R.string.runtime_installed_version, BuildConfig.VERSION_NAME) + "\n"
-                        + runtimeText(R.string.runtime_available_version, available.version),
-                true, runtimeText(R.string.runtime_update), runtimeText(R.string.runtime_update_later),
-                ReleaseNotesSelector.select(available.releaseNotes, AppLanguage.read(preferences)),
+    private boolean showCachedUpdateIfAvailable() {
+        if (updateCheckDialogRequested) return false;
+        UpdateHintRuntime runtime = UpdateHintRuntime.get(this);
+        UpdateHintRuntime.DownloadSnapshot operation = runtime.downloadOperation();
+        if (operation != null && operation.dialogVisible) {
+            return showUpdateOperation(operation);
+        }
+        AppUpdateManager.UpdateInfo available = runtime.pendingOffer();
+        if (available == null || updateDownloadInFlight) return false;
+        return showUpdateOffer(available);
+    }
+
+    private boolean showUpdateOffer(AppUpdateManager.UpdateInfo available) {
+        UpdateHintRuntime runtime = UpdateHintRuntime.get(this);
+        return showUpdateRuntimeDialog(DialogKind.Update,
+                runtimeText(R.string.update_dialog_current_version, BuildConfig.VERSION_NAME),
+                updateNotes(available), null, true,
                 () -> {
-                    UpdateHintRuntime.get(this).consume(available.resultId);
+                    updateCheckDialogRequested = false;
+                    updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+                    runtime.setManualCheckDialogRequested(false);
+                    runtime.consume(available.resultId);
                     startUpdateDownload(available);
-                }, () -> UpdateHintRuntime.get(this).consume(available.resultId));
+                }, () -> {
+                    updateCheckDialogRequested = false;
+                    updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+                    runtime.setManualCheckDialogRequested(false);
+                    runtime.consume(available.resultId);
+                }, null, false,
+                runtimeText(R.string.update_dialog_available_version, available.version),
+                available.historyComplete ? null
+                        : runtimeText(R.string.update_dialog_history_incomplete));
     }
 
     private void acceptUpdateHintIntent(Intent intent) {
@@ -2225,73 +2349,148 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
-        if (activityDestroyed || updateDownloadInFlight) return;
+        if (activityDestroyed) return;
         updateInstallRequested = true;
         refreshProductionHeader();
-        updateDownloadInFlight = true;
-        UpdateHintRuntime.get(this).setDownloadInFlight(true);
-        downloadingUpdateVersion = info.version;
-        downloadingUpdateNotes = ReleaseNotesSelector.select(info.releaseNotes, AppLanguage.read(preferences));
         record("update_download_started", "version", info.version);
-        showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Progress,
-                runtimeText(R.string.runtime_update_download_title, info.version),
-                runtimeText(R.string.runtime_update_download, 0), false, null, null,
-                downloadingUpdateNotes, null, null);
-        updateExecutor.execute(() -> {
-            try {
-                File file = updateManager.downloadAndVerify(
-                        getApplicationContext(), info, progress -> runOnUiThread(() -> {
-                            if (!activityDestroyed) updateRuntimeProgress(RuntimeDialogOwner.UPDATE,
-                                    runtimeText(R.string.runtime_update_download, progress), false, progress / 100f);
-                        }));
-                runOnUiThread(() -> {
-                    dismissUpdateProgress();
-                    if (activityDestroyed || isFinishing()) return;
-                    pendingUpdateFile = file;
-                    pendingUpdateInstall = info;
-                    presentPendingUpdateResult();
-                });
-            } catch (Throwable error) {
-                runOnUiThread(() -> {
-                    dismissUpdateProgress();
-                    showUpdateError(error);
-                });
-            }
-        });
+        UpdateHintRuntime.get(this).startDownload(info);
     }
 
-    private void dismissUpdateProgress() {
-        updateDownloadInFlight = false;
-        UpdateHintRuntime.get(this).setDownloadInFlight(false);
-        if (runtimeDialogOwner == RuntimeDialogOwner.UPDATE) clearRuntimeDialog();
-        restoreUpdateButton();
-    }
-
-    private void showUpdateError(Throwable error) {
-        updateInstallRequested = false;
+    private void onUpdateDownloadChanged(UpdateHintRuntime.DownloadSnapshot snapshot) {
+        updateDownloadInFlight = snapshot != null
+                && (snapshot.phase == UpdateHintRuntime.DownloadPhase.DOWNLOADING
+                || snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING);
+        if (snapshot == null || snapshot.phase == UpdateHintRuntime.DownloadPhase.FAILED) {
+            updateInstallRequested = false;
+        } else updateInstallRequested = true;
+        if (activityDestroyed) return;
         refreshProductionHeader();
-        record("update_failed", "error", error.toString());
-        if (activityDestroyed || isFinishing()) return;
-        String title = runtimeText(R.string.runtime_update_failed);
-        if (downloadingUpdateVersion != null) title += " • " + downloadingUpdateVersion;
-        pendingUpdateNotes = downloadingUpdateNotes;
-        pendingUpdateTitle = title;
-        pendingUpdateMessage = error.getMessage() == null
-                ? error.getClass().getSimpleName() : error.getMessage();
-        downloadingUpdateVersion = null;
-        downloadingUpdateNotes = "";
-        presentPendingUpdateResult();
+        restoreUpdateButton();
+        if (snapshot != null && snapshot.dialogVisible && activityResumed) {
+            showUpdateOperation(snapshot);
+        }
     }
 
-    private void showUpdateMessage(String title, String message) {
-        if (activityDestroyed || isFinishing()) return;
-        pendingUpdateTitle = title;
-        pendingUpdateMessage = message;
-        pendingUpdateNotes = "";
-        presentPendingUpdateResult();
+    private boolean showUpdateOperation(UpdateHintRuntime.DownloadSnapshot snapshot) {
+        if (snapshot == null || !snapshot.dialogVisible) return false;
+        updateInstallRequested = snapshot.phase != UpdateHintRuntime.DownloadPhase.FAILED;
+        boolean activeUpdateDialog = runtimeDialogOwner == RuntimeDialogOwner.UPDATE
+                && productionUi != null && productionUi.getState().getDialog() != null;
+        if (!canPresentUpdateResult(activeUpdateDialog)) return false;
+        boolean downloading = snapshot.phase == UpdateHintRuntime.DownloadPhase.DOWNLOADING
+                || snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING;
+        DialogKind kind = downloading ? DialogKind.Progress
+                : snapshot.phase == UpdateHintRuntime.DownloadPhase.READY
+                        ? DialogKind.Update : DialogKind.Message;
+        String status = null;
+        if (snapshot.phase == UpdateHintRuntime.DownloadPhase.DOWNLOADING
+                || snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING) {
+            status = runtimeText(R.string.update_dialog_downloading);
+        } else if (snapshot.phase == UpdateHintRuntime.DownloadPhase.FAILED) {
+            status = runtimeText(R.string.update_dialog_download_failed,
+                    snapshot.error == null ? "" : snapshot.error);
+            record("update_failed", "error", snapshot.error == null ? "unknown" : snapshot.error);
+        } else if (snapshot.installerError) {
+            status = runtimeText(R.string.update_dialog_installer_error);
+        }
+        Float progress = downloading ? snapshot.progress / 100f : null;
+        boolean shown = showUpdateRuntimeDialog(kind,
+                runtimeText(R.string.update_dialog_current_version, BuildConfig.VERSION_NAME),
+                updateNotes(snapshot.info), progress,
+                snapshot.phase == UpdateHintRuntime.DownloadPhase.READY,
+                () -> {
+                    UpdateHintRuntime runtime = UpdateHintRuntime.get(this);
+                    UpdateHintRuntime.DownloadSnapshot current = runtime.downloadOperation();
+                    if (snapshot.phase == UpdateHintRuntime.DownloadPhase.READY
+                            && current != null
+                            && current.phase == UpdateHintRuntime.DownloadPhase.READY
+                            && current.dialogVisible
+                            && current.info.resultId.equals(snapshot.info.resultId)
+                            && isForegroundUpdateOwner()
+                            && runtime.installReady(this)) {
+                        updateInstallerOpened = true;
+                        record("update_install_opened", "version", snapshot.info.version);
+                    }
+                }, () -> UpdateHintRuntime.get(this).dismissDownloadOperation(),
+                status, snapshot.phase == UpdateHintRuntime.DownloadPhase.FAILED
+                        || snapshot.installerError,
+                runtimeText(R.string.update_dialog_available_version, snapshot.info.version),
+                snapshot.info.historyComplete ? null
+                        : runtimeText(R.string.update_dialog_history_incomplete));
+        if (shown && snapshot.phase == UpdateHintRuntime.DownloadPhase.READY) {
+            maybeStartInitialInstallerHandoff(snapshot);
+        }
+        return shown;
     }
 
-    private boolean canPresentUpdateResult() {
+    private String updateNotes(AppUpdateManager.UpdateInfo info) {
+        return ReleaseNotesSelector.selectHistory(
+                info.releaseHistory, AppLanguage.read(preferences));
+    }
+
+    private void showUpdateStatus(String status, boolean isError) {
+        showUpdateRuntimeDialog(DialogKind.Message,
+                runtimeText(R.string.update_dialog_current_version, BuildConfig.VERSION_NAME),
+                "", null, false, () -> {}, () -> {
+                    updateCheckDialogRequested = false;
+                    updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
+                    UpdateHintRuntime.get(this).setManualCheckDialogRequested(false);
+                }, status, isError, null, null);
+    }
+
+    private boolean showUpdateRuntimeDialog(DialogKind kind, String message, String markdown,
+            Float progress, boolean confirmEnabled, Runnable confirm, Runnable dismiss) {
+        return showUpdateRuntimeDialog(kind, message, markdown, progress, confirmEnabled,
+                confirm, dismiss, null, false, null, null);
+    }
+
+    private boolean showUpdateRuntimeDialog(DialogKind kind, String message, String markdown,
+            Float progress, boolean confirmEnabled, Runnable confirm, Runnable dismiss,
+            String updateStatus, boolean updateStatusIsError, String availableVersion,
+            String historyWarning) {
+        boolean replacing = runtimeDialogOwner == RuntimeDialogOwner.UPDATE
+                && productionUi != null && productionUi.getState().getDialog() != null;
+        if (!canPresentUpdateResult(replacing)) return false;
+        runtimeDialogOwner = RuntimeDialogOwner.UPDATE;
+        if (!replacing) {
+            cancelPendingBackgroundStartSettings();
+            cancelPendingForegroundAdbAuthorization();
+            cancelPendingWeatherLocationPermission();
+        }
+        runtimeDialogConfirm = confirm;
+        runtimeDialogDismiss = dismiss;
+        productionUi.showDialog(new DialogUiState(kind,
+                runtimeText(R.string.update_dialog_title), message, progress,
+                true, confirmEnabled, true,
+                runtimeText(R.string.update_dialog_action),
+                runtimeText(R.string.update_dialog_close), true, markdown, true,
+                null, null, null, updateStatus, updateStatusIsError,
+                availableVersion, historyWarning));
+        return true;
+    }
+
+    private boolean isForegroundUpdateOwner() {
+        return activityResumed && !activityDestroyed && !isFinishing();
+    }
+
+    private void maybeStartInitialInstallerHandoff(UpdateHintRuntime.DownloadSnapshot snapshot) {
+        if (snapshot == null || snapshot.phase != UpdateHintRuntime.DownloadPhase.READY
+                || !snapshot.initialInstallerHandoffEligible
+                || snapshot.initialInstallerHandoffAttempted
+                || !isForegroundUpdateOwner()
+                || runtimeDialogOwner != RuntimeDialogOwner.UPDATE
+                || productionUi == null
+                || productionUi.getState().getDialog() == null
+                || !productionUi.getState().getDialog().getUpdatePresentation()) return;
+        UpdateHintRuntime runtime = UpdateHintRuntime.get(this);
+        if (!runtime.claimInitialInstallerHandoff(snapshot.info.resultId)) return;
+        if (runtime.installReady(this)) {
+            updateInstallerOpened = true;
+            record("update_install_opened", "version", snapshot.info.version);
+        }
+    }
+
+    private boolean canPresentUpdateResult(boolean replacingUpdateDialog) {
         return activityResumed && !activityDestroyed && !isFinishing() && !shutdownRequested
                 && !cameraPermissionPending && !backgroundStartSettingsPending()
                 && !weatherLocationPermissionPending && !weatherLocationPermissionInFlight
@@ -2302,33 +2501,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 && !settingsTransferInProgress && !settingsReloadPending
                 && legacyImportOfferDialog == null && settingsTransferDialog == null
                 && !logExportInProgress && !compatibilityExportInProgress
-                && productionUi != null && productionUi.getState().getDialog() == null;
-    }
-
-    private void presentPendingUpdateResult() {
-        if (!canPresentUpdateResult()) return;
-        if (pendingUpdateInstall != null && pendingUpdateFile != null) {
-            AppUpdateManager.UpdateInfo info = pendingUpdateInstall;
-            File file = pendingUpdateFile;
-            pendingUpdateInstall = null;
-            pendingUpdateFile = null;
-            try {
-                updateManager.install(this, info, file);
-                updateInstallerOpened = true;
-                record("update_install_opened", "version", info.version);
-                downloadingUpdateVersion = null;
-                downloadingUpdateNotes = "";
-            } catch (Throwable error) { showUpdateError(error); }
-        } else if (pendingUpdateTitle != null) {
-            String title = pendingUpdateTitle;
-            String message = pendingUpdateMessage;
-            String notes = pendingUpdateNotes;
-            pendingUpdateTitle = null;
-            pendingUpdateMessage = null;
-            pendingUpdateNotes = "";
-            showRuntimeDialog(RuntimeDialogOwner.UPDATE, DialogKind.Message, title, message,
-                    true, runtimeText(R.string.runtime_ok), null, notes, () -> {}, () -> {});
-        } else showCachedUpdateIfAvailable();
+                && productionUi != null && (replacingUpdateDialog
+                        || productionUi.getState().getDialog() == null);
     }
 
     private void startAndBindHelperService() {
@@ -3028,11 +3202,21 @@ public final class CameraProbeActivity extends ComponentActivity
         String importing = preferences == null ? null
                 : preferences.getString(PREF_AVAS_IMPORT_PROFILE, null);
         if (!AvasConfig.PROFILE_IDS.contains(importing)) importing = null;
-        return new AvasUiState(profiles, importing, avasAudition);
+        return new AvasUiState(profiles, importing, avasAudition,
+                new com.byd.extend.ui.AvasMicrophoneUiState(
+                        AvasMicrophoneSettings.enabled(preferences),
+                        AvasMicrophoneSettings.volume(preferences),
+                        CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasMicrophone),
+                        AvasMicrophoneCapture.state()));
     }
 
     @Override
     public void onProductionAvasAction(AvasBackendAction action) {
+        if (action != null && !shutdownRequested
+                && AvasMicrophoneSettings.PROFILE.equals(action.getProfileId())) {
+            onMicrophoneAction(action);
+            return;
+        }
         if (action == null || shutdownRequested || avasLibrary == null
                 || !AvasConfig.PROFILE_IDS.contains(action.getProfileId())) return;
         String profileId = action.getProfileId();
@@ -3040,11 +3224,14 @@ public final class CameraProbeActivity extends ComponentActivity
             AvasConfig config = avasLibrary.loadConfig();
             AvasConfig.Profile profile = config.profile(profileId);
             AvasActionKind kind = action.getKind();
+            if (!profile.enabled && kind != AvasActionKind.SetEnabled
+                    && kind != AvasActionKind.StopAudition) return;
             if (kind == AvasActionKind.ImportFiles) {
                 chooseAvasAudio(profileId);
                 return;
             }
             if (kind == AvasActionKind.StartAudition) {
+                if (AvasMicrophoneCapture.busy()) return;
                 String assetId = action.getStringValue();
                 boolean member = false;
                 for (AvasConfig.Asset asset : profile.assets) member |= asset.id.equals(assetId);
@@ -3113,6 +3300,7 @@ public final class CameraProbeActivity extends ComponentActivity
             Boolean skipConcurrentLockUnlock = null;
             if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
                 enabled = action.getBooleanValue();
+                if (!enabled) stopAvasListAudition(avasAudition.getSessionId());
             } else if (kind == AvasActionKind.SetRandom && action.getBooleanValue() != null) {
                 random = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetVolume && action.getIntValue() != null) {
@@ -3142,6 +3330,35 @@ public final class CameraProbeActivity extends ComponentActivity
             Toast.makeText(this, runtimeText(R.string.runtime_avas_action_failed),
                     Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void onMicrophoneAction(AvasBackendAction action) {
+        if (action.getKind() == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
+            if (action.getBooleanValue() && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},
+                        MICROPHONE_PERMISSION_REQUEST);
+            } else {
+                preferences.edit().putBoolean(AvasMicrophoneSettings.ENABLED,
+                        action.getBooleanValue()).apply();
+                if (!action.getBooleanValue()) WeatherRefreshAccessibilityService.stopMicrophone();
+            }
+        } else if (action.getKind() == AvasActionKind.StopManual) {
+            WeatherRefreshAccessibilityService.stopMicrophone();
+        } else if (AvasMicrophoneSettings.enabled(preferences)) {
+            if (action.getKind() == AvasActionKind.SetVolume && action.getIntValue() != null) {
+                preferences.edit().putInt(AvasMicrophoneSettings.VOLUME,
+                        Math.max(0, Math.min(100, action.getIntValue()))).apply();
+            } else if (action.getKind() == AvasActionKind.StartManual) {
+                stopAvasListAudition(avasAudition.getSessionId());
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE_PERMISSION_REQUEST);
+                else if (!WeatherRefreshAccessibilityService.startMicrophone())
+                    Toast.makeText(this, runtimeText(R.string.avas_mic_unavailable), Toast.LENGTH_LONG).show();
+            }
+        }
+        if (productionUi != null) productionUi.refreshAvasState();
+        refreshProductionHeader();
     }
 
     private AvasPlaybackUiState avasPlayback(String profileId) {
@@ -3304,7 +3521,9 @@ public final class CameraProbeActivity extends ComponentActivity
             refreshProductionHeader();
             return;
         }
-        if (action instanceof BydExtendUiAction.LearnCameraButton) {
+        if (action instanceof BydExtendUiAction.SetLanguage) {
+            if (productionReverseEditor != null) productionReverseEditor.setLanguage(runtimeLanguage());
+        } else if (action instanceof BydExtendUiAction.LearnCameraButton) {
             beginCameraButtonLearning(((BydExtendUiAction.LearnCameraButton) action).getAction());
         } else if (action instanceof BydExtendUiAction.ResetCameraButton) {
             cancelReverseButtonLearning();
@@ -3868,6 +4087,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void syncProductionReverseCompositionHost(boolean editable) {
         if (productionReverseEditor == null || reverseCameraPreview == null) return;
+        syncProductionReverseDisplayTarget(productionUi == null ? null
+                : productionUi.getState().getReverse().getSelectedTarget());
         productionReverseEditorEditable = editable;
         productionReverseEditor.setEditable(editable);
         productionReverseEditor.setVisibility(editable ? View.VISIBLE : View.GONE);
@@ -3880,6 +4101,16 @@ public final class CameraProbeActivity extends ComponentActivity
                 ReverseCameraController.loadVisibilityMask(preferences));
         reverseCameraPreview.setWidgetVisible(
                 ReverseCameraController.loadWidgetVisible(preferences));
+    }
+
+    private void syncProductionReverseDisplayTarget(com.byd.extend.ui.DisplayTarget target) {
+        int displayTarget = target == com.byd.extend.ui.DisplayTarget.Cluster
+                ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
+        if (reverseCameraPreview != null) reverseCameraPreview.setDisplayTarget(displayTarget);
+        if (productionReverseEditor != null) {
+            productionReverseEditor.setDisplayTarget(displayTarget);
+            productionReverseEditor.setLanguage(runtimeLanguage());
+        }
     }
 
     /**
@@ -4362,6 +4593,14 @@ public final class CameraProbeActivity extends ComponentActivity
             CameraHelperService.weatherSettingsChanged(this);
         } else if (target instanceof NumberTarget.Blind) {
             saveProductionBlindNumber((NumberTarget.Blind) target, value);
+        } else if (target instanceof NumberTarget.BlindHoldDuration) {
+            NumberTarget.BlindHoldDuration hold = (NumberTarget.BlindHoldDuration) target;
+            int seconds = clamp(Math.round(value), BlindCameraHold.MIN_DURATION_SECONDS,
+                    BlindCameraHold.MAX_DURATION_SECONDS);
+            preferences.edit().putInt(hold.getGroup() == CameraGroup.Rear
+                    ? BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS
+                    : BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS,
+                    seconds).apply();
         } else if (target instanceof NumberTarget.Parking) {
             saveProductionParkingNumber((NumberTarget.Parking) target, value);
         } else if (target instanceof NumberTarget.Profile) {
@@ -4389,6 +4628,7 @@ public final class CameraProbeActivity extends ComponentActivity
         return target instanceof NumberTarget.Profile
                 || target instanceof NumberTarget.Output
                 || target instanceof NumberTarget.Blind
+                || target instanceof NumberTarget.BlindHoldDuration
                 || target instanceof NumberTarget.Parking
                 || target instanceof NumberTarget.ReverseGeometry;
     }
@@ -4421,6 +4661,10 @@ public final class CameraProbeActivity extends ComponentActivity
             field = ((NumberTarget.Blind) target).getField().name();
             profile = ((NumberTarget.Blind) target).getGroup().name();
             stage = "signals";
+        } else if (target instanceof NumberTarget.BlindHoldDuration) {
+            field = "HoldDuration";
+            profile = ((NumberTarget.BlindHoldDuration) target).getGroup().name();
+            stage = "signals";
         } else if (target instanceof NumberTarget.Parking) {
             field = ((NumberTarget.Parking) target).getField().name();
             profile = String.valueOf(((NumberTarget.Parking) target).getView());
@@ -4444,6 +4688,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 || id == SelectionId.ParkingView || id == SelectionId.ReverseElement
                 || id == SelectionId.ReverseSource) {
             onProductionCameraSelectionChanged(id);
+        } else if (id == SelectionId.ReverseTarget) {
+            applyProductionReverseState();
+            CameraHelperService.reverseCameraSettingsChanged(this);
         } else if (id == SelectionId.DiagnosticMode) {
             DiagnosticMode mode = productionUi.getState().getDebug().getMode();
             selectedDebugMode = mode == DiagnosticMode.Direct ? 0 : 1;
@@ -4565,7 +4812,9 @@ public final class CameraProbeActivity extends ComponentActivity
         else if (command == CommandId.ReverseLower) changeProductionReverseZ(false);
         else if (command == CommandId.ReverseRaise) changeProductionReverseZ(true);
         else if (command == CommandId.ReverseResetLayout) {
-            resetProductionReverseLayout(action.getReverseElement());
+            resetProductionReverseLayout(action.getReverseElement(),
+                    productionUi == null ? com.byd.extend.ui.DisplayTarget.Tablet
+                            : productionUi.getState().getReverse().getSelectedTarget());
         } else if (manualSignalPayload(command) >= 0) requestManualTurnState(manualSignalPayload(command));
         else if (command == CommandId.StopDiagnosticCamera) stopActivityCameraManually("ui_stop");
         else if (command == CommandId.OpenBackgroundSettings) openBackgroundStartSettings("settings_button");
@@ -4645,7 +4894,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         AppPermissionProvisioner.hasAccessibilityAccess(this),
                         android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls(),
                         AvasNotificationAccess.isGranted(this),
-                        AppPermissionProvisioner.hasWriteSecureSettings(this))));
+                        AppPermissionProvisioner.hasWriteSecureSettings(this),
+                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)));
     }
 
     static HeaderUiState productionHeader(LocalAdbClient.AccessState.Status access,
@@ -5791,11 +6041,14 @@ public final class CameraProbeActivity extends ComponentActivity
         toast.show();
     }
 
-    private void resetProductionReverseLayout(ReverseElement element) {
+    private void resetProductionReverseLayout(
+            ReverseElement element, com.byd.extend.ui.DisplayTarget displayTarget) {
         boolean reset = false;
         try {
             if (element != null) {
-                ReverseCameraController.resetSelectedLayout(preferences, element.name());
+                ReverseCameraController.resetSelectedLayout(preferences, element.name(),
+                        displayTarget == com.byd.extend.ui.DisplayTarget.Cluster
+                                ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET);
                 reset = true;
             }
         } catch (RuntimeException error) {
@@ -5914,9 +6167,9 @@ public final class CameraProbeActivity extends ComponentActivity
     private void saveProductionReverseGeometry(NumberTarget.ReverseGeometry target, float value) {
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
         int pane = reverseElementIndex(target.getElement());
-        ReverseCameraLayout.Rect current = pane == ReverseCameraLayout.BACKGROUND_PANE_ID
-                ? layout.background : pane == ReverseCameraLayout.WIDGET_PANE_ID
-                        ? layout.widget : layout.pane(pane).destination;
+        int targetId = target.getDisplayTarget() == com.byd.extend.ui.DisplayTarget.Cluster
+                ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
+        ReverseCameraLayout.Rect current = layout.rectFor(pane, targetId);
         float normalized = value / 100.0f;
         float left = target.getField() == ReverseGeometryNumber.X ? normalized : current.left;
         float top = target.getField() == ReverseGeometryNumber.Y ? normalized : current.top;
@@ -5925,32 +6178,33 @@ public final class CameraProbeActivity extends ComponentActivity
         ReverseCameraLayout.Rect next = pane == ReverseCameraLayout.WIDGET_PANE_ID
                 ? ReverseCameraLayout.widgetDestination(left, top, width, height)
                 : ReverseCameraLayout.destination(left, top, width, height);
-        if (pane == ReverseCameraLayout.BACKGROUND_PANE_ID) {
-            layout = ReverseCameraLayout.withBackground(layout, next);
-        } else if (pane == ReverseCameraLayout.WIDGET_PANE_ID) {
-            layout = ReverseCameraLayout.withWidget(layout, next);
-        } else layout = ReverseCameraLayout.withPane(
-                layout, pane, next, layout.pane(pane).sourceCrop);
+        layout = ReverseCameraLayout.withRect(layout, pane, targetId, next);
         ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
 
     private void nudgeProductionReverse(float x, float y) {
-        int pane = reverseElementIndex(productionUi.getState().getReverse().getSelectedElement());
+        ReverseUiState reverse = productionUi.getState().getReverse();
+        int pane = reverseElementIndex(reverse.getSelectedElement());
+        int target = reverse.getSelectedTarget() == com.byd.extend.ui.DisplayTarget.Cluster
+                ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
         ReverseCameraLayout layout = ReverseCameraLayout.move(
-                ReverseCameraController.loadRawLayout(preferences), pane, x, y);
+                ReverseCameraController.loadRawLayout(preferences), pane, x, y, target);
         ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
 
     private void changeProductionReverseZ(boolean raise) {
-        int pane = reverseElementIndex(productionUi.getState().getReverse().getSelectedElement());
+        ReverseUiState reverse = productionUi.getState().getReverse();
+        int pane = reverseElementIndex(reverse.getSelectedElement());
         if (pane <= 0) return;
+        int target = reverse.getSelectedTarget() == com.byd.extend.ui.DisplayTarget.Cluster
+                ? CameraDisplayTarget.CLUSTER : CameraDisplayTarget.TABLET;
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(preferences);
-        layout = raise ? ReverseCameraLayout.raise(layout, pane)
-                : ReverseCameraLayout.lower(layout, pane);
+        layout = raise ? ReverseCameraLayout.raise(layout, pane, target)
+                : ReverseCameraLayout.lower(layout, pane, target);
         ReverseCameraController.saveCompositionLayout(preferences, layout);
         applyProductionReverseState();
         CameraHelperService.reverseCameraSettingsChanged(this);
@@ -6059,6 +6313,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (activeCameraViewpoint != viewpoint) openStockAvm(viewpoint, true);
         } else if (slot.getKind() == CameraHostKind.ReverseComposition
                 && productionReverseEditor != null) {
+            syncProductionReverseDisplayTarget(slot.getDisplayTarget());
             productionReverseEditorEditable = slot.getEditable();
             productionReverseEditor.setEditable(productionReverseEditorEditable);
             // The placement editor is a conditional sibling of the composition.  Hide the
@@ -6815,6 +7070,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     productionUi != null
                             && productionUi.getState().getReverse().getShowFront());
         }
+        syncProductionReverseDisplayTarget(productionUi == null ? null
+                : productionUi.getState().getReverse().getSelectedTarget());
         return productionReverseHost;
     }
 
@@ -7322,6 +7579,7 @@ public final class CameraProbeActivity extends ComponentActivity
     void requestAppShutdown() {
         if (shutdownRequested) return;
         shutdownRequested = true;
+        WeatherRefreshAccessibilityService.stopMicrophone();
         UpdateHintRuntime.get(this).shutdown();
         com.byd.extend.ui.RuntimeUiSession.clearProcessState();
         clearResumeAutoPreview();
@@ -14048,7 +14306,7 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!startupOverlayPermissionFlow.canPresentStartupDialogs(
                 android.provider.Settings.canDrawOverlays(this))) return;
         maybeShowLegacyImportOffer();
-        presentPendingUpdateResult();
+        showCachedUpdateIfAvailable();
     }
 
     private void maybeShowLegacyImportOffer() {

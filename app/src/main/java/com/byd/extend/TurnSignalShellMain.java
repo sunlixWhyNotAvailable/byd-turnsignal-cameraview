@@ -283,6 +283,52 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_START_AVAS_MICROPHONE) {
+                    String sessionId = data.readString();
+                    if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+                        throw new IllegalArgumentException("invalid AVAS microphone session");
+                    }
+                    ParcelFileDescriptor descriptor =
+                            ParcelFileDescriptor.CREATOR.createFromParcel(data);
+                    try {
+                        int format = data.readInt();
+                        int volume = data.readInt();
+                        if (!TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(format)) {
+                            throw new IllegalArgumentException("invalid AVAS microphone format");
+                        }
+                        if (!TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)) {
+                            throw new IllegalArgumentException("invalid AVAS microphone volume");
+                        }
+                        requireAvasRuntime().startMicrophone(sessionId, descriptor, format, volume);
+                        descriptor = null; // AvasRuntime owns the bounded PCM pipe.
+                    } finally {
+                        if (descriptor != null) descriptor.close();
+                    }
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_STOP_AVAS_MICROPHONE) {
+                    String sessionId = data.readString();
+                    if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+                        throw new IllegalArgumentException("invalid AVAS microphone session");
+                    }
+                    requireAvasRuntime().stopMicrophone(sessionId, "controller_stop");
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_SET_AVAS_MICROPHONE_VOLUME) {
+                    String sessionId = data.readString();
+                    int volume = data.readInt();
+                    if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) {
+                        throw new IllegalArgumentException("invalid AVAS microphone session");
+                    }
+                    if (!TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)) {
+                        throw new IllegalArgumentException("invalid AVAS microphone volume");
+                    }
+                    requireAvasRuntime().setMicrophoneVolume(sessionId, volume);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_START_AVAS_AUDITION) {
                     String profileId = requireAvasProfile(data.readString());
                     String assetId = data.readString();
@@ -356,7 +402,10 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     handler.post(() -> {
                         nonAvasStopped = true;
-                        if (avasRuntime != null) avasRuntime.stopAllAuditions();
+                        if (avasRuntime != null) {
+                            avasRuntime.stopAllAuditions();
+                            avasRuntime.stopCurrentMicrophone("controller_detached");
+                        }
                         // This helper will be reattached: keep the metadata executor and power state.
                         musicRuntime.configure(false);
                         parkingRadarRuntime.stop();
@@ -385,6 +434,11 @@ public final class TurnSignalShellMain {
                     String replacedSession = avasRuntime.auditionSessionId();
                     if (TurnSignalShellProtocol.isAvasSessionAllowed(replacedSession)) {
                         handler.post(() -> avasRuntime.stopAudition(replacedSession));
+                    }
+                    String replacedMicrophone = avasRuntime.microphoneSessionId();
+                    if (TurnSignalShellProtocol.isAvasSessionAllowed(replacedMicrophone)) {
+                        handler.post(() -> avasRuntime.stopMicrophone(
+                                replacedMicrophone, "callback_replaced"));
                     }
                 }
                 IBinder previous = callback;
@@ -415,6 +469,11 @@ public final class TurnSignalShellMain {
                     String diedSession = avasRuntime.auditionSessionId();
                     if (TurnSignalShellProtocol.isAvasSessionAllowed(diedSession)) {
                         handler.post(() -> avasRuntime.stopAudition(diedSession));
+                    }
+                    String diedMicrophone = avasRuntime.microphoneSessionId();
+                    if (TurnSignalShellProtocol.isAvasSessionAllowed(diedMicrophone)) {
+                        handler.post(() -> avasRuntime.stopMicrophone(
+                                diedMicrophone, "callback_died"));
                     }
                 }
             }

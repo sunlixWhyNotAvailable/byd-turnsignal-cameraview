@@ -175,8 +175,8 @@ public final class AvasNavigationAudioContractTest {
 
     @Test public void exteriorRouteIsDirtyBeforeItsFirstSideEffect() throws Exception {
         String player = source("AvasAudioPlayer.java");
-        String exterior = player.substring(player.indexOf("void play(File wav"),
-                player.indexOf("void playNavigation(File wav"));
+        String exterior = player.substring(player.indexOf("private void acquireExteriorSession("),
+                player.indexOf("private void restoreUnownedExteriorSession("));
         int dirty = exterior.indexOf(
                 "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED)");
         assertTrue(dirty >= 0);
@@ -189,7 +189,7 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(dirty < exterior.indexOf("route.naviFocus(true, diagnostics)"));
         assertTrue(dirty < exterior.indexOf("manager.requestAudioFocus(focus)"));
         assertFalse(exterior.contains("route.mute(true, diagnostics)"));
-        assertTrue(exterior.contains("route.prepare(focus, diagnostics, dirty -> settings.putInt("));
+        assertTrue(exterior.matches("(?s).*route\\.prepare\\(focus, diagnostics,\\s+dirty -> settings\\.putInt\\(.*"));
     }
 
     @Test public void exteriorSharedSetupAndCleanupAreNotGatedOnPrimaryAcceptance() throws Exception {

@@ -14,7 +14,10 @@ final class ReverseCameraEditorView extends View {
     }
 
     private static final int[] COLORS = {0xFF42A5F5, 0xFF66BB6A, 0xFFFFCA28};
-    private static final String[] LABELS = {"Rear", "Left", "Right"};
+    private final String[] labels = new String[3];
+    private String backgroundLabel;
+    private String widgetLabel;
+    private String language;
     private static final int BACKGROUND_COLOR = 0xFFAB47BC;
     private static final int WIDGET_COLOR = 0xFF26C6DA;
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -24,6 +27,7 @@ final class ReverseCameraEditorView extends View {
     private Listener listener;
     private int selectedCamera = ReverseCameraLayout.REAR_CAMERA_INDEX;
     private boolean editable = true;
+    private int displayTarget = CameraDisplayTarget.TABLET;
     /** Runtime visibility supplied by the real Reverse host; hidden selected panes stay outlined. */
     private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
     private boolean widgetVisible = true;
@@ -45,6 +49,38 @@ final class ReverseCameraEditorView extends View {
         text.setColor(Color.WHITE);
         text.setTextSize(dp(16));
         text.setFakeBoldText(true);
+        setLanguage(AppLanguage.ENGLISH);
+    }
+
+    void setLanguage(String value) {
+        String normalized = AppLanguage.normalize(value);
+        if (normalized.equals(language)) return;
+        language = normalized;
+        Context localized = AppLanguage.localizedContext(getContext(), language);
+        labels[0] = localized.getString(R.string.runtime_reverse_rear);
+        labels[1] = localized.getString(R.string.runtime_reverse_rear_left);
+        labels[2] = localized.getString(R.string.runtime_reverse_rear_right);
+        backgroundLabel = localized.getString(R.string.runtime_reverse_background);
+        widgetLabel = localized.getString(R.string.runtime_reverse_widget);
+        invalidate();
+    }
+
+    void setDisplayTarget(int value) {
+        if (!CameraDisplayTarget.isValid(value)) throw new IllegalArgumentException("invalid display target");
+        if (displayTarget == value) return;
+        displayTarget = value;
+        startRect = null;
+        resizeCorner = 0;
+        invalidate();
+    }
+
+    static boolean belongsToDisplay(ReverseCameraLayout model, int paneId, int target) {
+        return model.targetFor(paneId) == target;
+    }
+
+    static ReverseCameraLayout applyPlacement(
+            ReverseCameraLayout model, int paneId, int target, ReverseCameraLayout.Rect rect) {
+        return ReverseCameraLayout.withRect(model, paneId, target, rect);
     }
 
     void setListener(Listener value) {
@@ -128,7 +164,9 @@ final class ReverseCameraEditorView extends View {
         ReverseCameraLayout.Pane[] panes = layout.panes();
         for (int z = 0; z < panes.length; z++) {
             for (int i = 0; i < panes.length; i++) {
-                if (panes[i].zOrder == z) drawPane(canvas, panes[i], i);
+                if (layout.zOrderFor(panes[i].cameraIndex, displayTarget) == z) {
+                    drawPane(canvas, panes[i], i);
+                }
             }
         }
         drawWidgetPane(canvas);
@@ -144,10 +182,7 @@ final class ReverseCameraEditorView extends View {
             int hitCamera = hitTest(x, y);
             if (hitCamera == 0) return false;
             selectedCamera = hitCamera;
-            ReverseCameraLayout.Rect rect = selectedCamera
-                    == ReverseCameraLayout.BACKGROUND_PANE_ID
-                    ? layout.background : selectedCamera == ReverseCameraLayout.WIDGET_PANE_ID
-                            ? layout.widget : layout.pane(selectedCamera).destination;
+            ReverseCameraLayout.Rect rect = layout.rectFor(selectedCamera, displayTarget);
             downX = x;
             downY = y;
             startRect = rect;
@@ -166,15 +201,7 @@ final class ReverseCameraEditorView extends View {
                     ? bounded(startRect.left + dx, startRect.top + dy,
                             startRect.width, startRect.height, widget)
                     : resized(startRect, dx, dy, resizeCorner, widget);
-            if (selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID) {
-                layout = ReverseCameraLayout.withBackground(layout, destination);
-            } else if (widget) {
-                layout = ReverseCameraLayout.withWidget(layout, destination);
-            } else {
-                ReverseCameraLayout.Pane pane = layout.pane(selectedCamera);
-                layout = ReverseCameraLayout.withPane(
-                        layout, selectedCamera, destination, pane.sourceCrop);
-            }
+            layout = applyPlacement(layout, selectedCamera, displayTarget, destination);
             notifyChanged(false);
             invalidate();
             return true;
@@ -190,8 +217,9 @@ final class ReverseCameraEditorView extends View {
     }
 
     private void drawPane(Canvas canvas, ReverseCameraLayout.Pane pane, int index) {
+        if (!belongsToDisplay(layout, pane.cameraIndex, displayTarget)) return;
         if (!shouldDrawElement(visibilityMask, pane.cameraIndex, selectedCamera)) return;
-        ReverseCameraLayout.Rect value = pane.destination;
+        ReverseCameraLayout.Rect value = layout.rectFor(pane.cameraIndex, displayTarget);
         RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
                 value.right() * getWidth(), value.bottom() * getHeight());
         drawConfiguredFrame(canvas, rect,
@@ -204,14 +232,14 @@ final class ReverseCameraEditorView extends View {
         if (index == 0) {
             text.setTextAlign(Paint.Align.CENTER);
             Paint.FontMetrics metrics = text.getFontMetrics();
-            canvas.drawText(LABELS[index], rect.centerX(),
+            canvas.drawText(labels[index], rect.centerX(),
                     rect.centerY() - (metrics.ascent + metrics.descent) / 2.0f, text);
         } else if (index == 1) {
             text.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(LABELS[index], rect.left + dp(8), rect.bottom - dp(8), text);
+            canvas.drawText(labels[index], rect.left + dp(8), rect.bottom - dp(8), text);
         } else {
             text.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(LABELS[index], rect.right - dp(8), rect.bottom - dp(8), text);
+            canvas.drawText(labels[index], rect.right - dp(8), rect.bottom - dp(8), text);
         }
         text.setTextAlign(Paint.Align.LEFT);
         if (pane.cameraIndex == selectedCamera) {
@@ -224,9 +252,10 @@ final class ReverseCameraEditorView extends View {
     }
 
     private void drawBackgroundPane(Canvas canvas) {
+        if (!belongsToDisplay(layout, ReverseCameraLayout.BACKGROUND_PANE_ID, displayTarget)) return;
         if (!shouldDrawElement(visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID,
                 selectedCamera)) return;
-        ReverseCameraLayout.Rect value = layout.background;
+        ReverseCameraLayout.Rect value = layout.rectFor(ReverseCameraLayout.BACKGROUND_PANE_ID, displayTarget);
         RectF rect = new RectF(value.left * getWidth(), value.top * getHeight(),
                 value.right() * getWidth(), value.bottom() * getHeight());
         drawConfiguredFrame(canvas, rect,
@@ -236,7 +265,7 @@ final class ReverseCameraEditorView extends View {
                 ? 5 : 3));
         canvas.drawRect(rect, stroke);
         text.setTextAlign(Paint.Align.CENTER);
-        canvas.drawText("Background", rect.centerX(), rect.top + dp(22), text);
+        canvas.drawText(backgroundLabel, rect.centerX(), rect.top + dp(22), text);
         text.setTextAlign(Paint.Align.LEFT);
         if (selectedCamera == ReverseCameraLayout.BACKGROUND_PANE_ID) {
             float radius = dp(8);
@@ -248,11 +277,12 @@ final class ReverseCameraEditorView extends View {
     }
 
     private void drawWidgetPane(Canvas canvas) {
+        if (!belongsToDisplay(layout, ReverseCameraLayout.WIDGET_PANE_ID, displayTarget)) return;
         if (!widgetVisible && selectedCamera != ReverseCameraLayout.WIDGET_PANE_ID) return;
         if (!shouldDrawElement(visibilityMask, ReverseCameraLayout.WIDGET_PANE_ID,
                 selectedCamera)) return;
-        drawFixedPane(canvas, layout.widget, ReverseCameraLayout.WIDGET_PANE_ID,
-                WIDGET_COLOR, "Widget");
+        drawFixedPane(canvas, layout.rectFor(ReverseCameraLayout.WIDGET_PANE_ID, displayTarget),
+                ReverseCameraLayout.WIDGET_PANE_ID, WIDGET_COLOR, widgetLabel);
     }
 
     private void drawFixedPane(
@@ -347,8 +377,9 @@ final class ReverseCameraEditorView extends View {
     }
 
     private int hitTest(float x, float y) {
-        ReverseCameraLayout.Rect widget = layout.widget;
-        if (widgetVisible && shouldDrawElement(visibilityMask,
+        ReverseCameraLayout.Rect widget = layout.rectFor(ReverseCameraLayout.WIDGET_PANE_ID, displayTarget);
+        if (belongsToDisplay(layout, ReverseCameraLayout.WIDGET_PANE_ID, displayTarget)
+                && widgetVisible && shouldDrawElement(visibilityMask,
                 ReverseCameraLayout.WIDGET_PANE_ID, selectedCamera)
                 && x >= widget.left && x <= widget.right()
                 && y >= widget.top && y <= widget.bottom()) {
@@ -356,14 +387,17 @@ final class ReverseCameraEditorView extends View {
         }
         for (int z = 2; z >= 0; z--) {
             for (ReverseCameraLayout.Pane pane : layout.panes()) {
-                ReverseCameraLayout.Rect rect = pane.destination;
-                if (pane.zOrder == z && shouldDrawElement(visibilityMask, pane.cameraIndex, selectedCamera)
+                ReverseCameraLayout.Rect rect = layout.rectFor(pane.cameraIndex, displayTarget);
+                if (belongsToDisplay(layout, pane.cameraIndex, displayTarget)
+                        && layout.zOrderFor(pane.cameraIndex, displayTarget) == z
+                        && shouldDrawElement(visibilityMask, pane.cameraIndex, selectedCamera)
                         && x >= rect.left && x <= rect.right()
                         && y >= rect.top && y <= rect.bottom()) return pane.cameraIndex;
             }
         }
-        ReverseCameraLayout.Rect background = layout.background;
-        return shouldDrawElement(visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID, selectedCamera)
+        ReverseCameraLayout.Rect background = layout.rectFor(ReverseCameraLayout.BACKGROUND_PANE_ID, displayTarget);
+        return belongsToDisplay(layout, ReverseCameraLayout.BACKGROUND_PANE_ID, displayTarget)
+                && shouldDrawElement(visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID, selectedCamera)
                 && x >= background.left && x <= background.right()
                 && y >= background.top && y <= background.bottom()
                 ? ReverseCameraLayout.BACKGROUND_PANE_ID : 0;

@@ -14,7 +14,10 @@ public final class CameraButtonBindings {
     public static final String MIRROR_VISIBILITY_PRESS =
             "mirror_visibility_steering_press";
 
-    public enum Action { ReverseSource, MirrorSource, MirrorVisibility }
+    public static final String MICROPHONE_KEY_CODE = "avas_microphone_key_code";
+    public static final String MICROPHONE_PRESS = "avas_microphone_press";
+
+    public enum Action { ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone }
 
     public enum Press { Single, Hold, Double }
 
@@ -69,7 +72,7 @@ public final class CameraButtonBindings {
                 press = Press.Single;
             }
         }
-        return new Binding(keyCode, press);
+        return new Binding(keyCode, action == Action.AvasMicrophone ? Press.Single : press);
     }
 
     public static void save(SharedPreferences preferences, Action action, Binding binding) {
@@ -81,7 +84,8 @@ public final class CameraButtonBindings {
         }
         preferences.edit()
                 .putInt(keyCodeKey(action), value.keyCode)
-                .putString(pressKey(action), value.press.name())
+                .putString(pressKey(action), (action == Action.AvasMicrophone
+                        ? Press.Single : value.press).name())
                 .apply();
     }
 
@@ -97,15 +101,19 @@ public final class CameraButtonBindings {
                 .putString(MIRROR_SOURCE_PRESS, Press.Single.name())
                 .putInt(MIRROR_VISIBILITY_KEY_CODE, UNASSIGNED)
                 .putString(MIRROR_VISIBILITY_PRESS, Press.Single.name())
+                .putInt(MICROPHONE_KEY_CODE, UNASSIGNED)
+                .putString(MICROPHONE_PRESS, Press.Single.name())
                 .apply();
     }
 
     private static String keyCodeKey(Action action) {
+        if (action == Action.AvasMicrophone) return MICROPHONE_KEY_CODE;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_KEY_CODE : MIRROR_VISIBILITY_KEY_CODE;
     }
 
     private static String pressKey(Action action) {
+        if (action == Action.AvasMicrophone) return MICROPHONE_PRESS;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_PRESS : MIRROR_VISIBILITY_PRESS;
     }

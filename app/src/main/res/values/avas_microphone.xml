@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_mic_title">Microphone speech</string>
+    <string name="avas_mic_toggle_hint">One press starts speech; the next stops it.</string>
+    <string name="avas_mic_learning">The assigned button starts and stops microphone speech with a single press. Hold and Double do nothing.</string>
+    <string name="avas_mic_permission">Allow microphone access to use speech.</string>
+    <string name="avas_mic_unavailable">Microphone speech is unavailable. Check permissions and the helper connection.</string>
+    <string name="avas_mic_starting">Starting microphone…</string>
+    <string name="avas_mic_active">Microphone is live on the exterior speaker</string>
+    <string name="avas_mic_stopped">Microphone stopped</string>
+    <string name="avas_mic_error">Microphone unavailable</string>
+    <string name="avas_mic_stop">Stop microphone</string>
+</resources>

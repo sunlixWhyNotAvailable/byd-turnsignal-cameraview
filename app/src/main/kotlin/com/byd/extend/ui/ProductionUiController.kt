@@ -17,6 +17,7 @@ import com.byd.extend.AppLanguage
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
 import com.byd.extend.UpdateHintAppearance
+import com.byd.extend.ReverseCameraUiContract
 
 /** Activity-owned effects. Compose never receives Binder, Surface, Bitmap or preferences. */
 interface ProductionUiBackend {
@@ -612,7 +613,9 @@ class ProductionUiController @JvmOverloads constructor(
             kind = DialogKind.ReverseButtonCapture,
             title = strings.text("Натисніть кнопку на кермі…",
                 "Press a steering-wheel button…", "请按下方向盘按键…"),
-            message = if (action == CameraButtonBindings.Action.MirrorVisibility) strings.text(
+            message = if (action == CameraButtonBindings.Action.AvasMicrophone)
+                strings.resource(com.byd.extend.R.string.avas_mic_learning)
+            else if (action == CameraButtonBindings.Action.MirrorVisibility) strings.text(
                 "Призначена кнопка та вибраний жест показуватимуть або приховуватимуть віджет дзеркала.",
                 "The assigned button and selected gesture will show or hide the mirror widget.",
                 "所选按键和手势将显示或隐藏后视镜悬浮窗。") else strings.text(
@@ -852,6 +855,8 @@ class ProductionUiController @JvmOverloads constructor(
         is NumberTarget.Mirror -> matchesPlacementTarget(CameraProfileId.Mirror, target.displayTarget, source)
         is NumberTarget.Profile -> matchesPlacementTarget(target.profile, target.displayTarget, source) &&
             matchesMirrorSource(target.profile, target.mirrorFront, source)
+        is NumberTarget.ReverseGeometry -> target.displayTarget == null ||
+            target.displayTarget == source.reverse.selectedTarget
         else -> true
     }
 
@@ -881,6 +886,10 @@ class ProductionUiController @JvmOverloads constructor(
                     BlindNumber.SteeringAngle -> rule.copy(steeringAngle = value)
                 }
             })))
+        is NumberTarget.BlindHoldDuration -> source.copy(blind = source.blind.copy(
+            rules = source.blind.rules + (target.group to
+                (source.blind.rules[target.group] ?: BlindRuleUiState()).copy(
+                    holdDurationSeconds = value))))
         is NumberTarget.Parking -> if (target.view == null) source.copy(
             parking = source.parking.copy(maximumSpeed = value)) else {
             val view = target.view ?: return source
@@ -893,14 +902,23 @@ class ProductionUiController @JvmOverloads constructor(
         is NumberTarget.Profile -> updateProfileValue(source, target.profile, target.field, value)
         is NumberTarget.Mirror -> updateMirrorNumber(source, target.field, value)
         is NumberTarget.ReverseGeometry -> {
-            val current = source.reverse.geometry[target.element] ?: ReverseGeometryUiState()
-            source.copy(reverse = source.reverse.copy(geometry = source.reverse.geometry +
-                (target.element to when (target.field) {
+            val displayTarget = target.displayTarget ?: source.reverse.selectedTarget
+            val current = source.reverse.geometryByTarget[displayTarget]?.get(target.element)
+                ?: source.reverse.geometry[target.element] ?: ReverseGeometryUiState()
+            val updated = when (target.field) {
                     ReverseGeometryNumber.X -> current.copy(x = value)
                     ReverseGeometryNumber.Y -> current.copy(y = value)
                     ReverseGeometryNumber.Width -> current.copy(width = value)
                     ReverseGeometryNumber.Height -> current.copy(height = value)
-                })))
+                }
+            val geometryByTarget = source.reverse.geometryByTarget.toMutableMap()
+            geometryByTarget[displayTarget] = (geometryByTarget[displayTarget].orEmpty() +
+                (target.element to updated))
+            source.copy(reverse = source.reverse.copy(
+                geometry = if (displayTarget == source.reverse.selectedTarget)
+                    source.reverse.geometry + (target.element to updated)
+                    else source.reverse.geometry,
+                geometryByTarget = geometryByTarget))
         }
         is NumberTarget.Output -> source.copy(settings = source.settings.copy(cameraOutput =
             when (target.field) {
@@ -1093,7 +1111,24 @@ class ProductionUiController @JvmOverloads constructor(
             SelectionId.ReverseElement -> {
                 val value = ReverseElement.entries.getOrElse(index) { ReverseElement.RearLeft }
                 preferences.edit().putInt(UiSelectionPreferences.REVERSE_ELEMENT, value.ordinal).apply()
-                state = state.copy(reverse = state.reverse.copy(selectedElement = value))
+                val target = state.reverse.elementTargets[value] ?: DisplayTarget.Tablet
+                state = state.copy(reverse = state.reverse.copy(selectedElement = value,
+                    selectedTarget = target,
+                    geometry = state.reverse.geometryByTarget[target]
+                        ?: state.reverse.geometry,
+                    displayGeometry = backend.productionDisplayGeometry(target)))
+            }
+            SelectionId.ReverseTarget -> {
+                val value = if (index == DisplayTarget.Cluster.ordinal)
+                    DisplayTarget.Cluster else DisplayTarget.Tablet
+                val element = state.reverse.selectedElement
+                ReverseCameraUiContract.saveElementTarget(preferences, element, value)
+                state = state.copy(reverse = state.reverse.copy(
+                    selectedTarget = value,
+                    elementTargets = state.reverse.elementTargets + (element to value),
+                    geometry = state.reverse.geometryByTarget[value]
+                        ?: state.reverse.geometry,
+                    displayGeometry = backend.productionDisplayGeometry(value)))
             }
             SelectionId.ReverseSource -> {
                 val value = ReverseSource.entries.getOrElse(index) { ReverseSource.Rear }
@@ -1271,6 +1306,7 @@ private fun UiLanguage.wire() = when (this) {
     UiLanguage.English -> com.byd.extend.AppLanguage.ENGLISH
     UiLanguage.Ukrainian -> com.byd.extend.AppLanguage.UKRAINIAN
     UiLanguage.Chinese -> com.byd.extend.AppLanguage.CHINESE
+    UiLanguage.Russian -> com.byd.extend.AppLanguage.RUSSIAN
 }
 
 private fun Float.toPercentString(): String {
@@ -1311,6 +1347,7 @@ private fun CommandId.allowedInLegacyHandover() = this == CommandId.OpenBackgrou
 private fun SelectionTarget.isLocalSelection() = this is SelectionTarget.Simple && id in setOf(
     SelectionId.SignalsCategory, SelectionId.CameraSection, SelectionId.BlindGroup, SelectionId.BlindSide,
     SelectionId.ParkingView, SelectionId.ReverseElement, SelectionId.ReverseSource,
+    SelectionId.ReverseTarget,
     SelectionId.MirrorTarget, SelectionId.MirrorSource,
     SelectionId.SettingsCategory, SelectionId.DiagnosticMode, SelectionId.DirectMode,
     SelectionId.AvmMode, SelectionId.AvmOrientation,

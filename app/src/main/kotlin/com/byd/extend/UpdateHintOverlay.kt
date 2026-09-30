@@ -815,6 +815,7 @@ object UpdateHintOverlay {
     private fun readLanguage(settings: android.content.SharedPreferences): UiLanguage = when {
         AppLanguage.isUkrainian(AppLanguage.read(settings)) -> UiLanguage.Ukrainian
         AppLanguage.isChinese(AppLanguage.read(settings)) -> UiLanguage.Chinese
+        AppLanguage.isRussian(AppLanguage.read(settings)) -> UiLanguage.Russian
         else -> UiLanguage.English
     }
 

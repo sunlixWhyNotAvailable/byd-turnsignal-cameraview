@@ -88,7 +88,9 @@ public final class CameraSettingsTransfer {
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
                 if (version < 5 && (entry.getKey().endsWith("_strength_percent")
-                        || entry.getKey().endsWith("_fov_precise"))) continue;
+                        || entry.getKey().endsWith("_fov_precise")
+                        || isNewReverseDisplayKey(entry.getKey())
+                        || isBlindHoldDurationKey(entry.getKey()))) continue;
                 settings.put(entry.getKey(), entry.getValue());
             }
             result.put(SETTINGS, settings);
@@ -219,6 +221,8 @@ public final class CameraSettingsTransfer {
         }
         preserveMissingFrameAspects(editor, preferences, settings);
         preserveMissingDefaultOnCameraOptions(editor, preferences, settings);
+        preserveMissingReverseDisplayState(editor, preferences, settings);
+        preserveMissingBlindHoldDurations(editor, preferences, settings);
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
         }
@@ -293,6 +297,39 @@ public final class CameraSettingsTransfer {
                 BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN,
                 RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA}) {
             if (!imported.containsKey(key)) editor.putBoolean(key, bool(preferences, key, true));
+        }
+    }
+
+    private static void preserveMissingReverseDisplayState(
+            SharedPreferences.Editor editor, SharedPreferences preferences,
+            Map<String, Object> imported) {
+        ReverseCameraLayout current = ReverseCameraController.loadRawLayout(preferences);
+        for (int paneId : reverseCompositionPaneIds()) {
+            String targetKey = ReverseCameraController.displayTargetKey(paneId);
+            if (imported.containsKey(targetKey)) continue;
+            ReverseCameraController.putCompositionElementState(editor, paneId,
+                    current.targetFor(paneId),
+                    current.rectFor(paneId, CameraDisplayTarget.CLUSTER));
+        }
+        if (imported.containsKey("reverse_camera_cluster_z_0")) return;
+        for (int z = 0; z < 3; z++) {
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+                if (current.zOrderFor(cameraIndex, CameraDisplayTarget.CLUSTER) == z) {
+                    editor.putInt("reverse_camera_cluster_z_" + z, cameraIndex);
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void preserveMissingBlindHoldDurations(
+            SharedPreferences.Editor editor, SharedPreferences preferences,
+            Map<String, Object> imported) {
+        for (String key : new String[]{
+                BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS,
+                BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS}) {
+            if (!imported.containsKey(key)) editor.putInt(key, holdDuration(preferences, key));
         }
     }
 
@@ -440,6 +477,10 @@ public final class CameraSettingsTransfer {
                 bool(p, BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN, true));
         out.put(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN,
                 bool(p, BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN, true));
+        out.put(BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS,
+                holdDuration(p, BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS));
+        out.put(BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS,
+                holdDuration(p, BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS));
         out.put(BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, bool(p, BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, true));
         out.put(BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, bool(p, BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false));
         out.put(BlindSpotOverlayController.PREF_REAR_BSD_ONLY, bool(p, BlindSpotOverlayController.PREF_REAR_BSD_ONLY, false));
@@ -507,6 +548,7 @@ public final class CameraSettingsTransfer {
         ReverseCameraLayout layout = ReverseCameraController.loadRawLayout(p);
         addRect(out, "reverse_camera_background_left", layout.background);
         addRect(out, "reverse_camera_widget_left", layout.widget);
+        addReverseDisplayState(out, layout);
         if (geometry != null) {
             addBorder(out, CameraBorderSettings.reverseElementPrefix(
                             ReverseCameraLayout.BACKGROUND_PANE_ID),
@@ -555,6 +597,39 @@ public final class CameraSettingsTransfer {
                     CameraBorderSettings.forReverse(p, index, true));
         }
         return out;
+    }
+
+    private static void addReverseDisplayState(
+            Map<String, Object> out, ReverseCameraLayout layout) {
+        for (int paneId : reverseCompositionPaneIds()) {
+            out.put(ReverseCameraController.displayTargetKey(paneId), layout.targetFor(paneId));
+            addRect(out, ReverseCameraController.clusterGeometryPrefix(paneId) + "left",
+                    layout.rectFor(paneId, CameraDisplayTarget.CLUSTER));
+        }
+        for (int z = 0; z < 3; z++) {
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+                if (layout.zOrderFor(cameraIndex, CameraDisplayTarget.CLUSTER) == z) {
+                    out.put("reverse_camera_cluster_z_" + z, cameraIndex);
+                    break;
+                }
+            }
+        }
+    }
+
+    private static int[] reverseCompositionPaneIds() {
+        return new int[]{ReverseCameraLayout.BACKGROUND_PANE_ID,
+                ReverseCameraLayout.WIDGET_PANE_ID,
+                ReverseCameraLayout.REAR_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
+    }
+
+    private static int holdDuration(SharedPreferences preferences, String key) {
+        int duration = intValue(preferences, key,
+                BlindSpotOverlayController.DEFAULT_HOLD_DURATION_SECONDS);
+        return Math.max(BlindCameraHold.MIN_DURATION_SECONDS,
+                Math.min(BlindCameraHold.MAX_DURATION_SECONDS, duration));
     }
 
     private static CameraPlacement readBlindPlacement(
@@ -859,6 +934,43 @@ public final class CameraSettingsTransfer {
         requireRect(values, "reverse_camera_background_", true);
         requireRect(values, "reverse_camera_widget_", true);
         requireReverseZOrder(values);
+        requireReverseDisplayState(values);
+    }
+
+    private static void requireReverseDisplayState(Map<String, Object> values) {
+        for (int paneId : reverseCompositionPaneIds()) {
+            String targetKey = ReverseCameraController.displayTargetKey(paneId);
+            String prefix = ReverseCameraController.clusterGeometryPrefix(paneId);
+            String[] keys = {targetKey, prefix + "left", prefix + "top",
+                    prefix + "width", prefix + "height"};
+            int present = 0;
+            for (String key : keys) if (values.containsKey(key)) present++;
+            if (present != 0 && present != keys.length) {
+                throw new IllegalArgumentException("incomplete reverse display placement");
+            }
+            if (present == 0) continue;
+            if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
+                float x = number(values, prefix + "left");
+                float y = number(values, prefix + "top");
+                float width = number(values, prefix + "width");
+                float height = number(values, prefix + "height");
+                if (x < 0 || y < 0 || width < ReverseCameraLayout.MIN_WIDGET_WIDTH
+                        || height < ReverseCameraLayout.MIN_WIDGET_HEIGHT
+                        || x + width > 1 || y + height > 1) {
+                    throw new IllegalArgumentException("invalid reverse widget cluster geometry");
+                }
+            } else {
+                requireRect(values, prefix, true);
+            }
+        }
+        int presentZ = 0;
+        for (int z = 0; z < 3; z++) {
+            if (values.containsKey("reverse_camera_cluster_z_" + z)) presentZ++;
+        }
+        if (presentZ != 0 && presentZ != 3) {
+            throw new IllegalArgumentException("incomplete reverse cluster z-order");
+        }
+        if (presentZ == 3) requireReverseClusterZOrder(values);
     }
 
     private static void requireReverseZOrder(Map<String, Object> values) {
@@ -868,6 +980,19 @@ public final class CameraSettingsTransfer {
             int camera = values.containsKey(key) ? integer(values, key) : z + 1;
             if (camera < 1 || camera > 3) throw new IllegalArgumentException("invalid z order");
             if (zSeen[camera]) throw new IllegalArgumentException("duplicate reverse z order");
+            zSeen[camera] = true;
+        }
+    }
+
+    private static void requireReverseClusterZOrder(Map<String, Object> values) {
+        boolean[] zSeen = new boolean[4];
+        for (int z = 0; z < 3; z++) {
+            int camera = integer(values, "reverse_camera_cluster_z_" + z);
+            if (camera < ReverseCameraLayout.REAR_CAMERA_INDEX
+                    || camera > ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX
+                    || zSeen[camera]) {
+                throw new IllegalArgumentException("invalid reverse cluster z-order");
+            }
             zSeen[camera] = true;
         }
     }
@@ -893,6 +1018,11 @@ public final class CameraSettingsTransfer {
             if (key.endsWith("_target") && !CameraDisplayTarget.isValid(number)) throw new IllegalArgumentException("invalid display target");
             if (key.equals(BlindSpotOverlayController.PREF_CORNER_RADIUS)
                     && (number < 0 || number > BlindSpotOverlayController.MAX_CORNER_RADIUS_DP)) throw new IllegalArgumentException("invalid corner radius");
+            if (isBlindHoldDurationKey(key)
+                    && (number < BlindCameraHold.MIN_DURATION_SECONDS
+                    || number > BlindCameraHold.MAX_DURATION_SECONDS)) {
+                throw new IllegalArgumentException("invalid blind hold duration");
+            }
             if (key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)
                     && (number < 0 || number > 100)) throw new IllegalArgumentException("invalid transparency");
             if (key.equals(CameraBufferQuality.PREF_QUALITY) && !CameraBufferQuality.isValid(number)) throw new IllegalArgumentException("invalid quality");
@@ -901,6 +1031,11 @@ public final class CameraSettingsTransfer {
             if (key.endsWith("_rotation_degrees") && !CameraRotation.isValid(number)) throw new IllegalArgumentException("invalid rotation");
             if (key.endsWith("_display_mode") && !ReverseCameraLayout.isValidDisplayMode(number)) throw new IllegalArgumentException("invalid display mode");
             if (key.startsWith("reverse_camera_z_") && (number < 1 || number > 3)) throw new IllegalArgumentException("invalid z order");
+            if (key.startsWith("reverse_camera_cluster_z_")
+                    && (number < ReverseCameraLayout.REAR_CAMERA_INDEX
+                    || number > ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)) {
+                throw new IllegalArgumentException("invalid cluster z order");
+            }
             if (key.endsWith("_border_width")
                     && (number < CameraBorderSettings.MIN_DP
                     || number > CameraBorderSettings.MAX_DP)) {
@@ -1149,6 +1284,8 @@ public final class CameraSettingsTransfer {
         keys.add(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA);
         keys.add(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN);
         keys.add(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN);
+        keys.add(BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS);
+        keys.add(BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS);
         keys.add(BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED); keys.add(BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED);
         keys.add(BlindSpotOverlayController.PREF_REAR_BSD_ONLY); keys.add(BlindSpotOverlayController.PREF_WARNING_MODE);
         keys.add(BlindSpotOverlayController.PREF_CORNER_RADIUS); keys.add(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT);
@@ -1232,6 +1369,13 @@ public final class CameraSettingsTransfer {
             keys.add(prefix + "left"); keys.add(prefix + "top"); keys.add(prefix + "width"); keys.add(prefix + "height");
             addBorderKeys(keys, prefix);
         }
+        for (int paneId : reverseCompositionPaneIds()) {
+            keys.add(ReverseCameraController.displayTargetKey(paneId));
+            String prefix = ReverseCameraController.clusterGeometryPrefix(paneId);
+            keys.add(prefix + "left"); keys.add(prefix + "top");
+            keys.add(prefix + "width"); keys.add(prefix + "height");
+        }
+        for (int z = 0; z < 3; z++) keys.add("reverse_camera_cluster_z_" + z);
         for (int index : new int[]{1, 2, 3}) {
             String p = "reverse_camera_front_" + index + "_";
             for (String field : new String[]{"left", "top", "width", "height"}) {
@@ -1246,6 +1390,8 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
         return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
+                || isNewReverseDisplayKey(key)
+                || isBlindHoldDurationKey(key)
                 || version < BORDER_VERSION && isBorderKey(key)
                 || key.endsWith("_strength_percent") || key.endsWith("_fov_precise")
                 || key.endsWith("_frame_aspect")
@@ -1271,6 +1417,24 @@ public final class CameraSettingsTransfer {
                 || key.startsWith("mirror_") && !isBorderKey(key)
                 || key.matches("direct_crop_v3_corrected_[0-9]+_aspect")
                 || key.startsWith("parking_direct_crop_v1_") && key.endsWith("_corrected_aspect"));
+    }
+
+    private static boolean isNewReverseDisplayKey(String key) {
+        if (key == null) return false;
+        if (key.startsWith("reverse_camera_cluster_z_")) return true;
+        for (int paneId : reverseCompositionPaneIds()) {
+            String targetKey = ReverseCameraController.displayTargetKey(paneId);
+            String prefix = ReverseCameraController.clusterGeometryPrefix(paneId);
+            if (targetKey.equals(key) || key.equals(prefix + "left")
+                    || key.equals(prefix + "top") || key.equals(prefix + "width")
+                    || key.equals(prefix + "height")) return true;
+        }
+        return false;
+    }
+
+    private static boolean isBlindHoldDurationKey(String key) {
+        return BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS.equals(key)
+                || BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS.equals(key);
     }
 
     private static boolean isBlindPlacementKey(String key) {
@@ -1422,7 +1586,10 @@ public final class CameraSettingsTransfer {
                 || key.endsWith("_projection") || key.endsWith("_scale") || key.endsWith("_target")
                 || key.endsWith("_scale_percent") || key.endsWith("_mode")
                 || key.endsWith("_border_width") || key.endsWith("_border_color")
-                || key.startsWith("reverse_camera_z_") || key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)
+                || key.startsWith("reverse_camera_z_")
+                || key.startsWith("reverse_camera_cluster_z_")
+                || isBlindHoldDurationKey(key)
+                || key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)
                 || key.equals(BlindSpotOverlayController.PREF_CORNER_RADIUS)
                 || key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)
                 || key.equals(CameraBufferQuality.PREF_QUALITY)

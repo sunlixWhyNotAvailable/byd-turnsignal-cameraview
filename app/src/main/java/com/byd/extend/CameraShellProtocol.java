@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 31;
+    static final int VERSION = 33;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -580,6 +580,17 @@ final class CameraShellProtocol {
                 parcel.writeInt(pane.zOrder);
                 parcel.writeInt(pane.mirrorHorizontally ? 1 : 0);
             }
+            for (int paneId : compositionPaneIds()) {
+                parcel.writeInt(paneId);
+                parcel.writeInt(layout.targetFor(paneId));
+                writeRect(parcel, layout.rectFor(paneId, CameraDisplayTarget.CLUSTER));
+            }
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                parcel.writeInt(cameraIndex);
+                parcel.writeInt(layout.zOrderFor(cameraIndex, CameraDisplayTarget.CLUSTER));
+            }
             parcel.writeInt(bufferQuality);
             parcel.writeInt(visibilityMask);
             parcel.writeInt(transparencyPercent);
@@ -680,6 +691,41 @@ final class CameraShellProtocol {
                     }
                 }
             }
+            for (int paneId : compositionPaneIds()) {
+                if (parcel.readInt() != paneId) {
+                    throw new IllegalArgumentException("invalid Reverse display element mapping");
+                }
+                int target = parcel.readInt();
+                if (!CameraDisplayTarget.isValid(target)) {
+                    throw new IllegalArgumentException("invalid Reverse display target");
+                }
+                float[] cluster = readRect(parcel);
+                if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
+                    validateWidgetRect(cluster);
+                    layout = ReverseCameraLayout.withRect(layout, paneId,
+                            CameraDisplayTarget.CLUSTER,
+                            ReverseCameraLayout.widgetDestination(
+                                    cluster[0], cluster[1], cluster[2], cluster[3]));
+                } else {
+                    validateRect(cluster, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+                    layout = ReverseCameraLayout.withRect(layout, paneId,
+                            CameraDisplayTarget.CLUSTER,
+                            ReverseCameraLayout.destination(
+                                    cluster[0], cluster[1], cluster[2], cluster[3]));
+                }
+                layout = ReverseCameraLayout.withTarget(layout, paneId, target);
+            }
+            int[] clusterZOrders = new int[3];
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                if (parcel.readInt() != cameraIndex) {
+                    throw new IllegalArgumentException("invalid Cluster z-order mapping");
+                }
+                clusterZOrders[cameraIndex - ReverseCameraLayout.REAR_CAMERA_INDEX] =
+                        parcel.readInt();
+            }
+            layout = ReverseCameraLayout.withClusterZOrders(layout, clusterZOrders);
             ReverseCameraLayout rawFallbackLayout = layout;
             for (int i = 0; i < rawCrops.length; i++) {
                 ReverseCameraLayout.Pane pane = layout.pane(i + 1);
@@ -763,6 +809,29 @@ final class CameraShellProtocol {
             validateModelRect(layout.background, ReverseCameraLayout.MIN_DESTINATION_SIZE);
             validateWidgetRect(new float[]{layout.widget.left, layout.widget.top,
                     layout.widget.width, layout.widget.height});
+            for (int paneId : compositionPaneIds()) {
+                if (!CameraDisplayTarget.isValid(layout.targetFor(paneId))) {
+                    throw new IllegalArgumentException("invalid Reverse display target");
+                }
+                ReverseCameraLayout.Rect cluster = layout.rectFor(
+                        paneId, CameraDisplayTarget.CLUSTER);
+                if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
+                    validateWidgetRect(new float[]{cluster.left, cluster.top,
+                            cluster.width, cluster.height});
+                } else {
+                    validateModelRect(cluster, ReverseCameraLayout.MIN_DESTINATION_SIZE);
+                }
+            }
+            boolean[] clusterZSeen = new boolean[3];
+            for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                    cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX;
+                    cameraIndex++) {
+                int zOrder = layout.zOrderFor(cameraIndex, CameraDisplayTarget.CLUSTER);
+                if (zOrder < 0 || zOrder >= clusterZSeen.length || clusterZSeen[zOrder]) {
+                    throw new IllegalArgumentException("invalid Cluster z-order");
+                }
+                clusterZSeen[zOrder] = true;
+            }
             if (cornerRadiusDp < 0 || cornerRadiusDp > 48) {
                 throw new IllegalArgumentException("invalid reverse corner radius");
             }
@@ -862,6 +931,14 @@ final class CameraShellProtocol {
             parcel.writeFloat(rect.top);
             parcel.writeFloat(rect.width);
             parcel.writeFloat(rect.height);
+        }
+
+        private static int[] compositionPaneIds() {
+            return new int[]{ReverseCameraLayout.BACKGROUND_PANE_ID,
+                    ReverseCameraLayout.WIDGET_PANE_ID,
+                    ReverseCameraLayout.REAR_CAMERA_INDEX,
+                    ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                    ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX};
         }
 
         private static float[] readRect(Parcel parcel) {

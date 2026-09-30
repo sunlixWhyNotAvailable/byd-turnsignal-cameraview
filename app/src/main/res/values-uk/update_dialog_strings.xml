@@ -1,0 +1,12 @@
+<resources>
+    <string name="update_dialog_title">Оновлення</string>
+    <string name="update_dialog_current_version">Поточна версія: v%1$s</string>
+    <string name="update_dialog_available_version">Доступна версія: v%1$s</string>
+    <string name="update_dialog_history_incomplete">Історія релізів неповна: частину описів змін не вдалося завантажити.</string>
+    <string name="update_dialog_downloading">Завантаження оновлення…</string>
+    <string name="update_dialog_installer_error">Android не вдалося відкрити інсталятор. Спробуйте оновити ще раз.</string>
+    <string name="update_dialog_download_failed">Не вдалося оновити застосунок: %1$s</string>
+    <string name="update_dialog_action">Оновити</string>
+    <string name="update_dialog_close">Закрити</string>
+    <string name="update_download_notification_description">Завантаження оновлення</string>
+</resources>

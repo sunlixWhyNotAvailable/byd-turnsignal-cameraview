@@ -26,6 +26,10 @@ final class BlindSpotOverlayController {
             "camera_front_suppress_while_panorama";
     static final String PREF_REAR_HOLD_AFTER_SHORT_TURN = "camera_rear_hold_after_short_turn";
     static final String PREF_FRONT_HOLD_AFTER_SHORT_TURN = "camera_front_hold_after_short_turn";
+    static final String PREF_REAR_HOLD_DURATION_SECONDS =
+            "camera_rear_hold_duration_seconds";
+    static final String PREF_FRONT_HOLD_DURATION_SECONDS =
+            "camera_front_hold_duration_seconds";
     static final String PREF_FRONT_MIN_SPEED = "camera_front_min_speed_kph";
     static final String PREF_FRONT_MAX_SPEED = "camera_front_max_speed_kph";
     static final String PREF_FRONT_MIN_ANGLE = "camera_front_min_angle_deg";
@@ -76,6 +80,7 @@ final class BlindSpotOverlayController {
 
     static final int DEFAULT_MIN_SPEED_KPH = 10;
     static final int DEFAULT_MAX_SPEED_KPH = 300;
+    static final int DEFAULT_HOLD_DURATION_SECONDS = 3;
     static final int DEFAULT_FRONT_MIN_SPEED_KPH = 0;
     static final int DEFAULT_FRONT_MAX_SPEED_KPH = 10;
     static final float DEFAULT_FRONT_MIN_ANGLE_DEG = 10.0f;
@@ -1455,7 +1460,11 @@ final class BlindSpotOverlayController {
         // Consume end markers even while blocked so an old event cannot arm a later camera.
         shortTurnHold.acceptEnd(shortTurnEnd, shortTurnDirection, blink,
                 stateValid && !isHardBlocked() && !shutdown ? shownNormal & normalVisibleMask : 0,
-                SystemClock.elapsedRealtime());
+                SystemClock.elapsedRealtime(),
+                BlindCameraHold.durationMsForSeconds(readHoldDurationSeconds(
+                        settings, CameraProfile.REAR_LEFT)),
+                BlindCameraHold.durationMsForSeconds(readHoldDurationSeconds(
+                        settings, CameraProfile.FRONT_LEFT)));
         blink = nextBlink;
         speedKph = nextSpeed;
         steeringAngle = nextAngle;
@@ -1572,6 +1581,15 @@ final class BlindSpotOverlayController {
         pane.freshness.invalidate();
         if (!pane.targetActive && !pane.visible) return;
         requestVisibility(pane, false, reason);
+    }
+
+    static int readHoldDurationSeconds(SharedPreferences preferences, int cameraId) {
+        CameraProfile profile = CameraProfile.of(cameraId);
+        String key = profile.rear()
+                ? PREF_REAR_HOLD_DURATION_SECONDS : PREF_FRONT_HOLD_DURATION_SECONDS;
+        int value = preferences.getInt(key, DEFAULT_HOLD_DURATION_SECONDS);
+        return Math.max(BlindCameraHold.MIN_DURATION_SECONDS,
+                Math.min(BlindCameraHold.MAX_DURATION_SECONDS, value));
     }
 
     static boolean needsFreshFrameArm(

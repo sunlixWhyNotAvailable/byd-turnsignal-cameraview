@@ -6,6 +6,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 public final class AppLanguageTest {
+    @Test public void russianChoiceSurvivesUpgradeAndDoesNotChangeOtherPreferences() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        preferences.edit().putFloat("camera_x", 37.5f).apply();
+        AppLanguage.write(preferences, "ru");
+        assertEquals("ru", AppLanguage.initialLanguage(preferences, true));
+        assertEquals("ru", AppLanguage.locale(AppLanguage.read(preferences)).getLanguage());
+        assertEquals(37.5f, preferences.getFloat("camera_x", 0f), 0f);
+    }
     @Test
     public void freshInstallStartsEnglishAndInitializationPersistsTheChoice() {
         TestSharedPreferences preferences = new TestSharedPreferences();

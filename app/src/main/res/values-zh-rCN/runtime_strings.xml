@@ -191,4 +191,5 @@
     <string name="runtime_status_avm_ready">AVM 摄像头已就绪</string>
     <string name="runtime_status_camera_discovery_failed">摄像头发现失败：%1$s</string>
     <string name="runtime_status_detected">检测到 %1$s</string>
+    <string name="runtime_recovery_service_label">BYD Extend 恢复服务</string>
 </resources>

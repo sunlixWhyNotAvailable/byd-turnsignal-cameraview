@@ -183,7 +183,8 @@ public final class ComposeCameraHostParityTest {
         String readiness = reverse.substring(
                 reverse.indexOf("private boolean primaryRendererBoundsReady()"),
                 reverse.indexOf("private static boolean laidOutBoundsMatch("));
-        assertTrue(readiness.contains("for (PaneView pane : panes)"));
+        assertTrue(readiness.contains("frameBarrier.directSourceIndexes()"));
+        assertTrue(readiness.contains("paneForSource(sourceIndex)"));
         assertTrue(readiness.contains("pane.texture"));
         assertFalse(readiness.contains("centralFrontPane"));
     }

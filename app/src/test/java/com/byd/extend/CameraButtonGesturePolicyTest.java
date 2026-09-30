@@ -13,6 +13,31 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public final class CameraButtonGesturePolicyTest {
+    @Test public void microphoneAndCameraShareSingleButNeverFireForHoldOrDouble() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.AvasMicrophone,
+                new CameraButtonBindings.Binding(306, CameraButtonBindings.Press.Hold));
+        CameraButtonBindings.Binding mic = CameraButtonBindings.load(preferences,
+                CameraButtonBindings.Action.AvasMicrophone);
+        assertEquals(305, mic.keyCode);
+        assertEquals(CameraButtonBindings.Press.Single, mic.press);
+        CameraButtonGesturePolicy policy = policy();
+        List<CameraButtonGesturePolicy.Assignment> bindings = assignments(
+                new CameraButtonGesturePolicy.Assignment(CameraButtonBindings.Action.AvasMicrophone, mic, 1),
+                assignment(CameraButtonBindings.Action.ReverseSource, 305, CameraButtonBindings.Press.Single, 1));
+        assertTrue(down(policy, 305, 100, bindings).consumed);
+        assertTrue(up(policy, 305, 100, 150, bindings).actions.isEmpty());
+        assertTrue(policy.advance(450, bindings).actions.isEmpty());
+        assertEquals(actions(CameraButtonBindings.Action.ReverseSource, CameraButtonBindings.Action.AvasMicrophone),
+                policy.advance(451, bindings).actions);
+        down(policy, 305, 1000, bindings); up(policy, 305, 1000, 1050, bindings);
+        down(policy, 305, 1200, bindings); up(policy, 305, 1200, 1250, bindings);
+        assertTrue(policy.advance(1600, bindings).actions.isEmpty());
+        assertTrue(down(policy, 305, 2000, bindings).consumed);
+        assertTrue(policy.advance(2400, bindings).actions.isEmpty());
+        assertTrue(up(policy, 305, 2000, 2500, bindings).consumed);
+        assertTrue(policy.advance(2900, bindings).actions.isEmpty());
+    }
     private static final long HOLD = 400L;
     private static final long DOUBLE = 300L;
     private static final int[][] NATIVE_LONG_PAIRS = {

@@ -94,6 +94,7 @@ final class TurnSignalController {
     private final Set<String> transferredAvasAssets = new HashSet<>();
     private final PendingAvasOperations pendingAvas = new PendingAvasOperations();
     private volatile String desiredAvasAudition = "";
+    private volatile String desiredAvasMicrophone = "";
     private IBinder.DeathRecipient cameraHelperDeathRecipient;
     private IBinder.DeathRecipient avmShellDeathRecipient;
     private long cameraHelperEpoch;
@@ -110,7 +111,7 @@ final class TurnSignalController {
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private volatile IBinder pendingReverseHelper;
     private volatile long pendingReverseHelperEpoch;
-    private volatile int pendingReverseSurfaceCount = 3;
+    private volatile boolean pendingReverseClusterExpected;
     private final AuthorizationGate authorizationRequests = new AuthorizationGate();
     private long lastLaunchFailureAt;
     private volatile String automaticAuthorizationBlockedFor = "";
@@ -184,6 +185,7 @@ final class TurnSignalController {
         synchronized (this) {
             stopped = true;
             desiredAvasAudition = "";
+            desiredAvasMicrophone = "";
         }
         pendingAvas.clear();
         handler.removeCallbacks(pingRunnable);
@@ -368,6 +370,137 @@ final class TurnSignalController {
                         "error", summary(error));
             }
         });
+    }
+
+    /** Takes ownership of the app-owned bounded PCM read pipe until Binder transfer finishes. */
+    void startAvasMicrophone(String sessionId, ParcelFileDescriptor pcmReadFd,
+            int format, int volume) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)
+                || !TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(format)
+                || !TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)
+                || pcmReadFd == null) {
+            closeDescriptor(pcmReadFd);
+            avasMicrophoneStatus(sessionId, "error", "invalid_microphone_request");
+            return;
+        }
+        desiredAvasMicrophone = sessionId;
+        try {
+            worker.execute(() -> startAvasMicrophoneNow(
+                    sessionId, pcmReadFd, format, volume));
+        } catch (RuntimeException failure) {
+            closeDescriptor(pcmReadFd);
+            if (sessionId.equals(desiredAvasMicrophone)) desiredAvasMicrophone = "";
+            avasMicrophoneStatus(sessionId, "error", summary(failure));
+        }
+    }
+
+    void setAvasMicrophoneVolume(String sessionId, int volume) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)
+                || !TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(volume)) {
+            avasMicrophoneStatus(sessionId, "error", "invalid_microphone_volume");
+            return;
+        }
+        if (stopped) return;
+        try {
+            worker.execute(() -> {
+                IBinder value = healthyHelper();
+                if (value == null) {
+                    avasMicrophoneStatus(sessionId, "error", "helper_unavailable");
+                    return;
+                }
+                try {
+                    Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+                    try {
+                        data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                        data.writeString(sessionId);
+                        data.writeInt(volume);
+                        requireTransact(value,
+                                TurnSignalShellProtocol.TX_SET_AVAS_MICROPHONE_VOLUME, data, reply);
+                    } finally { data.recycle(); reply.recycle(); }
+                } catch (Throwable error) {
+                    avasMicrophoneStatus(sessionId, "error", summary(error));
+                    clearHelper(value);
+                }
+            });
+        } catch (RuntimeException failure) {
+            avasMicrophoneStatus(sessionId, "error", summary(failure));
+        }
+    }
+
+    void stopAvasMicrophone(String sessionId) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) return;
+        if (sessionId.equals(desiredAvasMicrophone)) desiredAvasMicrophone = "";
+        if (stopped) return;
+        try {
+            worker.execute(() -> {
+                IBinder value = healthyHelper();
+                if (value == null) {
+                    avasMicrophoneStatus(sessionId, "error", "helper_unavailable");
+                    return;
+                }
+                try {
+                    transactAvasProfile(value,
+                            TurnSignalShellProtocol.TX_STOP_AVAS_MICROPHONE, sessionId);
+                } catch (Throwable error) {
+                    avasMicrophoneStatus(sessionId, "error", summary(error));
+                    clearHelper(value);
+                }
+            });
+        } catch (RuntimeException failure) {
+            avasMicrophoneStatus(sessionId, "error", summary(failure));
+        }
+    }
+
+    private void startAvasMicrophoneNow(String sessionId, ParcelFileDescriptor pcmReadFd,
+            int format, int volume) {
+        try (ParcelFileDescriptor descriptor = pcmReadFd) {
+            if (stopped || !sessionId.equals(desiredAvasMicrophone)) {
+                avasMicrophoneStatus(sessionId, "stopped", "request_superseded");
+                return;
+            }
+            IBinder value = healthyHelper();
+            if (value == null) {
+                ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+                value = healthyHelper();
+            }
+            if (value == null) throw new IllegalStateException("helper_unavailable");
+            if (!sessionId.equals(desiredAvasMicrophone)) {
+                avasMicrophoneStatus(sessionId, "stopped", "request_superseded");
+                return;
+            }
+            Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                data.writeString(sessionId);
+                descriptor.writeToParcel(data, Parcelable.PARCELABLE_WRITE_RETURN_VALUE);
+                data.writeInt(format);
+                data.writeInt(volume);
+                requireTransact(value,
+                        TurnSignalShellProtocol.TX_START_AVAS_MICROPHONE, data, reply);
+            } finally { data.recycle(); reply.recycle(); }
+        } catch (Throwable failure) {
+            if (sessionId.equals(desiredAvasMicrophone)) desiredAvasMicrophone = "";
+            avasMicrophoneStatus(sessionId, "error", summary(failure));
+        }
+    }
+
+    private void avasMicrophoneStatus(String sessionId, String state, String error) {
+        if (!TurnSignalShellProtocol.isAvasSessionAllowed(sessionId)) return;
+        try {
+            JSONObject event = new JSONObject().put("kind", "avas_microphone_status")
+                    .put("session_id", sessionId).put("state", state);
+            if (error != null && !error.isEmpty()) event.put("error", error);
+            String line = event.toString();
+            shellEventSink.accept(line);
+            emit("avas_microphone_status", "session_id", sessionId,
+                    "state", state, "error", error == null ? "" : error);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void closeDescriptor(ParcelFileDescriptor descriptor) {
+        if (descriptor == null) return;
+        try { descriptor.close(); } catch (Exception ignored) {}
     }
 
     void stopAvasManual(String profileId) {
@@ -781,7 +914,8 @@ final class TurnSignalController {
             pendingReverseSurfaceSink = surfaceSink;
             pendingReverseHelper = null;
             pendingReverseHelperEpoch = 0;
-            pendingReverseSurfaceCount = spec.requiresCentralFrontSource() ? 4 : 3;
+            pendingReverseClusterExpected =
+                    spec.layout.containsTarget(CameraDisplayTarget.CLUSTER);
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
@@ -821,11 +955,16 @@ final class TurnSignalController {
         });
     }
 
-    void armReverseOverlayFrames(int requestId, int[] generations) {
+    void acquireReverseSurfacesForFallback(int requestId) {
+        if (requestId <= 0) return;
+        worker.execute(() -> acquireReverseSurfaces(requestId, true));
+    }
+
+    void armReverseOverlayFrames(int requestId, int displayTarget, int[] generations) {
         worker.execute(() -> {
             try {
                 IBinder value = ensureCameraHelper();
-                transactReverseFrames(value, requestId, generations);
+                transactReverseFrames(value, requestId, displayTarget, generations);
             } catch (Throwable error) {
                 emit("reverse_overlay_error", "stage", "arm_first_frames",
                         "request_id", requestId, "error", summary(error));
@@ -834,13 +973,13 @@ final class TurnSignalController {
     }
 
     void setReverseOverlayVisible(
-            int requestId, int[] generations, boolean visible,
+            int requestId, int displayTarget, int[] generations, boolean visible,
             Consumer<Boolean> completion) {
         worker.execute(() -> {
             boolean success = false;
             try {
                 IBinder value = ensureCameraHelper();
-                transactReverseVisibility(value, requestId, generations, visible);
+                transactReverseVisibility(value, requestId, displayTarget, generations, visible);
                 success = true;
             } catch (Throwable error) {
                 emit("reverse_overlay_error", "stage", visible ? "show" : "hide",
@@ -862,9 +1001,19 @@ final class TurnSignalController {
     void updateReverseOverlayVisibility(
             int requestId, int[] generations, int visibilityMask,
             boolean widgetVisible, Consumer<Boolean> completion) {
+        updateReverseOverlayVisibility(requestId, CameraDisplayTarget.TABLET,
+                generations, visibilityMask, widgetVisible, completion);
+    }
+
+    void updateReverseOverlayVisibility(
+            int requestId, int displayTarget, int[] generations, int visibilityMask,
+            boolean widgetVisible, Consumer<Boolean> completion) {
         if (requestId <= 0 || generations == null
                 || (generations.length != 3 && generations.length != 4)) {
             throw new IllegalArgumentException("reverse visibility identity is required");
+        }
+        if (!CameraDisplayTarget.isValid(displayTarget)) {
+            throw new IllegalArgumentException("invalid Reverse display target");
         }
         ReverseCameraLayout.requireVisibilityMask(visibilityMask);
         worker.execute(() -> {
@@ -872,7 +1021,8 @@ final class TurnSignalController {
             try {
                 IBinder value = ensureCameraHelper();
                 transactReverseVisibilityMask(
-                        value, requestId, generations, visibilityMask, widgetVisible);
+                        value, requestId, displayTarget,
+                        generations, visibilityMask, widgetVisible);
                 success = true;
             } catch (Throwable error) {
                 emit("reverse_overlay_error", "stage", "visibility_mask",
@@ -1398,6 +1548,7 @@ final class TurnSignalController {
     private void helperDied(IBinder deadHelper, int deadPid) {
         boolean stale;
         String diedAudition = "";
+        String diedMicrophone = "";
         synchronized (this) {
             stale = helper != deadHelper;
             if (!stale) {
@@ -1408,6 +1559,8 @@ final class TurnSignalController {
                 lastLaunchFailureAt = 0;
                 diedAudition = desiredAvasAudition;
                 desiredAvasAudition = "";
+                diedMicrophone = desiredAvasMicrophone;
+                desiredAvasMicrophone = "";
             }
         }
         if (stale) {
@@ -1415,7 +1568,11 @@ final class TurnSignalController {
             return;
         }
         emit("helper_death", "pid", deadPid, "error", primaryError,
-                "audition_session_id", diedAudition);
+                "audition_session_id", diedAudition,
+                "microphone_session_id", diedMicrophone);
+        if (TurnSignalShellProtocol.isAvasSessionAllowed(diedMicrophone)) {
+            avasMicrophoneStatus(diedMicrophone, "error", "helper_binder_died");
+        }
         if (!stopped) worker.execute(() -> ensureRunning(LocalAdbClient.PromptMode.NEVER, true));
     }
 
@@ -2271,7 +2428,7 @@ final class TurnSignalController {
     }
 
     private static void transactReverseVisibilityMask(
-            IBinder value, int requestId, int[] generations,
+            IBinder value, int requestId, int displayTarget, int[] generations,
             int visibilityMask, boolean widgetVisible) throws Exception {
         ReverseCameraLayout.requireVisibilityMask(visibilityMask);
         Parcel data = Parcel.obtain();
@@ -2279,6 +2436,7 @@ final class TurnSignalController {
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeInt(requestId);
+            data.writeInt(displayTarget);
             data.writeInt(generations.length);
             for (int generation : generations) data.writeInt(generation);
             data.writeInt(visibilityMask);
@@ -2325,36 +2483,72 @@ final class TurnSignalController {
     }
 
     private static ReverseSurfaces transactReverseAcquire(
-            IBinder value, int requestId, int expectedCount) throws Exception {
-        if (expectedCount != 3 && expectedCount != 4) {
-            throw new IllegalArgumentException("invalid reverse Surface count");
-        }
+            IBinder value, int requestId, boolean clusterExpected,
+            boolean forceTabletFallback) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
-        Surface[] surfaces = new Surface[expectedCount];
+        Surface[] surfaces = new Surface[8];
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeInt(requestId);
+            data.writeInt(forceTabletFallback ? 1 : 0);
             requireTransact(value, CameraShellProtocol.TX_REVERSE_ACQUIRE_SURFACES, data, reply);
             int returnedRequestId = reply.readInt();
-            int count = reply.readInt();
-            if (returnedRequestId != requestId || count != surfaces.length) {
+            int groupCount = reply.readInt();
+            if (returnedRequestId != requestId || groupCount < 1 || groupCount > 2
+                    || groupCount > (clusterExpected ? 2 : 1)) {
                 throw new IllegalStateException("camera helper returned stale reverse Surfaces");
             }
-            int[] generations = new int[count];
-            for (int i = 0; i < count; i++) {
-                generations[i] = reply.readInt();
-                if (generations[i] <= 0) {
-                    throw new IllegalStateException("invalid reverse Surface generation");
+            int[] preparedDisplayTargets = new int[groupCount];
+            int[] targets = new int[surfaces.length];
+            int[] sourceIndexes = new int[surfaces.length];
+            int[] generations = new int[surfaces.length];
+            boolean[] sourceSeen = new boolean[5];
+            int total = 0;
+            for (int group = 0; group < groupCount; group++) {
+                int target = reply.readInt();
+                int expectedTarget = group == 0
+                        ? CameraDisplayTarget.TABLET : CameraDisplayTarget.CLUSTER;
+                int count = reply.readInt();
+                if (target != expectedTarget || count < 0 || count > 4) {
+                    throw new IllegalStateException("invalid reverse Surface mapping");
+                }
+                preparedDisplayTargets[group] = target;
+                int[] groupSources = new int[count];
+                int[] groupGenerations = new int[count];
+                for (int i = 0; i < count; i++) {
+                    groupSources[i] = reply.readInt();
+                    groupGenerations[i] = reply.readInt();
+                    int sourceIndex = groupSources[i];
+                    if (sourceIndex <= 0 || sourceIndex > 4
+                            || sourceSeen[sourceIndex] || total + i >= surfaces.length) {
+                        throw new IllegalStateException("invalid reverse Surface identity");
+                    }
+                    sourceSeen[sourceIndex] = true;
+                }
+                if (!ReverseCameraController.isValidOutputGroup(
+                        target, groupSources, groupGenerations)) {
+                    throw new IllegalStateException("invalid reverse Surface group identity");
+                }
+                for (int i = 0; i < count; i++) {
+                    int sourceIndex = groupSources[i];
+                    int generation = groupGenerations[i];
+                    Surface surface = Surface.CREATOR.createFromParcel(reply);
+                    if (surface == null || !surface.isValid()) {
+                        if (surface != null) surface.release();
+                        throw new IllegalStateException("invalid reverse Surface");
+                    }
+                    targets[total] = target;
+                    sourceIndexes[total] = sourceIndex;
+                    generations[total] = generation;
+                    surfaces[total] = surface;
+                    total++;
                 }
             }
-            for (int i = 0; i < count; i++) {
-                surfaces[i] = Surface.CREATOR.createFromParcel(reply);
-                if (surfaces[i] == null || !surfaces[i].isValid()) {
-                    throw new IllegalStateException("invalid reverse Surface");
-                }
-            }
-            return new ReverseSurfaces(returnedRequestId, generations, surfaces);
+            return new ReverseSurfaces(
+                    returnedRequestId, preparedDisplayTargets,
+                    Arrays.copyOf(targets, total), Arrays.copyOf(sourceIndexes, total),
+                    Arrays.copyOf(generations, total), Arrays.copyOf(surfaces, total));
         } catch (Throwable error) {
             releaseSurfaces(surfaces);
             throw error;
@@ -2365,29 +2559,35 @@ final class TurnSignalController {
     }
 
     private static void transactReverseFrames(
-            IBinder value, int requestId, int[] generations) throws Exception {
+            IBinder value, int requestId, int displayTarget, int[] generations)
+            throws Exception {
         transactReverseIdentity(value, CameraShellProtocol.TX_REVERSE_ARM_FRAMES,
-                requestId, generations, false);
+                requestId, displayTarget, generations, false);
     }
 
     private static void transactReverseVisibility(
-            IBinder value, int requestId, int[] generations, boolean visible) throws Exception {
+            IBinder value, int requestId, int displayTarget,
+            int[] generations, boolean visible) throws Exception {
         transactReverseIdentity(value, CameraShellProtocol.TX_REVERSE_SET_VISIBLE,
-                requestId, generations, visible);
+                requestId, displayTarget, generations, visible);
     }
 
     private static void transactReverseIdentity(
-            IBinder value, int transaction, int requestId, int[] generations,
+            IBinder value, int transaction, int requestId, int displayTarget, int[] generations,
             boolean visible) throws Exception {
         if (requestId <= 0 || generations == null
-                || (generations.length != 3 && generations.length != 4)) {
+                || generations.length > 4) {
             throw new IllegalArgumentException("invalid reverse request identity");
+        }
+        if (!CameraDisplayTarget.isValid(displayTarget)) {
+            throw new IllegalArgumentException("invalid Reverse display target");
         }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
             data.writeInt(requestId);
+            data.writeInt(displayTarget);
             data.writeInt(generations.length);
             for (int generation : generations) data.writeInt(generation);
             if (transaction == CameraShellProtocol.TX_REVERSE_SET_VISIBLE) {
@@ -2475,6 +2675,10 @@ final class TurnSignalController {
     }
 
     private void acquireReverseSurfaces(int requestId) {
+        acquireReverseSurfaces(requestId, false);
+    }
+
+    private void acquireReverseSurfaces(int requestId, boolean forceTabletFallback) {
         Consumer<ReverseSurfaces> sink = pendingReverseSurfaceSink;
         if (sink == null || requestId != pendingReverseRequestId) return;
         try {
@@ -2491,7 +2695,7 @@ final class TurnSignalController {
                         "camera shell unavailable before reverse Surface acquisition");
             }
             ReverseSurfaces result = transactReverseAcquire(
-                    value, requestId, pendingReverseSurfaceCount);
+                    value, requestId, pendingReverseClusterExpected, forceTabletFallback);
             clearPendingReverseSurfaces(requestId);
             if (!handler.post(() -> sink.accept(result))) {
                 releaseSurfaces(result.surfaces);
@@ -2510,7 +2714,7 @@ final class TurnSignalController {
         pendingReverseSurfaceSink = null;
         pendingReverseHelper = null;
         pendingReverseHelperEpoch = 0;
-        pendingReverseSurfaceCount = 3;
+        pendingReverseClusterExpected = false;
     }
 
     private static void releaseSurfaces(Surface[] surfaces) {
@@ -2570,6 +2774,7 @@ final class TurnSignalController {
         pendingReverseSurfaceSink = null;
         pendingReverseHelper = null;
         pendingReverseHelperEpoch = 0;
+        pendingReverseClusterExpected = false;
         IBinder value = cameraHelper;
         if (!cameraPing(value)) value = resolveCameraHelper();
         if (!cameraPing(value)) return true;
@@ -2930,6 +3135,7 @@ final class TurnSignalController {
         pendingReverseSurfaceSink = null;
         pendingReverseHelper = null;
         pendingReverseHelperEpoch = 0;
+        pendingReverseClusterExpected = false;
         emit("camera_shell_died",
                 "camera_shell_epoch", epoch,
                 "pending_overlay_request_ids", Arrays.toString(overlayRequestIds),
@@ -3329,11 +3535,19 @@ final class TurnSignalController {
 
     static final class ReverseSurfaces {
         final int requestId;
+        final int[] preparedDisplayTargets;
+        final int[] displayTargets;
+        final int[] sourceIndexes;
         final int[] generations;
         final Surface[] surfaces;
 
-        ReverseSurfaces(int requestId, int[] generations, Surface[] surfaces) {
+        ReverseSurfaces(
+                int requestId, int[] preparedDisplayTargets, int[] displayTargets,
+                int[] sourceIndexes, int[] generations, Surface[] surfaces) {
             this.requestId = requestId;
+            this.preparedDisplayTargets = preparedDisplayTargets;
+            this.displayTargets = displayTargets;
+            this.sourceIndexes = sourceIndexes;
             this.generations = generations;
             this.surfaces = surfaces;
         }

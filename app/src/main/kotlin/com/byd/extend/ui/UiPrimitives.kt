@@ -533,6 +533,7 @@ internal fun SwitchLine(
     enabled: Boolean = true,
     strikeThrough: Boolean = false,
     compactSwitch: Boolean = true,
+    beforeSwitch: (@Composable () -> Unit)? = null,
 ) {
     val compact = LocalCompactControls.current
     val press = rememberPressFeedback(enabled && !pending)
@@ -550,6 +551,8 @@ internal fun SwitchLine(
             if (hint.isNotBlank()) Text(hint,
                 color = if (enabled) colors.muted else colors.muted.copy(alpha = .52f), fontSize = 13.sp)
         }
+        beforeSwitch?.invoke()
+        if (beforeSwitch != null) Spacer(Modifier.width(8.dp))
         Spacer(Modifier.width(10.dp))
         AppSwitch(checked, onCheckedChange, colors, pending, compact = compactSwitch, enabled = enabled, clearSemantics = true)
     }

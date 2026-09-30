@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reverse_target_tablet">Tablet</string>
+    <string name="reverse_target_cluster">Cluster</string>
+    <string name="camera_hold_duration">Hold duration</string>
+    <string name="camera_hold_duration_hint">After a short turn signal</string>
+    <string name="camera_hold_enabled">Keep camera visible</string>
+    <string name="camera_seconds_suffix">s</string>
+</resources>

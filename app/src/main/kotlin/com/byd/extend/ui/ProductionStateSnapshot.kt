@@ -17,6 +17,7 @@ fun readProductionUiState(
     activeTab = storedRootTab(preferences),
     language = when (AppLanguage.read(preferences)) {
         AppLanguage.CHINESE -> UiLanguage.Chinese
+        AppLanguage.RUSSIAN -> UiLanguage.Russian
         AppLanguage.UKRAINIAN -> UiLanguage.Ukrainian
         else -> UiLanguage.English
     },
@@ -122,6 +123,8 @@ private fun readBlind(
                     BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA, true),
                 holdAfterShortTurn = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN, true),
+                holdDurationSeconds = BlindSpotOverlayController.readHoldDurationSeconds(
+                    preferences, CameraProfile.REAR_LEFT).toString(),
                 sharpTurnEnabled = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_REAR_SHARP_TURN_ENABLED, false),
                 blindSpotOnly = preferences.getBoolean(
@@ -140,6 +143,8 @@ private fun readBlind(
                     BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA, true),
                 holdAfterShortTurn = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN, true),
+                holdDurationSeconds = BlindSpotOverlayController.readHoldDurationSeconds(
+                    preferences, CameraProfile.FRONT_LEFT).toString(),
                 turnRequired = preferences.getBoolean(
                     BlindSpotOverlayController.PREF_FRONT_TURN_REQUIRED, true),
             ),
@@ -203,21 +208,44 @@ private fun readReverse(
     preferences: SharedPreferences,
     displayGeometry: (DisplayTarget) -> CameraDisplayGeometry,
 ): ReverseUiState {
-    val targetGeometry = displayGeometry(DisplayTarget.Tablet)
     val raw = ReverseCameraController.loadRawLayout(preferences)
     val frontRaw = ReverseCameraController.loadFrontRawLayout(preferences)
-    val geometry = mapOf(
-        ReverseElement.Background to geometry(raw.background,
-            ReverseCameraController.loadVisibility(preferences, ReverseCameraLayout.BACKGROUND_PANE_ID)),
-        ReverseElement.Widget to geometry(raw.widget,
+    fun geometryFor(target: DisplayTarget) = mapOf(
+        ReverseElement.Background to geometry(
+            raw.rectFor(ReverseCameraLayout.BACKGROUND_PANE_ID, target.ordinal),
+            ReverseCameraController.loadVisibility(
+                preferences, ReverseCameraLayout.BACKGROUND_PANE_ID)),
+        ReverseElement.Widget to geometry(
+            raw.rectFor(ReverseCameraLayout.WIDGET_PANE_ID, target.ordinal),
             ReverseCameraController.loadWidgetVisible(preferences)),
-        ReverseElement.Rear to geometry(raw.rear.destination,
-            ReverseCameraController.loadVisibility(preferences, ReverseCameraLayout.REAR_CAMERA_INDEX)),
-        ReverseElement.RearLeft to geometry(raw.rearLeft.destination,
-            ReverseCameraController.loadVisibility(preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)),
-        ReverseElement.RearRight to geometry(raw.rearRight.destination,
-            ReverseCameraController.loadVisibility(preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)),
+        ReverseElement.Rear to geometry(
+            raw.rectFor(ReverseCameraLayout.REAR_CAMERA_INDEX, target.ordinal),
+            ReverseCameraController.loadVisibility(
+                preferences, ReverseCameraLayout.REAR_CAMERA_INDEX)),
+        ReverseElement.RearLeft to geometry(
+            raw.rectFor(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, target.ordinal),
+            ReverseCameraController.loadVisibility(
+                preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)),
+        ReverseElement.RearRight to geometry(
+            raw.rectFor(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, target.ordinal),
+            ReverseCameraController.loadVisibility(
+                preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)),
     )
+    val geometryByTarget = mapOf(
+        DisplayTarget.Tablet to geometryFor(DisplayTarget.Tablet),
+        DisplayTarget.Cluster to geometryFor(DisplayTarget.Cluster),
+    )
+    val elementTargets = mapOf(
+        ReverseElement.Background to raw.targetFor(ReverseCameraLayout.BACKGROUND_PANE_ID),
+        ReverseElement.Widget to raw.targetFor(ReverseCameraLayout.WIDGET_PANE_ID),
+        ReverseElement.Rear to raw.targetFor(ReverseCameraLayout.REAR_CAMERA_INDEX),
+        ReverseElement.RearLeft to raw.targetFor(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
+        ReverseElement.RearRight to raw.targetFor(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+    ).mapValues { (_, target) -> if (target == CameraDisplayTarget.CLUSTER)
+        DisplayTarget.Cluster else DisplayTarget.Tablet }
+    val selectedElement = enumPreference(preferences, UiSelectionPreferences.REVERSE_ELEMENT,
+        ReverseElement.RearLeft)
+    val selectedTarget = elementTargets[selectedElement] ?: DisplayTarget.Tablet
     val profiles = buildMap<CameraProfileId.Reverse, CameraProfileUiState> {
         for (index in ReverseCameraLayout.REAR_CAMERA_INDEX..ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
             val element = reverseElement(index)
@@ -227,14 +255,15 @@ private fun readReverse(
                 preferences, index, ReverseCameraLayout.centeredSourceCrop(rearPane.sourceCrop))
             put(CameraProfileId.Reverse(element, ReverseSource.Rear), reverseProfile(
                 rearPane, corrected, rearDewarp, CameraCalibrationPreset.hasReverse(preferences, index),
-                targetGeometry).withBorder(CameraBorderSettings.forReverse(preferences, index, false)))
+                displayGeometry(DisplayTarget.Tablet)).withBorder(CameraBorderSettings.forReverse(preferences, index, false)))
 
             val frontPane = frontRaw.pane(index)
             put(CameraProfileId.Reverse(element, ReverseSource.Front), reverseProfile(
                 frontPane,
                 ReverseCameraController.loadFrontCorrectedSourceCrop(preferences, index),
                 CameraDewarpConfig.loadForReverseFront(preferences, index),
-                CameraCalibrationPreset.hasReverseFront(preferences, index), targetGeometry)
+                CameraCalibrationPreset.hasReverseFront(preferences, index),
+                displayGeometry(DisplayTarget.Tablet))
                 .withBorder(CameraBorderSettings.forReverse(preferences, index, true)))
         }
         for ((element, pane) in listOf(ReverseElement.Background to ReverseCameraLayout.BACKGROUND_PANE_ID,
@@ -250,8 +279,8 @@ private fun readReverse(
         switchByGear = preferences.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false),
         section = enumPreference(preferences, UiSelectionPreferences.REVERSE_SECTION,
             CameraSection.Parameters),
-        selectedElement = enumPreference(preferences, UiSelectionPreferences.REVERSE_ELEMENT,
-            ReverseElement.RearLeft),
+        selectedElement = selectedElement,
+        selectedTarget = selectedTarget,
         selectedSource = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
             ReverseSource.Rear),
         showFront = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
@@ -264,10 +293,16 @@ private fun readReverse(
             ReverseElement.RearRight to ReverseCameraController.loadFrontIntegrated(
                 preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
         ),
-        geometry = geometry,
+        geometry = geometryByTarget[selectedTarget] ?: geometryByTarget.getValue(DisplayTarget.Tablet),
+        geometryByTarget = geometryByTarget,
+        elementTargets = elementTargets,
         profiles = profiles,
-        displayGeometry = targetGeometry,
-        zOrder = raw.panes().sortedBy { it.zOrder }.map { reverseElement(it.cameraIndex) },
+        displayGeometry = displayGeometry(selectedTarget),
+        zOrder = raw.panes().filter {
+            raw.targetFor(it.cameraIndex) == selectedTarget.ordinal
+        }.sortedBy {
+            raw.zOrderFor(it.cameraIndex, selectedTarget.ordinal)
+        }.map { reverseElement(it.cameraIndex) },
     )
 }
 

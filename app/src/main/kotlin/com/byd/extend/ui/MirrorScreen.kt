@@ -196,9 +196,10 @@ private fun FormScope.MirrorParameters(
 }
 
 @Composable
-private fun MirrorBindingRow(
+internal fun MirrorBindingRow(
     title: String, action: CameraButtonBindings.Action, binding: CameraButtonBindings.Binding,
     enabled: Boolean, strings: UiStrings, colors: UiPalette, onAction: (BydExtendUiAction) -> Unit,
+    showPress: Boolean = true,
     footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(colors.panelAlt)
@@ -208,7 +209,7 @@ private fun MirrorBindingRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, color = if (enabled) colors.text else colors.muted.copy(alpha = .62f),
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, modifier = Modifier.weight(1f))
-            ChoiceField("", listOf(strings.text("Одиночне", "Single", "单击"),
+            if (showPress) ChoiceField("", listOf(strings.text("Одиночне", "Single", "单击"),
                 strings.text("Утримання", "Hold", "长按"), strings.text("Подвійне", "Double", "双击")),
                 binding.press.ordinal, { onAction(BydExtendUiAction.SetCameraButtonPress(action,
                     CameraButtonBindings.Press.entries[it])) }, colors, Modifier.width(148.dp),

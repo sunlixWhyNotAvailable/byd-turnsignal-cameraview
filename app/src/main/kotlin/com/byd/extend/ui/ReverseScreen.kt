@@ -192,9 +192,16 @@ private fun FormScope.ReverseCompositionControls(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ): FormScope {
+    row("reverse-display-target") { Segmented(
+        listOf(strings.resource(com.byd.extend.R.string.reverse_target_tablet),
+            strings.resource(com.byd.extend.R.string.reverse_target_cluster)),
+        state.selectedTarget.ordinal, colors, Modifier.fillMaxWidth(),
+    ) { target -> onAction(BydExtendUiAction.Select(
+        SelectionTarget.Simple(SelectionId.ReverseTarget), target)) } }
     val geometry = state.geometry[selected] ?: ReverseGeometryUiState()
     fun commit(field: ReverseGeometryNumber, value: String) {
-        onAction(BydExtendUiAction.CommitNumber(NumberTarget.ReverseGeometry(selected, field), value))
+        onAction(BydExtendUiAction.CommitNumber(
+            NumberTarget.ReverseGeometry(selected, field, state.selectedTarget), value))
     }
     val width = (geometry.width.toFloatOrNull() ?: 100f).coerceIn(5f, 100f)
     val height = (geometry.height.toFloatOrNull() ?: 100f).coerceIn(5f, 100f)
@@ -202,8 +209,8 @@ private fun FormScope.ReverseCompositionControls(
     val y = (geometry.y.toFloatOrNull() ?: 0f).coerceIn(0f, 100f)
     row("reverse-position") { CoordinatePair(geometry.x, geometry.y, colors,
         { commit(ReverseGeometryNumber.X, it) }, { commit(ReverseGeometryNumber.Y, it) },
-        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.X),
-        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y),
+        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.X, state.selectedTarget),
+        NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Y, state.selectedTarget),
         maxX = 100f - width, maxY = 100f - height,
         horizontalTitle = strings.text("Горизонталь", "Horizontal"),
         verticalTitle = strings.text("Вертикаль", "Vertical")) }
@@ -212,8 +219,8 @@ private fun FormScope.ReverseCompositionControls(
         { commit(ReverseGeometryNumber.Height, it) }, colors,
         5f..(100f - x).coerceAtLeast(5f), "reverse-size-pair",
         secondRange = 5f..(100f - y).coerceAtLeast(5f),
-        identityFirst = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width),
-        identitySecond = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height)) }
+        identityFirst = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Width, state.selectedTarget),
+        identitySecond = NumberTarget.ReverseGeometry(selected, ReverseGeometryNumber.Height, state.selectedTarget)) }
     row("reverse-layer") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ActionButton(strings.text("Нижче шар", "Lower layer"), colors, Modifier.weight(1f), height = 32.dp,
             enabled = cameraElement && state.zOrder.indexOf(selected) > 0) {
@@ -244,7 +251,8 @@ private fun ReverseCompositionFrame(
         Box(Modifier.size(width, width / aspect).clip(RoundedCornerShape(7.dp))) {
             cameraHost(CameraHostSlot(CameraHostKind.ReverseComposition,
                 reverseElement = selected,
-                editable = state.section == CameraSection.Placement))
+                editable = state.section == CameraSection.Placement,
+                displayTarget = state.selectedTarget))
         }
     }
 }

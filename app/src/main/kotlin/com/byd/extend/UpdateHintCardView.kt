@@ -60,6 +60,7 @@ class UpdateHintCardView @JvmOverloads constructor(
         val localized = AppLanguage.localizedContext(context, when (language) {
             UiLanguage.Ukrainian -> AppLanguage.UKRAINIAN
             UiLanguage.Chinese -> AppLanguage.CHINESE
+            UiLanguage.Russian -> AppLanguage.RUSSIAN
             UiLanguage.English -> AppLanguage.ENGLISH
         })
         fun scaledDp(value: Float) = dp(context, value * scale)
@@ -100,6 +101,7 @@ class UpdateHintCardView @JvmOverloads constructor(
             contentDescription = when (language) {
                 UiLanguage.Ukrainian -> "Закрити"
                 UiLanguage.Chinese -> "关闭"
+                UiLanguage.Russian -> "Закрыть"
                 UiLanguage.English -> "Close"
             }
             background = GradientDrawable().apply {

@@ -5,19 +5,38 @@ public final class ReleaseNotesSelector {
     private static final String ENGLISH = "en";
     private static final String UKRAINIAN = "uk";
     private static final String CHINESE = "zh-CN";
-    private static final String[] LANGUAGES = {ENGLISH, UKRAINIAN, CHINESE};
+    private static final String RUSSIAN = "ru";
+    private static final String[] LANGUAGES = {ENGLISH, UKRAINIAN, CHINESE, RUSSIAN};
 
     private ReleaseNotesSelector() {}
 
     /** Returns the requested nonempty block, then English, then the original unsectioned body. */
     public static String select(String body, String language) {
         if (body == null || body.isEmpty()) return body == null ? "" : body;
-        String requestedLanguage = UKRAINIAN.equals(language) || CHINESE.equals(language)
-                ? language : ENGLISH;
+        String requestedLanguage = languageFor(language);
         String requested = block(body, requestedLanguage);
         if (requested != null) return requested;
         String english = ENGLISH.equals(requestedLanguage) ? null : block(body, ENGLISH);
         return english != null ? english : body;
+    }
+
+    /** Keeps every release's raw body and applies locale fallback independently per entry. */
+    static String selectHistory(
+            Iterable<AppUpdateManager.ReleaseNotesEntry> history, String language) {
+        StringBuilder notes = new StringBuilder();
+        for (AppUpdateManager.ReleaseNotesEntry entry : history) {
+            if (notes.length() > 0) notes.append("\n\n---\n\n");
+            notes.append("## v").append(entry.version).append("\n\n")
+                    .append(select(entry.body, language));
+        }
+        return notes.toString();
+    }
+
+    private static String languageFor(String language) {
+        if (UKRAINIAN.equals(language) || "ua".equals(language)) return UKRAINIAN;
+        if (CHINESE.equals(language) || "zh".equals(language)) return CHINESE;
+        if (RUSSIAN.equals(language)) return RUSSIAN;
+        return ENGLISH;
     }
 
     private static String block(String body, String language) {

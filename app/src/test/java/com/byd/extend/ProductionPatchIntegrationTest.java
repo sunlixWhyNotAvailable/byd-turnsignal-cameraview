@@ -297,7 +297,7 @@ public final class ProductionPatchIntegrationTest {
         assertTrue(toast.contains("if (activityDestroyed || !activityResumed) return;"));
         assertTrue(toast.contains("toast.setDuration(Toast.LENGTH_LONG)"));
         assertTrue(toast.contains("toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL"));
-        assertTrue(activity.contains("resetProductionReverseLayout(action.getReverseElement())"));
+        assertTrue(activity.contains("resetProductionReverseLayout(action.getReverseElement(),"));
         assertTrue(activity.contains("reverseCompositionStatusProfile()"));
         assertTrue(activity.contains("selectedTab == TAB_REVERSE_CAMERAS"));
         assertTrue(activity.contains("inputGenerations.length == 4 || inputGenerations.length == 5"));

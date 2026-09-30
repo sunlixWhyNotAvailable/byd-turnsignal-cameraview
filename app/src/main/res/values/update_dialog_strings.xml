@@ -1,0 +1,12 @@
+<resources>
+    <string name="update_dialog_title">Update</string>
+    <string name="update_dialog_current_version">Current version: v%1$s</string>
+    <string name="update_dialog_available_version">Available version: v%1$s</string>
+    <string name="update_dialog_history_incomplete">Partial release history: some release notes could not be loaded.</string>
+    <string name="update_dialog_downloading">Downloading update…</string>
+    <string name="update_dialog_installer_error">Android could not open the installer. Try the update again.</string>
+    <string name="update_dialog_download_failed">Could not update the app: %1$s</string>
+    <string name="update_dialog_action">Update</string>
+    <string name="update_dialog_close">Close</string>
+    <string name="update_download_notification_description">Downloading update</string>
+</resources>

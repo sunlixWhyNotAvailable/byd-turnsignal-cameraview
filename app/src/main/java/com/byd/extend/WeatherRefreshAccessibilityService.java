@@ -31,8 +31,17 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
             ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
     private final Runnable steeringTimeout = this::handleSteeringTimeout;
     private SharedPreferences steeringPreferences;
+    private AvasMicrophoneCapture microphone;
     private final SharedPreferences.OnSharedPreferenceChangeListener steeringPreferenceListener =
             (preferences, key) -> {
+                if (microphone != null) {
+                    if ((AvasMicrophoneSettings.ENABLED.equals(key)
+                            && !AvasMicrophoneSettings.enabled(preferences))
+                            || (GuardRecovery.KEY_USER_SHUTDOWN.equals(key)
+                            && GuardRecovery.isUserShutdownActive(this))) microphone.stop(false);
+                    if (AvasMicrophoneSettings.VOLUME.equals(key))
+                        microphone.volume(AvasMicrophoneSettings.volume(preferences));
+                }
                 if (!isSteeringPreference(key)) return;
                 steeringGestures.bindingsChanged(currentAssignments(preferences));
                 syncSteeringTimeout();
@@ -40,6 +49,48 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     static boolean beginSteeringButtonLearning(Context context) {
         return beginCameraButtonLearning(context, CameraButtonBindings.Action.ReverseSource);
+    }
+
+    static boolean startMicrophone() {
+        WeatherRefreshAccessibilityService service = activeService;
+        if (service == null || service.microphone == null) return false;
+        service.steeringHandler.post(service.microphone::start);
+        return true;
+    }
+
+    static void stopMicrophone() {
+        WeatherRefreshAccessibilityService service = activeService;
+        if (service != null && service.microphone != null)
+            service.steeringHandler.post(() -> service.microphone.stop(false));
+    }
+
+    static boolean ownsMicrophone(String sessionId) {
+        WeatherRefreshAccessibilityService service = activeService;
+        return service != null && service.microphone != null && service.microphone.owns(sessionId);
+    }
+
+    static void microphoneUnavailable(String sessionId) {
+        WeatherRefreshAccessibilityService service = activeService;
+        if (service != null && service.microphone != null) service.microphone.unavailable(sessionId);
+    }
+
+    static void microphoneEvent(String line) {
+        WeatherRefreshAccessibilityService service = activeService;
+        if (service == null || service.microphone == null) return;
+        try {
+            org.json.JSONObject event = new org.json.JSONObject(line);
+            String kind = event.optString("kind");
+            if ("avas_microphone_status".equals(kind) || "avas_status".equals(kind))
+                service.microphone.accept(event);
+            else if ("helper_ping_failed".equals(kind))
+                service.steeringHandler.post(() -> service.microphone.stop(true));
+        } catch (org.json.JSONException ignored) {}
+    }
+
+    @Override public int onStartCommand(android.content.Intent intent, int flags, int startId) {
+        if (intent != null && AvasMicrophoneCapture.ACTION_STOP.equals(intent.getAction())
+                && microphone != null) microphone.stop(false);
+        return START_NOT_STICKY;
     }
 
     static boolean beginCameraButtonLearning(
@@ -51,6 +102,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         }
         if (action == null || GuardRecovery.isUserShutdownActive(service)
                 || LegacySettingsImporter.blocksRuntime(service)) return false;
+        if (action == CameraButtonBindings.Action.AvasMicrophone
+                && !AvasMicrophoneSettings.enabled(service.getSharedPreferences("settings", 0)))
+            return false;
         service.steeringHandler.removeCallbacks(service.steeringTimeout);
         service.steeringGestures.beginLearning(action);
         return true;
@@ -156,6 +210,8 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                     steeringPreferenceListener);
         }
         steeringPreferences = getSharedPreferences("settings", MODE_PRIVATE);
+        if (microphone != null) microphone.stop(false);
+        microphone = new AvasMicrophoneCapture(this);
         steeringPreferences.registerOnSharedPreferenceChangeListener(steeringPreferenceListener);
         activeService = this;
         publishConnection(true);
@@ -232,6 +288,8 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (source || visibility) {
             CameraHelperService.requestMirrorButtonAction(this, source, visibility);
         }
+        if (result.actions.contains(CameraButtonBindings.Action.AvasMicrophone)
+                && microphone != null) microphone.toggle();
         return result.consumed;
     }
 
@@ -258,6 +316,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (mirrorEnabled) {
             addAssignment(result, preferences, CameraButtonBindings.Action.MirrorVisibility, 1L);
         }
+        if (AvasMicrophoneSettings.enabled(preferences)) {
+            addAssignment(result, preferences, CameraButtonBindings.Action.AvasMicrophone, 1L);
+        }
         return result;
     }
 
@@ -270,7 +331,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     }
 
     private static boolean isSteeringPreference(String key) {
-        return ReverseSteeringButtonPreferences.KEY_CODE.equals(key)
+        return CameraButtonBindings.MICROPHONE_KEY_CODE.equals(key)
+                || AvasMicrophoneSettings.ENABLED.equals(key)
+                || ReverseSteeringButtonPreferences.KEY_CODE.equals(key)
                 || CameraButtonBindings.MIRROR_SOURCE_KEY_CODE.equals(key)
                 || CameraButtonBindings.MIRROR_SOURCE_PRESS.equals(key)
                 || CameraButtonBindings.MIRROR_VISIBILITY_KEY_CODE.equals(key)
@@ -288,17 +351,20 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     @Override
     public void onInterrupt() {
+        if (microphone != null) microphone.stop(false);
         clearSteeringState();
     }
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
+        if (microphone != null) microphone.stop(false);
         publishDisconnectedIfActive();
         return super.onUnbind(intent);
     }
 
     @Override
     public void onDestroy() {
+        if (microphone != null) microphone.stop(false);
         resetSteeringState();
         if (steeringPreferences != null) {
             steeringPreferences.unregisterOnSharedPreferenceChangeListener(

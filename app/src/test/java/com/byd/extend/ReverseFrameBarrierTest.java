@@ -7,9 +7,67 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 
 public final class ReverseFrameBarrierTest {
+    @Test public void surfaceAcquisitionWaitsForPrepareButNotUnavailableCluster() {
+        assertTrue(CameraShellMain.ShellBinder.shouldDeferReverseSurfaceReady(
+                true, true, true, false)); // Reused Tablet ready before Cluster.prepare.
+        assertTrue(CameraShellMain.ShellBinder.shouldDeferReverseSurfaceReady(
+                false, true, true, false)); // Open Cluster still preparing its Surface.
+        assertFalse(CameraShellMain.ShellBinder.shouldDeferReverseSurfaceReady(
+                false, true, true, true));
+        assertFalse(CameraShellMain.ShellBinder.shouldDeferReverseSurfaceReady(
+                false, false, true, false)); // Unavailable Cluster cannot hold Tablet.
+    }
+
+    @Test public void preparedEmptyOutputIsDistinctFromUnavailableCluster() {
+        assertTrue(ReverseCameraController.hasPreparedDisplayTarget(0, new int[]{0}));
+        assertFalse(ReverseCameraController.hasPreparedDisplayTarget(1, new int[]{0}));
+        assertTrue(ReverseCameraController.isValidOutputGroup(0, new int[0], new int[0]));
+        assertTrue(ReverseCameraController.isValidOutputGroup(1, new int[]{1, 3, 4},
+                new int[]{11, 13, 14}));
+        assertFalse(ReverseCameraController.isValidOutputGroup(1, new int[]{1, 1},
+                new int[]{11, 12}));
+        org.junit.Assert.assertArrayEquals(new int[]{12},
+                ReverseCameraController.generationsForDisplay(0,
+                        new int[]{0, 1, 1}, new int[]{12, 11, 13}));
+        org.junit.Assert.assertArrayEquals(new int[]{11, 13},
+                ReverseCameraController.generationsForDisplay(1,
+                        new int[]{0, 1, 1}, new int[]{12, 11, 13}));
+    }
+
     private static final int REQUEST = 41;
     private static final int BASE = 7;
     private static final int[] DIRECT = {11, 12, 13};
+
+    @Test public void splitDisplayWaitsOnlyForItsAssignedSources() {
+        ReverseCameraCompositionView.FrameBarrier tablet =
+                new ReverseCameraCompositionView.FrameBarrier();
+        ReverseCameraCompositionView.FrameBarrier cluster =
+                new ReverseCameraCompositionView.FrameBarrier();
+        tablet.arm(REQUEST, 0, new int[]{2}, new int[]{12}, 1, false);
+        cluster.arm(REQUEST, 0, new int[]{1, 3, 4}, new int[]{11, 13, 14}, 2, false);
+        assertFalse(tablet.readyPending(REQUEST, 0, new int[]{12}));
+        tablet.frame(REQUEST, 2, 12); // Discard the queued pre-arm frame.
+        assertFalse(tablet.readyPending(REQUEST, 0, new int[]{12}));
+        tablet.frame(REQUEST, 2, 12);
+        assertTrue(tablet.recordReadyEvent(REQUEST, 0, new int[]{12}));
+        assertTrue(tablet.reveal(REQUEST, 0, new int[]{12}));
+        assertFalse(cluster.readyPending(REQUEST, 0, new int[]{11, 13, 14}));
+        for (int source : new int[]{1, 3}) {
+            cluster.frame(REQUEST, source, source + 10);
+            cluster.frame(REQUEST, source, source + 10);
+        }
+        // The integrated central Front source is paused until selected, not a reveal prerequisite.
+        assertTrue(cluster.recordReadyEvent(REQUEST, 0, new int[]{11, 13, 14}));
+        assertTrue(cluster.reveal(REQUEST, 0, new int[]{11, 13, 14}));
+    }
+
+    @Test public void displayWithOnlyBackgroundAndWidgetNeedsNoCameraFrame() {
+        ReverseCameraCompositionView.FrameBarrier barrier =
+                new ReverseCameraCompositionView.FrameBarrier();
+        barrier.arm(REQUEST, 0, new int[0], new int[0], 0, false);
+        assertTrue(barrier.recordReadyEvent(REQUEST, 0, new int[0]));
+        assertTrue(barrier.reveal(REQUEST, 0, new int[0]));
+    }
 
     @Test
     public void partialFramesCannotRevealAndReadyIsExactOnce() {

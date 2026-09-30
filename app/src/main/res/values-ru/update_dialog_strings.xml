@@ -1,0 +1,12 @@
+<resources>
+    <string name="update_dialog_title">Обновление</string>
+    <string name="update_dialog_current_version">Текущая версия: v%1$s</string>
+    <string name="update_dialog_available_version">Доступная версия: v%1$s</string>
+    <string name="update_dialog_history_incomplete">История релизов неполная: не удалось загрузить часть описаний изменений.</string>
+    <string name="update_dialog_downloading">Загрузка обновления…</string>
+    <string name="update_dialog_installer_error">Android не удалось открыть установщик. Попробуйте обновить ещё раз.</string>
+    <string name="update_dialog_download_failed">Не удалось обновить приложение: %1$s</string>
+    <string name="update_dialog_action">Обновить</string>
+    <string name="update_dialog_close">Закрыть</string>
+    <string name="update_download_notification_description">Загрузка обновления</string>
+</resources>

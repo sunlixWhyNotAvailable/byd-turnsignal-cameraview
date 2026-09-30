@@ -12,6 +12,29 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class AvasTelemetryControllerTest {
+    @Test public void powerOffObservationIgnoresMelodyEligibilityAndLockValidity() {
+        Rig rig = new Rig();
+        rig.sink.profilesEnabled = false;
+        rig.transport.snapshots.add(snapshot(0, 99));
+        rig.activate();
+
+        assertTrue(rig.sink.profiles.isEmpty());
+        assertEquals(1, rig.sink.powerOffObservations);
+    }
+
+    @Test public void powerOffCallbackObservationDoesNotDependOnMelodyEligibility() {
+        Rig rig = new Rig();
+        rig.sink.profilesEnabled = false;
+        rig.transport.snapshots.add(snapshot(2, 2));
+        rig.activate();
+
+        rig.transport.emitPower(0, 100);
+        rig.runAll();
+
+        assertTrue(rig.sink.profiles.isEmpty());
+        assertEquals(1, rig.sink.powerOffObservations);
+    }
+
     @Test public void initialGetIsQuietAndCallbacksDeliverWithPowerPriority() {
         Rig rig = new Rig();
         rig.transport.snapshots.add(snapshot(2, 2));
@@ -380,11 +403,16 @@ public final class AvasTelemetryControllerTest {
         final List<String> profiles = new ArrayList<>();
         final List<String> suppressed = new ArrayList<>();
         final List<String> logs = new ArrayList<>();
+        boolean profilesEnabled = true;
+        int powerOffObservations;
         int lastGapPower = Integer.MIN_VALUE;
         int lastGapLock = Integer.MIN_VALUE;
         @Override public boolean powerOnSuppressionEligible() { return true; }
         @Override public boolean powerOffSuppressionEligible() { return true; }
-        @Override public void onProfile(String profile) { profiles.add(profile); }
+        @Override public void onProfile(String profile) {
+            if (profilesEnabled) profiles.add(profile);
+        }
+        @Override public void onPowerOffObserved() { powerOffObservations++; }
         @Override public void onSuppressed(String profile, String powerProfile, long deltaMs) {
             suppressed.add(profile + ":" + powerProfile + ":" + deltaMs);
         }

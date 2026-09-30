@@ -4,6 +4,15 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class RequiredPermissionsTest {
+    @Test public void microphonePermissionIsRequiredOnlyWhenFeatureEnabled() {
+        TestSharedPreferences prefs = withoutUpdateHint();
+        assertTrue(RequiredPermissions.read(prefs, false, false, false)
+                .satisfied(false, false, true, false, true, true, false));
+        prefs.edit().putBoolean(AvasMicrophoneSettings.ENABLED, true).apply();
+        RequiredPermissions required = RequiredPermissions.read(prefs, false, false, false);
+        assertFalse(required.satisfied(false, false, true, false, true, true, false));
+        assertTrue(required.satisfied(false, false, true, false, true, true, true));
+    }
     @Test public void coreProvisionedRightsRemainRequiredWithFeaturesDisabled() {
         TestSharedPreferences prefs = withoutUpdateHint();
         CameraButtonBindings.save(prefs, CameraButtonBindings.Action.MirrorVisibility,

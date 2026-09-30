@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reverse_target_tablet">Планшет</string>
+    <string name="reverse_target_cluster">Приборка</string>
+    <string name="camera_hold_duration">Тривалість утримання</string>
+    <string name="camera_hold_duration_hint">Після короткого сигналу повороту</string>
+    <string name="camera_hold_enabled">Утримувати камеру</string>
+    <string name="camera_seconds_suffix">с</string>
+</resources>

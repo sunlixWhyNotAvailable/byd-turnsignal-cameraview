@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_mic_title">Мовлення через мікрофон</string>
+    <string name="avas_mic_toggle_hint">Натиск вмикає мовлення; наступний — вимикає.</string>
+    <string name="avas_mic_learning">Призначена кнопка вмикає та вимикає мовлення одним натиском. Утримання та подвійний натиск нічого не роблять.</string>
+    <string name="avas_mic_permission">Дозвольте доступ до мікрофона для мовлення.</string>
+    <string name="avas_mic_unavailable">Мовлення недоступне. Перевірте дозволи та підключення хелпера.</string>
+    <string name="avas_mic_starting">Запуск мікрофона…</string>
+    <string name="avas_mic_active">Мікрофон транслюється на зовнішній динамік</string>
+    <string name="avas_mic_stopped">Мікрофон зупинено</string>
+    <string name="avas_mic_error">Мікрофон недоступний</string>
+    <string name="avas_mic_stop">Зупинити мікрофон</string>
+</resources>

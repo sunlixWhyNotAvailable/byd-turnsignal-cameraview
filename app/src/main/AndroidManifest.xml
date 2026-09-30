@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -67,7 +70,7 @@
         <service
             android:name="com.byd.extend.RecoveryNotificationListener"
             android:exported="true"
-            android:label="BYD Extend recovery"
+            android:label="@string/runtime_recovery_service_label"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
@@ -92,6 +95,7 @@
 
         <service
             android:name="com.byd.extend.WeatherRefreshAccessibilityService"
+            android:foregroundServiceType="microphone"
             android:exported="true"
             android:label="@string/weather_accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

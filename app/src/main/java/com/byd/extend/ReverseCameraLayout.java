@@ -26,15 +26,31 @@ final class ReverseCameraLayout {
 
     private static final int BACK_Z = 0;
     private static final int FRONT_Z = 2;
+    private static final int ELEMENT_COUNT = 5;
+    private static final int TARGET_TABLET = CameraDisplayTarget.TABLET;
+    private static final int TARGET_CLUSTER = CameraDisplayTarget.CLUSTER;
 
     final Rect background;
     final Rect widget;
     final Pane rear;
     final Pane rearLeft;
     final Pane rearRight;
+    private final Rect[] clusterRects;
+    private final int[] displayTargets;
+    private final int[] clusterZOrders;
 
     private ReverseCameraLayout(
             Rect background, Rect widget, Pane rear, Pane rearLeft, Pane rearRight) {
+        this(background, widget, rear, rearLeft, rearRight,
+                defaultClusterRects(background, widget, rear, rearLeft, rearRight),
+                new int[]{TARGET_TABLET, TARGET_TABLET, TARGET_TABLET,
+                        TARGET_TABLET, TARGET_TABLET},
+                new int[]{rear.zOrder, rearLeft.zOrder, rearRight.zOrder});
+    }
+
+    private ReverseCameraLayout(
+            Rect background, Rect widget, Pane rear, Pane rearLeft, Pane rearRight,
+            Rect[] clusterRects, int[] displayTargets, int[] clusterZOrders) {
         if (background == null || widget == null) {
             throw new IllegalArgumentException("reverse overlay geometry is required");
         }
@@ -42,11 +58,44 @@ final class ReverseCameraLayout {
                 || rearLeft.zOrder == rearRight.zOrder) {
             throw new IllegalArgumentException("pane z-orders must be unique");
         }
+        if (clusterRects == null || clusterRects.length != ELEMENT_COUNT
+                || displayTargets == null || displayTargets.length != ELEMENT_COUNT
+                || clusterZOrders == null || clusterZOrders.length != 3) {
+            throw new IllegalArgumentException("reverse display geometry is required");
+        }
+        for (int i = 0; i < ELEMENT_COUNT; i++) {
+            if (clusterRects[i] == null || !CameraDisplayTarget.isValid(displayTargets[i])) {
+                throw new IllegalArgumentException("invalid reverse display element");
+            }
+        }
+        boolean[] clusterZSeen = new boolean[3];
+        for (int zOrder : clusterZOrders) {
+            if (zOrder < BACK_Z || zOrder > FRONT_Z || clusterZSeen[zOrder]) {
+                throw new IllegalArgumentException("cluster pane z-orders must be unique");
+            }
+            clusterZSeen[zOrder] = true;
+        }
         this.background = background;
         this.widget = widget;
         this.rear = rear;
         this.rearLeft = rearLeft;
         this.rearRight = rearRight;
+        this.clusterRects = clusterRects.clone();
+        this.displayTargets = displayTargets.clone();
+        this.clusterZOrders = clusterZOrders.clone();
+    }
+
+    private static Rect[] defaultClusterRects(
+            Rect background, Rect widget, Pane rear, Pane rearLeft, Pane rearRight) {
+        return new Rect[]{centered(background),
+                widgetDestination((1f - widget.width) / 2f, (1f - widget.height) / 2f,
+                        widget.width, widget.height), centered(rear.destination),
+                centered(rearLeft.destination), centered(rearRight.destination)};
+    }
+
+    private static Rect centered(Rect rect) {
+        return destination((1.0f - rect.width) / 2.0f, (1.0f - rect.height) / 2.0f,
+                rect.width, rect.height);
     }
 
     static ReverseCameraLayout defaults() {
@@ -149,6 +198,110 @@ final class ReverseCameraLayout {
                 crop.height);
     }
 
+    int targetFor(int paneId) {
+        return displayTargets[elementIndex(paneId)];
+    }
+
+    boolean containsTarget(int target) {
+        for (int selected : displayTargets) if (selected == target) return true;
+        return false;
+    }
+
+    Rect rectFor(int paneId, int target) {
+        if (!CameraDisplayTarget.isValid(target)) {
+            throw new IllegalArgumentException("invalid reverse display target");
+        }
+        if (target == TARGET_TABLET) {
+            if (paneId == BACKGROUND_PANE_ID) return background;
+            if (paneId == WIDGET_PANE_ID) return widget;
+            return pane(paneId).destination;
+        }
+        return clusterRects[elementIndex(paneId)];
+    }
+
+    int zOrderFor(int cameraIndex, int target) {
+        if (!CameraDisplayTarget.isValid(target)) {
+            throw new IllegalArgumentException("invalid reverse display target");
+        }
+        if (cameraIndex < REAR_CAMERA_INDEX || cameraIndex > REAR_RIGHT_CAMERA_INDEX) {
+            throw new IllegalArgumentException("unsupported reverse camera index: "
+                    + cameraIndex);
+        }
+        return target == TARGET_CLUSTER
+                ? clusterZOrders[cameraIndex - REAR_CAMERA_INDEX]
+                : pane(cameraIndex).zOrder;
+    }
+
+    static ReverseCameraLayout withClusterZOrders(
+            ReverseCameraLayout layout, int[] zOrders) {
+        if (layout == null || zOrders == null || zOrders.length != 3) {
+            throw new IllegalArgumentException("three Cluster z-orders are required");
+        }
+        boolean[] seen = new boolean[3];
+        for (int zOrder : zOrders) {
+            if (zOrder < BACK_Z || zOrder > FRONT_Z || seen[zOrder]) {
+                throw new IllegalArgumentException("Cluster z-orders must be unique");
+            }
+            seen[zOrder] = true;
+        }
+        return copy(layout, layout.background, layout.widget, layout.rear,
+                layout.rearLeft, layout.rearRight, layout.clusterRects,
+                layout.displayTargets, zOrders);
+    }
+
+    static ReverseCameraLayout withTarget(
+            ReverseCameraLayout layout, int paneId, int target) {
+        if (layout == null || !CameraDisplayTarget.isValid(target)) {
+            throw new IllegalArgumentException("reverse display target is required");
+        }
+        int index = elementIndex(paneId);
+        if (layout.displayTargets[index] == target) return layout;
+        int[] targets = layout.displayTargets.clone();
+        targets[index] = target;
+        return copy(layout, layout.background, layout.widget, layout.rear,
+                layout.rearLeft, layout.rearRight, layout.clusterRects, targets,
+                layout.clusterZOrders);
+    }
+
+    static ReverseCameraLayout withRect(
+            ReverseCameraLayout layout, int paneId, int target, Rect rect) {
+        if (layout == null || rect == null || !CameraDisplayTarget.isValid(target)) {
+            throw new IllegalArgumentException("reverse display geometry is required");
+        }
+        Rect safe = paneId == WIDGET_PANE_ID
+                ? widgetDestination(rect.left, rect.top, rect.width, rect.height)
+                : destination(rect.left, rect.top, rect.width, rect.height);
+        if (target == TARGET_TABLET) {
+            if (paneId == BACKGROUND_PANE_ID) return withBackground(layout, safe);
+            if (paneId == WIDGET_PANE_ID) return withWidget(layout, safe);
+            Pane pane = layout.pane(paneId);
+            return withPane(layout, paneId, safe, pane.sourceCrop);
+        }
+        int index = elementIndex(paneId);
+        Rect[] cluster = layout.clusterRects.clone();
+        cluster[index] = safe;
+        return copy(layout, layout.background, layout.widget, layout.rear,
+                layout.rearLeft, layout.rearRight, cluster, layout.displayTargets,
+                layout.clusterZOrders);
+    }
+
+    private static int elementIndex(int paneId) {
+        if (paneId == BACKGROUND_PANE_ID) return 0;
+        if (paneId == WIDGET_PANE_ID) return 1;
+        if (paneId >= REAR_CAMERA_INDEX && paneId <= REAR_RIGHT_CAMERA_INDEX) {
+            return paneId + 1;
+        }
+        throw new IllegalArgumentException("unsupported reverse pane id: " + paneId);
+    }
+
+    private static ReverseCameraLayout copy(
+            ReverseCameraLayout source, Rect background, Rect widget,
+            Pane rear, Pane rearLeft, Pane rearRight,
+            Rect[] clusterRects, int[] targets, int[] clusterZOrders) {
+        return new ReverseCameraLayout(background, widget, rear, rearLeft, rearRight,
+                clusterRects, targets, clusterZOrders);
+    }
+
     static ReverseCameraLayout withPane(
             ReverseCameraLayout layout, int cameraIndex, Rect destination, Rect sourceCrop) {
         if (layout == null || destination == null || sourceCrop == null) {
@@ -213,7 +366,8 @@ final class ReverseCameraLayout {
         Rect safe = destination(
                 destination.left, destination.top, destination.width, destination.height);
         return new ReverseCameraLayout(
-                safe, layout.widget, layout.rear, layout.rearLeft, layout.rearRight);
+                safe, layout.widget, layout.rear, layout.rearLeft, layout.rearRight,
+                layout.clusterRects, layout.displayTargets, layout.clusterZOrders);
     }
 
     static ReverseCameraLayout withWidget(
@@ -224,7 +378,8 @@ final class ReverseCameraLayout {
         Rect safe = widgetDestination(
                 destination.left, destination.top, destination.width, destination.height);
         return new ReverseCameraLayout(
-                layout.background, safe, layout.rear, layout.rearLeft, layout.rearRight);
+                layout.background, safe, layout.rear, layout.rearLeft, layout.rearRight,
+                layout.clusterRects, layout.displayTargets, layout.clusterZOrders);
     }
 
     static ReverseCameraLayout withSideCalibration(
@@ -248,19 +403,20 @@ final class ReverseCameraLayout {
 
     static ReverseCameraLayout move(
             ReverseCameraLayout layout, int cameraIndex, float deltaX, float deltaY) {
+        return move(layout, cameraIndex, deltaX, deltaY, TARGET_TABLET);
+    }
+
+    static ReverseCameraLayout move(
+            ReverseCameraLayout layout, int cameraIndex,
+            float deltaX, float deltaY, int target) {
         if (layout == null) throw new IllegalArgumentException("layout is required");
-        Rect current = cameraIndex == BACKGROUND_PANE_ID
-                ? layout.background : cameraIndex == WIDGET_PANE_ID
-                        ? layout.widget : layout.pane(cameraIndex).destination;
+        Rect current = layout.rectFor(cameraIndex, target);
         Rect moved = cameraIndex == WIDGET_PANE_ID
                 ? widgetDestination(current.left + deltaX, current.top + deltaY,
                         current.width, current.height)
                 : destination(current.left + deltaX, current.top + deltaY,
                         current.width, current.height);
-        if (cameraIndex == BACKGROUND_PANE_ID) return withBackground(layout, moved);
-        if (cameraIndex == WIDGET_PANE_ID) return withWidget(layout, moved);
-        Pane pane = layout.pane(cameraIndex);
-        return withPane(layout, cameraIndex, moved, pane.sourceCrop);
+        return withRect(layout, cameraIndex, target, moved);
     }
 
     static ReverseCameraLayout bringToFront(
@@ -272,8 +428,18 @@ final class ReverseCameraLayout {
         return moveOne(layout, cameraIndex, 1);
     }
 
+    static ReverseCameraLayout raise(
+            ReverseCameraLayout layout, int cameraIndex, int target) {
+        return movePeer(layout, cameraIndex, target, 1);
+    }
+
     static ReverseCameraLayout lower(ReverseCameraLayout layout, int cameraIndex) {
         return moveOne(layout, cameraIndex, -1);
+    }
+
+    static ReverseCameraLayout lower(
+            ReverseCameraLayout layout, int cameraIndex, int target) {
+        return movePeer(layout, cameraIndex, target, -1);
     }
 
     static PixelRect project(Rect normalized, int pixelWidth, int pixelHeight) {
@@ -362,13 +528,16 @@ final class ReverseCameraLayout {
         switch (cameraIndex) {
             case REAR_CAMERA_INDEX:
                 return new ReverseCameraLayout(
-                        background, widget, replacement, rearLeft, rearRight);
+                        background, widget, replacement, rearLeft, rearRight,
+                        clusterRects, displayTargets, clusterZOrders);
             case REAR_LEFT_CAMERA_INDEX:
                 return new ReverseCameraLayout(
-                        background, widget, rear, replacement, rearRight);
+                        background, widget, rear, replacement, rearRight,
+                        clusterRects, displayTargets, clusterZOrders);
             case REAR_RIGHT_CAMERA_INDEX:
                 return new ReverseCameraLayout(
-                        background, widget, rear, rearLeft, replacement);
+                        background, widget, rear, rearLeft, replacement,
+                        clusterRects, displayTargets, clusterZOrders);
             default:
                 throw new IllegalArgumentException("unsupported reverse camera index: "
                         + cameraIndex);
@@ -384,7 +553,8 @@ final class ReverseCameraLayout {
         return new ReverseCameraLayout(layout.background, layout.widget,
                 reordered(layout.rear, cameraIndex, targetZ, edgeZ),
                 reordered(layout.rearLeft, cameraIndex, targetZ, edgeZ),
-                reordered(layout.rearRight, cameraIndex, targetZ, edgeZ));
+                reordered(layout.rearRight, cameraIndex, targetZ, edgeZ),
+                layout.clusterRects, layout.displayTargets, layout.clusterZOrders);
     }
 
     private static ReverseCameraLayout moveOne(
@@ -396,7 +566,52 @@ final class ReverseCameraLayout {
         return new ReverseCameraLayout(layout.background, layout.widget,
                 swapped(layout.rear, cameraIndex, from, to),
                 swapped(layout.rearLeft, cameraIndex, from, to),
-                swapped(layout.rearRight, cameraIndex, from, to));
+                swapped(layout.rearRight, cameraIndex, from, to),
+                layout.clusterRects, layout.displayTargets, layout.clusterZOrders);
+    }
+
+    private static ReverseCameraLayout movePeer(
+            ReverseCameraLayout layout, int cameraIndex, int target, int delta) {
+        if (layout == null) throw new IllegalArgumentException("layout is required");
+        int from = layout.zOrderFor(cameraIndex, target);
+        if (layout.targetFor(cameraIndex) != target) return layout;
+        int to = from;
+        for (Pane peer : layout.panes()) {
+            if (layout.targetFor(peer.cameraIndex) != target) continue;
+            int z = layout.zOrderFor(peer.cameraIndex, target);
+            if ((z - from) * delta > 0
+                    && (to == from || Math.abs(z - from) < Math.abs(to - from))) to = z;
+        }
+        if (from == to) return layout;
+        if (target == TARGET_TABLET) return new ReverseCameraLayout(
+                layout.background, layout.widget,
+                swapped(layout.rear, cameraIndex, from, to),
+                swapped(layout.rearLeft, cameraIndex, from, to),
+                swapped(layout.rearRight, cameraIndex, from, to),
+                layout.clusterRects, layout.displayTargets, layout.clusterZOrders);
+        int[] zOrders = layout.clusterZOrders.clone();
+        for (int i = 0; i < zOrders.length; i++) {
+            if (i == cameraIndex - REAR_CAMERA_INDEX) zOrders[i] = to;
+            else if (zOrders[i] == to) zOrders[i] = from;
+        }
+        return copy(layout, layout.background, layout.widget, layout.rear,
+                layout.rearLeft, layout.rearRight, layout.clusterRects,
+                layout.displayTargets, zOrders);
+    }
+
+    static ReverseCameraLayout resetLayer(
+            ReverseCameraLayout layout, int cameraIndex, int target) {
+        ReverseCameraLayout defaults = defaults();
+        int rank = 0;
+        for (Pane peer : layout.panes()) {
+            if (layout.targetFor(peer.cameraIndex) == target
+                    && defaults.zOrderFor(peer.cameraIndex, target)
+                    < defaults.zOrderFor(cameraIndex, target)) rank++;
+        }
+        // At most two peers: retain the other display's order and avoid unreachable global z slots.
+        for (int i = 0; i < 2; i++) layout = lower(layout, cameraIndex, target);
+        for (int i = 0; i < rank; i++) layout = raise(layout, cameraIndex, target);
+        return layout;
     }
 
     private static Pane swapped(Pane pane, int cameraIndex, int from, int to) {

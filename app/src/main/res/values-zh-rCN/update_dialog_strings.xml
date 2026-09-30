@@ -1,0 +1,12 @@
+<resources>
+    <string name="update_dialog_title">更新</string>
+    <string name="update_dialog_current_version">当前版本：v%1$s</string>
+    <string name="update_dialog_available_version">可用版本：v%1$s</string>
+    <string name="update_dialog_history_incomplete">版本历史不完整：部分版本说明未能加载。</string>
+    <string name="update_dialog_downloading">正在下载更新…</string>
+    <string name="update_dialog_installer_error">Android 无法打开安装程序。请重试更新。</string>
+    <string name="update_dialog_download_failed">无法更新应用：%1$s</string>
+    <string name="update_dialog_action">更新</string>
+    <string name="update_dialog_close">关闭</string>
+    <string name="update_download_notification_description">正在下载更新</string>
+</resources>

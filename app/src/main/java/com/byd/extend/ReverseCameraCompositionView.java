@@ -13,6 +13,8 @@ import android.view.View;
 import android.view.ViewOutlineProvider;
 import android.widget.FrameLayout;
 
+import java.util.Arrays;
+
 final class ReverseCameraCompositionView extends FrameLayout {
     private static final String TAG = "ReverseCameraView";
     static final int SOURCE_WIDTH = 1920;
@@ -82,6 +84,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private int paneBufferViewportHeight;
     private int automaticBufferQuality = CameraBufferQuality.ORIGINAL;
     private int visibilityMask = ReverseCameraLayout.VISIBILITY_ALL;
+    private int displayTarget = CameraDisplayTarget.TABLET;
     private boolean forceDewarpPipeline;
     private int[] borderDp = new int[CameraShellProtocol.ReverseOverlaySpec.BORDER_COUNT];
     private int[] borderArgb = defaultBorderColors();
@@ -132,6 +135,15 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     void setCallback(Callback value) {
         callback = value;
+    }
+
+    void setDisplayTarget(int value) {
+        if (!CameraDisplayTarget.isValid(value)) {
+            throw new IllegalArgumentException("invalid Reverse display target");
+        }
+        if (displayTarget == value) return;
+        displayTarget = value;
+        applyModel();
     }
 
     void enablePreviewBase() {
@@ -380,7 +392,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     ReverseCameraLayout.PixelRect selectorButtonBounds(
             int mode, int viewportWidth, int viewportHeight) {
         ReverseCameraLayout.PixelRect widget = ReverseCameraLayout.project(
-                model.widget, viewportWidth, viewportHeight);
+                model.rectFor(ReverseCameraLayout.WIDGET_PANE_ID, displayTarget),
+                viewportWidth, viewportHeight);
         float[] button = ReverseSideSelectorView.normalizedButtonRect(mode);
         int left = widget.left + Math.round(button[0] * widget.width);
         int top = widget.top + Math.round(button[1] * widget.height);
@@ -410,13 +423,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     void setDewarpStatsContext(int requestId, int[] generations) {
-        if (generations == null || (generations.length != panes.length
-                && generations.length != panes.length + 1)) return;
-        for (int i = 0; i < panes.length; i++) {
-            panes[i].texture.setDewarpStatsContext(requestId, generations[i]);
-        }
-        if (centralFrontPane != null && generations.length == panes.length + 1) {
-            centralFrontPane.texture.setDewarpStatsContext(requestId, generations[3]);
+        int[] sources = outputSourceIndexes();
+        if (generations == null || generations.length != sources.length) return;
+        for (int index = 0; index < sources.length; index++) {
+            PaneView pane = paneForSource(sources[index]);
+            if (pane != null) pane.texture.setDewarpStatsContext(requestId, generations[index]);
         }
     }
 
@@ -471,7 +482,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     void setPaneBoundedBuffers(int viewportWidth, int viewportHeight, int quality) {
-        int[][] bounds = paneBounds(model, viewportWidth, viewportHeight);
+        int[][] bounds = paneBounds(model, viewportWidth, viewportHeight, displayTarget);
         for (int i = 0; i < panes.length; i++) {
             panes[i].texture.setPaneBoundedBuffer(
                     bounds[i][0], bounds[i][1], quality);
@@ -488,7 +499,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
         return samePaneGeometry(
                 model, paneBufferViewportWidth, paneBufferViewportHeight,
-                layout, viewportWidth, viewportHeight);
+                layout, viewportWidth, viewportHeight, displayTarget);
     }
 
     boolean usesPaneBoundedBuffers(
@@ -499,7 +510,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     /** Returns the first retained pane-buffer comparison that does not match the requested spec. */
     PaneBufferMismatch firstPaneBufferMismatch(
             ReverseCameraLayout layout, int viewportWidth, int viewportHeight, int quality) {
-        int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight);
+        int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight, displayTarget);
         for (int i = 0; i < panes.length; i++) {
             int expectedWidth = bounds[i][0];
             int expectedHeight = bounds[i][1];
@@ -570,12 +581,17 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     static int[][] paneBounds(
             ReverseCameraLayout layout, int viewportWidth, int viewportHeight) {
+        return paneBounds(layout, viewportWidth, viewportHeight, CameraDisplayTarget.TABLET);
+    }
+
+    static int[][] paneBounds(ReverseCameraLayout layout, int viewportWidth,
+            int viewportHeight, int target) {
         if (layout == null) throw new IllegalArgumentException("reverse layout is required");
         ReverseCameraLayout.Pane[] values = layout.panes();
         int[][] result = new int[values.length][2];
         for (int i = 0; i < values.length; i++) {
             ReverseCameraLayout.PixelRect rect = ReverseCameraLayout.project(
-                    values[i].destination, viewportWidth, viewportHeight);
+                    layout.rectFor(values[i].cameraIndex, target), viewportWidth, viewportHeight);
             result[i][0] = Math.max(1, rect.width);
             result[i][1] = Math.max(1, rect.height);
         }
@@ -585,11 +601,19 @@ final class ReverseCameraCompositionView extends FrameLayout {
     static boolean samePaneGeometry(
             ReverseCameraLayout current, int currentViewportWidth, int currentViewportHeight,
             ReverseCameraLayout next, int nextViewportWidth, int nextViewportHeight) {
+        return samePaneGeometry(current, currentViewportWidth, currentViewportHeight,
+                next, nextViewportWidth, nextViewportHeight, CameraDisplayTarget.TABLET);
+    }
+
+    static boolean samePaneGeometry(
+            ReverseCameraLayout current, int currentViewportWidth, int currentViewportHeight,
+            ReverseCameraLayout next, int nextViewportWidth, int nextViewportHeight,
+            int target) {
         if (currentViewportWidth != nextViewportWidth
                 || currentViewportHeight != nextViewportHeight) return false;
         int[][] currentBounds = paneBounds(
-                current, currentViewportWidth, currentViewportHeight);
-        int[][] nextBounds = paneBounds(next, nextViewportWidth, nextViewportHeight);
+                current, currentViewportWidth, currentViewportHeight, target);
+        int[][] nextBounds = paneBounds(next, nextViewportWidth, nextViewportHeight, target);
         if (currentBounds.length != nextBounds.length) return false;
         for (int i = 0; i < currentBounds.length; i++) {
             if (currentBounds[i][0] != nextBounds[i][0]
@@ -627,18 +651,23 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     boolean surfacesReady() {
-        for (PaneView pane : panes) {
-            if (pane.surface == null || !pane.surface.isValid()) return false;
-        }
-        if (centralFrontSourceEnabled && (centralFrontPane == null
-                || centralFrontPane.surface == null || !centralFrontPane.surface.isValid())) {
-            return false;
+        for (int sourceIndex : outputSourceIndexes()) {
+            PaneView pane = paneForSource(sourceIndex);
+            if (pane == null || pane.surface == null || !pane.surface.isValid()) return false;
         }
         return true;
     }
 
+    private boolean allSurfacesReady() {
+        for (PaneView pane : panes) {
+            if (pane.surface == null || !pane.surface.isValid()) return false;
+        }
+        return !centralFrontSourceEnabled || centralFrontPane != null
+                && centralFrontPane.surface != null && centralFrontPane.surface.isValid();
+    }
+
     boolean previewSurfacesReady() {
-        return surfacesReady() && previewBaseSurface != null && previewBaseSurface.isValid();
+        return allSurfacesReady() && previewBaseSurface != null && previewBaseSurface.isValid();
     }
 
     boolean centralFrontSurfaceRecoveryPending() {
@@ -677,34 +706,36 @@ final class ReverseCameraCompositionView extends FrameLayout {
         if (requestId <= 0 || !surfacesReady()) {
             throw new IllegalStateException("reverse Surfaces unavailable");
         }
-        int directCount = centralFrontSourceEnabled ? panes.length + 1 : panes.length;
-        Surface[] surfaces = new Surface[directCount];
-        int[] generations = new int[directCount];
-        for (int i = 0; i < panes.length; i++) {
-            surfaces[i] = panes[i].surface;
-            generations[i] = panes[i].generation;
+        int[] sourceIndexes = outputSourceIndexes();
+        Surface[] surfaces = new Surface[sourceIndexes.length];
+        int[] generations = new int[sourceIndexes.length];
+        for (int i = 0; i < sourceIndexes.length; i++) {
+            PaneView pane = paneForSource(sourceIndexes[i]);
+            surfaces[i] = pane.surface;
+            generations[i] = pane.generation;
+            if (sourceIndexes[i] == 4) centralFrontSurfaceRecoveryPending = false;
         }
-        if (centralFrontSourceEnabled) {
-            surfaces[3] = centralFrontPane.surface;
-            generations[3] = centralFrontPane.generation;
-            centralFrontSurfaceRecoveryPending = false;
-        }
-        return new SurfaceBundle(requestId, generations, surfaces);
+        return new SurfaceBundle(requestId, sourceIndexes, generations, surfaces);
     }
 
     SurfaceBundle acquirePreviewSurfaces(int requestId) {
-        if (requestId <= 0 || !previewSurfacesReady()) {
+        if (requestId <= 0 || previewBaseSurface == null
+                || !previewBaseSurface.isValid() || !allSurfacesReady()) {
             throw new IllegalStateException("reverse preview Surfaces unavailable");
         }
-        SurfaceBundle direct = acquireSurfaces(requestId);
+        SurfaceBundle direct = acquireAllSurfaces(requestId);
         Surface[] surfaces = new Surface[direct.surfaces.length + 1];
         int[] generations = new int[direct.generations.length + 1];
+        int[] sourceIndexes = new int[direct.sourceIndexes.length + 1];
         surfaces[0] = previewBaseSurface;
         System.arraycopy(direct.surfaces, 0, surfaces, 1, direct.surfaces.length);
         generations[0] = previewBaseGeneration;
         System.arraycopy(direct.generations, 0, generations, 1,
                 direct.generations.length);
-        return new SurfaceBundle(requestId, generations, surfaces);
+        sourceIndexes[0] = 0;
+        System.arraycopy(direct.sourceIndexes, 0, sourceIndexes, 1,
+                direct.sourceIndexes.length);
+        return new SurfaceBundle(requestId, sourceIndexes, generations, surfaces);
     }
 
     void armPreviewFrames(int requestId, int[] expectedGenerations) {
@@ -747,20 +778,19 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     void armFrames(int requestId, int[] expectedGenerations) {
-        int directCount = centralFrontSourceEnabled ? panes.length + 1 : panes.length;
+        int[] sourceIndexes = outputSourceIndexes();
         if (requestId <= 0 || expectedGenerations == null
-                || expectedGenerations.length != directCount) {
+                || expectedGenerations.length != sourceIndexes.length) {
             throw new IllegalArgumentException("invalid reverse frame identity");
         }
-        for (int i = 0; i < panes.length; i++) {
-            if (expectedGenerations[i] != panes[i].generation || panes[i].surface == null) {
+        int requiredCount = 0;
+        for (int i = 0; i < sourceIndexes.length; i++) {
+            PaneView pane = paneForSource(sourceIndexes[i]);
+            if (pane == null || expectedGenerations[i] != pane.generation
+                    || pane.surface == null || !pane.surface.isValid()) {
                 throw new IllegalStateException("stale reverse Surface");
             }
-        }
-        if (directCount > panes.length
-                && (centralFrontPane == null || centralFrontPane.surface == null
-                || expectedGenerations[3] != centralFrontPane.generation)) {
-            throw new IllegalStateException("stale reverse central front Surface");
+            if (sourceIndexes[i] != 4) requiredCount++;
         }
         int baseGeneration = 0;
         if (previewBase != null) {
@@ -772,9 +802,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
         resetCentralFrontFreshness();
         resetPaneFreshness();
         setAllCovers(View.VISIBLE);
-        frameBarrier.arm(requestId, baseGeneration, expectedGenerations,
-                centralFrontSourceEnabled ? panes.length : directCount);
+        frameBarrier.arm(requestId, baseGeneration, sourceIndexes, expectedGenerations,
+                requiredCount, true);
         applyEffectiveVisibility();
+        maybeReportFrames();
     }
 
     void clearFrames() {
@@ -832,9 +863,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                         return;
                     }
                 }
-                clearFrames();
+                if (isOutputSource(sourceIndex)) clearFrames();
                 applyModel();
-                notifySurfacesReady();
+                if (isOutputSource(sourceIndex)) notifySurfacesReady();
             }
 
             @Override
@@ -850,7 +881,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 pane.targetActive = false;
                 pane.frameFresh = false;
                 pane.discardNextFrame = true;
-                if (sourceIndex == 4 && centralFrontSourceEnabled
+                boolean outputSource = isOutputSource(sourceIndex);
+                if (sourceIndex == 4 && outputSource && centralFrontSourceEnabled
                         && frameBarrier.revealed()) {
                     centralFrontSurfaceRecoveryPending = true;
                     resetCentralFrontFreshness();
@@ -860,8 +892,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     }
                     return;
                 }
-                clearFrames();
-                if (callback != null) {
+                if (outputSource) clearFrames();
+                if (outputSource && callback != null) {
                     callback.onReverseSurfaceLost(sourceIndex, lostGeneration);
                 }
             }
@@ -947,7 +979,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private void maybeReportFrames() {
         if (!primaryRendererBoundsReady()) return;
         int requestId = frameBarrier.requestId();
-        int[] directGenerations = currentDirectGenerations();
+        int[] directGenerations = currentBarrierGenerations();
         int baseGeneration = previewBase == null ? 0 : previewBaseGeneration;
         if (!frameBarrier.readyPending(requestId, baseGeneration, directGenerations)
                 || callback == null) return;
@@ -967,7 +999,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
      */
     private boolean primaryRendererBoundsReady() {
         if (getWidth() <= 1 || getHeight() <= 1) return false;
-        for (PaneView pane : panes) {
+        for (int sourceIndex : frameBarrier.directSourceIndexes()) {
+            PaneView pane = paneForSource(sourceIndex);
+            if (pane == null) return false;
             if (!laidOutBoundsMatch(pane) || !laidOutBoundsMatch(pane.texture)) return false;
         }
         return true;
@@ -991,7 +1025,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private int[] currentGenerations() {
-        int[] direct = currentDirectGenerations();
+        int[] direct = previewBase == null
+                ? currentOutputGenerations() : currentDirectGenerations();
         if (previewBase == null) return direct;
         int[] values = new int[direct.length + 1];
         values[0] = previewBaseGeneration;
@@ -1005,6 +1040,102 @@ final class ReverseCameraCompositionView extends FrameLayout {
         for (int i = 0; i < panes.length; i++) values[i] = panes[i].generation;
         if (centralFrontSourceEnabled) values[3] = centralFrontPane.generation;
         return values;
+    }
+
+    private int[] currentOutputGenerations() {
+        int[] sources = outputSourceIndexes();
+        int[] values = new int[sources.length];
+        for (int index = 0; index < sources.length; index++) {
+            PaneView pane = paneForSource(sources[index]);
+            values[index] = pane == null ? 0 : pane.generation;
+        }
+        return values;
+    }
+
+    private int[] currentBarrierGenerations() {
+        int[] sources = frameBarrier.directSourceIndexes();
+        int[] values = new int[sources.length];
+        for (int index = 0; index < sources.length; index++) {
+            PaneView pane = paneForSource(sources[index]);
+            values[index] = pane == null ? 0 : pane.generation;
+        }
+        return values;
+    }
+
+    private SurfaceBundle acquireAllSurfaces(int requestId) {
+        int count = centralFrontSourceEnabled ? panes.length + 1 : panes.length;
+        int[] sourceIndexes = new int[count];
+        int[] generations = new int[count];
+        Surface[] surfaces = new Surface[count];
+        for (int index = 0; index < panes.length; index++) {
+            sourceIndexes[index] = index + 1;
+            generations[index] = panes[index].generation;
+            surfaces[index] = panes[index].surface;
+        }
+        if (centralFrontSourceEnabled) {
+            sourceIndexes[3] = 4;
+            generations[3] = centralFrontPane.generation;
+            surfaces[3] = centralFrontPane.surface;
+        }
+        return new SurfaceBundle(requestId, sourceIndexes, generations, surfaces);
+    }
+
+    private int[] outputSourceIndexes() {
+        if (previewBase != null) {
+            int count = centralFrontSourceEnabled ? panes.length + 1 : panes.length;
+            int[] all = new int[count];
+            for (int index = 0; index < panes.length; index++) all[index] = index + 1;
+            if (centralFrontSourceEnabled) all[3] = 4;
+            return all;
+        }
+        return outputSourceIndexesForDisplay(
+                model, displayTarget, visibilityMask,
+                centralFrontSourceEnabled, centralFrontIntegrated);
+    }
+
+    /** Sources this production display group actually needs for its visible composition. */
+    static int[] outputSourceIndexesForDisplay(
+            ReverseCameraLayout layout, int displayTarget, int visibilityMask,
+            boolean centralFrontSourceEnabled, boolean centralFrontIntegrated) {
+        if (layout == null || !CameraDisplayTarget.isValid(displayTarget)) {
+            throw new IllegalArgumentException("Reverse display output requires a layout and target");
+        }
+        ReverseCameraLayout.requireVisibilityMask(visibilityMask);
+        int count = 0;
+        for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+            if (layout.targetFor(cameraIndex) == displayTarget
+                    && ReverseCameraLayout.isVisible(visibilityMask, cameraIndex)) count++;
+        }
+        boolean includeCentral = centralFrontSourceEnabled && centralFrontIntegrated
+                && ReverseCameraLayout.isVisible(
+                        visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX)
+                && layout.targetFor(ReverseCameraLayout.REAR_CAMERA_INDEX) == displayTarget;
+        if (includeCentral) count++;
+        int[] result = new int[count];
+        int offset = 0;
+        for (int cameraIndex = ReverseCameraLayout.REAR_CAMERA_INDEX;
+                cameraIndex <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX; cameraIndex++) {
+            if (layout.targetFor(cameraIndex) == displayTarget
+                    && ReverseCameraLayout.isVisible(visibilityMask, cameraIndex)) {
+                result[offset++] = cameraIndex;
+            }
+        }
+        if (includeCentral) result[offset] = 4;
+        return result;
+    }
+
+    private boolean isOutputSource(int sourceIndex) {
+        for (int outputSourceIndex : outputSourceIndexes()) {
+            if (outputSourceIndex == sourceIndex) return true;
+        }
+        return false;
+    }
+
+    private PaneView paneForSource(int sourceIndex) {
+        if (sourceIndex == 4) return centralFrontPane;
+        return sourceIndex >= 1 && sourceIndex <= panes.length
+                ? panes[sourceIndex - 1] : null;
     }
 
     private void createPreviewBaseInput(SurfaceTexture texture, int width, int height) {
@@ -1039,6 +1170,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
         private final int[] generations = new int[SOURCE_COUNT];
         private final boolean[] discardNext = new boolean[SOURCE_COUNT];
         private final boolean[] fresh = new boolean[SOURCE_COUNT];
+        private final boolean[] requiredDirectSource = new boolean[SOURCE_COUNT];
+        private final int[] directSourceIndexes = new int[SOURCE_COUNT - 1];
         private int requestId;
         private boolean readyPending;
         private boolean readyEventRecorded;
@@ -1065,36 +1198,58 @@ final class ReverseCameraCompositionView extends FrameLayout {
         void arm(
                 int nextRequestId, int baseGeneration, int[] directGenerations,
                 int nextRequiredDirectCount, boolean nextRequireBase) {
+            if (directGenerations == null) {
+                throw new IllegalArgumentException("invalid reverse frame identity");
+            }
+            int[] sourceIndexes = new int[directGenerations.length];
+            for (int index = 0; index < sourceIndexes.length; index++) {
+                sourceIndexes[index] = index + 1;
+            }
+            arm(nextRequestId, baseGeneration, sourceIndexes, directGenerations,
+                    nextRequiredDirectCount, nextRequireBase);
+        }
+
+        void arm(
+                int nextRequestId, int baseGeneration, int[] sourceIndexes,
+                int[] directGenerations, int nextRequiredDirectCount,
+                boolean nextRequireBase) {
             if (nextRequestId <= 0 || baseGeneration < 0 || directGenerations == null
-                    || (directGenerations.length != SOURCE_COUNT - 2
-                    && directGenerations.length != SOURCE_COUNT - 1)
-                    || nextRequiredDirectCount < SOURCE_COUNT - 2
+                    || sourceIndexes == null || sourceIndexes.length != directGenerations.length
+                    || directGenerations.length > SOURCE_COUNT - 1
+                    || nextRequiredDirectCount < 0
                     || nextRequiredDirectCount > directGenerations.length) {
                 throw new IllegalArgumentException("invalid reverse frame identity");
             }
             requestId = nextRequestId;
             directCount = directGenerations.length;
             requiredDirectCount = nextRequiredDirectCount;
+            Arrays.fill(generations, 0);
+            Arrays.fill(requiredDirectSource, false);
+            Arrays.fill(directSourceIndexes, 0);
             generations[SOURCE_BASE] = baseGeneration;
             requireBase = nextRequireBase && baseGeneration != 0;
             baseUnavailable = false;
             fresh[SOURCE_BASE] = baseGeneration == 0;
             discardNext[SOURCE_BASE] = baseGeneration != 0;
             for (int i = 0; i < directGenerations.length; i++) {
-                if (directGenerations[i] <= 0) {
+                int source = sourceIndexes[i];
+                if (source <= SOURCE_BASE || source >= SOURCE_COUNT
+                        || directGenerations[i] <= 0 || generations[source] != 0) {
                     throw new IllegalArgumentException("invalid reverse Surface generation");
                 }
-                int source = i + 1;
                 generations[source] = directGenerations[i];
+                directSourceIndexes[i] = source;
+                requiredDirectSource[source] = i < nextRequiredDirectCount;
                 fresh[source] = false;
                 discardNext[source] = true;
             }
-            for (int i = directCount + 1; i < SOURCE_COUNT; i++) {
-                generations[i] = 0;
-                discardNext[i] = false;
-                fresh[i] = true;
+            for (int source = 1; source < SOURCE_COUNT; source++) {
+                if (generations[source] == 0) {
+                    discardNext[source] = false;
+                    fresh[source] = true;
+                }
             }
-            readyPending = false;
+            readyPending = allFresh();
             readyEventRecorded = false;
             revealed = false;
             guardDiagnosticReported = false;
@@ -1115,6 +1270,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             }
             directCount = SOURCE_COUNT - 1;
             requiredDirectCount = SOURCE_COUNT - 1;
+            Arrays.fill(requiredDirectSource, false);
+            Arrays.fill(directSourceIndexes, 0);
             requireBase = true;
             baseUnavailable = false;
         }
@@ -1125,6 +1282,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
         int expectedGeneration(int source) {
             return validSource(source) ? generations[source] : 0;
+        }
+
+        int[] directSourceIndexes() {
+            return Arrays.copyOf(directSourceIndexes, directCount);
         }
 
         boolean markBaseUnavailable(int expectedRequestId) {
@@ -1193,8 +1354,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
         private boolean allFresh() {
             if (requireBase && !fresh[SOURCE_BASE]) return false;
-            for (int i = 1; i <= requiredDirectCount; i++) {
-                if (!fresh[i]) return false;
+            for (int source = 1; source < SOURCE_COUNT; source++) {
+                if (requiredDirectSource[source] && !fresh[source]) return false;
             }
             return true;
         }
@@ -1205,7 +1366,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     || directGenerations == null
                     || directGenerations.length != directCount) return false;
             for (int i = 0; i < directGenerations.length; i++) {
-                if (directGenerations[i] != generations[i + 1]) return false;
+                int source = directSourceIndexes[i];
+                if (source <= 0 || source >= SOURCE_COUNT
+                        || directGenerations[i] != generations[source]) return false;
             }
             return true;
         }
@@ -1233,12 +1396,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     rawCrop.left, rawCrop.top, rawCrop.width, rawCrop.height);
         }
         if (width <= 0 || height <= 0) return;
-        ReverseCameraLayout.PixelRect backgroundRect =
-                ReverseCameraLayout.project(model.background, width, height);
+        ReverseCameraLayout.PixelRect backgroundRect = ReverseCameraLayout.project(
+                model.rectFor(ReverseCameraLayout.BACKGROUND_PANE_ID, displayTarget),
+                width, height);
         applyFrameBounds(backgroundPane, backgroundRect);
         backgroundPane.setZ(0.0f);
-        ReverseCameraLayout.PixelRect widgetRect =
-                ReverseCameraLayout.project(model.widget, width, height);
+        ReverseCameraLayout.PixelRect widgetRect = ReverseCameraLayout.project(
+                model.rectFor(ReverseCameraLayout.WIDGET_PANE_ID, displayTarget),
+                width, height);
         applyFrameBounds(sideSelector, widgetRect);
         sideSelector.setZ(5.0f);
         for (PaneView pane : panes) {
@@ -1254,10 +1419,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     && !pane.texture.usesRawFallback()
                     ? value.sourceCrop
                     : rawCrop;
-            ReverseCameraLayout.PixelRect baseRect =
-                    ReverseCameraLayout.project(value.destination, width, height);
+            ReverseCameraLayout.PixelRect baseRect = ReverseCameraLayout.project(
+                    centerFallback.rectFor(pane.cameraIndex, displayTarget), width, height);
             applyFrameBounds(pane, baseRect);
-            pane.setZ(1.0f + value.zOrder);
+            pane.setZ(1.0f + model.zOrderFor(pane.cameraIndex, displayTarget));
             pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
                     value.mirrorHorizontally, baseRect.width, baseRect.height);
         }
@@ -1272,10 +1437,12 @@ final class ReverseCameraCompositionView extends FrameLayout {
             ReverseCameraLayout.Rect centerSourceCrop = centralFrontPane.dewarpConfig.enabled
                     && !centralFrontPane.texture.usesRawFallback()
                     ? centerValue.sourceCrop : centerRawCrop;
-            ReverseCameraLayout.PixelRect centerRect =
-                    ReverseCameraLayout.project(centerValue.destination, width, height);
+            ReverseCameraLayout.PixelRect centerRect = ReverseCameraLayout.project(
+                    frontModel.rectFor(ReverseCameraLayout.REAR_CAMERA_INDEX,
+                            displayTarget), width, height);
             applyFrameBounds(centralFrontPane, centerRect);
-            centralFrontPane.setZ(1.1f + centerValue.zOrder);
+            centralFrontPane.setZ(1.1f + model.zOrderFor(
+                    ReverseCameraLayout.REAR_CAMERA_INDEX, displayTarget));
             centralFrontPane.applyTransform(centerSourceCrop, centerValue.rotationDegrees,
                     centerValue.displayMode, centerValue.mirrorHorizontally,
                     centerRect.width, centerRect.height);
@@ -1385,10 +1552,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     private void applyEffectiveVisibility() {
-        backgroundPane.setAlpha(alphaForVisibility(
-                visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID));
+        boolean backgroundVisible = model.targetFor(
+                ReverseCameraLayout.BACKGROUND_PANE_ID) == displayTarget
+                && ReverseCameraLayout.isVisible(
+                        visibilityMask, ReverseCameraLayout.BACKGROUND_PANE_ID);
+        backgroundPane.setAlpha(backgroundVisible ? 1.0f : 0.0f);
         boolean centerVisible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX);
+                visibilityMask, ReverseCameraLayout.REAR_CAMERA_INDEX)
+                && model.targetFor(ReverseCameraLayout.REAR_CAMERA_INDEX) == displayTarget;
         boolean centralFrontEligible = centerVisible
                 && sideMode == ReverseSideSelectorView.MODE_FRONT
                 && centralFrontIntegrated && centralFrontSourceEnabled
@@ -1397,9 +1568,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 && centralFrontFrameReady && centralFrontPane.frameFresh;
         boolean front = sideMode == ReverseSideSelectorView.MODE_FRONT;
         boolean leftEligible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+                visibilityMask, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX)
+                && model.targetFor(ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX) == displayTarget;
         boolean rightEligible = ReverseCameraLayout.isVisible(
-                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+                visibilityMask, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX)
+                && model.targetFor(ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) == displayTarget;
         boolean preReveal = frameBarrier.requestId() > 0 && !frameBarrier.revealed();
         setPaneTargetActive(panes[0], preReveal || centerVisible && !centralFrontVisible);
         setPaneTargetActive(panes[1], preReveal || leftEligible);
@@ -1417,6 +1590,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
         sideSelector.setEffectiveVisibility(
                 leftEligible, rightEligible, front ? centralFrontVisible : centerVisible);
         sideSelector.setVisibility(widgetVisible && widgetAvailable
+                && model.targetFor(ReverseCameraLayout.WIDGET_PANE_ID) == displayTarget
                 ? View.VISIBLE : View.GONE);
     }
 
@@ -1483,11 +1657,14 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     static final class SurfaceBundle {
         final int requestId;
+        final int[] sourceIndexes;
         final int[] generations;
         final Surface[] surfaces;
 
-        SurfaceBundle(int requestId, int[] generations, Surface[] surfaces) {
+        SurfaceBundle(
+                int requestId, int[] sourceIndexes, int[] generations, Surface[] surfaces) {
             this.requestId = requestId;
+            this.sourceIndexes = sourceIndexes;
             this.generations = generations;
             this.surfaces = surfaces;
         }

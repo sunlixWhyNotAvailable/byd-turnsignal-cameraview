@@ -24,9 +24,14 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -35,6 +40,9 @@ final class AppUpdateManager {
     private static final String RELEASE_API_HOST = "api.github.com";
     private static final String RELEASE_API_PATH =
             "/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest";
+    private static final String RELEASE_HISTORY_API_PATH =
+            "/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases";
+    static final int RELEASE_HISTORY_PAGE_SIZE = 30;
     private static final String APK_DOWNLOAD_HOST = "github.com";
     private static final String APK_PATH_MARKER =
             "/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/download/";
@@ -51,11 +59,41 @@ final class AppUpdateManager {
         final String version;
         final String downloadUrl;
         final String releaseNotes;
+        final List<ReleaseNotesEntry> releaseHistory;
+        final boolean historyComplete;
 
         UpdateInfo(String version, String downloadUrl, String releaseNotes) {
+            this(version, downloadUrl, releaseNotes,
+                    Collections.singletonList(new ReleaseNotesEntry(version, releaseNotes)), true);
+        }
+
+        UpdateInfo(String version, String downloadUrl, String releaseNotes,
+                List<ReleaseNotesEntry> releaseHistory, boolean historyComplete) {
             this.version = version;
             this.downloadUrl = downloadUrl;
             this.releaseNotes = releaseNotes;
+            this.releaseHistory = Collections.unmodifiableList(new ArrayList<>(releaseHistory));
+            this.historyComplete = historyComplete;
+        }
+    }
+
+    static final class ReleaseNotesEntry {
+        final String version;
+        final String body;
+
+        ReleaseNotesEntry(String version, String body) {
+            this.version = version;
+            this.body = body == null ? "" : body;
+        }
+    }
+
+    static final class ReleaseHistory {
+        final List<ReleaseNotesEntry> entries;
+        final boolean complete;
+
+        ReleaseHistory(List<ReleaseNotesEntry> entries, boolean complete) {
+            this.entries = Collections.unmodifiableList(new ArrayList<>(entries));
+            this.complete = complete;
         }
     }
 
@@ -79,10 +117,11 @@ final class AppUpdateManager {
             return new CheckResult(null, true);
         }
 
+        String notes = release.optString("body", "");
+        String apkUrl = findApkAssetUrl(release.optJSONArray("assets"), version);
+        ReleaseHistory history = fetchReleaseHistory(BuildConfig.VERSION_NAME, version, notes);
         UpdateInfo available = new UpdateInfo(
-                version,
-                findApkAssetUrl(release.optJSONArray("assets"), version),
-                release.optString("body", ""));
+                version, apkUrl, notes, history.entries, history.complete);
         return new CheckResult(available, true);
     }
 
@@ -105,9 +144,11 @@ final class AppUpdateManager {
         DownloadManager manager = (DownloadManager) context.getSystemService(
                 Context.DOWNLOAD_SERVICE);
         if (manager == null) throw new IllegalStateException("DownloadManager is unavailable");
+        Context localized = AppLanguage.localizedContext(context,
+                AppLanguage.read(context.getSharedPreferences("settings", Context.MODE_PRIVATE)));
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(info.downloadUrl))
                 .setTitle("BYD Extend " + info.version)
-                .setDescription("Downloading update")
+                .setDescription(localized.getString(R.string.update_download_notification_description))
                 .setMimeType(APK_MIME)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 .setDestinationInExternalFilesDir(
@@ -159,6 +200,20 @@ final class AppUpdateManager {
         return value;
     }
 
+    static String requireTrustedReleaseHistoryApiUrl(String value) {
+        URI uri = parseUri(value, "GitHub release history API URL");
+        String query = uri.getRawQuery() == null ? "" : uri.getRawQuery();
+        if (!"https".equalsIgnoreCase(uri.getScheme())
+                || !RELEASE_API_HOST.equalsIgnoreCase(uri.getHost())
+                || !RELEASE_HISTORY_API_PATH.equals(uri.getPath())
+                || uri.getPort() != -1
+                || uri.getUserInfo() != null
+                || !query.matches("per_page=" + RELEASE_HISTORY_PAGE_SIZE + "&page=[1-9][0-9]*")) {
+            throw new IllegalArgumentException("GitHub release history API URL is not allowed");
+        }
+        return value;
+    }
+
     static String requireTrustedApkDownloadUrl(String value) {
         URI uri = parseUri(value, "GitHub APK URL");
         String path = uri.getPath() == null ? "" : uri.getPath();
@@ -175,6 +230,71 @@ final class AppUpdateManager {
 
     private String fetchLatestRelease() throws IOException {
         String trustedUrl = requireTrustedReleaseApiUrl(BuildConfig.UPDATE_RELEASE_API_URL);
+        return fetchReleaseApiResponse(trustedUrl);
+    }
+
+    private ReleaseHistory fetchReleaseHistory(
+            String installedVersion, String offeredVersion, String offeredBody) {
+        Map<String, ReleaseNotesEntry> entries = new HashMap<>();
+        boolean complete = true;
+        for (int page = 1; ; page++) {
+            try {
+                String url = "https://" + RELEASE_API_HOST + RELEASE_HISTORY_API_PATH
+                        + "?per_page=" + RELEASE_HISTORY_PAGE_SIZE + "&page=" + page;
+                JSONArray releases = new JSONArray(fetchReleaseApiResponse(
+                        requireTrustedReleaseHistoryApiUrl(url)));
+                if (releases.length() == 0) break;
+                if (!collectReleaseNotesPage(
+                        releases, installedVersion, offeredVersion, entries)) complete = false;
+                if (releases.length() < RELEASE_HISTORY_PAGE_SIZE) break;
+            } catch (Exception error) {
+                complete = false;
+                break;
+            }
+        }
+
+        return orderedReleaseHistory(entries, offeredVersion, offeredBody, complete);
+    }
+
+    static ReleaseHistory orderedReleaseHistory(Map<String, ReleaseNotesEntry> entries,
+            String offeredVersion, String offeredBody, boolean complete) {
+        ReleaseNotesEntry offered = entries.get(offeredVersion);
+        if (offered == null || (offeredBody != null && !offeredBody.isEmpty())) {
+            entries.put(offeredVersion, new ReleaseNotesEntry(offeredVersion, offeredBody));
+        }
+        List<ReleaseNotesEntry> ordered = new ArrayList<>(entries.values());
+        ordered.sort((first, second) -> compareVersions(second.version, first.version));
+        return new ReleaseHistory(ordered, complete);
+    }
+
+    static boolean collectReleaseNotesPage(JSONArray releases, String installedVersion,
+            String offeredVersion, Map<String, ReleaseNotesEntry> entries) {
+        boolean complete = true;
+        for (int index = 0; index < releases.length(); index++) {
+            JSONObject release = releases.optJSONObject(index);
+            if (release == null) {
+                complete = false;
+                continue;
+            }
+            if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) {
+                continue;
+            }
+            String version;
+            try {
+                version = normalizeVersion(release.optString("tag_name", ""));
+            } catch (IllegalArgumentException unsupportedTag) {
+                complete = false;
+                continue;
+            }
+            if (isNewerVersion(version, offeredVersion)
+                    || !isNewerVersion(version, installedVersion)) continue;
+            entries.putIfAbsent(version,
+                    new ReleaseNotesEntry(version, release.optString("body", "")));
+        }
+        return complete;
+    }
+
+    private String fetchReleaseApiResponse(String trustedUrl) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(trustedUrl).openConnection();
         connection.setRequestMethod("GET");
         connection.setConnectTimeout(10_000);
@@ -192,6 +312,16 @@ final class AppUpdateManager {
         } finally {
             connection.disconnect();
         }
+    }
+
+    private static int compareVersions(String first, String second) {
+        int[] firstParts = parseVersion(first);
+        int[] secondParts = parseVersion(second);
+        for (int index = 0; index < firstParts.length; index++) {
+            int comparison = Integer.compare(firstParts[index], secondParts[index]);
+            if (comparison != 0) return comparison;
+        }
+        return 0;
     }
 
     static byte[] readReleaseResponse(java.io.InputStream input) throws IOException {

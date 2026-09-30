@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_mic_title">麦克风广播</string>
+    <string name="avas_mic_toggle_hint">单击开始广播，再次单击停止。</string>
+    <string name="avas_mic_learning">所选按键单击开始或停止麦克风广播。长按和双击不执行操作。</string>
+    <string name="avas_mic_permission">请允许麦克风权限以使用广播。</string>
+    <string name="avas_mic_unavailable">麦克风广播不可用。请检查权限及辅助服务连接。</string>
+    <string name="avas_mic_starting">正在启动麦克风…</string>
+    <string name="avas_mic_active">麦克风正在通过车外扬声器广播</string>
+    <string name="avas_mic_stopped">麦克风已停止</string>
+    <string name="avas_mic_error">麦克风不可用</string>
+    <string name="avas_mic_stop">停止麦克风</string>
+</resources>

@@ -16,6 +16,9 @@ public final class ReleaseNotesSelectorTest {
                     + "<!-- bydextend:release-notes:zh-CN -->\n"
                     + "# 简体中文\n\n- **修复了**更新。\n"
                     + "<!-- /bydextend:release-notes:zh-CN -->\n\n"
+                    + "<!-- bydextend:release-notes:ru -->\n"
+                    + "# Русский\n\n- **Исправлено** обновление.\n"
+                    + "<!-- /bydextend:release-notes:ru -->\n\n"
                     + "SHA-256: ABC123";
 
     @Test
@@ -26,6 +29,8 @@ public final class ReleaseNotesSelectorTest {
                 ReleaseNotesSelector.select(BODY, "uk"));
         assertEquals("# 简体中文\n\n- **修复了**更新。",
                 ReleaseNotesSelector.select(BODY, "zh-CN"));
+        assertEquals("# Русский\n\n- **Исправлено** обновление.",
+                ReleaseNotesSelector.select(BODY, "ru"));
     }
 
     @Test
@@ -33,6 +38,10 @@ public final class ReleaseNotesSelectorTest {
         String missing = BODY.replace(
                 "<!-- bydextend:release-notes:uk -->\n# Українська\n\n- **Виправлено** оновлення.\n"
                         + "<!-- /bydextend:release-notes:uk -->\n\n",
+                "");
+        String missingRussian = BODY.replace(
+                "<!-- bydextend:release-notes:ru -->\n# Русский\n\n- **Исправлено** обновление.\n"
+                        + "<!-- /bydextend:release-notes:ru -->\n\n",
                 "");
         String empty = BODY.replace("# 简体中文\n\n- **修复了**更新。", "   ");
         String malformed = BODY.replace("<!-- /bydextend:release-notes:uk -->", "");
@@ -43,6 +52,8 @@ public final class ReleaseNotesSelectorTest {
                 ReleaseNotesSelector.select(empty, "zh-CN"));
         assertEquals("# English\n\n- **Fixed** the `update` flow.",
                 ReleaseNotesSelector.select(malformed, "uk"));
+        assertEquals("# English\n\n- **Fixed** the `update` flow.",
+                ReleaseNotesSelector.select(missingRussian, "ru"));
     }
 
     @Test
@@ -95,5 +106,15 @@ public final class ReleaseNotesSelectorTest {
         assertEquals(legacy, ReleaseNotesSelector.select(legacy, "uk"));
         assertEquals(ukrainianOnly, ReleaseNotesSelector.select(ukrainianOnly, "en"));
         assertEquals(legacy, ReleaseNotesSelector.select(legacy, "unsupported"));
+    }
+
+    @Test
+    public void releaseHistoryUsesRequestedLocaleAndFallsBackPerEntry() {
+        String history = ReleaseNotesSelector.selectHistory(java.util.Arrays.asList(
+                new AppUpdateManager.ReleaseNotesEntry("1.4.1", BODY),
+                new AppUpdateManager.ReleaseNotesEntry("1.3.3", "## Changes\n\n- English only")), "ru");
+
+        assertEquals("## v1.4.1\n\n# Русский\n\n- **Исправлено** обновление."
+                + "\n\n---\n\n## v1.3.3\n\n## Changes\n\n- English only", history);
     }
 }

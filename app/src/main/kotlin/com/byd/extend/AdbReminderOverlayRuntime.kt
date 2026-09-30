@@ -415,12 +415,14 @@ class AdbReminderOverlayRuntime(
         private fun message(language: UiLanguage) = when (language) {
             UiLanguage.Ukrainian -> "Очікування Wi-Fi для відновлення ADB"
             UiLanguage.Chinese -> "正在等待 Wi-Fi 以恢复 ADB"
+            UiLanguage.Russian -> "Ожидание Wi-Fi для восстановления ADB"
             UiLanguage.English -> "Waiting for Wi-Fi to restore ADB"
         }
 
         private fun retryLabel(language: UiLanguage) = when (language) {
             UiLanguage.Ukrainian -> "Повторити"
             UiLanguage.Chinese -> "重试"
+            UiLanguage.Russian -> "Повторить"
             UiLanguage.English -> "Retry"
         }
 

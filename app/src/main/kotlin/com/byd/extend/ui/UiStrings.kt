@@ -29,6 +29,7 @@ internal class UiStrings @JvmOverloads constructor(
 
     val ukrainian: Boolean get() = language == UiLanguage.Ukrainian
     val chinese: Boolean get() = language == UiLanguage.Chinese
+    fun resource(id: Int): String = resources?.getString(id) ?: ""
     fun text(ukrainianText: String, englishText: String): String =
         packaged(ukrainianText, englishText) ?: if (ukrainian) ukrainianText else englishText
     fun text(ukrainianText: String, englishText: String, chineseText: String): String =
@@ -112,6 +113,7 @@ internal class UiStrings @JvmOverloads constructor(
         UiLanguage.Ukrainian -> AppLanguage.UKRAINIAN
         UiLanguage.English -> AppLanguage.ENGLISH
         UiLanguage.Chinese -> AppLanguage.CHINESE
+        UiLanguage.Russian -> AppLanguage.RUSSIAN
     }
 
     val subtitle get() = format(

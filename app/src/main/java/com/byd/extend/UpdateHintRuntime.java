@@ -16,6 +16,7 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.Display;
 
+import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -33,11 +34,16 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private final SharedPreferences preferences;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService checks = Executors.newSingleThreadExecutor();
+    private final ExecutorService downloads = Executors.newSingleThreadExecutor();
     private final AppUpdateManager manager = new AppUpdateManager();
     private final UpdateResultPresentation presentation = new UpdateResultPresentation();
     private final Set<Activity> started = Collections.newSetFromMap(new IdentityHashMap<>());
     private WeakReference<CheckListener> listener = new WeakReference<>(null);
+    private final Object downloadLock = new Object();
+    private WeakReference<DownloadListener> downloadListener = new WeakReference<>(null);
+    private DownloadSnapshot downloadOperation;
     private AppUpdateManager.UpdateInfo available;
+    private volatile boolean manualCheckDialogRequested;
     private boolean shutdown;
     private final DisplayManager displays;
     private boolean waitingForDisplay;
@@ -65,6 +71,75 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         void onCheckStarted(boolean force);
         void onCheckDiscarded();
         void onCheckFinished(AppUpdateManager.UpdateInfo available, Throwable error, boolean force);
+    }
+
+    interface DownloadListener {
+        void onDownloadChanged(DownloadSnapshot snapshot);
+    }
+
+    enum DownloadPhase { DOWNLOADING, INSTALLING, READY, FAILED }
+
+    static final class DownloadSnapshot {
+        final AppUpdateManager.UpdateInfo info;
+        final DownloadPhase phase;
+        final int progress;
+        final File file;
+        final String error;
+        final boolean installerError;
+        final boolean dialogVisible;
+        final boolean initialInstallerHandoffEligible;
+        final boolean initialInstallerHandoffAttempted;
+
+        DownloadSnapshot(AppUpdateManager.UpdateInfo info, DownloadPhase phase, int progress,
+                File file, String error, boolean installerError, boolean dialogVisible) {
+            this(info, phase, progress, file, error, installerError, dialogVisible, false, false);
+        }
+
+        private DownloadSnapshot(AppUpdateManager.UpdateInfo info, DownloadPhase phase, int progress,
+                File file, String error, boolean installerError, boolean dialogVisible,
+                boolean initialInstallerHandoffEligible, boolean initialInstallerHandoffAttempted) {
+            this.info = info;
+            this.phase = phase;
+            this.progress = progress;
+            this.file = file;
+            this.error = error;
+            this.installerError = installerError;
+            this.dialogVisible = dialogVisible;
+            this.initialInstallerHandoffEligible = initialInstallerHandoffEligible;
+            this.initialInstallerHandoffAttempted = initialInstallerHandoffAttempted;
+        }
+
+        DownloadSnapshot withProgress(int value) {
+            return new DownloadSnapshot(info, phase, value, file, error,
+                    installerError, dialogVisible, initialInstallerHandoffEligible,
+                    initialInstallerHandoffAttempted);
+        }
+
+        DownloadSnapshot withPhase(DownloadPhase value, String message, boolean failedInstaller) {
+            return new DownloadSnapshot(info, value, progress, file, message,
+                    failedInstaller, dialogVisible, initialInstallerHandoffEligible,
+                    initialInstallerHandoffAttempted);
+        }
+
+        DownloadSnapshot withDialogVisible(boolean value) {
+            return new DownloadSnapshot(info, phase, progress, file, error,
+                    installerError, value, value && initialInstallerHandoffEligible,
+                    initialInstallerHandoffAttempted);
+        }
+
+        DownloadSnapshot withInitialInstallerHandoff(boolean eligible, boolean attempted) {
+            return new DownloadSnapshot(info, phase, progress, file, error,
+                    installerError, dialogVisible, eligible, attempted);
+        }
+    }
+
+    static boolean shouldReuseDownload(
+            DownloadSnapshot operation, AppUpdateManager.UpdateInfo requested) {
+        return operation != null
+                && (operation.phase == DownloadPhase.DOWNLOADING
+                || operation.phase == DownloadPhase.INSTALLING
+                || operation.phase == DownloadPhase.READY
+                        && operation.info.version.equals(requested.version));
     }
 
     public static synchronized UpdateHintRuntime get(Context context) {
@@ -114,7 +189,127 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         if (listener.get() == value) listener.clear();
     }
     boolean isChecking() { return autoCheck.isChecking(); }
-    void setDownloadInFlight(boolean value) { autoCheck.setDownloading(value); }
+    void setManualCheckDialogRequested(boolean value) {
+        manualCheckDialogRequested = value;
+    }
+    void setDownloadListener(DownloadListener value) {
+        downloadListener = new WeakReference<>(value);
+        value.onDownloadChanged(downloadOperation());
+    }
+    void removeDownloadListener(DownloadListener value) {
+        if (downloadListener.get() == value) downloadListener.clear();
+    }
+    DownloadSnapshot downloadOperation() {
+        synchronized (downloadLock) { return downloadOperation; }
+    }
+    DownloadSnapshot showDownloadOperation() {
+        DownloadSnapshot current;
+        synchronized (downloadLock) {
+            if (downloadOperation == null) return null;
+            downloadOperation = downloadOperation.withDialogVisible(true);
+            current = downloadOperation;
+        }
+        notifyDownloadListener(current);
+        return current;
+    }
+    void dismissDownloadOperation() {
+        DownloadSnapshot current;
+        synchronized (downloadLock) {
+            if (downloadOperation == null) return;
+            if (downloadOperation.phase == DownloadPhase.FAILED) downloadOperation = null;
+            else downloadOperation = downloadOperation.withDialogVisible(false);
+            current = downloadOperation;
+        }
+        notifyDownloadListener(current);
+    }
+    boolean startDownload(AppUpdateManager.UpdateInfo info) {
+        DownloadSnapshot started;
+        boolean reused;
+        synchronized (downloadLock) {
+            if (shouldReuseDownload(downloadOperation, info)) {
+                downloadOperation = downloadOperation.withDialogVisible(true);
+                started = downloadOperation;
+                reused = true;
+            } else {
+                started = new DownloadSnapshot(info, DownloadPhase.DOWNLOADING,
+                        0, null, null, false, true);
+                downloadOperation = started;
+                reused = false;
+            }
+        }
+        if (reused) {
+            notifyDownloadListener(started);
+            return false;
+        }
+        autoCheck.setDownloading(true);
+        notifyDownloadListener(started);
+        downloads.execute(() -> {
+            File file = null;
+            Exception failure = null;
+            try {
+                file = manager.downloadAndVerify(context, info,
+                        value -> main.post(() -> updateDownloadProgress(info.resultId, value)));
+            } catch (Exception error) {
+                failure = error;
+            }
+            File downloaded = file;
+            Exception error = failure;
+            main.post(() -> finishDownload(info.resultId, downloaded, error));
+        });
+        return true;
+    }
+    boolean installReady(Activity activity) {
+        DownloadSnapshot current;
+        synchronized (downloadLock) {
+            current = downloadOperation;
+            if (current == null || current.phase != DownloadPhase.READY || current.file == null) {
+                return false;
+            }
+            downloadOperation = current.withInitialInstallerHandoff(false, true)
+                    .withPhase(DownloadPhase.INSTALLING, null, false);
+            current = downloadOperation;
+        }
+        notifyDownloadListener(current);
+        try {
+            manager.install(activity, current.info, current.file);
+            synchronized (downloadLock) {
+                if (downloadOperation != null
+                        && downloadOperation.info.resultId.equals(current.info.resultId)) {
+                    downloadOperation = downloadOperation.withPhase(
+                            DownloadPhase.READY, null, false);
+                    current = downloadOperation;
+                }
+            }
+            notifyDownloadListener(current);
+            return true;
+        } catch (Exception error) {
+            synchronized (downloadLock) {
+                if (downloadOperation != null
+                        && downloadOperation.info.resultId.equals(current.info.resultId)) {
+                    downloadOperation = downloadOperation.withPhase(
+                            DownloadPhase.READY,
+                            error.getMessage() == null ? error.getClass().getSimpleName()
+                                    : error.getMessage(), true);
+                    current = downloadOperation;
+                }
+            }
+            notifyDownloadListener(current);
+            return false;
+        }
+    }
+
+    boolean claimInitialInstallerHandoff(String resultId) {
+        synchronized (downloadLock) {
+            DownloadSnapshot current = downloadOperation;
+            if (current == null || current.phase != DownloadPhase.READY || current.file == null
+                    || !current.dialogVisible || !current.initialInstallerHandoffEligible
+                    || current.initialInstallerHandoffAttempted
+                    || !current.info.resultId.equals(resultId)) return false;
+            downloadOperation = current.withInitialInstallerHandoff(false, true);
+            return true;
+        }
+    }
+
     boolean enabled() { return preferences.getBoolean(PREF_ENABLED, true); }
 
     boolean check(boolean force) {
@@ -145,6 +340,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
             main.post(() -> {
                 CheckListener observer = listener.get();
                 if (!autoCheck.complete(request, error == null && completed != null)) {
+                    manualCheckDialogRequested = false;
                     if (observer != null) observer.onCheckDiscarded();
                     return;
                 }
@@ -157,14 +353,54 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                             completed.available == null ? null : completed.available.resultId,
                             completed.fresh, !started.isEmpty(), enabled(),
                             Settings.canDrawOverlays(context));
+                    if (request.manual && !manualCheckDialogRequested
+                            && completed.available != null) {
+                        presentation.consume(completed.available.resultId);
+                    }
                     queuePendingHint();
                 }
+                if (request.manual) manualCheckDialogRequested = false;
                 Log.i("UpdateHintRuntime", "check_finished result=" + (error != null ? "error"
                         : completed != null && completed.available != null ? "available" : "none"));
                 if (observer != null) observer.onCheckFinished(
                         completed == null ? null : completed.available, error, request.manual);
             });
         });
+    }
+
+    private void updateDownloadProgress(String resultId, int progress) {
+        DownloadSnapshot current;
+        synchronized (downloadLock) {
+            if (downloadOperation == null || !downloadOperation.info.resultId.equals(resultId)
+                    || downloadOperation.phase != DownloadPhase.DOWNLOADING) return;
+            downloadOperation = downloadOperation.withProgress(progress);
+            current = downloadOperation;
+        }
+        notifyDownloadListener(current);
+    }
+
+    private void finishDownload(String resultId, File file, Exception error) {
+        DownloadSnapshot current;
+        synchronized (downloadLock) {
+            if (downloadOperation == null || !downloadOperation.info.resultId.equals(resultId)
+                    || downloadOperation.phase != DownloadPhase.DOWNLOADING) return;
+            downloadOperation = error == null
+                    ? new DownloadSnapshot(downloadOperation.info, DownloadPhase.READY,
+                            100, file, null, false, downloadOperation.dialogVisible,
+                            downloadOperation.dialogVisible, false)
+                    : new DownloadSnapshot(downloadOperation.info, DownloadPhase.FAILED,
+                            downloadOperation.progress, null,
+                            error.getMessage() == null ? error.getClass().getSimpleName()
+                                    : error.getMessage(), false, downloadOperation.dialogVisible);
+            current = downloadOperation;
+        }
+        autoCheck.setDownloading(false);
+        notifyDownloadListener(current);
+    }
+
+    private void notifyDownloadListener(DownloadSnapshot snapshot) {
+        DownloadListener observer = downloadListener.get();
+        if (observer != null) observer.onDownloadChanged(snapshot);
     }
 
     AppUpdateManager.UpdateInfo pendingOffer() {

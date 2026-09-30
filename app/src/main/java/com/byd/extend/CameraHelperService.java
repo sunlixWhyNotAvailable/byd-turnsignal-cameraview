@@ -265,6 +265,42 @@ public final class CameraHelperService extends Service {
 
     public static AdbRecoverySnapshot adbRecoverySnapshot() { return latestAdbRecovery; }
 
+    /** Takes ownership of the read descriptor; never starts a new helper for a stale session. */
+    static boolean startAvasMicrophone(String sessionId, android.os.ParcelFileDescriptor pcm,
+            int volume) {
+        CameraHelperService service = activeInstance;
+        if (service != null && service.postRuntime(() -> {
+            if (service.helper != null && service.helperRuntimeStarted
+                    && WeatherRefreshAccessibilityService.ownsMicrophone(sessionId)
+                    && !GuardRecovery.isUserShutdownActive(service)) {
+                service.helper.startAvasMicrophone(sessionId, pcm, volume);
+            } else {
+                closeMicrophoneDescriptor(pcm);
+                WeatherRefreshAccessibilityService.microphoneUnavailable(sessionId);
+            }
+        })) return true;
+        closeMicrophoneDescriptor(pcm);
+        return false;
+    }
+
+    static void stopAvasMicrophone(String sessionId) {
+        CameraHelperService service = activeInstance;
+        if (service != null) service.postRuntime(() -> {
+            if (service.helper != null) service.helper.stopAvasMicrophone(sessionId);
+        });
+    }
+
+    static void setAvasMicrophoneVolume(String sessionId, int volume) {
+        CameraHelperService service = activeInstance;
+        if (service != null) service.postRuntime(() -> {
+            if (service.helper != null) service.helper.setAvasMicrophoneVolume(sessionId, volume);
+        });
+    }
+
+    private static void closeMicrophoneDescriptor(android.os.ParcelFileDescriptor pcm) {
+        try { pcm.close(); } catch (java.io.IOException ignored) {}
+    }
+
     public static void addAdbRecoveryListener(Runnable listener) {
         adbRecoveryListeners.addIfAbsent(listener);
     }
@@ -310,8 +346,9 @@ public final class CameraHelperService extends Service {
             if (snapshot != null && adbReminder != null) {
                 SharedPreferences prefs = getSharedPreferences("settings", MODE_PRIVATE);
                 String language = AppLanguage.read(prefs);
-                UiLanguage uiLanguage = "uk".equals(language) ? UiLanguage.Ukrainian
-                        : "zh".equals(language) ? UiLanguage.Chinese : UiLanguage.English;
+                UiLanguage uiLanguage = AppLanguage.isUkrainian(language) ? UiLanguage.Ukrainian
+                        : AppLanguage.isChinese(language) ? UiLanguage.Chinese
+                        : AppLanguage.isRussian(language) ? UiLanguage.Russian : UiLanguage.English;
                 adbReminder.update(AdbRecoveryUiBridge.overlay(snapshot,
                         new AdbReminderSettings(this), uiLanguage,
                         prefs.getBoolean("ui_dark_theme", true)));
@@ -762,6 +799,7 @@ public final class CameraHelperService extends Service {
             return;
         }
         if (ACTION_SHUTDOWN.equals(action)) {
+            WeatherRefreshAccessibilityService.stopMicrophone();
             GuardRecovery.setUserShutdownActive(this, true);
             if (adbRecovery != null) adbRecovery.close();
             if (adbReminder != null) adbReminder.close();
@@ -1261,6 +1299,7 @@ public final class CameraHelperService extends Service {
 
     @Override
     public void onDestroy() {
+        WeatherRefreshAccessibilityService.stopMicrophone();
         LocalAdbClient.removeAccessStateListener(serviceAdbListener);
         if (adbRecovery != null) adbRecovery.close();
         if (adbReminder != null) adbReminder.close();
@@ -1539,6 +1578,9 @@ public final class CameraHelperService extends Service {
 
     private void acceptHelperLine(String line) {
         if (line == null) return;
+        if (line.contains("avas_microphone_status") || line.contains("avas_status")
+                || line.contains("helper_ping_failed"))
+            WeatherRefreshAccessibilityService.microphoneEvent(line);
         postRuntime(() -> {
             if (isShellOemVisibilityEvent(line)) {
                 lifecycle("oem_camera_visibility_upstream_ignored");

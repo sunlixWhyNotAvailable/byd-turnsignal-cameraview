@@ -15,6 +15,7 @@ import static org.junit.Assert.assertTrue;
 public final class AvasShellProtocolTest {
     @Test
     public void avasWireSlotsAndInputAllowlistRemainCompatible() {
+        assertEquals(12, TurnSignalShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 9,
                 TurnSignalShellProtocol.TX_CONFIGURE_AVAS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
@@ -31,6 +32,19 @@ public final class AvasShellProtocolTest {
                 TurnSignalShellProtocol.TX_START_AVAS_AUDITION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 16,
                 TurnSignalShellProtocol.TX_STOP_AVAS_AUDITION);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 18,
+                TurnSignalShellProtocol.TX_START_AVAS_MICROPHONE);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 19,
+                TurnSignalShellProtocol.TX_STOP_AVAS_MICROPHONE);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 20,
+                TurnSignalShellProtocol.TX_SET_AVAS_MICROPHONE_VOLUME);
+        assertEquals(1, TurnSignalShellProtocol.AVAS_MIC_FORMAT_PCM_S16LE_MONO_16KHZ);
+        assertTrue(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(1));
+        assertFalse(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(2));
+        assertTrue(TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(0));
+        assertTrue(TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(100));
+        assertFalse(TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(-1));
+        assertFalse(TurnSignalShellProtocol.isAvasMicrophoneVolumeAllowed(101));
         assertTrue(TurnSignalShellProtocol.isAvasSessionAllowed(
                 "0123456789abcdef0123456789abcdef"));
         assertFalse(TurnSignalShellProtocol.isAvasSessionAllowed(null));

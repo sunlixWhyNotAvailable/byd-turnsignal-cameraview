@@ -5,6 +5,20 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class BlindShortTurnHoldTest {
+    @Test public void persistedHoldDurationIsIndependentPerGroupAndSharedByItsSides() {
+        TestSharedPreferences settings = new TestSharedPreferences();
+        assertEquals(3, BlindSpotOverlayController.readHoldDurationSeconds(settings, CameraProfile.REAR_LEFT));
+        assertEquals(3, BlindSpotOverlayController.readHoldDurationSeconds(settings, CameraProfile.FRONT_RIGHT));
+        settings.putInt(BlindSpotOverlayController.PREF_REAR_HOLD_DURATION_SECONDS, 1);
+        settings.putInt(BlindSpotOverlayController.PREF_FRONT_HOLD_DURATION_SECONDS, 5);
+        for (int camera : new int[]{CameraProfile.REAR_LEFT, CameraProfile.REAR_RIGHT}) {
+            assertEquals(1, BlindSpotOverlayController.readHoldDurationSeconds(settings, camera));
+        }
+        for (int camera : new int[]{CameraProfile.FRONT_LEFT, CameraProfile.FRONT_RIGHT}) {
+            assertEquals(5, BlindSpotOverlayController.readHoldDurationSeconds(settings, camera));
+        }
+    }
+
     private static final int REAR_LEFT = 1, REAR_RIGHT = 2, FRONT_LEFT = 4, FRONT_RIGHT = 8;
     private static final int ALL = 15;
     private static final int STALK = TurnSignalTelemetryController.LIVE_STALK;
@@ -198,5 +212,33 @@ public final class BlindShortTurnHoldTest {
         assertEquals(3100, hold.nextDeadline());
         assertEquals(REAR_RIGHT, hold.retainedMask(1, 0, ALL, 3100));
         assertEquals(0, hold.retainedMask(1, 0, ALL, 3500));
+    }
+
+    @Test public void holdDurationsAreCapturedPerFrontAndRearGroupAtTurnEnd() {
+        BlindCameraHold hold = new BlindCameraHold();
+        int shown = REAR_LEFT | FRONT_LEFT;
+        hold.retainedMask(2, shown, ALL, 100);
+        hold.acceptEnd(200, 2, 2, shown, 200, 1_000, 5_000);
+        assertEquals(shown, hold.retainedMask(1, 0, ALL, 200));
+        assertEquals(shown, hold.retainedMask(1, 0, ALL, 1_199));
+        assertEquals(FRONT_LEFT, hold.retainedMask(1, 0, ALL, 1_200));
+        assertEquals(FRONT_LEFT, hold.retainedMask(1, 0, ALL, 5_199));
+        assertEquals(0, hold.retainedMask(1, 0, ALL, 5_200));
+
+        BlindCameraHold nextHold = new BlindCameraHold();
+        nextHold.retainedMask(4, REAR_RIGHT | FRONT_RIGHT, ALL, 10);
+        nextHold.acceptEnd(100, 4, 4, REAR_RIGHT | FRONT_RIGHT, 100, 5_000, 1_000);
+        assertEquals(REAR_RIGHT | FRONT_RIGHT, nextHold.retainedMask(1, 0, ALL, 100));
+        assertEquals(REAR_RIGHT, nextHold.retainedMask(1, 0, ALL, 1_100));
+        assertEquals(REAR_RIGHT, nextHold.retainedMask(1, 0, ALL, 5_099));
+        assertEquals(0, nextHold.retainedMask(1, 0, ALL, 5_100));
+    }
+
+    @Test public void configuredHoldSecondsStayWithinOneToFiveSeconds() {
+        assertEquals(1_000, BlindCameraHold.durationMsForSeconds(1));
+        assertEquals(3_000, BlindCameraHold.durationMsForSeconds(3));
+        assertEquals(5_000, BlindCameraHold.durationMsForSeconds(5));
+        assertEquals(1_000, BlindCameraHold.durationMsForSeconds(0));
+        assertEquals(5_000, BlindCameraHold.durationMsForSeconds(6));
     }
 }
