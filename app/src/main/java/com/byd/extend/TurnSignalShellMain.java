@@ -278,6 +278,16 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_START_AVAS_ENGINE) {
+                    requireAvasRuntime().startEngine();
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_STOP_AVAS_ENGINE) {
+                    requireAvasRuntime().stopEngine();
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_REPORT_AVAS_STATUS) {
                     requireAvasRuntime().reportStatus();
                     reply.writeNoException();

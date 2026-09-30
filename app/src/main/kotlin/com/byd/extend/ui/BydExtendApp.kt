@@ -639,10 +639,18 @@ private fun FormScope.AvasIntegration(
             }
         }
     row("avas-microphone") {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            AvasMicrophoneCard(state.microphone, strings, colors, onAction, Modifier.weight(1f))
-            if (columns > 1) Spacer(Modifier.weight(1f))
+        if (columns > 1) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                AvasMicrophoneCard(state.microphone, strings, colors, onAction, Modifier.weight(1f))
+                AvasEngineCard(state.engine, strings, colors, onAction,
+                    Modifier.weight(1f).testTag("avas-engine"))
+            }
+        } else {
+            AvasMicrophoneCard(state.microphone, strings, colors, onAction)
         }
+    }
+    if (columns == 1) row("avas-engine") {
+        AvasEngineCard(state.engine, strings, colors, onAction, Modifier.testTag("avas-engine"))
     }
     listing?.let { profileId ->
         val profile = state.profiles.firstOrNull { it.id == profileId }

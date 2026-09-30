@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_engine_title">Імітація роботи двигуна</string>
+    <string name="avas_engine_pack">Звуковий набір</string>
+    <string name="avas_engine_pack_ferrari_v8">Ferrari F430 V8</string>
+    <string name="avas_engine_pack_jaguar_v6">Jaguar F-Type V6</string>
+    <string name="avas_engine_pack_huracan_v10">Huracan V10</string>
+    <string name="avas_engine_pack_german_l4">Німецький L4</string>
+    <string name="avas_engine_exterior">Зовнішній динамік</string>
+    <string name="avas_engine_interior">Внутрішні динаміки</string>
+    <string name="avas_engine_no_outputs">Увімкніть хоча б один вихід для запуску.</string>
+    <string name="avas_engine_stopped">Звук двигуна зупинено</string>
+    <string name="avas_engine_starting">Запуск звуку двигуна…</string>
+    <string name="avas_engine_active">Звук двигуна активний</string>
+    <string name="avas_engine_stopping">Зупинка звуку двигуна…</string>
+    <string name="avas_engine_error">Звук двигуна недоступний</string>
+    <string name="avas_engine_start">Старт</string>
+    <string name="avas_engine_stop">Стоп</string>
+</resources>

@@ -40,10 +40,26 @@ public class AvasNotificationAccessTest {
         assertFalse(AvasNotificationAccess.required(prefs));
     }
 
+    @Test public void engineOnlyRequirementNeedsAnEnabledOutput() {
+        TestSharedPreferences prefs = new TestSharedPreferences();
+        prefs.edit().putBoolean("adb_recovery_enabled", false).apply();
+        AvasConfig engineOnly = AvasConfig.empty().withEngine(new AvasConfig.Engine(
+                true, AvasEngineSettings.DEFAULT_PACK_ID, false, 15, true, 15));
+        prefs.edit().putString(AvasAudioLibrary.PREF_CONFIG, engineOnly.toJson()).apply();
+        assertTrue(AvasNotificationAccess.hasEnabledAvasAudio(prefs));
+        assertTrue(AvasNotificationAccess.required(prefs));
+
+        AvasConfig noOutput = engineOnly.withEngine(new AvasConfig.Engine(
+                true, AvasEngineSettings.DEFAULT_PACK_ID, false, 15, false, 15));
+        prefs.edit().putString(AvasAudioLibrary.PREF_CONFIG, noOutput.toJson()).apply();
+        assertFalse(AvasNotificationAccess.hasEnabledAvasAudio(prefs));
+        assertFalse(AvasNotificationAccess.required(prefs));
+    }
+
     @Test public void malformedStoredConfigDoesNotMaterializeOrEnableRequirement() {
         TestSharedPreferences prefs = new TestSharedPreferences();
         prefs.edit().putString(AvasAudioLibrary.PREF_CONFIG, "bad").apply();
-        assertFalse(AvasNotificationAccess.hasEnabledProfiles(prefs));
+        assertFalse(AvasNotificationAccess.hasEnabledAvasAudio(prefs));
         assertEquals("bad", prefs.getString(AvasAudioLibrary.PREF_CONFIG, null));
     }
 
@@ -101,7 +117,7 @@ public class AvasNotificationAccessTest {
         String contextGrant = source.substring(start, end);
         assertTrue(contextGrant.contains("return ensureGranted(true, userId"));
         assertFalse(contextGrant.contains("required("));
-        assertFalse(contextGrant.contains("hasEnabledProfiles"));
+        assertFalse(contextGrant.contains("hasEnabledAvasAudio"));
         assertTrue(contextGrant.contains("() -> readGranted(app)"));
     }
 

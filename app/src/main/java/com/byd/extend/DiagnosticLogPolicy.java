@@ -19,7 +19,7 @@ final class DiagnosticLogPolicy {
             "overlay_geometry", "camera_overlay_geometry", "lifetime_counters",
             "avm_event", "music_journal_snapshot", "music_metadata_publish",
             "avas_nav_state", "avas_route_call", "avas_audio_sample", "avas_audio_progress",
-            "avas_telemetry_sample", "avas_telemetry_read", "avas_telemetry_callback",
+            "avas_telemetry_sample", "avas_telemetry_read", "avas_telemetry_callback", "avas_engine_motion",
             "avas_track_state", "avas_track_sample", "avas_track_timestamp", "avas_pcm_levels",
             "avas_play_call_timing", "avas_nav_source_get", "avas_nav_source_gate_timeline"));
     // These detail records also drive runtime state. Keep their full IPC delivery with logging OFF.

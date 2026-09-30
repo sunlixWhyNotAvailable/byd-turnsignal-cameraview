@@ -16,14 +16,20 @@ public final class AvasConfig {
     public static final List<String> PROFILE_IDS = Collections.unmodifiableList(Arrays.asList(
             "lock", "unlock", "power_off", "power_on"));
     private static final int MAX_JSON_LENGTH = 1_048_576;
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     public final List<Profile> profiles;
+    public final Engine engine;
 
     public AvasConfig(List<Profile> profiles) {
+        this(profiles, Engine.defaults());
+    }
+
+    public AvasConfig(List<Profile> profiles, Engine engine) {
         if (profiles == null || profiles.size() != PROFILE_IDS.size()) {
             throw new IllegalArgumentException("all AVAS profiles are required");
         }
+        if (engine == null) throw new IllegalArgumentException("engine is null");
         List<Profile> copy = Collections.unmodifiableList(new ArrayList<>(profiles));
         Set<String> assetIds = new HashSet<>();
         for (int index = 0; index < PROFILE_IDS.size(); index++) {
@@ -38,6 +44,7 @@ public final class AvasConfig {
             }
         }
         this.profiles = copy;
+        this.engine = engine;
     }
 
     public static AvasConfig empty() {
@@ -45,7 +52,7 @@ public final class AvasConfig {
         for (String id : PROFILE_IDS) {
             profiles.add(new Profile(id, false, false, 15, "", Collections.emptyList(), true));
         }
-        return new AvasConfig(profiles);
+        return new AvasConfig(profiles, Engine.defaults());
     }
 
     public Profile profile(String id) {
@@ -60,7 +67,11 @@ public final class AvasConfig {
         if (index < 0) throw new IllegalArgumentException("unknown AVAS profile");
         List<Profile> copy = new ArrayList<>(profiles);
         copy.set(index, profile);
-        return new AvasConfig(copy);
+        return new AvasConfig(copy, engine);
+    }
+
+    public AvasConfig withEngine(Engine engine) {
+        return new AvasConfig(profiles, engine);
     }
 
     public String toJson() {
@@ -81,7 +92,14 @@ public final class AvasConfig {
                         .put("skipConcurrentLockUnlock", profile.skipConcurrentLockUnlock)
                         .put("assets", assets));
             }
-            return root.put("profiles", values).toString();
+            JSONObject engineValue = new JSONObject()
+                    .put("enabled", engine.enabled)
+                    .put("packId", engine.packId)
+                    .put("exteriorEnabled", engine.exteriorEnabled)
+                    .put("exteriorVolume", engine.exteriorVolume)
+                    .put("interiorEnabled", engine.interiorEnabled)
+                    .put("interiorVolume", engine.interiorVolume);
+            return root.put("profiles", values).put("engine", engineValue).toString();
         } catch (Exception error) {
             throw new IllegalStateException("AVAS serialization failed", error);
         }
@@ -93,11 +111,12 @@ public final class AvasConfig {
         }
         try {
             JSONObject root = new JSONObject(json);
-            requireKeys(root, "version", "profiles");
             int version = strictInt(root.get("version"), "version");
-            if (version != 1 && version != VERSION) {
+            if (version < 1 || version > VERSION) {
                 throw new IllegalArgumentException("unsupported AVAS configuration");
             }
+            if (version == VERSION) requireKeys(root, "version", "profiles", "engine");
+            else requireKeys(root, "version", "profiles");
             JSONArray input = root.getJSONArray("profiles");
             if (input.length() != PROFILE_IDS.size()) {
                 throw new IllegalArgumentException("all AVAS profiles are required");
@@ -124,7 +143,9 @@ public final class AvasConfig {
                         value.getString("selectedAssetId"), assets,
                         version == 1 || strictBoolean(value.get("skipConcurrentLockUnlock"))));
             }
-            return new AvasConfig(profiles);
+            Engine engine = version == VERSION
+                    ? parseEngine(root.getJSONObject("engine")) : Engine.defaults();
+            return new AvasConfig(profiles, engine);
         } catch (IllegalArgumentException error) {
             throw error;
         } catch (Exception error) {
@@ -148,6 +169,22 @@ public final class AvasConfig {
         return (Boolean) value;
     }
 
+    private static String strictString(Object value, String field) {
+        if (!(value instanceof String)) throw new IllegalArgumentException("invalid " + field);
+        return (String) value;
+    }
+
+    private static Engine parseEngine(JSONObject value) throws org.json.JSONException {
+        requireKeys(value, "enabled", "packId", "exteriorEnabled", "exteriorVolume",
+                "interiorEnabled", "interiorVolume");
+        return new Engine(strictBoolean(value.get("enabled")),
+                strictString(value.get("packId"), "packId"),
+                strictBoolean(value.get("exteriorEnabled")),
+                strictInt(value.get("exteriorVolume"), "exteriorVolume"),
+                strictBoolean(value.get("interiorEnabled")),
+                strictInt(value.get("interiorVolume"), "interiorVolume"));
+    }
+
     private static int strictInt(Object value, String field) {
         if (!(value instanceof Number)) throw new IllegalArgumentException("invalid " + field);
         Number number = (Number) value;
@@ -158,6 +195,37 @@ public final class AvasConfig {
             throw new IllegalArgumentException("invalid " + field);
         }
         return (int) integer;
+    }
+
+    public static final class Engine {
+        public final boolean enabled;
+        public final String packId;
+        public final boolean exteriorEnabled;
+        public final int exteriorVolume;
+        public final boolean interiorEnabled;
+        public final int interiorVolume;
+
+        public Engine(boolean enabled, String packId, boolean exteriorEnabled,
+                int exteriorVolume, boolean interiorEnabled, int interiorVolume) {
+            if (!AvasEngineSettings.PACK_IDS.contains(packId)) {
+                throw new IllegalArgumentException("invalid engine pack id");
+            }
+            if (exteriorVolume < 0 || exteriorVolume > 100
+                    || interiorVolume < 0 || interiorVolume > 100) {
+                throw new IllegalArgumentException("invalid engine volume");
+            }
+            this.enabled = enabled;
+            this.packId = packId;
+            this.exteriorEnabled = exteriorEnabled;
+            this.exteriorVolume = exteriorVolume;
+            this.interiorEnabled = interiorEnabled;
+            this.interiorVolume = interiorVolume;
+        }
+
+        public static Engine defaults() {
+            return new Engine(false, AvasEngineSettings.DEFAULT_PACK_ID,
+                    true, 15, false, 15);
+        }
     }
 
     public static final class Profile {

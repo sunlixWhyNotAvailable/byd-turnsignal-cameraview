@@ -1,0 +1,52 @@
+{
+  "id": "huracan_v10",
+  "name": "Lamborghini Huracán V10",
+  "idleRpm": 900,
+  "maxRpm": 7375,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 2362,
+      "on": "rpm_2362_on.wav",
+      "off": "rpm_2362_off.wav"
+    },
+    {
+      "rpm": 3036,
+      "on": "rpm_3036_on.wav",
+      "off": "rpm_3036_off.wav"
+    },
+    {
+      "rpm": 3731,
+      "on": "rpm_3731_on.wav",
+      "off": "rpm_3731_off.wav"
+    },
+    {
+      "rpm": 4506,
+      "on": "rpm_4506_on.wav",
+      "off": "rpm_4506_off.wav"
+    },
+    {
+      "rpm": 5228,
+      "on": "rpm_5228_on.wav",
+      "off": "rpm_5228_off.wav"
+    },
+    {
+      "rpm": 5948,
+      "on": "rpm_5948_on.wav",
+      "off": "rpm_5948_off.wav"
+    },
+    {
+      "rpm": 6591,
+      "on": "rpm_6591_on.wav",
+      "off": "rpm_6591_off.wav"
+    },
+    {
+      "rpm": 7329,
+      "on": "rpm_7329_on.wav",
+      "off": "rpm_7329_off.wav"
+    }
+  ]
+}

@@ -12,6 +12,49 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class AvasTelemetryControllerTest {
+    @Test public void engineCannotRestoreFromPowerCachedBeforeTelemetryDeactivation() {
+        Rig rig = new Rig();
+        rig.sink.engine.configure(true, true);
+        rig.transport.snapshots.add(snapshot(2, 2));
+        rig.activate();
+        assertTrue(rig.sink.engine.desiredActive());
+        rig.sink.engine.configure(false, true);
+        rig.controller.deactivate();
+        rig.runAll();
+        assertFalse(rig.sink.engine.hasValidPower());
+        assertEquals(AvasEngineSessionPolicy.Action.NONE,
+                rig.sink.engine.configure(true, true));
+        rig.transport.snapshots.add(snapshot(0, 2));
+        rig.activate();
+        assertFalse(rig.sink.engine.desiredActive());
+        rig.transport.emitPower(2, 100);
+        rig.runAll();
+        assertTrue(rig.sink.engine.desiredActive());
+    }
+
+    @Test public void rawEnginePowerIsSeededWithoutLockAndPrecedesEventDispatch() {
+        Rig rig = new Rig();
+        rig.transport.snapshots.add(snapshot(2, 2));
+        rig.activate();
+        assertEquals(Arrays.asList("raw:2:true"), rig.sink.delivery);
+        rig.transport.emitPower(0, 100);
+        rig.runAll();
+        assertEquals(Arrays.asList("raw:2:true", "raw:0:false", "event:power_off"),
+                rig.sink.delivery);
+
+        Rig missingLock = new Rig();
+        missingLock.transport.snapshots.add(snapshot(2, -1));
+        missingLock.activate();
+        assertEquals(Arrays.asList("raw:2:true"), missingLock.sink.delivery);
+    }
+
+    @Test public void racingPowerSnapshotNeverOverwritesNewEnginePower() {
+        Rig rig = new Rig();
+        rig.transport.snapshots.add(snapshot(2, 2));
+        rig.transport.duringRead = () -> rig.transport.emitPower(0, 50);
+        rig.activate();
+        assertEquals(Arrays.asList("raw:0:true"), rig.sink.delivery);
+    }
     @Test public void powerOffObservationIgnoresMelodyEligibilityAndLockValidity() {
         Rig rig = new Rig();
         rig.sink.profilesEnabled = false;
@@ -400,9 +443,11 @@ public final class AvasTelemetryControllerTest {
     }
 
     private static final class FakeSink implements AvasTelemetryController.Sink {
+        final AvasEngineSessionPolicy engine = new AvasEngineSessionPolicy();
         final List<String> profiles = new ArrayList<>();
         final List<String> suppressed = new ArrayList<>();
         final List<String> logs = new ArrayList<>();
+        final List<String> delivery = new ArrayList<>();
         boolean profilesEnabled = true;
         int powerOffObservations;
         int lastGapPower = Integer.MIN_VALUE;
@@ -410,7 +455,12 @@ public final class AvasTelemetryControllerTest {
         @Override public boolean powerOnSuppressionEligible() { return true; }
         @Override public boolean powerOffSuppressionEligible() { return true; }
         @Override public void onProfile(String profile) {
+            delivery.add("event:" + profile);
             if (profilesEnabled) profiles.add(profile);
+        }
+        @Override public void onRawPower(int power, boolean baseline) {
+            delivery.add("raw:" + power + ":" + baseline);
+            engine.observePower(power, baseline);
         }
         @Override public void onPowerOffObserved() { powerOffObservations++; }
         @Override public void onSuppressed(String profile, String powerProfile, long deltaMs) {

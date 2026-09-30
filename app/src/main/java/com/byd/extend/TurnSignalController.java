@@ -315,6 +315,26 @@ final class TurnSignalController {
         worker.execute(() -> startAvasManualNow(profileId));
     }
 
+    void startAvasEngine() {
+        worker.execute(this::startAvasEngineNow);
+    }
+
+    void stopAvasEngine() {
+        worker.execute(() -> {
+            IBinder value = healthyHelper();
+            if (value == null) {
+                emitAvasError("engine_stop", "engine", null, "helper_unavailable");
+                return; // Stop never creates a helper.
+            }
+            try {
+                transactNoArgs(value, TurnSignalShellProtocol.TX_STOP_AVAS_ENGINE);
+            } catch (Throwable error) {
+                emitAvasError("engine_stop", "engine", null, summary(error));
+                clearHelper(value);
+            }
+        });
+    }
+
     void startAvasAudition(String profileId, String assetId, String sessionId) {
         requireAvasProfile(profileId);
         if (!TurnSignalShellProtocol.isAvasAssetAllowed(assetId)
@@ -1659,6 +1679,38 @@ final class TurnSignalController {
             transactAvasProfile(value, TurnSignalShellProtocol.TX_START_AVAS_MANUAL, profileId);
         } catch (Throwable error) {
             emitAvasError("manual_start", profileId, profile.selectedAssetId, summary(error));
+            reportAvasStatus(value);
+        }
+    }
+
+    private void startAvasEngineNow() {
+        AvasConfig config;
+        try {
+            config = avasLibrary.loadConfig();
+            if (!config.engine.enabled) {
+                throw new IllegalStateException("engine is disabled");
+            }
+            if (!config.engine.exteriorEnabled && !config.engine.interiorEnabled) {
+                throw new IllegalStateException("engine outputs are disabled");
+            }
+        } catch (Throwable error) {
+            emitAvasError("engine_start", "engine", null, summary(error));
+            return;
+        }
+        IBinder value = healthyHelper();
+        if (value == null) {
+            ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+            value = healthyHelper();
+        }
+        if (value == null) {
+            emitAvasError("engine_start", "engine", null, "helper_unavailable");
+            return;
+        }
+        try {
+            transactAvasConfig(value, config.toJson());
+            transactNoArgs(value, TurnSignalShellProtocol.TX_START_AVAS_ENGINE);
+        } catch (Throwable error) {
+            emitAvasError("engine_start", "engine", null, summary(error));
             reportAvasStatus(value);
         }
     }

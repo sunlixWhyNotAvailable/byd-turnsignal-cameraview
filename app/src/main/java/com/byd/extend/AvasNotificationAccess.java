@@ -20,7 +20,7 @@ final class AvasNotificationAccess {
         if (preferences == null) return false;
         try {
             return preferences.getBoolean(GuardRecovery.KEY_AUTO_START, true)
-                    && (hasEnabledProfiles(preferences)
+                    && (hasEnabledAvasAudio(preferences)
                         || preferences.getBoolean("adb_recovery_enabled", true));
         } catch (RuntimeException ignored) {
             return false;
@@ -28,14 +28,13 @@ final class AvasNotificationAccess {
     }
 
     /** Reads the stored AVAS JSON only; it never initializes or rewrites the configuration. */
-    static boolean hasEnabledProfiles(SharedPreferences preferences) {
+    static boolean hasEnabledAvasAudio(SharedPreferences preferences) {
         if (preferences == null) return false;
         try {
             String stored = preferences.getString(AvasAudioLibrary.PREF_CONFIG, "");
             if (stored == null || stored.isEmpty()) return false;
-            for (AvasConfig.Profile profile : AvasConfig.parse(stored).profiles) {
-                if (profile.enabled) return true;
-            }
+            AvasConfig config = AvasConfig.parse(stored);
+            return AvasRecoveryPolicy.anyEnabledAvasAudio(config);
         } catch (RuntimeException ignored) {
             // Invalid configuration is handled by its existing owner and must not be reset here.
         }

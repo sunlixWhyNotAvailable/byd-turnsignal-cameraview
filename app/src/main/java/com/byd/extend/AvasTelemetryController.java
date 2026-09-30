@@ -33,6 +33,7 @@ final class AvasTelemetryController implements AutoCloseable {
         boolean powerOffSuppressionEligible();
         void onProfile(String profile);
         default void onPowerOffObserved() {}
+        default void onRawPower(int power, boolean baseline) {}
         void onSuppressed(String profile, String powerProfile, long deltaMs);
         void log(String kind, Object... fields);
     }
@@ -55,6 +56,7 @@ final class AvasTelemetryController implements AutoCloseable {
     private int power = -1;
     private int lock = -1;
     private boolean initialized;
+    private boolean rawPowerSeen;
     private volatile boolean active;
     private volatile boolean subscribed;
     private long lastSubscribeAttempt = Long.MIN_VALUE;
@@ -84,6 +86,7 @@ final class AvasTelemetryController implements AutoCloseable {
         telemetryHealthy = false;
         gapLogged = false;
         resetBaseline();
+        rawPowerSeen = false;
         trySubscribe();
         readAndApply(true, subscribed ? "initial" : "fallback_initial");
         scheduleNext(subscribed ? RECONCILE_MS : FALLBACK_MS);
@@ -97,6 +100,8 @@ final class AvasTelemetryController implements AutoCloseable {
         cancelTask();
         closeSubscription();
         resetBaseline();
+        // Consumers must not restore from a Power value captured before this observation gap.
+        publishRawPower(-1, true);
         telemetryHealthy = false;
         gapLogged = false;
         sink.log("avas_telemetry_mode", "mode", "off", "reason", "automatic_profiles_disabled");
@@ -147,6 +152,7 @@ final class AvasTelemetryController implements AutoCloseable {
             if (sequence <= listenerArrivals.powerApplied) return;
             listenerArrivals.powerApplied = sequence;
             power = value;
+            publishRawPower(value, false);
             if (AvasEventPolicy.normalizedPower(value) < 0) {
                 invalidCallback(receivedMs);
                 return;
@@ -181,6 +187,7 @@ final class AvasTelemetryController implements AutoCloseable {
 
     private void subscriptionFailed(long listenerGeneration, String reason, long receivedMs) {
         if (!active || listenerGeneration != generation) return;
+        publishRawPower(-1, true);
         sink.log("avas_telemetry_subscription", "registered", false,
                 "mode", "fallback_250ms", "reason", reason, "received_t_ms", receivedMs);
         enterFallback("listener_error", true);
@@ -221,6 +228,8 @@ final class AvasTelemetryController implements AutoCloseable {
                 && powerBefore == before.powerApplied;
         boolean applyLock = sameSubscription && lockBefore == before.lockArrival.get()
                 && lockBefore == before.lockApplied;
+        // Engine Power is independent of Lock readiness, and precedes OFF event enqueueing.
+        if (applyPower) publishRawPower(snapshot.power, silent);
         if (!applyPower || !applyLock) {
             sink.log("avas_telemetry_snapshot_raced", "source", source,
                     "power_discarded", !applyPower, "lock_discarded", !applyLock);
@@ -336,6 +345,11 @@ final class AvasTelemetryController implements AutoCloseable {
         power = -1;
         lock = -1;
         policy.reset();
+    }
+
+    private void publishRawPower(int value, boolean silent) {
+        sink.onRawPower(value, silent || !rawPowerSeen);
+        rawPowerSeen = value >= 0 && value <= 4;
     }
 
     private void logGapOnce(String source, int rawPower, int rawLock, long observedMs) {

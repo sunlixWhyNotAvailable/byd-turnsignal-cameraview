@@ -60,6 +60,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     private AvasFocusMaintainer activeFocusMaintainer;
     private AudioFocusRequest exteriorSessionFocus;
     private int exteriorSessionUsers;
+    private int exteriorPriorityUsers;
     private int exteriorSessionSavedVolume;
     private boolean navigationSessionActive;
 
@@ -437,6 +438,15 @@ final class AvasAudioPlayer implements AutoCloseable {
                 throw new IllegalStateException("Navigation audio session is active");
             }
             if (exteriorSessionUsers > 0) {
+                if (focus != null) {
+                    if (exteriorPriorityUsers == 0) {
+                        int granted = manager.requestAudioFocus(focus);
+                        event(diagnostics, "avas_focus_request", "result", granted,
+                                "phase", "shared_priority_acquired");
+                        exteriorSessionFocus = focus;
+                    }
+                    exteriorPriorityUsers++;
+                }
                 int users = ++exteriorSessionUsers;
                 event(diagnostics, "avas_route_shared", "active_sources", users);
                 return;
@@ -456,13 +466,16 @@ final class AvasAudioPlayer implements AutoCloseable {
                 event(diagnostics, "avas_mute_volume", "phase", "saved", "volume", savedVolume,
                         "muted", savedMute == 1);
                 route.naviFocus(true, diagnostics);
-                int granted = manager.requestAudioFocus(focus);
-                event(diagnostics, "avas_focus_request", "result", granted);
+                int granted = focus == null ? AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                        : manager.requestAudioFocus(focus);
+                event(diagnostics, "avas_focus_request", "result", granted,
+                        "requested", focus != null);
                 Thread.sleep(EXTERIOR_NAV_PREP_MS);
                 route.prepare(focus, diagnostics,
                         dirty -> settings.putInt(AvasShellSettings.DIRTY, dirty));
                 exteriorSessionFocus = focus;
                 exteriorSessionUsers = 1;
+                exteriorPriorityUsers = focus == null ? 0 : 1;
             } catch (Exception failure) {
                 try { restore(focus, diagnostics); }
                 catch (Exception cleanupFailure) { failure.addSuppressed(cleanupFailure); }
@@ -482,9 +495,20 @@ final class AvasAudioPlayer implements AutoCloseable {
     }
 
     private void releaseExteriorSession(AvasAudioDiagnostics.Context diagnostics) throws Exception {
+        releaseExteriorSession(diagnostics, true);
+    }
+
+    private void releaseExteriorSession(AvasAudioDiagnostics.Context diagnostics, boolean priority)
+            throws Exception {
         synchronized (exteriorSessionLock) {
             if (exteriorSessionUsers <= 0) return;
             int users = --exteriorSessionUsers;
+            if (priority && exteriorPriorityUsers > 0) exteriorPriorityUsers--;
+            if (users > 0 && exteriorPriorityUsers == 0 && exteriorSessionFocus != null) {
+                stopFocusMaintainer(activeFocusMaintainer);
+                manager.abandonAudioFocusRequest(exteriorSessionFocus);
+                exteriorSessionFocus = null;
+            }
             AudioFocusRequest focus = exteriorSessionFocus;
             if (!releaseExteriorSessionIfLast(users, () -> {
                 exteriorSessionFocus = null;
@@ -497,7 +521,142 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
     }
 
+    /** One continuous engine sink. Interior deliberately does not acquire the OEM NAV route. */
+    EngineOutput openEngineOutput(boolean exterior, BooleanSupplier cancelled) throws Exception {
+        return new EngineOutput(exterior, cancelled);
+    }
+
+    final class EngineOutput implements AutoCloseable {
+        private final boolean exterior;
+        private final BooleanSupplier cancelled;
+        private AudioTrack track;
+        private boolean leased;
+        private long writtenFrames;
+
+        private EngineOutput(boolean exterior, BooleanSupplier cancelled) throws Exception {
+            this.exterior = exterior;
+            this.cancelled = cancelled;
+            try {
+                if (exterior) {
+                    // An audition cancelled by engine startup still owns NAV until its cleanup.
+                    long deadline = SystemClock.elapsedRealtime() + 3000;
+                    while (!cancelled.getAsBoolean()) {
+                        boolean busy;
+                        synchronized (exteriorSessionLock) { busy = navigationSessionActive; }
+                        if (!busy) break;
+                        if (SystemClock.elapsedRealtime() >= deadline) {
+                            throw new IOException("Navigation audition did not release its route");
+                        }
+                        Thread.sleep(10);
+                    }
+                    if (cancelled.getAsBoolean()) throw new IOException("Engine startup cancelled");
+                    restoreUnownedExteriorSession(null);
+                    acquireExteriorSession(null, null);
+                    leased = true;
+                }
+                AudioAttributes attributes = exterior
+                        ? new AudioAttributes.Builder().setLegacyStreamType(NAV_STREAM)
+                                .setFlags(REQUESTED_ROUTE_FLAGS).build()
+                        : new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build();
+                int minimum = AudioTrack.getMinBufferSize(48_000, AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT);
+                if (minimum <= 0) throw new IOException("Engine AudioTrack buffer unavailable");
+                int bufferBytes = align(Math.max(minimum, 1920), 2);
+                track = new AudioTrack.Builder().setAudioAttributes(attributes)
+                        .setAudioFormat(new AudioFormat.Builder().setSampleRate(48_000)
+                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                        .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(bufferBytes).build();
+                if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                    throw new IOException("Engine AudioTrack not initialized");
+                }
+                if (exterior) prepareExterior(bufferBytes);
+                else track.play();
+                event("avas_engine_output", "phase", "opened", "exterior", exterior,
+                        "session", track.getAudioSessionId(), "buffer_bytes", bufferBytes);
+            } catch (Exception error) {
+                try { close(); } catch (Exception cleanup) { error.addSuppressed(cleanup); }
+                throw error;
+            }
+        }
+
+        private void prepareExterior(int bufferBytes) throws Exception {
+            AvasNavSourceGate gate = newNavSourceGate();
+            try {
+                gate.start();
+                short[] silence = new short[bufferBytes / 2];
+                AvasNavSourcePlayback.await(gate, silence.length, Math.min(960, silence.length),
+                        cancelled, new AvasNavSourcePlayback.ZeroWriter() {
+                            @Override public long prefill(long frames) {
+                                int count = track.write(silence, 0, (int) frames,
+                                        AudioTrack.WRITE_NON_BLOCKING);
+                                if (count < 0) throw new IllegalStateException("Engine prefill=" + count);
+                                writtenFrames += count;
+                                return count;
+                            }
+                            @Override public long write(long frames) throws Exception {
+                                return EngineOutput.this.write(silence, (int) frames);
+                            }
+                        }, () -> {
+                            boolean started = AvasNavVolumePolicy.capAndPlay(
+                                    value -> manager.setStreamVolume(NAV_STREAM, value, 0),
+                                    () -> manager.getStreamVolume(NAV_STREAM), cancelled, track::play);
+                            return started ? SystemClock.elapsedRealtime() : -1;
+                        }, SystemClock::elapsedRealtime);
+            } finally { gate.close(); }
+        }
+
+        int write(short[] pcm, int frames) throws Exception {
+            int offset = 0;
+            long deadline = SystemClock.elapsedRealtime() + 2000;
+            while (offset < frames && !cancelled.getAsBoolean()) {
+                int count = track.write(pcm, offset, frames - offset, AudioTrack.WRITE_NON_BLOCKING);
+                if (count < 0) throw new IOException("Engine PCM write=" + count);
+                if (count > 0) {
+                    offset += count;
+                    writtenFrames += count;
+                    deadline = SystemClock.elapsedRealtime() + 2000;
+                } else {
+                    if (SystemClock.elapsedRealtime() >= deadline) throw new IOException("Engine PCM stalled");
+                    Thread.sleep(1);
+                }
+            }
+            return offset;
+        }
+
+        void drain() throws Exception {
+            if (track == null) return;
+            long deadline = SystemClock.elapsedRealtime() + 2000;
+            while (!cancelled.getAsBoolean()
+                    && engineFramesPending(writtenFrames, track.getPlaybackHeadPosition())) {
+                if (SystemClock.elapsedRealtime() >= deadline) throw new IOException("Engine drain stalled");
+                Thread.sleep(2);
+            }
+        }
+
+        @Override public void close() throws Exception {
+            AudioTrack current = track;
+            track = null;
+            if (current != null) {
+                try {
+                    event("avas_engine_output", "phase", "closed", "exterior", exterior,
+                            "frames", writtenFrames, "underruns", current.getUnderrunCount());
+                } catch (RuntimeException ignored) {
+                } finally { release(current); }
+            }
+            if (leased) {
+                leased = false;
+                releaseExteriorSession(null, false);
+            }
+        }
+    }
+
     interface ExteriorSessionCleanup { void release() throws Exception; }
+
+    static boolean engineFramesPending(long writtenFrames, int playbackHead) {
+        return (writtenFrames & 0xffff_ffffL) != Integer.toUnsignedLong(playbackHead);
+    }
 
     static boolean releaseExteriorSessionIfLast(int remainingUsers,
             ExteriorSessionCleanup cleanup) throws Exception {

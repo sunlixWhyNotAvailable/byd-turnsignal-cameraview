@@ -42,6 +42,7 @@ final class AvasRuntime implements AutoCloseable {
     private final AvasPlaybackQueue queue;
     private final AvasEventPolicy policy = new AvasEventPolicy();
     private final AvasTelemetryController telemetryController;
+    private final AvasEngineRuntime engine;
     private final ExecutorService playback = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "avas-playback"));
     private final ScheduledExecutorService telemetry = Executors.newSingleThreadScheduledExecutor(r ->
@@ -67,6 +68,16 @@ final class AvasRuntime implements AutoCloseable {
         this.ownerUid = ownerUid;
         this.eventSink = eventSink;
         queue = new AvasPlaybackQueue(SystemClock::elapsedRealtime, Process.myPid());
+        engine = new AvasEngineRuntime(context, () -> {
+                    queue.stopAllAuditions();
+                    return audioPlayer();
+                },
+                () -> {
+                    MicrophoneSession session = microphoneSession;
+                    return session != null && "active".equals(session.state);
+                }, telemetry, this::emit, () -> {
+                    if (!closed) telemetry.execute(this::reportStatus);
+                });
         AvasVehicleTelemetryTransport transport = new AvasVehicleTelemetryTransport(context);
         telemetryController = new AvasTelemetryController(SystemClock::elapsedRealtime,
                 new AvasTelemetryController.Executor() {
@@ -88,6 +99,9 @@ final class AvasRuntime implements AutoCloseable {
                     @Override public void onPowerOffObserved() {
                         stopCurrentMicrophone("vehicle_power_off");
                     }
+                    @Override public void onRawPower(int power, boolean baseline) {
+                        engine.onPower(power, baseline);
+                    }
                     @Override public void onSuppressed(String profile, String powerProfile,
                             long deltaMs) {
                         event("avas_event_skipped", "profile", profile,
@@ -102,6 +116,7 @@ final class AvasRuntime implements AutoCloseable {
         if (closed || started) return;
         started = true;
         config = loadConfig();
+        engine.configure(config.engine);
         // Recover a route left dirty by helper death even when no new sound is requested.
         try {
             player = new AvasAudioPlayer(context, this::emit);
@@ -122,6 +137,7 @@ final class AvasRuntime implements AutoCloseable {
         Set<String> deleted = assetIds(config);
         deleted.removeAll(assetIds(next));
         config = next;
+        engine.configure(next.engine);
         telemetryController.eligibilityChanged(skipEligible(next, "power_on"),
                 skipEligible(next, "power_off"));
         if (!deleted.isEmpty()) {
@@ -215,6 +231,19 @@ final class AvasRuntime implements AutoCloseable {
         reportStatus();
     }
 
+    void startEngine() {
+        if (closed) return;
+        queue.stopAllAuditions();
+        engine.startManual();
+        reportStatus();
+    }
+
+    void stopEngine() {
+        if (closed) return;
+        engine.stopManual();
+        reportStatus();
+    }
+
     synchronized void startAudition(String profileId, String assetId, String sessionId) {
         if (closed) return;
         if (!validSessionId(sessionId)) {
@@ -223,9 +252,9 @@ final class AvasRuntime implements AutoCloseable {
             return;
         }
         MicrophoneSession microphone = microphoneSession;
-        if (microphone != null && !microphone.terminal()) {
+        if (microphone != null && !microphone.terminal() || engine.exteriorActive()) {
             auditionError(profileId, assetId, sessionId,
-                    "exterior microphone audio is active");
+                    "exterior audio is active");
             reportStatus();
             return;
         }
@@ -456,7 +485,8 @@ final class AvasRuntime implements AutoCloseable {
                             .put("state", microphone.state).put("format", microphone.format)
                             .put("volume", microphone.volume);
             emit(new JSONObject().put("kind", "avas_status").put("profiles", profiles)
-                    .put("audition", audition).put("microphone", microphoneStatus));
+                    .put("audition", audition).put("microphone", microphoneStatus)
+                    .put("engine", engine.status()));
         } catch (Exception ignored) {
         }
     }
@@ -469,6 +499,7 @@ final class AvasRuntime implements AutoCloseable {
             queue.close();
         }
         telemetryController.close();
+        engine.close();
         telemetry.shutdownNow();
         boolean interrupted = false;
         stopCurrentMicrophone("helper_shutdown");
@@ -546,6 +577,8 @@ final class AvasRuntime implements AutoCloseable {
             return;
         }
         try {
+            engine.awaitShutdown(request.cancelled::get);
+            if (closed || request.cancelled.get()) return;
             AvasAudioPlayer output = audioPlayer();
             event(request, "avas_play_start", "asset", assetId(file),
                     "gain", profile.volume);
@@ -582,7 +615,7 @@ final class AvasRuntime implements AutoCloseable {
 
     private synchronized void updateTelemetry() {
         if (!started || closed) return;
-        boolean enabled = false;
+        boolean enabled = config.engine.enabled;
         for (AvasConfig.Profile profile : config.profiles) enabled |= profile.enabled;
         MicrophoneSession microphone = microphoneSession;
         enabled |= microphone != null && !microphone.terminal();

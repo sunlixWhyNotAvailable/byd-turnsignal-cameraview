@@ -1,0 +1,52 @@
+{
+  "id": "ferrari_v8",
+  "name": "Ferrari 430 V8",
+  "idleRpm": 900,
+  "maxRpm": 7874,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 2859,
+      "on": "rpm_2859_on.wav",
+      "off": "rpm_2859_off.wav"
+    },
+    {
+      "rpm": 3532,
+      "on": "rpm_3532_on.wav",
+      "off": "rpm_3532_off.wav"
+    },
+    {
+      "rpm": 4352,
+      "on": "rpm_4352_on.wav",
+      "off": "rpm_4352_off.wav"
+    },
+    {
+      "rpm": 5046,
+      "on": "rpm_5046_on.wav",
+      "off": "rpm_5046_off.wav"
+    },
+    {
+      "rpm": 5692,
+      "on": "rpm_5692_on.wav",
+      "off": "rpm_5692_off.wav"
+    },
+    {
+      "rpm": 6487,
+      "on": "rpm_6487_on.wav",
+      "off": "rpm_6487_off.wav"
+    },
+    {
+      "rpm": 7103,
+      "on": "rpm_7103_on.wav",
+      "off": "rpm_7103_off.wav"
+    },
+    {
+      "rpm": 7874,
+      "on": "rpm_7874_on.wav",
+      "off": "rpm_7874_off.wav"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 package com.byd.extend.ui
 
 import androidx.compose.runtime.Immutable
+import com.byd.extend.AvasEngineSettings
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
 import com.byd.extend.UpdateHintAppearance
@@ -472,6 +473,7 @@ enum class AvasPlaybackUiState { Idle, ManualQueued, ManualPlaying, AutomaticPla
 enum class AvasActionKind {
     SetEnabled, SetRandom, SetSkipConcurrentLockUnlock, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
     DeleteAsset, StartAudition, StopAudition, SetNoiseSuppression, SetEchoCancellation,
+    SetEnginePack, SetEngineExterior, SetEngineInterior, SetEngineExteriorVolume, SetEngineInteriorVolume,
 }
 
 @Immutable
@@ -522,6 +524,7 @@ data class AvasUiState @JvmOverloads constructor(
     val importingProfileId: String? = null,
     val audition: AvasAuditionUiState = AvasAuditionUiState(),
     val microphone: AvasMicrophoneUiState = AvasMicrophoneUiState(),
+    val engine: AvasEngineUiState = AvasEngineUiState(),
 )
 
 @Immutable
@@ -536,6 +539,23 @@ data class AvasMicrophoneUiState @JvmOverloads constructor(
     val echoCancellationSupported: Boolean = false,
 ) {
     val busy: Boolean get() = state == "starting" || state == "active"
+}
+
+@Immutable
+data class AvasEngineUiState @JvmOverloads constructor(
+    val enabled: Boolean = false,
+    val packId: String = AvasEngineSettings.DEFAULT_PACK_ID,
+    val exteriorEnabled: Boolean = true,
+    val exteriorVolume: Int = 15,
+    val interiorEnabled: Boolean = false,
+    val interiorVolume: Int = 15,
+    val state: String = "stopped",
+    val error: String = "",
+) {
+    val hasOutput: Boolean get() = exteriorEnabled || interiorEnabled
+    val busy: Boolean get() = state == "starting" || state == "active" || state == "stopping"
+    val startAllowed: Boolean get() = enabled && hasOutput && !busy
+    val stopAllowed: Boolean get() = enabled && busy
 }
 
 @Immutable

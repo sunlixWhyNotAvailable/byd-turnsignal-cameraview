@@ -66,6 +66,7 @@ import com.byd.extend.ui.AvasActionKind;
 import com.byd.extend.ui.AvasAssetUiState;
 import com.byd.extend.ui.AvasAuditionUiState;
 import com.byd.extend.ui.AvasBackendAction;
+import com.byd.extend.ui.AvasEngineUiState;
 import com.byd.extend.ui.AvasPlaybackUiState;
 import com.byd.extend.ui.AvasProfileUiState;
 import com.byd.extend.ui.AvasUiState;
@@ -514,6 +515,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private AvasAudioLibrary avasLibrary;
     private final Map<String, AvasPlaybackUiState> avasPlayback = new HashMap<>();
     private AvasAuditionUiState avasAudition = new AvasAuditionUiState();
+    private String avasEngineState = "stopped";
+    private String avasEngineError = "";
     private String lastStoppedAvasSession = "";
     private final Map<String, Long> avasDurations = new HashMap<>();
     private final Set<String> avasDurationRequests = new HashSet<>();
@@ -3226,11 +3229,19 @@ public final class CameraProbeActivity extends ComponentActivity
                         AvasMicrophoneSettings.noiseSuppression(preferences),
                         AvasMicrophoneSettings.echoCancellation(preferences),
                         AvasMicrophoneEffects.supportsNoiseSuppression(),
-                        AvasMicrophoneEffects.supportsEchoCancellation()));
+                        AvasMicrophoneEffects.supportsEchoCancellation()),
+                new AvasEngineUiState(config.engine.enabled, config.engine.packId,
+                        config.engine.exteriorEnabled, config.engine.exteriorVolume,
+                        config.engine.interiorEnabled, config.engine.interiorVolume,
+                        avasEngineState, avasEngineError));
     }
 
     @Override
     public void onProductionAvasAction(AvasBackendAction action) {
+        if (action != null && !shutdownRequested && "engine".equals(action.getProfileId())) {
+            onEngineAction(action);
+            return;
+        }
         if (action != null && !shutdownRequested
                 && AvasMicrophoneSettings.PROFILE.equals(action.getProfileId())) {
             onMicrophoneAction(action);
@@ -3351,6 +3362,66 @@ public final class CameraProbeActivity extends ComponentActivity
         }
     }
 
+    private void onEngineAction(AvasBackendAction action) {
+        if (avasLibrary == null) return;
+        try {
+            AvasConfig config = avasLibrary.loadConfig();
+            AvasConfig.Engine engine = config.engine;
+            AvasActionKind kind = action.getKind();
+            if (kind == AvasActionKind.StartManual) {
+                if (engine.enabled && (engine.exteriorEnabled || engine.interiorEnabled)
+                        && !isAvasEngineBusy()) {
+                    CameraHelperService.startAvasEngine(this);
+                }
+                return;
+            }
+            if (kind == AvasActionKind.StopManual) {
+                if (isAvasEngineBusy()) CameraHelperService.stopAvasEngine(this);
+                return;
+            }
+            if (!engine.enabled && kind != AvasActionKind.SetEnabled) return;
+            boolean enabled = engine.enabled;
+            String packId = engine.packId;
+            boolean exteriorEnabled = engine.exteriorEnabled;
+            int exteriorVolume = engine.exteriorVolume;
+            boolean interiorEnabled = engine.interiorEnabled;
+            int interiorVolume = engine.interiorVolume;
+            if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
+                enabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetEnginePack && action.getStringValue() != null) {
+                packId = action.getStringValue();
+            } else if (kind == AvasActionKind.SetEngineExterior
+                    && action.getBooleanValue() != null) {
+                exteriorEnabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetEngineInterior
+                    && action.getBooleanValue() != null) {
+                interiorEnabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetEngineExteriorVolume
+                    && action.getIntValue() != null) {
+                exteriorVolume = Math.max(0, Math.min(100, action.getIntValue()));
+            } else if (kind == AvasActionKind.SetEngineInteriorVolume
+                    && action.getIntValue() != null) {
+                interiorVolume = Math.max(0, Math.min(100, action.getIntValue()));
+            } else {
+                return;
+            }
+            AvasConfig.Engine updated = new AvasConfig.Engine(enabled, packId,
+                    exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume);
+            avasLibrary.saveConfig(config.withEngine(updated));
+            CameraHelperService.configureAvas(this);
+        } catch (RuntimeException invalid) {
+            record("avas_engine_ui_action_failed", "action", action.getKind().name(),
+                    "error", invalid.toString());
+            Toast.makeText(this, runtimeText(R.string.runtime_avas_action_failed),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean isAvasEngineBusy() {
+        return "starting".equals(avasEngineState) || "active".equals(avasEngineState)
+                || "stopping".equals(avasEngineState);
+    }
+
     private void onMicrophoneAction(AvasBackendAction action) {
         if (action.getKind() == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
             if (action.getBooleanValue() && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
@@ -3395,6 +3466,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void resetAvasPlayback() {
         avasAudition = new AvasAuditionUiState();
+        avasEngineState = "stopped";
+        avasEngineError = "";
         avasPlayback.clear();
         for (String profileId : AvasConfig.PROFILE_IDS) {
             avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
@@ -13700,6 +13773,7 @@ public final class CameraProbeActivity extends ComponentActivity
             if (active) {
                 runOnUiThread(() -> {
                     pushGuardConfigFromPreferences();
+                    CameraHelperService.reportAvasStatus(CameraProbeActivity.this);
                     advanceStartupAuthorizationFlow();
                 });
             }
@@ -15034,6 +15108,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     record("helper_launch_ui_detail_suppressed", "error", json.optString("error"));
                 } else if ("helper_death".equals(kind)
                         || "helper_ping_failed".equals(kind)) {
+                    avasEngineState = "stopped";
+                    avasEngineError = "";
                     if ("helper_death".equals(kind)
                             && avasAudition.getSessionId() != null
                             && avasAudition.getSessionId().equals(
@@ -15041,6 +15117,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         avasAudition = new AvasAuditionUiState();
                         if (productionUi != null) productionUi.refreshAvasState();
                     }
+                    if (productionUi != null) productionUi.refreshAvasState();
                     telemetryReady = false;
                     manualGearPark = false;
                     publishGuardStatus("Helper відновлюється: "
@@ -15160,6 +15237,20 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         avasPlayback.clear();
         avasPlayback.putAll(next);
+        JSONObject engine = event.optJSONObject("engine");
+        if (helper == null || !helperCallbackRegistration.registered()) {
+            avasEngineState = "stopped";
+            avasEngineError = "";
+        } else if (engine == null) {
+            avasEngineState = "stopped";
+            avasEngineError = "";
+        } else {
+            String state = engine.optString("state", "stopped");
+            avasEngineState = "starting".equals(state) || "active".equals(state)
+                    || "stopping".equals(state) || "error".equals(state)
+                    ? state : "stopped";
+            avasEngineError = engine.optString("error", "");
+        }
         JSONObject audition = event.optJSONObject("audition");
         if (audition != null && avasAudition.getSessionId() != null
                 && avasAudition.getSessionId().equals(audition.optString("sessionId"))) {
@@ -15186,6 +15277,11 @@ public final class CameraProbeActivity extends ComponentActivity
                 && ("manual_start".equals(stage) || "manual_stop".equals(stage)
                         || "manual_playback".equals(stage))) {
             avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
+        }
+        if ("engine".equals(profileId)
+                && ("engine_start".equals(stage) || "engine_stop".equals(stage))) {
+            avasEngineState = "error";
+            avasEngineError = event.optString("error", "");
         }
         if (productionUi != null) productionUi.refreshAvasState();
         String detail = event.optString("error");

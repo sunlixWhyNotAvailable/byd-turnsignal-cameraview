@@ -17,6 +17,46 @@ class AvasUiModelTest {
     }
 
     @Test
+    fun engineDefaultsAndControlsFollowBackendState() {
+        val defaults = AvasEngineUiState()
+
+        assertFalse(defaults.enabled)
+        assertEquals("ferrari_v8", defaults.packId)
+        assertTrue(defaults.exteriorEnabled)
+        assertEquals(15, defaults.exteriorVolume)
+        assertFalse(defaults.interiorEnabled)
+        assertEquals(15, defaults.interiorVolume)
+        assertFalse(defaults.startAllowed)
+        assertFalse(defaults.stopAllowed)
+
+        val enabled = defaults.copy(enabled = true)
+        assertTrue(enabled.startAllowed)
+        assertFalse(enabled.copy(exteriorEnabled = false).startAllowed)
+        assertTrue(enabled.copy(state = "starting").busy)
+        assertFalse(enabled.copy(state = "starting").startAllowed)
+        assertTrue(enabled.copy(state = "starting").stopAllowed)
+        assertTrue(enabled.copy(state = "active").stopAllowed)
+        assertTrue(enabled.copy(state = "stopping").busy)
+        assertFalse(enabled.copy(state = "stopping").startAllowed)
+        assertFalse(enabled.copy(state = "error", error = "unavailable").busy)
+        assertTrue(enabled.copy(state = "error", error = "unavailable").startAllowed)
+    }
+
+    @Test
+    fun engineActionsCarryFixedPackAndIndependentOutputValues() {
+        val pack = AvasBackendAction("engine", AvasActionKind.SetEnginePack,
+            stringValue = "huracan_v10")
+        val exterior = AvasBackendAction("engine", AvasActionKind.SetEngineExterior,
+            booleanValue = false)
+        val interiorVolume = AvasBackendAction("engine", AvasActionKind.SetEngineInteriorVolume,
+            intValue = 63)
+
+        assertEquals("huracan_v10", pack.stringValue)
+        assertEquals(false, exterior.booleanValue)
+        assertEquals(63, interiorVolume.intValue)
+    }
+
+    @Test
     fun skipSwitchActionAndProfileValuesAreIndependent() {
         val on = AvasProfileUiState(id = AvasProfileIds.POWER_ON,
             skipConcurrentLockUnlock = false)

@@ -75,8 +75,11 @@ final class AvasExteriorRoute {
         Thread.sleep(ROUTE_SETTLE_MS);
         boolean optional = exteriorPath(true, diagnostics);
         naviFocus(true, diagnostics);
-        int focusResult = manager.requestAudioFocus(focus);
-        event(diagnostics, "avas_focus_request", "result", focusResult, "phase", "post_route");
+        // Continuous engine output shares the route without repeatedly taking exclusive focus.
+        int focusResult = focus == null ? AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                : manager.requestAudioFocus(focus);
+        event(diagnostics, "avas_focus_request", "result", focusResult, "phase", "post_route",
+                "requested", focus != null);
         Thread.sleep(ROUTE_SETTLE_MS);
         boolean ready = routeAccepted(primary, optional,
                 focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);

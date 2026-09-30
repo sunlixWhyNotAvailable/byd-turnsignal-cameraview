@@ -34,14 +34,20 @@ public final class AvasRecoveryPolicyTest {
     }
 
     @Test
-    public void detectsAnyEnabledAutomaticProfile() {
-        assertFalse(AvasRecoveryPolicy.anyAutomaticProfileEnabled(AvasConfig.empty()));
+    public void detectsAnyEnabledAvasAudioDemand() {
+        assertFalse(AvasRecoveryPolicy.anyEnabledAvasAudio(AvasConfig.empty()));
         List<AvasConfig.Profile> profiles = new ArrayList<>();
         for (String id : AvasConfig.PROFILE_IDS) {
             profiles.add(new AvasConfig.Profile(id, "unlock".equals(id), false,
                     15, "", Collections.emptyList()));
         }
-        assertTrue(AvasRecoveryPolicy.anyAutomaticProfileEnabled(new AvasConfig(profiles)));
+        assertTrue(AvasRecoveryPolicy.anyEnabledAvasAudio(new AvasConfig(profiles)));
+        AvasConfig engineOnly = AvasConfig.empty().withEngine(new AvasConfig.Engine(
+                true, AvasEngineSettings.DEFAULT_PACK_ID, false, 15, true, 25));
+        assertTrue(AvasRecoveryPolicy.anyEnabledAvasAudio(engineOnly));
+        assertFalse(AvasRecoveryPolicy.anyEnabledAvasAudio(AvasConfig.empty().withEngine(
+                new AvasConfig.Engine(true, AvasEngineSettings.DEFAULT_PACK_ID,
+                        false, 15, false, 15))));
     }
 
     @Test

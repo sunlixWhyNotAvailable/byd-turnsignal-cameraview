@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_engine_title">发动机模拟</string>
+    <string name="avas_engine_pack">声音包</string>
+    <string name="avas_engine_pack_ferrari_v8">法拉利 F430 V8</string>
+    <string name="avas_engine_pack_jaguar_v6">捷豹 F-Type V6</string>
+    <string name="avas_engine_pack_huracan_v10">Huracan V10</string>
+    <string name="avas_engine_pack_german_l4">德国 L4</string>
+    <string name="avas_engine_exterior">车外扬声器</string>
+    <string name="avas_engine_interior">车内扬声器</string>
+    <string name="avas_engine_no_outputs">请至少启用一个输出后再启动。</string>
+    <string name="avas_engine_stopped">发动机声音已停止</string>
+    <string name="avas_engine_starting">正在启动发动机声音…</string>
+    <string name="avas_engine_active">发动机声音正在播放</string>
+    <string name="avas_engine_stopping">正在停止发动机声音…</string>
+    <string name="avas_engine_error">发动机声音不可用</string>
+    <string name="avas_engine_start">启动</string>
+    <string name="avas_engine_stop">停止</string>
+</resources>

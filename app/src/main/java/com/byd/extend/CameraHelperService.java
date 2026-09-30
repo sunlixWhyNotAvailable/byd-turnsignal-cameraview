@@ -97,6 +97,10 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.AVAS_START_MANUAL";
     private static final String ACTION_AVAS_STOP_MANUAL =
             "com.byd.extend.action.AVAS_STOP_MANUAL";
+    private static final String ACTION_AVAS_START_ENGINE =
+            "com.byd.extend.action.AVAS_START_ENGINE";
+    private static final String ACTION_AVAS_STOP_ENGINE =
+            "com.byd.extend.action.AVAS_STOP_ENGINE";
     private static final String ACTION_AVAS_REPORT_STATUS =
             "com.byd.extend.action.AVAS_REPORT_STATUS";
     private static final String ACTION_AVAS_START_AUDITION =
@@ -602,6 +606,16 @@ public final class CameraHelperService extends Service {
                 .putExtra(EXTRA_AVAS_PROFILE_ID, profileId));
     }
 
+    static void startAvasEngine(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_AVAS_START_ENGINE));
+    }
+
+    static void stopAvasEngine(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_AVAS_STOP_ENGINE));
+    }
+
     static void reportAvasStatus(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_AVAS_REPORT_STATUS));
@@ -1020,6 +1034,8 @@ public final class CameraHelperService extends Service {
         return ACTION_AVAS_CONFIGURE.equals(action)
                 || ACTION_AVAS_START_MANUAL.equals(action)
                 || ACTION_AVAS_STOP_MANUAL.equals(action)
+                || ACTION_AVAS_START_ENGINE.equals(action)
+                || ACTION_AVAS_STOP_ENGINE.equals(action)
                 || ACTION_AVAS_START_AUDITION.equals(action)
                 || ACTION_AVAS_STOP_AUDITION.equals(action)
                 || ACTION_AVAS_REPORT_STATUS.equals(action);
@@ -1033,6 +1049,10 @@ public final class CameraHelperService extends Service {
             active.startAvasManual(command.avasProfileId);
         } else if (ACTION_AVAS_STOP_MANUAL.equals(command.action)) {
             active.stopAvasManual(command.avasProfileId);
+        } else if (ACTION_AVAS_START_ENGINE.equals(command.action)) {
+            active.startAvasEngine();
+        } else if (ACTION_AVAS_STOP_ENGINE.equals(command.action)) {
+            active.stopAvasEngine();
         } else if (ACTION_AVAS_REPORT_STATUS.equals(command.action)) {
             active.reportAvasStatus();
         } else if (ACTION_AVAS_START_AUDITION.equals(command.action)) {
@@ -1457,7 +1477,7 @@ public final class CameraHelperService extends Service {
                 && AvasRecoveryPolicy.daemonRequired(
                 GuardRecovery.isAutoStartEnabled(this),
                 GuardRecovery.isUserShutdownActive(this),
-                AvasNotificationAccess.hasEnabledProfiles(settings));
+                AvasNotificationAccess.hasEnabledAvasAudio(settings));
     }
 
     private boolean logcatRecordingRequested(SharedPreferences settings) {
@@ -1468,7 +1488,7 @@ public final class CameraHelperService extends Service {
 
     private void reconcileAvasRecovery(boolean permissionTrigger, String reason) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-        boolean anyProfile = AvasNotificationAccess.hasEnabledProfiles(settings);
+        boolean anyProfile = AvasNotificationAccess.hasEnabledAvasAudio(settings);
         boolean daemonRequired = avasDaemonRequired(settings);
         boolean wakeRequired = AvasRecoveryPolicy.wakeRequired(
                 helperRuntimeStarted, GuardRecovery.isUserShutdownActive(this), anyProfile);

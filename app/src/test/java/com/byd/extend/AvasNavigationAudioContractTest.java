@@ -177,6 +177,8 @@ public final class AvasNavigationAudioContractTest {
         String player = source("AvasAudioPlayer.java");
         String exterior = player.substring(player.indexOf("private void acquireExteriorSession("),
                 player.indexOf("private void restoreUnownedExteriorSession("));
+        // Joining an already journaled engine route may request transient focus earlier.
+        exterior = exterior.substring(exterior.indexOf("AvasNavVolumePolicy.Snapshot navSnapshot"));
         int dirty = exterior.indexOf(
                 "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED)");
         assertTrue(dirty >= 0);

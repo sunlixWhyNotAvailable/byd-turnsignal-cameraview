@@ -1,0 +1,47 @@
+{
+  "id": "german_l4",
+  "name": "German inline-four",
+  "idleRpm": 900,
+  "maxRpm": 7000,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 1473,
+      "on": "rpm_1473_on.wav",
+      "off": "rpm_1473_off.wav"
+    },
+    {
+      "rpm": 2108,
+      "on": "rpm_2108_on.wav",
+      "off": "rpm_2108_off.wav"
+    },
+    {
+      "rpm": 2721,
+      "on": "rpm_2721_on.wav",
+      "off": "rpm_2721_off.wav"
+    },
+    {
+      "rpm": 3509,
+      "on": "rpm_3509_on.wav",
+      "off": "rpm_3509_off.wav"
+    },
+    {
+      "rpm": 4362,
+      "on": "rpm_4362_on.wav",
+      "off": "rpm_4362_off.wav"
+    },
+    {
+      "rpm": 5502,
+      "on": "rpm_5502_on.wav",
+      "off": "rpm_5502_off.wav"
+    },
+    {
+      "rpm": 6714,
+      "on": "rpm_6714_on.wav",
+      "off": "rpm_6714_off.wav"
+    }
+  ]
+}

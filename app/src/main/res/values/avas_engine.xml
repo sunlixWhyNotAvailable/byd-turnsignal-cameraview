@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="avas_engine_title">Engine simulation</string>
+    <string name="avas_engine_pack">Sound pack</string>
+    <string name="avas_engine_pack_ferrari_v8">Ferrari F430 V8</string>
+    <string name="avas_engine_pack_jaguar_v6">Jaguar F-Type V6</string>
+    <string name="avas_engine_pack_huracan_v10">Huracan V10</string>
+    <string name="avas_engine_pack_german_l4">German L4</string>
+    <string name="avas_engine_exterior">Exterior speaker</string>
+    <string name="avas_engine_interior">Interior speakers</string>
+    <string name="avas_engine_no_outputs">Enable at least one output to start.</string>
+    <string name="avas_engine_stopped">Engine sound stopped</string>
+    <string name="avas_engine_starting">Starting engine sound…</string>
+    <string name="avas_engine_active">Engine sound is active</string>
+    <string name="avas_engine_stopping">Stopping engine sound…</string>
+    <string name="avas_engine_error">Engine sound unavailable</string>
+    <string name="avas_engine_start">Start</string>
+    <string name="avas_engine_stop">Stop</string>
+</resources>

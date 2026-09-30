@@ -4,12 +4,13 @@ package com.byd.extend;
 final class AvasRecoveryPolicy {
     private AvasRecoveryPolicy() {}
 
-    static boolean anyAutomaticProfileEnabled(AvasConfig config) {
+    static boolean anyEnabledAvasAudio(AvasConfig config) {
         if (config == null) return false;
         for (AvasConfig.Profile profile : config.profiles) {
             if (profile.enabled) return true;
         }
-        return false;
+        return config.engine.enabled
+                && (config.engine.exteriorEnabled || config.engine.interiorEnabled);
     }
 
     static boolean daemonRequired(

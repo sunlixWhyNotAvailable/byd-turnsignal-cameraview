@@ -1,0 +1,52 @@
+{
+  "id": "jaguar_v6",
+  "name": "Jaguar F-Type V6",
+  "idleRpm": 800,
+  "maxRpm": 6144,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 2181,
+      "on": "rpm_2181_on.wav",
+      "off": "rpm_2181_off.wav"
+    },
+    {
+      "rpm": 2862,
+      "on": "rpm_2862_on.wav",
+      "off": "rpm_2862_off.wav"
+    },
+    {
+      "rpm": 3307,
+      "on": "rpm_3307_on.wav",
+      "off": "rpm_3307_off.wav"
+    },
+    {
+      "rpm": 3765,
+      "on": "rpm_3765_on.wav",
+      "off": "rpm_3765_off.wav"
+    },
+    {
+      "rpm": 4410,
+      "on": "rpm_4410_on.wav",
+      "off": "rpm_4410_off.wav"
+    },
+    {
+      "rpm": 4998,
+      "on": "rpm_4998_on.wav",
+      "off": "rpm_4998_off.wav"
+    },
+    {
+      "rpm": 5553,
+      "on": "rpm_5553_on.wav",
+      "off": "rpm_5553_off.wav"
+    },
+    {
+      "rpm": 6118,
+      "on": "rpm_6118_on.wav",
+      "off": "rpm_6118_off.wav"
+    }
+  ]
+}
