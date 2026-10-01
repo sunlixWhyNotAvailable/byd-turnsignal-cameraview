@@ -7,9 +7,9 @@
   "idle": "idle.wav",
   "idleGainDb": 13.71,
   "start": "start.wav",
-  "startGainDb": 12.52,
+  "startGainDb": 4.9606,
   "stop": "stop.wav",
-  "stopGainDb": 16.00,
+  "stopGainDb": 6.1717,
   "layers": [
     {
       "rpm": 2181,
@@ -23,7 +23,7 @@
       "on": "rpm_2862_on.wav",
       "onGainDb": 9.59,
       "off": "rpm_2862_off.wav",
-      "offGainDb": 10.10
+      "offGainDb": 10.1
     },
     {
       "rpm": 3307,
@@ -35,7 +35,7 @@
     {
       "rpm": 3765,
       "on": "rpm_3765_on.wav",
-      "onGainDb": 9.10,
+      "onGainDb": 9.1,
       "off": "rpm_3765_off.wav",
       "offGainDb": 0.63
     },
@@ -63,7 +63,7 @@
     {
       "rpm": 6118,
       "on": "rpm_6118_on.wav",
-      "onGainDb": 0.90,
+      "onGainDb": 0.9,
       "off": "rpm_6118_off.wav",
       "offGainDb": 5.69
     }

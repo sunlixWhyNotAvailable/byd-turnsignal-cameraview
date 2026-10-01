@@ -1,0 +1,71 @@
+{
+  "id": "golf_gti_l4",
+  "name": "Volkswagen Golf GTI L4",
+  "idleRpm": 800,
+  "maxRpm": 5953,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 1517,
+      "on": "rpm_1517_on.wav",
+      "off": "rpm_1517_off.wav",
+      "onGainDb": -3.9955,
+      "offGainDb": -15.4534
+    },
+    {
+      "rpm": 2339,
+      "on": "rpm_2339_on.wav",
+      "off": "rpm_2339_off.wav",
+      "onGainDb": -1.6085,
+      "offGainDb": -10.4341
+    },
+    {
+      "rpm": 2831,
+      "on": "rpm_2831_on.wav",
+      "off": "rpm_2831_off.wav",
+      "onGainDb": -2.1609,
+      "offGainDb": -3.5694
+    },
+    {
+      "rpm": 3543,
+      "on": "rpm_3543_on.wav",
+      "off": "rpm_3543_off.wav",
+      "onGainDb": -1.5546,
+      "offGainDb": -4.1665
+    },
+    {
+      "rpm": 4108,
+      "on": "rpm_4108_on.wav",
+      "off": "rpm_4108_off.wav",
+      "onGainDb": -1.4544,
+      "offGainDb": -6.7458
+    },
+    {
+      "rpm": 4715,
+      "on": "rpm_4715_on.wav",
+      "off": "rpm_4715_off.wav",
+      "onGainDb": -2.3462,
+      "offGainDb": -6.0847
+    },
+    {
+      "rpm": 5338,
+      "on": "rpm_5338_on.wav",
+      "off": "rpm_5338_off.wav",
+      "onGainDb": -1.8232,
+      "offGainDb": -4.8359
+    },
+    {
+      "rpm": 5953,
+      "on": "rpm_5953_on.wav",
+      "off": "rpm_5953_off.wav",
+      "onGainDb": -4.2342,
+      "offGainDb": -8.0297
+    }
+  ],
+  "idleGainDb": 0.4381,
+  "startGainDb": 3.4378,
+  "stopGainDb": 11.4877
+}

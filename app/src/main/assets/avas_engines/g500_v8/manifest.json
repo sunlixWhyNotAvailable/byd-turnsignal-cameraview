@@ -1,0 +1,71 @@
+{
+  "id": "g500_v8",
+  "name": "Mercedes G500 V8",
+  "idleRpm": 650,
+  "maxRpm": 5465,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 1257,
+      "on": "rpm_1257_on.wav",
+      "off": "rpm_1257_off.wav",
+      "onGainDb": -8.3737,
+      "offGainDb": -14.9713
+    },
+    {
+      "rpm": 1846,
+      "on": "rpm_1846_on.wav",
+      "off": "rpm_1846_off.wav",
+      "onGainDb": -5.8626,
+      "offGainDb": -11.2149
+    },
+    {
+      "rpm": 2625,
+      "on": "rpm_2625_on.wav",
+      "off": "rpm_2625_off.wav",
+      "onGainDb": -5.9318,
+      "offGainDb": -6.719
+    },
+    {
+      "rpm": 3166,
+      "on": "rpm_3166_on.wav",
+      "off": "rpm_3166_off.wav",
+      "onGainDb": -5.0095,
+      "offGainDb": -2.9429
+    },
+    {
+      "rpm": 3702,
+      "on": "rpm_3702_on.wav",
+      "off": "rpm_3702_off.wav",
+      "onGainDb": -5.0114,
+      "offGainDb": -2.9267
+    },
+    {
+      "rpm": 4244,
+      "on": "rpm_4244_on.wav",
+      "off": "rpm_4244_off.wav",
+      "onGainDb": -5.4283,
+      "offGainDb": -6.5248
+    },
+    {
+      "rpm": 4939,
+      "on": "rpm_4939_on.wav",
+      "off": "rpm_4939_off.wav",
+      "onGainDb": -5.8778,
+      "offGainDb": -7.3363
+    },
+    {
+      "rpm": 5456,
+      "on": "rpm_5456_on.wav",
+      "off": "rpm_5456_off.wav",
+      "onGainDb": -4.086,
+      "offGainDb": -8.8978
+    }
+  ],
+  "idleGainDb": -1.4136,
+  "startGainDb": -0.6529,
+  "stopGainDb": 3.5972
+}

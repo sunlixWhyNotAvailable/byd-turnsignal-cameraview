@@ -71,15 +71,21 @@ public final class AvasShellProtocolTest {
     }
 
     @Test
-    public void avasAloneUsesTheProvenShellAttributedContextAndAsyncClose() throws Exception {
+    public void avasAndMediaUseRealShellAttributionWithoutReplacingOemContext() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/byd/extend/TurnSignalShellMain.java")),
                 StandardCharsets.UTF_8);
 
         assertTrue(source.contains("new AvasRuntime("));
-        assertTrue(source.contains("avasShellContext(context), appUid"));
+        assertTrue(source.contains("shellContext(context), appUid"));
         assertTrue(source.contains("createPackageContext(\"com.android.shell\", 0)"));
         assertTrue(source.contains("\"createAppContext\", threadClass"));
+        String media = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/byd/extend/MusicMetadataRuntime.java")), StandardCharsets.UTF_8);
+        assertTrue(media.contains("mediaContext = TurnSignalShellMain.shellContext(context)"));
+        assertTrue(media.contains("sessionManager = (MediaSessionManager) mediaContext.getSystemService("));
+        assertTrue(media.contains("mediaContext.sendBroadcast("));
+        assertFalse(media.contains("context.sendBroadcast("));
         assertTrue(source.contains("avasCloseWorker.execute"));
         int asyncClose = source.indexOf("avasCloseWorker.execute");
         assertTrue(source.indexOf("closeAvasOnce();", asyncClose)

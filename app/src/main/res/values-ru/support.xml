@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+<string name="support_close">"Закрыть"</string>
+    <string name="support">"Поддержать"</string>
+    <string name="support_title">"Поддержать разработку"</string>
+    <string name="support_description">"Добровольная поддержка разработки и улучшения приложений для автомобилей BYD"</string>
+    <string name="support_card_label">"Номер карты Банки"</string>
+    <string name="support_qr_description">"QR-код Банки для пополнения"</string>
+    <string name="support_scan_hint">"Отсканируйте QR-код телефоном или откройте ссылку на Банку."</string>
+    <string name="support_copy">"Копировать"</string>
+    <string name="support_copy_link">"Копировать ссылку"</string>
+    <string name="support_copy_card">"Копировать номер карты"</string>
+    <string name="support_link_copied">"Ссылка скопирована"</string>
+    <string name="support_card_copied">"Номер карты скопирован"</string>
+    <string name="support_tap_to_copy">"Нажмите, чтобы скопировать"</string>
+    <string name="support_action_unavailable">"Нет приложения для этого действия"</string>
+    <string name="support_share">"Поделиться"</string>
+</resources>

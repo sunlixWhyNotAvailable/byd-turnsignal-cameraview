@@ -14,6 +14,12 @@
     <string name="avas_engine_active">发动机声音正在播放</string>
     <string name="avas_engine_stopping">正在停止发动机声音…</string>
     <string name="avas_engine_error">发动机声音不可用</string>
-    <string name="avas_engine_start">启动</string>
-    <string name="avas_engine_stop">停止</string>
+    <string name="avas_engine_start">测试</string>
+    <string name="avas_engine_stop">停止测试</string>
+    <string name="avas_engine_testing">正在测试发动机声音</string>
+    <string name="avas_engine_pack_maserati_v8">Maserati GranTurismo V8</string>
+    <string name="avas_engine_pack_g500_v8">Mercedes G500 V8</string>
+    <string name="avas_engine_pack_golf_gti_l4">Volkswagen Golf GTI L4</string>
+    <string name="avas_engine_pack_porsche_gt3_h6">Porsche 911 GT3 H6</string>
+    <string name="avas_engine_pack_harley_vtwin">Harley-Davidson V-twin</string>
 </resources>

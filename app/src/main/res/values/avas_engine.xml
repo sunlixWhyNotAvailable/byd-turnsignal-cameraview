@@ -14,6 +14,12 @@
     <string name="avas_engine_active">Engine sound is active</string>
     <string name="avas_engine_stopping">Stopping engine sound…</string>
     <string name="avas_engine_error">Engine sound unavailable</string>
-    <string name="avas_engine_start">Start</string>
-    <string name="avas_engine_stop">Stop</string>
+    <string name="avas_engine_start">Test</string>
+    <string name="avas_engine_stop">Stop test</string>
+    <string name="avas_engine_testing">Testing engine sound</string>
+    <string name="avas_engine_pack_maserati_v8">Maserati GranTurismo V8</string>
+    <string name="avas_engine_pack_g500_v8">Mercedes G500 V8</string>
+    <string name="avas_engine_pack_golf_gti_l4">Volkswagen Golf GTI L4</string>
+    <string name="avas_engine_pack_porsche_gt3_h6">Porsche 911 GT3 H6</string>
+    <string name="avas_engine_pack_harley_vtwin">Harley-Davidson V-twin</string>
 </resources>

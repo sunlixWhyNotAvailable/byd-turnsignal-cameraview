@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+<string name="support_close">"Close"</string>
+    <string name="support">"Support"</string>
+    <string name="support_title">"Support development"</string>
+    <string name="support_description">"Voluntary support for the development and improvement of apps for BYD cars"</string>
+    <string name="support_card_label">"Jar card number"</string>
+    <string name="support_qr_description">"Scan to support via monobank"</string>
+    <string name="support_scan_hint">"Scan the QR code with your phone or open the Jar link."</string>
+    <string name="support_copy">"Copy"</string>
+    <string name="support_copy_link">"Copy link"</string>
+    <string name="support_copy_card">"Copy card number"</string>
+    <string name="support_link_copied">"Link copied"</string>
+    <string name="support_card_copied">"Card number copied"</string>
+    <string name="support_tap_to_copy">"Tap to copy"</string>
+    <string name="support_action_unavailable">"No app can handle this action"</string>
+    <string name="support_share">"Share"</string>
+</resources>

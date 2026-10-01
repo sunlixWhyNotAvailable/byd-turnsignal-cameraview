@@ -1,0 +1,71 @@
+{
+  "id": "porsche_gt3_h6",
+  "name": "Porsche 911 GT3 H6",
+  "idleRpm": 800,
+  "maxRpm": 7822,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 2403,
+      "on": "rpm_2403_on.wav",
+      "off": "rpm_2403_off.wav",
+      "onGainDb": -5.9115,
+      "offGainDb": -9.1841
+    },
+    {
+      "rpm": 3340,
+      "on": "rpm_3340_on.wav",
+      "off": "rpm_3340_off.wav",
+      "onGainDb": -9.4084,
+      "offGainDb": -6.117
+    },
+    {
+      "rpm": 4005,
+      "on": "rpm_4005_on.wav",
+      "off": "rpm_4005_off.wav",
+      "onGainDb": -4.6247,
+      "offGainDb": -8.1169
+    },
+    {
+      "rpm": 4836,
+      "on": "rpm_4836_on.wav",
+      "off": "rpm_4836_off.wav",
+      "onGainDb": -4.4118,
+      "offGainDb": -10.2054
+    },
+    {
+      "rpm": 5485,
+      "on": "rpm_5485_on.wav",
+      "off": "rpm_5485_off.wav",
+      "onGainDb": -6.9375,
+      "offGainDb": -9.4089
+    },
+    {
+      "rpm": 6321,
+      "on": "rpm_6321_on.wav",
+      "off": "rpm_6321_off.wav",
+      "onGainDb": -7.5968,
+      "offGainDb": -10.4398
+    },
+    {
+      "rpm": 7037,
+      "on": "rpm_7037_on.wav",
+      "off": "rpm_7037_off.wav",
+      "onGainDb": -7.195,
+      "offGainDb": -9.8059
+    },
+    {
+      "rpm": 7822,
+      "on": "rpm_7822_on.wav",
+      "off": "rpm_7822_off.wav",
+      "onGainDb": -4.1449,
+      "offGainDb": -7.4184
+    }
+  ],
+  "idleGainDb": -4.0429,
+  "startGainDb": -8.0018,
+  "stopGainDb": 9.3307
+}

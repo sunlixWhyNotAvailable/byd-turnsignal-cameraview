@@ -33,6 +33,7 @@ final class AvasPcmTransfer {
                 offset += count;
                 lastProgress = clock.now();
             } else {
+                if (cancelled.getAsBoolean()) return offset;
                 output.idle();
                 if (clock.now() - lastProgress > 3000) {
                     throw new IllegalStateException("AudioTrack write stalled");

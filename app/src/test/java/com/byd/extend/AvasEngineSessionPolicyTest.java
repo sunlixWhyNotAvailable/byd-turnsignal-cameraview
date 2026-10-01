@@ -48,18 +48,55 @@ public final class AvasEngineSessionPolicyTest {
         assertEquals(START, p.observeReady(true));
     }
 
-    @Test public void manualSuppressionSurvivesIndicatorsUntilOffOrManualStart() {
+    @Test public void testOverridesLiveAndStopRestoresItWithoutAnotherIgnition() {
         AvasEngineSessionPolicy p = enabled();
         p.observePower(2, true);
         p.observeReady(true);
-        assertEquals(STOP_NOW, p.manualStop());
+        assertEquals(NONE, p.manualStop()); // never stops live
+        assertTrue(p.desiredActive());
+        assertEquals(START, p.manualStart()); // test replaces live output
+        assertTrue(p.testActive());
+        assertEquals(NONE, p.manualStart());
         p.observeReady(false);
         assertEquals(NONE, p.observeReady(true));
-        assertEquals(START, p.manualStart());
-        p.manualStop();
+        assertEquals(RESTORE, p.manualStop());
+        assertFalse(p.testActive());
+        assertTrue(p.desiredActive());
+        assertEquals(NONE, p.manualStop()); // duplicate Stop cannot stop resumed live
         p.observePower(0, false);
         p.observePower(2, false);
         assertEquals(START, p.observeReady(true));
+    }
+
+    @Test public void testBeforeOkDoesNotStartLiveOrRequireAnotherManualStart() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(false);
+        assertEquals(START, p.manualStart());
+        assertFalse(p.liveRequested());
+        assertEquals(STOP_NOW, p.manualStop());
+        assertFalse(p.desiredActive());
+        assertEquals(START, p.observeReady(true)); // live is independent of the stopped test
+        p.observePower(0, false);
+        p.observePower(2, false);
+        p.observeReady(false);
+        p.manualStart();
+        assertEquals(NONE, p.playbackFailed());
+        assertEquals(START, p.observeReady(true)); // failed test must not suppress real ignition
+    }
+
+    @Test public void okDuringTestAndTestFailureReleaseToLive() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(false);
+        p.manualStart();
+        assertEquals(NONE, p.observeReady(true)); // no second output while testing
+        assertTrue(p.liveRequested());
+        assertEquals(RESTORE, p.manualStop());
+        p.manualStart();
+        assertEquals(RESTORE, p.playbackFailed());
+        assertFalse(p.testActive());
+        assertEquals(NONE, p.playbackFailed()); // no infinite live failure/restart loop
     }
 
     @Test public void disablingOutputsRequiresFreshReadBeforeAutomaticRestore() {

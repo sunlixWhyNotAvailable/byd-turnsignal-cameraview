@@ -555,11 +555,12 @@ data class AvasEngineUiState @JvmOverloads constructor(
     val interiorVolume: Int = 15,
     val state: String = "stopped",
     val error: String = "",
+    val testActive: Boolean = false,
 ) {
     val hasOutput: Boolean get() = exteriorEnabled || interiorEnabled
     val busy: Boolean get() = state == "starting" || state == "active" || state == "stopping"
-    val startAllowed: Boolean get() = enabled && hasOutput && !busy
-    val stopAllowed: Boolean get() = enabled && busy
+    val startAllowed: Boolean get() = enabled && hasOutput && !testActive && state != "stopping"
+    val stopAllowed: Boolean get() = enabled && testActive
 }
 
 @Immutable

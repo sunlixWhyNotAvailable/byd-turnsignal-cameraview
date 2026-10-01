@@ -7,9 +7,9 @@
   "idle": "idle.wav",
   "idleGainDb": 13.11,
   "start": "start.wav",
-  "startGainDb": 13.60,
+  "startGainDb": -3.9204,
   "stop": "stop.wav",
-  "stopGainDb": 13.80,
+  "stopGainDb": 8.9276,
   "layers": [
     {
       "rpm": 2362,

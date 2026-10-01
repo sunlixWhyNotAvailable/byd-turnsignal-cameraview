@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -52,7 +54,7 @@ internal fun AvasEngineCard(
                 colors, clearSemantics = true, label = title)
         }
     }) {
-        Column(Modifier.fillMaxWidth().alpha(if (state.enabled) 1f else .45f),
+        Column(Modifier.fillMaxWidth().fillMaxHeight().alpha(if (state.enabled) 1f else .45f),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(strings.resource(R.string.avas_engine_pack), color = colors.muted, fontSize = 12.sp)
             ChoiceField("", packLabels, packIndex, {
@@ -88,9 +90,11 @@ internal fun AvasEngineCard(
                 Text(strings.resource(R.string.avas_engine_no_outputs), color = colors.muted,
                     fontSize = 12.sp)
             }
+            Spacer(Modifier.weight(1f))
             Text(strings.resource(when {
                 hasError -> R.string.avas_engine_error
                 state.state == "starting" -> R.string.avas_engine_starting
+                state.testActive -> R.string.avas_engine_testing
                 state.state == "active" -> R.string.avas_engine_active
                 state.state == "stopping" -> R.string.avas_engine_stopping
                 else -> R.string.avas_engine_stopped
@@ -126,5 +130,10 @@ private fun enginePackResource(packId: String) = when (packId) {
     AvasEngineSettings.JAGUAR_V6 -> R.string.avas_engine_pack_jaguar_v6
     AvasEngineSettings.HURACAN_V10 -> R.string.avas_engine_pack_huracan_v10
     AvasEngineSettings.GERMAN_L4 -> R.string.avas_engine_pack_german_l4
+    AvasEngineSettings.MASERATI_V8 -> R.string.avas_engine_pack_maserati_v8
+    AvasEngineSettings.G500_V8 -> R.string.avas_engine_pack_g500_v8
+    AvasEngineSettings.GOLF_GTI_L4 -> R.string.avas_engine_pack_golf_gti_l4
+    AvasEngineSettings.PORSCHE_GT3_H6 -> R.string.avas_engine_pack_porsche_gt3_h6
+    AvasEngineSettings.HARLEY_VTWIN -> R.string.avas_engine_pack_harley_vtwin
     else -> R.string.avas_engine_pack_ferrari_v8
 }

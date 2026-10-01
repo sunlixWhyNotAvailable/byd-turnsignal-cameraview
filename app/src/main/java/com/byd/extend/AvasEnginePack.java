@@ -118,8 +118,7 @@ public final class AvasEnginePack {
     }
 
     private static void requireAllowedId(String id) {
-        if (!"ferrari_v8".equals(id) && !"jaguar_v6".equals(id)
-                && !"huracan_v10".equals(id) && !"german_l4".equals(id)) {
+        if (!AvasEngineSettings.PACK_IDS.contains(id)) {
             throw new IllegalArgumentException("unsupported engine pack");
         }
     }

@@ -50,6 +50,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     private final AvasExteriorRoute route;
     private final AvasNavigationRoute navigationRoute;
     private final Consumer<JSONObject> log;
+    private final AvasEngineCueGate cueGate;
     private final AtomicLong generation = new AtomicLong();
     private final Object trackLock = new Object();
     private final Object exteriorSessionLock = new Object();
@@ -64,9 +65,10 @@ final class AvasAudioPlayer implements AutoCloseable {
     private int exteriorSessionSavedVolume;
     private boolean navigationSessionActive;
 
-    AvasAudioPlayer(Context context, Consumer<JSONObject> log) throws Exception {
+    AvasAudioPlayer(Context context, Consumer<JSONObject> log, AvasEngineCueGate cueGate) throws Exception {
         this.context = context;
         this.log = log;
+        this.cueGate = cueGate;
         manager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) throw new IllegalStateException("AudioManager unavailable");
         settings = new AvasShellSettings(context);
@@ -228,6 +230,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (scaled.length < pcm.length) scaled = new byte[pcm.length];
             try (FileInputStream input = new FileInputStream(wav)) {
                 skipFully(input, header.dataOffset);
+                if (!cueGate.awaitEventStart(() -> cancelled(ticket, cancelled))) return;
                 long remaining = header.dataBytes;
                 while (remaining > 0 && !cancelled(ticket, cancelled)) {
                     int wanted = (int) Math.min(pcm.length, remaining);
@@ -668,6 +671,13 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (!cancelled.getAsBoolean()) drainedFrames = writtenFrames;
         }
 
+        long submittedFrames() { return writtenFrames; }
+
+        boolean playedThrough(long frame) {
+            observePlaybackHead();
+            return drainedFrames >= frame;
+        }
+
         private void observePlaybackHead() {
             if (track == null) return;
             int current = track.getPlaybackHeadPosition();
@@ -903,6 +913,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (scaled.length < pcm.length) scaled = new byte[pcm.length];
             try (FileInputStream input = new FileInputStream(wav)) {
                 skipFully(input, header.dataOffset);
+                if (!cueGate.awaitEventStart(() -> cancelled(ticket, cancelled))) return;
                 long remaining = header.dataBytes;
                 while (remaining > 0 && !cancelled(ticket, cancelled)) {
                     int wanted = (int) Math.min(pcm.length, remaining);
@@ -1014,15 +1025,20 @@ final class AvasAudioPlayer implements AutoCloseable {
             throws Exception {
         return AvasPcmTransfer.write(length, frameSize,
                 () -> cancelled(ticket, externalCancellation), new AvasPcmTransfer.Output() {
-            @Override public int write(int offset, int writable) {
+            @Override public int write(int offset, int writable) throws Exception {
+                IntSupplier transfer;
                 if (exteriorGain != null) {
                     exteriorGain.update();
                     // Keep original PCM peaks intact: amplification belongs to this track's effect.
-                    return output.write(pcm, offset, writable, AudioTrack.WRITE_NON_BLOCKING);
+                    transfer = () -> output.write(pcm, offset, writable, AudioTrack.WRITE_NON_BLOCKING);
+                } else {
+                    int volume = currentVolume == null ? initialVolume : clamp(currentVolume.getAsInt());
+                    AvasWav.scalePcm16(pcm, offset, scaled, 0, writable, volume);
+                    transfer = () -> output.write(scaled, 0, writable, AudioTrack.WRITE_NON_BLOCKING);
                 }
-                int volume = currentVolume == null ? initialVolume : clamp(currentVolume.getAsInt());
-                AvasWav.scalePcm16(pcm, offset, scaled, 0, writable, volume);
-                return output.write(scaled, 0, writable, AudioTrack.WRITE_NON_BLOCKING);
+                return "wav".equals(phase) && !diagnostics.firstWavWrite
+                        ? cueGate.writeEventStart(() -> cancelled(ticket, externalCancellation), transfer)
+                        : transfer.getAsInt();
             }
             @Override public void written(int offset, int count) {
                 if (exteriorGain != null && "wav".equals(phase)) {

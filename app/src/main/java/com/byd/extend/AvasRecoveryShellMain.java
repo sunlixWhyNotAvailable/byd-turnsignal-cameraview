@@ -57,7 +57,7 @@ public final class AvasRecoveryShellMain {
             return;
         }
         Looper.prepareMainLooper();
-        Context context = TurnSignalShellMain.avasShellContext(
+        Context context = TurnSignalShellMain.shellContext(
                 TurnSignalShellMain.systemContext());
         if (!installedIdentityMatches(context, appUid, apkIdentity)) {
             throw new SecurityException("Application identity mismatch");

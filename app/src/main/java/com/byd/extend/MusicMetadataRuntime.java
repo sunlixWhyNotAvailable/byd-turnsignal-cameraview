@@ -100,6 +100,7 @@ final class MusicMetadataRuntime {
     private final Runnable progressRunnable = this::refreshPlayingProgress;
 
     private MediaSessionManager sessionManager;
+    private Context mediaContext;
     private Method currentFocusPackage;
     private BydMediaWriter writer;
     private boolean enabled;
@@ -342,26 +343,31 @@ final class MusicMetadataRuntime {
 
     private boolean dispatchPendingMediaKey(PendingMediaKey pending, int action, int repeats,
             long downTime, long eventTime) {
-        if (pending.binding != null) return dispatchMediaKey(pending.binding, pending.keyCode,
-                action, repeats, downTime, eventTime);
-        if (pending.receiver == null || !isLiveMediaProcess(pending.packageName, false)) return false;
+        boolean accepted = false;
+        String failure = "";
         try {
-            context.sendBroadcast(new Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(pending.receiver)
-                    .putExtra(Intent.EXTRA_KEY_EVENT, new android.view.KeyEvent(
-                            downTime, eventTime, action, pending.keyCode, repeats)));
-            return true;
-        } catch (RuntimeException unavailable) { return false; }
-    }
-
-    private static boolean dispatchMediaKey(SessionBinding binding, int keyCode,
-            int action, int repeats, long downTime, long eventTime) {
-        if (binding == null || binding.destroyed) return false;
-        try {
-            return binding.controller.dispatchMediaButtonEvent(new android.view.KeyEvent(
-                    downTime, eventTime, action, keyCode, repeats));
-        } catch (Throwable ignored) {
-            return false;
+            android.view.KeyEvent key = new android.view.KeyEvent(
+                    downTime, eventTime, action, pending.keyCode, repeats);
+            if (pending.binding != null && !pending.binding.destroyed) {
+                accepted = pending.binding.controller.dispatchMediaButtonEvent(key);
+                if (!accepted) failure = "session_rejected";
+            } else if (pending.binding == null && pending.receiver != null
+                    && mediaContext != null && isLiveMediaProcess(pending.packageName, false)) {
+                mediaContext.sendBroadcast(new Intent(Intent.ACTION_MEDIA_BUTTON)
+                        .setComponent(pending.receiver).putExtra(Intent.EXTRA_KEY_EVENT, key));
+                accepted = true;
+            } else failure = "endpoint_unavailable";
+        } catch (Throwable problem) {
+            failure = summary(problem);
         }
+        if (repeats == 0 || !accepted) emit("music_media_key_dispatch",
+                "endpoint", pending.binding != null ? "session" : "receiver",
+                "target", pending.packageName, "receiver", pending.receiver == null ? ""
+                        : pending.receiver.flattenToShortString(),
+                "caller_package", mediaContext == null ? "" : mediaContext.getPackageName(),
+                "caller_uid", android.os.Process.myUid(), "key_code", pending.keyCode,
+                "action", action, "accepted", accepted, "error", failure);
+        return accepted;
     }
 
     private void releaseMediaKey(PendingMediaKey pending, long eventTime) {
@@ -462,7 +468,8 @@ final class MusicMetadataRuntime {
         }
         try {
             ensureMediaFrameworkInitialized();
-            sessionManager = (MediaSessionManager) context.getSystemService(
+            if (mediaContext == null) mediaContext = TurnSignalShellMain.shellContext(context);
+            sessionManager = (MediaSessionManager) mediaContext.getSystemService(
                     Context.MEDIA_SESSION_SERVICE);
             if (sessionManager == null) {
                 throw new IllegalStateException("MediaSessionManager unavailable");

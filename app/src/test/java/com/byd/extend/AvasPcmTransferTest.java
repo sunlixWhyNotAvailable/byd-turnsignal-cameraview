@@ -79,6 +79,21 @@ public final class AvasPcmTransferTest {
         assertEquals(4, output.frames);
     }
 
+    @Test public void cancellingDuringLongCueWaitDoesNotReportPcmStall() throws Exception {
+        Clock clock = new Clock();
+        boolean[] cancelled = {false};
+        Output output = new Output() {
+            @Override public int write(int offset, int length) {
+                clock.now = 6500; // First PCM write waited behind an engine cue.
+                cancelled[0] = true;
+                return 0;
+            }
+            @Override public void idle() { fail("cancelled wait is not PCM backpressure"); }
+        };
+        assertEquals(0, AvasPcmTransfer.write(16, 4, () -> cancelled[0], output, clock));
+        assertEquals(0, output.frames);
+    }
+
     @Test public void drainChecksPlaybackHeadAndUsesItsOwnAbsoluteDeadline() throws Exception {
         Clock clock = new Clock();
         assertThrows(IllegalStateException.class,

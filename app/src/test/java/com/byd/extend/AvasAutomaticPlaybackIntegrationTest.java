@@ -7,7 +7,7 @@ import org.junit.Test;
 /** Exercises the real event policy and queue together, without Android or audio. */
 public final class AvasAutomaticPlaybackIntegrationTest {
     @Test(timeout = 2000)
-    public void suppressedUnlockCannotReplacePendingPowerButLaterIndependentLockCan()
+    public void suppressedUnlockIsOmittedAndLaterIndependentLockQueuesAfterPower()
             throws Exception {
         AvasEventPolicy policy = new AvasEventPolicy();
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
@@ -30,10 +30,13 @@ public final class AvasAutomaticPlaybackIntegrationTest {
         }
         assertNotNull(latest);
         assertEquals("lock", latest.profile);
-        assertEquals("power_off", latest.supersededAutomatic.profile);
-        assertEquals("idle", queue.state("power_off"));
+        assertEquals(2, queue.pendingCount());
+        assertEquals("automatic_queued", queue.state("power_off"));
         assertFalse(playing.cancelled.get());
         queue.finish(playing);
+        AvasPlaybackQueue.Request powerOff = queue.take();
+        assertEquals("power_off", powerOff.profile);
+        queue.finish(powerOff);
         assertSame(latest, queue.take());
         queue.close();
     }
@@ -54,7 +57,7 @@ public final class AvasAutomaticPlaybackIntegrationTest {
         queue.finish(powerOff);
         AvasPlaybackQueue.Request unlock = queue.take();
         assertEquals("unlock", unlock.profile);
-        assertNull(unlock.supersededAutomatic);
+        assertFalse(unlock.cancelled.get());
         queue.close();
     }
 }

@@ -60,6 +60,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -74,6 +75,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -306,6 +308,10 @@ private fun AppHeader(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ) {
+    var supportVisible by rememberSaveable { mutableStateOf(false) }
+    val supportPress = rememberPressFeedback()
+    val focus = LocalFocusManager.current
+    if (supportVisible) SupportDialog(strings, colors) { supportVisible = false }
     Panel(colors, Modifier.fillMaxWidth(), padding = 0.dp) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -313,7 +319,24 @@ private fun AppHeader(
                 Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).testTag("app-artwork"),
                 contentScale = ContentScale.Crop)
             Column(Modifier.weight(1f)) {
-                Text("BYD Extend", color = colors.text, fontSize = 23.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("BYD Extend", color = colors.text, fontSize = 23.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text(strings.resource(R.string.support), color = colors.accent, fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("support-button").clip(RoundedCornerShape(4.dp))
+                            .background(if (supportPress.pressed) {
+                                if (colors.dark) Color(0xFF20344A) else Color(0xFFE7F1FF)
+                            } else Color.Transparent)
+                            .then(supportPress.modifier)
+                            .clickable(role = Role.Button, interactionSource = supportPress.interactionSource,
+                                indication = null, onClick = {
+                                    focus.clearFocus()
+                                    supportVisible = true
+                                })
+                            .padding(horizontal = 6.dp, vertical = 8.dp))
+                }
                 Text(strings.subtitle, color = colors.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

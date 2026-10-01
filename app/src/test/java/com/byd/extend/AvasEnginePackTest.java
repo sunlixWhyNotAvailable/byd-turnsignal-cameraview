@@ -11,9 +11,6 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 
 public final class AvasEnginePackTest {
-    private static final String[] PACK_IDS = {
-            "ferrari_v8", "jaguar_v6", "huracan_v10", "german_l4"
-    };
 
     @Test
     public void everyBundledPackLoadsAndRendersIdleMidAndMaximumRpm() throws Exception {
@@ -21,7 +18,7 @@ public final class AvasEnginePackTest {
         if (!Files.isDirectory(assets)) assets = Paths.get("app/src/main/assets/avas_engines");
         assertTrue("bundled engine assets are missing", Files.isDirectory(assets));
 
-        for (String id : PACK_IDS) verifyPack(assets.resolve(id), id);
+        for (String id : AvasEngineSettings.PACK_IDS) verifyPack(assets.resolve(id), id);
     }
 
     private static void verifyPack(Path directory, String id) throws Exception {
@@ -30,8 +27,22 @@ public final class AvasEnginePackTest {
         AvasEnginePack pack = AvasEnginePack.fromManifest(id, manifest,
                 name -> Files.readAllBytes(directory.resolve(name)));
         assertEquals(id + " idle calibration", -24.0, dbfs(pack.idle), 0.02);
-        assertEquals(id + " start calibration", -24.0, dbfs(pack.start), 0.02);
-        assertEquals(id + " stop calibration", -24.0, dbfs(pack.stop), 0.02);
+        calibratedCue(id + " start", pack.start);
+        calibratedCue(id + " stop", pack.stop);
+        int[] expectedFrames;
+        switch (id) {
+            case "jaguar_v6": expectedFrames = new int[]{233350, 104585}; break;
+            case "ferrari_v8": expectedFrames = new int[]{129544, 47738}; break;
+            case "huracan_v10": expectedFrames = new int[]{206634, 174941}; break;
+            case "maserati_v8": expectedFrames = new int[]{309450, 140275}; break;
+            case "g500_v8": expectedFrames = new int[]{174025, 209075}; break;
+            case "golf_gti_l4": expectedFrames = new int[]{123050, 98133}; break;
+            case "porsche_gt3_h6": expectedFrames = new int[]{162000, 152400}; break;
+            case "harley_vtwin": expectedFrames = new int[]{228452, 114511}; break;
+            default: expectedFrames = new int[]{31200, 31200};
+        }
+        assertEquals(id + " full start recording", expectedFrames[0], pack.start.length);
+        assertEquals(id + " full stop recording", expectedFrames[1], pack.stop.length);
         assertTrue(id + " idle has headroom", peak(pack.idle) <= 0.503f);
         assertTrue(id + " start has headroom", peak(pack.start) <= 0.503f);
         assertTrue(id + " stop has headroom", peak(pack.stop) <= 0.503f);
@@ -42,10 +53,13 @@ public final class AvasEnginePackTest {
             double fraction = (layer.rpm - pack.idleRpm)
                     / (double) (pack.maxRpm - pack.idleRpm);
             double reference = -24.0 + 4.0 * Math.sqrt(fraction);
-            assertEquals(id + " " + layer.rpm + " on calibration",
-                    reference + 3.0, onDb, 0.02);
-            assertEquals(id + " " + layer.rpm + " off calibration",
-                    reference - 3.0, offDb, 0.02);
+            assertTrue(id + " " + layer.rpm + " exceeds calibration target",
+                    onDb <= reference + 3.02 && offDb <= reference - 2.98);
+            // Preserve original dynamics: lower both gains if either reaches the peak ceiling.
+            assertTrue(id + " " + layer.rpm + " is uncalibrated",
+                    Math.abs(onDb - reference - 3.0) <= 0.02
+                            || Math.abs(20 * Math.log10(Math.max(peak(layer.on),
+                                    peak(layer.off))) + 6.0) <= 0.02);
             assertTrue(id + " " + layer.rpm + " pair has a 6dB load gap",
                     Math.abs((onDb - offDb) - 6.0) <= 0.03);
             assertTrue(id + " " + layer.rpm + " on layer has headroom",
@@ -77,6 +91,14 @@ public final class AvasEnginePackTest {
         double sum = 0.0;
         for (float sample : samples) sum += sample * sample;
         return 20.0 * Math.log10(Math.sqrt(sum / samples.length));
+    }
+
+    private static void calibratedCue(String name, float[] samples) {
+        double level = dbfs(samples);
+        assertTrue(name + " exceeds target RMS", level <= -23.98);
+        // A high-crest-factor original may hit the peak ceiling before the RMS target.
+        assertTrue(name + " is uncalibrated", Math.abs(level + 24) <= 0.02
+                || Math.abs(20 * Math.log10(peak(samples)) + 6) <= 0.02);
     }
 
     private static float peak(float[] samples) {

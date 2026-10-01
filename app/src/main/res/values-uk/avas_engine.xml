@@ -14,6 +14,12 @@
     <string name="avas_engine_active">Звук двигуна активний</string>
     <string name="avas_engine_stopping">Зупинка звуку двигуна…</string>
     <string name="avas_engine_error">Звук двигуна недоступний</string>
-    <string name="avas_engine_start">Старт</string>
-    <string name="avas_engine_stop">Стоп</string>
+    <string name="avas_engine_start">Тест</string>
+    <string name="avas_engine_stop">Зупинити тест</string>
+    <string name="avas_engine_testing">Тестування звуку двигуна</string>
+    <string name="avas_engine_pack_maserati_v8">Maserati GranTurismo V8</string>
+    <string name="avas_engine_pack_g500_v8">Mercedes G500 V8</string>
+    <string name="avas_engine_pack_golf_gti_l4">Volkswagen Golf GTI L4</string>
+    <string name="avas_engine_pack_porsche_gt3_h6">Porsche 911 GT3 H6</string>
+    <string name="avas_engine_pack_harley_vtwin">Harley-Davidson V-twin</string>
 </resources>

@@ -15,7 +15,7 @@ public final class AvasNavigationAudioContractTest {
         String runtime = source("AvasRuntime.java");
         String start = runtime.substring(runtime.indexOf("synchronized void start()"),
                 runtime.indexOf("synchronized void configure("));
-        int recover = start.indexOf("player = new AvasAudioPlayer(context, this::emit)");
+        int recover = start.indexOf("player = new AvasAudioPlayer(context, this::emit, cueGate)");
         assertTrue(recover >= 0);
         assertTrue(start.indexOf("playback.execute") > recover);
         assertTrue(start.indexOf("updateTelemetry()") > recover);

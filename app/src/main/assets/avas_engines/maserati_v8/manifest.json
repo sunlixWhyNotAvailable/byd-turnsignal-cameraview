@@ -1,0 +1,71 @@
+{
+  "id": "maserati_v8",
+  "name": "Maserati GranTurismo V8",
+  "idleRpm": 800,
+  "maxRpm": 6906,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 1900,
+      "on": "rpm_1900_on.wav",
+      "off": "rpm_1900_off.wav",
+      "onGainDb": 4.14,
+      "offGainDb": 1.134
+    },
+    {
+      "rpm": 2772,
+      "on": "rpm_2772_on.wav",
+      "off": "rpm_2772_off.wav",
+      "onGainDb": 6.966,
+      "offGainDb": 2.1499
+    },
+    {
+      "rpm": 3443,
+      "on": "rpm_3443_on.wav",
+      "off": "rpm_3443_off.wav",
+      "onGainDb": 2.9719,
+      "offGainDb": 0.0211
+    },
+    {
+      "rpm": 4013,
+      "on": "rpm_4013_on.wav",
+      "off": "rpm_4013_off.wav",
+      "onGainDb": 1.1393,
+      "offGainDb": -2.625
+    },
+    {
+      "rpm": 4784,
+      "on": "rpm_4784_on.wav",
+      "off": "rpm_4784_off.wav",
+      "onGainDb": 0.0753,
+      "offGainDb": -4.9112
+    },
+    {
+      "rpm": 5519,
+      "on": "rpm_5519_on.wav",
+      "off": "rpm_5519_off.wav",
+      "onGainDb": -3.2039,
+      "offGainDb": -7.3292
+    },
+    {
+      "rpm": 6218,
+      "on": "rpm_6218_on.wav",
+      "off": "rpm_6218_off.wav",
+      "onGainDb": -3.9737,
+      "offGainDb": -10.0491
+    },
+    {
+      "rpm": 6886,
+      "on": "rpm_6886_on.wav",
+      "off": "rpm_6886_off.wav",
+      "onGainDb": -4.4372,
+      "offGainDb": -8.4792
+    }
+  ],
+  "idleGainDb": 14.6043,
+  "startGainDb": 10.1917,
+  "stopGainDb": 7.2018
+}

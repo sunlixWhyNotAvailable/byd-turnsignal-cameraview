@@ -46,76 +46,36 @@ public class AvasPlaybackQueueTest {
         assertSame(second, queue.take());
         assertFalse(first.cancelled.get());
         assertFalse(second.cancelled.get());
-        assertNull(second.supersededAutomatic);
     }
 
-    @Test public void idleTripleKeepsFirstAndLatestBeforeWorkerTake() throws Exception {
+    @Test public void acceptedBurstRetainsAllEventsAcrossCueWaitAndManualWork() throws Exception {
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
-        AvasPlaybackQueue.Request first = queue.enqueue("power_on", false);
-        AvasPlaybackQueue.Request second = queue.enqueue("unlock", false);
-        AvasPlaybackQueue.Request latest = queue.enqueue("lock", false);
-
-        assertEquals(2, queue.pendingCount());
-        assertFalse(first.cancelled.get());
-        assertTrue(second.cancelled.get());
-        assertEquals(second.id, latest.supersededAutomatic.requestId);
-        assertEquals("unlock", latest.supersededAutomatic.profile);
-        assertSame(first, queue.take());
-        queue.finish(first);
-        assertSame(latest, queue.take());
-    }
-
-    @Test public void activeAutomaticBurstKeepsActiveAndLatestThenRepeats() throws Exception {
-        AvasPlaybackQueue queue = new AvasPlaybackQueue();
-        AvasPlaybackQueue.Request active = queue.enqueue("power_on", false);
-        assertSame(active, queue.take());
-        AvasPlaybackQueue.Request b = queue.enqueue("unlock", false);
-        AvasPlaybackQueue.Request c = queue.enqueue("power_off", false);
-        AvasPlaybackQueue.Request d = queue.enqueue("lock", false);
-
-        assertFalse(active.cancelled.get());
-        assertTrue(b.cancelled.get());
-        assertTrue(c.cancelled.get());
-        assertFalse(d.cancelled.get());
-        assertEquals(c.id, d.supersededAutomatic.requestId);
-        queue.finish(active);
-        assertSame(d, queue.take());
-
-        AvasPlaybackQueue.Request e = queue.enqueue("power_on", false);
-        AvasPlaybackQueue.Request f = queue.enqueue("unlock", false);
-        assertTrue(e.cancelled.get());
-        assertEquals(e.id, f.supersededAutomatic.requestId);
-        queue.finish(d);
-        assertSame(f, queue.take());
-    }
-
-    @Test public void automaticReplacementAppendsAfterManualWithoutMovingIt() throws Exception {
-        AvasPlaybackQueue queue = new AvasPlaybackQueue();
-        AvasPlaybackQueue.Request active = queue.enqueue("power_on", false);
-        assertSame(active, queue.take());
-        AvasPlaybackQueue.Request oldAutomatic = queue.enqueue("unlock", false);
+        AvasPlaybackQueue.Request on = queue.enqueue("power_on", false);
+        assertSame(on, queue.take()); // Dequeued while waiting for engine startup.
+        AvasPlaybackQueue.Request unlock = queue.enqueue("unlock", false);
         AvasPlaybackQueue.Request manual = queue.enqueue("lock", true);
-        AvasPlaybackQueue.Request latestAutomatic = queue.enqueue("power_off", false);
-
-        assertTrue(oldAutomatic.cancelled.get());
-        assertEquals("idle", queue.state("unlock"));
-        assertEquals("manual_queued", queue.state("lock"));
-        assertEquals("automatic_queued", queue.state("power_off"));
-        queue.finish(active);
-        assertSame(manual, queue.take());
-        queue.finish(manual);
-        assertSame(latestAutomatic, queue.take());
+        AvasPlaybackQueue.Request off = queue.enqueue("power_off", false);
+        AvasPlaybackQueue.Request lock = queue.enqueue("lock", false);
+        for (AvasPlaybackQueue.Request next : new AvasPlaybackQueue.Request[]{unlock, manual, off, lock}) {
+            queue.finish(on);
+            assertSame(next, queue.take());
+            assertFalse(next.cancelled.get());
+            on = next;
+        }
+        assertEquals(0, queue.pendingCount());
     }
 
-    @Test public void manualAtIdleHeadDoesNotProtectOlderAutomatic() throws Exception {
+    @Test public void manualAtIdleHeadPreservesAutomaticOrder() throws Exception {
         AvasPlaybackQueue queue = new AvasPlaybackQueue();
         AvasPlaybackQueue.Request manual = queue.enqueue("lock", true);
         AvasPlaybackQueue.Request oldAutomatic = queue.enqueue("power_on", false);
         AvasPlaybackQueue.Request latestAutomatic = queue.enqueue("unlock", false);
 
-        assertTrue(oldAutomatic.cancelled.get());
+        assertFalse(oldAutomatic.cancelled.get());
         assertSame(manual, queue.take());
         queue.finish(manual);
+        assertSame(oldAutomatic, queue.take());
+        queue.finish(oldAutomatic);
         assertSame(latestAutomatic, queue.take());
     }
 

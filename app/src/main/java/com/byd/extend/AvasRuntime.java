@@ -40,6 +40,7 @@ final class AvasRuntime implements AutoCloseable {
     private final int ownerUid;
     private final Consumer<JSONObject> eventSink;
     private final AvasPlaybackQueue queue;
+    private final AvasEngineCueGate cueGate = new AvasEngineCueGate();
     private final AvasEventPolicy policy = new AvasEventPolicy();
     private final AvasTelemetryController telemetryController;
     private final AvasEngineRuntime engine;
@@ -77,7 +78,7 @@ final class AvasRuntime implements AutoCloseable {
                     return session != null && "active".equals(session.state);
                 }, telemetry, this::emit, () -> {
                     if (!closed) telemetry.execute(this::reportStatus);
-                });
+                }, cueGate);
         AvasVehicleTelemetryTransport transport = new AvasVehicleTelemetryTransport(context);
         telemetryController = new AvasTelemetryController(SystemClock::elapsedRealtime,
                 new AvasTelemetryController.Executor() {
@@ -119,7 +120,7 @@ final class AvasRuntime implements AutoCloseable {
         engine.configure(config.engine);
         // Recover a route left dirty by helper death even when no new sound is requested.
         try {
-            player = new AvasAudioPlayer(context, this::emit);
+            player = new AvasAudioPlayer(context, this::emit, cueGate);
         } catch (Exception failure) {
             // The dirty marker remains set; the existing next-play construction retries cleanup.
             event("avas_error", "stage", "recovery", "error", failure.toString());
@@ -415,7 +416,7 @@ final class AvasRuntime implements AutoCloseable {
         if (closed) throw new IllegalStateException("AVAS runtime is closed");
         AvasAudioPlayer current = player;
         if (current == null) {
-            current = new AvasAudioPlayer(context, this::emit);
+            current = new AvasAudioPlayer(context, this::emit, cueGate);
             player = current;
         }
         return current;
@@ -577,7 +578,7 @@ final class AvasRuntime implements AutoCloseable {
             return;
         }
         try {
-            engine.awaitShutdown(request.cancelled::get);
+            cueGate.awaitEventStart(() -> closed || request.cancelled.get());
             if (closed || request.cancelled.get()) return;
             AvasAudioPlayer output = audioPlayer();
             event(request, "avas_play_start", "asset", assetId(file),
@@ -630,12 +631,6 @@ final class AvasRuntime implements AutoCloseable {
         }
         AvasPlaybackQueue.Request request = queue.enqueueExterior(profileId, false);
         if (request != null) {
-            if (request.supersededAutomatic != null) {
-                AvasAudioDiagnostics.Context old = request.supersededAutomatic;
-                event("avas_queue_replaced", "old_request", old.requestId,
-                        "old_profile", old.profile, "new_request", request.diagnostics.requestId,
-                        "new_profile", request.profile);
-            }
             event(request, "avas_event_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
             event(request, "avas_request_accepted", "accepted_t_ms", request.diagnostics.acceptedMs);
             event(request, "avas_queue_enqueued", "pending", queue.pendingCount());

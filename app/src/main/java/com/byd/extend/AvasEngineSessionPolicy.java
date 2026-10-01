@@ -1,6 +1,6 @@
 package com.byd.extend;
 
-/** OK indication starts automatic sound; only confirmed power-off ends it with a tail. */
+/** OK controls live sound; a manual test temporarily owns the single output without disabling live. */
 public final class AvasEngineSessionPolicy {
     public static final int POWER_OFF = 0;
     public static final int POWER_ACC = 1;
@@ -14,7 +14,8 @@ public final class AvasEngineSessionPolicy {
     private boolean enabled;
     private boolean outputsPresent;
     private boolean active;
-    private boolean suppressed;
+    private boolean liveRequested;
+    private boolean testing;
     private boolean recoveryPending;
     private boolean powerUnknown;
     private boolean hasValidPower;
@@ -29,9 +30,11 @@ public final class AvasEngineSessionPolicy {
         this.outputsPresent = outputsPresent;
         if (!available()) {
             ready = null;
+            liveRequested = false;
+            testing = false;
+            recoveryPending = false;
             if (active) {
                 active = false;
-                recoveryPending = false;
                 return Action.STOP_NOW;
             }
             return Action.NONE;
@@ -51,9 +54,14 @@ public final class AvasEngineSessionPolicy {
     }
 
     private Action reconcileReady() {
-        if (active || suppressed || !available() || !hasValidPower || powerUnknown
-                || lastValidPower == POWER_OFF || !Boolean.TRUE.equals(ready)) return Action.NONE;
-        boolean restore = recoveryPending || !ignitionPending;
+        if (!available() || !hasValidPower || powerUnknown || lastValidPower == POWER_OFF) {
+            return Action.NONE;
+        }
+        boolean wasLive = liveRequested;
+        if (Boolean.TRUE.equals(ready)) liveRequested = true;
+        if (!liveRequested || testing || active) return Action.NONE;
+        if (recoveryPending && !Boolean.TRUE.equals(ready)) return Action.NONE;
+        boolean restore = wasLive || recoveryPending || !ignitionPending;
         ignitionPending = false;
         return start(restore);
     }
@@ -75,7 +83,8 @@ public final class AvasEngineSessionPolicy {
             ready = null;
             lastKnownReady = false;
             ignitionPending = false;
-            suppressed = false;
+            liveRequested = false;
+            testing = false;
             recoveryPending = false;
             if (!active) return Action.NONE;
             active = false;
@@ -84,28 +93,35 @@ public final class AvasEngineSessionPolicy {
         return reconcileReady();
     }
 
+    /** Starts only the test override; vehicle demand continues to update underneath it. */
     public Action manualStart() {
-        if (!available()) return Action.NONE;
-        suppressed = false;
-        if (active) return Action.NONE;
-        return start(recoveryPending);
+        if (!available() || testing) return Action.NONE;
+        testing = true;
+        active = true;
+        return Action.START;
     }
 
+    /** A repeated/stale Stop must never stop live playback. */
     public Action manualStop() {
-        suppressed = true;
-        recoveryPending = false;
-        if (!active) return Action.NONE;
+        if (!testing) return Action.NONE;
+        testing = false;
         active = false;
-        return Action.STOP_NOW;
+        Action live = reconcileReady();
+        return live == Action.NONE ? Action.STOP_NOW : live;
     }
 
-    /** Clears failed playback while preserving power and manual-stop suppression state. */
-    public void playbackFailed() {
-        if (active) recoveryPending = true;
+    /** A failed test releases its override; a failed live output retains the existing retry policy. */
+    public Action playbackFailed() {
+        boolean wasTesting = testing;
+        testing = false;
+        if (active && !wasTesting) recoveryPending = true;
         active = false;
+        return wasTesting ? reconcileReady() : Action.NONE;
     }
 
     public boolean desiredActive() { return active; }
+    public boolean testActive() { return testing; }
+    public boolean liveRequested() { return liveRequested; }
     public boolean hasValidPower() { return hasValidPower && !powerUnknown; }
     public int rawPower() { return rawPower; }
     public int lastValidPower() { return lastValidPower; }

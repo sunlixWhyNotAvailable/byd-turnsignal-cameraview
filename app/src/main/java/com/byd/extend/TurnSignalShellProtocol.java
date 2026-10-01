@@ -13,7 +13,7 @@ final class TurnSignalShellProtocol {
             "com.byd.extend.ITurnSignalShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_helper.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_helper.log";
-    static final int VERSION = 15;
+    static final int VERSION = 17;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;

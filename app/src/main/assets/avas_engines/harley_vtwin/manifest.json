@@ -1,0 +1,71 @@
+{
+  "id": "harley_vtwin",
+  "name": "Harley-Davidson V-twin",
+  "idleRpm": 900,
+  "maxRpm": 4675,
+  "sampleRate": 48000,
+  "idle": "idle.wav",
+  "start": "start.wav",
+  "stop": "stop.wav",
+  "layers": [
+    {
+      "rpm": 1721,
+      "on": "rpm_1721_on.wav",
+      "off": "rpm_1721_off.wav",
+      "onGainDb": -4.9942,
+      "offGainDb": -8.187
+    },
+    {
+      "rpm": 2160,
+      "on": "rpm_2160_on.wav",
+      "off": "rpm_2160_off.wav",
+      "onGainDb": -6.0921,
+      "offGainDb": -11.0409
+    },
+    {
+      "rpm": 2581,
+      "on": "rpm_2581_on.wav",
+      "off": "rpm_2581_off.wav",
+      "onGainDb": -7.6986,
+      "offGainDb": -14.796
+    },
+    {
+      "rpm": 2955,
+      "on": "rpm_2955_on.wav",
+      "off": "rpm_2955_off.wav",
+      "onGainDb": -8.8487,
+      "offGainDb": -14.7267
+    },
+    {
+      "rpm": 3443,
+      "on": "rpm_3443_on.wav",
+      "off": "rpm_3443_off.wav",
+      "onGainDb": -8.0217,
+      "offGainDb": -14.2172
+    },
+    {
+      "rpm": 3863,
+      "on": "rpm_3863_on.wav",
+      "off": "rpm_3863_off.wav",
+      "onGainDb": -7.2965,
+      "offGainDb": -13.2521
+    },
+    {
+      "rpm": 4299,
+      "on": "rpm_4299_on.wav",
+      "off": "rpm_4299_off.wav",
+      "onGainDb": -6.4141,
+      "offGainDb": -14.0205
+    },
+    {
+      "rpm": 4675,
+      "on": "rpm_4675_on.wav",
+      "off": "rpm_4675_off.wav",
+      "onGainDb": -6.2067,
+      "offGainDb": -13.4281
+    }
+  ],
+  "idleGainDb": 1.3073,
+  "startGainDb": 2.7111,
+  "stopGainDb": 4.4358
+}
