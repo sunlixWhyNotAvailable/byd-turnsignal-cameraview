@@ -26,14 +26,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 final class MusicMetadataRuntime {
     static final long PUBLISH_DEBOUNCE_MS = 750;
     static final long SESSION_REPAIR_DEBOUNCE_MS = PUBLISH_DEBOUNCE_MS;
     static final long PROGRESS_REFRESH_INTERVAL_MS = 1_000;
+    static final long MEDIA_KEY_HANDOFF_TIMEOUT_MS = 500;
     static final int SOURCE_THIRD_PARTY = 26;
     static final int DEVICE_AUDIO = 1002;
     static final int DEVICE_INSTRUMENT = 1007;
@@ -82,6 +87,7 @@ final class MusicMetadataRuntime {
         return thread;
     });
     private final Map<MediaSession.Token, SessionBinding> sessions = new HashMap<>();
+    private final Map<Integer, PendingMediaKey> pendingMediaKeys = new HashMap<>();
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionListener;
     private final Runnable publishRunnable = this::publishSelectedSession;
     private final Runnable progressRunnable = this::refreshPlayingProgress;
@@ -90,6 +96,7 @@ final class MusicMetadataRuntime {
     private Method currentFocusPackage;
     private BydMediaWriter writer;
     private boolean enabled;
+    private boolean captureFocusOnOpen = true;
     private boolean awake;
     private boolean observersStarted;
     private boolean publishPending;
@@ -141,6 +148,126 @@ final class MusicMetadataRuntime {
             emit("music_metadata_config", "enabled", enabled, "awake", awake,
                     "observer_active", observersStarted, "error", error);
         });
+    }
+
+    void setCaptureFocusOnOpen(boolean value) {
+        runOnHandler(() -> {
+            if (captureFocusOnOpen == value) return;
+            captureFocusOnOpen = value;
+            if (!value) releaseAllMediaKeys("capture_disabled");
+            emit("music_media_key_config", "capture_focus_on_open", value,
+                    "enabled", enabled, "awake", awake);
+        });
+    }
+
+    boolean dispatchMediaKey(String foregroundPackage, int rawKeyCode, int action,
+            int repeatCount, long downTime, long eventTime) {
+        if (!MusicMediaKeyPolicy.isValidCommand(foregroundPackage, rawKeyCode,
+                action, repeatCount, downTime, eventTime)) return false;
+        if (Looper.myLooper() == handler.getLooper()) {
+            return dispatchMediaKeyOnHandler(foregroundPackage, rawKeyCode, action,
+                    repeatCount, downTime, eventTime);
+        }
+        AtomicInteger state = new AtomicInteger(); // queued, running, completed, cancelled
+        AtomicBoolean result = new AtomicBoolean();
+        CountDownLatch complete = new CountDownLatch(1);
+        boolean posted = handler.post(() -> {
+            if (!state.compareAndSet(0, 1)) return;
+            result.set(dispatchMediaKeyOnHandler(foregroundPackage, rawKeyCode, action,
+                    repeatCount, downTime, eventTime));
+            state.set(2);
+            complete.countDown();
+        });
+        if (!posted) return false;
+        try {
+            if (complete.await(MEDIA_KEY_HANDOFF_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                return result.get();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        // Cancel a not-yet-started command; an in-flight command is consumed conservatively
+        // so timeout cannot fall through to stock after the MediaSession receives its DOWN.
+        if (state.compareAndSet(0, 3)) return false;
+        return state.get() == 1 || result.get();
+    }
+
+    private boolean dispatchMediaKeyOnHandler(String foregroundPackage, int rawKeyCode,
+            int action, int repeatCount, long downTime, long eventTime) {
+        int keyCode = MusicMediaKeyPolicy.standardKeyCode(rawKeyCode);
+        PendingMediaKey pending = pendingMediaKeys.get(keyCode);
+        try {
+            if (action == android.view.KeyEvent.ACTION_UP) {
+                if (pending == null || pending.downTime != downTime) return false;
+                pendingMediaKeys.remove(keyCode);
+                dispatchMediaKey(pending.binding, keyCode,
+                        android.view.KeyEvent.ACTION_UP, 0, downTime, eventTime);
+                return true;
+            }
+            if (repeatCount > 0) {
+                if (pending == null || pending.downTime != downTime) return false;
+                dispatchMediaKey(pending.binding, keyCode,
+                        android.view.KeyEvent.ACTION_DOWN, repeatCount, downTime, eventTime);
+                return true;
+            }
+            if (pending != null) {
+                pendingMediaKeys.remove(keyCode);
+                releaseMediaKey(pending, eventTime);
+            }
+            if (!enabled || !captureFocusOnOpen || !awake || !observersStarted) return false;
+            SessionBinding target = selectSession(sessions.values(), foregroundPackage);
+            if (target == null || target.destroyed) return false;
+            if (!dispatchMediaKey(target, keyCode,
+                    android.view.KeyEvent.ACTION_DOWN, 0, downTime, eventTime)) return false;
+            pendingMediaKeys.put(keyCode, new PendingMediaKey(target, keyCode, downTime));
+            return true;
+        } catch (Throwable failure) {
+            setError("media_key_dispatch: " + summary(failure), "media_key");
+            return false;
+        }
+    }
+
+    private static boolean dispatchMediaKey(SessionBinding binding, int keyCode,
+            int action, int repeats, long downTime, long eventTime) {
+        if (binding == null || binding.destroyed) return false;
+        try {
+            return binding.controller.dispatchMediaButtonEvent(new android.view.KeyEvent(
+                    downTime, eventTime, action, keyCode, repeats));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void releaseMediaKey(PendingMediaKey pending, long eventTime) {
+        dispatchMediaKey(pending.binding, pending.keyCode,
+                android.view.KeyEvent.ACTION_UP, 0, pending.downTime,
+                Math.max(pending.downTime, eventTime));
+    }
+
+    private void releaseMediaKeysFor(SessionBinding binding, String reason) {
+        long now = SystemClock.uptimeMillis();
+        for (Map.Entry<Integer, PendingMediaKey> entry
+                : new ArrayList<>(pendingMediaKeys.entrySet())) {
+            PendingMediaKey pending = entry.getValue();
+            if (pending.binding != binding) continue;
+            pendingMediaKeys.remove(entry.getKey());
+            releaseMediaKey(pending, now);
+            emit("music_media_key_released", "key_code", entry.getKey(),
+                    "reason", reason, "target_package", binding.packageName);
+        }
+    }
+
+    private void releaseAllMediaKeys(String reason) {
+        if (pendingMediaKeys.isEmpty()) return;
+        long now = SystemClock.uptimeMillis();
+        for (Map.Entry<Integer, PendingMediaKey> entry
+                : new ArrayList<>(pendingMediaKeys.entrySet())) {
+            PendingMediaKey pending = entry.getValue();
+            pendingMediaKeys.remove(entry.getKey());
+            releaseMediaKey(pending, now);
+            emit("music_media_key_released", "key_code", entry.getKey(),
+                    "reason", reason, "target_package", pending.binding.packageName);
+        }
     }
 
     void powerStateChanged(boolean interactive, String reason) {
@@ -249,7 +376,9 @@ final class MusicMetadataRuntime {
                     "source_event", reason, "awake", awake);
         }
         observersStarted = false;
+        releaseAllMediaKeys("observer_stop:" + reason);
         for (SessionBinding binding : new ArrayList<>(sessions.values())) {
+            binding.destroyed = true;
             binding.unregister();
         }
         sessions.clear();
@@ -269,6 +398,7 @@ final class MusicMetadataRuntime {
     }
 
     private void pausePublishing() {
+        releaseAllMediaKeys("sleep");
         lifecycleGeneration++;
         handler.removeCallbacks(publishRunnable);
         cancelProgressRefresh();
@@ -297,7 +427,11 @@ final class MusicMetadataRuntime {
         for (MediaSession.Token token : new ArrayList<>(sessions.keySet())) {
             if (next.containsKey(token)) continue;
             SessionBinding removed = sessions.remove(token);
-            if (removed != null) removed.unregister();
+            if (removed != null) {
+                releaseMediaKeysFor(removed, "session_removed");
+                removed.destroyed = true;
+                removed.unregister();
+            }
             if (progressSession == removed) cancelProgressRefresh();
         }
         schedulePublish(reason, false);
@@ -809,6 +943,7 @@ final class MusicMetadataRuntime {
         int bestScore = Integer.MIN_VALUE;
         for (SessionBinding binding : candidates) {
             if (!focusPackage.equals(binding.packageName)) continue;
+            if (binding.destroyed) continue;
             int score = binding.score();
             if (score > bestScore) {
                 best = binding;
@@ -844,10 +979,23 @@ final class MusicMetadataRuntime {
         }
     }
 
+    private final class PendingMediaKey {
+        final SessionBinding binding;
+        final int keyCode;
+        final long downTime;
+
+        PendingMediaKey(SessionBinding binding, int keyCode, long downTime) {
+            this.binding = binding;
+            this.keyCode = keyCode;
+            this.downTime = downTime;
+        }
+    }
+
     private final class SessionBinding extends MediaController.Callback {
         final MediaController controller;
         final MediaSession.Token token;
         final String packageName;
+        volatile boolean destroyed;
         private MediaMetadata metadata;
         private PlaybackState playbackState;
 
@@ -928,6 +1076,8 @@ final class MusicMetadataRuntime {
 
         @Override
         public void onSessionDestroyed() {
+            releaseMediaKeysFor(this, "session_destroyed");
+            destroyed = true;
             SessionBinding removed = sessions.remove(token);
             if (removed != null) removed.unregister();
             if (removed == progressSession) cancelProgressRefresh();

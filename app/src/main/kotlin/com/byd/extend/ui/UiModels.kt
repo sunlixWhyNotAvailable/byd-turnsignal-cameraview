@@ -173,6 +173,8 @@ internal class NumericPreviewSession {
 enum class ToggleId {
     Guard,
     Music,
+    MusicCaptureFocusOnOpen,
+    MusicEngineVisualization,
     Weather,
     AutoStart,
     AutomaticUpdate,
@@ -442,6 +444,8 @@ data class GuardUiState(
 @Immutable
 data class MusicUiState(
     val enabled: Boolean = false,
+    val captureFocusOnOpen: Boolean = true,
+    val engineVisualization: Boolean = false,
     val operation: OperationUiState = OperationUiState(),
 )
 

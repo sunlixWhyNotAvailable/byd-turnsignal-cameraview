@@ -29,8 +29,11 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     private final Handler steeringHandler = new Handler(Looper.getMainLooper());
     private final CameraButtonGesturePolicy steeringGestures = new CameraButtonGesturePolicy(
             ViewConfiguration.getLongPressTimeout(), getMultiPressTimeout());
+    private final MusicMediaKeyPolicy.RoutedKeys routedMusicKeys =
+            new MusicMediaKeyPolicy.RoutedKeys();
     private final Runnable steeringTimeout = this::handleSteeringTimeout;
     private SharedPreferences steeringPreferences;
+    private String foregroundPackage = "";
     private AvasMicrophoneCapture microphone;
     private final SharedPreferences.OnSharedPreferenceChangeListener steeringPreferenceListener =
             (preferences, key) -> {
@@ -207,6 +210,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        releaseRoutedMusicKeys();
         resetSteeringState();
         if (steeringPreferences != null) {
             steeringPreferences.unregisterOnSharedPreferenceChangeListener(
@@ -222,8 +226,14 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event == null
-                || event.getEventType() != AccessibilityEvent.TYPE_VIEW_CLICKED
+        if (event == null) return;
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            CharSequence packageName = event.getPackageName();
+            String value = packageName == null ? "" : packageName.toString();
+            foregroundPackage = MusicMediaKeyPolicy.isValidPackage(value) ? value : "";
+            return;
+        }
+        if (event.getEventType() != AccessibilityEvent.TYPE_VIEW_CLICKED
                 || event.getPackageName() == null
                 || !WEATHER_PACKAGE.contentEquals(event.getPackageName())) {
             return;
@@ -243,6 +253,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     @Override
     public boolean onKeyEvent(KeyEvent event) {
         if (event == null) return false;
+        if (dispatchRoutedMusicKeyTail(event)) return true;
         if (GuardRecovery.isUserShutdownActive(this)
                 || LegacySettingsImporter.blocksRuntime(this)) {
             // Stop accepting new cycles, but finish consuming any cycle this filter already owns.
@@ -258,7 +269,41 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                 event.isCanceled(), event.getDownTime(), event.getEventTime(),
                 SystemClock.uptimeMillis(), currentAssignments(preferences));
         syncSteeringTimeout();
-        return dispatchSteeringResult(result, preferences);
+        if (dispatchSteeringResult(result, preferences)) return true;
+        if (!MusicMediaKeyPolicy.shouldRouteInitialDown(
+                preferences.getBoolean("music_visualizer_enabled", false),
+                preferences.getBoolean("music_capture_focus_on_open", true),
+                steeringGestures.isLearning(), result.consumed,
+                event.getKeyCode(), event.getAction(), event.getRepeatCount())) return false;
+        if (!CameraHelperService.dispatchMusicMediaKey(
+                foregroundPackage, event.getKeyCode(), event.getAction(),
+                event.getRepeatCount(), event.getDownTime(), event.getEventTime())) return false;
+        routedMusicKeys.begin(event.getKeyCode(), event.getDownTime());
+        return true;
+    }
+
+    private boolean dispatchRoutedMusicKeyTail(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        long downTime = event.getDownTime();
+        boolean keyUp = event.getAction() == KeyEvent.ACTION_UP;
+        boolean repeat = event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getRepeatCount() > 0;
+        if (!routedMusicKeys.owns(keyCode, downTime) || (!keyUp && !repeat)) return false;
+        if (keyUp) routedMusicKeys.finish(keyCode, downTime);
+        // The DOWN was already routed, so always consume its tail even if helper/session died.
+        CameraHelperService.dispatchMusicMediaKey(
+                foregroundPackage, keyCode, event.getAction(), event.getRepeatCount(),
+                downTime, event.getEventTime());
+        return true;
+    }
+
+    private void releaseRoutedMusicKeys() {
+        long now = SystemClock.uptimeMillis();
+        for (java.util.Map.Entry<Integer, Long> routed : routedMusicKeys.drain().entrySet()) {
+            long downTime = routed.getValue();
+            CameraHelperService.dispatchMusicMediaKey("", routed.getKey(),
+                    KeyEvent.ACTION_UP, 0, downTime, Math.max(downTime, now));
+        }
     }
 
     private void handleSteeringTimeout() {
@@ -356,11 +401,13 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     public void onInterrupt() {
         if (microphone != null) microphone.stop(false);
         clearSteeringState();
+        releaseRoutedMusicKeys();
     }
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         if (microphone != null) microphone.stop(false);
+        releaseRoutedMusicKeys();
         publishDisconnectedIfActive();
         return super.onUnbind(intent);
     }
@@ -368,6 +415,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     @Override
     public void onDestroy() {
         if (microphone != null) microphone.stop(false);
+        releaseRoutedMusicKeys();
         resetSteeringState();
         if (steeringPreferences != null) {
             steeringPreferences.unregisterOnSharedPreferenceChangeListener(

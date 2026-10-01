@@ -35,12 +35,12 @@ data class AdbReminderGeometry(
             val travelX = (availableWidth - width).coerceAtLeast(0)
             val travelY = (availableHeight - height).coerceAtLeast(0)
             val bodyLeft = availableLeft + (travelX * value.x).roundToInt()
-            val bodyTop = availableTop + (travelY * value.y).roundToInt()
+            val requestedBodyTop = availableTop + (travelY * value.y).roundToInt()
             val extension = retryHeight.coerceIn(0, (availableHeight - height).coerceAtLeast(0))
-            val belowFits = bodyTop + height + extension <= availableTop + availableHeight
-            val aboveFits = bodyTop - extension >= availableTop
-            val retryAbove = !belowFits && aboveFits
-            val windowTop = if (retryAbove) bodyTop - extension else bodyTop
+            val retryAbove = requestedBodyTop + height + extension > availableTop + availableHeight
+            val windowTop = (if (retryAbove) requestedBodyTop - extension else requestedBodyTop)
+                .coerceAtLeast(availableTop)
+            val bodyTop = windowTop + if (retryAbove) extension else 0
             return AdbReminderGeometry(
                 bodyLeft, bodyTop, width, height, bodyLeft, windowTop, width,
                 height + extension, retryAbove, extension,

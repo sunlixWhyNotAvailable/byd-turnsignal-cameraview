@@ -5,43 +5,60 @@
   "maxRpm": 7000,
   "sampleRate": 48000,
   "idle": "idle.wav",
+  "idleGainDb": -6.48,
   "start": "start.wav",
+  "startGainDb": -5.97,
   "stop": "stop.wav",
+  "stopGainDb": -5.77,
   "layers": [
     {
       "rpm": 1473,
       "on": "rpm_1473_on.wav",
-      "off": "rpm_1473_off.wav"
+      "onGainDb": -7.89,
+      "off": "rpm_1473_off.wav",
+      "offGainDb": -15.92
     },
     {
       "rpm": 2108,
       "on": "rpm_2108_on.wav",
-      "off": "rpm_2108_off.wav"
+      "onGainDb": -2.22,
+      "off": "rpm_2108_off.wav",
+      "offGainDb": -12.93
     },
     {
       "rpm": 2721,
       "on": "rpm_2721_on.wav",
-      "off": "rpm_2721_off.wav"
+      "onGainDb": -1.89,
+      "off": "rpm_2721_off.wav",
+      "offGainDb": -11.08
     },
     {
       "rpm": 3509,
       "on": "rpm_3509_on.wav",
-      "off": "rpm_3509_off.wav"
+      "onGainDb": -1.23,
+      "off": "rpm_3509_off.wav",
+      "offGainDb": -11.11
     },
     {
       "rpm": 4362,
       "on": "rpm_4362_on.wav",
-      "off": "rpm_4362_off.wav"
+      "onGainDb": -5.61,
+      "off": "rpm_4362_off.wav",
+      "offGainDb": -13.43
     },
     {
       "rpm": 5502,
       "on": "rpm_5502_on.wav",
-      "off": "rpm_5502_off.wav"
+      "onGainDb": -5.59,
+      "off": "rpm_5502_off.wav",
+      "offGainDb": -13.16
     },
     {
       "rpm": 6714,
       "on": "rpm_6714_on.wav",
-      "off": "rpm_6714_off.wav"
+      "onGainDb": -0.93,
+      "off": "rpm_6714_off.wav",
+      "offGainDb": -10.57
     }
   ]
 }

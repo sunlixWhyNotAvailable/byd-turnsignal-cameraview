@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.byd.extend.AdbReminderAppearance
+import com.byd.extend.R
 import kotlin.math.roundToInt
 
 @Composable
@@ -309,7 +310,7 @@ private fun ReminderCanvas(
                 Row(Modifier.height(retryHeight), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     Icon(Icons.Outlined.Refresh, null, tint = colors.text, modifier = Modifier.size(18.dp))
-                    Text(strings.text("Повторити", "Retry", "重试"), color = colors.text,
+                    Text(strings.resource(R.string.adb_reminder_retry), color = colors.text,
                         fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -335,8 +336,7 @@ private fun ReminderCanvas(
                     }
                 }.pointerInput(Unit) { detectTapGestures(onLongPress = { latestHide() }) }
                 .padding(16.dp), contentAlignment = Alignment.Center) {
-                Text(strings.text("Очікування Wi-Fi для відновлення ADB",
-                    "Waiting for Wi-Fi to restore ADB", "正在等待 Wi-Fi 以恢复 ADB"),
+                Text(strings.resource(R.string.adb_reminder_message),
                     color = colors.text, fontSize = 16.sp, lineHeight = 22.sp,
                     textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }

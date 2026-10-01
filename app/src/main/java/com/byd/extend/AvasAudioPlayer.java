@@ -114,8 +114,9 @@ final class AvasAudioPlayer implements AutoCloseable {
             navState.start();
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
                     SystemClock.elapsedRealtime(), "silence_planned_frames", silenceFrames);
-            AudioAttributes attributes = new AudioAttributes.Builder()
-                    .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
+            AudioAttributes attributes = MusicPlaybackSource.attributes(
+                    new AudioAttributes.Builder().setLegacyStreamType(NAV_STREAM)
+                            .setFlags(REQUESTED_ROUTE_FLAGS), MusicPlaybackSource.EVENT).build();
             IntConsumer focusCallback = AvasAudioDiagnostics.bind(diagnostics,
                     (captured, change) -> event(captured, "avas_focus_change", "value", change));
             focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
@@ -300,10 +301,12 @@ final class AvasAudioPlayer implements AutoCloseable {
                 AudioFormat.ENCODING_PCM_16BIT);
         if (minimum <= 0) throw new IllegalStateException("Invalid microphone AudioTrack buffer " + minimum);
         int bufferBytes = align(Math.max(minimum, frameSize * 256), frameSize);
-        AudioAttributes attributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
+        AudioAttributes attributes = MusicPlaybackSource.attributes(
+                new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS),
+                MusicPlaybackSource.MICROPHONE).build();
         IntConsumer focusCallback = AvasAudioDiagnostics.bind(null,
                 (captured, change) -> event(captured, "avas_focus_change", "value", change));
         AudioFocusRequest focus = new AudioFocusRequest.Builder(
@@ -523,17 +526,27 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     /** One continuous engine sink. Interior deliberately does not acquire the OEM NAV route. */
     EngineOutput openEngineOutput(boolean exterior, BooleanSupplier cancelled) throws Exception {
-        return new EngineOutput(exterior, cancelled);
+        return new EngineOutput(exterior, cancelled, null, 100);
+    }
+
+    EngineOutput openEngineOutput(boolean exterior, BooleanSupplier cancelled,
+            IntSupplier currentVolume, int initialVolume) throws Exception {
+        return new EngineOutput(exterior, cancelled, currentVolume, initialVolume);
     }
 
     final class EngineOutput implements AutoCloseable {
         private final boolean exterior;
         private final BooleanSupplier cancelled;
         private AudioTrack track;
+        private ExteriorGain gain;
         private boolean leased;
         private long writtenFrames;
+        private long drainedFrames;
+        private int lastPlaybackHead;
+        private boolean playbackHeadObserved;
 
-        private EngineOutput(boolean exterior, BooleanSupplier cancelled) throws Exception {
+        private EngineOutput(boolean exterior, BooleanSupplier cancelled,
+                IntSupplier currentVolume, int initialVolume) throws Exception {
             this.exterior = exterior;
             this.cancelled = cancelled;
             try {
@@ -554,11 +567,15 @@ final class AvasAudioPlayer implements AutoCloseable {
                     acquireExteriorSession(null, null);
                     leased = true;
                 }
-                AudioAttributes attributes = exterior
-                        ? new AudioAttributes.Builder().setLegacyStreamType(NAV_STREAM)
-                                .setFlags(REQUESTED_ROUTE_FLAGS).build()
-                        : new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build();
+                AudioAttributes.Builder attributesBuilder = new AudioAttributes.Builder();
+                if (exterior) {
+                    attributesBuilder.setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS);
+                } else {
+                    attributesBuilder.setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC);
+                }
+                AudioAttributes attributes = MusicPlaybackSource.attributes(
+                        attributesBuilder, MusicPlaybackSource.ENGINE).build();
                 int minimum = AudioTrack.getMinBufferSize(48_000, AudioFormat.CHANNEL_OUT_MONO,
                         AudioFormat.ENCODING_PCM_16BIT);
                 if (minimum <= 0) throw new IOException("Engine AudioTrack buffer unavailable");
@@ -571,10 +588,18 @@ final class AvasAudioPlayer implements AutoCloseable {
                 if (track.getState() != AudioTrack.STATE_INITIALIZED) {
                     throw new IOException("Engine AudioTrack not initialized");
                 }
-                if (exterior) prepareExterior(bufferBytes);
-                else track.play();
+                if (exterior) {
+                    gain = new ExteriorGain(track, currentVolume, clamp(initialVolume), null);
+                    gain.prepare();
+                    prepareExterior(bufferBytes);
+                } else track.play();
                 event("avas_engine_output", "phase", "opened", "exterior", exterior,
-                        "session", track.getAudioSessionId(), "buffer_bytes", bufferBytes);
+                        "session", track.getAudioSessionId(), "buffer_bytes", bufferBytes,
+                        "track_volume", trackVolumePercent(),
+                        "pcm_multiplier", exterior ? 1 : JSONObject.NULL,
+                        "pcm_volume_source", exterior ? "neutral" : "runtime",
+                        "loudness_enabled", loudnessEnabled(),
+                        "loudness_gain_mb", loudnessGainMb());
             } catch (Exception error) {
                 try { close(); } catch (Exception cleanup) { error.addSuppressed(cleanup); }
                 throw error;
@@ -608,6 +633,7 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
 
         int write(short[] pcm, int frames) throws Exception {
+            if (gain != null) gain.update();
             int offset = 0;
             long deadline = SystemClock.elapsedRealtime() + 2000;
             while (offset < frames && !cancelled.getAsBoolean()) {
@@ -616,6 +642,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                 if (count > 0) {
                     offset += count;
                     writtenFrames += count;
+                    observePlaybackHead();
                     deadline = SystemClock.elapsedRealtime() + 2000;
                 } else {
                     if (SystemClock.elapsedRealtime() >= deadline) throw new IOException("Engine PCM stalled");
@@ -628,20 +655,55 @@ final class AvasAudioPlayer implements AutoCloseable {
         void drain() throws Exception {
             if (track == null) return;
             long deadline = SystemClock.elapsedRealtime() + 2000;
-            while (!cancelled.getAsBoolean()
-                    && engineFramesPending(writtenFrames, track.getPlaybackHeadPosition())) {
+            while (!cancelled.getAsBoolean()) {
+                observePlaybackHead();
+                if (!engineFramesPending(writtenFrames, track.getPlaybackHeadPosition())) break;
                 if (SystemClock.elapsedRealtime() >= deadline) throw new IOException("Engine drain stalled");
                 Thread.sleep(2);
             }
+            if (!cancelled.getAsBoolean()) drainedFrames = writtenFrames;
+        }
+
+        private void observePlaybackHead() {
+            if (track == null) return;
+            int current = track.getPlaybackHeadPosition();
+            long position = Integer.toUnsignedLong(current);
+            if (!playbackHeadObserved) {
+                playbackHeadObserved = true;
+                drainedFrames = Math.min(writtenFrames, position);
+            } else {
+                long previous = Integer.toUnsignedLong(lastPlaybackHead);
+                long advanced = (position - previous) & 0xffff_ffffL;
+                drainedFrames += Math.min(advanced, Math.max(0L, writtenFrames - drainedFrames));
+            }
+            lastPlaybackHead = current;
+        }
+
+        int trackVolumePercent() {
+            return gain == null ? (exterior ? -1 : 100) : gain.appliedVolume();
+        }
+
+        boolean loudnessEnabled() {
+            return gain != null && gain.loudnessEnabled();
+        }
+
+        int loudnessGainMb() {
+            return gain == null ? 0 : gain.targetGainMb();
         }
 
         @Override public void close() throws Exception {
             AudioTrack current = track;
+            observePlaybackHead();
             track = null;
+            ExteriorGain currentGain = gain;
+            gain = null;
+            if (currentGain != null) currentGain.close();
             if (current != null) {
                 try {
                     event("avas_engine_output", "phase", "closed", "exterior", exterior,
-                            "frames", writtenFrames, "underruns", current.getUnderrunCount());
+                            "frames", writtenFrames, "submitted_frames", writtenFrames,
+                            "drained_frames", drainedFrames,
+                            "underruns", current.getUnderrunCount());
                 } catch (RuntimeException ignored) {
                 } finally { release(current); }
             }
@@ -1347,6 +1409,15 @@ final class AvasAudioPlayer implements AutoCloseable {
                 }
             }
             applyVolume(volume);
+        }
+
+        synchronized int appliedVolume() { return appliedVolume; }
+
+        synchronized boolean loudnessEnabled() { return loudness != null; }
+
+        synchronized int targetGainMb() {
+            return loudness == null ? 0
+                    : AvasPlaybackPlan.exteriorTargetGainMb(appliedVolume);
         }
 
         private int volume() {

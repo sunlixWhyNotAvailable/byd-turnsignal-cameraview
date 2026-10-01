@@ -4570,6 +4570,14 @@ public final class CameraProbeActivity extends ComponentActivity
             } else if (id == ToggleId.Music) {
                 preferences.edit().putBoolean("music_visualizer_enabled", value).apply();
                 onMusicEnabledChanged(value);
+            } else if (id == ToggleId.MusicCaptureFocusOnOpen) {
+                if (!preferences.getBoolean("music_visualizer_enabled", false)) return;
+                preferences.edit().putBoolean("music_capture_focus_on_open", value).apply();
+                onMusicOptionsChanged();
+            } else if (id == ToggleId.MusicEngineVisualization) {
+                if (!preferences.getBoolean("music_visualizer_enabled", false)) return;
+                preferences.edit().putBoolean("music_engine_visualization_enabled", value).apply();
+                onMusicOptionsChanged();
             } else if (id == ToggleId.Weather) {
                 onProductionWeatherEnabled(value);
             } else if (id == ToggleId.AutoStart) {
@@ -7735,7 +7743,18 @@ public final class CameraProbeActivity extends ComponentActivity
     void onMusicEnabledChanged(boolean checked) {
         record("music_toggle", "enabled", checked);
         CameraHelperService.musicSettingsChanged(this);
+        if (productionUi != null) productionUi.reload();
         updateControls();
+    }
+
+    void onMusicOptionsChanged() {
+        CameraHelperService.musicSettingsChanged(this);
+        if (productionUi != null) productionUi.reload();
+        updateControls();
+    }
+
+    String musicText(int resourceId) {
+        return runtimeText(resourceId);
     }
 
     private void onWeatherEnableRequested(boolean enabled) {

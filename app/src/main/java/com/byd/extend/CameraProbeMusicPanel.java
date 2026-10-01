@@ -17,9 +17,12 @@ final class CameraProbeMusicPanel {
     private final SharedPreferences preferences;
     private final LinearLayout root;
     private final Switch musicSwitch;
+    private final Switch captureFocusSwitch;
+    private final Switch engineVisualizationSwitch;
     private final TextView musicStatus;
     private final TextView musicJournalText;
     private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
+    private boolean controlsAllowed = true;
 
     CameraProbeMusicPanel(CameraProbeActivity activity, SharedPreferences preferences) {
         this.activity = activity;
@@ -41,6 +44,27 @@ final class CameraProbeMusicPanel {
         musicSwitch.setChecked(preferences.getBoolean("music_visualizer_enabled", false));
         root.addView(musicSwitch, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(58)));
+
+        captureFocusSwitch = new Switch(activity);
+        captureFocusSwitch.setText(activity.musicText(
+                R.string.capture_audio_focus_when_opening_a_player));
+        captureFocusSwitch.setTextColor(Color.WHITE);
+        captureFocusSwitch.setChecked(preferences.getBoolean("music_capture_focus_on_open", true));
+        root.addView(captureFocusSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+        root.addView(hint(activity.musicText(
+                R.string.control_the_opened_player_from_the_steering_wheel)));
+
+        engineVisualizationSwitch = new Switch(activity);
+        engineVisualizationSwitch.setText(activity.musicText(
+                R.string.enable_engine_sound_visualization));
+        engineVisualizationSwitch.setTextColor(Color.WHITE);
+        engineVisualizationSwitch.setChecked(preferences.getBoolean(
+                "music_engine_visualization_enabled", false));
+        root.addView(engineVisualizationSwitch, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, activity.dp(52)));
+        root.addView(hint(activity.musicText(
+                R.string.when_engine_sound_plays_through_the_interior_speaker_when_no_other_audio_is_playing)));
 
         musicStatus = activity.statusText(musicSwitch.isChecked()
                 ? "Очікування helper..." : "Вимкнено");
@@ -64,9 +88,21 @@ final class CameraProbeMusicPanel {
 
         musicSwitch.setOnCheckedChangeListener((button, checked) -> {
             preferences.edit().putBoolean("music_visualizer_enabled", checked).apply();
+            setDependentControlsEnabled(controlsAllowed && checked);
             musicStatus.setText(checked ? "Очікування helper..." : "Вимкнено");
             activity.onMusicEnabledChanged(checked);
         });
+        captureFocusSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (!musicSwitch.isChecked()) return;
+            preferences.edit().putBoolean("music_capture_focus_on_open", checked).apply();
+            activity.onMusicOptionsChanged();
+        });
+        engineVisualizationSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (!musicSwitch.isChecked()) return;
+            preferences.edit().putBoolean("music_engine_visualization_enabled", checked).apply();
+            activity.onMusicOptionsChanged();
+        });
+        setDependentControlsEnabled(musicSwitch.isChecked());
     }
 
     View view() {
@@ -78,11 +114,27 @@ final class CameraProbeMusicPanel {
     }
 
     void setControlEnabled(boolean enabled) {
+        controlsAllowed = enabled;
         musicSwitch.setEnabled(enabled);
+        setDependentControlsEnabled(enabled && musicSwitch.isChecked());
     }
 
     void setStatus(String status) {
         musicStatus.setText(status);
+    }
+
+    private void setDependentControlsEnabled(boolean enabled) {
+        captureFocusSwitch.setEnabled(enabled);
+        engineVisualizationSwitch.setEnabled(enabled);
+    }
+
+    private TextView hint(String value) {
+        TextView text = new TextView(activity);
+        text.setText(value);
+        text.setTextColor(Color.LTGRAY);
+        text.setTextSize(13);
+        text.setPadding(activity.dp(4), 0, activity.dp(4), activity.dp(6));
+        return text;
     }
 
     void acceptEvent(JSONObject event) {

@@ -19,7 +19,7 @@ public final class FixedBydTelemetryManagerTest {
     private static final int STEERING = TurnSignalTelemetryController.STEERING_FID;
     private static final int SPEED = TurnSignalTelemetryController.SPEED_FID;
 
-    @Test public void closeReconfiguresOverlappingDeviceWithoutDisablingOtherOwner()
+    @Test public void sharedDeviceKeepsAdditiveSupersetUntilLastOwnerCloses()
             throws Exception {
         FakeManager backend = new FakeManager();
         FixedBydTelemetryManager owner =
@@ -31,23 +31,18 @@ public final class FixedBydTelemetryManagerTest {
 
         assertArrayEquals(new int[]{POWER, STEERING}, backend.enabled.get(1001));
         guard.close();
-        assertArrayEquals(new int[]{POWER}, backend.enabled.get(1001));
-        assertEquals(0, backend.disable1001Count);
-        assertEquals(0, backend.unregisterCount);
+        assertArrayEquals(new int[]{POWER, STEERING}, backend.enabled.get(1001));
 
         avas.close();
         assertFalse(backend.enabled.containsKey(1001));
-        assertEquals(1, backend.disable1001Count);
-        assertEquals(1, backend.unregisterCount);
     }
 
-    @Test public void failedAddRollsBackAndLeavesExistingOwnerSubscribed() throws Exception {
+    @Test public void failedAddKeepsExistingOwnerAndDoesNotDisableItsDevice() throws Exception {
         FakeManager backend = new FakeManager();
         FixedBydTelemetryManager owner =
                 new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
         RecordingListener avasListener = new RecordingListener();
-        FixedBydTelemetryManager.Subscription avas = owner.subscribe(request(1001, POWER),
-                avasListener);
+        FixedBydTelemetryManager.Subscription avas = owner.subscribe(request(1001, POWER), avasListener);
         backend.failDevices.add(1004);
 
         try {
@@ -58,34 +53,75 @@ public final class FixedBydTelemetryManagerTest {
             fail("expected enable failure");
         } catch (Exception expected) {}
 
-        assertArrayEquals(new int[]{POWER}, backend.enabled.get(1001));
+        assertArrayEquals(new int[]{POWER, STEERING}, backend.enabled.get(1001));
         assertFalse(backend.enabled.containsKey(1004));
         assertEquals(0, avasListener.errors);
-        assertEquals(0, backend.unregisterCount);
+        backend.listener.onChanged(1001, POWER, 2, null);
+        assertEquals(2, avasListener.lastValue);
         avas.close();
     }
 
-    @Test public void rollbackFailureNotifiesExistingOwnerToEnterSafeFallback() throws Exception {
+    @Test public void duplicateEnableStatusOneIsAlreadySubscribedSuccess() throws Exception {
+        FakeManager backend = new FakeManager();
+        backend.enableExternal(1011, 555745336);
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+        RecordingListener reverse = new RecordingListener();
+        FixedBydTelemetryManager.Subscription subscription = owner.subscribe(
+                request(1011, 555745336), reverse);
+        backend.listener.onChanged(1011, 555745336, 4, null);
+        assertEquals(4, reverse.lastValue);
+        assertTrue(FixedBydTelemetryManager.isEnableSuccess(0));
+        assertTrue(FixedBydTelemetryManager.isEnableSuccess(1));
+        assertFalse(FixedBydTelemetryManager.isEnableSuccess(2));
+        subscription.close();
+    }
+
+    @Test public void closingReverseOwnerKeepsEngineGearAndViceVersa() throws Exception {
+        assertSharedGearOwnerLifecycle(true);
+        assertSharedGearOwnerLifecycle(false);
+    }
+
+    @Test public void failedDisableKeepsTheConfirmedEnabledSet() throws Exception {
         FakeManager backend = new FakeManager();
         FixedBydTelemetryManager owner =
                 new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
-        RecordingListener avasListener = new RecordingListener();
-        FixedBydTelemetryManager.Subscription avas = owner.subscribe(request(1001, POWER),
-                avasListener);
-        backend.failDevices.add(1004); // Fail after the device-1001 union was applied.
-        backend.failDevices.add(1001); // Then fail restoring AVAS-only ownership.
+        FixedBydTelemetryManager.Subscription first = owner.subscribe(
+                request(1011, 555745336), new RecordingListener());
+        backend.disableStatus = -1;
+        first.close();
+        assertArrayEquals(new int[]{555745336}, backend.enabled.get(1011));
 
-        try {
-            owner.subscribe(new FixedBydTelemetryManager.Request[]{
-                    new FixedBydTelemetryManager.Request(1001, STEERING),
-                    new FixedBydTelemetryManager.Request(1004,
-                            TurnSignalTelemetryController.STALK_FID)}, new RecordingListener());
-            fail("expected enable failure");
-        } catch (Exception expected) {}
+        backend.failDevices.add(1011);
+        FixedBydTelemetryManager.Subscription second = owner.subscribe(
+                request(1011, 555745336), new RecordingListener());
+        assertArrayEquals(new int[]{555745336}, backend.enabled.get(1011));
+        second.close();
+    }
 
-        assertEquals(1, avasListener.errors);
-        assertTrue(avasListener.lastError.startsWith("subscription_rollback_failed:"));
-        avas.close();
+    private static void assertSharedGearOwnerLifecycle(boolean engineFirst) throws Exception {
+        FakeManager backend = new FakeManager();
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+        RecordingListener engineListener = new RecordingListener();
+        RecordingListener reverseListener = new RecordingListener();
+        FixedBydTelemetryManager.Subscription engine;
+        FixedBydTelemetryManager.Subscription reverse;
+        if (engineFirst) {
+            engine = owner.subscribe(request(1011, 555745336), engineListener);
+            reverse = owner.subscribe(request(1011, 555745336), reverseListener);
+        } else {
+            reverse = owner.subscribe(request(1011, 555745336), reverseListener);
+            engine = owner.subscribe(request(1011, 555745336), engineListener);
+        }
+        if (engineFirst) reverse.close(); else engine.close();
+        assertArrayEquals(new int[]{555745336}, backend.enabled.get(1011));
+        backend.listener.onChanged(1011, 555745336, 4, null);
+        if (engineFirst) assertEquals(4, engineListener.lastValue);
+        else assertEquals(4, reverseListener.lastValue);
+
+        if (engineFirst) engine.close(); else reverse.close();
+        assertFalse(backend.enabled.containsKey(1011));
     }
 
     @Test public void floatAndIntegerOverloadsReachMatchingConsumersWithoutConversionLoss()
@@ -153,7 +189,7 @@ public final class FixedBydTelemetryManagerTest {
     public static final class FakeManager {
         final Map<Integer, int[]> enabled = new LinkedHashMap<>();
         final Queue<Integer> failDevices = new ArrayDeque<>();
-        int disable1001Count;
+        int disableStatus;
         int unregisterCount;
         FakeOnAutoListener listener;
         public void registerListener(FakeOnAutoListener listener) { this.listener = listener; }
@@ -163,13 +199,31 @@ public final class FixedBydTelemetryManagerTest {
                 failDevices.remove();
                 return -1;
             }
-            enabled.put(device, Arrays.copyOf(fids, fids.length));
+            int[] current = enabled.getOrDefault(device, new int[0]);
+            boolean added = false;
+            for (int fid : fids) {
+                if (contains(current, fid)) continue;
+                current = Arrays.copyOf(current, current.length + 1);
+                current[current.length - 1] = fid;
+                added = true;
+            }
+            if (!added) {
+                return 1;
+            }
+            enabled.put(device, current);
             return 0;
         }
         public int disableDevice(int device) {
+            if (disableStatus != 0) return disableStatus;
             enabled.remove(device);
-            if (device == 1001) disable1001Count++;
             return 0;
+        }
+
+        void enableExternal(int device, int fid) { enabled.put(device, new int[]{fid}); }
+
+        private static boolean contains(int[] values, int fid) {
+            for (int value : values) if (value == fid) return true;
+            return false;
         }
     }
 

@@ -30,6 +30,8 @@ final class MusicVisualizerRuntime {
     private final Runnable retryStop = this::retryStop;
 
     private boolean enabled;
+    private boolean captureFocusOnOpen = true;
+    private boolean engineVisualizationEnabled;
     private boolean awake;
     private boolean callbackRegistered;
     private boolean mediaActive;
@@ -40,6 +42,7 @@ final class MusicVisualizerRuntime {
     private boolean stopRetryExhausted;
     private int stopRetryAttempts;
     private String error = "";
+    private Boolean lastSourceTagsAvailable;
 
     MusicVisualizerRuntime(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -63,7 +66,18 @@ final class MusicVisualizerRuntime {
     }
 
     void configure(boolean value) {
-        runOnHandler(() -> configureOnHandler(value));
+        runOnHandler(() -> configureOnHandler(
+                value, captureFocusOnOpen, engineVisualizationEnabled));
+    }
+
+    void configure(boolean value, boolean captureFocus, boolean engineVisualization) {
+        runOnHandler(() -> configureOnHandler(value, captureFocus, engineVisualization));
+    }
+
+    boolean dispatchMediaKey(String foregroundPackage, int rawKeyCode, int action,
+            int repeatCount, long downTime, long eventTime) {
+        return metadataRuntime.dispatchMediaKey(foregroundPackage, rawKeyCode, action,
+                repeatCount, downTime, eventTime);
     }
 
     void powerStateChanged(boolean interactive) {
@@ -95,11 +109,17 @@ final class MusicVisualizerRuntime {
         });
     }
 
-    private void configureOnHandler(boolean value) {
+    private void configureOnHandler(
+            boolean value, boolean captureFocus, boolean engineVisualization) {
         if (value) reconcileAwakeFromSystem("configure");
-        boolean changed = enabled != value;
+        boolean changed = enabled != value || captureFocusOnOpen != captureFocus
+                || engineVisualizationEnabled != engineVisualization;
         enabled = value;
+        captureFocusOnOpen = captureFocus;
+        engineVisualizationEnabled = engineVisualization;
         metadataRuntime.configure(value);
+        metadataRuntime.setCaptureFocusOnOpen(captureFocus);
+        reportSourceTagCapability("configure");
         if (enabled) {
             activate(changed ? "configure" : "configure_retry");
             if (awake) refreshCurrentState(changed ? "configure" : "configure_retry");
@@ -218,7 +238,8 @@ final class MusicVisualizerRuntime {
         // Observation survives sleep; activity must not cancel a required sleep-stop retry.
         if (!shouldProcessPlayback(enabled, awake, callbackRegistered)) return;
         metadataRuntime.audioPlaybackChanged(source);
-        boolean nextActive = hasMediaPlayback(configurations);
+        boolean nextActive = hasMediaPlayback(configurations, engineVisualizationEnabled);
+        reportSourceTagCapability(source);
         if (nextActive == mediaActive) {
             if (nextActive) startOutput(source);
             else if (outputActive) scheduleDeferredStop(source);
@@ -361,6 +382,8 @@ final class MusicVisualizerRuntime {
 
     private void emitConfig(String reason) {
         emit("music_runtime_config", "enabled", enabled,
+                "capture_focus_on_open", captureFocusOnOpen,
+                "engine_visualization", engineVisualizationEnabled,
                 "source_event", reason, "awake", awake,
                 "callback_registered", callbackRegistered,
                 "playback_active", mediaActive, "session_active", outputActive,
@@ -370,6 +393,8 @@ final class MusicVisualizerRuntime {
     private void emitStatus(String reason) {
         emit("music_runtime_status",
                 "source_event", reason, "enabled", enabled, "awake", awake,
+                "capture_focus_on_open", captureFocusOnOpen,
+                "engine_visualization", engineVisualizationEnabled,
                 "callback_registered", callbackRegistered,
                 "playback_active", mediaActive,
                 "session_active", outputActive,
@@ -380,15 +405,32 @@ final class MusicVisualizerRuntime {
     }
 
     static boolean hasMediaPlayback(List<AudioPlaybackConfiguration> configurations) {
+        return hasMediaPlayback(configurations, false);
+    }
+
+    static boolean hasMediaPlayback(
+            List<AudioPlaybackConfiguration> configurations, boolean engineVisualizationEnabled) {
         if (configurations == null) return false;
         for (AudioPlaybackConfiguration configuration : configurations) {
             if (configuration == null) continue;
             AudioAttributes attributes = configuration.getAudioAttributes();
-            if (attributes != null && isMediaPlayback(
-                    isActive(configuration),
-                    attributes.getUsage(), attributes.getContentType())) return true;
+            if (attributes != null
+                    && MusicPlaybackSource.isEligibleForVisualization(
+                            attributes, engineVisualizationEnabled)
+                    && isMediaPlayback(isActive(configuration),
+                            attributes.getUsage(), attributes.getContentType())) return true;
         }
         return false;
+    }
+
+    private void reportSourceTagCapability(String reason) {
+        boolean available = MusicPlaybackSource.sourceTagsAvailable();
+        if (lastSourceTagsAvailable != null && lastSourceTagsAvailable == available) return;
+        lastSourceTagsAvailable = available;
+        emit("music_source_filter_status", "available", available,
+                "classification", available ? "source_tags" : "unfiltered_mix",
+                "source_event", reason,
+                "engine_visualization_enabled", engineVisualizationEnabled);
     }
 
     static boolean isMediaPlayback(boolean active, int usage, int contentType) {

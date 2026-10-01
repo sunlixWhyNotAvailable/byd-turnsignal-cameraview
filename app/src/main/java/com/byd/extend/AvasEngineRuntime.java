@@ -29,6 +29,8 @@ final class AvasEngineRuntime implements AutoCloseable {
     private volatile boolean closed;
     private String state = "stopped";
     private String error = "";
+    private int lastLoggedPower = AvasEngineSessionPolicy.POWER_INVALID;
+    private boolean loggedPower;
 
     AvasEngineRuntime(Context context, Callable<AvasAudioPlayer> player,
             BooleanSupplier microphoneActive, ScheduledExecutorService executor,
@@ -47,6 +49,9 @@ final class AvasEngineRuntime implements AutoCloseable {
         config = next;
         telemetry.setEnabled(next.enabled && hasOutput(next));
         AvasEngineSessionPolicy.Action action = policy.configure(next.enabled, hasOutput(next));
+        if (action != AvasEngineSessionPolicy.Action.NONE) {
+            logPolicy("configure", policy.rawPower(), false, action);
+        }
         if (!next.enabled || !hasOutput(next)) {
             if (current != null) current.cancelled = true;
             setState(current == null ? "stopped" : "stopping", "");
@@ -63,18 +68,31 @@ final class AvasEngineRuntime implements AutoCloseable {
 
     synchronized void onPower(int value, boolean baseline) {
         if (closed) return;
-        apply(policy.observePower(value, baseline));
+        AvasEngineSessionPolicy.Action action = policy.observePower(value, baseline);
+        if (!loggedPower || value != lastLoggedPower || action != AvasEngineSessionPolicy.Action.NONE) {
+            logPolicy("power", value, baseline, action);
+            lastLoggedPower = value;
+            loggedPower = true;
+        }
+        apply(action);
     }
 
     synchronized void startManual() {
         if (closed || current != null && !current.tail && !current.cancelled) return;
-        apply(policy.manualStart());
+        AvasEngineSessionPolicy.Action action = policy.manualStart();
+        logPolicy("manual_start", policy.rawPower(), false, action);
+        apply(action);
     }
 
     synchronized void stopManual() {
         if (closed) return;
-        apply(policy.manualStop());
-        if (current != null) current.cancelled = true;
+        AvasEngineSessionPolicy.Action action = policy.manualStop();
+        logPolicy("manual_stop", policy.rawPower(), false, action);
+        if (current != null) {
+            current.cancelled = true;
+            log("avas_engine_cancel", "source", "manual_stop", "pack", current.pack);
+        }
+        apply(action);
     }
 
     synchronized JSONObject status() {
@@ -108,6 +126,14 @@ final class AvasEngineRuntime implements AutoCloseable {
         }
     }
 
+    private void logPolicy(String source, int rawPower, boolean baseline,
+            AvasEngineSessionPolicy.Action action) {
+        log("avas_engine_policy", "source", source, "power_raw", rawPower,
+                "power_valid", policy.hasValidPower(), "last_valid_power", policy.lastValidPower(),
+                "baseline", baseline, "action", action.name(),
+                "desired_active", policy.desiredActive());
+    }
+
     private void start(boolean ignition) {
         if (current != null) current.cancelled = true;
         Session next = new Session(config, ignition);
@@ -126,6 +152,14 @@ final class AvasEngineRuntime implements AutoCloseable {
         AvasAudioPlayer.EngineOutput exterior = null;
         AvasAudioPlayer.EngineOutput interior = null;
         String failure = "";
+        boolean startCueStarted = false;
+        boolean startCueEnded = false;
+        boolean stopCueStarted = false;
+        boolean stopCueEnded = false;
+        long startExteriorSubmitted = 0;
+        long startInteriorSubmitted = 0;
+        long stopExteriorSubmitted = 0;
+        long stopInteriorSubmitted = 0;
         try {
             if (session.cancelled || closed) return;
             Context owner = context.createPackageContext(BuildConfig.APPLICATION_ID, 0);
@@ -134,7 +168,10 @@ final class AvasEngineRuntime implements AutoCloseable {
             AvasEngineModel model = new AvasEngineModel(pack.idleRpm, pack.maxRpm);
             AvasAudioPlayer output = player.call();
             BooleanSupplier cancelled = () -> session.cancelled || closed;
-            if (session.exterior) exterior = output.openEngineOutput(true, cancelled);
+            if (session.exterior) {
+                exterior = output.openEngineOutput(true, cancelled,
+                        () -> config.exteriorVolume, session.exteriorVolume);
+            }
             if (session.interior) interior = output.openEngineOutput(false, cancelled);
             if (cancelled.getAsBoolean()) return;
             synchronized (this) {
@@ -148,25 +185,89 @@ final class AvasEngineRuntime implements AutoCloseable {
             int tailAt = 0;
             boolean stopping = false;
             long lastLog = 0;
+            if (intro != null) {
+                startCueStarted = true;
+                logCue("start", "begin", intro.length, 0, 0, "ignition");
+            }
             while (!cancelled.getAsBoolean()) {
-                if (session.tail) stopping = true;
+                if (session.tail && !stopping) {
+                    stopping = true;
+                    stopCueStarted = true;
+                    logCue("stop", "begin", pack.stop.length, 0, 0, "power_off");
+                }
                 int frames = block.length;
+                int cue = 0;
                 if (stopping) {
                     frames = Math.min(frames, pack.stop.length - tailAt);
-                    if (frames <= 0) break;
+                    if (frames <= 0) {
+                        if (!cancelled.getAsBoolean() && !stopCueEnded) {
+                            stopCueEnded = true;
+                            logCue("stop", "end", pack.stop.length,
+                                    stopExteriorSubmitted, stopInteriorSubmitted, "complete");
+                        }
+                        break;
+                    }
                     System.arraycopy(pack.stop, tailAt, block, 0, frames);
                     tailAt += frames;
+                    cue = 2;
                 } else if (intro != null && introAt < intro.length) {
                     frames = Math.min(frames, intro.length - introAt);
                     System.arraycopy(intro, introAt, block, 0, frames);
                     introAt += frames;
+                    cue = 1;
                 } else {
                     long now = SystemClock.elapsedRealtime();
-                    AvasEngineModel.State drive = telemetry.update(model, now);
+                    AvasEngineTelemetry.Snapshot snapshot = telemetry.updateSnapshot(model, now);
+                    AvasEngineModel.State drive = snapshot.state;
                     synth.render(block, 0, frames, drive.rpm, drive.load);
                     if (now - lastLog >= 5000) {
-                        log("avas_engine_motion", "rpm", drive.rpm, "load", drive.load,
-                                "gear", drive.gear, "valid", drive.valid);
+                        AvasConfig.Engine settings = config;
+                        log("avas_engine_motion", "pack", pack.id,
+                                "rpm", drive.rpm, "load", drive.load,
+                                "gear", drive.gear, "model_valid", drive.valid,
+                                "speed_raw_bits", snapshot.speedRaw,
+                                "speed_validity_raw", snapshot.speedValidityRaw,
+                                "speed_valid", snapshot.speedValid,
+                                "speed_kph", jsonFloat(snapshot.roadSpeedKph),
+                                "speed_source", snapshot.speedSource,
+                                "speed_validity_source", snapshot.speedValiditySource,
+                                "selector_raw", snapshot.selectorRaw,
+                                "selector_valid", snapshot.selectorValid,
+                                "selector_source", snapshot.selectorSource,
+                                "pedal_raw", snapshot.pedalRaw,
+                                "pedal_validity_raw", snapshot.pedalValidityRaw,
+                                "pedal_valid", snapshot.pedalValid,
+                                "pedal_source", snapshot.pedalSource,
+                                "pedal_validity_source", snapshot.pedalValiditySource,
+                                "brake_raw", snapshot.brakeRaw,
+                                "brake_validity_raw", snapshot.brakeValidityRaw,
+                                "brake_valid", snapshot.brakeValid,
+                                "brake_source", snapshot.brakeSource,
+                                "brake_validity_source", snapshot.brakeValiditySource,
+                                "front_motor_raw", snapshot.frontMotorRaw,
+                                "front_motor_valid", snapshot.frontMotorValid,
+                                "front_motor_source", snapshot.frontMotorSource,
+                                "front_raw_per_kph", jsonFloat(snapshot.frontRawPerKph),
+                                "front_calibration_samples", snapshot.frontCalibrationSamples,
+                                "rear_motor_raw", snapshot.rearMotorRaw,
+                                "rear_motor_valid", snapshot.rearMotorValid,
+                                "rear_motor_source", snapshot.rearMotorSource,
+                                "rear_raw_per_kph", jsonFloat(snapshot.rearRawPerKph),
+                                "rear_calibration_samples", snapshot.rearCalibrationSamples,
+                                "motion_source", snapshot.motionSource,
+                                "motion_kph", jsonFloat(snapshot.motionKph),
+                                "exterior_enabled", exterior != null,
+                                "exterior_user_volume", settings.exteriorVolume,
+                                "exterior_track_volume", exterior == null ? -1
+                                        : exterior.trackVolumePercent(),
+                                "exterior_loudness_enabled", exterior != null
+                                        && exterior.loudnessEnabled(),
+                                "exterior_loudness_gain_mb", exterior == null ? 0
+                                        : exterior.loudnessGainMb(),
+                                "interior_enabled", interior != null,
+                                "interior_pcm_volume", settings.interiorVolume,
+                                "interior_pcm_multiplier", settings.interiorVolume / 100.0f,
+                                "microphone_duck", duck);
                         lastLog = now;
                     }
                 }
@@ -178,12 +279,27 @@ final class AvasEngineRuntime implements AutoCloseable {
                 }
                 AvasConfig.Engine settings = config;
                 if (exterior != null) {
-                    pcm(block, pcm, frames, settings.exteriorVolume);
-                    exterior.write(pcm, frames);
+                    pcm(block, pcm, frames, 100);
+                    int written = exterior.write(pcm, frames);
+                    if (cue == 1) startExteriorSubmitted += written;
+                    else if (cue == 2) stopExteriorSubmitted += written;
                 }
                 if (interior != null) {
                     pcm(block, pcm, frames, settings.interiorVolume);
-                    interior.write(pcm, frames);
+                    int written = interior.write(pcm, frames);
+                    if (cue == 1) startInteriorSubmitted += written;
+                    else if (cue == 2) stopInteriorSubmitted += written;
+                }
+                if (cue == 1 && introAt >= intro.length && !cancelled.getAsBoolean()
+                        && !startCueEnded) {
+                    startCueEnded = true;
+                    logCue("start", "end", intro.length,
+                            startExteriorSubmitted, startInteriorSubmitted, "complete");
+                } else if (cue == 2 && tailAt >= pack.stop.length
+                        && !cancelled.getAsBoolean() && !stopCueEnded) {
+                    stopCueEnded = true;
+                    logCue("stop", "end", pack.stop.length,
+                            stopExteriorSubmitted, stopInteriorSubmitted, "complete");
                 }
             }
             if (!cancelled.getAsBoolean()) {
@@ -191,21 +307,52 @@ final class AvasEngineRuntime implements AutoCloseable {
                 if (interior != null) interior.drain();
             }
         } catch (Exception problem) {
-            if (!session.cancelled && !closed) failure = problem.toString();
+            if (!session.cancelled && !closed) {
+                failure = problem.toString();
+                log("avas_engine_error", "pack", session.pack, "phase", state,
+                        "error", failure);
+            }
         } finally {
+            if (startCueStarted && !startCueEnded) {
+                logCue("start", "cancel", -1, startExteriorSubmitted,
+                        startInteriorSubmitted, "session_cancelled");
+            }
+            if (stopCueStarted && !stopCueEnded) {
+                logCue("stop", "cancel", -1, stopExteriorSubmitted,
+                        stopInteriorSubmitted, "session_cancelled");
+            }
+            if (session.cancelled || closed) {
+                log("avas_engine_cancel", "source", closed ? "shutdown" : "session",
+                        "pack", session.pack);
+            }
             failure = closeOutput(interior, failure);
             failure = closeOutput(exterior, failure);
             synchronized (this) {
                 if (current == session) {
                     current = null;
                     if (!config.enabled || !hasOutput(config)) failure = "";
-                    if (!failure.isEmpty()) policy.playbackFailed();
+                    if (!failure.isEmpty()) {
+                        policy.playbackFailed();
+                        logPolicy("playback_failed", policy.rawPower(), false,
+                                AvasEngineSessionPolicy.Action.NONE);
+                    }
                     setState(failure.isEmpty() ? "stopped" : "error", failure);
                 }
             }
             // Even loading/routing/PCM failures must never strand the event lane.
             session.finished.countDown();
         }
+    }
+
+    private void logCue(String cue, String phase, int frames, long exteriorSubmitted,
+            long interiorSubmitted, String reason) {
+        log("avas_engine_cue", "cue", cue, "phase", phase, "frames", frames,
+                "exterior_submitted_frames", exteriorSubmitted,
+                "interior_submitted_frames", interiorSubmitted, "reason", reason);
+    }
+
+    private static Object jsonFloat(float value) {
+        return Float.isFinite(value) ? value : JSONObject.NULL;
     }
 
     static void pcm(float[] input, short[] output, int frames, int volume) {
@@ -268,6 +415,7 @@ final class AvasEngineRuntime implements AutoCloseable {
         final boolean exterior;
         final boolean interior;
         final boolean ignition;
+        final int exteriorVolume;
         final CountDownLatch finished = new CountDownLatch(1);
         volatile boolean cancelled;
         volatile boolean tail;
@@ -276,6 +424,7 @@ final class AvasEngineRuntime implements AutoCloseable {
             exterior = settings.exteriorEnabled;
             interior = settings.interiorEnabled;
             this.ignition = ignition;
+            exteriorVolume = settings.exteriorVolume;
         }
     }
 }

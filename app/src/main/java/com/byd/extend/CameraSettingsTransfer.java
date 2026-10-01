@@ -1576,6 +1576,7 @@ public final class CameraSettingsTransfer {
                 || key.equals(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_HOLD_AFTER_SHORT_TURN)
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)
+                || key.equals("music_capture_focus_on_open")
                 || key.equals("mirror_correction") || key.equals("mirror_mirrored");
     }
 
@@ -1724,7 +1725,10 @@ public final class CameraSettingsTransfer {
                 || key.startsWith("reverse_front_calibration_preset_v1_")) return true;
         return key.equals("guard_enabled") || key.equals("outward_deg") || key.equals("center_deg")
                 || key.equals("correction_delay_ms") || key.equals("max_speed_kph")
-                || key.equals("music_visualizer_enabled") || key.equals("parking_any_enabled")
+                || key.equals("music_visualizer_enabled")
+                || key.equals("music_capture_focus_on_open")
+                || key.equals("music_engine_visualization_enabled")
+                || key.equals("parking_any_enabled")
                 || key.equals("weather_enabled") || key.equals("weather_interval_minutes")
                 || key.equals("auto_start_enabled");
     }

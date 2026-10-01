@@ -5,48 +5,67 @@
   "maxRpm": 6144,
   "sampleRate": 48000,
   "idle": "idle.wav",
+  "idleGainDb": 13.71,
   "start": "start.wav",
+  "startGainDb": 12.52,
   "stop": "stop.wav",
+  "stopGainDb": 16.00,
   "layers": [
     {
       "rpm": 2181,
       "on": "rpm_2181_on.wav",
-      "off": "rpm_2181_off.wav"
+      "onGainDb": 7.34,
+      "off": "rpm_2181_off.wav",
+      "offGainDb": 8.54
     },
     {
       "rpm": 2862,
       "on": "rpm_2862_on.wav",
-      "off": "rpm_2862_off.wav"
+      "onGainDb": 9.59,
+      "off": "rpm_2862_off.wav",
+      "offGainDb": 10.10
     },
     {
       "rpm": 3307,
       "on": "rpm_3307_on.wav",
-      "off": "rpm_3307_off.wav"
+      "onGainDb": 10.05,
+      "off": "rpm_3307_off.wav",
+      "offGainDb": 7.19
     },
     {
       "rpm": 3765,
       "on": "rpm_3765_on.wav",
-      "off": "rpm_3765_off.wav"
+      "onGainDb": 9.10,
+      "off": "rpm_3765_off.wav",
+      "offGainDb": 0.63
     },
     {
       "rpm": 4410,
       "on": "rpm_4410_on.wav",
-      "off": "rpm_4410_off.wav"
+      "onGainDb": 4.43,
+      "off": "rpm_4410_off.wav",
+      "offGainDb": -2.18
     },
     {
       "rpm": 4998,
       "on": "rpm_4998_on.wav",
-      "off": "rpm_4998_off.wav"
+      "onGainDb": 1.99,
+      "off": "rpm_4998_off.wav",
+      "offGainDb": -1.92
     },
     {
       "rpm": 5553,
       "on": "rpm_5553_on.wav",
-      "off": "rpm_5553_off.wav"
+      "onGainDb": 0.04,
+      "off": "rpm_5553_off.wav",
+      "offGainDb": -1.22
     },
     {
       "rpm": 6118,
       "on": "rpm_6118_on.wav",
-      "off": "rpm_6118_off.wav"
+      "onGainDb": 0.90,
+      "off": "rpm_6118_off.wav",
+      "offGainDb": 5.69
     }
   ]
 }

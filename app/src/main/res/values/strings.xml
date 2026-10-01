@@ -84,6 +84,10 @@
     <string name="km_h">"km/h"</string>
     <string name="music_and_lighting">"Music and lighting"</string>
     <string name="ambient_lighting_and_music_metadata">"Ambient lighting and music metadata"</string>
+    <string name="capture_audio_focus_when_opening_a_player">"Capture audio focus when opening a player"</string>
+    <string name="control_the_opened_player_from_the_steering_wheel">"Control the opened player from the steering wheel"</string>
+    <string name="enable_engine_sound_visualization">"Enable engine sound visualization"</string>
+    <string name="when_engine_sound_plays_through_the_interior_speaker_when_no_other_audio_is_playing">"When engine sound plays through the interior speaker (when no other audio is playing)"</string>
     <string name="stock_ambient_lighting_during_playback">"Stock ambient lighting during playback"</string>
     <string name="weather">"Weather"</string>
     <string name="settings_applied">"Settings applied"</string>
@@ -319,4 +323,6 @@
     <string name="update_hint_border_hint">0 removes the border</string>
     <string name="update_hint_size">Widget size</string>
     <string name="update_hint_sample">Preview · 1:1</string>
+    <string name="adb_reminder_message">ADB recovery preparation is complete.\nConnect the tablet to Wi-Fi to finish restoring ADB.</string>
+    <string name="adb_reminder_retry">Repeat Wi-Fi request</string>
 </resources>

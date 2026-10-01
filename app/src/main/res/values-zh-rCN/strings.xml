@@ -84,6 +84,10 @@
     <string name="km_h">"千米/时"</string>
     <string name="music_and_lighting">"音乐与氛围灯"</string>
     <string name="ambient_lighting_and_music_metadata">"氛围灯与音乐信息"</string>
+    <string name="capture_audio_focus_when_opening_a_player">"打开播放器时获取音频焦点"</string>
+    <string name="control_the_opened_player_from_the_steering_wheel">"通过方向盘控制已打开的播放器"</string>
+    <string name="enable_engine_sound_visualization">"启用引擎声可视化"</string>
+    <string name="when_engine_sound_plays_through_the_interior_speaker_when_no_other_audio_is_playing">"仅在车内播放模拟引擎声时（无其他音频播放时）"</string>
     <string name="stock_ambient_lighting_during_playback">"播放音乐时联动原车氛围灯"</string>
     <string name="weather">"天气"</string>
     <string name="settings_applied">"设置已应用"</string>
@@ -319,4 +323,6 @@
     <string name="update_hint_border_hint">0 表示无边框</string>
     <string name="update_hint_size">悬浮窗大小</string>
     <string name="update_hint_sample">预览 · 1:1</string>
+    <string name="adb_reminder_message">ADB 恢复准备已完成。\n请将平板连接到 Wi-Fi，以完成 ADB 恢复。</string>
+    <string name="adb_reminder_retry">重试 Wi-Fi 请求</string>
 </resources>

@@ -234,8 +234,29 @@ public final class TurnSignalShellMain {
                     return true;
                 }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_MUSIC) {
-                    musicRuntime.configure(data.readInt() != 0);
+                    boolean enabled = data.readInt() != 0;
+                    boolean captureFocusOnOpen = data.readInt() != 0;
+                    boolean engineVisualizationEnabled = data.readInt() != 0;
+                    musicRuntime.configure(enabled, captureFocusOnOpen,
+                            engineVisualizationEnabled);
                     reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_DISPATCH_MUSIC_KEY) {
+                    String foregroundPackage = data.readString();
+                    int rawKeyCode = data.readInt();
+                    int action = data.readInt();
+                    int repeatCount = data.readInt();
+                    long downTime = data.readLong();
+                    long eventTime = data.readLong();
+                    if (!MusicMediaKeyPolicy.isValidCommand(foregroundPackage, rawKeyCode,
+                            action, repeatCount, downTime, eventTime)) {
+                        throw new IllegalArgumentException("invalid music media-key command");
+                    }
+                    boolean handled = musicRuntime.dispatchMediaKey(foregroundPackage,
+                            rawKeyCode, action, repeatCount, downTime, eventTime);
+                    reply.writeNoException();
+                    reply.writeInt(handled ? 1 : 0);
                     return true;
                 }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR) {

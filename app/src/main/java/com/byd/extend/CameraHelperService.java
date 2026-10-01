@@ -156,6 +156,10 @@ public final class CameraHelperService extends Service {
         void applyGuard(boolean enabled, float outward, float center,
                 int delayMs, int maxSpeedKph);
         void applyMusic(boolean enabled);
+        default void applyMusic(boolean enabled, boolean captureFocusOnOpen,
+                boolean engineVisualizationEnabled) {
+            applyMusic(enabled);
+        }
         void applyParkingRadar(boolean enabled);
     }
 
@@ -166,11 +170,14 @@ public final class CameraHelperService extends Service {
         final int delayMs;
         final int maxSpeedKph;
         final boolean musicEnabled;
+        final boolean captureFocusOnOpen;
+        final boolean engineVisualizationEnabled;
         final boolean parkingEnabled;
 
         private RuntimeSettingsSnapshot(
                 boolean guardEnabled, float outward, float center,
                 int delayMs, int maxSpeedKph, boolean musicEnabled,
+                boolean captureFocusOnOpen, boolean engineVisualizationEnabled,
                 boolean parkingEnabled) {
             this.guardEnabled = guardEnabled;
             this.outward = outward;
@@ -178,6 +185,8 @@ public final class CameraHelperService extends Service {
             this.delayMs = delayMs;
             this.maxSpeedKph = maxSpeedKph;
             this.musicEnabled = musicEnabled;
+            this.captureFocusOnOpen = captureFocusOnOpen;
+            this.engineVisualizationEnabled = engineVisualizationEnabled;
             this.parkingEnabled = parkingEnabled;
         }
 
@@ -190,12 +199,14 @@ public final class CameraHelperService extends Service {
                     settings.getInt("correction_delay_ms", 100),
                     settings.getInt("max_speed_kph", 30),
                     settings.getBoolean("music_visualizer_enabled", false),
+                    settings.getBoolean("music_capture_focus_on_open", true),
+                    settings.getBoolean("music_engine_visualization_enabled", false),
                     parkingEnabled);
         }
 
         void replay(RuntimeSettingsSink sink) {
             sink.applyGuard(guardEnabled, outward, center, delayMs, maxSpeedKph);
-            sink.applyMusic(musicEnabled);
+            sink.applyMusic(musicEnabled, captureFocusOnOpen, engineVisualizationEnabled);
             sink.applyParkingRadar(parkingEnabled);
         }
     }
@@ -311,6 +322,20 @@ public final class CameraHelperService extends Service {
 
     public static void removeAdbRecoveryListener(Runnable listener) {
         adbRecoveryListeners.remove(listener);
+    }
+
+    static boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode,
+            int action, int repeatCount, long downTime, long eventTime) {
+        CameraHelperService service = activeInstance;
+        if (service == null || !service.helperRuntimeStarted) return false;
+        CameraHelperMain.HelperBinder activeHelper = service.helper;
+        if (activeHelper == null || !activeHelper.isHealthy()) return false;
+        try {
+            return activeHelper.dispatchMusicMediaKey(foregroundPackage, rawKeyCode,
+                    action, repeatCount, downTime, eventTime);
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
     }
 
     public static void adbRecoverySettingsChanged(Context context) {
@@ -956,8 +981,9 @@ public final class CameraHelperService extends Service {
                         && avasRecoveryDaemon.ownsRecovery()));
         helper.applyParkingRadar(anyParkingEnabled());
         if (refreshMusicAfterClose) {
-            helper.applyMusic(settings
-                    .getBoolean("music_visualizer_enabled", false));
+            helper.applyMusic(settings.getBoolean("music_visualizer_enabled", false),
+                    settings.getBoolean("music_capture_focus_on_open", true),
+                    settings.getBoolean("music_engine_visualization_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
             mirror.settingsChanged();
             overlay.applySettings();
@@ -980,8 +1006,9 @@ public final class CameraHelperService extends Service {
             mirror.settingsChanged();
             clusterFullscreen.settingsChanged();
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
-            helper.applyMusic(settings
-                    .getBoolean("music_visualizer_enabled", false));
+            helper.applyMusic(settings.getBoolean("music_visualizer_enabled", false),
+                    settings.getBoolean("music_capture_focus_on_open", true),
+                    settings.getBoolean("music_engine_visualization_enabled", false));
         } else if (ACTION_WEATHER_SETTINGS_CHANGED.equals(action)) {
             weatherRuntime.settingsChanged();
         } else if (isAvasAction(action)) {

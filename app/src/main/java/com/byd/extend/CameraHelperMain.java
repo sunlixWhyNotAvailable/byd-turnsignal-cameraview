@@ -162,9 +162,32 @@ final class CameraHelperMain {
             turnController.configureMusic(enabled);
         }
 
+        void configureMusic(boolean enabled, boolean captureFocusOnOpen,
+                boolean engineVisualizationEnabled) {
+            turnController.configureMusic(enabled, captureFocusOnOpen,
+                    engineVisualizationEnabled);
+        }
+
         @Override
         public void applyMusic(boolean enabled) {
             turnController.applyMusic(enabled);
+        }
+
+        @Override
+        public void applyMusic(boolean enabled, boolean captureFocusOnOpen,
+                boolean engineVisualizationEnabled) {
+            turnController.applyMusic(enabled, captureFocusOnOpen,
+                    engineVisualizationEnabled);
+        }
+
+        boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode,
+                int action, int repeatCount, long downTime, long eventTime) {
+            return turnController.dispatchMusicMediaKey(foregroundPackage, rawKeyCode,
+                    action, repeatCount, downTime, eventTime);
+        }
+
+        boolean isHealthy() {
+            return turnController.isHealthy();
         }
 
         void configureParkingRadar(boolean anyEnabled) {
@@ -5017,6 +5040,7 @@ final class CameraHelperMain {
                     || "music_metadata_cleanup".equals(kind)
                     || "music_metadata_relinquished".equals(kind)
                     || "music_metadata_error".equals(kind)
+                    || "music_source_filter_status".equals(kind)
                     || "music_runtime_error".equals(kind);
         }
 

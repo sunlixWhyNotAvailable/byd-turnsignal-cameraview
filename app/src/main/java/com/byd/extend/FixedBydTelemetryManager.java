@@ -2,6 +2,7 @@ package com.byd.extend;
 
 import android.content.Context;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -54,7 +55,7 @@ final class FixedBydTelemetryManager {
     private final Method disable;
     private final Object managerListener;
     private final Map<Long, Client> clients = new LinkedHashMap<>();
-    private final Map<Integer, int[]> enabled = new LinkedHashMap<>();
+    private final Map<Integer, Set<Integer>> enabled = new LinkedHashMap<>();
     private long nextId;
     private boolean registered;
 
@@ -111,31 +112,22 @@ final class FixedBydTelemetryManager {
         }
         long id = ++nextId;
         Client client = new Client(requests, listener);
-        Map<Integer, int[]> previous = copyEnabled();
         clients.put(id, client);
         try {
             if (!registered) {
                 register.invoke(manager, managerListener);
                 registered = true;
             }
-            applyUnion(union());
+            enableMissing(union());
             client.active = true;
         } catch (Exception failure) {
-            clients.remove(id);
-            Exception rollbackFailure = null;
-            try { applyUnion(previous); } catch (Exception rollback) {
-                rollbackFailure = rollback;
-            }
-            if (rollbackFailure != null && !clients.isEmpty()) {
-                dispatchError("subscription_rollback_failed: " + rollbackFailure,
-                        elapsedRealtime());
-            }
+            Client removed = clients.remove(id);
+            if (removed != null) disableUnownedDevices(devices(removed));
             if (clients.isEmpty()) {
                 if (registered) {
                     try { unregister.invoke(manager, managerListener); } catch (Exception ignored) {}
                     registered = false;
                 }
-                enabled.clear();
             }
             throw failure;
         }
@@ -147,23 +139,12 @@ final class FixedBydTelemetryManager {
     }
 
     private synchronized void unsubscribe(long id) {
-        if (clients.remove(id) == null) return;
-        if (clients.isEmpty()) {
-            for (Integer device : new ArrayList<>(enabled.keySet())) {
-                try { disable.invoke(manager, device); } catch (Exception ignored) {}
-            }
-            enabled.clear();
-            if (registered) {
-                try { unregister.invoke(manager, managerListener); } catch (Exception ignored) {}
-                registered = false;
-            }
-            return;
-        }
-        try {
-            applyUnion(union());
-        } catch (Exception failure) {
-            dispatchError("subscription_reconfigure_failed: " + failure,
-                    elapsedRealtime());
+        Client removed = clients.remove(id);
+        if (removed == null) return;
+        disableUnownedDevices(devices(removed));
+        if (clients.isEmpty() && registered) {
+            try { unregister.invoke(manager, managerListener); } catch (Exception ignored) {}
+            registered = false;
         }
     }
 
@@ -236,30 +217,66 @@ final class FixedBydTelemetryManager {
         return result;
     }
 
-    private void applyUnion(Map<Integer, int[]> desired) throws Exception {
+    private void enableMissing(Map<Integer, int[]> desired) throws Exception {
         for (Map.Entry<Integer, int[]> entry : desired.entrySet()) {
-            int[] old = enabled.get(entry.getKey());
-            if (Arrays.equals(old, entry.getValue())) continue;
-            Object status = enable.invoke(manager, entry.getKey(), entry.getValue());
-            if (!(status instanceof Number) || ((Number) status).intValue() != 0) {
+            Set<Integer> actual = enabled.get(entry.getKey());
+            int[] missing = Arrays.stream(entry.getValue())
+                    .filter(fid -> actual == null || !actual.contains(fid)).toArray();
+            if (missing.length == 0) continue;
+            Object status = enable.invoke(manager, entry.getKey(), missing);
+            if (!(status instanceof Number)
+                    || !isEnableSuccess(((Number) status).intValue())) {
                 throw new IllegalStateException("enableDevice failed device=" + entry.getKey()
                         + " status=" + status);
             }
-            enabled.put(entry.getKey(), entry.getValue().clone());
-        }
-        for (Integer device : new ArrayList<>(enabled.keySet())) {
-            if (desired.containsKey(device)) continue;
-            disable.invoke(manager, device);
-            enabled.remove(device);
+            Set<Integer> updated = enabled.computeIfAbsent(
+                    entry.getKey(), ignored -> new LinkedHashSet<>());
+            for (int fid : missing) updated.add(fid);
         }
     }
 
-    private Map<Integer, int[]> copyEnabled() {
-        Map<Integer, int[]> copy = new LinkedHashMap<>();
-        for (Map.Entry<Integer, int[]> entry : enabled.entrySet()) {
-            copy.put(entry.getKey(), entry.getValue().clone());
+    static boolean isEnableSuccess(int status) {
+        return status == 0 || status == 1;
+    }
+
+    private void disableUnownedDevices(Set<Integer> devices) {
+        for (Integer device : devices) {
+            if (!enabled.containsKey(device)) continue;
+            if (hasClient(device)) continue;
+            try {
+                Object status = disable.invoke(manager, device);
+                if (status instanceof Number && ((Number) status).intValue() == 0) {
+                    enabled.remove(device);
+                } else {
+                    logDisableFailure(device, "status=" + status);
+                }
+            } catch (Exception failure) {
+                // Keep the confirmed enabled set when native teardown fails.
+                logDisableFailure(device, failure.toString());
+            }
         }
-        return copy;
+    }
+
+    private static Set<Integer> devices(Client client) {
+        Set<Integer> devices = new LinkedHashSet<>();
+        for (Request request : client.requests) devices.add(request.device);
+        return devices;
+    }
+
+    private static void logDisableFailure(int device, String reason) {
+        String message = "disableDevice failed device=" + device + " " + reason;
+        if (message.length() > 160) message = message.substring(0, 160);
+        try { Log.w("FixedBydTelemetry", message); }
+        catch (RuntimeException | LinkageError ignored) {}
+    }
+
+    private boolean hasClient(int device) {
+        for (Client client : clients.values()) {
+            for (Request request : client.requests) {
+                if (request.device == device) return true;
+            }
+        }
+        return false;
     }
 
     private static final class Client {

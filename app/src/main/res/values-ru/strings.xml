@@ -84,6 +84,10 @@
     <string name="km_h">"км/ч"</string>
     <string name="music_and_lighting">"Музыка и подсветка"</string>
     <string name="ambient_lighting_and_music_metadata">"Подсветка салона и метаданные музыки"</string>
+    <string name="capture_audio_focus_when_opening_a_player">"Захватывать аудиофокус при открытии плеера"</string>
+    <string name="control_the_opened_player_from_the_steering_wheel">"Управление открытым плеером с руля"</string>
+    <string name="enable_engine_sound_visualization">"Включать визуализацию звука двигателя"</string>
+    <string name="when_engine_sound_plays_through_the_interior_speaker_when_no_other_audio_is_playing">"Когда звук двигателя воспроизводится в салоне (при отсутствии другого аудио)"</string>
     <string name="stock_ambient_lighting_during_playback">"Штатная подсветка при воспроизведении"</string>
     <string name="weather">"Погода"</string>
     <string name="settings_applied">"Настройки применены"</string>
@@ -319,4 +323,6 @@
     <string name="update_hint_border_hint">"0 убирает рамку"</string>
     <string name="update_hint_size">"Размер виджета"</string>
     <string name="update_hint_sample">"Предпросмотр · 1:1"</string>
+    <string name="adb_reminder_message">Подготовка к восстановлению ADB завершена.\nПодключите планшет к Wi-Fi для завершения восстановления ADB.</string>
+    <string name="adb_reminder_retry">Повторить запрос Wi-Fi</string>
 </resources>

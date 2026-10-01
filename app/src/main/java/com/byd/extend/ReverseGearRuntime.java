@@ -6,7 +6,6 @@ import android.os.Looper;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.function.BiConsumer;
 
 final class ReverseGearRuntime {
@@ -23,8 +22,7 @@ final class ReverseGearRuntime {
     private final BiConsumer<String, Object[]> eventSink;
 
     private Object device;
-    private Object listener;
-    private Method unregisterListener;
+    private FixedBydTelemetryManager.Subscription subscription;
     private Method readValue;
     private boolean started;
     private boolean listenerRegistered;
@@ -60,45 +58,30 @@ final class ReverseGearRuntime {
         if (started) return;
         started = true;
         try {
-            Class<?> listenerType = Class.forName("android.hardware.IBYDAutoListener");
-            Class<?> eventType = Class.forName("android.hardware.IBYDAutoEvent");
-            Method getEventId = eventType.getMethod("getEventType");
-            Method getEventValue = eventType.getMethod("getValue");
-            listener = Proxy.newProxyInstance(
-                    ReverseGearRuntime.class.getClassLoader(),
-                    new Class<?>[]{listenerType},
-                    (proxy, method, args) -> {
-                        if (method.getDeclaringClass() == Object.class) {
-                            if ("toString".equals(method.getName())) return "ReverseGearListener";
-                            if ("hashCode".equals(method.getName())) {
-                                return System.identityHashCode(proxy);
-                            }
-                            if ("equals".equals(method.getName())) return proxy == args[0];
-                        }
-                        if ("onDataChanged".equals(method.getName())) {
-                            int fid = (Integer) getEventId.invoke(args[0]);
-                            int value = (Integer) getEventValue.invoke(args[0]);
-                            handler.post(() -> acceptValue(fid, value, "callback"));
-                        } else if ("onError".equals(method.getName())) {
-                            int code = (Integer) args[0];
-                            String message = String.valueOf(args[1]);
-                            handler.post(() -> listenerFailed(code, message));
-                        }
-                        return null;
-                    });
-
             Class<?> deviceType = Class.forName(
                     "android.hardware.bydauto.gearbox.BYDAutoGearboxDevice");
             device = deviceType.getMethod("getInstance", Context.class).invoke(null, context);
-            Method register = findListenerMethod(device, "registerListener", true);
-            unregisterListener = findListenerMethod(device, "unregisterListener", false);
             readValue = deviceType.getMethod("get", int[].class, Class.class);
-            register.invoke(device, listener, new int[]{GEAR_FID});
+            subscription = FixedBydTelemetryManager.get(context).subscribe(
+                    new FixedBydTelemetryManager.Request[]{
+                            new FixedBydTelemetryManager.Request(DEVICE_TYPE, GEAR_FID)},
+                    new FixedBydTelemetryManager.Listener() {
+                        @Override public void onValue(
+                                int deviceType, int fid, int value, long receivedMs) {
+                            handler.post(() -> acceptValue(fid, value, "callback"));
+                        }
+                        @Override public void onError(String reason, long receivedMs) {
+                            handler.post(() -> listenerFailed(-1, reason));
+                        }
+                    });
             listenerRegistered = true;
             listenerHealthy = true;
             emitListener("registered", true, "");
             readCurrent("initial_read");
         } catch (Throwable error) {
+            if (subscription != null) subscription.close();
+            subscription = null;
+            listenerRegistered = false;
             invalidate();
             listenerHealthy = false;
             emitListener("registration_error", false, summary(error));
@@ -112,13 +95,14 @@ final class ReverseGearRuntime {
         boolean unregistered = false;
         String error = "";
         try {
-            if (unregisterListener != null && device != null && listener != null) {
-                unregisterListener.invoke(device, listener);
+            if (subscription != null) {
+                subscription.close();
                 unregistered = true;
             }
         } catch (Throwable failure) {
             error = summary(failure);
         }
+        subscription = null;
         listenerRegistered = false;
         listenerHealthy = false;
         readValue = null;
@@ -207,20 +191,6 @@ final class ReverseGearRuntime {
                 "gear", valid ? ReverseGearSessionPolicy.gearForRaw(raw).name() : "UNKNOWN",
                 "registered", listenerRegistered, "source_event", source,
                 "device", DEVICE_TYPE, "tx", TRANSACTION, "fid", GEAR_FID);
-    }
-
-    private Method findListenerMethod(Object target, String name, boolean withFeatureIds)
-            throws NoSuchMethodException {
-        for (Method method : target.getClass().getMethods()) {
-            Class<?>[] parameters = method.getParameterTypes();
-            if (method.getName().equals(name)
-                    && parameters.length == (withFeatureIds ? 2 : 1)
-                    && parameters[0].isAssignableFrom(listener.getClass())
-                    && (!withFeatureIds || parameters[1] == int[].class)) {
-                return method;
-            }
-        }
-        throw new NoSuchMethodException(name);
     }
 
     static boolean isValidRaw(int value) {

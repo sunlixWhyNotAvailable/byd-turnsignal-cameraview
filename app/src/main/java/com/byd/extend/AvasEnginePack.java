@@ -89,6 +89,9 @@ public final class AvasEnginePack {
             float[] idle = decodeWav(reader.read(assetName(manifest, "idle")));
             float[] start = decodeWav(reader.read(assetName(manifest, "start")));
             float[] stop = decodeWav(reader.read(assetName(manifest, "stop")));
+            applyGain(idle, manifest, "idleGainDb");
+            applyGain(start, manifest, "startGainDb");
+            applyGain(stop, manifest, "stopGainDb");
             JSONArray sourceLayers = manifest.getJSONArray("layers");
             if (sourceLayers.length() == 0 || sourceLayers.length() > 16) {
                 throw new IOException("invalid engine layer count");
@@ -101,9 +104,11 @@ public final class AvasEnginePack {
                 if (rpm < idleRpm || rpm > maxRpm || rpm <= previousRpm) {
                     throw new IOException("engine layers must have ascending RPM values");
                 }
-                layers[index] = new Layer(rpm,
-                        decodeWav(reader.read(assetName(source, "on"))),
-                        decodeWav(reader.read(assetName(source, "off"))));
+                float[] on = decodeWav(reader.read(assetName(source, "on")));
+                float[] off = decodeWav(reader.read(assetName(source, "off")));
+                applyGain(on, source, "onGainDb");
+                applyGain(off, source, "offGainDb");
+                layers[index] = new Layer(rpm, on, off);
                 previousRpm = rpm;
             }
             return new AvasEnginePack(id, name, idleRpm, maxRpm, idle, start, stop, layers);
@@ -127,6 +132,18 @@ public final class AvasEnginePack {
             throw new IOException("invalid engine asset name");
         }
         return name;
+    }
+
+    /** Applies a constant manifest gain without changing the recording's internal dynamics. */
+    private static void applyGain(float[] samples, JSONObject object, String key)
+            throws JSONException, IOException {
+        if (!object.has(key)) return;
+        double gainDb = object.getDouble(key);
+        if (!Double.isFinite(gainDb) || gainDb < -40.0 || gainDb > 24.0) {
+            throw new IOException("invalid engine asset gain");
+        }
+        float gain = (float) Math.pow(10.0, gainDb / 20.0);
+        for (int index = 0; index < samples.length; index++) samples[index] *= gain;
     }
 
     private static float[] decodeWav(byte[] bytes) throws IOException {

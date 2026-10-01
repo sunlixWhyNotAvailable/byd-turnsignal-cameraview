@@ -5,6 +5,10 @@ import static org.junit.Assert.assertTrue;
 
 import android.media.AudioAttributes;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+
 import org.junit.Test;
 
 public final class MusicVisualizerPlaybackTest {
@@ -56,5 +60,30 @@ public final class MusicVisualizerPlaybackTest {
         assertFalse(MusicVisualizerRuntime.shouldStartOutput(
                 true, true, true, avasTrackActive, false));
         assertTrue(MusicVisualizerRuntime.shouldScheduleStop(true, avasTrackActive, false));
+    }
+
+    @Test
+    public void sourceTagsExcludeEventMicAndDefaultOffEngineButKeepRealMusic() {
+        assertTrue(MusicPlaybackSource.isEligibleTags(Collections.emptySet(), false));
+        assertFalse(MusicPlaybackSource.isEligibleTags(
+                Collections.singleton(MusicPlaybackSource.ENGINE), false));
+        assertTrue(MusicPlaybackSource.isEligibleTags(
+                Collections.singleton(MusicPlaybackSource.ENGINE), true));
+        assertFalse(MusicPlaybackSource.isEligibleTags(
+                Collections.singleton(MusicPlaybackSource.EVENT), true));
+        assertFalse(MusicPlaybackSource.isEligibleTags(
+                Collections.singleton(MusicPlaybackSource.MICROPHONE), true));
+
+        Set<String> mixedTags = new HashSet<>();
+        mixedTags.add(MusicPlaybackSource.ENGINE);
+        boolean ordinaryMusic = MusicVisualizerRuntime.isMediaPlayback(true,
+                AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                && MusicPlaybackSource.isEligibleTags(Collections.emptySet(), false);
+        boolean engineTrack = MusicVisualizerRuntime.isMediaPlayback(true,
+                AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                && MusicPlaybackSource.isEligibleTags(mixedTags, false);
+        assertTrue(ordinaryMusic);
+        assertFalse(engineTrack);
+        assertTrue(ordinaryMusic || engineTrack);
     }
 }

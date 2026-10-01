@@ -32,11 +32,30 @@ public final class AvasEngineCoreTest {
     }
 
     @Test
+    public void appliesFixedManifestGainsToDecodedSamples() throws Exception {
+        String calibrated = manifest()
+                .replace("\"idle\":\"idle.wav\"", "\"idle\":\"idle.wav\",\"idleGainDb\":6.020599913")
+                .replace("\"start\":\"start.wav\"", "\"start\":\"start.wav\",\"startGainDb\":-6.020599913")
+                .replace("\"on\":\"low-on.wav\"", "\"on\":\"low-on.wav\",\"onGainDb\":6.020599913")
+                .replace("\"off\":\"high-off.wav\"", "\"off\":\"high-off.wav\",\"offGainDb\":6.020599913");
+        AvasEnginePack pack = AvasEnginePack.fromManifest("ferrari_v8", calibrated,
+                fixtureWavs()::get);
+
+        assertEquals(0.5f, pack.idle[0], 0.0001f);
+        assertEquals(0.25f, pack.start[0], 0.0001f);
+        assertEquals(0.8f, pack.layers[0].on[0], 0.0001f);
+        assertEquals(-0.4f, pack.layers[1].off[0], 0.0001f);
+    }
+
+    @Test
     public void rejectsUnknownPackIdsUnsafePathsAndWrongWavRate() throws Exception {
         assertThrows(IllegalArgumentException.class,
                 () -> AvasEnginePack.fromManifest("arbitrary", manifest(), name -> new byte[0]));
         assertThrows(IOException.class, () -> AvasEnginePack.fromManifest("ferrari_v8",
                 manifest().replace("idle.wav", "../other.wav"), name -> new byte[0]));
+        assertThrows(IOException.class, () -> AvasEnginePack.fromManifest("ferrari_v8",
+                manifest().replace("\"idle\":\"idle.wav\"",
+                        "\"idle\":\"idle.wav\",\"idleGainDb\":25"), fixtureWavs()::get));
 
         Map<String, byte[]> assets = fixtureWavs();
         assets.put("idle.wav", wav(44_100, (short) 1));
@@ -87,7 +106,7 @@ public final class AvasEngineCoreTest {
     }
 
     @Test
-    public void invalidCriticalInputsFailToIdleAndInvalidBrakeRemovesLoad() {
+    public void invalidSpeedFailsToIdleButInvalidPedalPreservesMotionAndBrakeRemovesLoad() {
         AvasEngineModel model = new AvasEngineModel(800, 6_000);
         AvasEngineModel.State state = model.update(0, 45, true,
                 100, true, Float.NaN, false, 4, true);
@@ -102,10 +121,43 @@ public final class AvasEngineCoreTest {
         assertEquals(0.0f, state.load, 0.001f);
         assertEquals(0, state.gear);
 
-        state = model.update(40, 0, true, Float.NaN, true,
+        state = model.update(40, 45, true, Float.NaN, false,
                 0, true, 4, true);
-        assertFalse(state.valid);
-        assertTrue(Float.isFinite(state.rpm));
+        assertTrue(state.valid);
+        assertTrue(state.rpm > 800.0f);
+        assertEquals(0.0f, state.load, 0.001f);
+
+        float movingRpm = state.rpm;
+        state = model.update(60, Float.NaN, false, Float.NaN, false,
+                0, true, 1, true);
+        assertTrue(state.valid);
+        assertTrue(state.rpm < movingRpm);
+        assertEquals(0, state.gear);
+        for (long time = 80; time <= 3_060; time += 20) {
+            state = model.update(time, Float.NaN, false, Float.NaN, false,
+                    0, true, 1, true);
+        }
+        assertEquals(800.0f, state.rpm, 0.1f);
+    }
+
+    @Test
+    public void pedalIncreaseCannotLowerRpmAtFixedSpeedAndGear() {
+        AvasEngineModel model = new AvasEngineModel(800, 6_000);
+        AvasEngineModel.State state = model.update(0, 20, true,
+                0, true, 0, true, 4, true);
+        int gear = state.gear;
+        float lowPedalRpm = state.rpm;
+
+        model.update(1_000, 20, true, 100, true, 0, true, 4, true);
+
+        assertEquals(gear, state.gear);
+        assertTrue(state.rpm >= lowPedalRpm);
+
+        // Shift intent still responds to pedal; it does not enter the RPM divisor.
+        state = model.update(1_400, 34, true, 100, true, 0, true, 4, true);
+        assertEquals(1, state.gear);
+        state = model.update(1_800, 34, true, 0, true, 0, true, 4, true);
+        assertEquals(2, state.gear);
     }
 
     @Test

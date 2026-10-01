@@ -37,4 +37,17 @@ class AdbReminderGeometryTest {
         assertEquals(0, result.retryHeight)
         assertEquals(result.bodyHeight, result.windowHeight)
     }
+
+    @Test fun wrappedBodyAndRetryRemainInsideInsetsEvenWhenNeitherSideInitiallyFits() {
+        for (bodyHeight in listOf(140, 380, 580)) {
+            for (position in listOf(0f, .5f, 1f)) {
+                val result = AdbReminderGeometry.calculate(12, 24, 960, 600, bodyHeight, 44,
+                    AdbReminderAppearance(widthPercent = 30, y = position))
+                assertEquals(bodyHeight, result.bodyHeight)
+                assertTrue(result.windowTop >= 24)
+                assertTrue(result.windowTop + result.windowHeight <= 624)
+                assertEquals(result.bodyTop, result.windowTop + result.bodyTopInWindow)
+            }
+        }
+    }
 }

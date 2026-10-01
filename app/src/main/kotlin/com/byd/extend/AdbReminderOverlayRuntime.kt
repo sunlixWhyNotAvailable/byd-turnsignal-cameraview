@@ -15,6 +15,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
@@ -151,17 +154,10 @@ class AdbReminderOverlayRuntime(
         val manager = windowManager ?: appContext.getSystemService(WindowManager::class.java)
             .also { windowManager = it }
         val area = usableArea(manager)
-        val density = appContext.resources.displayMetrics.density
-        val retryHeight = (44f * density).roundToInt()
-        val bodyHeight = (92f * density).roundToInt()
-        val geometry = AdbReminderGeometry.calculate(
-            area.left, area.top, area.width(), area.height(), bodyHeight, retryHeight,
-            current.appearance,
-        )
         val runtimeCallback = object : Callback {
             override fun onRetry() = callback.onRetry()
             override fun onSuppressed() {
-                retiredCycleId = current.cycleId
+                retiredCycleId = request?.cycleId
                 hide("held")
                 callback.onSuppressed()
             }
@@ -172,6 +168,13 @@ class AdbReminderOverlayRuntime(
             request = request?.copy(appearance = next)
             reconcile(forceLayout = true)
         }.also { card = it }
+        val bodyWidth = (area.width() * current.appearance.widthPercent / 100f)
+            .roundToInt().coerceAtLeast(1)
+        val (bodyHeight, retryHeight) = view.measureText(current, bodyWidth)
+        val geometry = AdbReminderGeometry.calculate(
+            area.left, area.top, area.width(), area.height(), bodyHeight, retryHeight,
+            current.appearance,
+        )
         view.bind(current, geometry)
         val layout = params ?: WindowManager.LayoutParams(
             geometry.windowWidth,
@@ -244,6 +247,10 @@ class AdbReminderOverlayRuntime(
         private val density = resources.displayMetrics.density
         private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        private val retryPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        private var bodyText: StaticLayout? = null
+        private var retryText: StaticLayout? = null
         private var request: AdbReminderOverlayRequest? = null
         private var geometry: AdbReminderGeometry? = null
         private var appearance = AdbReminderAppearance()
@@ -258,6 +265,37 @@ class AdbReminderOverlayRuntime(
         private val hold = Runnable {
             held = true
             callback.onSuppressed()
+        }
+
+        fun measureText(next: AdbReminderOverlayRequest, bodyWidth: Int): Pair<Int, Int> {
+            val language = when (next.language) {
+                UiLanguage.Ukrainian -> AppLanguage.UKRAINIAN
+                UiLanguage.English -> AppLanguage.ENGLISH
+                UiLanguage.Chinese -> AppLanguage.CHINESE
+                UiLanguage.Russian -> AppLanguage.RUSSIAN
+            }
+            val strings = AppLanguage.localizedContext(context, language).resources
+            val foreground = if (next.darkTheme) 0xFFF1F6FF.toInt() else 0xFF121A23.toInt()
+            val scaledDensity = density * resources.configuration.fontScale
+            bodyPaint.color = foreground
+            bodyPaint.textSize = 16f * scaledDensity
+            val message = strings.getString(R.string.adb_reminder_message)
+            bodyText = StaticLayout.Builder.obtain(message, 0, message.length, bodyPaint,
+                (bodyWidth - 32f * density).roundToInt().coerceAtLeast(1))
+                .setAlignment(Layout.Alignment.ALIGN_CENTER).setIncludePad(false)
+                .setLineSpacing((22f * scaledDensity - bodyPaint.fontSpacing).coerceAtLeast(0f), 1f)
+                .build()
+            retryPaint.color = foreground
+            retryPaint.textSize = 14f * scaledDensity
+            retryPaint.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            val label = strings.getString(R.string.adb_reminder_retry)
+            val labelWidth = minOf(kotlin.math.ceil(retryPaint.measureText(label)).toInt(),
+                (bodyWidth - 57f * density).roundToInt()).coerceAtLeast(1)
+            retryText = StaticLayout.Builder.obtain(label, 0, label.length, retryPaint, labelWidth)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER).setIncludePad(false).build()
+            contentDescription = message + "\n" + label
+            return maxOf((76f * density).roundToInt(), bodyText!!.height + (32f * density).roundToInt()) to
+                maxOf((44f * density).roundToInt(), retryText!!.height + (16f * density).roundToInt())
         }
 
         fun bind(next: AdbReminderOverlayRequest, nextGeometry: AdbReminderGeometry) {
@@ -291,6 +329,7 @@ class AdbReminderOverlayRuntime(
             val background = if (current.darkTheme) 0xFF080D12.toInt() else Color.WHITE
             val foreground = if (current.darkTheme) 0xFFF1F6FF.toInt() else 0xFF121A23.toInt()
             val retryTop = if (layout.retryAbove) 0f else bodyBottom
+            val overlap = radius.coerceAtMost(layout.bodyHeight / 2f).coerceAtMost(width / 2f)
             val hiddenOffset = (1f - retryReveal) * layout.retryHeight *
                 (if (layout.retryAbove) 1f else -1f)
             canvas.save()
@@ -299,11 +338,16 @@ class AdbReminderOverlayRuntime(
             paint.color = if (retryPressed) {
                 withAlpha(0xFF2F86F6.toInt(), if (current.darkTheme) .24f else .14f)
             } else withAlpha(background, appearance.alpha)
-            canvas.drawRoundRect(RectF(0f, retryTop, width.toFloat(), retryTop + layout.retryHeight),
-                radius, radius, paint)
+            val retryRect = RectF(0f, if (layout.retryAbove) retryTop else retryTop - overlap,
+                width.toFloat(), retryTop + layout.retryHeight + if (layout.retryAbove) overlap else 0f)
+            val retryPath = Path().apply {
+                val corners = if (layout.retryAbove) floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+                    else floatArrayOf(0f, 0f, 0f, 0f, radius, radius, radius, radius)
+                addRoundRect(retryRect, corners, Path.Direction.CW)
+            }
+            canvas.drawPath(retryPath, paint)
             if (appearance.borderEnabled) drawRetryOutline(canvas, layout, retryTop, radius)
-            drawCenteredText(canvas, retryLabel(current.language), retryTop + layout.retryHeight / 2f,
-                14f, foreground, Typeface.DEFAULT_BOLD)
+            drawRetryText(canvas, retryTop + layout.retryHeight / 2f, foreground)
             canvas.restore()
             paint.style = Paint.Style.FILL
             paint.color = withAlpha(background, appearance.alpha)
@@ -316,8 +360,12 @@ class AdbReminderOverlayRuntime(
                 canvas.drawRoundRect(RectF(inset, bodyTop + inset, width - inset, bodyBottom - inset),
                     (radius - inset).coerceAtLeast(0f), (radius - inset).coerceAtLeast(0f), paint)
             }
-            drawCenteredText(canvas, message(current.language), (bodyTop + bodyBottom) / 2f,
-                16f, foreground, Typeface.DEFAULT)
+            bodyText?.let { text ->
+                canvas.save()
+                canvas.translate((width - text.width) / 2f, (bodyTop + bodyBottom - text.height) / 2f)
+                text.draw(canvas)
+                canvas.restore()
+            }
         }
 
         private fun drawRetryOutline(canvas: Canvas, layout: AdbReminderGeometry, top: Float, radius: Float) {
@@ -329,7 +377,8 @@ class AdbReminderOverlayRuntime(
             val left = inset
             val right = width - inset
             val outer = if (layout.retryAbove) top + inset else top + layout.retryHeight - inset
-            val join = if (layout.retryAbove) top + layout.retryHeight else top
+            val overlap = radius.coerceAtMost(layout.bodyHeight / 2f).coerceAtMost(width / 2f)
+            val join = if (layout.retryAbove) top + layout.retryHeight + overlap else top - overlap
             val r = (radius - inset).coerceIn(0f, minOf(width / 2f, layout.retryHeight.toFloat()))
             val path = Path().apply {
                 moveTo(left, join)
@@ -342,16 +391,31 @@ class AdbReminderOverlayRuntime(
             canvas.drawPath(path, paint)
         }
 
-        private fun drawCenteredText(canvas: Canvas, text: String, centerY: Float, sp: Float,
-            color: Int, typeface: Typeface) {
+        private fun drawRetryText(canvas: Canvas, centerY: Float, color: Int) {
+            val text = retryText ?: return
+            val iconSize = 18f * density
+            val gap = 7f * density
+            val left = (width - text.width - iconSize - gap) / 2f
+            canvas.save()
+            canvas.translate(left + iconSize + gap, centerY - text.height / 2f)
+            text.draw(canvas)
+            canvas.restore()
+            // Material Refresh's 24x24 viewport, scaled to the same 18dp icon as the editor.
+            canvas.save()
+            canvas.translate(left, centerY - iconSize / 2f)
+            canvas.scale(iconSize / 24f, iconSize / 24f)
             paint.style = Paint.Style.FILL
             paint.color = color
-            paint.typeface = typeface
-            paint.textSize = sp * resources.configuration.fontScale * density
-            paint.textAlign = Paint.Align.CENTER
-            val available = width - 24f * density
-            val shown = paint.breakText(text, true, available, null).let { text.take(it) }
-            canvas.drawText(shown, width / 2f, centerY - (paint.ascent() + paint.descent()) / 2f, paint)
+            val icon = Path().apply {
+                moveTo(17.65f, 6.35f); cubicTo(16.2f, 4.9f, 14.21f, 4f, 12f, 4f)
+                cubicTo(7.58f, 4f, 4f, 7.58f, 4f, 12f); cubicTo(4f, 16.42f, 7.58f, 20f, 12f, 20f)
+                cubicTo(15.73f, 20f, 18.84f, 17.45f, 19.73f, 14f); lineTo(17.65f, 14f)
+                cubicTo(16.83f, 16.33f, 14.61f, 18f, 12f, 18f); cubicTo(8.69f, 18f, 6f, 15.31f, 6f, 12f)
+                cubicTo(6f, 8.69f, 8.69f, 6f, 12f, 6f); cubicTo(13.66f, 6f, 15.14f, 6.69f, 16.22f, 7.78f)
+                lineTo(13f, 11f); lineTo(20f, 11f); lineTo(20f, 4f); close()
+            }
+            canvas.drawPath(icon, paint)
+            canvas.restore()
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -411,20 +475,6 @@ class AdbReminderOverlayRuntime(
 
         private fun retryHit(y: Float, layout: AdbReminderGeometry): Boolean =
             if (layout.retryAbove) y < layout.retryHeight else y >= layout.bodyHeight
-
-        private fun message(language: UiLanguage) = when (language) {
-            UiLanguage.Ukrainian -> "Очікування Wi-Fi для відновлення ADB"
-            UiLanguage.Chinese -> "正在等待 Wi-Fi 以恢复 ADB"
-            UiLanguage.Russian -> "Ожидание Wi-Fi для восстановления ADB"
-            UiLanguage.English -> "Waiting for Wi-Fi to restore ADB"
-        }
-
-        private fun retryLabel(language: UiLanguage) = when (language) {
-            UiLanguage.Ukrainian -> "Повторити"
-            UiLanguage.Chinese -> "重试"
-            UiLanguage.Russian -> "Повторить"
-            UiLanguage.English -> "Retry"
-        }
 
         private fun withAlpha(color: Int, alpha: Float): Int =
             (color and 0x00FFFFFF) or ((alpha.coerceIn(0f, 1f) * 255).roundToInt() shl 24)

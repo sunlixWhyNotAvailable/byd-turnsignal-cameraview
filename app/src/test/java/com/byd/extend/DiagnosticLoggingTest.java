@@ -22,6 +22,11 @@ public class DiagnosticLoggingTest {
             assertTrue(kind, DiagnosticLogPolicy.shouldProduce(kind));
         }
         assertFalse(DiagnosticLogPolicy.shouldProduce("telemetry_sample"));
+        for (String kind : new String[]{"avas_engine_motion", "avas_engine_policy",
+                "avas_engine_cue", "avas_engine_output", "avas_engine_error"}) {
+            assertTrue(kind, DiagnosticLogPolicy.shouldPersist(kind));
+            assertTrue(kind, DiagnosticLogPolicy.shouldProduce(kind));
+        }
         assertTrue(DiagnosticLogPolicy.shouldPersist("correction_requested"));
         assertTrue(DiagnosticLogPolicy.shouldPersist("camera_error"));
         DiagnosticLogPolicy.configure(true);

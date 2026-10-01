@@ -9,8 +9,7 @@ public final class AvasEngineModel {
     private static final int MANUAL = 5;
     private static final int SPORT = 6;
     // ponytail: fixed speed/RPM ratios cap realism; calibrate per pack only if measured references justify it.
-    // D upshifts at these speeds; throttle delays them by up to 20%, M/S stretch them, and
-    // downshifts use 72% with at least 300 ms between changes.
+    // Pedal delays shifts, but never changes the fixed speed/RPM ratio for a gear.
     private static final float[] UPSHIFT_KPH = {32.0f, 58.0f, 88.0f, 122.0f, 160.0f};
     private static final float REVERSE_RPM_PER_KPH = 58.0f;
     private static final float RPM_FRACTION_AT_UPSHIFT = 0.82f;
@@ -59,14 +58,14 @@ public final class AvasEngineModel {
         boolean selectorOk = selectorValid && isSelector(rawSelector);
         boolean parkOrNeutral = selectorOk && (rawSelector == PARK || rawSelector == NEUTRAL);
         boolean speedOk = speedValid && Float.isFinite(speedKph) && speedKph >= 0.0f;
-        if (!pedalOk || !selectorOk || (!parkOrNeutral && !speedOk)) {
+        if (!selectorOk || (!parkOrNeutral && !speedOk)) {
             invalidate(nowMs);
             return state;
         }
 
-        float pedal = pedalPercent / 100.0f;
+        float pedal = pedalOk ? pedalPercent / 100.0f : 0.0f;
         boolean brakeOk = brakeValid && inPercentRange(brakePercent);
-        float load = brakeOk ? pedal * (1.0f - brakePercent / 100.0f) : 0.0f;
+        float load = pedalOk && brakeOk ? pedal * (1.0f - brakePercent / 100.0f) : 0.0f;
         float targetRpm;
         int gear;
         if (parkOrNeutral) {
@@ -84,7 +83,7 @@ public final class AvasEngineModel {
             } else {
                 shiftOneStep(nowMs, speedKph, pedal, rawSelector);
             }
-            float referenceKph = referenceSpeed(virtualGear, pedal, rawSelector);
+            float referenceKph = referenceSpeed(virtualGear, rawSelector);
             float revsAtShift = (maxRpm - idleRpm) * RPM_FRACTION_AT_UPSHIFT;
             targetRpm = idleRpm + speedKph * revsAtShift / referenceKph;
             gear = virtualGear;
@@ -149,9 +148,9 @@ public final class AvasEngineModel {
         return gear;
     }
 
-    private float referenceSpeed(int gear, float pedal, int selector) {
-        return gear < 6 ? upshiftKph(gear, pedal, selector)
-                : upshiftKph(5, pedal, selector) * TOP_GEAR_REFERENCE_MULTIPLIER;
+    private float referenceSpeed(int gear, int selector) {
+        return gear < 6 ? upshiftKph(gear, 0.0f, selector)
+                : upshiftKph(5, 0.0f, selector) * TOP_GEAR_REFERENCE_MULTIPLIER;
     }
 
     private static float upshiftKph(int gear, float pedal, int selector) {

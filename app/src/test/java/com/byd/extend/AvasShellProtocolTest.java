@@ -15,7 +15,10 @@ import static org.junit.Assert.assertTrue;
 public final class AvasShellProtocolTest {
     @Test
     public void avasWireSlotsAndInputAllowlistRemainCompatible() {
-        assertEquals(13, TurnSignalShellProtocol.VERSION);
+        assertEquals("protocol_mismatch", TurnSignalShellProtocol.compatibilityError(
+                13, BuildConfig.VERSION_CODE));
+        assertEquals("", TurnSignalShellProtocol.compatibilityError(
+                TurnSignalShellProtocol.VERSION, BuildConfig.VERSION_CODE));
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 9,
                 TurnSignalShellProtocol.TX_CONFIGURE_AVAS);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
@@ -42,6 +45,8 @@ public final class AvasShellProtocolTest {
                 TurnSignalShellProtocol.TX_START_AVAS_ENGINE);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 22,
                 TurnSignalShellProtocol.TX_STOP_AVAS_ENGINE);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 23,
+                TurnSignalShellProtocol.TX_DISPATCH_MUSIC_KEY);
         assertEquals(1, TurnSignalShellProtocol.AVAS_MIC_FORMAT_PCM_S16LE_MONO_16KHZ);
         assertTrue(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(1));
         assertFalse(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(2));
@@ -120,6 +125,7 @@ public final class AvasShellProtocolTest {
                 visualizer.indexOf("private void configureOnHandler"),
                 visualizer.indexOf("private void applyPowerState"));
         assertTrue(configure.contains("metadataRuntime.configure(value)"));
+        assertTrue(configure.contains("metadataRuntime.setCaptureFocusOnOpen(captureFocus)"));
         assertTrue(configure.contains("reconcileAwakeFromSystem(\"configure\")"));
         assertTrue(configure.contains(
                 "activate(changed ? \"configure\" : \"configure_retry\")"));

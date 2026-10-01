@@ -1,6 +1,10 @@
 package com.byd.extend;
 
 import org.junit.Test;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.Assert.*;
@@ -54,5 +58,30 @@ public final class AvasEngineOutputTest {
         assertFalse(AvasEngineTelemetry.percentValid(51, 0));
         assertFalse(AvasEngineTelemetry.percentValid(-10011, 1));
         assertFalse(AvasEngineTelemetry.percentValid(101, 1));
+    }
+
+    @Test public void exteriorEngineUsesTaggedTrackGainOnceAndKeepsCabinVolumeIndependent()
+            throws Exception {
+        String player = source("AvasAudioPlayer.java");
+        String engine = player.substring(player.indexOf("EngineOutput openEngineOutput("),
+                player.indexOf("interface ExteriorSessionCleanup"));
+        String runtime = source("AvasEngineRuntime.java");
+
+        assertTrue(engine.contains("MusicPlaybackSource.ENGINE"));
+        assertTrue(engine.contains("new ExteriorGain(track, currentVolume"));
+        assertTrue(engine.contains("if (gain != null) gain.update()"));
+        assertTrue(engine.contains("\"submitted_frames\""));
+        assertTrue(engine.contains("\"drained_frames\""));
+        assertTrue(player.contains("MusicPlaybackSource.EVENT"));
+        assertTrue(player.contains("MusicPlaybackSource.MICROPHONE"));
+        assertTrue(runtime.contains("() -> config.exteriorVolume"));
+        assertTrue(runtime.contains("pcm(block, pcm, frames, 100)"));
+        assertTrue(runtime.contains("pcm(block, pcm, frames, settings.interiorVolume)"));
+    }
+
+    private static String source(String name) throws Exception {
+        Path path = Paths.get("src/main/java/com/byd/extend", name);
+        if (!Files.isRegularFile(path)) path = Paths.get("app/src/main/java/com/byd/extend", name);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 }

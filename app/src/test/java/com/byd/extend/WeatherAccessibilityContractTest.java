@@ -17,10 +17,14 @@ public final class WeatherAccessibilityContractTest {
         String xml = readProjectFile("app/src/main/res/xml/weather_refresh_accessibility_service.xml");
         assertTrue(xml.contains("flagRequestFilterKeyEvents"));
         assertTrue(xml.contains("android:canRequestFilterKeyEvents=\"true\""));
-        assertTrue(xml.contains("com.byd.weatherdata"));
+        assertTrue(xml.contains("typeWindowStateChanged"));
+        assertFalse(xml.contains("android:packageNames="));
 
         String service = readProjectFile(
                 "app/src/main/java/com/byd/extend/WeatherRefreshAccessibilityService.java");
+        assertTrue(service.contains("WEATHER_PACKAGE = \"com.byd.weatherdata\""));
+        assertTrue(service.contains("!WEATHER_PACKAGE.contentEquals(event.getPackageName())"));
+        assertTrue(service.contains("!REFRESH_VIEW_ID.equals(source.getViewIdResourceName())"));
         assertTrue(service.contains("steeringGestures.onKey("));
         assertTrue(service.contains("event.getDownTime()"));
         assertTrue(service.contains("publishCameraSteeringButtonCaptured"));

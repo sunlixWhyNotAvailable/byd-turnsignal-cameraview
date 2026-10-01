@@ -431,6 +431,27 @@ private fun SignalsScreen(
                         state.music.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Music), it)) }, colors,
                         pending = state.music.operation.pending, enabled = state.music.operation.enabled)
+                    SwitchLine(
+                        strings.text("Захоплювати аудіофокус при відкритті плеєра",
+                            "Capture audio focus when opening a player", "打开播放器时获取音频焦点"),
+                        strings.text("Керування відкритим плеєром із керма",
+                            "Control the opened player from the steering wheel", "通过方向盘控制已打开的播放器"),
+                        state.music.captureFocusOnOpen,
+                        { onAction(BydExtendUiAction.Toggle(
+                            ToggleTarget.Simple(ToggleId.MusicCaptureFocusOnOpen), it)) }, colors,
+                        pending = state.music.operation.pending,
+                        enabled = state.music.enabled && state.music.operation.enabled)
+                    SwitchLine(
+                        strings.text("Вмикати візуалізацію для двигуна",
+                            "Enable engine sound visualization", "启用引擎声可视化"),
+                        strings.text("Коли звук двигуна відтворюється в салоні (за відсутності іншого аудіо)",
+                            "When engine sound plays through the interior speaker (when no other audio is playing)",
+                            "仅在车内播放模拟引擎声时（无其他音频播放时）"),
+                        state.music.engineVisualization,
+                        { onAction(BydExtendUiAction.Toggle(
+                            ToggleTarget.Simple(ToggleId.MusicEngineVisualization), it)) }, colors,
+                        pending = state.music.operation.pending,
+                        enabled = state.music.enabled && state.music.operation.enabled)
                     } }
                     SignalsCategory.Weather -> Column(Modifier.fillMaxSize()
                         .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Погода", "Weather", "天气"), colors) {

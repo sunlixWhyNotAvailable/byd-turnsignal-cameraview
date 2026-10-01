@@ -270,12 +270,65 @@ final class TurnSignalController {
         applyMusic(enabled);
     }
 
+    void configureMusic(boolean enabled, boolean captureFocusOnOpen,
+            boolean engineVisualizationEnabled) {
+        settings.edit()
+                .putBoolean("music_visualizer_enabled", enabled)
+                .putBoolean("music_capture_focus_on_open", captureFocusOnOpen)
+                .putBoolean("music_engine_visualization_enabled", engineVisualizationEnabled)
+                .apply();
+        applyMusic(enabled, captureFocusOnOpen, engineVisualizationEnabled);
+    }
+
     void applyMusic(boolean enabled) {
+        applyMusic(enabled,
+                settings.getBoolean("music_capture_focus_on_open", true),
+                settings.getBoolean("music_engine_visualization_enabled", false));
+    }
+
+    void applyMusic(boolean enabled, boolean captureFocusOnOpen,
+            boolean engineVisualizationEnabled) {
         worker.execute(() -> {
-            if (!sendMusicConfig(enabled)) {
+            if (!sendMusicConfig(enabled, captureFocusOnOpen, engineVisualizationEnabled)) {
                 ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
             }
         });
+    }
+
+    boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode, int action,
+            int repeatCount, long downTime, long eventTime) {
+        IBinder value = helper;
+        if (!healthy || value == null || !value.isBinderAlive()) return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeString(foregroundPackage);
+            data.writeInt(rawKeyCode);
+            data.writeInt(action);
+            data.writeInt(repeatCount);
+            data.writeLong(downTime);
+            data.writeLong(eventTime);
+            requireTransact(value, TurnSignalShellProtocol.TX_DISPATCH_MUSIC_KEY, data, reply);
+            int handled = reply.readInt();
+            if (handled != 0 && handled != 1) {
+                throw new IllegalStateException("invalid media-key reply");
+            }
+            return handled == 1;
+        } catch (Throwable error) {
+            clearHelper(value);
+            healthy = false;
+            primaryError = "music_key_binder_error: " + summary(error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    boolean isHealthy() {
+        IBinder value = helper;
+        return healthy && value != null && value.isBinderAlive();
     }
 
     void configureParkingRadar(boolean anyEnabled) {
@@ -1541,7 +1594,9 @@ final class TurnSignalController {
             transactCallback(value);
             transactConfig(value);
             transactMusicConfig(value,
-                    settings.getBoolean("music_visualizer_enabled", false));
+                    settings.getBoolean("music_visualizer_enabled", false),
+                    settings.getBoolean("music_capture_focus_on_open", true),
+                    settings.getBoolean("music_engine_visualization_enabled", false));
             transactParkingRadarConfig(value,
                     CameraHelperService.anyParkingEnabled(settings));
             transactNoArgs(value, TurnSignalShellProtocol.TX_REPORT_STATUS);
@@ -1612,11 +1667,12 @@ final class TurnSignalController {
         }
     }
 
-    private boolean sendMusicConfig(boolean enabled) {
+    private boolean sendMusicConfig(boolean enabled, boolean captureFocusOnOpen,
+            boolean engineVisualizationEnabled) {
         IBinder value = helper;
         if (!healthy || value == null) return false;
         try {
-            transactMusicConfig(value, enabled);
+            transactMusicConfig(value, enabled, captureFocusOnOpen, engineVisualizationEnabled);
             return true;
         } catch (Throwable error) {
             clearHelper(value);
@@ -1925,12 +1981,15 @@ final class TurnSignalController {
         }
     }
 
-    private void transactMusicConfig(IBinder value, boolean enabled) throws Exception {
+    private void transactMusicConfig(IBinder value, boolean enabled,
+            boolean captureFocusOnOpen, boolean engineVisualizationEnabled) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
             data.writeInt(enabled ? 1 : 0);
+            data.writeInt(captureFocusOnOpen ? 1 : 0);
+            data.writeInt(engineVisualizationEnabled ? 1 : 0);
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_MUSIC, data, reply);
         } finally {
             data.recycle();

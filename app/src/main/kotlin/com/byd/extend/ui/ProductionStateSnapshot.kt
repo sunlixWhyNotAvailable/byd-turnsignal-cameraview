@@ -63,7 +63,11 @@ private fun readSignals(preferences: SharedPreferences) = SignalsUiState(
         correctionDelayMs = preferences.getInt("correction_delay_ms", 100).toString(),
         maximumSpeed = preferences.getInt("max_speed_kph", 30).toString(),
     ),
-    music = MusicUiState(enabled = preferences.getBoolean("music_visualizer_enabled", false)),
+    music = MusicUiState(
+        enabled = preferences.getBoolean("music_visualizer_enabled", false),
+        captureFocusOnOpen = preferences.getBoolean("music_capture_focus_on_open", true),
+        engineVisualization = preferences.getBoolean("music_engine_visualization_enabled", false),
+    ),
     weather = WeatherUiState(
         enabled = preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false),
         refreshMinutes = preferences.getInt(
