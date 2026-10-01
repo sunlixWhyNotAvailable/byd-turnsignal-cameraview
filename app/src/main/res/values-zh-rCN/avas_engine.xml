@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="avas_engine_title">发动机模拟</string>
+    <string name="avas_engine_key_binding">启动/停止发动机</string>
+    <string name="avas_engine_learning_title">按下方向盘按键，为发动机启动/停止功能进行绑定…</string>
+    <string name="avas_engine_learning">所选按键会按指定手势切换发动机声音。</string>
     <string name="avas_engine_pack">声音包</string>
     <string name="avas_engine_pack_ferrari_v8">法拉利 F430 V8</string>
     <string name="avas_engine_pack_jaguar_v6">捷豹 F-Type V6</string>

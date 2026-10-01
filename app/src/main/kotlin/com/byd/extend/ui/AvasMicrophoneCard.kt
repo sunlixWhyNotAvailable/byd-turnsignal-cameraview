@@ -4,8 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -44,7 +42,7 @@ internal fun AvasMicrophoneCard(
                 colors, clearSemantics = true, label = title)
         }
     }) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight().alpha(if (state.enabled) 1f else .45f),
+        Column(Modifier.fillMaxWidth().alpha(if (state.enabled) 1f else .45f),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             MirrorBindingRow(strings.resource(R.string.avas_mic_toggle_hint),
                 CameraButtonBindings.Action.AvasMicrophone, state.binding, state.enabled,
@@ -67,7 +65,6 @@ internal fun AvasMicrophoneCard(
                 if (state.echoCancellationSupported) "" else strings.resource(R.string.avas_mic_effect_unsupported),
                 state.echoCancellation, { send(AvasActionKind.SetEchoCancellation, enabled = it) },
                 colors, enabled = state.enabled && state.echoCancellationSupported)
-            Spacer(Modifier.weight(1f))
             Text(strings.resource(when (state.state) {
                 "starting" -> R.string.avas_mic_starting
                 "active" -> R.string.avas_mic_active

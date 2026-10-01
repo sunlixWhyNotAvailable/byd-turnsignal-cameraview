@@ -385,7 +385,11 @@ final class TurnSignalController {
     }
 
     void startAvasEngine() {
-        worker.execute(this::startAvasEngineNow);
+        worker.execute(() -> dispatchAvasEngineNow(false));
+    }
+
+    void toggleAvasEngine() {
+        worker.execute(() -> dispatchAvasEngineNow(true));
     }
 
     void stopAvasEngine() {
@@ -1755,7 +1759,8 @@ final class TurnSignalController {
         }
     }
 
-    private void startAvasEngineNow() {
+    private void dispatchAvasEngineNow(boolean liveToggle) {
+        String stage = liveToggle ? "engine_toggle" : "engine_start";
         AvasConfig config;
         try {
             config = avasLibrary.loadConfig();
@@ -1766,7 +1771,7 @@ final class TurnSignalController {
                 throw new IllegalStateException("engine outputs are disabled");
             }
         } catch (Throwable error) {
-            emitAvasError("engine_start", "engine", null, summary(error));
+            emitAvasError(stage, "engine", null, summary(error));
             return;
         }
         IBinder value = healthyHelper();
@@ -1775,14 +1780,15 @@ final class TurnSignalController {
             value = healthyHelper();
         }
         if (value == null) {
-            emitAvasError("engine_start", "engine", null, "helper_unavailable");
+            emitAvasError(stage, "engine", null, "helper_unavailable");
             return;
         }
         try {
             transactAvasConfig(value, config.toJson());
-            transactNoArgs(value, TurnSignalShellProtocol.TX_START_AVAS_ENGINE);
+            transactNoArgs(value, liveToggle ? TurnSignalShellProtocol.TX_TOGGLE_AVAS_ENGINE
+                    : TurnSignalShellProtocol.TX_START_AVAS_ENGINE);
         } catch (Throwable error) {
-            emitAvasError("engine_start", "engine", null, summary(error));
+            emitAvasError(stage, "engine", null, summary(error));
             reportAvasStatus(value);
         }
     }

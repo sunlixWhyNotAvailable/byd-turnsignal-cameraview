@@ -1,5 +1,6 @@
 package com.byd.extend.ui
 
+import com.byd.extend.CameraButtonBindings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -44,6 +45,22 @@ class AvasUiModelTest {
         assertFalse(enabled.copy(state = "stopping").startAllowed)
         assertFalse(enabled.copy(state = "error", error = "unavailable").busy)
         assertTrue(enabled.copy(state = "error", error = "unavailable").startAllowed)
+
+        val toggleErrorDuringTest = enabled.copy(state = "error", error = "toggle failed",
+            testActive = true)
+        assertFalse(toggleErrorDuringTest.startAllowed)
+        assertTrue(toggleErrorDuringTest.stopAllowed)
+    }
+
+    @Test
+    fun engineBindingIsSeparateFromRuntimeState() {
+        val binding = CameraButtonBindings.Binding(88, CameraButtonBindings.Press.Double)
+        val configured = AvasEngineUiState(enabled = true, binding = binding)
+
+        assertEquals(CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
+            AvasEngineUiState().binding)
+        assertEquals(binding, configured.copy(state = "active", testActive = true).binding)
+        assertEquals(binding, configured.copy(state = "stopped", testActive = false).binding)
     }
 
     @Test

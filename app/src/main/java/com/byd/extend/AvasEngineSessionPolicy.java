@@ -16,6 +16,8 @@ public final class AvasEngineSessionPolicy {
     private boolean active;
     private boolean liveRequested;
     private boolean testing;
+    private boolean tailing;
+    private boolean liveChoiceMade;
     private boolean recoveryPending;
     private boolean powerUnknown;
     private boolean hasValidPower;
@@ -26,18 +28,20 @@ public final class AvasEngineSessionPolicy {
     private boolean ignitionPending;
 
     public Action configure(boolean enabled, boolean outputsPresent) {
+        boolean wasPlaying = active || tailing;
         this.enabled = enabled;
         this.outputsPresent = outputsPresent;
         if (!available()) {
             ready = null;
+            lastKnownReady = null;
+            liveChoiceMade = false;
             liveRequested = false;
             testing = false;
+            active = false;
+            tailing = false;
             recoveryPending = false;
-            if (active) {
-                active = false;
-                return Action.STOP_NOW;
-            }
-            return Action.NONE;
+            ignitionPending = false;
+            return wasPlaying ? Action.STOP_NOW : Action.NONE;
         }
         return reconcileReady();
     }
@@ -46,8 +50,18 @@ public final class AvasEngineSessionPolicy {
         if (hasValidPower && lastValidPower == POWER_OFF) return Action.NONE;
         ready = present;
         if (present != null) {
-            if (present && Boolean.FALSE.equals(lastKnownReady)) ignitionPending = true;
-            if (!present) ignitionPending = false;
+            if (present) {
+                boolean wasLive = liveRequested;
+                if (Boolean.FALSE.equals(lastKnownReady)) {
+                    liveRequested = true;
+                    if (!wasLive && !testing) ignitionPending = true;
+                } else if (lastKnownReady == null && !liveChoiceMade) {
+                    liveRequested = true;
+                    ignitionPending = false;
+                }
+            } else {
+                ignitionPending = false;
+            }
             lastKnownReady = present;
         }
         return reconcileReady();
@@ -57,13 +71,10 @@ public final class AvasEngineSessionPolicy {
         if (!available() || !hasValidPower || powerUnknown || lastValidPower == POWER_OFF) {
             return Action.NONE;
         }
-        boolean wasLive = liveRequested;
-        if (Boolean.TRUE.equals(ready)) liveRequested = true;
-        if (!liveRequested || testing || active) return Action.NONE;
+        if (!liveRequested || testing || active || tailing) return Action.NONE;
         if (recoveryPending && !Boolean.TRUE.equals(ready)) return Action.NONE;
-        boolean restore = wasLive || recoveryPending || !ignitionPending;
-        ignitionPending = false;
-        return start(restore);
+        if (!liveChoiceMade && !Boolean.TRUE.equals(ready)) return Action.NONE;
+        return start(recoveryPending || !ignitionPending, false);
     }
 
     public Action observePower(int raw, boolean baseline) {
@@ -83,11 +94,14 @@ public final class AvasEngineSessionPolicy {
             ready = null;
             lastKnownReady = false;
             ignitionPending = false;
+            liveChoiceMade = false;
             liveRequested = false;
             testing = false;
             recoveryPending = false;
+            if (tailing) return Action.NONE;
             if (!active) return Action.NONE;
             active = false;
+            tailing = true;
             return Action.STOP_WITH_TAIL;
         }
         return reconcileReady();
@@ -95,10 +109,53 @@ public final class AvasEngineSessionPolicy {
 
     /** Starts only the test override; vehicle demand continues to update underneath it. */
     public Action manualStart() {
-        if (!available() || testing) return Action.NONE;
+        if (!available() || testing || tailing) return Action.NONE;
         testing = true;
-        active = true;
-        return Action.START;
+        recoveryPending = false;
+        return start(false, true);
+    }
+
+    /** Toggles live demand for the current power session, independently of test playback. */
+    public Action toggleLive() {
+        if (!available()) return Action.NONE;
+        liveChoiceMade = true;
+        liveRequested = !liveRequested;
+        recoveryPending = false;
+        if (!liveRequested) {
+            ignitionPending = false;
+            if (testing || tailing || !active) return Action.NONE;
+            active = false;
+            return Action.STOP_NOW;
+        }
+        if (testing) {
+            ignitionPending = false;
+            return Action.NONE;
+        }
+        if (tailing) {
+            ignitionPending = true;
+            return Action.NONE;
+        }
+        if (active) {
+            ignitionPending = false;
+            return Action.NONE;
+        }
+        ignitionPending = false;
+        return start(false, false);
+    }
+
+    /** Reconciles only after the existing Power-OFF tail and its cue gate have finished. */
+    public Action playbackTailFinished() {
+        if (!tailing) return Action.NONE;
+        tailing = false;
+        return startAfterTail();
+    }
+
+    private Action startAfterTail() {
+        if (!available() || !liveRequested || testing || active) return Action.NONE;
+        if (recoveryPending && !Boolean.TRUE.equals(ready)) return Action.NONE;
+        if (!liveChoiceMade && (!hasValidPower || powerUnknown || lastValidPower == POWER_OFF
+                || !Boolean.TRUE.equals(ready))) return Action.NONE;
+        return start(recoveryPending || !ignitionPending, false);
     }
 
     /** A repeated/stale Stop must never stop live playback. */
@@ -106,28 +163,39 @@ public final class AvasEngineSessionPolicy {
         if (!testing) return Action.NONE;
         testing = false;
         active = false;
-        Action live = reconcileReady();
-        return live == Action.NONE ? Action.STOP_NOW : live;
+        recoveryPending = false;
+        ignitionPending = false;
+        return liveRequested ? start(true, false) : Action.STOP_NOW;
     }
 
     /** A failed test releases its override; a failed live output retains the existing retry policy. */
     public Action playbackFailed() {
         boolean wasTesting = testing;
+        boolean wasTailing = tailing;
+        boolean wasActive = active;
         testing = false;
-        if (active && !wasTesting) recoveryPending = true;
         active = false;
-        return wasTesting ? reconcileReady() : Action.NONE;
+        tailing = false;
+        if (wasTailing) return startAfterTail();
+        if (wasTesting) {
+            recoveryPending = false;
+            ignitionPending = false;
+            return liveRequested ? start(true, false) : Action.NONE;
+        }
+        if (wasActive && liveRequested) recoveryPending = true;
+        return Action.NONE;
     }
 
-    public boolean desiredActive() { return active; }
+    public boolean desiredActive() { return liveRequested || testing; }
     public boolean testActive() { return testing; }
     public boolean liveRequested() { return liveRequested; }
     public boolean hasValidPower() { return hasValidPower && !powerUnknown; }
     public int rawPower() { return rawPower; }
     public int lastValidPower() { return lastValidPower; }
 
-    private Action start(boolean restore) {
+    private Action start(boolean restore, boolean test) {
         active = true;
+        testing = test;
         ignitionPending = false;
         recoveryPending = false;
         return restore ? Action.RESTORE : Action.START;

@@ -319,6 +319,11 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_TOGGLE_AVAS_ENGINE) {
+                    requireAvasRuntime().toggleEngine();
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_REPORT_AVAS_STATUS) {
                     requireAvasRuntime().reportStatus();
                     reply.writeNoException();

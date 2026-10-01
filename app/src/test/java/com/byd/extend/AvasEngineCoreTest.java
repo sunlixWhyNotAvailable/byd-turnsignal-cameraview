@@ -68,8 +68,8 @@ public final class AvasEngineCoreTest {
         AvasEngineModel model = new AvasEngineModel(800, 6_000);
         AvasEngineModel.State state = model.update(0, Float.NaN, false,
                 100, true, 0, true, 1, true);
-        assertEquals(6_000.0f, state.rpm, 0.01f);
-        assertEquals(1.0f, state.load, 0.001f);
+        assertEquals(800.0f, state.rpm, 0.01f);
+        assertEquals(0.0f, state.load, 0.001f);
         assertEquals(0, state.gear);
         assertTrue(state.valid);
 
@@ -81,15 +81,39 @@ public final class AvasEngineCoreTest {
     }
 
     @Test
+    public void fullPedalParkRevReachesNinetyFivePercentAroundNineHundredMs() {
+        AvasEngineModel model = new AvasEngineModel(800, 6_000);
+        AvasEngineModel.State state = model.update(0, Float.NaN, false,
+                100, true, 0, true, 1, true);
+        assertEquals(800.0f, state.rpm, 0.01f);
+        assertEquals(0.0f, state.load, 0.001f);
+
+        state = model.update(20, Float.NaN, false, 100, true,
+                0, true, 1, true);
+        assertEquals(1_135.4f, state.rpm, 1.0f);
+        assertEquals(0.221f, state.load, 0.002f);
+        for (long time = 40; time <= 900; time += 20) {
+            state = model.update(time, Float.NaN, false, 100, true,
+                    0, true, 1, true);
+        }
+        assertTrue(state.rpm >= 5_740.0f);
+        assertEquals(1.0f, state.load, 0.001f);
+
+        state = model.update(920, Float.NaN, false, 100, true,
+                100, true, 1, true);
+        assertEquals(0.867f, state.load, 0.003f);
+    }
+
+    @Test
     public void speedDrivesRpmAndVirtualShiftsMoveOneGearAtATime() {
         AvasEngineModel moving = new AvasEngineModel(800, 6_000);
         AvasEngineModel.State state = moving.update(1_000, 30, true,
                 0, true, 0, true, 4, true);
-        assertTrue(state.rpm > 800.0f);
+        assertEquals(800.0f, state.rpm, 0.01f);
         assertEquals(0.0f, state.load, 0.001f);
         assertEquals(1, state.gear);
         moving.update(1_100, 30, true, 0, true, 0, true, 4, true);
-        assertTrue(state.rpm > 800.0f);
+        assertTrue(state.rpm > 3_000.0f);
 
         moving.update(1_400, 250, true, 0, true, 0, true, 4, true);
         assertEquals(2, state.gear);
@@ -101,8 +125,11 @@ public final class AvasEngineCoreTest {
         AvasEngineModel reverse = new AvasEngineModel(800, 6_000);
         AvasEngineModel.State reverseState = reverse.update(0, 40, true,
                 0, true, 0, true, 2, true);
+        assertEquals(800.0f, reverseState.rpm, 0.01f);
         assertEquals(1, reverseState.gear);
-        assertTrue(reverseState.rpm > 2_800.0f);
+        reverse.update(100, 40, true, 0, true, 0, true, 2, true);
+        assertTrue(reverseState.rpm > 2_000.0f);
+        assertTrue(reverseState.rpm < 3_120.0f);
     }
 
     @Test
@@ -112,7 +139,7 @@ public final class AvasEngineCoreTest {
                 100, true, Float.NaN, false, 4, true);
         assertTrue(state.valid);
         assertEquals(0.0f, state.load, 0.001f);
-        assertTrue(state.rpm > 800.0f);
+        assertEquals(800.0f, state.rpm, 0.01f);
 
         state = model.update(20, Float.NaN, true, 100, true,
                 0, true, 4, true);
@@ -121,23 +148,63 @@ public final class AvasEngineCoreTest {
         assertEquals(0.0f, state.load, 0.001f);
         assertEquals(0, state.gear);
 
-        state = model.update(40, 45, true, Float.NaN, false,
+        state = model.update(40, 45, true, 100, true,
                 0, true, 4, true);
         assertTrue(state.valid);
-        assertTrue(state.rpm > 800.0f);
+        assertEquals(800.0f, state.rpm, 0.01f);
         assertEquals(0.0f, state.load, 0.001f);
 
+        state = model.update(60, 45, true, 100, true,
+                0, true, 4, true);
+        assertTrue(state.rpm > 800.0f);
+        assertTrue(state.load > 0.0f);
+        float poweredLoad = state.load;
+        state = model.update(80, 45, true, 100, true,
+                100, true, 4, true);
+        assertTrue(state.load < poweredLoad);
+        assertTrue(state.load > 0.0f);
         float movingRpm = state.rpm;
-        state = model.update(60, Float.NaN, false, Float.NaN, false,
+        state = model.update(100, 45, true, Float.NaN, false,
+                0, true, 4, true);
+        assertTrue(state.rpm > movingRpm);
+        float coastingRpm = state.rpm;
+        state = model.update(120, Float.NaN, false, Float.NaN, false,
                 0, true, 1, true);
         assertTrue(state.valid);
-        assertTrue(state.rpm < movingRpm);
+        assertTrue(state.rpm < coastingRpm);
         assertEquals(0, state.gear);
-        for (long time = 80; time <= 3_060; time += 20) {
+        for (long time = 140; time <= 3_060; time += 20) {
             state = model.update(time, Float.NaN, false, Float.NaN, false,
                     0, true, 1, true);
         }
         assertEquals(800.0f, state.rpm, 0.1f);
+    }
+
+    @Test
+    public void releasedPedalCoastsAtMovingRpmWhileLoadReleases() {
+        AvasEngineModel model = new AvasEngineModel(800, 6_000);
+        AvasEngineModel.State state = model.update(0, 30, true,
+                100, true, 0, true, 4, true);
+        int gear = state.gear;
+        assertEquals(800.0f, state.rpm, 0.01f);
+
+        state = model.update(100, 30, true, 100, true, 0, true, 4, true);
+        float poweredRpm = state.rpm;
+        float poweredLoad = state.load;
+        assertTrue(poweredRpm > 3_000.0f);
+        assertTrue(poweredLoad > 0.7f);
+
+        state = model.update(120, 30, true, 0, true, 0, true, 4, true);
+        assertEquals(gear, state.gear);
+        assertTrue(state.rpm > poweredRpm);
+        assertEquals(0.619f, state.load, 0.003f);
+
+        for (long time = 140; time <= 500; time += 20) {
+            state = model.update(time, 30, true, 0, true, 0, true, 4, true);
+        }
+        assertTrue(state.rpm > 4_000.0f);
+        assertTrue(state.load < 0.1f);
+        assertEquals(gear, state.gear);
     }
 
     @Test

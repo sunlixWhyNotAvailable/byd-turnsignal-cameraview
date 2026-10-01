@@ -611,19 +611,27 @@ class ProductionUiController @JvmOverloads constructor(
         pendingDialogCommand = null
         state = state.copy(dialog = DialogUiState(
             kind = DialogKind.ReverseButtonCapture,
-            title = strings.text("Натисніть кнопку на кермі…",
+            title = if (action == CameraButtonBindings.Action.AvasEngine)
+                strings.resource(com.byd.extend.R.string.avas_engine_learning_title)
+            else strings.text("Натисніть кнопку на кермі…",
                 "Press a steering-wheel button…", "请按下方向盘按键…"),
-            message = if (action == CameraButtonBindings.Action.AvasMicrophone)
-                strings.resource(com.byd.extend.R.string.avas_mic_learning)
-            else if (action == CameraButtonBindings.Action.MirrorVisibility) strings.text(
-                "Призначена кнопка та вибраний жест показуватимуть або приховуватимуть віджет дзеркала.",
-                "The assigned button and selected gesture will show or hide the mirror widget.",
-                "所选按键和手势将显示或隐藏后视镜悬浮窗。") else strings.text(
-                "Призначена кнопка перемикатиме передні й задні камери замість штатної дії. " +
-                    "Передні види доступні лише з увімкненою інтеграцією.",
-                "The assigned button will switch front/rear cameras instead of its original action. " +
-                    "Front views require enabled integration.",
-                "所选按键将切换前后摄像头，并取代原有操作。前方视角仅在启用集成后可用。"),
+            message = when (action) {
+                CameraButtonBindings.Action.AvasMicrophone ->
+                    strings.resource(com.byd.extend.R.string.avas_mic_learning)
+                CameraButtonBindings.Action.AvasEngine ->
+                    strings.resource(com.byd.extend.R.string.avas_engine_learning)
+                CameraButtonBindings.Action.MirrorVisibility -> strings.text(
+                    "Призначена кнопка та вибраний жест показуватимуть або приховуватимуть віджет дзеркала.",
+                    "The assigned button and selected gesture will show or hide the mirror widget.",
+                    "所选按键和手势将显示或隐藏后视镜悬浮窗。")
+                CameraButtonBindings.Action.ReverseSource,
+                CameraButtonBindings.Action.MirrorSource -> strings.text(
+                    "Призначена кнопка перемикатиме передні й задні камери замість штатної дії. " +
+                        "Передні види доступні лише з увімкненою інтеграцією.",
+                    "The assigned button will switch front/rear cameras instead of its original action. " +
+                        "Front views require enabled integration.",
+                    "所选按键将切换前后摄像头，并取代原有操作。前方视角仅在启用集成后可用。")
+            },
             cancellable = true,
             confirmEnabled = false,
             captureAction = action,

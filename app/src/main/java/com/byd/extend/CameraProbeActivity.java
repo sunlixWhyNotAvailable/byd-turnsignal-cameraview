@@ -3234,7 +3234,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 new AvasEngineUiState(config.engine.enabled, config.engine.packId,
                         config.engine.exteriorEnabled, config.engine.exteriorVolume,
                         config.engine.interiorEnabled, config.engine.interiorVolume,
-                        avasEngineState, avasEngineError, avasEngineTestActive));
+                        avasEngineState, avasEngineError, avasEngineTestActive,
+                        CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine)));
     }
 
     @Override
@@ -3409,6 +3410,12 @@ public final class CameraProbeActivity extends ComponentActivity
             AvasConfig.Engine updated = new AvasConfig.Engine(enabled, packId,
                     exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume);
             avasLibrary.saveConfig(config.withEngine(updated));
+            if (!enabled && productionUi != null
+                    && productionUi.getState().getDialog() != null
+                    && productionUi.getState().getDialog().getCaptureAction()
+                            == CameraButtonBindings.Action.AvasEngine) {
+                cancelReverseButtonLearning();
+            }
             CameraHelperService.configureAvas(this);
         } catch (RuntimeException invalid) {
             record("avas_engine_ui_action_failed", "action", action.getKind().name(),
@@ -3623,17 +3630,23 @@ public final class CameraProbeActivity extends ComponentActivity
         } else if (action instanceof BydExtendUiAction.LearnCameraButton) {
             beginCameraButtonLearning(((BydExtendUiAction.LearnCameraButton) action).getAction());
         } else if (action instanceof BydExtendUiAction.ResetCameraButton) {
-            cancelReverseButtonLearning();
-            CameraButtonBindings.reset(preferences,
-                    ((BydExtendUiAction.ResetCameraButton) action).getAction());
-            productionUi.reload();
+            CameraButtonBindings.Action target =
+                    ((BydExtendUiAction.ResetCameraButton) action).getAction();
+            if (cameraButtonActionEnabled(target)) {
+                cancelReverseButtonLearning();
+                CameraButtonBindings.reset(preferences, target);
+                productionUi.reload();
+            }
         } else if (action instanceof BydExtendUiAction.SetCameraButtonPress) {
             BydExtendUiAction.SetCameraButtonPress change = (BydExtendUiAction.SetCameraButtonPress) action;
-            cancelReverseButtonLearning();
-            CameraButtonBindings.Binding before = CameraButtonBindings.load(preferences, change.getAction());
-            CameraButtonBindings.save(preferences, change.getAction(),
-                    new CameraButtonBindings.Binding(before.keyCode, change.getPress()));
-            productionUi.reload();
+            if (cameraButtonActionEnabled(change.getAction())) {
+                cancelReverseButtonLearning();
+                CameraButtonBindings.Binding before = CameraButtonBindings.load(
+                        preferences, change.getAction());
+                CameraButtonBindings.save(preferences, change.getAction(),
+                        new CameraButtonBindings.Binding(before.keyCode, change.getPress()));
+                productionUi.reload();
+            }
         } else if (action instanceof BydExtendUiAction.SetProfileBorder) {
             saveProductionProfileBorder((BydExtendUiAction.SetProfileBorder) action);
         } else if (action instanceof BydExtendUiAction.Toggle) {
@@ -4063,7 +4076,8 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private boolean beginCameraButtonLearning(CameraButtonBindings.Action action) {
         if (productionUi == null || activityDestroyed || shutdownRequested
-                || action == null || LegacySettingsImporter.blocksRuntime(this)) return false;
+                || action == null || !cameraButtonActionEnabled(action)
+                || LegacySettingsImporter.blocksRuntime(this)) return false;
         cancelReverseButtonLearning();
         productionUi.showCameraButtonCaptureDialog(action);
         if (WeatherRefreshAccessibilityService.isConnected()
@@ -4078,7 +4092,9 @@ public final class CameraProbeActivity extends ComponentActivity
             if (epoch != buttonLearningEpoch || pendingButtonLearning != action
                     || activityDestroyed || !activityResumed || shutdownRequested
                     || productionUi == null || productionUi.getState().getDialog() == null
-                    || productionUi.getState().getDialog().getKind() != DialogKind.ReverseButtonCapture) return;
+                    || productionUi.getState().getDialog().getKind() != DialogKind.ReverseButtonCapture
+                    || productionUi.getState().getDialog().getCaptureAction() != action
+                    || !cameraButtonActionEnabled(action)) return;
             pendingButtonLearning = null;
             boolean started = connected && WeatherRefreshAccessibilityService
                     .beginCameraButtonLearning(this, action);
@@ -4090,6 +4106,16 @@ public final class CameraProbeActivity extends ComponentActivity
             refreshProductionHeader();
         });
         return true;
+    }
+
+    private boolean cameraButtonActionEnabled(CameraButtonBindings.Action action) {
+        if (action == null) return false;
+        if (action != CameraButtonBindings.Action.AvasEngine) return true;
+        try {
+            return avasLibrary != null && avasLibrary.loadConfig().engine.enabled;
+        } catch (RuntimeException invalid) {
+            return false;
+        }
     }
 
     /** Cancels transient capture without changing the persisted binding. */
@@ -15298,8 +15324,9 @@ public final class CameraProbeActivity extends ComponentActivity
             avasPlayback.put(profileId, AvasPlaybackUiState.Idle);
         }
         if ("engine".equals(profileId)
-                && ("engine_start".equals(stage) || "engine_stop".equals(stage))) {
-            avasEngineTestActive = false;
+                && ("engine_start".equals(stage) || "engine_stop".equals(stage)
+                        || "engine_toggle".equals(stage))) {
+            if (!"engine_toggle".equals(stage)) avasEngineTestActive = false;
             avasEngineState = "error";
             avasEngineError = event.optString("error", "");
         }

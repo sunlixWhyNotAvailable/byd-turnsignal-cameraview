@@ -6,6 +6,24 @@ import static org.junit.Assert.assertEquals;
 
 public final class CameraButtonBindingsTest {
     @Test
+    public void engineBindingKeepsGestureAndNeverOverwritesOtherActions() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        CameraButtonBindings.Binding empty = new CameraButtonBindings.Binding(
+                -1, CameraButtonBindings.Press.Single);
+        assertEquals(empty, CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine));
+        CameraButtonBindings.Binding engine = new CameraButtonBindings.Binding(
+                306, CameraButtonBindings.Press.Hold);
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.AvasEngine, engine);
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.MirrorSource, engine);
+        assertEquals(engine, CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine));
+        assertEquals(empty, CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasMicrophone));
+        CameraButtonBindings.reset(preferences, CameraButtonBindings.Action.AvasEngine);
+        assertEquals(new CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Hold),
+                CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine));
+        assertEquals(engine, CameraButtonBindings.load(preferences, CameraButtonBindings.Action.MirrorSource));
+    }
+
+    @Test
     public void defaultsAndMalformedValuesAreUnassignedSingle() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         assertEquals(new CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),

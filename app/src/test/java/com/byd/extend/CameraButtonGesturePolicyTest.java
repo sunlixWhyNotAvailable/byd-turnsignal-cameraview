@@ -13,6 +13,44 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public final class CameraButtonGesturePolicyTest {
+    @Test public void engineGesturesUseSharedClassifierAndFanOutWithoutDuplicates() {
+        for (CameraButtonBindings.Press gesture : CameraButtonBindings.Press.values()) {
+            CameraButtonGesturePolicy policy = policy();
+            List<CameraButtonGesturePolicy.Assignment> bindings = assignments(
+                    assignment(CameraButtonBindings.Action.AvasEngine, 305, gesture, 1),
+                    assignment(CameraButtonBindings.Action.MirrorSource, 305, gesture, 1));
+            assertTrue(down(policy, 305, 100, bindings).consumed);
+            CameraButtonGesturePolicy.Result result;
+            if (gesture == CameraButtonBindings.Press.Hold) {
+                result = down(policy, 306, 500, bindings);
+                assertTrue(up(policy, 306, 500, 550, bindings).actions.isEmpty());
+                assertTrue(up(policy, 305, 100, 560, bindings).actions.isEmpty());
+            } else {
+                assertTrue(up(policy, 305, 100, 150, bindings).actions.isEmpty());
+                if (gesture == CameraButtonBindings.Press.Double) {
+                    down(policy, 305, 300, bindings);
+                    result = up(policy, 305, 300, 350, bindings);
+                } else result = policy.advance(451, bindings);
+            }
+            assertEquals(actions(CameraButtonBindings.Action.AvasEngine,
+                    CameraButtonBindings.Action.MirrorSource), result.actions);
+            assertTrue(policy.advance(1000, bindings).actions.isEmpty());
+        }
+    }
+
+    @Test public void disablingEngineCancelsPendingSingleAndReleasesNewCycles() {
+        CameraButtonGesturePolicy policy = policy();
+        List<CameraButtonGesturePolicy.Assignment> enabled = assignments(
+                assignment(CameraButtonBindings.Action.AvasEngine, 305,
+                        CameraButtonBindings.Press.Single, 1));
+        List<CameraButtonGesturePolicy.Assignment> disabled = assignments();
+        assertTrue(down(policy, 305, 100, enabled).consumed);
+        policy.bindingsChanged(disabled);
+        assertTrue(up(policy, 305, 100, 150, disabled).consumed);
+        assertTrue(policy.advance(500, disabled).actions.isEmpty());
+        assertFalse(down(policy, 305, 1000, disabled).consumed);
+    }
+
     @Test public void microphoneAndCameraShareSingleButNeverFireForHoldOrDouble() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         CameraButtonBindings.save(preferences, CameraButtonBindings.Action.AvasMicrophone,

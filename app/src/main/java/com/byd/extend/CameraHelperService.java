@@ -101,6 +101,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.AVAS_START_ENGINE";
     private static final String ACTION_AVAS_STOP_ENGINE =
             "com.byd.extend.action.AVAS_STOP_ENGINE";
+    private static final String ACTION_AVAS_TOGGLE_ENGINE =
+            "com.byd.extend.action.AVAS_TOGGLE_ENGINE";
     private static final String ACTION_AVAS_REPORT_STATUS =
             "com.byd.extend.action.AVAS_REPORT_STATUS";
     private static final String ACTION_AVAS_START_AUDITION =
@@ -662,6 +664,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_AVAS_STOP_ENGINE));
     }
 
+    static void toggleAvasEngine(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_AVAS_TOGGLE_ENGINE));
+    }
+
     static void reportAvasStatus(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_AVAS_REPORT_STATUS));
@@ -1084,6 +1091,7 @@ public final class CameraHelperService extends Service {
                 || ACTION_AVAS_STOP_MANUAL.equals(action)
                 || ACTION_AVAS_START_ENGINE.equals(action)
                 || ACTION_AVAS_STOP_ENGINE.equals(action)
+                || ACTION_AVAS_TOGGLE_ENGINE.equals(action)
                 || ACTION_AVAS_START_AUDITION.equals(action)
                 || ACTION_AVAS_STOP_AUDITION.equals(action)
                 || ACTION_AVAS_REPORT_STATUS.equals(action);
@@ -1101,6 +1109,8 @@ public final class CameraHelperService extends Service {
             active.startAvasEngine();
         } else if (ACTION_AVAS_STOP_ENGINE.equals(command.action)) {
             active.stopAvasEngine();
+        } else if (ACTION_AVAS_TOGGLE_ENGINE.equals(command.action)) {
+            active.toggleAvasEngine();
         } else if (ACTION_AVAS_REPORT_STATUS.equals(command.action)) {
             active.reportAvasStatus();
         } else if (ACTION_AVAS_START_AUDITION.equals(command.action)) {

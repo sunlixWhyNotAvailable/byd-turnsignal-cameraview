@@ -19,8 +19,9 @@ public final class AvasEngineModel {
     private static final float MANUAL_SHIFT_MULTIPLIER = 1.10f;
     private static final float SPORT_SHIFT_MULTIPLIER = 1.20f;
     private static final double RPM_RISE_TAU_SECONDS = 0.12;
+    private static final double PARK_NEUTRAL_RPM_RISE_TAU_SECONDS = 0.30;
     private static final double RPM_FALL_TAU_SECONDS = 0.28;
-    private static final double LOAD_ATTACK_TAU_SECONDS = 0.06;
+    private static final double LOAD_ATTACK_TAU_SECONDS = 0.08;
     private static final double LOAD_RELEASE_TAU_SECONDS = 0.14;
     private static final long SHIFT_INTERVAL_MS = 300;
 
@@ -89,7 +90,7 @@ public final class AvasEngineModel {
             gear = virtualGear;
         }
         targetRpm = Math.max(idleRpm, Math.min(maxRpm, targetRpm));
-        smooth(nowMs, targetRpm, load);
+        smooth(nowMs, targetRpm, load, parkOrNeutral);
         previousSelector = rawSelector;
         state.rpm = currentRpm;
         state.load = currentLoad;
@@ -111,15 +112,17 @@ public final class AvasEngineModel {
         state.valid = false;
     }
 
-    private void smooth(long nowMs, float targetRpm, float targetLoad) {
+    private void smooth(long nowMs, float targetRpm, float targetLoad, boolean parkOrNeutral) {
         if (!initialized) {
-            currentRpm = targetRpm;
-            currentLoad = targetLoad;
+            currentRpm = idleRpm;
+            currentLoad = 0.0f;
         } else {
             long elapsedMs = Math.max(0L, Math.min(100L, nowMs - lastUpdateMs));
             double seconds = elapsedMs / 1000.0;
             double rpmTau = targetRpm >= currentRpm
-                    ? RPM_RISE_TAU_SECONDS : RPM_FALL_TAU_SECONDS;
+                    ? (parkOrNeutral ? PARK_NEUTRAL_RPM_RISE_TAU_SECONDS
+                            : RPM_RISE_TAU_SECONDS)
+                    : RPM_FALL_TAU_SECONDS;
             double loadTau = targetLoad >= currentLoad
                     ? LOAD_ATTACK_TAU_SECONDS : LOAD_RELEASE_TAU_SECONDS;
             currentRpm += (targetRpm - currentRpm) * (1.0 - Math.exp(-seconds / rpmTau));

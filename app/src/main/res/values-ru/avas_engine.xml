@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="avas_engine_title">Имитация работы двигателя</string>
+    <string name="avas_engine_key_binding">Старт/стоп двигателя</string>
+    <string name="avas_engine_learning_title">Нажмите кнопку на руле, чтобы назначить запуск/остановку двигателя…</string>
+    <string name="avas_engine_learning">Назначенная кнопка переключает звук двигателя выбранным жестом.</string>
     <string name="avas_engine_pack">Звуковой набор</string>
     <string name="avas_engine_pack_ferrari_v8">Ferrari F430 V8</string>
     <string name="avas_engine_pack_jaguar_v6">Jaguar F-Type V6</string>

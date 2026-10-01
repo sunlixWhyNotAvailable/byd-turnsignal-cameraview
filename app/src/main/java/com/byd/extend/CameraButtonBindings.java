@@ -2,7 +2,7 @@ package com.byd.extend;
 
 import android.content.SharedPreferences;
 
-/** Persisted global camera-button assignments. */
+/** Persisted global camera and AVAS button assignments. */
 public final class CameraButtonBindings {
     public static final int UNASSIGNED = -1;
     public static final String MIRROR_SOURCE_KEY_CODE =
@@ -16,8 +16,10 @@ public final class CameraButtonBindings {
 
     public static final String MICROPHONE_KEY_CODE = "avas_microphone_key_code";
     public static final String MICROPHONE_PRESS = "avas_microphone_press";
+    public static final String ENGINE_KEY_CODE = "avas_engine_key_code";
+    public static final String ENGINE_PRESS = "avas_engine_press";
 
-    public enum Action { ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone }
+    public enum Action { ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone, AvasEngine }
 
     public enum Press { Single, Hold, Double }
 
@@ -103,16 +105,20 @@ public final class CameraButtonBindings {
                 .putString(MIRROR_VISIBILITY_PRESS, Press.Single.name())
                 .putInt(MICROPHONE_KEY_CODE, UNASSIGNED)
                 .putString(MICROPHONE_PRESS, Press.Single.name())
+                .putInt(ENGINE_KEY_CODE, UNASSIGNED)
+                .putString(ENGINE_PRESS, Press.Single.name())
                 .apply();
     }
 
     private static String keyCodeKey(Action action) {
+        if (action == Action.AvasEngine) return ENGINE_KEY_CODE;
         if (action == Action.AvasMicrophone) return MICROPHONE_KEY_CODE;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_KEY_CODE : MIRROR_VISIBILITY_KEY_CODE;
     }
 
     private static String pressKey(Action action) {
+        if (action == Action.AvasEngine) return ENGINE_PRESS;
         if (action == Action.AvasMicrophone) return MICROPHONE_PRESS;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_PRESS : MIRROR_VISIBILITY_PRESS;

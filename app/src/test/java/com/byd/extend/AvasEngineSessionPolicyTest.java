@@ -45,7 +45,8 @@ public final class AvasEngineSessionPolicyTest {
         assertEquals(NONE, p.observePower(0, false));
         assertEquals(NONE, p.observeReady(true));
         assertEquals(NONE, p.observePower(2, false));
-        assertEquals(START, p.observeReady(true));
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(START, p.playbackTailFinished());
     }
 
     @Test public void testOverridesLiveAndStopRestoresItWithoutAnotherIgnition() {
@@ -65,7 +66,8 @@ public final class AvasEngineSessionPolicyTest {
         assertEquals(NONE, p.manualStop()); // duplicate Stop cannot stop resumed live
         p.observePower(0, false);
         p.observePower(2, false);
-        assertEquals(START, p.observeReady(true));
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(START, p.playbackTailFinished());
     }
 
     @Test public void testBeforeOkDoesNotStartLiveOrRequireAnotherManualStart() {
@@ -79,6 +81,7 @@ public final class AvasEngineSessionPolicyTest {
         assertEquals(START, p.observeReady(true)); // live is independent of the stopped test
         p.observePower(0, false);
         p.observePower(2, false);
+        assertEquals(NONE, p.playbackTailFinished());
         p.observeReady(false);
         p.manualStart();
         assertEquals(NONE, p.playbackFailed());
@@ -104,9 +107,53 @@ public final class AvasEngineSessionPolicyTest {
         p.observePower(2, true);
         p.observeReady(true);
         assertEquals(STOP_NOW, p.configure(true, false));
+        assertFalse(p.liveRequested());
         assertEquals(NONE, p.manualStart());
         assertEquals(NONE, p.configure(true, true));
         assertEquals(RESTORE, p.observeReady(true));
+    }
+
+    @Test public void manualLiveStartBeforeOkDoesNotRepeatIgnitionOnOk() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        assertEquals(NONE, p.observeReady(false));
+        assertEquals(START, p.toggleLive());
+        assertTrue(p.liveRequested());
+        assertFalse(p.testActive());
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(NONE, p.observeReady(true));
+        assertTrue(p.desiredActive());
+    }
+
+    @Test public void liveToggleDuringTestChangesOnlyDemandAndStopRestoresItQuietly() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(false);
+        assertEquals(START, p.manualStart());
+        assertEquals(NONE, p.toggleLive());
+        assertTrue(p.testActive());
+        assertTrue(p.liveRequested());
+        assertEquals(RESTORE, p.manualStop());
+        assertFalse(p.testActive());
+
+        assertEquals(START, p.manualStart());
+        assertEquals(NONE, p.toggleLive());
+        assertTrue(p.testActive());
+        assertFalse(p.liveRequested());
+        assertEquals(STOP_NOW, p.manualStop());
+        assertFalse(p.desiredActive());
+    }
+
+    @Test public void failedTestRestoresLiveDemandSelectedDuringTest() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(false);
+        assertEquals(START, p.manualStart());
+        assertEquals(NONE, p.toggleLive());
+        assertTrue(p.testActive());
+        assertEquals(RESTORE, p.playbackFailed());
+        assertFalse(p.testActive());
+        assertTrue(p.liveRequested());
     }
 
     @Test public void repeatedOffDoesNotStopManualTestButNextOffEdgeDoes() {
@@ -128,6 +175,44 @@ public final class AvasEngineSessionPolicyTest {
             assertEquals(NONE, other.observePower(raw, true));
             assertFalse(other.desiredActive());
         }
+    }
+
+    @Test public void confirmedOkRiseRestartsStoppedLiveButUnknownDoesNotCreateAnEdge() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        assertEquals(RESTORE, p.observeReady(true));
+        assertEquals(STOP_NOW, p.toggleLive());
+        assertEquals(NONE, p.observeReady(null));
+        assertEquals(NONE, p.observeReady(true));
+        assertFalse(p.liveRequested());
+
+        assertEquals(NONE, p.observeReady(false));
+        assertEquals(NONE, p.observeReady(null));
+        assertEquals(START, p.observeReady(true));
+        assertTrue(p.liveRequested());
+    }
+
+    @Test public void repeatedConfigurePreservesExplicitLiveStop() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        assertEquals(RESTORE, p.observeReady(true));
+        assertEquals(STOP_NOW, p.toggleLive());
+        assertEquals(NONE, p.configure(true, true));
+        assertEquals(NONE, p.observeReady(true));
+        assertFalse(p.liveRequested());
+    }
+
+    @Test public void tailDefersTogglesAndUsesOnlyTheLatestLiveDemand() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        assertEquals(RESTORE, p.observeReady(true));
+        assertEquals(STOP_WITH_TAIL, p.observePower(0, false));
+        assertEquals(NONE, p.toggleLive());
+        assertEquals(NONE, p.toggleLive());
+        assertEquals(NONE, p.toggleLive());
+        assertTrue(p.liveRequested());
+        assertEquals(START, p.playbackTailFinished());
+        assertTrue(p.desiredActive());
     }
 
     @Test public void separateIndicatorEnumsPreserveUnknowns() {

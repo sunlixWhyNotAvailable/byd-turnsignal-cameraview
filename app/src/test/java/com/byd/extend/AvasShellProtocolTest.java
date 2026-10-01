@@ -47,6 +47,10 @@ public final class AvasShellProtocolTest {
                 TurnSignalShellProtocol.TX_STOP_AVAS_ENGINE);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 23,
                 TurnSignalShellProtocol.TX_DISPATCH_MUSIC_KEY);
+        assertEquals(IBinder.FIRST_CALL_TRANSACTION + 25,
+                TurnSignalShellProtocol.TX_TOGGLE_AVAS_ENGINE);
+        assertEquals("protocol_mismatch", TurnSignalShellProtocol.compatibilityError(
+                17, BuildConfig.VERSION_CODE));
         assertEquals(1, TurnSignalShellProtocol.AVAS_MIC_FORMAT_PCM_S16LE_MONO_16KHZ);
         assertTrue(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(1));
         assertFalse(TurnSignalShellProtocol.isAvasMicrophoneFormatAllowed(2));

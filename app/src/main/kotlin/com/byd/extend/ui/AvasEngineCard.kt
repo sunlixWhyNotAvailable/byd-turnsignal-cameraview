@@ -5,8 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -24,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.byd.extend.AvasEngineSettings
+import com.byd.extend.CameraButtonBindings
 import com.byd.extend.R
 import kotlin.math.roundToInt
 
@@ -54,7 +53,7 @@ internal fun AvasEngineCard(
                 colors, clearSemantics = true, label = title)
         }
     }) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight().alpha(if (state.enabled) 1f else .45f),
+        Column(Modifier.fillMaxWidth().alpha(if (state.enabled) 1f else .45f),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(strings.resource(R.string.avas_engine_pack), color = colors.muted, fontSize = 12.sp)
             ChoiceField("", packLabels, packIndex, {
@@ -90,7 +89,6 @@ internal fun AvasEngineCard(
                 Text(strings.resource(R.string.avas_engine_no_outputs), color = colors.muted,
                     fontSize = 12.sp)
             }
-            Spacer(Modifier.weight(1f))
             Text(strings.resource(when {
                 hasError -> R.string.avas_engine_error
                 state.state == "starting" -> R.string.avas_engine_starting
@@ -99,6 +97,9 @@ internal fun AvasEngineCard(
                 state.state == "stopping" -> R.string.avas_engine_stopping
                 else -> R.string.avas_engine_stopped
             }), color = if (hasError) colors.red else colors.muted, fontSize = 13.sp)
+            MirrorBindingRow(strings.resource(R.string.avas_engine_key_binding),
+                CameraButtonBindings.Action.AvasEngine, state.binding, state.enabled,
+                strings, colors, onAction)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionButton(strings.resource(R.string.avas_engine_start), colors,
                     Modifier.weight(1f), icon = Icons.Outlined.PlayArrow, primary = true,

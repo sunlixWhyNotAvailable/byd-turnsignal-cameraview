@@ -7,7 +7,7 @@
 
 ## Project status
 
-Current source target: `1.5.0` (version code `110`), with Ukrainian, English, Simplified Chinese and Russian
+Current source target: `1.5.1` (version code `111`), with Ukrainian, English, Simplified Chinese and Russian
 interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
 [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
 

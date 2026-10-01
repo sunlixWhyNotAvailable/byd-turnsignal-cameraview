@@ -245,6 +245,12 @@ final class AvasRuntime implements AutoCloseable {
         reportStatus();
     }
 
+    void toggleEngine() {
+        if (closed) return;
+        engine.toggleLive();
+        reportStatus();
+    }
+
     synchronized void startAudition(String profileId, String assetId, String sessionId) {
         if (closed) return;
         if (!validSessionId(sessionId)) {

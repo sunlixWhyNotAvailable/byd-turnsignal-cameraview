@@ -223,6 +223,10 @@ final class CameraHelperMain {
             turnController.stopAvasEngine();
         }
 
+        public void toggleAvasEngine() {
+            turnController.toggleAvasEngine();
+        }
+
         public void startAvasAudition(String profileId, String assetId, String sessionId) {
             turnController.startAvasAudition(profileId, assetId, sessionId);
         }

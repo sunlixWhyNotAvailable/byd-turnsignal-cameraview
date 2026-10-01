@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="avas_engine_title">Engine simulation</string>
+    <string name="avas_engine_key_binding">Engine start/stop</string>
+    <string name="avas_engine_learning_title">Press a steering-wheel button to assign engine start/stop…</string>
+    <string name="avas_engine_learning">The assigned button toggles engine sound using the selected gesture.</string>
     <string name="avas_engine_pack">Sound pack</string>
     <string name="avas_engine_pack_ferrari_v8">Ferrari F430 V8</string>
     <string name="avas_engine_pack_jaguar_v6">Jaguar F-Type V6</string>

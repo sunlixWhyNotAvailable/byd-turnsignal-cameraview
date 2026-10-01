@@ -107,9 +107,20 @@ final class AvasEngineRuntime implements AutoCloseable {
         apply(action);
     }
 
+    synchronized void toggleLive() {
+        if (closed) return;
+        AvasEngineSessionPolicy.Action action = policy.toggleLive();
+        logPolicy("live_toggle", policy.rawPower(), false, action);
+        if (action == AvasEngineSessionPolicy.Action.STOP_NOW && current != null) {
+            log("avas_engine_cancel", "source", "live_toggle", "pack", current.pack);
+        }
+        apply(action);
+    }
+
     synchronized JSONObject status() {
         try { return new JSONObject().put("state", state).put("error", error)
-                .put("packId", config.packId).put("testActive", policy.testActive()); }
+                .put("packId", config.packId).put("testActive", policy.testActive())
+                .put("liveRequested", policy.liveRequested()); }
         catch (Exception ignored) { return new JSONObject(); }
     }
 
@@ -343,20 +354,26 @@ final class AvasEngineRuntime implements AutoCloseable {
             failure = closeOutput(interior, failure);
             failure = closeOutput(exterior, failure);
             synchronized (this) {
-                if (current == session) {
-                    current = null;
-                    if (!config.enabled || !hasOutput(config)) failure = "";
-                    AvasEngineSessionPolicy.Action recovery = AvasEngineSessionPolicy.Action.NONE;
-                    if (!failure.isEmpty()) {
-                        recovery = policy.playbackFailed();
-                        logPolicy("playback_failed", policy.rawPower(), false, recovery);
+                synchronized (cueGate) {
+                    // Finish first, then reconcile and possibly begin one replacement cue while
+                    // event starters are still excluded by the same gate monitor.
+                    cueGate.finish(session.cue);
+                    if (current == session) {
+                        current = null;
+                        if (!config.enabled || !hasOutput(config)) failure = "";
+                        AvasEngineSessionPolicy.Action recovery = AvasEngineSessionPolicy.Action.NONE;
+                        if (!failure.isEmpty()) {
+                            recovery = policy.playbackFailed();
+                            logPolicy("playback_failed", policy.rawPower(), false, recovery);
+                        } else if (session.tail) {
+                            recovery = policy.playbackTailFinished();
+                        }
+                        setState(failure.isEmpty() ? "stopped" : "error", failure);
+                        apply(recovery);
                     }
-                    setState(failure.isEmpty() ? "stopped" : "error", failure);
-                    apply(recovery);
                 }
             }
             // Even loading/routing/PCM failures must never strand the event lane.
-            cueGate.finish(session.cue);
         }
     }
 

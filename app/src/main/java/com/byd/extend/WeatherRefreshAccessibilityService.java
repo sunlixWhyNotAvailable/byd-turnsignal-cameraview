@@ -35,8 +35,14 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
     private SharedPreferences steeringPreferences;
     private String foregroundPackage = "";
     private AvasMicrophoneCapture microphone;
+    private AvasConfig.Engine engineConfig = AvasConfig.Engine.defaults();
     private final SharedPreferences.OnSharedPreferenceChangeListener steeringPreferenceListener =
             (preferences, key) -> {
+                if (AvasAudioLibrary.PREF_CONFIG.equals(key)) {
+                    refreshEngineConfig(preferences);
+                    if (!engineConfig.enabled && steeringGestures.learningAction()
+                            == CameraButtonBindings.Action.AvasEngine) steeringGestures.cancelLearning();
+                }
                 if (microphone != null) {
                     if ((AvasMicrophoneSettings.ENABLED.equals(key)
                             && !AvasMicrophoneSettings.enabled(preferences))
@@ -110,6 +116,8 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                 || LegacySettingsImporter.blocksRuntime(service)) return false;
         if (action == CameraButtonBindings.Action.AvasMicrophone
                 && !AvasMicrophoneSettings.enabled(service.getSharedPreferences("settings", 0)))
+            return false;
+        if (action == CameraButtonBindings.Action.AvasEngine && !service.engineConfig.enabled)
             return false;
         service.steeringHandler.removeCallbacks(service.steeringTimeout);
         service.steeringGestures.beginLearning(action);
@@ -217,6 +225,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                     steeringPreferenceListener);
         }
         steeringPreferences = getSharedPreferences("settings", MODE_PRIVATE);
+        refreshEngineConfig(steeringPreferences);
         if (microphone != null) microphone.stop(false);
         microphone = new AvasMicrophoneCapture(this);
         steeringPreferences.registerOnSharedPreferenceChangeListener(steeringPreferenceListener);
@@ -356,6 +365,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         }
         if (result.actions.contains(CameraButtonBindings.Action.AvasMicrophone)
                 && microphone != null) microphone.toggle();
+        if (result.actions.contains(CameraButtonBindings.Action.AvasEngine)) {
+            CameraHelperService.toggleAvasEngine(this);
+        }
         return result.consumed;
     }
 
@@ -372,7 +384,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     private List<CameraButtonGesturePolicy.Assignment> currentAssignments(
             SharedPreferences preferences) {
-        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(3);
+        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(5);
         addAssignment(result, preferences, CameraButtonBindings.Action.ReverseSource,
                 CameraProbeActivity.reverseOwnerEpochSnapshot());
         boolean mirrorEnabled = RearviewMirrorSettings.enabled(preferences);
@@ -385,7 +397,20 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (AvasMicrophoneSettings.enabled(preferences)) {
             addAssignment(result, preferences, CameraButtonBindings.Action.AvasMicrophone, 1L);
         }
+        if (engineConfig.enabled && (engineConfig.exteriorEnabled || engineConfig.interiorEnabled)) {
+            addAssignment(result, preferences, CameraButtonBindings.Action.AvasEngine, 1L);
+        }
         return result;
+    }
+
+    private void refreshEngineConfig(SharedPreferences preferences) {
+        try {
+            String json = preferences.getString(AvasAudioLibrary.PREF_CONFIG, "");
+            engineConfig = json == null || json.isEmpty()
+                    ? AvasConfig.Engine.defaults() : AvasConfig.parse(json).engine;
+        } catch (RuntimeException invalidConfig) {
+            engineConfig = AvasConfig.Engine.defaults();
+        }
     }
 
     private static void addAssignment(List<CameraButtonGesturePolicy.Assignment> result,
@@ -398,6 +423,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     private static boolean isSteeringPreference(String key) {
         return CameraButtonBindings.MICROPHONE_KEY_CODE.equals(key)
+                || CameraButtonBindings.ENGINE_KEY_CODE.equals(key)
+                || CameraButtonBindings.ENGINE_PRESS.equals(key)
+                || AvasAudioLibrary.PREF_CONFIG.equals(key)
                 || AvasMicrophoneSettings.ENABLED.equals(key)
                 || ReverseSteeringButtonPreferences.KEY_CODE.equals(key)
                 || CameraButtonBindings.MIRROR_SOURCE_KEY_CODE.equals(key)
