@@ -1,6 +1,6 @@
 package com.byd.extend;
 
-/** Pure raw-power and manual-control policy for one virtual engine session. */
+/** OK indication starts automatic sound; only confirmed power-off ends it with a tail. */
 public final class AvasEngineSessionPolicy {
     public static final int POWER_OFF = 0;
     public static final int POWER_ACC = 1;
@@ -20,11 +20,15 @@ public final class AvasEngineSessionPolicy {
     private boolean hasValidPower;
     private int rawPower = POWER_INVALID;
     private int lastValidPower = POWER_INVALID;
+    private Boolean ready;
+    private Boolean lastKnownReady;
+    private boolean ignitionPending;
 
     public Action configure(boolean enabled, boolean outputsPresent) {
         this.enabled = enabled;
         this.outputsPresent = outputsPresent;
         if (!available()) {
+            ready = null;
             if (active) {
                 active = false;
                 recoveryPending = false;
@@ -32,11 +36,26 @@ public final class AvasEngineSessionPolicy {
             }
             return Action.NONE;
         }
-        if (!active && !suppressed && hasValidPower && !powerUnknown
-                && lastValidPower == POWER_ON) {
-            return start(true);
+        return reconcileReady();
+    }
+
+    public Action observeReady(Boolean present) {
+        if (hasValidPower && lastValidPower == POWER_OFF) return Action.NONE;
+        ready = present;
+        if (present != null) {
+            if (present && Boolean.FALSE.equals(lastKnownReady)) ignitionPending = true;
+            if (!present) ignitionPending = false;
+            lastKnownReady = present;
         }
-        return Action.NONE;
+        return reconcileReady();
+    }
+
+    private Action reconcileReady() {
+        if (active || suppressed || !available() || !hasValidPower || powerUnknown
+                || lastValidPower == POWER_OFF || !Boolean.TRUE.equals(ready)) return Action.NONE;
+        boolean restore = recoveryPending || !ignitionPending;
+        ignitionPending = false;
+        return start(restore);
     }
 
     public Action observePower(int raw, boolean baseline) {
@@ -45,7 +64,6 @@ public final class AvasEngineSessionPolicy {
             powerUnknown = true;
             return Action.NONE;
         }
-        boolean recovering = powerUnknown;
         powerUnknown = false;
         boolean hadValidPower = hasValidPower;
         int previousPower = lastValidPower;
@@ -54,21 +72,16 @@ public final class AvasEngineSessionPolicy {
 
         if (raw == POWER_OFF) {
             if (hadValidPower && previousPower == POWER_OFF) return Action.NONE;
+            ready = null;
+            lastKnownReady = false;
+            ignitionPending = false;
             suppressed = false;
             recoveryPending = false;
             if (!active) return Action.NONE;
             active = false;
             return Action.STOP_WITH_TAIL;
         }
-        if (raw != POWER_ON || !available() || suppressed || active) return Action.NONE;
-        if (baseline || recovering || recoveryPending || !hadValidPower || previousPower == POWER_ON) {
-            return start(true);
-        }
-        if (previousPower == POWER_OFF || previousPower == POWER_ACC
-                || previousPower == POWER_OK || previousPower == POWER_FAKE_OK) {
-            return start(false);
-        }
-        return start(true);
+        return reconcileReady();
     }
 
     public Action manualStart() {
@@ -99,6 +112,7 @@ public final class AvasEngineSessionPolicy {
 
     private Action start(boolean restore) {
         active = true;
+        ignitionPending = false;
         recoveryPending = false;
         return restore ? Action.RESTORE : Action.START;
     }

@@ -20,6 +20,7 @@ final class AvasEngineRuntime implements AutoCloseable {
     private final Runnable changed;
     private final Consumer<JSONObject> events;
     private final AvasEngineTelemetry telemetry;
+    private final AvasEngineReadyMonitor readiness;
     private final AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
     private final ExecutorService render = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "avas-engine-pcm"));
@@ -41,6 +42,7 @@ final class AvasEngineRuntime implements AutoCloseable {
         this.changed = changed;
         this.events = events;
         telemetry = new AvasEngineTelemetry(context, executor, events);
+        readiness = new AvasEngineReadyMonitor(context, executor, this::onReady, events);
     }
 
     synchronized void configure(AvasConfig.Engine next) {
@@ -48,6 +50,7 @@ final class AvasEngineRuntime implements AutoCloseable {
         AvasConfig.Engine previous = config;
         config = next;
         telemetry.setEnabled(next.enabled && hasOutput(next));
+        readiness.setEnabled(next.enabled && hasOutput(next));
         AvasEngineSessionPolicy.Action action = policy.configure(next.enabled, hasOutput(next));
         if (action != AvasEngineSessionPolicy.Action.NONE) {
             logPolicy("configure", policy.rawPower(), false, action);
@@ -69,10 +72,20 @@ final class AvasEngineRuntime implements AutoCloseable {
     synchronized void onPower(int value, boolean baseline) {
         if (closed) return;
         AvasEngineSessionPolicy.Action action = policy.observePower(value, baseline);
+        readiness.onPower(value);
         if (!loggedPower || value != lastLoggedPower || action != AvasEngineSessionPolicy.Action.NONE) {
             logPolicy("power", value, baseline, action);
             lastLoggedPower = value;
             loggedPower = true;
+        }
+        apply(action);
+    }
+
+    private synchronized void onReady(Boolean present) {
+        if (closed) return;
+        AvasEngineSessionPolicy.Action action = policy.observeReady(present);
+        if (action != AvasEngineSessionPolicy.Action.NONE) {
+            logPolicy("ok_indicator", policy.rawPower(), false, action);
         }
         apply(action);
     }
@@ -248,6 +261,7 @@ final class AvasEngineRuntime implements AutoCloseable {
                                 "front_motor_valid", snapshot.frontMotorValid,
                                 "front_motor_source", snapshot.frontMotorSource,
                                 "front_raw_per_kph", jsonFloat(snapshot.frontRawPerKph),
+                                "motor_scale_kind", "audio_motion_not_measured_speed",
                                 "front_calibration_samples", snapshot.frontCalibrationSamples,
                                 "rear_motor_raw", snapshot.rearMotorRaw,
                                 "rear_motor_valid", snapshot.rearMotorValid,
@@ -400,6 +414,7 @@ final class AvasEngineRuntime implements AutoCloseable {
             closed = true;
             if (current != null) current.cancelled = true;
         }
+        readiness.close();
         telemetry.close();
         render.shutdown();
         boolean interrupted = false;

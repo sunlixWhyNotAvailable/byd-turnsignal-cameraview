@@ -567,7 +567,7 @@ private fun FormScope.AvasIntegration(
         ?: AvasProfileUiState(id = id) }
         .chunked(columns).forEachIndexed { pairIndex, pair ->
             row("avas-profile-pair-$pairIndex") {
-                    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max),
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp).height(IntrinsicSize.Max),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         pair.forEach { profile ->
                             val importing = state.importingProfileId != null
@@ -661,17 +661,20 @@ private fun FormScope.AvasIntegration(
         }
     row("avas-microphone") {
         if (columns > 1) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                AvasMicrophoneCard(state.microphone, strings, colors, onAction, Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp).height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                AvasMicrophoneCard(state.microphone, strings, colors, onAction,
+                    Modifier.weight(1f).fillMaxHeight())
                 AvasEngineCard(state.engine, strings, colors, onAction,
-                    Modifier.weight(1f).testTag("avas-engine"))
+                    Modifier.weight(1f).fillMaxHeight().testTag("avas-engine"))
             }
         } else {
-            AvasMicrophoneCard(state.microphone, strings, colors, onAction)
+            AvasMicrophoneCard(state.microphone, strings, colors, onAction, Modifier.padding(top = 12.dp))
         }
     }
     if (columns == 1) row("avas-engine") {
-        AvasEngineCard(state.engine, strings, colors, onAction, Modifier.testTag("avas-engine"))
+        AvasEngineCard(state.engine, strings, colors, onAction,
+            Modifier.padding(top = 12.dp).testTag("avas-engine"))
     }
     listing?.let { profileId ->
         val profile = state.profiles.firstOrNull { it.id == profileId }

@@ -86,4 +86,53 @@ public final class MusicVisualizerPlaybackTest {
         assertFalse(engineTrack);
         assertTrue(ordinaryMusic || engineTrack);
     }
+
+    @Test
+    public void anonymizedEngineTrackCannotStartVisualizerButAnotherPlayerCan() {
+        // AudioPlaybackConfiguration.anonymizedCopy strips tags, UID and session, but keeps PIID.
+        int engine = 70_001;
+        int music = 70_002;
+        MusicPlaybackSource.register(engine, MusicPlaybackSource.ENGINE);
+        try {
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(engine, Collections.emptySet(), false));
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(engine, null, false));
+            assertTrue(MusicPlaybackSource.isEligiblePlayer(engine, Collections.emptySet(), true));
+            assertTrue(MusicPlaybackSource.isEligiblePlayer(music, Collections.emptySet(), false));
+
+            boolean engineOnly = MusicPlaybackSource.isEligiblePlayer(engine, Collections.emptySet(), false);
+            assertFalse(MusicVisualizerRuntime.shouldStartOutput(true, true, true, engineOnly, false));
+            boolean mixed = engineOnly
+                    || MusicPlaybackSource.isEligiblePlayer(music, Collections.emptySet(), false);
+            assertTrue(MusicVisualizerRuntime.shouldStartOutput(true, true, true, mixed, false));
+        } finally {
+            MusicPlaybackSource.released(engine);
+        }
+        // A queued active callback after track release still belongs to AVAS, not ordinary music.
+        assertFalse(MusicPlaybackSource.isEligiblePlayer(engine, Collections.emptySet(), false));
+    }
+
+    @Test
+    public void retiredPlayersAreBoundedWithoutEvictingActiveEngineOrAdmittingEventAndMic() {
+        int engine = 71_001;
+        int event = 71_002;
+        int microphone = 71_003;
+        MusicPlaybackSource.register(engine, MusicPlaybackSource.ENGINE);
+        MusicPlaybackSource.register(event, MusicPlaybackSource.EVENT);
+        MusicPlaybackSource.register(microphone, MusicPlaybackSource.MICROPHONE);
+        MusicPlaybackSource.released(event);
+        for (int id = 72_000; id < 72_065; id++) {
+            MusicPlaybackSource.register(id, MusicPlaybackSource.EVENT);
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(id, Collections.emptySet(), true));
+            MusicPlaybackSource.released(id);
+        }
+        try {
+            assertTrue(MusicPlaybackSource.isEligiblePlayer(event, Collections.emptySet(), false));
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(engine, Collections.emptySet(), false));
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(microphone, Collections.emptySet(), true));
+            assertFalse(MusicPlaybackSource.isEligiblePlayer(72_064, Collections.emptySet(), true));
+        } finally {
+            MusicPlaybackSource.released(engine);
+            MusicPlaybackSource.released(microphone);
+        }
+    }
 }

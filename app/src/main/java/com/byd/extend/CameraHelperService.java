@@ -324,12 +324,33 @@ public final class CameraHelperService extends Service {
         adbRecoveryListeners.remove(listener);
     }
 
+    static void noteMusicForegroundPackage(String packageName) {
+        CameraHelperService service = activeInstance;
+        if (service == null || !service.helperRuntimeStarted) return;
+        CameraHelperMain.HelperBinder activeHelper = service.helper;
+        if (activeHelper != null && activeHelper.isHealthy()) {
+            activeHelper.noteMusicForegroundPackage(packageName);
+        }
+    }
+
+    static void logMusicKeyDecision(int key, String reason, String foreground) {
+        CameraHelperService service = activeInstance;
+        if (service != null) service.lifecycle("music_media_key_ingress",
+                "raw_key", key, "reason", reason, "foreground", foreground);
+    }
+
     static boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode,
             int action, int repeatCount, long downTime, long eventTime) {
         CameraHelperService service = activeInstance;
-        if (service == null || !service.helperRuntimeStarted) return false;
+        if (service == null || !service.helperRuntimeStarted) {
+            logMusicKeyDecision(rawKeyCode, "runtime_unavailable", foregroundPackage);
+            return false;
+        }
         CameraHelperMain.HelperBinder activeHelper = service.helper;
-        if (activeHelper == null || !activeHelper.isHealthy()) return false;
+        if (activeHelper == null || !activeHelper.isHealthy()) {
+            logMusicKeyDecision(rawKeyCode, "helper_unavailable", foregroundPackage);
+            return false;
+        }
         try {
             return activeHelper.dispatchMusicMediaKey(foregroundPackage, rawKeyCode,
                     action, repeatCount, downTime, eventTime);

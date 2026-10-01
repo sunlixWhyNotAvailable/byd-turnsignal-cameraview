@@ -242,6 +242,16 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_MUSIC_FOREGROUND) {
+                    String packageName = data.readString();
+                    if (packageName == null || !packageName.isEmpty()
+                            && !MusicMediaKeyPolicy.isValidPackage(packageName)) {
+                        throw new IllegalArgumentException("invalid foreground package");
+                    }
+                    musicRuntime.noteForegroundPackage(packageName);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_DISPATCH_MUSIC_KEY) {
                     String foregroundPackage = data.readString();
                     int rawKeyCode = data.readInt();

@@ -1,12 +1,17 @@
 package com.byd.extend;
 
 import android.media.AudioAttributes;
+import android.media.AudioPlaybackConfiguration;
+import android.media.AudioTrack;
 
 import java.lang.reflect.Method;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** AudioAttributes tags used to distinguish AVAS tracks inside the OEM playback mix. */
+/** AVAS player identities survive Android's anonymized playback callbacks; tags are a fallback. */
 public final class MusicPlaybackSource {
     public static final String ENGINE = "byd_extend.engine";
     public static final String EVENT = "byd_extend.event";
@@ -15,6 +20,12 @@ public final class MusicPlaybackSource {
     private static final Method ADD_TAG = method(AudioAttributes.Builder.class, "addTag");
     private static final Method GET_TAGS = method(AudioAttributes.class, "getTags");
     private static final AtomicBoolean TAGGING_FAILED = new AtomicBoolean();
+    private static final Method TRACK_ID = method(AudioTrack.class, "getPlayerIId");
+    private static final Method CONFIG_ID = method(AudioPlaybackConfiguration.class, "getPlayerInterfaceId");
+    private static final AtomicBoolean IDENTITY_FAILED = new AtomicBoolean();
+    private static final Map<Integer, String> PLAYERS = new HashMap<>();
+    // Retain released identities for queued callbacks, without growing over a long helper session.
+    private static final Map<Integer, String> RELEASED = new LinkedHashMap<>();
 
     private MusicPlaybackSource() {}
 
@@ -37,15 +48,63 @@ public final class MusicPlaybackSource {
         return ADD_TAG != null && GET_TAGS != null && !TAGGING_FAILED.get();
     }
 
+    static boolean playerIdentityAvailable() {
+        return TRACK_ID != null && CONFIG_ID != null && !IDENTITY_FAILED.get();
+    }
+
+    static int register(AudioTrack track, String source) {
+        int id = playerId(TRACK_ID, track);
+        register(id, source);
+        return id;
+    }
+
+    static synchronized void register(int id, String source) {
+        if (!isKnownSource(source)) throw new IllegalArgumentException("unknown music source");
+        if (id <= 0) return;
+        PLAYERS.put(id, source);
+        RELEASED.remove(id);
+    }
+
+    static void released(AudioTrack track) {
+        if (track != null) released(playerId(TRACK_ID, track));
+    }
+
+    static synchronized void released(int id) {
+        String source = PLAYERS.remove(id);
+        if (source == null) return;
+        RELEASED.put(id, source);
+        // ponytail: last 64 retired players cover delayed callbacks; active players are never evicted.
+        if (RELEASED.size() > 64) RELEASED.remove(RELEASED.keySet().iterator().next());
+    }
+
     static boolean isEligibleForVisualization(
-            AudioAttributes attributes, boolean engineVisualizationEnabled) {
-        if (!sourceTagsAvailable()) return true;
-        Set<String> tags = tags(attributes);
-        if (tags == null) {
-            TAGGING_FAILED.set(true);
-            return true;
+            AudioPlaybackConfiguration configuration, boolean engineVisualizationEnabled) {
+        int id = playerId(CONFIG_ID, configuration);
+        Set<String> tags = sourceTagsAvailable() ? tags(configuration.getAudioAttributes()) : null;
+        if (tags == null) TAGGING_FAILED.set(true);
+        return isEligiblePlayer(id, tags, engineVisualizationEnabled);
+    }
+
+    static boolean isEligiblePlayer(int id, Set<String> tags, boolean engineVisualizationEnabled) {
+        String source = source(id);
+        return source == null ? tags == null || isEligibleTags(tags, engineVisualizationEnabled)
+                : ENGINE.equals(source) && engineVisualizationEnabled;
+    }
+
+    private static synchronized String source(int id) {
+        String source = PLAYERS.get(id);
+        return source != null ? source : RELEASED.get(id);
+    }
+
+    private static int playerId(Method getter, Object player) {
+        if (getter == null || player == null) return -1;
+        try {
+            int id = ((Number) getter.invoke(player)).intValue();
+            if (id > 0) return id;
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            IDENTITY_FAILED.set(true);
         }
-        return isEligibleTags(tags, engineVisualizationEnabled);
+        return -1;
     }
 
     static boolean isEligibleTags(Set<String> tags, boolean engineVisualizationEnabled) {

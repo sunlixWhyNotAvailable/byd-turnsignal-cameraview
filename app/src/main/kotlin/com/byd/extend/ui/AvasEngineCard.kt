@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -57,7 +58,7 @@ internal fun AvasEngineCard(
             ChoiceField("", packLabels, packIndex, {
                 send(AvasActionKind.SetEnginePack, packId = packIds.getOrNull(it)
                     ?: AvasEngineSettings.DEFAULT_PACK_ID)
-            }, colors, enabled = state.enabled, hudCompact = true)
+            }, colors, Modifier.height(40.dp), enabled = state.enabled, hudCompact = true)
 
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                 .background(colors.panelAlt).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp))

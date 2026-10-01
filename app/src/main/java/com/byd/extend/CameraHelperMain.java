@@ -180,6 +180,10 @@ final class CameraHelperMain {
                     engineVisualizationEnabled);
         }
 
+        void noteMusicForegroundPackage(String packageName) {
+            turnController.noteMusicForegroundPackage(packageName);
+        }
+
         boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode,
                 int action, int repeatCount, long downTime, long eventTime) {
             return turnController.dispatchMusicMediaKey(foregroundPackage, rawKeyCode,

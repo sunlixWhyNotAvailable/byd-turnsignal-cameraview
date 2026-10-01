@@ -295,6 +295,22 @@ final class TurnSignalController {
         });
     }
 
+    void noteMusicForegroundPackage(String packageName) {
+        worker.execute(() -> {
+            IBinder value = helper;
+            if (!healthy || value == null || !value.isBinderAlive()) return;
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                data.writeString(packageName);
+                requireTransact(value, TurnSignalShellProtocol.TX_MUSIC_FOREGROUND, data, reply);
+            } catch (Exception ignored) {
+                // An observation must not launch a helper or interrupt camera/guard work.
+            } finally { data.recycle(); reply.recycle(); }
+        });
+    }
+
     boolean dispatchMusicMediaKey(String foregroundPackage, int rawKeyCode, int action,
             int repeatCount, long downTime, long eventTime) {
         IBinder value = helper;

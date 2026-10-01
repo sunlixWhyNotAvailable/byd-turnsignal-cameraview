@@ -2,8 +2,10 @@ package com.byd.extend;
 
 import java.util.Arrays;
 
-/** Session-only conversion of signed motor values to road-speed-equivalent input. */
+/** Audio motion axis, not a measurement of road speed or a universal drivetrain ratio. */
 final class AvasEngineMotorMapping {
+    // Nominal sound tuning from the observed ~75 raw/kmh correlation. Valid pairs may refine it.
+    static final float NOMINAL_AUDIO_SCALE = 75.0f;
     private static final int WINDOW = 5;
     private static final int MIN_SAMPLES = 3;
     // ponytail: 10 km/h avoids near-stop ratios; lower it only with low-speed calibration evidence.
@@ -46,7 +48,7 @@ final class AvasEngineMotorMapping {
         }
 
         float rawPerKph() {
-            if (!usable()) return Float.NaN;
+            if (!usable()) return NOMINAL_AUDIO_SCALE;
             double[] sorted = Arrays.copyOf(ratios, count);
             Arrays.sort(sorted);
             int middle = count / 2;
@@ -56,7 +58,7 @@ final class AvasEngineMotorMapping {
         }
 
         float speedKph(int motorRaw, boolean motorValid) {
-            if (!motorValid || isKnownSdkError(motorRaw) || !usable()) return Float.NaN;
+            if (!motorValid || motorRaw == Integer.MIN_VALUE || isKnownSdkError(motorRaw)) return Float.NaN;
             return (float) (Math.abs((long) motorRaw) / (double) rawPerKph());
         }
     }

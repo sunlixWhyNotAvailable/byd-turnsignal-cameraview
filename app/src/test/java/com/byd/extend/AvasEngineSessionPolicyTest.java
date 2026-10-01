@@ -1,143 +1,109 @@
 package com.byd.extend;
 
 import org.junit.Test;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
+import static com.byd.extend.AvasEngineSessionPolicy.Action.*;
 
 public final class AvasEngineSessionPolicyTest {
-    @Test
-    public void baselineRestoresOnlyOnAndARealOnEdgeStarts() {
-        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
-        assertEquals(AvasEngineSessionPolicy.Action.NONE, policy.configure(true, true));
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OK, true));
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.START,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, false));
-        assertTrue(policy.desiredActive());
-
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ACC, false));
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_FAKE_OK, false));
-        assertTrue(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_WITH_TAIL,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, false));
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, false));
-        assertEquals(AvasEngineSessionPolicy.Action.START,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, false));
+    private AvasEngineSessionPolicy enabled() {
+        AvasEngineSessionPolicy p = new AvasEngineSessionPolicy();
+        p.configure(true, true);
+        return p;
     }
 
-    @Test
-    public void baselineAccOkAndFakeOkStaySilent() {
-        int[] powers = {AvasEngineSessionPolicy.POWER_ACC, AvasEngineSessionPolicy.POWER_OK,
-                AvasEngineSessionPolicy.POWER_FAKE_OK};
-        for (int power : powers) {
-            AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
-            policy.configure(true, true);
-            assertEquals(AvasEngineSessionPolicy.Action.NONE, policy.observePower(power, true));
-            assertFalse(policy.desiredActive());
+    @Test public void samePowerTwoStaysSilentUntilOkAppears() {
+        AvasEngineSessionPolicy p = enabled();
+        assertEquals(NONE, p.observePower(2, true));
+        assertEquals(NONE, p.observeReady(false));
+        assertFalse(p.desiredActive());
+        assertEquals(START, p.observeReady(true));
+        assertEquals(NONE, p.observeReady(true));
+        assertTrue(p.desiredActive());
+    }
+
+    @Test public void helperBaselineAndPlaybackRecoveryDoNotRepeatIgnition() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        assertEquals(RESTORE, p.observeReady(true));
+        p.playbackFailed();
+        assertEquals(RESTORE, p.observeReady(true));
+        p.observeReady(null);
+        p.playbackFailed();
+        assertEquals(NONE, p.configure(true, true));
+        assertEquals(RESTORE, p.observeReady(true));
+    }
+
+    @Test public void missingOkOrPowerDoesNotBecomeOffAndOnlyOffGetsTail() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(true);
+        assertEquals(NONE, p.observeReady(null));
+        assertEquals(NONE, p.observeReady(false));
+        assertEquals(NONE, p.observePower(255, false));
+        assertTrue(p.desiredActive());
+        assertEquals(STOP_WITH_TAIL, p.observePower(0, false));
+        assertEquals(NONE, p.observePower(0, false));
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(NONE, p.observePower(2, false));
+        assertEquals(START, p.observeReady(true));
+    }
+
+    @Test public void manualSuppressionSurvivesIndicatorsUntilOffOrManualStart() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(true);
+        assertEquals(STOP_NOW, p.manualStop());
+        p.observeReady(false);
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(START, p.manualStart());
+        p.manualStop();
+        p.observePower(0, false);
+        p.observePower(2, false);
+        assertEquals(START, p.observeReady(true));
+    }
+
+    @Test public void disablingOutputsRequiresFreshReadBeforeAutomaticRestore() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(2, true);
+        p.observeReady(true);
+        assertEquals(STOP_NOW, p.configure(true, false));
+        assertEquals(NONE, p.manualStart());
+        assertEquals(NONE, p.configure(true, true));
+        assertEquals(RESTORE, p.observeReady(true));
+    }
+
+    @Test public void repeatedOffDoesNotStopManualTestButNextOffEdgeDoes() {
+        AvasEngineSessionPolicy p = enabled();
+        p.observePower(0, true);
+        assertEquals(START, p.manualStart());
+        assertEquals(NONE, p.observePower(0, false));
+        p.observePower(1, false);
+        assertEquals(STOP_WITH_TAIL, p.observePower(0, false));
+    }
+
+    @Test public void okCannotStartWithoutKnownPowerAndPowerCannotStartWithoutOk() {
+        AvasEngineSessionPolicy p = enabled();
+        assertEquals(NONE, p.observeReady(true));
+        assertEquals(NONE, p.observePower(255, true));
+        assertEquals(RESTORE, p.observePower(2, true));
+        for (int raw = 1; raw <= 4; raw++) {
+            AvasEngineSessionPolicy other = enabled();
+            assertEquals(NONE, other.observePower(raw, true));
+            assertFalse(other.desiredActive());
         }
     }
 
-    @Test
-    public void initialAndRecoveredPowerTwoRestoreWithoutIgnition() {
-        AvasEngineSessionPolicy baseline = new AvasEngineSessionPolicy();
-        baseline.configure(true, true);
-        assertEquals(AvasEngineSessionPolicy.Action.RESTORE,
-                baseline.observePower(AvasEngineSessionPolicy.POWER_ON, true));
-
-        AvasEngineSessionPolicy recovery = new AvasEngineSessionPolicy();
-        recovery.configure(true, true);
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                recovery.observePower(AvasEngineSessionPolicy.POWER_ACC, true));
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                recovery.observePower(AvasEngineSessionPolicy.POWER_INVALID, false));
-        assertFalse(recovery.hasValidPower());
-        assertEquals(AvasEngineSessionPolicy.Action.RESTORE,
-                recovery.observePower(AvasEngineSessionPolicy.POWER_ON, false));
-        assertEquals(AvasEngineSessionPolicy.POWER_ON, recovery.rawPower());
-        assertEquals(AvasEngineSessionPolicy.POWER_ON, recovery.lastValidPower());
-    }
-
-    @Test
-    public void offReconciliationFinishesWithTailAndUnknownPowerCannotRestoreStaleOn() {
-        AvasEngineSessionPolicy active = new AvasEngineSessionPolicy();
-        active.configure(true, true);
-        active.observePower(AvasEngineSessionPolicy.POWER_ON, true);
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_WITH_TAIL,
-                active.observePower(AvasEngineSessionPolicy.POWER_OFF, true));
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                active.observePower(AvasEngineSessionPolicy.POWER_OFF, true));
-
-        AvasEngineSessionPolicy unknown = new AvasEngineSessionPolicy();
-        unknown.configure(true, true);
-        unknown.observePower(AvasEngineSessionPolicy.POWER_ON, true);
-        unknown.playbackFailed();
-        unknown.observePower(AvasEngineSessionPolicy.POWER_INVALID, false);
-        assertEquals(AvasEngineSessionPolicy.Action.NONE, unknown.configure(true, true));
-        assertFalse(unknown.desiredActive());
-    }
-
-    @Test
-    public void manualStopSuppressesUntilOffAndManualStartOverridesIt() {
-        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
-        policy.configure(true, true);
-        policy.observePower(AvasEngineSessionPolicy.POWER_ACC, true);
-        assertEquals(AvasEngineSessionPolicy.Action.START,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, false));
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_NOW, policy.manualStop());
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ACC, false));
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, false));
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, false));
-        assertEquals(AvasEngineSessionPolicy.Action.START,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, false));
-
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_NOW, policy.manualStop());
-        assertEquals(AvasEngineSessionPolicy.Action.START, policy.manualStart());
-        assertTrue(policy.desiredActive());
-    }
-
-    @Test
-    public void repeatedOffDoesNotStopManualStartButNextOffEdgeDoes() {
-        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
-        policy.configure(true, true);
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, true));
-        assertEquals(AvasEngineSessionPolicy.Action.START, policy.manualStart());
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, false));
-        assertTrue(policy.desiredActive());
-
-        assertEquals(AvasEngineSessionPolicy.Action.NONE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ACC, false));
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_WITH_TAIL,
-                policy.observePower(AvasEngineSessionPolicy.POWER_OFF, false));
-        assertFalse(policy.desiredActive());
-    }
-
-    @Test
-    public void failedPlaybackCanBeSilentlyRestoredAndUnavailableOutputsFailClosed() {
-        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
-        policy.configure(true, true);
-        assertEquals(AvasEngineSessionPolicy.Action.RESTORE,
-                policy.observePower(AvasEngineSessionPolicy.POWER_ON, true));
-        policy.playbackFailed();
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.RESTORE, policy.manualStart());
-
-        assertEquals(AvasEngineSessionPolicy.Action.STOP_NOW,
-                policy.configure(true, false));
-        assertFalse(policy.desiredActive());
-        assertEquals(AvasEngineSessionPolicy.Action.NONE, policy.manualStart());
+    @Test public void separateIndicatorEnumsPreserveUnknowns() {
+        assertEquals(Boolean.TRUE, AvasEngineReadyMonitor.decode(1, false));
+        assertEquals(Boolean.FALSE, AvasEngineReadyMonitor.decode(2, false));
+        assertNull(AvasEngineReadyMonitor.decode(0, false));
+        assertEquals(Boolean.TRUE, AvasEngineReadyMonitor.decode(1, true));
+        assertEquals(Boolean.FALSE, AvasEngineReadyMonitor.decode(0, true));
+        assertNull(AvasEngineReadyMonitor.decode(2, true));
+        for (int raw : new int[]{3, 4, 5, 6, 7, 255, -10011}) {
+            assertNull(AvasEngineReadyMonitor.decode(raw, false));
+            assertNull(AvasEngineReadyMonitor.decode(raw, true));
+        }
+        assertNull(AvasEngineReadyMonitor.decode(null, false));
     }
 }

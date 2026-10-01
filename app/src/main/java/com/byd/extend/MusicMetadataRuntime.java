@@ -3,6 +3,12 @@ package com.byd.extend;
 import android.annotation.SuppressLint;
 import android.app.ActivityManager;
 import android.content.Context;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.media.AudioManager;
 import android.media.MediaDescription;
 import android.media.MediaMetadata;
@@ -88,6 +94,7 @@ final class MusicMetadataRuntime {
     });
     private final Map<MediaSession.Token, SessionBinding> sessions = new HashMap<>();
     private final Map<Integer, PendingMediaKey> pendingMediaKeys = new HashMap<>();
+    private final MusicMediaKeyPolicy.Selection mediaSelection = new MusicMediaKeyPolicy.Selection();
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionListener;
     private final Runnable publishRunnable = this::publishSelectedSession;
     private final Runnable progressRunnable = this::refreshPlayingProgress;
@@ -154,10 +161,88 @@ final class MusicMetadataRuntime {
         runOnHandler(() -> {
             if (captureFocusOnOpen == value) return;
             captureFocusOnOpen = value;
-            if (!value) releaseAllMediaKeys("capture_disabled");
+            if (!value) {
+                releaseAllMediaKeys("capture_disabled");
+                mediaSelection.clear();
+            }
             emit("music_media_key_config", "capture_focus_on_open", value,
                     "enabled", enabled, "awake", awake);
         });
+    }
+
+    void noteForegroundPackage(String packageName) {
+        runOnHandler(() -> {
+            mediaSelection.opened(packageName, false);
+            if (!enabled || !captureFocusOnOpen || !awake || !observersStarted) return;
+            refreshSessions("player_open");
+            considerOpenedPlayer();
+        });
+    }
+
+    private void considerOpenedPlayer() {
+        if (!enabled || !captureFocusOnOpen || !awake) return;
+        String candidate = mediaSelection.foreground;
+        if (!MusicMediaKeyPolicy.isValidPackage(candidate)) return;
+        String previous = mediaSelection.player;
+        boolean capable = controlSession(candidate, 0) != null
+                || isLiveMediaProcess(candidate, true) && mediaReceiver(candidate) != null;
+        mediaSelection.opened(candidate, capable);
+        if (!previous.equals(mediaSelection.player)) {
+            emit("music_media_target", "package", mediaSelection.player, "previous", previous);
+        }
+    }
+
+    private SessionBinding controlSession(String packageName, int keyCode) {
+        SessionBinding best = null;
+        for (SessionBinding binding : sessions.values()) {
+            if (binding.destroyed || !binding.packageName.equals(packageName)) continue;
+            try { binding.playbackState = binding.controller.getPlaybackState(); }
+            catch (RuntimeException dead) { continue; }
+            PlaybackState state = binding.playbackState;
+            long actions = state == null ? 0 : state.getActions();
+            if (!MusicMediaKeyPolicy.isPlayer(actions)
+                    || keyCode != 0 && !MusicMediaKeyPolicy.supports(actions, keyCode)) continue;
+            if (best == null || binding.score() > best.score()) best = binding;
+        }
+        return best;
+    }
+
+    private ComponentName mediaReceiver(String packageName) {
+        if (!MusicMediaKeyPolicy.isValidPackage(packageName)) return null;
+        try {
+            PackageManager pm = context.getPackageManager();
+            if ((pm.getApplicationInfo(packageName, 0).flags & ApplicationInfo.FLAG_STOPPED) != 0) return null;
+            List<ResolveInfo> receivers = pm.queryBroadcastReceivers(
+                    new Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(packageName), 0);
+            ComponentName selected = null;
+            for (ResolveInfo resolved : receivers) {
+                ActivityInfo info = resolved.activityInfo;
+                if (info == null || !packageName.equals(info.packageName) || !info.exported
+                        || !info.enabled || !info.applicationInfo.enabled) continue;
+                if (info.permission != null && context.checkSelfPermission(info.permission)
+                        != PackageManager.PERMISSION_GRANTED) continue;
+                if (selected != null) return null; // Ambiguous endpoints must not receive duplicate commands.
+                selected = new ComponentName(info.packageName, info.name);
+            }
+            return selected;
+        } catch (RuntimeException | PackageManager.NameNotFoundException ignored) { return null; }
+    }
+
+    private boolean isLiveMediaProcess(String packageName, boolean requireForeground) {
+        if (activityManager == null || !MusicMediaKeyPolicy.isValidPackage(packageName)) return false;
+        try {
+            if ((context.getPackageManager().getApplicationInfo(packageName, 0).flags
+                    & ApplicationInfo.FLAG_STOPPED) != 0) return false;
+            List<ActivityManager.RunningAppProcessInfo> processes = activityManager.getRunningAppProcesses();
+            if (processes == null) return false;
+            for (ActivityManager.RunningAppProcessInfo process : processes) {
+                if (process == null || requireForeground && process.importance
+                        > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) continue;
+                if (packageName.equals(process.processName)) return true;
+                if (process.pkgList != null && Arrays.asList(process.pkgList).contains(packageName)) return true;
+            }
+        } catch (RuntimeException | PackageManager.NameNotFoundException ignored) {}
+        return false;
     }
 
     boolean dispatchMediaKey(String foregroundPackage, int rawKeyCode, int action,
@@ -200,13 +285,13 @@ final class MusicMetadataRuntime {
             if (action == android.view.KeyEvent.ACTION_UP) {
                 if (pending == null || pending.downTime != downTime) return false;
                 pendingMediaKeys.remove(keyCode);
-                dispatchMediaKey(pending.binding, keyCode,
+                dispatchPendingMediaKey(pending,
                         android.view.KeyEvent.ACTION_UP, 0, downTime, eventTime);
                 return true;
             }
             if (repeatCount > 0) {
                 if (pending == null || pending.downTime != downTime) return false;
-                dispatchMediaKey(pending.binding, keyCode,
+                dispatchPendingMediaKey(pending,
                         android.view.KeyEvent.ACTION_DOWN, repeatCount, downTime, eventTime);
                 return true;
             }
@@ -214,17 +299,58 @@ final class MusicMetadataRuntime {
                 pendingMediaKeys.remove(keyCode);
                 releaseMediaKey(pending, eventTime);
             }
-            if (!enabled || !captureFocusOnOpen || !awake || !observersStarted) return false;
-            SessionBinding target = selectSession(sessions.values(), foregroundPackage);
-            if (target == null || target.destroyed) return false;
-            if (!dispatchMediaKey(target, keyCode,
-                    android.view.KeyEvent.ACTION_DOWN, 0, downTime, eventTime)) return false;
-            pendingMediaKeys.put(keyCode, new PendingMediaKey(target, keyCode, downTime));
-            return true;
+            if (!enabled || !captureFocusOnOpen || !awake || !observersStarted) {
+                return mediaKeyDecision(rawKeyCode, false, "disabled_or_unavailable");
+            }
+            mediaSelection.opened(foregroundPackage, false);
+            considerOpenedPlayer();
+            SessionBinding target = controlSession(mediaSelection.player, keyCode);
+            if (mediaSelection.needsSessionRefresh(target != null)) {
+                refreshSessions("media_key");
+                considerOpenedPlayer();
+                target = controlSession(mediaSelection.player, keyCode);
+            }
+            String packageName = mediaSelection.player;
+            if (!isLiveMediaProcess(packageName, false)) {
+                return mediaKeyDecision(rawKeyCode, false, "player_closed_or_unavailable");
+            }
+            ComponentName receiver = null;
+            if (target == null && controlSession(packageName, 0) == null
+                    && mediaSelection.mayUseReceiver(packageName,
+                            isLiveMediaProcess(packageName, true), false)) {
+                receiver = mediaReceiver(packageName);
+            }
+            if (target == null && receiver == null) {
+                return mediaKeyDecision(rawKeyCode, false, "no_supported_endpoint");
+            }
+            PendingMediaKey selected = new PendingMediaKey(target, receiver, packageName, keyCode, downTime);
+            if (!dispatchPendingMediaKey(selected, android.view.KeyEvent.ACTION_DOWN, 0, downTime, eventTime)) {
+                return mediaKeyDecision(rawKeyCode, false, "dispatch_rejected");
+            }
+            pendingMediaKeys.put(keyCode, selected);
+            return mediaKeyDecision(rawKeyCode, true, target == null ? "receiver" : "session");
         } catch (Throwable failure) {
-            setError("media_key_dispatch: " + summary(failure), "media_key");
-            return false;
+            return mediaKeyDecision(rawKeyCode, false, "dispatch_error:" + summary(failure));
         }
+    }
+
+    private boolean mediaKeyDecision(int key, boolean handled, String reason) {
+        emit("music_media_key_route", "raw_key", key, "handled", handled, "reason", reason,
+                "foreground", mediaSelection.foreground, "target", mediaSelection.player);
+        return handled;
+    }
+
+    private boolean dispatchPendingMediaKey(PendingMediaKey pending, int action, int repeats,
+            long downTime, long eventTime) {
+        if (pending.binding != null) return dispatchMediaKey(pending.binding, pending.keyCode,
+                action, repeats, downTime, eventTime);
+        if (pending.receiver == null || !isLiveMediaProcess(pending.packageName, false)) return false;
+        try {
+            context.sendBroadcast(new Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(pending.receiver)
+                    .putExtra(Intent.EXTRA_KEY_EVENT, new android.view.KeyEvent(
+                            downTime, eventTime, action, pending.keyCode, repeats)));
+            return true;
+        } catch (RuntimeException unavailable) { return false; }
     }
 
     private static boolean dispatchMediaKey(SessionBinding binding, int keyCode,
@@ -239,7 +365,7 @@ final class MusicMetadataRuntime {
     }
 
     private void releaseMediaKey(PendingMediaKey pending, long eventTime) {
-        dispatchMediaKey(pending.binding, pending.keyCode,
+        dispatchPendingMediaKey(pending,
                 android.view.KeyEvent.ACTION_UP, 0, pending.downTime,
                 Math.max(pending.downTime, eventTime));
     }
@@ -266,7 +392,7 @@ final class MusicMetadataRuntime {
             pendingMediaKeys.remove(entry.getKey());
             releaseMediaKey(pending, now);
             emit("music_media_key_released", "key_code", entry.getKey(),
-                    "reason", reason, "target_package", pending.binding.packageName);
+                    "reason", reason, "target_package", pending.packageName);
         }
     }
 
@@ -382,6 +508,7 @@ final class MusicMetadataRuntime {
             binding.unregister();
         }
         sessions.clear();
+        mediaSelection.clear();
         sessionManager = null;
         currentFocusPackage = null;
         queuedWrite = null;
@@ -434,6 +561,7 @@ final class MusicMetadataRuntime {
             }
             if (progressSession == removed) cancelProgressRefresh();
         }
+        considerOpenedPlayer();
         schedulePublish(reason, false);
     }
 
@@ -981,11 +1109,16 @@ final class MusicMetadataRuntime {
 
     private final class PendingMediaKey {
         final SessionBinding binding;
+        final ComponentName receiver;
+        final String packageName;
         final int keyCode;
         final long downTime;
 
-        PendingMediaKey(SessionBinding binding, int keyCode, long downTime) {
+        PendingMediaKey(SessionBinding binding, ComponentName receiver, String packageName,
+                int keyCode, long downTime) {
             this.binding = binding;
+            this.receiver = receiver;
+            this.packageName = packageName;
             this.keyCode = keyCode;
             this.downTime = downTime;
         }
@@ -1067,6 +1200,7 @@ final class MusicMetadataRuntime {
         @Override
         public void onPlaybackStateChanged(PlaybackState state) {
             playbackState = state;
+            considerOpenedPlayer();
             if (state == null || state.getState() != PlaybackState.STATE_PLAYING) {
                 cancelProgressRefresh();
             }

@@ -147,6 +147,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (output.getState() != AudioTrack.STATE_INITIALIZED) {
                 throw new IllegalStateException("AudioTrack not initialized");
             }
+            registerPlaybackSource(output, MusicPlaybackSource.EVENT);
             event(diagnostics, "avas_track_state", "phase", "created", "state",
                     safeTrackState(output), "play_state", safePlayState(output),
                     "buffer_bytes", bufferBytes, "transfer_mode", "stream",
@@ -332,6 +333,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (output.getState() != AudioTrack.STATE_INITIALIZED) {
                 throw new IllegalStateException("Microphone AudioTrack not initialized");
             }
+            registerPlaybackSource(output, MusicPlaybackSource.MICROPHONE);
             synchronized (trackLock) {
                 if (stopped.getAsBoolean()) return;
                 activeMicrophoneTrack = output;
@@ -430,6 +432,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                 activeMicrophoneTrack.flush();
             } catch (Exception ignored) {
             }
+            MusicPlaybackSource.released(activeMicrophoneTrack);
             try { activeMicrophoneTrack.release(); } catch (Exception ignored) {}
         }
     }
@@ -588,6 +591,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                 if (track.getState() != AudioTrack.STATE_INITIALIZED) {
                     throw new IOException("Engine AudioTrack not initialized");
                 }
+                registerPlaybackSource(track, MusicPlaybackSource.ENGINE);
                 if (exterior) {
                     gain = new ExteriorGain(track, currentVolume, clamp(initialVolume), null);
                     gain.prepare();
@@ -805,8 +809,9 @@ final class AvasAudioPlayer implements AutoCloseable {
             event(diagnostics, "avas_audio_preparation", "preparation_t_ms",
                     SystemClock.elapsedRealtime(), "route", "navigation",
                     "silence_planned_frames", 0);
-            AudioAttributes attributes = new AudioAttributes.Builder()
-                    .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS).build();
+            AudioAttributes attributes = MusicPlaybackSource.attributes(new AudioAttributes.Builder()
+                    .setLegacyStreamType(NAV_STREAM).setFlags(REQUESTED_ROUTE_FLAGS),
+                    MusicPlaybackSource.EVENT).build();
             IntConsumer focusCallback = AvasAudioDiagnostics.bind(diagnostics,
                     (captured, change) -> event(captured, "avas_focus_change", "value", change));
             focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
@@ -842,6 +847,7 @@ final class AvasAudioPlayer implements AutoCloseable {
             if (output.getState() != AudioTrack.STATE_INITIALIZED) {
                 throw new IllegalStateException("AudioTrack not initialized");
             }
+            registerPlaybackSource(output, MusicPlaybackSource.EVENT);
             event(diagnostics, "avas_track_state", "phase", "created", "state",
                     safeTrackState(output), "play_state", safePlayState(output),
                     "buffer_bytes", bufferBytes);
@@ -979,6 +985,7 @@ final class AvasAudioPlayer implements AutoCloseable {
                 try {
                     activeMicrophoneTrack.pause();
                     activeMicrophoneTrack.flush();
+                    MusicPlaybackSource.released(activeMicrophoneTrack);
                     activeMicrophoneTrack.release();
                 } catch (Exception ignored) {
                 }
@@ -1285,6 +1292,7 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     private static void release(AudioTrack output, boolean exterior) {
         if (output == null) return;
+        MusicPlaybackSource.released(output);
         try {
             if (exterior) {
                 output.stop();
@@ -1298,6 +1306,12 @@ final class AvasAudioPlayer implements AutoCloseable {
             output.release();
         } catch (Exception ignored) {
         }
+    }
+
+    private void registerPlaybackSource(AudioTrack track, String source) {
+        int id = MusicPlaybackSource.register(track, source);
+        event("avas_playback_source", "source", source, "player_id", id,
+                "identity_registered", id > 0);
     }
 
     private void event(String kind, Object... fields) {

@@ -17,6 +17,8 @@ public final class AvasTelemetryControllerTest {
         rig.sink.engine.configure(true, true);
         rig.transport.snapshots.add(snapshot(2, 2));
         rig.activate();
+        assertFalse(rig.sink.engine.desiredActive());
+        rig.sink.engine.observeReady(true);
         assertTrue(rig.sink.engine.desiredActive());
         rig.sink.engine.configure(false, true);
         rig.controller.deactivate();
@@ -29,6 +31,8 @@ public final class AvasTelemetryControllerTest {
         assertFalse(rig.sink.engine.desiredActive());
         rig.transport.emitPower(2, 100);
         rig.runAll();
+        assertFalse(rig.sink.engine.desiredActive());
+        rig.sink.engine.observeReady(true);
         assertTrue(rig.sink.engine.desiredActive());
     }
 

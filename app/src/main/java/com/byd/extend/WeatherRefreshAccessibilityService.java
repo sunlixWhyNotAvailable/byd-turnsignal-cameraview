@@ -230,7 +230,11 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             CharSequence packageName = event.getPackageName();
             String value = packageName == null ? "" : packageName.toString();
-            foregroundPackage = MusicMediaKeyPolicy.isValidPackage(value) ? value : "";
+            String next = MusicMediaKeyPolicy.isValidPackage(value) ? value : "";
+            if (!next.equals(foregroundPackage)) {
+                foregroundPackage = next;
+                CameraHelperService.noteMusicForegroundPackage(next);
+            }
             return;
         }
         if (event.getEventType() != AccessibilityEvent.TYPE_VIEW_CLICKED
@@ -269,17 +273,31 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                 event.isCanceled(), event.getDownTime(), event.getEventTime(),
                 SystemClock.uptimeMillis(), currentAssignments(preferences));
         syncSteeringTimeout();
-        if (dispatchSteeringResult(result, preferences)) return true;
+        if (dispatchSteeringResult(result, preferences)) {
+            logInitialMediaKey(event, "camera_assignment_or_learning");
+            return true;
+        }
         if (!MusicMediaKeyPolicy.shouldRouteInitialDown(
                 preferences.getBoolean("music_visualizer_enabled", false),
                 preferences.getBoolean("music_capture_focus_on_open", true),
                 steeringGestures.isLearning(), result.consumed,
-                event.getKeyCode(), event.getAction(), event.getRepeatCount())) return false;
+                event.getKeyCode(), event.getAction(), event.getRepeatCount())) {
+            logInitialMediaKey(event, "disabled_or_ineligible");
+            return false;
+        }
+        logInitialMediaKey(event, "helper_dispatch");
         if (!CameraHelperService.dispatchMusicMediaKey(
                 foregroundPackage, event.getKeyCode(), event.getAction(),
                 event.getRepeatCount(), event.getDownTime(), event.getEventTime())) return false;
         routedMusicKeys.begin(event.getKeyCode(), event.getDownTime());
         return true;
+    }
+
+    private void logInitialMediaKey(KeyEvent event, String reason) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
+                && MusicMediaKeyPolicy.isMediaKey(event.getKeyCode())) {
+            CameraHelperService.logMusicKeyDecision(event.getKeyCode(), reason, foregroundPackage);
+        }
     }
 
     private boolean dispatchRoutedMusicKeyTail(KeyEvent event) {

@@ -1,6 +1,7 @@
 package com.byd.extend;
 
 import android.view.KeyEvent;
+import android.media.session.PlaybackState;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -54,8 +55,48 @@ final class MusicMediaKeyPolicy {
                 || repeats < 0 || repeats > MAX_REPEAT_COUNT
                 || downTime < 0 || eventTime < downTime
                 || eventTime - downTime > MAX_KEY_HOLD_MS) return false;
-        return action == KeyEvent.ACTION_UP && (foregroundPackage == null
-                || foregroundPackage.isEmpty()) || isValidPackage(foregroundPackage);
+        return foregroundPackage != null && (foregroundPackage.isEmpty()
+                || isValidPackage(foregroundPackage));
+    }
+
+    static boolean isPlayer(long actions) {
+        return (actions & (PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE)) != 0;
+    }
+
+    static boolean supports(long actions, int rawKeyCode) {
+        switch (standardKeyCode(rawKeyCode)) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE: return isPlayer(actions);
+            case KeyEvent.KEYCODE_MEDIA_PLAY: return (actions & PlaybackState.ACTION_PLAY) != 0;
+            case KeyEvent.KEYCODE_MEDIA_PAUSE: return (actions & PlaybackState.ACTION_PAUSE) != 0;
+            case KeyEvent.KEYCODE_MEDIA_NEXT: return (actions & PlaybackState.ACTION_SKIP_TO_NEXT) != 0;
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS: return (actions & PlaybackState.ACTION_SKIP_TO_PREVIOUS) != 0;
+            case KeyEvent.KEYCODE_MEDIA_STOP: return (actions & PlaybackState.ACTION_STOP) != 0;
+            case KeyEvent.KEYCODE_MEDIA_REWIND: return (actions & PlaybackState.ACTION_REWIND) != 0;
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return (actions & PlaybackState.ACTION_FAST_FORWARD) != 0;
+            default: return false;
+        }
+    }
+
+    static final class Selection {
+        String foreground = "";
+        String player = "";
+
+        void opened(String packageName, boolean capable) {
+            foreground = packageName == null ? "" : packageName;
+            if (capable && isValidPackage(foreground)) player = foreground;
+        }
+
+        void clear() { foreground = ""; player = ""; }
+
+        boolean needsSessionRefresh(boolean hasUsableSession) {
+            return !hasUsableSession || !foreground.equals(player);
+        }
+
+        boolean mayUseReceiver(String packageName, boolean foregroundProcess, boolean stopped) {
+            return !stopped && foregroundProcess && isValidPackage(packageName)
+                    && packageName.equals(player) && packageName.equals(foreground);
+        }
     }
 
     static boolean isValidPackage(String packageName) {

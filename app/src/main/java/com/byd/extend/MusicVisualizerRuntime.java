@@ -42,7 +42,7 @@ final class MusicVisualizerRuntime {
     private boolean stopRetryExhausted;
     private int stopRetryAttempts;
     private String error = "";
-    private Boolean lastSourceTagsAvailable;
+    private String lastSourceFilterStatus = "";
 
     MusicVisualizerRuntime(
             Context context, Handler handler, BiConsumer<String, Object[]> eventSink) {
@@ -72,6 +72,10 @@ final class MusicVisualizerRuntime {
 
     void configure(boolean value, boolean captureFocus, boolean engineVisualization) {
         runOnHandler(() -> configureOnHandler(value, captureFocus, engineVisualization));
+    }
+
+    void noteForegroundPackage(String packageName) {
+        metadataRuntime.noteForegroundPackage(packageName);
     }
 
     boolean dispatchMediaKey(String foregroundPackage, int rawKeyCode, int action,
@@ -416,7 +420,7 @@ final class MusicVisualizerRuntime {
             AudioAttributes attributes = configuration.getAudioAttributes();
             if (attributes != null
                     && MusicPlaybackSource.isEligibleForVisualization(
-                            attributes, engineVisualizationEnabled)
+                            configuration, engineVisualizationEnabled)
                     && isMediaPlayback(isActive(configuration),
                             attributes.getUsage(), attributes.getContentType())) return true;
         }
@@ -424,11 +428,14 @@ final class MusicVisualizerRuntime {
     }
 
     private void reportSourceTagCapability(String reason) {
-        boolean available = MusicPlaybackSource.sourceTagsAvailable();
-        if (lastSourceTagsAvailable != null && lastSourceTagsAvailable == available) return;
-        lastSourceTagsAvailable = available;
-        emit("music_source_filter_status", "available", available,
-                "classification", available ? "source_tags" : "unfiltered_mix",
+        boolean identity = MusicPlaybackSource.playerIdentityAvailable();
+        boolean tags = MusicPlaybackSource.sourceTagsAvailable();
+        String status = identity + ":" + tags;
+        if (lastSourceFilterStatus.equals(status)) return;
+        lastSourceFilterStatus = status;
+        emit("music_source_filter_status", "available", identity,
+                "classification", identity ? "owned_player_id" : "source_tags_unverified",
+                "tag_api_available", tags,
                 "source_event", reason,
                 "engine_visualization_enabled", engineVisualizationEnabled);
     }

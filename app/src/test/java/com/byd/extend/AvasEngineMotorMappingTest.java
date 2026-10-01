@@ -7,14 +7,14 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public final class AvasEngineMotorMappingTest {
-    @Test public void roadSpeedIsFallbackUntilOneSignedMotorHasMedianCalibration() {
+    @Test public void signedMotorWorksBeforeCalibrationAndValidPairsRefineScale() {
         AvasEngineMotorMapping.Scale front = new AvasEngineMotorMapping.Scale();
         AvasEngineMotorMapping.Scale rear = new AvasEngineMotorMapping.Scale();
 
         AvasEngineMotorMapping.Motion motion = AvasEngineMotorMapping.select(
                 42, true, -1_100, true, front, Integer.MIN_VALUE, false, rear);
-        assertEquals("speed", motion.source);
-        assertEquals(42, motion.speedKph, 0.001f);
+        assertEquals("motor_front", motion.source);
+        assertEquals(1_100f / 75, motion.speedKph, 0.001f);
 
         observe(front, 1, 50, -2_500, 100);
         observe(front, 2, 50, -3_000, 200);
@@ -54,7 +54,7 @@ public final class AvasEngineMotorMappingTest {
         assertEquals(1, scale.sampleCount());
         scale.observe(0, true, 6_000, 3, 0, true, 6_000, 3);
         assertEquals(1, scale.sampleCount());
-        assertTrue(Float.isNaN(scale.rawPerKph()));
+        assertEquals(75, scale.rawPerKph(), 0.001f);
 
         assertEquals(1141899272, AvasEngineTelemetry.motorFids(true)[0]);
         assertEquals(621805576, AvasEngineTelemetry.motorFids(true)[1]);
@@ -89,6 +89,28 @@ public final class AvasEngineMotorMappingTest {
                 new AvasEngineMotorMapping.Scale());
         assertEquals("motor_front", negative.source);
         assertEquals(20, negative.speedKph, 0.001f);
+    }
+
+    @Test public void invalidRoadSpeedCannotFreezeMovingOrCoastingEngineAtIdle() {
+        AvasEngineMotorMapping.Scale front = new AvasEngineMotorMapping.Scale();
+        AvasEngineMotorMapping.Scale rear = new AvasEngineMotorMapping.Scale();
+        AvasEngineMotorMapping.Motion motion = AvasEngineMotorMapping.select(
+                32, false, 1_200, true, front, -2_400, true, rear);
+        assertEquals("motor_rear", motion.source);
+        assertEquals(32, motion.speedKph, 0.001f);
+        AvasEngineModel model = new AvasEngineModel(900, 6000);
+        AvasEngineModel.State state = model.update(0, motion.speedKph, true,
+                0, true, 0, true, 4, true);
+        assertTrue(state.valid);
+        assertTrue(state.rpm > 900);
+        assertEquals(0, state.load, 0.001f);
+        motion = AvasEngineMotorMapping.select(Float.NaN, false, Integer.MIN_VALUE,
+                false, front, -750, true, rear);
+        assertEquals(10, motion.speedKph, 0.001f);
+        assertEquals("motor_rear", motion.source);
+        motion = AvasEngineMotorMapping.select(20, true, Integer.MIN_VALUE, false,
+                front, -2_147_482_648, true, rear);
+        assertEquals("speed", motion.source);
     }
 
     private static void observe(AvasEngineMotorMapping.Scale scale, long revision,
