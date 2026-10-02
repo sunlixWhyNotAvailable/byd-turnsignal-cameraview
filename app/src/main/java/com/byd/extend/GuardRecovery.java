@@ -4,7 +4,9 @@ import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.util.Log;
 
 final class GuardRecovery {
@@ -15,6 +17,8 @@ final class GuardRecovery {
             "com.byd.extend.action.SHELL_RECOVERY";
     static final String KEY_AUTO_START = "auto_start_enabled";
     static final String KEY_USER_SHUTDOWN = "user_shutdown_active";
+    private static final String KEY_ACTIVE_BOOT = "active_boot_count";
+    private static Integer processBootCount;
     private static final long WATCHDOG_MS = 60_000;
     private static final long RECOVERY_SOON_MS = 5_000;
     private static final long STALE_MS = 90_000;
@@ -93,11 +97,57 @@ final class GuardRecovery {
     }
 
     static boolean shouldRecover(Context context) {
-        return shouldRecover(isAutoStartEnabled(context), isUserShutdownActive(context));
+        return shouldRecover(isAutoStartEnabled(context), isUserShutdownActive(context),
+                hasActiveSession(context));
     }
 
     static boolean shouldRecover(boolean autoStart, boolean userShutdown) {
-        return autoStart && !userShutdown;
+        return shouldRecover(autoStart, userShutdown, false);
+    }
+
+    static boolean shouldRecover(boolean autoStart, boolean userShutdown, boolean activeSession) {
+        return !userShutdown && (autoStart || activeSession);
+    }
+
+    static boolean hasActiveSession(Context context) {
+        return hasActiveSession(sessionPreferences(context), bootCount(context));
+    }
+
+    static boolean hasActiveSession(SharedPreferences session, int bootCount) {
+        return bootCount >= 0 && session.getInt(KEY_ACTIVE_BOOT, -1) == bootCount;
+    }
+
+    static void sessionStarted(Context context) {
+        if (!isUserShutdownActive(context)) {
+            setSessionActive(sessionPreferences(context), bootCount(context), true);
+        }
+    }
+
+    static void setSessionActive(SharedPreferences session, int bootCount, boolean active) {
+        if (active && bootCount >= 0) {
+            if (!hasActiveSession(session, bootCount)) {
+                session.edit().putInt(KEY_ACTIVE_BOOT, bootCount).commit();
+            }
+        } else if (session.contains(KEY_ACTIVE_BOOT)) {
+            session.edit().remove(KEY_ACTIVE_BOOT).commit();
+        }
+    }
+
+    private static SharedPreferences sessionPreferences(Context context) {
+        // Session state is not a user setting and must never travel in an imported preset.
+        return context.getSharedPreferences("runtime_recovery", Context.MODE_PRIVATE);
+    }
+
+    private static synchronized int bootCount(Context context) {
+        if (processBootCount == null) {
+            try {
+                processBootCount = Settings.Global.getInt(
+                        context.getContentResolver(), Settings.Global.BOOT_COUNT, -1);
+            } catch (RuntimeException ignored) {
+                processBootCount = -1;
+            }
+        }
+        return processBootCount;
     }
 
     static boolean shouldAttemptWatchdogRecovery(
@@ -114,6 +164,7 @@ final class GuardRecovery {
     static void setUserShutdownActive(Context context, boolean active) {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
                 .putBoolean(KEY_USER_SHUTDOWN, active).commit();
+        setSessionActive(sessionPreferences(context), bootCount(context), !active);
         schedule(context);
     }
 

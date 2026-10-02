@@ -846,7 +846,9 @@ public final class CameraHelperService extends Service {
         boolean targetUserShutdown = ACTION_ACTIVITY_OPEN.equals(action)
                 ? false : ACTION_SHUTDOWN.equals(action)
                 ? true : GuardRecovery.isUserShutdownActive(this);
-        boolean willRecover = GuardRecovery.shouldRecover(targetAutoStart, targetUserShutdown);
+        boolean willRecover = GuardRecovery.shouldRecover(targetAutoStart, targetUserShutdown,
+                helperRuntimeStarted || ACTION_ACTIVITY_OPEN.equals(action)
+                        || GuardRecovery.hasActiveSession(this));
         boolean manualRuntime = !targetUserShutdown
                 && (activityVisible || ACTION_ACTIVITY_OPEN.equals(action));
         if ((willRecover || helperRuntimeStarted || manualRuntime) && !blocked) {
@@ -1371,7 +1373,6 @@ public final class CameraHelperService extends Service {
             if (GuardRecovery.shouldRecover(this)
                     && !LegacySettingsImporter.blocksRuntime(this)) {
                 GuardRecovery.scheduleSoon(this);
-                startPersistent(this, "task_removed");
             }
         });
         super.onTaskRemoved(rootIntent);
@@ -1451,6 +1452,7 @@ public final class CameraHelperService extends Service {
         if (LegacySettingsImporter.blocksRuntime(this)) return;
         ensureHelperCreated();
         if (helperRuntimeStarted) return;
+        GuardRecovery.sessionStarted(this);
         helperRuntimeStarted = true;
         boolean cameraReady = helper.discoverCamera();
         mirror.attachHelper(helper);
@@ -1535,7 +1537,7 @@ public final class CameraHelperService extends Service {
     private boolean avasDaemonRequired(SharedPreferences settings) {
         return !LegacySettingsImporter.blocksRuntime(this)
                 && AvasRecoveryPolicy.daemonRequired(
-                GuardRecovery.isAutoStartEnabled(this),
+                GuardRecovery.shouldRecover(this),
                 GuardRecovery.isUserShutdownActive(this),
                 AvasNotificationAccess.hasEnabledAvasAudio(settings));
     }

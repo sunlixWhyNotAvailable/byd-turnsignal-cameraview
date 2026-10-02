@@ -11,7 +11,7 @@ import java.util.List;
 
 public final class AvasRecoveryPolicyTest {
     @Test
-    public void daemonRequiresAutoStartProfileAndNoExplicitShutdown() {
+    public void daemonRequiresRecoveryProfileAndNoExplicitShutdown() {
         assertTrue(AvasRecoveryPolicy.daemonRequired(true, false, true));
         assertFalse(AvasRecoveryPolicy.daemonRequired(false, false, true));
         assertFalse(AvasRecoveryPolicy.daemonRequired(true, true, true));

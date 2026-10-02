@@ -14,8 +14,8 @@ final class AvasRecoveryPolicy {
     }
 
     static boolean daemonRequired(
-            boolean autoStart, boolean userShutdown, boolean anyProfileEnabled) {
-        return autoStart && !userShutdown && anyProfileEnabled;
+            boolean recoveryAllowed, boolean userShutdown, boolean anyProfileEnabled) {
+        return recoveryAllowed && !userShutdown && anyProfileEnabled;
     }
 
     static boolean wakeRequired(

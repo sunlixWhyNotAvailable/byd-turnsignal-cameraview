@@ -44,8 +44,6 @@
 
         <activity
             android:name="com.byd.extend.CameraProbeActivity"
-            android:autoRemoveFromRecents="true"
-            android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape" />
