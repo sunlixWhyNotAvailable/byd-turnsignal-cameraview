@@ -105,7 +105,7 @@
     <string name="simulated_refresh_complete">"模拟刷新已完成"</string>
     <string name="weather_data_open_meteo_adapted">"天气数据：Open-Meteo（经适配）"</string>
     <string name="independent_parameters_placement_and_calibration">"独立参数、位置与校准"</string>
-    <string name="enable_rear_cameras">"启用后置摄像头"</string>
+    <string name="enable_rear_cameras">"启用摄像头"</string>
     <string name="enable_front_cameras">"启用前置摄像头"</string>
     <string name="minimum_speed">"最低车速"</string>
     <string name="opposite_camera_on_sharp_turns">"急转弯时显示\n对侧摄像头"</string>
@@ -330,4 +330,6 @@
     <string name="update_hint_sample">预览 · 1:1</string>
     <string name="adb_reminder_message">ADB 恢复准备已完成。\n请将平板连接到 Wi-Fi，以完成 ADB 恢复。</string>
     <string name="adb_reminder_retry">重试 Wi-Fi 请求</string>
+    <string name="adb_recovery_wait_authorization">等待 ADB 授权</string>
+    <string name="adb_recovery_wait_permissions">等待恢复权限</string>
 </resources>

@@ -5,6 +5,24 @@ final class AdbRecoveryPolicy {
     static final long CONSENT_RETRY_MS = 15_000L;
     private AdbRecoveryPolicy() { }
 
+    enum Proof { AVAILABLE, AUTHORIZATION_REQUIRED, TRANSPORT_UNAVAILABLE, FAILED }
+
+    static AdbRecoverySnapshot.Stage prerequisite(boolean authorizationPending,
+            boolean authorizedIdentity, boolean hasWss) {
+        if (authorizationPending || !authorizedIdentity) {
+            return AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION;
+        }
+        return hasWss ? null : AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS;
+    }
+
+    static Proof classifyProof(LocalAdbClient.Result result, String marker) {
+        if (result.authorizationRequired) return Proof.AUTHORIZATION_REQUIRED;
+        if (result.ok && result.output != null && result.output.contains(marker)) {
+            return Proof.AVAILABLE;
+        }
+        return result.transportUnavailable ? Proof.TRANSPORT_UNAVAILABLE : Proof.FAILED;
+    }
+
     static boolean shouldWriteWifiOne(boolean manual, int current) {
         return manual || current == 0;
     }

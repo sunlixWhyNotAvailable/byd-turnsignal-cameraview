@@ -107,7 +107,7 @@ internal fun FormScope.AdbRecoveryScreen(
         row("retry") { ActionButton(
             strings.text("Повторити запит Wi-Fi", "Retry Wi-Fi request", "重试 Wi-Fi 请求"),
             colors, Modifier.fillMaxWidth(), icon = Icons.Outlined.Refresh,
-            enabled = state.enabled && !state.authenticated5555,
+            enabled = state.retryAllowed,
         ) { onAction(AdbRecoveryUiAction.Retry) } }
     }
     row("adb-gap") { Spacer(Modifier.height(12.dp)) }
@@ -172,6 +172,8 @@ private fun stageState(state: AdbRecoveryUiState, strings: UiStrings): StatusUiS
     if (!state.enabled) return StatusUiState(
         strings.text("Сервіс вимкнено", "Service disabled", "服务已关闭"), StatusTone.Neutral, true)
     val (text, tone) = when (state.stage) {
+        AdbRecoveryStage.WAIT_AUTHORIZATION -> strings.resource(R.string.adb_recovery_wait_authorization) to StatusTone.Warning
+        AdbRecoveryStage.WAIT_PERMISSIONS -> strings.resource(R.string.adb_recovery_wait_permissions) to StatusTone.Warning
         AdbRecoveryStage.PREPARING -> strings.text("Підготовка", "Preparing", "正在准备") to StatusTone.Warning
         AdbRecoveryStage.AVAILABLE -> strings.text("ADB доступний", "ADB available", "ADB 可用") to StatusTone.Ok
         AdbRecoveryStage.WAIT_WIFI -> strings.text("Очікування Wi-Fi", "Waiting for Wi-Fi", "等待 Wi-Fi") to StatusTone.Warning

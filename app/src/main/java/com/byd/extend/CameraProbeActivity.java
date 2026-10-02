@@ -14638,29 +14638,40 @@ public final class CameraProbeActivity extends ComponentActivity
         publishAdbOperation(true);
         updateControls();
         record(event, "automatic", automatic, "mode", mode.name());
-        ipcExecutor.execute(() -> {
-            if (!authorizeOnly) {
-                transactAdbAuthorization(current, operation, automatic, mode);
-                return;
-            }
-            LocalAdbClient.Result result = LocalAdbClient.authorize(
-                    getApplicationContext(), mode, this::record);
-            if (result.ok) {
-                AppPermissionProvisioner.ensure(
-                        getApplicationContext(), operation, this::record);
-            }
-            mainHandler.post(() -> {
-                if (activityDestroyed) return;
-                adbAuthPending = false;
-                adbAuthMode = null;
-                adbAuthorizationRequested = result.ok;
-                startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
-                publishAdbOperation(false);
-                refreshProductionHeader();
-                updateControls();
-                advanceStartupAuthorizationFlow();
-            });
-        });
+        AdbAuthorizationSession.Attempt foregroundAttempt = LocalAdbClient.AUTHORIZATION.begin();
+        try { ipcExecutor.execute(() -> {
+            try {
+                if (!authorizeOnly) {
+                    transactAdbAuthorization(current, operation, automatic, mode);
+                    return;
+                }
+                LocalAdbClient.Result result = LocalAdbClient.authorize(
+                        getApplicationContext(), mode, this::record);
+                if (result.ok) {
+                    AppPermissionProvisioner.ensure(
+                            getApplicationContext(), operation, this::record);
+                }
+                mainHandler.post(() -> {
+                    if (activityDestroyed) return;
+                    adbAuthPending = false;
+                    adbAuthMode = null;
+                    adbAuthorizationRequested = result.ok;
+                    startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
+                    publishAdbOperation(false);
+                    refreshProductionHeader();
+                    updateControls();
+                    advanceStartupAuthorizationFlow();
+                });
+            } finally { foregroundAttempt.close(); }
+        }); } catch (java.util.concurrent.RejectedExecutionException stoppedExecutor) {
+            foregroundAttempt.close();
+            adbAuthPending = false;
+            adbAuthMode = null;
+            startupOverlayPermissionFlow.finishForegroundAuthorizationAttempt();
+            publishAdbOperation(false);
+            record("adb_authorization_request_failed", "reason", "executor_stopped");
+            return false;
+        }
         return true;
     }
 
@@ -15798,7 +15809,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 boolean overlayAttempted, boolean overlayInFlight, boolean localAuthorization) {
             // A local request completes on the old Activity, unlike helper state callbacks.
             // Reconcile via AUTO_ONCE: LocalAdbClient serializes with the old request and
-            // retains its authorization cache/RSA prompt-once marker.
+            // retains its authorization cache/process-local RSA attempt budget.
             foregroundAuthorizationStarted = foregroundStarted
                     && (!localAuthorization || foregroundFinished);
             foregroundAuthorizationFinished = foregroundStarted && foregroundFinished;

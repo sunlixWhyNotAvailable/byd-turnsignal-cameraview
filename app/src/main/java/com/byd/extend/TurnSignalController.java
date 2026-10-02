@@ -10,6 +10,7 @@ import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
 import android.os.Process;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.Surface;
 
 import org.json.JSONObject;
@@ -19,6 +20,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -89,6 +91,7 @@ final class TurnSignalController {
     private ReverseSteeringModelConfig steeringModel;
     private IBinder steeringModelHelper;
     private long steeringModelAttemptAt;
+    private boolean steeringModelLoadPending;
     private volatile boolean authorizationPending;
     private volatile LocalAdbClient.PromptMode authorizationMode;
     private volatile IBinder helper;
@@ -1305,6 +1308,7 @@ final class TurnSignalController {
                     "active_mode", modeName(authorizationRequests.mode()));
             return action;
         }
+        AdbAuthorizationSession.Attempt foregroundAttempt = LocalAdbClient.AUTHORIZATION.begin();
         if (mode == LocalAdbClient.PromptMode.FORCE) {
             automaticAuthorizationBlockedFor = "";
             automaticAuthorizationBlockReported = false;
@@ -1319,7 +1323,7 @@ final class TurnSignalController {
                 "cancelled_pending_socket", socketClosed,
                 "active_mode", modeName(authorizationMode));
         emitAuthorizationState();
-        worker.execute(() -> {
+        try { worker.execute(() -> {
             try {
                 if (!authorizationRequests.isCurrent(mode)) {
                     emit("authorization_superseded", "mode", mode.name(),
@@ -1331,11 +1335,17 @@ final class TurnSignalController {
             } finally {
                 authorizationRequests.finish(mode);
                 syncRequestedAuthorizationState();
+                foregroundAttempt.close();
                 if (!stopped && !authorizationPending && healthyHelper() == null) {
                     failPendingAvas("helper_unavailable");
                 }
             }
-        });
+        }); } catch (java.util.concurrent.RejectedExecutionException stoppedWorker) {
+            authorizationRequests.finish(mode);
+            syncRequestedAuthorizationState();
+            foregroundAttempt.close();
+            throw stoppedWorker;
+        }
         return action;
     }
 
@@ -2072,12 +2082,21 @@ final class TurnSignalController {
     }
 
     private void syncSteeringModel(IBinder value, boolean attaching) {
+        if (stopped || value == null || helper != value || !healthy) return;
+        if (steeringModelLoadPending) return;
         if (!attaching && steeringModel != null && steeringModelHelper == value) return;
         long now = SystemClock.elapsedRealtime();
         if (!attaching && now - steeringModelAttemptAt < RETRY_BACKOFF_MS) return;
         steeringModelAttemptAt = now;
+        if (steeringModel == null) {
+            steeringModelLoadPending = true;
+            if (!handler.post(this::prepareSteeringModelOnMain)) {
+                steeringModelLoadPending = false;
+                reportSteeringModelFailure(new IllegalStateException("app main handler rejected task"));
+            }
+            return;
+        }
         try {
-            if (steeringModel == null) steeringModel = ReverseSteeringModelConfig.load(context);
             Parcel data = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
@@ -2097,8 +2116,42 @@ final class TurnSignalController {
             }
         } catch (Throwable failure) {
             // Model availability must never make the camera/AVAS helper unavailable.
-            emit("reverse_steering_model", "available", false, "error", summary(failure));
+            reportSteeringModelFailure(failure);
         }
+    }
+
+    private void prepareSteeringModelOnMain() {
+        if (stopped) return;
+        Callable<ReverseSteeringModelConfig> load = null;
+        Throwable failure = null;
+        try {
+            load = ReverseSteeringModelConfig.prepareLoad(context);
+        } catch (Throwable error) {
+            failure = error;
+        }
+        final Callable<ReverseSteeringModelConfig> prepared = load;
+        final Throwable preparationFailure = failure;
+        try {
+            worker.execute(() -> {
+                steeringModelLoadPending = false;
+                if (stopped) return;
+                try {
+                    if (preparationFailure != null) throw preparationFailure;
+                    steeringModel = prepared.call();
+                    // The helper can reconnect while OEM initialization is queued.
+                    syncSteeringModel(helper, true);
+                } catch (Throwable error) {
+                    reportSteeringModelFailure(error);
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // Controller shutdown already owns cleanup; never revive a stopped worker.
+        }
+    }
+
+    private void reportSteeringModelFailure(Throwable failure) {
+        emit("reverse_steering_model", "available", false, "error", summary(failure),
+                "stack", Log.getStackTraceString(failure));
     }
 
     private void transactParkingRadarConfig(IBinder value, boolean anyEnabled) throws Exception {

@@ -8,6 +8,8 @@ public final class AdbRecoverySnapshot {
 
     public enum Stage {
         DISABLED,
+        WAITING_FOR_AUTHORIZATION,
+        WAITING_FOR_PERMISSIONS,
         CHECKING_5555,
         PREPARING,
         WAITING_FOR_WIFI,

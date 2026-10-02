@@ -101,15 +101,13 @@ public final class AdbCoreTest {
     public void authPolicyAndLaunchStayNarrow() {
         assertEquals("127.0.0.1:5555", LocalAdbClient.endpointForTest());
         assertTrue(LocalAdbClient.shouldSendPublicKey(
-                LocalAdbClient.PromptMode.AUTO_ONCE, false, false));
+                LocalAdbClient.PromptMode.AUTO_ONCE, false));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
-                LocalAdbClient.PromptMode.AUTO_ONCE, true, false));
+                LocalAdbClient.PromptMode.AUTO_ONCE, true));
         assertTrue(LocalAdbClient.shouldSendPublicKey(
-                LocalAdbClient.PromptMode.AUTO_ONCE, true, true));
-        assertTrue(LocalAdbClient.shouldSendPublicKey(
-                LocalAdbClient.PromptMode.FORCE, true, false));
+                LocalAdbClient.PromptMode.FORCE, true));
         assertFalse(LocalAdbClient.shouldSendPublicKey(
-                LocalAdbClient.PromptMode.NEVER, false, true));
+                LocalAdbClient.PromptMode.NEVER, false));
         assertEquals("com.byd.extend", BuildConfig.APPLICATION_ID);
         assertEquals("com.byd.extend", CameraHelperMain.PACKAGE_NAME);
         assertTrue(TurnSignalShellProtocol.TX_CONFIGURE_MUSIC
@@ -1652,7 +1650,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(33, CameraShellProtocol.VERSION);
+        assertEquals(34, CameraShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
                 CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);

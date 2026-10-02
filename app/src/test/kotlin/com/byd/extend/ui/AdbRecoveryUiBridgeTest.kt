@@ -9,6 +9,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AdbRecoveryUiBridgeTest {
+    @Test fun onboardingKeepsStatusButDisablesRetryAndWifiReminder() {
+        val settings = AdbReminderSettings(TestSharedPreferences())
+        listOf(
+            AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION to AdbRecoveryStage.WAIT_AUTHORIZATION,
+            AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS to AdbRecoveryStage.WAIT_PERMISSIONS,
+        ).forEach { (backend, visible) ->
+            val snapshot = AdbRecoverySnapshot(backend, true, false, false,
+                -1L, 1L, false, AdbRecoverySnapshot.ReadyOutcome.NONE)
+            val state = AdbRecoveryUiBridge.state(snapshot, settings)
+            assertTrue(state.enabled)
+            assertEquals(visible, state.stage)
+            assertFalse(state.retryAllowed)
+            assertFalse(AdbRecoveryUiBridge.overlay(snapshot, settings,
+                UiLanguage.English, true).waitWifi)
+        }
+    }
+
     @Test fun nullSnapshotUsesPersistedDefaultsWithoutInventingRuntimeStatus() {
         val state = AdbRecoveryUiBridge.state(null,
             AdbReminderSettings(TestSharedPreferences()))
@@ -25,6 +42,7 @@ class AdbRecoveryUiBridgeTest {
         val settings = AdbReminderSettings(TestSharedPreferences())
         val state = AdbRecoveryUiBridge.state(snapshot, settings)
         assertEquals(AdbRecoveryStage.WAIT_WIFI, state.stage)
+        assertTrue(state.retryAllowed)
         assertEquals(1234L, state.waitStartedElapsedMs)
         assertEquals(17L, state.cycleId)
         val overlay = AdbRecoveryUiBridge.overlay(snapshot, settings,
@@ -47,6 +65,7 @@ class AdbRecoveryUiBridgeTest {
             val state = AdbRecoveryUiBridge.state(snapshot, settings)
             assertEquals(uiStage, state.stage)
             assertTrue(state.authenticated5555)
+            assertFalse(state.retryAllowed)
             assertFalse(AdbRecoveryUiBridge.overlay(snapshot, settings,
                 UiLanguage.English, true).waitWifi)
         }
@@ -78,6 +97,7 @@ class AdbRecoveryUiBridgeTest {
             true, false, false, 500L, 3L, false,
             AdbRecoverySnapshot.ReadyOutcome.NONE)
         assertFalse(AdbRecoveryUiBridge.state(stale, settings).enabled)
+        assertFalse(AdbRecoveryUiBridge.state(stale, settings).retryAllowed)
         assertFalse(AdbRecoveryUiBridge.overlay(stale, settings,
             UiLanguage.English, true).waitWifi)
     }

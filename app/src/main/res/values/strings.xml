@@ -105,7 +105,7 @@
     <string name="simulated_refresh_complete">"Simulated refresh complete"</string>
     <string name="weather_data_open_meteo_adapted">"Weather data: Open-Meteo (adapted)"</string>
     <string name="independent_parameters_placement_and_calibration">"Independent parameters, placement, and calibration"</string>
-    <string name="enable_rear_cameras">"Enable rear cameras"</string>
+    <string name="enable_rear_cameras">"Enable cameras"</string>
     <string name="enable_front_cameras">"Enable front cameras"</string>
     <string name="minimum_speed">"Minimum speed"</string>
     <string name="opposite_camera_on_sharp_turns">"Opposite camera\non sharp turns"</string>
@@ -330,4 +330,6 @@
     <string name="update_hint_sample">Preview · 1:1</string>
     <string name="adb_reminder_message">ADB recovery preparation is complete.\nConnect the tablet to Wi-Fi to finish restoring ADB.</string>
     <string name="adb_reminder_retry">Repeat Wi-Fi request</string>
+    <string name="adb_recovery_wait_authorization">Waiting for ADB authorization</string>
+    <string name="adb_recovery_wait_permissions">Waiting for recovery permission</string>
 </resources>

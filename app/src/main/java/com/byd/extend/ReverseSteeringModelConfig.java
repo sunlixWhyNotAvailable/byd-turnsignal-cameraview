@@ -1,6 +1,7 @@
 package com.byd.extend;
 
 import android.content.Context;
+import android.os.Looper;
 
 import org.json.JSONObject;
 
@@ -8,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Callable;
 
 /** Active-model steering clamp bounds from the stock AVC asset configuration. */
 final class ReverseSteeringModelConfig {
@@ -33,7 +35,12 @@ final class ReverseSteeringModelConfig {
         this.model = model;
     }
 
-    static ReverseSteeringModelConfig load(Context context) throws Exception {
+    /** Resolve OEM classes on the app Looper; defer asset I/O to the controller worker. */
+    static Callable<ReverseSteeringModelConfig> prepareLoad(Context context) throws Exception {
+        // CarStatus creates a Handler in its static initializer. A failed first load poisons it.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw new IllegalStateException("OEM steering model requires the app main Looper");
+        }
         Context stockContext = context.createPackageContext(STOCK_PACKAGE,
                 Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
         ClassLoader loader = stockContext.getClassLoader();
@@ -60,11 +67,13 @@ final class ReverseSteeringModelConfig {
         String model = (series.isEmpty() ? "" : series + "/") + carType + "/" + subCarType;
         String assetPath = "resource_ts/" + carType + "/CarModel/" + subCarType
                 + "/Vehicle_Configuration.json";
-        String json;
-        try (InputStream input = stockContext.getAssets().open(assetPath)) {
-            json = readUtf8(input);
-        }
-        return fromJson(model, json);
+        return () -> {
+            String json;
+            try (InputStream input = stockContext.getAssets().open(assetPath)) {
+                json = readUtf8(input);
+            }
+            return fromJson(model, json);
+        };
     }
 
     static ReverseSteeringModelConfig fromJson(String model, String json) throws Exception {

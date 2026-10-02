@@ -8,6 +8,24 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public final class AdbRecoveryCoordinatorTest {
+    @Test public void onboardingSuspendsReminderAndDoesNotClaimInitialAuthorizationAsRecovery() {
+        AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
+        coordinator.begin(false, 1L);
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        coordinator.wifi(false, 2L);
+        for (AdbRecoverySnapshot.Stage prerequisite : new AdbRecoverySnapshot.Stage[]{
+                AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION,
+                AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS}) {
+            coordinator.waitForPrerequisite(prerequisite);
+            assertEquals(prerequisite, coordinator.snapshot().stage());
+            assertEquals(-1L, coordinator.snapshot().waitStartedElapsedMs());
+            assertFalse(coordinator.snapshot().authenticated5555());
+        }
+        coordinator.begin(false, 3L);
+        coordinator.ready();
+        assertEquals(AdbRecoverySnapshot.ReadyOutcome.AVAILABLE, coordinator.snapshot().readyOutcome());
+    }
+
     @Test public void initialHealthyProofIsAvailableWithoutClaimingRecovery() {
         AdbRecoveryCoordinator coordinator = configuredCoordinator(new MemoryStore());
         coordinator.begin(false, 1L);

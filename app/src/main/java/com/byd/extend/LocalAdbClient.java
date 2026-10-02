@@ -44,7 +44,9 @@ final class LocalAdbClient {
     static final int EXPORT_READ_TIMEOUT_MS = 30_000;
     static final long NO_CANCELLATION = Long.MIN_VALUE;
     private static final String PREFS = "local_adb";
-    private static final String AUTO_PROMPT_KEY = "auto_prompt_key";
+    // Old auto_prompt_key preferences are intentionally ignored: sending is not authorization.
+    static final AdbAuthorizationSession AUTHORIZATION = new AdbAuthorizationSession();
+    private static final Object KEY_LOCK = new Object();
     private static final String AUTHORIZED_KEY = "authorized_key";
     private static final String ACCESS_STATUS_KEY = "access_status";
     private static final String ACCESS_STATUS_FINGERPRINT_KEY = "access_status_fingerprint";
@@ -137,6 +139,14 @@ final class LocalAdbClient {
             PromptMode mode,
             long cancellationToken,
             BiConsumer<String, Object[]> eventSink) {
+        try (AdbAuthorizationSession.Attempt attempt = mode == PromptMode.NEVER
+                ? null : AUTHORIZATION.begin()) {
+            return authorizeInSession(context, mode, cancellationToken, eventSink);
+        }
+    }
+
+    private static Result authorizeInSession(Context context, PromptMode mode,
+            long cancellationToken, BiConsumer<String, Object[]> eventSink) {
         Context applicationContext = context.getApplicationContext();
         long stateVersion = accessStateVersion();
         Result result;
@@ -167,6 +177,18 @@ final class LocalAdbClient {
             String fixedCommand,
             long cancellationToken,
             BiConsumer<String, Object[]> eventSink) {
+        return executeAuthorized(context, fixedCommand, cancellationToken, null, eventSink);
+    }
+
+    static Result executeRecoveryProof(Context context, String fixedCommand,
+            AdbAuthorizationSession.RecoveryOperation recovery,
+            BiConsumer<String, Object[]> eventSink) {
+        return executeAuthorized(context, fixedCommand, NO_CANCELLATION, recovery, eventSink);
+    }
+
+    private static Result executeAuthorized(Context context, String fixedCommand,
+            long cancellationToken, AdbAuthorizationSession.RecoveryOperation recovery,
+            BiConsumer<String, Object[]> eventSink) {
         Context applicationContext = context.getApplicationContext();
         long stateVersion = accessStateVersion();
         Result result;
@@ -175,7 +197,7 @@ final class LocalAdbClient {
             try {
                 OpenResult open = Connection.open(
                         applicationContext, PromptMode.NEVER,
-                        cancellationToken, eventSink);
+                        cancellationToken, eventSink, recoveryCancellation(recovery));
                 if (open.connection == null) {
                     result = Result.authorizationRequired(
                             open.authorizationError, open.publicKeySent, open.fingerprint);
@@ -209,7 +231,9 @@ final class LocalAdbClient {
                 if (!isCancellationTokenCurrent(cancellationToken)) {
                     result = Result.superseded();
                 } else {
-                    result = Result.failed(summary(error), "", -1, "unavailable");
+                    result = error instanceof TransportUnavailableException
+                            ? Result.transportUnavailable(summary(error))
+                            : Result.failed(summary(error), "", -1, "unavailable");
                 }
             } finally {
                 if (connection != null) connection.close();
@@ -401,10 +425,28 @@ final class LocalAdbClient {
     }
 
     static boolean shouldSendPublicKey(
-            PromptMode mode, boolean alreadyPrompted, boolean authorizedFingerprintRejected) {
+            PromptMode mode, boolean alreadyPrompted) {
         return mode == PromptMode.FORCE
                 || mode == PromptMode.AUTO_ONCE
-                && (authorizedFingerprintRejected || !alreadyPrompted);
+                && !alreadyPrompted;
+    }
+
+    static boolean hasAuthorizedIdentity(Context context) {
+        String saved = prefs(context).getString(AUTHORIZED_KEY, "");
+        return !saved.isEmpty() && saved.equals(currentFingerprint(context));
+    }
+
+    private static OperationCancellation recoveryCancellation(
+            AdbAuthorizationSession.RecoveryOperation recovery) {
+        if (recovery == null) return null;
+        return new OperationCancellation() {
+            @Override public boolean isCancellationRequested() { return recovery.cancelled(); }
+            @Override public void registerActiveSocket(Socket socket) {
+                try { recovery.register(socket); }
+                catch (IOException cancelled) { LocalAdbClient.close(socket); }
+            }
+            @Override public void clearActiveSocket(Socket socket) { recovery.unregister(socket); }
+        };
     }
 
     static AccessState decodeAccessStateForTest(String status, String fingerprint) {
@@ -535,7 +577,12 @@ final class LocalAdbClient {
                 if (!isCancellationTokenCurrent(authGeneration)) {
                     throw new AuthorizationSupersededException();
                 }
-                socket.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
+                try {
+                    socket.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
+                } catch (java.net.ConnectException | java.net.NoRouteToHostException
+                        | SocketTimeoutException unavailable) {
+                    throw new TransportUnavailableException(unavailable);
+                }
                 socket.setSoTimeout(READ_TIMEOUT_MS);
                 socket.setTcpNoDelay(true);
                 emitStage(eventSink, "socket_connected", "fingerprint", fingerprint,
@@ -608,10 +655,12 @@ final class LocalAdbClient {
                         return OpenResult.authorizationRequired(
                                 "authorization_rejected", true, fingerprint);
                     }
-                    if (!shouldSendPublicKey(mode, alreadyPrompted(context, fingerprint),
-                            authorizedFingerprintRejected)) {
+                    if (mode == PromptMode.NEVER || !AUTHORIZATION.claimPrompt(
+                            fingerprint, mode == PromptMode.FORCE)) {
                         emitStage(eventSink, "authorization_required",
                                 "fingerprint", fingerprint,
+                                "reason", mode == PromptMode.NEVER
+                                        ? "prompt_forbidden" : "automatic_attempt_consumed",
                                 "public_key_sent", false);
                         recordAccessError(context, fingerprint);
                         connection.close();
@@ -626,9 +675,8 @@ final class LocalAdbClient {
                     AdbPacket.write(connection.out, AdbPacket.A_AUTH,
                             AdbPacket.AUTH_RSAPUBLICKEY, 0,
                             nul(publicKey));
-                    markPrompted(context, fingerprint);
                     emitStage(eventSink, "public_key_sent", "fingerprint", fingerprint,
-                            "public_key", publicKey,
+                            "mode", mode.name(), "automatic_attempt_consumed", true,
                             "payload_bytes", publicKey.getBytes(StandardCharsets.UTF_8).length + 1);
                     publicKeySent = true;
                     socket.setSoTimeout(AUTH_TIMEOUT_MS);
@@ -789,6 +837,7 @@ final class LocalAdbClient {
         final boolean publicKeySent;
         final boolean superseded;
         final boolean commandReadTimeout;
+        final boolean transportUnavailable;
         final String output;
         final int exitCode;
         final String error;
@@ -797,11 +846,20 @@ final class LocalAdbClient {
         private Result(boolean ok, boolean authorizationRequired, boolean publicKeySent,
                 boolean superseded, boolean commandReadTimeout,
                 String output, int exitCode, String error, String fingerprint) {
+            this(ok, authorizationRequired, publicKeySent, superseded, commandReadTimeout,
+                    output, exitCode, error, fingerprint, false);
+        }
+
+        private Result(boolean ok, boolean authorizationRequired, boolean publicKeySent,
+                boolean superseded, boolean commandReadTimeout,
+                String output, int exitCode, String error, String fingerprint,
+                boolean transportUnavailable) {
             this.ok = ok;
             this.authorizationRequired = authorizationRequired;
             this.publicKeySent = publicKeySent;
             this.superseded = superseded;
             this.commandReadTimeout = commandReadTimeout;
+            this.transportUnavailable = transportUnavailable;
             this.output = output;
             this.exitCode = exitCode;
             this.error = error;
@@ -837,6 +895,11 @@ final class LocalAdbClient {
         static Result failed(String error, String output, int exitCode, String fingerprint) {
             return new Result(false, false, false, false, false,
                     output, exitCode, error, fingerprint);
+        }
+
+        static Result transportUnavailable(String error) {
+            return new Result(false, false, false, false, false,
+                    "", -1, error, "unavailable", true);
         }
     }
 
@@ -920,7 +983,14 @@ final class LocalAdbClient {
     }
 
     static KeyPair loadOrCreateKeys(Context context) throws Exception {
-        File dir = new File(context.getFilesDir(), "adb_keys");
+        return loadOrCreateKeys(new File(context.getFilesDir(), "adb_keys"));
+    }
+
+    static KeyPair loadOrCreateKeys(File dir) throws Exception {
+        synchronized (KEY_LOCK) { return loadOrCreateKeysLocked(dir); }
+    }
+
+    private static KeyPair loadOrCreateKeysLocked(File dir) throws Exception {
         File privateFile = new File(dir, "adb_key.priv");
         File publicFile = new File(dir, "adb_key.pub");
         if (privateFile.exists()) {
@@ -988,14 +1058,6 @@ final class LocalAdbClient {
         return result.toString();
     }
 
-    private static boolean alreadyPrompted(Context context, String fingerprint) {
-        return promptKey(fingerprint).equals(prefs(context).getString(AUTO_PROMPT_KEY, ""));
-    }
-
-    private static void markPrompted(Context context, String fingerprint) {
-        prefs(context).edit().putString(AUTO_PROMPT_KEY, promptKey(fingerprint)).apply();
-    }
-
     private static boolean isAuthorized(Context context, String fingerprint) {
         return fingerprint.equals(prefs(context).getString(AUTHORIZED_KEY, ""));
     }
@@ -1007,7 +1069,6 @@ final class LocalAdbClient {
     private static void clearAuthorized(Context context) {
         prefs(context).edit()
                 .remove(AUTHORIZED_KEY)
-                .remove(AUTO_PROMPT_KEY)
                 .apply();
     }
 
@@ -1089,10 +1150,6 @@ final class LocalAdbClient {
         }
     }
 
-    private static String promptKey(String fingerprint) {
-        return BuildConfig.VERSION_CODE + ":" + fingerprint;
-    }
-
     private static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
@@ -1157,5 +1214,9 @@ final class LocalAdbClient {
         AuthorizationSupersededException() {
             super("ADB authorization superseded");
         }
+    }
+
+    private static final class TransportUnavailableException extends IOException {
+        TransportUnavailableException(IOException cause) { super(cause); }
     }
 }

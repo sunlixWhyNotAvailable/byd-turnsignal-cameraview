@@ -383,6 +383,8 @@ public final class CameraHelperService extends Service {
                 try { AppPermissionProvisioner.ensure(this, reason, this::avasRecoveryEvent); }
                 finally {
                     permissionsProvisioning.set(false);
+                    AdbRecoveryRuntime recovery = adbRecovery;
+                    if (recovery != null) recovery.onPermissionsChecked();
                     publishAdbRecoveryUi();
                 }
             });

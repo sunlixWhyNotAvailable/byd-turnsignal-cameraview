@@ -53,9 +53,15 @@ final class LocalAdbTlsClient implements AutoCloseable {
     }
 
     static LocalAdbTlsClient connect(int port, AdbTlsIdentity identity) throws Exception {
+        return connect(port, identity, null);
+    }
+
+    static LocalAdbTlsClient connect(int port, AdbTlsIdentity identity,
+            AdbAuthorizationSession.RecoveryOperation recovery) throws Exception {
         if (port < 1 || port > 65535) throw new IOException("Invalid local ADB TLS port");
         Socket plain = new Socket();
         try {
+            if (recovery != null) recovery.register(plain);
             plain.connect(new InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MS);
             plain.setSoTimeout(READ_TIMEOUT_MS);
             plain.setTcpNoDelay(true);
@@ -70,6 +76,7 @@ final class LocalAdbTlsClient implements AutoCloseable {
             SSLContext context = tlsContext(identity);
             SSLSocket encrypted = (SSLSocket) context.getSocketFactory()
                     .createSocket(plain, "127.0.0.1", port, true);
+            if (recovery != null) recovery.register(encrypted);
             encrypted.setSoTimeout(READ_TIMEOUT_MS);
             encrypted.startHandshake();
             LocalAdbTlsClient client = new LocalAdbTlsClient(encrypted);
@@ -101,12 +108,27 @@ final class LocalAdbTlsClient implements AutoCloseable {
         return requestTcpip5555(input, output);
     }
 
+    TcpipResult requestTcpip5555(AdbAuthorizationSession.RecoveryOperation recovery)
+            throws IOException {
+        return requestTcpip5555(input, output, recovery);
+    }
+
     static TcpipResult requestTcpip5555(InputStream input, OutputStream output)
             throws IOException {
+        return requestTcpip5555(input, output, null);
+    }
+
+    static TcpipResult requestTcpip5555(InputStream input, OutputStream output,
+            AdbAuthorizationSession.RecoveryOperation recovery) throws IOException {
         int local = 1;
         int remote = 0;
         int responseBytes = 0;
-        AdbPacket.write(output, AdbPacket.A_OPEN, local, 0, nul("tcpip:5555"));
+        if (recovery == null) {
+            AdbPacket.write(output, AdbPacket.A_OPEN, local, 0, nul("tcpip:5555"));
+        } else {
+            recovery.write(() -> AdbPacket.write(output, AdbPacket.A_OPEN,
+                    local, 0, nul("tcpip:5555")));
+        }
         try {
             while (true) {
                 AdbPacket packet = AdbPacket.read(input, true);

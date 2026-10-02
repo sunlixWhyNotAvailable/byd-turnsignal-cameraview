@@ -105,7 +105,7 @@
     <string name="simulated_refresh_complete">"Демонстраційне оновлення завершено"</string>
     <string name="weather_data_open_meteo_adapted">"Дані погоди: Open-Meteo (адаптовано)"</string>
     <string name="independent_parameters_placement_and_calibration">"Окремі параметри, розташування та калібрування"</string>
-    <string name="enable_rear_cameras">"Включити задні камери"</string>
+    <string name="enable_rear_cameras">"Включити камери"</string>
     <string name="enable_front_cameras">"Включити передні камери"</string>
     <string name="minimum_speed">"Мінімальна швидкість"</string>
     <string name="opposite_camera_on_sharp_turns">"Протилежна камера\nрізкого повороту"</string>
@@ -330,4 +330,6 @@
     <string name="update_hint_sample">Передпоказ · 1:1</string>
     <string name="adb_reminder_message">Підготовку відновлення ADB виконано.\nПриєднайте планшет до Wi-Fi для завершення відновлення ADB</string>
     <string name="adb_reminder_retry">Повторити запит Wi-Fi</string>
+    <string name="adb_recovery_wait_authorization">Очікування авторизації ADB</string>
+    <string name="adb_recovery_wait_permissions">Очікування дозволу відновлення</string>
 </resources>

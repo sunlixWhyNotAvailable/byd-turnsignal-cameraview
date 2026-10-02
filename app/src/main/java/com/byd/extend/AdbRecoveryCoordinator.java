@@ -63,6 +63,15 @@ final class AdbRecoveryCoordinator {
         }
     }
 
+    synchronized void waitForPrerequisite(AdbRecoverySnapshot.Stage value) {
+        if (!enabled) return;
+        authenticated = false;
+        recoveryAttempted = false;
+        readyOutcome = AdbRecoverySnapshot.ReadyOutcome.NONE;
+        waitStarted = -1L;
+        stage = value;
+    }
+
     synchronized void wifi(boolean connected, long elapsedMs) {
         wifiConnected = connected;
         if (!enabled || authenticated) return;

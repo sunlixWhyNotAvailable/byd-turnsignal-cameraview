@@ -4,7 +4,9 @@ import androidx.compose.runtime.Immutable
 import com.byd.extend.AdbReminderAppearance
 import com.byd.extend.AdbRecoverySnapshot
 
-enum class AdbRecoveryStage { PREPARING, AVAILABLE, WAIT_WIFI, RESTORING, RESTORED, FAILED }
+enum class AdbRecoveryStage {
+    PREPARING, WAIT_AUTHORIZATION, WAIT_PERMISSIONS, AVAILABLE, WAIT_WIFI, RESTORING, RESTORED, FAILED
+}
 
 @Immutable
 data class AdbRecoveryUiState @JvmOverloads constructor(
@@ -17,6 +19,9 @@ data class AdbRecoveryUiState @JvmOverloads constructor(
     val hintSuppressedForCycle: Boolean = false,
     val appearance: AdbReminderAppearance = AdbReminderAppearance(),
 ) {
+    val retryAllowed: Boolean get() = enabled && !authenticated5555 &&
+        stage in setOf(AdbRecoveryStage.WAIT_WIFI, AdbRecoveryStage.RESTORING, AdbRecoveryStage.FAILED)
+
     companion object {
         @JvmStatic fun fromSnapshot(
             snapshot: AdbRecoverySnapshot,
@@ -26,6 +31,8 @@ data class AdbRecoveryUiState @JvmOverloads constructor(
             authenticated5555 = snapshot.authenticated5555(),
             wifiConnected = snapshot.wifiConnected(),
             stage = when (snapshot.stage()) {
+                AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION -> AdbRecoveryStage.WAIT_AUTHORIZATION
+                AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS -> AdbRecoveryStage.WAIT_PERMISSIONS
                 AdbRecoverySnapshot.Stage.DISABLED,
                 AdbRecoverySnapshot.Stage.CHECKING_5555,
                 AdbRecoverySnapshot.Stage.PREPARING -> AdbRecoveryStage.PREPARING

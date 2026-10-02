@@ -17,7 +17,7 @@ public final class AdbRecoveryIntegrationContractTest {
         assertTrue(editor.contains("AnimatedVisibility(showRetry,"));
         assertFalse(editor.contains("AnimatedVisibility(true,"));
         assertFalse(editor.contains("AdbRecoveryUiAction.Retry"));
-        assertTrue(screen.contains("enabled = state.enabled && !state.authenticated5555"));
+        assertTrue(screen.contains("enabled = state.retryAllowed"));
     }
 
     @Test public void appRecoveryStartsBeforeDependentHelperAndKeepsItsOwnObserver() throws Exception {
@@ -30,6 +30,7 @@ public final class AdbRecoveryIntegrationContractTest {
         assertTrue(service.contains("LocalAdbClient.removeAccessStateListener(serviceAdbListener)"));
         assertFalse(service.contains("LocalAdbClient.setAccessStateListener("));
         assertTrue(service.contains("AppPermissionProvisioner.ensure(this, reason"));
+        assertTrue(service.contains("recovery.onPermissionsChecked()"));
         assertTrue(service.contains("if (!enabled) return true;"));
         assertFalse(service.contains("execute(() -> applyWeatherAccessibility(false"));
     }

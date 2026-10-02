@@ -64,10 +64,10 @@ internal fun BlindScreen(
                 } }
                 val groupEnabled = if (state.selectedGroup == CameraGroup.Rear) state.rearEnabled else state.frontEnabled
                 row("profile-enabled") { SwitchLine(
-                    strings.text(
-                        if (state.selectedGroup == CameraGroup.Rear) "Включити задні камери" else "Включити передні камери",
-                        if (state.selectedGroup == CameraGroup.Rear) "Enable rear cameras" else "Enable front cameras",
-                    ), "", groupEnabled,
+                    if (state.selectedGroup == CameraGroup.Rear)
+                        strings.resource(com.byd.extend.R.string.enable_rear_cameras)
+                    else strings.text("Включити передні камери", "Enable front cameras"),
+                    "", groupEnabled,
                     {
                         onAction(BydExtendUiAction.Toggle(ToggleTarget.Blind(
                             if (state.selectedGroup == CameraGroup.Rear) ToggleId.BlindRear else ToggleId.BlindFront,
