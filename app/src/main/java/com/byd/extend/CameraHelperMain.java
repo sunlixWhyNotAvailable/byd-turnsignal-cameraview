@@ -547,6 +547,19 @@ final class CameraHelperMain {
                 if (cameraId < 0) {
                     throw new IllegalStateException("No pano_h/pano_l/apa/byd_apa camera");
                 }
+                if (isUnsafeBmmCameraId(cameraId)) {
+                    // Leopard 5 / DiLink 5.1 (MT8673, Huawei MDC AVM): pano_h maps to 10000.
+                    // bmmcameraserver routes 10000 to NormalHal3CamDevice::open(), which
+                    // sprintf()s the id into a 4-byte buffer -> FORTIFY abort, killing the
+                    // service and every other client (DVR, DMS). Never open it.
+                    int rejectedId = cameraId;
+                    String rejectedTag = cameraTag;
+                    cameraId = -1;
+                    cameraTag = "none";
+                    throw new IllegalStateException("Unsupported AVM camera " + rejectedTag
+                            + " id " + rejectedId + " (MDC/IP-camera platform; opening it"
+                            + " crashes bmmcameraserver)");
+                }
                 int width = optionalInt(info, "getDefaultPreviewWidth", cameraId);
                 int height = optionalInt(info, "getDefaultPreviewHeight", cameraId);
                 emit("camera_discovery", "ok", true, "camera_id", cameraId,
@@ -5209,6 +5222,15 @@ final class CameraHelperMain {
             if (allowed.equals(tag)) return true;
         }
         return false;
+    }
+
+    /**
+     * IDs above 10000 are RTSP/IP cameras (IPCamDevice) and IDs 0..999 are local HAL3
+     * cameras. On some firmware an id in between (observed: exactly 10000) is sent to the
+     * HAL3 path, whose id formatting overflows and aborts bmmcameraserver.
+     */
+    static boolean isUnsafeBmmCameraId(int cameraId) {
+        return cameraId >= 1000 && cameraId <= 10000;
     }
 
     private static Object openWithConstructor(Class<?> avm, int cameraId) throws Exception {
