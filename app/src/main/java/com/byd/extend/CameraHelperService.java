@@ -1609,6 +1609,7 @@ public final class CameraHelperService extends Service {
                 || line.contains("helper_ping_failed"))
             WeatherRefreshAccessibilityService.microphoneEvent(line);
         postRuntime(() -> {
+            if (cameraRuntime != null) cameraRuntime.acceptPlatformEvent(line);
             if (cameraRuntime != null && line.contains("\"helper_ping\"")) {
                 try {
                     org.json.JSONObject event = new org.json.JSONObject(line);

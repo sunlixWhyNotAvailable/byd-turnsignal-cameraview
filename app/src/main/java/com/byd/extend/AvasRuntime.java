@@ -132,6 +132,11 @@ final class AvasRuntime implements AutoCloseable {
         reportStatus();
     }
 
+    void navigationVolumeChanged() {
+        AvasAudioPlayer current = player;
+        if (!closed && current != null) current.navigationVolumeChanged();
+    }
+
     synchronized void configure(AvasConfig next) {
         if (closed) return;
         if (next == null) throw new IllegalArgumentException("AVAS config is null");

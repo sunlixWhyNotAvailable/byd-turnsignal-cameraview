@@ -1,6 +1,9 @@
 package com.byd.extend;
 
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Bundle;
@@ -21,6 +24,22 @@ final class CameraRuntimeClient {
     private volatile boolean visible;
     private volatile boolean preview;
     private volatile boolean detached;
+    // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
+    private ClusterFullscreenController cluster;
+    private OemCameraVisibilityRuntime pano;
+    private boolean platformRegistered;
+    private final BroadcastReceiver platformReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context ignored, Intent intent) {
+            String action = intent == null ? "" : intent.getAction();
+            if ("android.media.VOLUME_CHANGED_ACTION".equals(action)
+                    || "android.media.STREAM_MUTE_CHANGED_ACTION".equals(action)) {
+                platformCommand(CameraRuntimeHost.NAV_VOLUME, 0, "");
+            } else {
+                platformCommand(CameraRuntimeHost.POWER,
+                        "android.intent.action.QUICKBOOT_POWERON".equals(action) ? 1 : 0, "");
+            }
+        }
+    };
     private java.util.Map<String, Object> lastSettings = new java.util.HashMap<>();
     private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener =
             (prefs, key) -> scheduleSettingsSync();
@@ -75,6 +94,7 @@ final class CameraRuntimeClient {
                 applyRuntimeSettings(pending, snapshot);
                 command(CameraRuntimeHost.VISIBILITY, visible, "", null);
                 if (preview) command(CameraRuntimeHost.PREVIEW, true, "", null);
+                handler.post(this::platformAttached);
                 return camera != null && camera.isBinderAlive();
             } finally { data.recycle(); reply.recycle(); }
         } catch (Exception error) {
@@ -109,6 +129,7 @@ final class CameraRuntimeClient {
     }
 
     private synchronized void syncPreferenceEdits() {
+        if (!detached && cluster != null) cluster.settingsChanged();
         // Preference-only edits (language, restore-on-open, etc.) have no service action.
         // Push changes to an attached runtime; never start a helper just for a disk write.
         if (!detached && camera != null && !changes(lastSettings, settings.getAll()).isEmpty())
@@ -148,6 +169,57 @@ final class CameraRuntimeClient {
 
     synchronized void reportStatus() {
         if (connect()) command(CameraRuntimeHost.STATUS, false, "", null);
+        if (pano != null) pano.reportStatus();
+    }
+
+    private synchronized void platformAttached() {
+        if (detached || shell == null) return;
+        if (cluster == null)
+            cluster = new ClusterFullscreenController(context, settings, handler, this::platformEvent);
+        if (!platformRegistered) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_ON);
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            filter.addAction(Intent.ACTION_USER_PRESENT);
+            filter.addAction("android.intent.action.QUICKBOOT_POWERON");
+            filter.addAction("android.media.VOLUME_CHANGED_ACTION");
+            filter.addAction("android.media.STREAM_MUTE_CHANGED_ACTION");
+            try {
+                context.registerReceiver(platformReceiver, filter, null, handler);
+                platformRegistered = true;
+                platformEvent("app_platform_listener", "registered", true);
+            } catch (RuntimeException error) {
+                platformEvent("app_platform_listener", "registered", false, "error", error.toString());
+            }
+        }
+        // Reconcile current state after a process gap; do not recreate live cameras or tracks.
+        platformCommand(CameraRuntimeHost.POWER, 0, "");
+        platformCommand(CameraRuntimeHost.NAV_VOLUME, 0, "");
+        if (pano == null) {
+            pano = new OemCameraVisibilityRuntime(context, handler,
+                    (known, active, source) -> platformCommand(CameraRuntimeHost.PANO,
+                            known ? (active ? 1 : 0) : -1, source), this::platformEvent);
+            pano.start();
+        } else pano.reportStatus();
+    }
+
+    synchronized void acceptPlatformEvent(String line) {
+        if (!detached && cluster != null && line.contains("\"shell_power_state\""))
+            cluster.acceptEvent(line);
+    }
+
+    private synchronized void platformCommand(int operation, int value, String source) {
+        if (!detached && shell != null) command(operation, false, source, null, value);
+    }
+
+    private void platformEvent(String kind, Object... fields) {
+        try {
+            org.json.JSONObject event = new org.json.JSONObject().put("kind", kind)
+                    .put("source", "app_platform").put("t_ms", android.os.SystemClock.elapsedRealtime());
+            for (int i = 0; i + 1 < fields.length; i += 2)
+                event.put(String.valueOf(fields[i]), fields[i + 1]);
+            deliverEvent(event.toString());
+        } catch (org.json.JSONException error) { throw new IllegalArgumentException(error); }
     }
 
     synchronized void shutdown() {
@@ -161,11 +233,21 @@ final class CameraRuntimeClient {
         detached = true;
         settings.unregisterOnSharedPreferenceChangeListener(preferenceListener);
         handler.removeCallbacks(preferenceSync);
+        if (pano != null) { pano.stopForTeardown(); pano = null; }
+        if (cluster != null) { cluster.shutdown(); cluster = null; }
+        if (platformRegistered) {
+            context.unregisterReceiver(platformReceiver);
+            platformRegistered = false;
+        }
         if (shell != null) command(CameraRuntimeHost.DETACH, false, "", null);
         shell = null; camera = null;
     }
 
     private Bundle command(int operation, boolean flag, String scope, Bundle bundle) {
+        return command(operation, flag, scope, bundle, 0);
+    }
+
+    private Bundle command(int operation, boolean flag, String scope, Bundle bundle, int platformValue) {
         IBinder target = shell;
         if (target == null) return null;
         Parcel data = Parcel.obtain(), reply = Parcel.obtain();
@@ -177,7 +259,10 @@ final class CameraRuntimeClient {
                 data.writeBundle(bundle);
             if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.VISIBILITY
                     || operation == CameraRuntimeHost.PREVIEW) data.writeInt(flag ? 1 : 0);
-            if (operation == CameraRuntimeHost.SETTINGS) data.writeString(scope);
+            if (operation == CameraRuntimeHost.PANO || operation == CameraRuntimeHost.POWER)
+                data.writeInt(platformValue);
+            if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.PANO)
+                data.writeString(scope);
             if (!target.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
                 throw new IllegalStateException("camera runtime command unsupported");
             reply.readException();
@@ -191,9 +276,14 @@ final class CameraRuntimeClient {
     }
 
     private void failure(String kind, Exception error) {
-        try { events.accept(new org.json.JSONObject().put("kind", kind)
+        try { deliverEvent(new org.json.JSONObject().put("kind", kind)
                 .put("error", error.toString()).toString()); }
         catch (org.json.JSONException ignored) { /* fixed String fields */ }
+    }
+
+    private void deliverEvent(String line) {
+        // HelperBinder's camera entry holds its own lock before ours. Never call it back under ours.
+        handler.post(() -> { if (!detached) events.accept(line); });
     }
 
     static java.util.Map<String, Object> changes(java.util.Map<String, ?> before,

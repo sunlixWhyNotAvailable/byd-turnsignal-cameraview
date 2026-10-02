@@ -97,6 +97,13 @@ final class AvasAudioPlayer implements AutoCloseable {
 
     void setNavigationPriority(boolean enabled) { navigationMonitor.configure(enabled); }
 
+    void navigationVolumeChanged() {
+        ExteriorGain[] outputs;
+        synchronized (exteriorSessionLock) { outputs = exteriorOutputs.toArray(new ExteriorGain[0]); }
+        // Do not hold the session lock while entering a gain's lock (close uses the reverse order).
+        for (ExteriorGain output : outputs) output.refreshNavigationVolume();
+    }
+
     private void navigationChanged(boolean blocked, String reason) {
         synchronized (navigationMonitor) {
             if (closed || navigationBlocked == blocked && navigationReason.equals(reason)) return;
@@ -1541,10 +1548,10 @@ final class AvasAudioPlayer implements AutoCloseable {
         synchronized void prepare() {
             synchronized (exteriorSessionLock) { exteriorOutputs.add(this); }
             int volume = volume();
-            // Until the native curve and its change notifications are available, stay silent.
+            // Until the native NAV curve is available, stay silent. The app forwards volume edges.
             output.setVolume(0f);
             try {
-                navVolume = new AvasExteriorVolume(context, manager, output, () -> {
+                navVolume = new AvasExteriorVolume(manager, output, () -> {
                     try { update(); }
                     catch (RuntimeException failure) {
                         event(diagnostics, "avas_exterior_gain_error", "error", failure.toString());
@@ -1591,6 +1598,10 @@ final class AvasAudioPlayer implements AutoCloseable {
         }
 
         synchronized int appliedVolume() { return appliedVolume; }
+
+        synchronized void refreshNavigationVolume() {
+            if (!disposed && navVolume != null) navVolume.refresh();
+        }
 
         synchronized boolean loudnessEnabled() { return loudness != null; }
 

@@ -274,7 +274,7 @@ public final class CameraHelperServiceThreadingTest {
     }
 
     @Test
-    public void serviceOwnsVisibilityReplayAndRejectsRetainedShellCache() throws Exception {
+    public void appFacadeOwnsVisibilityReplayInsteadOfShellContext() throws Exception {
         assertTrue(CameraHelperService.isShellOemVisibilityEvent(
                 new JSONObject().put("kind", "oem_camera_visibility").toString()));
         assertTrue(CameraHelperService.isShellOemVisibilityEvent(
@@ -292,9 +292,11 @@ public final class CameraHelperServiceThreadingTest {
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
         assertFalse(text.contains("new OemCameraVisibilityRuntime("));
         String host = CameraRuntimeContinuityTest.source("CameraRuntimeHost");
-        assertTrue(host.contains("pano = new OemCameraVisibilityRuntime("));
-        assertTrue(host.contains("pano.reportStatus()"));
-        assertTrue(host.contains("pano.stopForTeardown()"));
+        assertFalse(host.contains("new OemCameraVisibilityRuntime("));
+        String client = CameraRuntimeContinuityTest.source("CameraRuntimeClient");
+        assertTrue(client.contains("pano = new OemCameraVisibilityRuntime(context, handler"));
+        assertTrue(client.contains("pano.reportStatus()"));
+        assertTrue(client.contains("pano.stopForTeardown()"));
 
         Path shellSource = Path.of("app/src/main/java/com/byd/extend/TurnSignalShellMain.java");
         if (!Files.exists(shellSource)) {

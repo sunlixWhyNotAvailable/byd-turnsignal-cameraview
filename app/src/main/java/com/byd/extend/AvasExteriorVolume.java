@@ -1,9 +1,5 @@
 package com.byd.extend;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.media.AudioManager;
 import android.media.AudioRouting;
 import android.media.AudioTrack;
@@ -16,7 +12,6 @@ import java.util.function.Consumer;
 /** Compensates only our track against the real NAV curve; never changes shared stream volume. */
 final class AvasExteriorVolume implements AutoCloseable {
     private static final int NAV_STREAM = 15;
-    private final Context context;
     private final AudioManager manager;
     private final AudioTrack track;
     private final Runnable changed;
@@ -25,17 +20,12 @@ final class AvasExteriorVolume implements AutoCloseable {
     private final Method curve;
     private volatile float attenuation;
     private volatile boolean closed;
-    private boolean registered;
     private boolean monitoring;
     private String lastError = "";
-    private final BroadcastReceiver receiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context ignored, Intent intent) { refresh(); }
-    };
     private final AudioRouting.OnRoutingChangedListener routing = ignored -> refresh();
 
-    AvasExteriorVolume(Context context, AudioManager manager, AudioTrack track,
+    AvasExteriorVolume(AudioManager manager, AudioTrack track,
             Runnable changed, Consumer<String> diagnostic) throws Exception {
-        this.context = context;
         this.manager = manager;
         this.track = track;
         this.changed = changed;
@@ -47,10 +37,6 @@ final class AvasExteriorVolume implements AutoCloseable {
 
     void start() {
         try {
-            IntentFilter filter = new IntentFilter("android.media.VOLUME_CHANGED_ACTION");
-            filter.addAction("android.media.STREAM_MUTE_CHANGED_ACTION");
-            context.registerReceiver(receiver, filter, null, new Handler(Looper.getMainLooper()));
-            registered = true;
             track.addOnRoutingChangedListener(routing, new Handler(Looper.getMainLooper()));
             monitoring = true;
             refresh();
@@ -63,7 +49,8 @@ final class AvasExteriorVolume implements AutoCloseable {
 
     float attenuation() { return attenuation; }
 
-    private void refresh() {
+    // Volume/mute broadcasts arrive through the real app; routing callbacks are native to the track.
+    void refresh() {
         if (closed || !monitoring) return;
         try {
             int index = manager.getStreamVolume(NAV_STREAM);
@@ -100,10 +87,6 @@ final class AvasExteriorVolume implements AutoCloseable {
 
     @Override public void close() {
         closed = true;
-        if (registered) {
-            try { context.unregisterReceiver(receiver); } catch (RuntimeException ignored) { }
-            registered = false;
-        }
         try { track.removeOnRoutingChangedListener(routing); } catch (RuntimeException ignored) { }
     }
 }

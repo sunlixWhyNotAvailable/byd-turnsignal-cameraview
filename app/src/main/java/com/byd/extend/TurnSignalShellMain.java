@@ -1,9 +1,6 @@
 package com.byd.extend;
 
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -95,7 +92,6 @@ public final class TurnSignalShellMain {
         private final ExecutorService avasCloseWorker = Executors.newSingleThreadExecutor();
         private final Runnable recoveryRunnable = this::attemptRecovery;
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
-        private final BroadcastReceiver powerReceiver;
         private final AwakeSessionState awakeSession;
         private IBinder callback;
         private IBinder.DeathRecipient callbackDeathRecipient;
@@ -104,7 +100,6 @@ public final class TurnSignalShellMain {
         private boolean recoveryEnabled;
         private boolean recoveryCommandInFlight;
         private boolean awaitingControllerAttach;
-        private boolean powerReceiverRegistered;
         private IBinder.DeathRecipient controllerDeathRecipient;
         private boolean stdoutFlushScheduled;
         private boolean processTerminationRequested;
@@ -129,13 +124,6 @@ public final class TurnSignalShellMain {
             this.processTerminator = processTerminator;
             powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             awakeSession = loadAwakeSession();
-            powerReceiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context receiverContext, Intent intent) {
-                    String action = intent == null ? "" : String.valueOf(intent.getAction());
-                    handler.post(() -> powerStateChanged(action));
-                }
-            };
             runtime = new TurnSignalGuardRuntime(
                     context, handler, this::emit, this::markStartupCleanupAttempted);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
@@ -156,7 +144,6 @@ public final class TurnSignalShellMain {
         }
 
         void start() {
-            registerPowerReceiver();
             runtime.start();
             warningRuntime.start();
             reverseGearRuntime.start();
@@ -179,7 +166,6 @@ public final class TurnSignalShellMain {
             if (cameras != null) cameras.shutdown();
             handler.removeCallbacks(recoveryRunnable);
             handler.removeCallbacks(wakeCheckRunnable);
-            unregisterPowerReceiver();
             recoveryWorker.shutdownNow();
             clearCallback();
             musicRuntime.stop();
@@ -211,7 +197,7 @@ public final class TurnSignalShellMain {
                                         DiagnosticLogPolicy.print(line);
                                         scheduleStdoutFlush();
                                     }
-                                });
+                                }, this::platformSignal);
                         cameras = cameraRuntime;
                     }
                     int cameraOperation = cameras.transact(data, reply);
@@ -675,29 +661,14 @@ public final class TurnSignalShellMain {
             }
         }
 
-        private void registerPowerReceiver() {
-            IntentFilter filter = new IntentFilter();
-            filter.addAction(Intent.ACTION_SCREEN_ON);
-            filter.addAction(Intent.ACTION_SCREEN_OFF);
-            filter.addAction(Intent.ACTION_USER_PRESENT);
-            filter.addAction("android.intent.action.QUICKBOOT_POWERON");
-            try {
-                context.registerReceiver(powerReceiver, filter);
-                powerReceiverRegistered = true;
-                emit("shell_power_receiver", "registered", true);
-            } catch (Throwable error) {
-                emit("shell_power_receiver", "registered", false,
-                        "error", summary(error));
-            }
-        }
-
-        private void unregisterPowerReceiver() {
-            if (!powerReceiverRegistered) return;
-            powerReceiverRegistered = false;
-            try {
-                context.unregisterReceiver(powerReceiver);
-            } catch (Throwable ignored) {
-            }
+        private void platformSignal(int operation, int value) {
+            handler.post(() -> {
+                if (processTerminationRequested || nonAvasStopped) return;
+                if (operation == CameraRuntimeHost.POWER)
+                    powerStateChanged(value == 1 ? "android.intent.action.QUICKBOOT_POWERON" : "app_power");
+                else if (operation == CameraRuntimeHost.NAV_VOLUME && avasRuntime != null)
+                    avasRuntime.navigationVolumeChanged();
+            });
         }
 
         private void powerStateChanged(String action) {
@@ -802,9 +773,8 @@ public final class TurnSignalShellMain {
         }
 
         private long bootCount() {
-            try {
-                return Settings.Global.getInt(
-                        context.getContentResolver(), Settings.Global.BOOT_COUNT);
+            try (AvasShellSettings settings = new AvasShellSettings(shellContext(context))) {
+                return settings.getInt(Settings.Global.BOOT_COUNT, -1);
             } catch (Throwable ignored) {
                 return -1;
             }

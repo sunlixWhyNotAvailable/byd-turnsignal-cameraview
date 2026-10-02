@@ -15,7 +15,8 @@ import org.json.JSONObject;
 /** Lives in bydextend_helper. App callback death is NOT camera runtime shutdown. */
 final class CameraRuntimeHost {
     static final int ATTACH = 1, SETTINGS = 2, VISIBILITY = 3, PREVIEW = 4,
-            TOGGLE_REVERSE = 5, ACK_SETTINGS = 6, STOP = 7, STATUS = 8, DETACH = 9;
+            TOGGLE_REVERSE = 5, ACK_SETTINGS = 6, STOP = 7, STATUS = 8, DETACH = 9,
+            PANO = 10, POWER = 11, NAV_VOLUME = 12;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int EVENT = 1, PREFERENCES = 2;
     private final HandlerThread thread = new HandlerThread("camera-runtime");
@@ -23,13 +24,12 @@ final class CameraRuntimeHost {
     private final CameraRuntimeContext context;
     private final int appUid;
     private final Consumer<String> journal;
+    private final java.util.function.BiConsumer<Integer, Integer> platformSignal;
     private final CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController blind;
     private ParkingCameraController parking;
     private ReverseCameraController reverse;
     private RearviewMirrorController mirror;
-    private ClusterFullscreenController cluster;
-    private OemCameraVisibilityRuntime pano;
     private final CameraRuntimeLifetime<IBinder> lifetime = new CameraRuntimeLifetime<>();
     private boolean visible;
     private boolean preview;
@@ -50,9 +50,11 @@ final class CameraRuntimeHost {
         }
     }; }
 
-    CameraRuntimeHost(Context system, int appUid, Consumer<String> journal) throws Exception {
+    CameraRuntimeHost(Context system, int appUid, Consumer<String> journal,
+            java.util.function.BiConsumer<Integer, Integer> platformSignal) throws Exception {
         this.appUid = appUid;
         this.journal = journal;
+        this.platformSignal = platformSignal;
         context = new CameraRuntimeContext(system, appUid);
         CameraShellMain.initializeSystemFontsForShell();
         thread.start();
@@ -72,10 +74,11 @@ final class CameraRuntimeHost {
                 || operation == VISIBILITY || operation == PREVIEW ? data.readInt() != 0 : false;
         boolean initialVisible = operation == ATTACH && data.readInt() != 0;
         boolean initialPreview = operation == ATTACH && data.readInt() != 0;
-        String scope = operation == SETTINGS ? data.readString() : "";
+        int platformValue = operation == PANO || operation == POWER ? data.readInt() : 0;
+        String scope = operation == SETTINGS || operation == PANO ? data.readString() : "";
         Bundle pending = call(() -> {
             if (lifetime.stopped() && operation != STOP) throw new IllegalStateException("camera runtime stopped");
-            if (operation != ATTACH && lifetime.client() != owner)
+            if (operation != ATTACH && (owner == null || lifetime.client() != owner))
                 throw new IllegalStateException("camera client attachment expired");
             switch (operation) {
                 case ATTACH:
@@ -92,7 +95,6 @@ final class CameraRuntimeHost {
                     catch (RuntimeException error) { stopOnHandler(); throw error; }
                     event("camera_runtime_attached", "pid", android.os.Process.myPid(), "retained", retained);
                     helper.reportRetainedCameraState();
-                    pano.reportStatus();
                     return changes;
                 case SETTINGS:
                     context.overlayAllowed = flag;
@@ -100,7 +102,20 @@ final class CameraRuntimeHost {
                     if (!"sync".equals(scope)) applySettings(scope);
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
-                case STATUS: helper.reportRetainedCameraState(); pano.reportStatus(); break;
+                case STATUS: helper.reportRetainedCameraState(); break;
+                case PANO:
+                    if (platformValue < -1 || platformValue > 1 || scope == null || scope.length() > 64)
+                        throw new IllegalArgumentException("invalid pano state");
+                    blind.oemVisibility(platformValue >= 0, platformValue == 1);
+                    reverse.oemVisibility(platformValue >= 0, platformValue == 1, scope);
+                    mirror.oemVisibility(platformValue >= 0, platformValue == 1);
+                    break;
+                case POWER:
+                    if (platformValue != 0 && platformValue != 1)
+                        throw new IllegalArgumentException("invalid power event");
+                    platformSignal.accept(operation, platformValue);
+                    break;
+                case NAV_VOLUME: platformSignal.accept(operation, 0); break;
                 case DETACH: clientDied(owner); break;
                 case VISIBILITY: setVisibility(flag); break;
                 case PREVIEW:
@@ -131,12 +146,6 @@ final class CameraRuntimeHost {
         reverse = new ReverseCameraController(context, handler, helper::emitControllerEvent,
                 active -> { blind.setReversePriority(active); parking.setReversePriority(active); });
         mirror = new RearviewMirrorController(context, handler, this::event);
-        cluster = new ClusterFullscreenController(context, context.settings, handler, this::event);
-        pano = new OemCameraVisibilityRuntime(context, handler, (known, active, source) -> {
-            blind.oemVisibility(known, active);
-            reverse.oemVisibility(known, active, source);
-            mirror.oemVisibility(known, active);
-        }, this::event);
         discoverCamera();
         blind.setUiHidden(visible); parking.setUiHidden(visible);
         blind.setSuspended(preview); parking.setSuspended(preview);
@@ -144,7 +153,6 @@ final class CameraRuntimeHost {
         mirror.attachHelper(helper);
         mirror.appVisibility(visible);
         mirror.setRuntimeAllowed(true);
-        pano.start();
     }
 
     private void discoverCamera() {
@@ -189,13 +197,12 @@ final class CameraRuntimeHost {
         else if ("trigger".equals(scope)) blind.applyTriggerSettings();
         else if ("parking".equals(scope)) parking.settingsChanged();
         else if ("reverse".equals(scope)) reverse.settingsChanged();
-        else if ("mirror".equals(scope)) { mirror.settingsChanged(); cluster.settingsChanged(); }
+        else if ("mirror".equals(scope)) mirror.settingsChanged();
         else if ("logging".equals(scope)) helper.configureLogging();
         else {
             helper.configureLogging();
             blind.applySettings(); blind.applyWarningSettings(); blind.applyTriggerSettings();
             parking.settingsChanged(); reverse.settingsChanged(); mirror.settingsChanged();
-            cluster.settingsChanged();
         }
     }
 
@@ -205,7 +212,7 @@ final class CameraRuntimeHost {
 
     private void dispatch(String line) {
         blind.acceptEvent(line); parking.acceptEvent(line); reverse.acceptEvent(line);
-        mirror.acceptEvent(line); cluster.acceptEvent(line);
+        mirror.acceptEvent(line);
     }
 
     private void acceptCameraLine(String line) {
@@ -262,12 +269,10 @@ final class CameraRuntimeHost {
         lifetime.shutdown(() -> {
             unlinkClient();
             handler.removeCallbacks(discoveryRetry);
-            if (pano != null) pano.stopForTeardown();
             if (reverse != null) reverse.shutdown();
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();
             if (parking != null) parking.shutdown();
-            if (cluster != null) cluster.shutdown();
             helper.shutdown(true);
             thread.quitSafely();
         });
