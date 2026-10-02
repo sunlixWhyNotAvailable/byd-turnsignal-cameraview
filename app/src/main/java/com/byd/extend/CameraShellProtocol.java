@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 33;
+    static final int VERSION = 34;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -40,6 +40,7 @@ final class CameraShellProtocol {
     /** Selects one Reverse front/rear mode for one current request. */
     static final int TX_REVERSE_SET_MODE = IBinder.FIRST_CALL_TRANSACTION + 19;
     static final int TX_CONFIGURE_LOGGING = IBinder.FIRST_CALL_TRANSACTION + 20;
+    static final int TX_REVERSE_STEERING = IBinder.FIRST_CALL_TRANSACTION + 21;
     static final int CAP_REVERSE_TOGGLE_MODE = 1;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
@@ -406,6 +407,10 @@ final class CameraShellProtocol {
         final boolean widgetVisible;
         /** Enables automatic Front selection without making the selector widget visible. */
         final boolean switchByGear;
+        final boolean rearDirectionGuidelines;
+        final boolean frontDirectionGuidelines;
+        final boolean rearSteeringShift;
+        final boolean frontSteeringShift;
 
         ReverseOverlaySpec(int requestId, ReverseCameraLayout layout) {
             this(requestId, layout, 8,
@@ -522,6 +527,27 @@ final class CameraShellProtocol {
                 boolean centralFrontIntegrated,
                 boolean widgetVisible,
                 boolean switchByGear) {
+            this(requestId, layout, rawFallbackLayout, cornerRadiusDp,
+                    rearDewarp, leftDewarp, rightDewarp, bufferQuality, visibilityMask,
+                    transparencyPercent, frontLayout, frontRawFallbackLayout,
+                    frontLeftDewarp, frontRightDewarp, frontLeftIntegrated,
+                    frontRightIntegrated, centralFrontDewarp, centralFrontIntegrated,
+                    widgetVisible, switchByGear, true, true, true, true);
+        }
+
+        ReverseOverlaySpec(
+                int requestId, ReverseCameraLayout layout,
+                ReverseCameraLayout rawFallbackLayout, int cornerRadiusDp,
+                CameraDewarpConfig rearDewarp, CameraDewarpConfig leftDewarp,
+                CameraDewarpConfig rightDewarp, int bufferQuality, int visibilityMask,
+                int transparencyPercent, ReverseCameraLayout frontLayout,
+                ReverseCameraLayout frontRawFallbackLayout,
+                CameraDewarpConfig frontLeftDewarp, CameraDewarpConfig frontRightDewarp,
+                boolean frontLeftIntegrated, boolean frontRightIntegrated,
+                CameraDewarpConfig centralFrontDewarp, boolean centralFrontIntegrated,
+                boolean widgetVisible, boolean switchByGear,
+                boolean rearDirectionGuidelines, boolean frontDirectionGuidelines,
+                boolean rearSteeringShift, boolean frontSteeringShift) {
             if (layout == null) throw new IllegalArgumentException("reverse layout required");
             if (rawFallbackLayout == null) {
                 throw new IllegalArgumentException("reverse raw fallback layout required");
@@ -558,6 +584,10 @@ final class CameraShellProtocol {
             this.centralFrontIntegrated = centralFrontIntegrated;
             this.widgetVisible = widgetVisible;
             this.switchByGear = switchByGear;
+            this.rearDirectionGuidelines = rearDirectionGuidelines;
+            this.frontDirectionGuidelines = frontDirectionGuidelines;
+            this.rearSteeringShift = rearSteeringShift;
+            this.frontSteeringShift = frontSteeringShift;
         }
 
         void writeToParcel(Parcel parcel) {
@@ -600,6 +630,10 @@ final class CameraShellProtocol {
             parcel.writeInt(frontRightIntegrated ? 1 : 0);
             parcel.writeInt(centralFrontIntegrated ? 1 : 0);
             parcel.writeInt(switchByGear ? 1 : 0);
+            parcel.writeInt(rearDirectionGuidelines ? 1 : 0);
+            parcel.writeInt(frontDirectionGuidelines ? 1 : 0);
+            parcel.writeInt(rearSteeringShift ? 1 : 0);
+            parcel.writeInt(frontSteeringShift ? 1 : 0);
             writeDewarp(parcel, frontLeftDewarp);
             writeDewarp(parcel, frontRightDewarp);
             writeDewarp(parcel, centralFrontDewarp);
@@ -750,6 +784,10 @@ final class CameraShellProtocol {
             boolean frontRightIntegrated = readBoolean(parcel);
             boolean centralFrontIntegrated = readBoolean(parcel);
             boolean switchByGear = readBoolean(parcel);
+            boolean rearDirectionGuidelines = readBoolean(parcel);
+            boolean frontDirectionGuidelines = readBoolean(parcel);
+            boolean rearSteeringShift = readBoolean(parcel);
+            boolean frontSteeringShift = readBoolean(parcel);
             CameraDewarpConfig frontLeftDewarp = readDewarp(parcel);
             CameraDewarpConfig frontRightDewarp = readDewarp(parcel);
             CameraDewarpConfig centralFrontDewarp = readDewarp(parcel);
@@ -794,7 +832,9 @@ final class CameraShellProtocol {
                     transparencyPercent, frontLayout, frontRawFallbackLayout,
                     frontLeftDewarp, frontRightDewarp,
                     frontLeftIntegrated, frontRightIntegrated,
-                    centralFrontDewarp, centralFrontIntegrated, widgetVisible, switchByGear);
+                    centralFrontDewarp, centralFrontIntegrated, widgetVisible, switchByGear,
+                    rearDirectionGuidelines, frontDirectionGuidelines,
+                    rearSteeringShift, frontSteeringShift);
             for (int index = 0; index < BORDER_COUNT; index++) {
                 result.setBorder(index, parcel.readInt(), parcel.readInt());
             }

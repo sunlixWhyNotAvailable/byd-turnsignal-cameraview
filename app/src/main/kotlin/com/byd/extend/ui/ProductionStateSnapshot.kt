@@ -250,6 +250,18 @@ private fun readReverse(
     val selectedElement = enumPreference(preferences, UiSelectionPreferences.REVERSE_ELEMENT,
         ReverseElement.RearLeft)
     val selectedTarget = elementTargets[selectedElement] ?: DisplayTarget.Tablet
+    val frontIntegration = mapOf(
+        ReverseElement.Rear to ReverseCameraController.loadCentralFrontIntegrated(preferences),
+        ReverseElement.RearLeft to ReverseCameraController.loadFrontIntegrated(
+            preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
+        ReverseElement.RearRight to ReverseCameraController.loadFrontIntegrated(
+            preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
+    )
+    val selectedSource = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
+        ReverseSource.Rear).let { source ->
+        if (source == ReverseSource.Front && frontIntegration[selectedElement] != true)
+            ReverseSource.Rear else source
+    }
     val profiles = buildMap<CameraProfileId.Reverse, CameraProfileUiState> {
         for (index in ReverseCameraLayout.REAR_CAMERA_INDEX..ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
             val element = reverseElement(index)
@@ -285,18 +297,18 @@ private fun readReverse(
             CameraSection.Parameters),
         selectedElement = selectedElement,
         selectedTarget = selectedTarget,
-        selectedSource = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
-            ReverseSource.Rear),
-        showFront = enumPreference(preferences, UiSelectionPreferences.REVERSE_SOURCE,
-            ReverseSource.Rear) == ReverseSource.Front,
+        selectedSource = selectedSource,
+        showFront = selectedSource == ReverseSource.Front,
+        rearDirectionGuidelines = ReverseGuidanceSettings.isDirectionGuidelinesEnabled(
+            preferences, false),
+        rearCameraShiftWithSteering = ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(
+            preferences, false),
+        frontDirectionGuidelines = ReverseGuidanceSettings.isDirectionGuidelinesEnabled(
+            preferences, true),
+        frontCameraShiftWithSteering = ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(
+            preferences, true),
         steeringKeyCode = CameraButtonBindings.load(preferences, CameraButtonBindings.Action.ReverseSource).keyCode,
-        frontIntegration = mapOf(
-            ReverseElement.Rear to ReverseCameraController.loadCentralFrontIntegrated(preferences),
-            ReverseElement.RearLeft to ReverseCameraController.loadFrontIntegrated(
-                preferences, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX),
-            ReverseElement.RearRight to ReverseCameraController.loadFrontIntegrated(
-                preferences, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX),
-        ),
+        frontIntegration = frontIntegration,
         geometry = geometryByTarget[selectedTarget] ?: geometryByTarget.getValue(DisplayTarget.Tablet),
         geometryByTarget = geometryByTarget,
         elementTargets = elementTargets,

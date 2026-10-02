@@ -12,6 +12,9 @@
     <string name="layout">"Композиція"</string>
     <string name="placement">"Розташування"</string>
     <string name="calibration">"Калібрування"</string>
+    <string name="direction_lines">"Лінії напрямку"</string>
+    <string name="steering_camera_shift">"Зміщення від оберту керма"</string>
+    <string name="guidance_unavailable">"Недоступно в цій версії"</string>
     <string name="preset_saved">"Пресет збережено"</string>
     <string name="preset_loaded">"Пресет завантажено"</string>
     <string name="settings_transferred_value">"Налаштування перенесено • %1$s"</string>

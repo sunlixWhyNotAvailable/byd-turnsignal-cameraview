@@ -26,7 +26,7 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 5;
+    private static final int VERSION = 6;
     private static final int BORDER_VERSION = 4;
     private static final int LEGACY_GEOMETRY_VERSION = 3;
     private static final int PREVIOUS_VERSION = 2;
@@ -60,7 +60,7 @@ public final class CameraSettingsTransfer {
 
     private CameraSettingsTransfer() {}
 
-    /** Legacy v2 export without destination geometry or the v5 correction controls. */
+    /** Legacy v2 export without destination geometry or newer correction/guidance controls. */
     public static String exportCameraPreset(SharedPreferences preferences) {
         return exportCameraPreset(preferences, null, PREVIOUS_VERSION);
     }
@@ -87,6 +87,7 @@ public final class CameraSettingsTransfer {
             result.put("schema", SCHEMA).put("version", version);
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
+                if (version < VERSION && isReverseGuidanceKey(entry.getKey())) continue;
                 if (version < 5 && (entry.getKey().endsWith("_strength_percent")
                         || entry.getKey().endsWith("_fov_precise")
                         || isNewReverseDisplayKey(entry.getKey())
@@ -499,6 +500,14 @@ public final class CameraSettingsTransfer {
                 ReverseCameraController.loadWidgetVisible(p));
         out.put(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED,
                 ReverseCameraController.loadCentralFrontIntegrated(p));
+        out.put(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES,
+                ReverseGuidanceSettings.isDirectionGuidelinesEnabled(p, false));
+        out.put(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT,
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(p, false));
+        out.put(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES,
+                ReverseGuidanceSettings.isDirectionGuidelinesEnabled(p, true));
+        out.put(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT,
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(p, true));
         addMirror(out, p, geometry != null);
 
         for (CameraProfile profile : CameraProfile.values()) {
@@ -1293,6 +1302,10 @@ public final class CameraSettingsTransfer {
         keys.add("parking_camera_scale_sync"); keys.add(ReverseCameraController.PREF_ENABLED);
         keys.add(ReverseCameraController.PREF_BACKGROUND_VISIBLE); keys.add(ReverseCameraController.PREF_WIDGET_VISIBLE);
         keys.add(ReverseCameraController.PREF_CENTRAL_FRONT_INTEGRATED);
+        keys.add(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES);
+        keys.add(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT);
+        keys.add(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES);
+        keys.add(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT);
         keys.add(RearviewMirrorSettings.PREF_ENABLED);
         keys.add(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA);
         keys.add(RearviewMirrorSettings.PREF_TARGET);
@@ -1390,6 +1403,7 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
         return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
+                || version < VERSION && isReverseGuidanceKey(key)
                 || isNewReverseDisplayKey(key)
                 || isBlindHoldDurationKey(key)
                 || version < BORDER_VERSION && isBorderKey(key)
@@ -1571,6 +1585,7 @@ public final class CameraSettingsTransfer {
                 || key.equals(RearviewMirrorSettings.PREF_ENABLED)
                 || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
                 || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
+                || isReverseGuidanceKey(key)
                 || key.equals(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA)
                 || key.equals(BlindSpotOverlayController.PREF_REAR_HOLD_AFTER_SHORT_TURN)
@@ -1578,6 +1593,13 @@ public final class CameraSettingsTransfer {
                 || key.equals(RearviewMirrorSettings.PREF_SUPPRESS_WHILE_PANORAMA)
                 || key.equals("music_capture_focus_on_open")
                 || key.equals("mirror_correction") || key.equals("mirror_mirrored");
+    }
+
+    private static boolean isReverseGuidanceKey(String key) {
+        return key.equals(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES)
+                || key.equals(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT)
+                || key.equals(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES)
+                || key.equals(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT);
     }
 
     private static boolean isIntegerKey(String key) {

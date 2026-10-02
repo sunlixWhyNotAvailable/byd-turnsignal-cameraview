@@ -9,13 +9,14 @@ import org.junit.Test
 class RuntimeUiSessionTest {
     @Test
     fun selectionsRoundTripAndApplyBeforeRendering() {
-        val initial = BydExtendUiState()
+        val initial = BydExtendUiState().copy(reverse = ReverseUiState(
+            frontIntegration = mapOf(ReverseElement.Rear to true)))
         val selected = RuntimeUiSelections.from(initial).copy(
             activeTab = RootTab.Reverse,
             signalsCategory = SignalsCategory.Weather,
             blindGroup = CameraGroup.Front,
             parkingView = ParkingView.RearRight,
-            reverseElement = ReverseElement.Widget,
+            reverseElement = ReverseElement.Rear,
             reverseSource = ReverseSource.Front,
             settingsCategory = SettingsCategory.Logs,
             diagnosticMode = DiagnosticMode.Avm,
@@ -26,11 +27,42 @@ class RuntimeUiSessionTest {
         assertEquals(SignalsCategory.Weather, restored.signals.category)
         assertEquals(CameraGroup.Front, restored.blind.selectedGroup)
         assertEquals(ParkingView.RearRight, restored.parking.selectedView)
-        assertEquals(ReverseElement.Widget, restored.reverse.selectedElement)
+        assertEquals(ReverseElement.Rear, restored.reverse.selectedElement)
         assertEquals(ReverseSource.Front, restored.reverse.selectedSource)
         assertEquals(true, restored.reverse.showFront)
         assertEquals(SettingsCategory.Logs, restored.settings.category)
         assertEquals(DiagnosticMode.Avm, restored.debug.mode)
+    }
+
+    @Test
+    fun frontSourceFallsBackOnlyForTheSelectedUnintegratedCameraPair() {
+        val state = BydExtendUiState().copy(reverse = ReverseUiState(
+            frontIntegration = mapOf(
+                ReverseElement.Rear to true,
+                ReverseElement.RearLeft to false,
+                ReverseElement.RearRight to true,
+            )))
+        val integratedFront = RuntimeUiSelections.from(state).copy(
+            reverseElement = ReverseElement.RearRight,
+            reverseSource = ReverseSource.Front,
+            reverseSection = CameraSection.Calibration,
+        ).applyTo(state)
+        assertEquals(ReverseSource.Front, integratedFront.reverse.selectedSource)
+        assertEquals(true, integratedFront.reverse.showFront)
+        assertEquals(CameraSection.Calibration, integratedFront.reverse.section)
+
+        val unintegratedFront = RuntimeUiSelections.from(state).copy(
+            reverseElement = ReverseElement.RearLeft,
+            reverseSource = ReverseSource.Front,
+        ).applyTo(state)
+        assertEquals(ReverseSource.Rear, unintegratedFront.reverse.selectedSource)
+        assertEquals(false, unintegratedFront.reverse.showFront)
+
+        val nonCameraFront = RuntimeUiSelections.from(state).copy(
+            reverseElement = ReverseElement.Widget,
+            reverseSource = ReverseSource.Front,
+        ).applyTo(state)
+        assertEquals(ReverseSource.Rear, nonCameraFront.reverse.selectedSource)
     }
 
     @Test

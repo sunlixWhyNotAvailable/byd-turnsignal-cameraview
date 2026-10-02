@@ -11,7 +11,7 @@ final class DiagnosticLogPolicy {
     private static volatile boolean extended;
     private static final DiagnosticLogPolicy STDOUT = new DiagnosticLogPolicy();
     private static final Set<String> DETAIL = new HashSet<>(Arrays.asList(
-            "telemetry_sample", "listener_event", "vehicle_state", "bsd_read",
+            "telemetry_sample", "listener_event", "vehicle_state", "bsd_read", "reverse_steering_state",
             "bsd_event_ignored", "parking_radar_snapshot", "parking_radar_state",
             "parking_radar_event_ignored", "reverse_gear_read", "camera_source_hub_stats",
             "camera_dewarp_stats", "camera_overlay_frame", "reverse_overlay_frame",
@@ -26,7 +26,7 @@ final class DiagnosticLogPolicy {
     private static final Set<String> FUNCTIONAL_DETAIL = new HashSet<>(Arrays.asList(
             "vehicle_state", "parking_radar_state", "camera_overlay_frame", "reverse_overlay_frame",
             "avm_event", "parking_radar_snapshot", "music_metadata_publish", "music_journal_snapshot",
-            "lifetime_counters"));
+            "lifetime_counters", "reverse_steering_state"));
     private String lastError = "", lastKind = "";
     private long firstAt, lastAt, repeats;
     private boolean suppressed;

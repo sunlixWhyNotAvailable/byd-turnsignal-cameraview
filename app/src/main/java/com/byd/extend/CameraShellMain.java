@@ -419,6 +419,20 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_REVERSE_STEERING) {
+                    int requestId = data.readInt();
+                    if (requestId <= 0) throw new IllegalArgumentException("invalid reverse request id");
+                    ReverseSteeringSample sample = new ReverseSteeringSample(
+                            data.readFloat(), data.readFloat(), data.readFloat(), data.readLong());
+                    runOnMain(() -> {
+                        for (ShellReverseCameraOverlay output : reverseOverlays) {
+                            output.updateSteering(requestId, sample);
+                        }
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == CameraShellProtocol.TX_REVERSE_CLOSE) {
                     String reason = data.readString();
                     runOnMain(() -> {

@@ -19,12 +19,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class FixedBydTelemetryManager {
     interface Listener {
         void onValue(int device, int fid, int value, long receivedMs);
+        default void onBytes(int device, int fid, byte[] value, long receivedMs) {}
         void onError(String reason, long receivedMs);
     }
 
     interface Subscription { void close(); }
 
-    enum ValueType { INTEGER, FLOAT }
+    enum ValueType { INTEGER, FLOAT, BYTES }
 
     static final class Request {
         final int device;
@@ -53,6 +54,7 @@ final class FixedBydTelemetryManager {
     private final Method unregister;
     private final Method enable;
     private final Method disable;
+    private final Method getBuffer;
     private final Object managerListener;
     private final Map<Long, Client> clients = new LinkedHashMap<>();
     private final Map<Integer, Set<Integer>> enabled = new LinkedHashMap<>();
@@ -73,7 +75,24 @@ final class FixedBydTelemetryManager {
         unregister = managerType.getMethod("unregisterListener", listenerType);
         enable = managerType.getMethod("enableDevice", int.class, int[].class);
         disable = managerType.getMethod("disableDevice", int.class);
+        Method bufferReader;
+        try {
+            bufferReader = managerType.getMethod("getBuffer", int.class, int.class);
+        } catch (NoSuchMethodException unavailableOnNumericOnlyBuild) {
+            bufferReader = null;
+        }
+        getBuffer = bufferReader;
         managerListener = createListenerProxy();
+    }
+
+    byte[] readBuffer(int device, int fid) throws Exception {
+        if (getBuffer == null) throw new IllegalStateException("BYDAutoManager getBuffer unavailable");
+        Object value = getBuffer.invoke(manager, device, fid);
+        if (!(value instanceof byte[])) {
+            throw new IllegalStateException("getBuffer returned "
+                    + (value == null ? "null" : value.getClass().getSimpleName()));
+        }
+        return ((byte[]) value).clone();
     }
 
     private static Object resolveManager(Context context) {
@@ -154,6 +173,14 @@ final class FixedBydTelemetryManager {
         for (Client client : snapshot) {
             if (!client.active || !client.accepts(device, fid)) continue;
             ValueType expected = client.valueType(device, fid);
+            byte[] bytes = callbackBytes(expected, value);
+            if (bytes != null) {
+                try {
+                    client.listener.onBytes(device, fid, bytes, receivedMs);
+                } catch (RuntimeException ignored) {
+                }
+                continue;
+            }
             Integer raw = callbackRaw(expected, value);
             try {
                 if (raw != null) {
@@ -175,6 +202,11 @@ final class FixedBydTelemetryManager {
         }
         if (expected == ValueType.INTEGER && value instanceof Integer) return (Integer) value;
         return null;
+    }
+
+    static byte[] callbackBytes(ValueType expected, Object value) {
+        return expected == ValueType.BYTES && value instanceof byte[]
+                ? ((byte[]) value).clone() : null;
     }
 
     private synchronized void dispatchError(String reason, long receivedMs) {

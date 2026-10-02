@@ -121,6 +121,11 @@ class ProductionUiController @JvmOverloads constructor(
             is BydExtendUiAction.PreviewNumber -> !matchesNumberTarget(action.target)
             is BydExtendUiAction.Toggle -> (action.target as? ToggleTarget.Profile)?.let {
                 !matchesMirrorSource(it.profile, it.mirrorFront)
+            } ?: (action.target as? ToggleTarget.ReverseSource)?.let {
+                it.id == ToggleId.ReverseDirectionGuidelines ||
+                    state.activeTab != RootTab.Reverse ||
+                    state.reverse.selectedElement != ReverseElement.Rear ||
+                    state.reverse.selectedSource != it.source
             } ?: false
             is BydExtendUiAction.Select -> (action.target as? SelectionTarget.Profile)?.let {
                 !matchesMirrorSource(it.profile, it.mirrorFront)
@@ -267,6 +272,12 @@ class ProductionUiController @JvmOverloads constructor(
                         }
                     }
                     simple?.id == SelectionId.ReverseElement -> typedBackendHandled = true
+                    simple?.id == SelectionId.ReverseSource &&
+                        state.reverse.selectedSource.ordinal != action.index -> {
+                        // A stale/programmatic Front selection must not reach the Activity after
+                        // the controller has sanitized it to Rear for this pane's integration.
+                        typedBackendHandled = true
+                    }
                     simple?.id == SelectionId.MirrorTarget -> typedBackendHandled = true
                     simple?.id == SelectionId.MirrorSource -> {
                         typedBackendHandled = true
@@ -551,8 +562,10 @@ class ProductionUiController @JvmOverloads constructor(
             reverse = fresh.reverse.copy(
                 section = old.reverse.section,
                 selectedElement = old.reverse.selectedElement,
-                selectedSource = old.reverse.selectedSource,
-                showFront = old.reverse.showFront,
+                selectedSource = fresh.reverse.sourceFor(
+                    old.reverse.selectedElement, old.reverse.selectedSource),
+                showFront = fresh.reverse.sourceFor(
+                    old.reverse.selectedElement, old.reverse.selectedSource) == ReverseSource.Front,
                 panoramaOperation = old.reverse.panoramaOperation,
                 profiles = mergeProfileOperations(fresh.reverse.profiles, old.reverse.profiles),
             ),
@@ -590,6 +603,11 @@ class ProductionUiController @JvmOverloads constructor(
             ),
             dialog = old.dialog,
         ))
+        if (state.reverse.selectedSource != old.reverse.selectedSource) {
+            preferences.edit().putInt(UiSelectionPreferences.REVERSE_SOURCE,
+                state.reverse.selectedSource.ordinal).apply()
+            RuntimeUiSession.updateSelections(RuntimeUiSelections.from(state))
+        }
     }
 
     fun setHeader(header: HeaderUiState) { state = state.copy(header = header) }
@@ -1118,9 +1136,14 @@ class ProductionUiController @JvmOverloads constructor(
                 selectedView = ParkingView.entries.getOrElse(index) { ParkingView.FrontLeft }))
             SelectionId.ReverseElement -> {
                 val value = ReverseElement.entries.getOrElse(index) { ReverseElement.RearLeft }
-                preferences.edit().putInt(UiSelectionPreferences.REVERSE_ELEMENT, value.ordinal).apply()
+                // Changing panes starts on Rear; only section navigation retains the source.
+                val source = ReverseSource.Rear
+                preferences.edit().putInt(UiSelectionPreferences.REVERSE_ELEMENT, value.ordinal)
+                    .putInt(UiSelectionPreferences.REVERSE_SOURCE, source.ordinal).apply()
                 val target = state.reverse.elementTargets[value] ?: DisplayTarget.Tablet
                 state = state.copy(reverse = state.reverse.copy(selectedElement = value,
+                    selectedSource = source,
+                    showFront = source == ReverseSource.Front,
                     selectedTarget = target,
                     geometry = state.reverse.geometryByTarget[target]
                         ?: state.reverse.geometry,
@@ -1139,7 +1162,8 @@ class ProductionUiController @JvmOverloads constructor(
                     displayGeometry = backend.productionDisplayGeometry(value)))
             }
             SelectionId.ReverseSource -> {
-                val value = ReverseSource.entries.getOrElse(index) { ReverseSource.Rear }
+                val requested = ReverseSource.entries.getOrElse(index) { ReverseSource.Rear }
+                val value = state.reverse.sourceFor(state.reverse.selectedElement, requested)
                 preferences.edit().putInt(UiSelectionPreferences.REVERSE_SOURCE, value.ordinal).apply()
                 state = state.copy(reverse = state.reverse.copy(
                     selectedSource = value, showFront = value == ReverseSource.Front))

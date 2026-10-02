@@ -58,6 +58,51 @@ public final class CameraSettingsTransferTest {
     }
 
     @Test
+    public void v6RoundTripsCentralGuidanceAndOldPresetDefaultsMissingFlagsOn() {
+        TestSharedPreferences source = new TestSharedPreferences();
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(source, false, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(source, false, true);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(source, true, true);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(source, true, false);
+
+        Map<String, Object> current = CameraSettingsTransfer.parseCameraPreset(
+                CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
+        assertEquals(6, current.get("version"));
+        @SuppressWarnings("unchecked") Map<String, Object> values =
+                (Map<String, Object>) current.get("settings");
+        assertEquals(false, values.get(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES));
+        assertEquals(true, values.get(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT));
+        assertEquals(true, values.get(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES));
+        assertEquals(false, values.get(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT));
+        assertFalse(values.containsKey("reverse_camera_parking_guidelines"));
+
+        TestSharedPreferences roundTrip = new TestSharedPreferences();
+        CameraSettingsTransfer.applyCameraPreset(roundTrip, current, GEOMETRY);
+        assertFalse(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(roundTrip, false));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(roundTrip, false));
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(roundTrip, true));
+        assertFalse(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(roundTrip, true));
+
+        @SuppressWarnings("unchecked") Map<String, Object> oldValues =
+                (Map<String, Object>) current.get("settings");
+        oldValues.remove(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES);
+        oldValues.remove(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT);
+        oldValues.remove(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES);
+        oldValues.remove(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT);
+        current.put("version", 5);
+        TestSharedPreferences oldPresetTarget = new TestSharedPreferences();
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(oldPresetTarget, false, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(oldPresetTarget, false, false);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(oldPresetTarget, true, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(oldPresetTarget, true, false);
+        CameraSettingsTransfer.applyCameraPreset(oldPresetTarget, current, GEOMETRY);
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(oldPresetTarget, false));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(oldPresetTarget, false));
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(oldPresetTarget, true));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(oldPresetTarget, true));
+    }
+
+    @Test
     public void correctedFreeMarkerRoundTripsAndOldPresetClearsStaleMarker() {
         TestSharedPreferences source = new TestSharedPreferences();
         CameraProfile profile = CameraProfile.of(CameraProfile.REAR_LEFT);
@@ -544,7 +589,7 @@ public final class CameraSettingsTransferTest {
 
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
-        assertEquals(5, parsed.get("version"));
+        assertEquals(6, parsed.get("version"));
         @SuppressWarnings("unchecked") Map<String, Object> values =
                 (Map<String, Object>) parsed.get("settings");
         for (CameraProfile profile : CameraProfile.values()) {
@@ -764,7 +809,7 @@ public final class CameraSettingsTransferTest {
 
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(
                 CameraSettingsTransfer.exportCameraPreset(source, GEOMETRY));
-        assertEquals(5, parsed.get("version"));
+        assertEquals(6, parsed.get("version"));
         TestSharedPreferences target = new TestSharedPreferences();
         CameraSettingsTransfer.applyCameraPreset(target, parsed, GEOMETRY);
         assertEquals(3, CameraBorderSettings.forBlind(target, CameraProfile.FRONT_LEFT).borderDp);

@@ -12,6 +12,9 @@
     <string name="layout">"布局"</string>
     <string name="placement">"位置"</string>
     <string name="calibration">"校准"</string>
+    <string name="direction_lines">"行驶轨迹线"</string>
+    <string name="steering_camera_shift">"随方向盘转动偏移画面"</string>
+    <string name="guidance_unavailable">"当前版本暂不可用"</string>
     <string name="preset_saved">"预设已保存"</string>
     <string name="preset_loaded">"预设已加载"</string>
     <string name="settings_transferred_value">"设置已传送 • %1$s"</string>

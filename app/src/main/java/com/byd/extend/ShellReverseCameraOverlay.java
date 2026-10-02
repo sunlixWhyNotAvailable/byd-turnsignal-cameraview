@@ -5,6 +5,7 @@ import android.graphics.Color;
 import android.graphics.Point;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Display;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -41,6 +42,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private boolean frontIntegrationAvailable;
     private long selectorActionGeneration;
     private Runnable pendingSelectorAction;
+    private ReverseSteeringSample steeringSample = ReverseSteeringSample.UNKNOWN;
+    private boolean rearSteeringShift = true;
+    private boolean frontSteeringShift = true;
+    private final Runnable steeringExpired = this::applySteering;
 
     ShellReverseCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
         this(context, CameraDisplayTarget.TABLET, eventSink);
@@ -118,6 +123,11 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             }
         }
         requestId = spec.requestId;
+        rearSteeringShift = spec.rearSteeringShift;
+        frontSteeringShift = spec.frontSteeringShift;
+        if (spec.rearDirectionGuidelines || spec.frontDirectionGuidelines)
+            emit("reverse_guidelines_unavailable", "reason", "oem_projection_not_compatible",
+                    "request_id", requestId);
         imageAlpha = WindowlessOverlayHost.alphaForTransparency(spec.transparencyPercent);
         completedFrameRequestId = 0;
         blockedRevealReported = false;
@@ -153,6 +163,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             windowless.setVisible(false, imageAlpha);
         }
         active = true;
+        applySteering();
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
         emit("reverse_overlay_prepare", "request_id", requestId,
@@ -179,6 +190,25 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         return new SurfaceSnapshot(
                 bundle.requestId, displayTarget, bundle.sourceIndexes,
                 bundle.generations, bundle.surfaces);
+    }
+
+    void updateSteering(int expectedRequestId, ReverseSteeringSample sample) {
+        if (!active || root == null || expectedRequestId != requestId) return;
+        steeringSample = sample;
+        applySteering();
+    }
+
+    private void applySteering() {
+        mainHandler.removeCallbacks(steeringExpired);
+        if (!active || root == null) return;
+        long now = SystemClock.elapsedRealtime();
+        float angle = steeringSample.freshAngle(now);
+        root.setSteeringShift(angle, steeringSample.minimumDegrees,
+                steeringSample.maximumDegrees, rearSteeringShift, frontSteeringShift);
+        if (Float.isFinite(angle)) {
+            mainHandler.postDelayed(steeringExpired,
+                    Math.max(1L, steeringSample.observedMs + ReverseSteeringSample.MAX_AGE_MS + 1L - now));
+        }
     }
 
     void armFrames(int expectedRequestId, int[] expectedGenerations) {
@@ -320,6 +350,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     private void quiesce(String reason) {
+        mainHandler.removeCallbacks(steeringExpired);
+        steeringSample = ReverseSteeringSample.UNKNOWN;
         ReverseCameraCompositionView activeRoot = root;
         if (activeRoot == null || !active) return;
         WindowlessOverlayHost activeHost = windowless;

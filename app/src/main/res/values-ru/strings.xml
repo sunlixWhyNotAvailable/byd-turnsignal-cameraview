@@ -12,6 +12,9 @@
     <string name="layout">"Композиция"</string>
     <string name="placement">"Расположение"</string>
     <string name="calibration">"Калибровка"</string>
+    <string name="direction_lines">"Линии направления"</string>
+    <string name="steering_camera_shift">"Смещение от поворота руля"</string>
+    <string name="guidance_unavailable">"Недоступно в этой версии"</string>
     <string name="preset_saved">"Пресет сохранён"</string>
     <string name="preset_loaded">"Пресет загружен"</string>
     <string name="settings_transferred_value">"Настройки перенесены • %1$s"</string>

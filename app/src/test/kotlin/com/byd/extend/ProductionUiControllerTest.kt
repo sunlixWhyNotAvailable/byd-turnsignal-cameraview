@@ -127,23 +127,84 @@ class ProductionUiControllerTest {
     @Test
     fun newControllerRestoresCapturedProcessSelectionsBeforeItsFirstState() {
         val firstPreferences = TestSharedPreferences()
+        ReverseCameraController.saveCentralFrontIntegrated(firstPreferences, true)
         val first = ProductionUiController(firstPreferences, FakeBackend(firstPreferences))
         first.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
         first.dispatch(BydExtendUiAction.Select(
-            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.Widget.ordinal))
+            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.Rear.ordinal))
         first.dispatch(BydExtendUiAction.Select(
             SelectionTarget.Simple(SelectionId.ReverseSource), ReverseSource.Front.ordinal))
+        first.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.CameraSection), CameraSection.Calibration.ordinal))
         RuntimeUiSession.INSTANCE.getOrCreate(RuntimeUiSelections.from(first.state))
             .select(RuntimeUiSelections.from(first.state))
 
         val recreatedPreferences = TestSharedPreferences()
+        ReverseCameraController.saveCentralFrontIntegrated(recreatedPreferences, true)
         val recreated = ProductionUiController(
             recreatedPreferences, FakeBackend(recreatedPreferences))
 
         assertEquals(RootTab.Reverse, recreated.state.activeTab)
-        assertEquals(ReverseElement.Widget, recreated.state.reverse.selectedElement)
+        assertEquals(ReverseElement.Rear, recreated.state.reverse.selectedElement)
         assertEquals(ReverseSource.Front, recreated.state.reverse.selectedSource)
         assertTrue(recreated.state.reverse.showFront)
+        assertEquals(CameraSection.Calibration, recreated.state.reverse.section)
+    }
+
+    @Test
+    fun reverseSourceUsesPerPairIntegrationAndGuidanceShiftIsSourceSpecific() {
+        val preferences = TestSharedPreferences()
+        ReverseCameraController.saveCentralFrontIntegrated(preferences, true)
+        val backend = FakeBackend(preferences)
+        backend.effect = { action ->
+            if (action is BydExtendUiAction.Toggle) {
+                val target = action.target as? ToggleTarget.ReverseSource
+                if (target?.id == ToggleId.ReverseCameraShiftWithSteering) {
+                    ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(
+                        preferences, target.source == ReverseSource.Front, action.value)
+                }
+                val integration = action.target as? ToggleTarget.Reverse
+                if (integration?.id == ToggleId.ReverseFrontIntegration &&
+                    integration.element == ReverseElement.Rear) {
+                    ReverseCameraController.saveCentralFrontIntegrated(preferences, action.value)
+                }
+            }
+        }
+        val controller = ProductionUiController(preferences, backend)
+        controller.dispatch(BydExtendUiAction.Navigate(RootTab.Reverse))
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.Rear.ordinal))
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseSource), ReverseSource.Front.ordinal))
+
+        val actionsBeforeDisabledToggle = backend.actions.size
+        controller.dispatch(BydExtendUiAction.Toggle(ToggleTarget.ReverseSource(
+            ToggleId.ReverseDirectionGuidelines, ReverseSource.Front), false))
+        assertEquals(actionsBeforeDisabledToggle, backend.actions.size)
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true))
+
+        controller.dispatch(BydExtendUiAction.Toggle(ToggleTarget.ReverseSource(
+            ToggleId.ReverseCameraShiftWithSteering, ReverseSource.Front), false))
+        assertFalse(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true))
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false))
+        assertFalse(controller.state.reverse.cameraShiftWithSteering)
+
+        val frontCrop = ReverseCameraLayout.sourceCrop(0.12f, 0.16f, 0.64f, 0.68f)
+        ReverseCameraController.saveFrontSourceCrop(
+            preferences, ReverseCameraLayout.REAR_CAMERA_INDEX, frontCrop, false)
+        controller.dispatch(BydExtendUiAction.Toggle(
+            ToggleTarget.Reverse(ToggleId.ReverseFrontIntegration, ReverseElement.Rear), false))
+        assertEquals(ReverseSource.Rear, controller.state.reverse.selectedSource)
+        assertEquals(ReverseSource.Rear.ordinal,
+            preferences.getInt(UiSelectionPreferences.REVERSE_SOURCE, -1))
+        assertEquals(frontCrop.left, ReverseCameraController.loadFrontRawLayout(preferences)
+            .pane(ReverseCameraLayout.REAR_CAMERA_INDEX).sourceCrop.left, 0f)
+        assertFalse(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true))
+
+        controller.dispatch(BydExtendUiAction.Select(
+            SelectionTarget.Simple(SelectionId.ReverseElement), ReverseElement.RearLeft.ordinal))
+        assertEquals(ReverseSource.Rear, controller.state.reverse.selectedSource)
+        assertFalse(controller.state.reverse.showFront)
     }
 
     @Test

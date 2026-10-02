@@ -201,7 +201,7 @@ public class CameraCorrectionStrengthTest {
                 com.byd.extend.ui.ProfileNumber.Strength, null, "50"));
     }
 
-    @Test public void v5ExportAndOldImportsRetainCompatibilityWithoutReadTimeWrites() {
+    @Test public void v6ExportAndOldImportsRetainCompatibilityWithoutReadTimeWrites() {
         TestSharedPreferences p = new TestSharedPreferences();
         CameraProfile left = CameraProfile.of(CameraProfile.REAR_LEFT);
         CameraDewarpConfig.saveForProfile(p, left, selected());
@@ -209,7 +209,7 @@ public class CameraCorrectionStrengthTest {
         Map<String, ?> before = p.getAll();
         CameraSettingsTransfer.GeometryResolver geometry = target -> new CameraSettingsTransfer.DisplayGeometry(1920, 720, 0, 0, 0);
         Map<String, Object> parsed = CameraSettingsTransfer.parseCameraPreset(CameraSettingsTransfer.exportCameraPreset(p, geometry));
-        assertEquals(5, parsed.get("version"));
+        assertEquals(6, parsed.get("version"));
         assertEquals(before, p.getAll());
         TestSharedPreferences out = new TestSharedPreferences();
         CameraSettingsTransfer.applyCameraPreset(out, parsed);

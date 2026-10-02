@@ -84,6 +84,7 @@ public final class TurnSignalShellMain {
         private final TurnSignalGuardRuntime runtime;
         private final BlindSpotWarningRuntime warningRuntime;
         private final ReverseGearRuntime reverseGearRuntime;
+        private final ReverseSteeringRuntime reverseSteeringRuntime;
         private final MusicVisualizerRuntime musicRuntime;
         private final ParkingRadarRuntime parkingRadarRuntime;
         private final AvasRuntime avasRuntime;
@@ -138,6 +139,7 @@ public final class TurnSignalShellMain {
                     context, handler, this::emit, this::markStartupCleanupAttempted);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
+            reverseSteeringRuntime = new ReverseSteeringRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
             parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
             AvasRuntime createdAvas = null;
@@ -157,6 +159,7 @@ public final class TurnSignalShellMain {
             runtime.start();
             warningRuntime.start();
             reverseGearRuntime.start();
+            reverseSteeringRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
             parkingRadarRuntime.start();
             if (avasRuntime != null) {
@@ -179,6 +182,7 @@ public final class TurnSignalShellMain {
             musicRuntime.stop();
             parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
+            reverseSteeringRuntime.stop();
             warningRuntime.stop();
             runtime.stop();
             closeAvasOnce();
@@ -409,6 +413,7 @@ public final class TurnSignalShellMain {
                     runtime.reportStatus();
                     warningRuntime.reportStatus();
                     reverseGearRuntime.reportStatus();
+                    reverseSteeringRuntime.reportStatus();
                     musicRuntime.reportStatus();
                     parkingRadarRuntime.reportStatus();
                     if (avasRuntime != null) avasRuntime.reportStatus();
@@ -429,6 +434,7 @@ public final class TurnSignalShellMain {
                         musicRuntime.stop();
                         parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
+                        reverseSteeringRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_request");
@@ -456,6 +462,7 @@ public final class TurnSignalShellMain {
                         musicRuntime.configure(false);
                         parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
+                        reverseSteeringRuntime.stop();
                         warningRuntime.stop();
                         runtime.stop();
                         emit("shell_shutdown", "reason", "controller_detached_avas_retained");
@@ -497,6 +504,7 @@ public final class TurnSignalShellMain {
             runtime.reportStatus();
             warningRuntime.reportStatus();
             reverseGearRuntime.reportStatus();
+            reverseSteeringRuntime.reportStatus();
             musicRuntime.reportStatus();
             // AVAS status emits back through this Binder; never enter its monitor while
             // registerCallback still owns the ShellBinder monitor.
@@ -586,6 +594,7 @@ public final class TurnSignalShellMain {
                     runtime.start();
                     warningRuntime.start();
                     reverseGearRuntime.start();
+                    reverseSteeringRuntime.start();
                     parkingRadarRuntime.start();
                 }
                 awaitingControllerAttach = false;

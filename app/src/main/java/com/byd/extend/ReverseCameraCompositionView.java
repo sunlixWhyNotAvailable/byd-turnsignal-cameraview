@@ -80,6 +80,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private boolean centralFrontFrameReady;
     private boolean centralFrontDiscardNextFrame;
     private boolean centralFrontSurfaceRecoveryPending;
+    private float steeringAngleDegrees = Float.NaN;
+    private float steeringMinimumDegrees = Float.NaN;
+    private float steeringMaximumDegrees = Float.NaN;
+    private boolean rearSteeringShiftEnabled;
+    private boolean frontSteeringShiftEnabled;
     private boolean widgetVisible;
     private boolean widgetAvailable = true;
     private int sideMode = ReverseSideSelectorView.MODE_REAR;
@@ -390,6 +395,36 @@ final class ReverseCameraCompositionView extends FrameLayout {
         resetCentralFrontFreshness();
         applyModel();
         finishOutputSetUpdate(previousSources);
+    }
+
+    /**
+     * Sets transient steering crop state. The caller supplies bounds from the active OEM model;
+     * a non-finite, stale, or out-of-bounds angle restores the saved crop. Positive angles use
+     * increasing source X; this pane's existing output transform applies mirror/rotation once.
+     */
+    void setSteeringShift(
+            float angleDegrees, float minimumDegrees, float maximumDegrees,
+            boolean rearEnabled, boolean frontEnabled) {
+        boolean validBounds = ReverseSteeringShift.hasValidBounds(
+                minimumDegrees, maximumDegrees);
+        float nextAngle = validBounds && ReverseSteeringShift.isValidAngle(
+                angleDegrees, minimumDegrees, maximumDegrees)
+                ? angleDegrees : Float.NaN;
+        float nextMinimum = validBounds ? minimumDegrees : Float.NaN;
+        float nextMaximum = validBounds ? maximumDegrees : Float.NaN;
+        if (Float.floatToIntBits(steeringAngleDegrees) == Float.floatToIntBits(nextAngle)
+                && Float.floatToIntBits(steeringMinimumDegrees)
+                == Float.floatToIntBits(nextMinimum)
+                && Float.floatToIntBits(steeringMaximumDegrees)
+                == Float.floatToIntBits(nextMaximum)
+                && rearSteeringShiftEnabled == rearEnabled
+                && frontSteeringShiftEnabled == frontEnabled) return;
+        steeringAngleDegrees = nextAngle;
+        steeringMinimumDegrees = nextMinimum;
+        steeringMaximumDegrees = nextMaximum;
+        rearSteeringShiftEnabled = rearEnabled;
+        frontSteeringShiftEnabled = frontEnabled;
+        applyActiveSteeringTransform();
     }
 
     void setWidgetAvailable(boolean available) {
@@ -1479,6 +1514,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
                 width, height);
         applyFrameBounds(sideSelector, widgetRect);
         sideSelector.setZ(5.0f);
+        boolean centralFrontActive = usesCentralFrontSource();
         for (PaneView pane : panes) {
             boolean frontSource = effectiveSourceIsFront(pane.sourceIndex, sideMode,
                     frontLeftIntegrated, frontRightIntegrated);
@@ -1488,10 +1524,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
             ReverseCameraLayout.Pane value = centerFallback.pane(pane.cameraIndex);
             ReverseCameraLayout.Rect rawCrop =
                     centerRawFallback.pane(pane.cameraIndex).sourceCrop;
-            ReverseCameraLayout.Rect sourceCrop = pane.dewarpConfig.enabled
-                    && !pane.texture.usesRawFallback()
-                    ? value.sourceCrop
-                    : rawCrop;
+            ReverseCameraLayout.Rect sourceCrop = sourceCropFor(
+                    pane, centerFallback, centerRawFallback,
+                    pane.cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX
+                            && !centralFrontActive
+                            && rearSteeringShiftEnabled);
             ReverseCameraLayout.PixelRect baseRect = ReverseCameraLayout.project(
                     centerFallback.rectFor(pane.cameraIndex, displayTarget), width, height);
             applyFrameBounds(pane, baseRect);
@@ -1507,9 +1544,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
             centralFrontPane.texture.applyDewarpSourceRoi(
                     centerRawCrop.left, centerRawCrop.top,
                     centerRawCrop.width, centerRawCrop.height);
-            ReverseCameraLayout.Rect centerSourceCrop = centralFrontPane.dewarpConfig.enabled
-                    && !centralFrontPane.texture.usesRawFallback()
-                    ? centerValue.sourceCrop : centerRawCrop;
+            ReverseCameraLayout.Rect centerSourceCrop = sourceCropFor(
+                    centralFrontPane, frontModel, frontRawFallbackModel,
+                    centralFrontActive
+                            && frontSteeringShiftEnabled);
             ReverseCameraLayout.PixelRect centerRect = ReverseCameraLayout.project(
                     frontModel.rectFor(ReverseCameraLayout.REAR_CAMERA_INDEX,
                             displayTarget), width, height);
@@ -1520,6 +1558,54 @@ final class ReverseCameraCompositionView extends FrameLayout {
                     centerValue.displayMode, centerValue.mirrorHorizontally,
                     centerRect.width, centerRect.height);
         }
+    }
+
+    /** Updates only the active central texture matrix; angle callbacks do not reapply the layout. */
+    private void applyActiveSteeringTransform() {
+        int width = getWidth();
+        int height = getHeight();
+        if (width <= 0 || height <= 0) return;
+        if (!usesCentralFrontSource()) {
+            applyCentralSteeringTransform(
+                    panes[0], model, rawFallbackModel, rearSteeringShiftEnabled, width, height);
+        } else {
+            applyCentralSteeringTransform(centralFrontPane, frontModel,
+                    frontRawFallbackModel, frontSteeringShiftEnabled, width, height);
+        }
+    }
+
+    private boolean usesCentralFrontSource() {
+        return ReverseSteeringShift.usesCentralFrontSource(
+                sideMode == ReverseSideSelectorView.MODE_FRONT,
+                centralFrontIntegrated && centralFrontPane != null,
+                centralFrontSourceEnabled);
+    }
+
+    private void applyCentralSteeringTransform(
+            PaneView pane, ReverseCameraLayout calibrated,
+            ReverseCameraLayout rawFallback, boolean shiftEnabled, int width, int height) {
+        ReverseCameraLayout.Pane value = calibrated.pane(
+                ReverseCameraLayout.REAR_CAMERA_INDEX);
+        ReverseCameraLayout.Rect sourceCrop = sourceCropFor(
+                pane, calibrated, rawFallback, shiftEnabled);
+        ReverseCameraLayout.PixelRect bounds = ReverseCameraLayout.project(
+                calibrated.rectFor(ReverseCameraLayout.REAR_CAMERA_INDEX, displayTarget),
+                width, height);
+        pane.applyTransform(sourceCrop, value.rotationDegrees, value.displayMode,
+                value.mirrorHorizontally, bounds.width, bounds.height);
+    }
+
+    private ReverseCameraLayout.Rect sourceCropFor(
+            PaneView pane, ReverseCameraLayout calibrated,
+            ReverseCameraLayout rawFallback, boolean shiftEnabled) {
+        ReverseCameraLayout.Pane value = calibrated.pane(pane.cameraIndex);
+        ReverseCameraLayout.Rect rawCrop = rawFallback.pane(pane.cameraIndex).sourceCrop;
+        ReverseCameraLayout.Rect sourceCrop = pane.dewarpConfig.enabled
+                && !pane.texture.usesRawFallback() ? value.sourceCrop : rawCrop;
+        return shiftEnabled
+                ? ReverseSteeringShift.apply(sourceCrop,
+                        steeringAngleDegrees, steeringMinimumDegrees, steeringMaximumDegrees)
+                : sourceCrop;
     }
 
     /** Applies projected bounds only when they differ, avoiding retained layout churn. */

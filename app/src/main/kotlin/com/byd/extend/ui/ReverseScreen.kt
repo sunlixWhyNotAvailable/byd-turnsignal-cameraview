@@ -72,15 +72,30 @@ internal fun ReverseScreen(
         if (selected == ReverseElement.Widget) {
             row("profile-widget-key") { ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction) }
         }
-        if (cameraElement && state.section == CameraSection.Calibration) {
+        if (cameraElement) {
             row("profile-source") { Segmented(listOf(strings.text("Задня", "Rear"), strings.text("Передня", "Front")),
-                state.selectedSource.ordinal, colors, Modifier.fillMaxWidth()) {
+                state.selectedSource.ordinal, colors, Modifier.fillMaxWidth().testTag("reverse-source"),
+                enabled = { it == ReverseSource.Rear.ordinal || state.frontIntegration[selected] == true }) {
                 onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseSource), it))
             } }
         }
+        if (selected == ReverseElement.Rear) {
+            row("reverse-direction-guidelines") { SwitchLine(
+                strings.text("Лінії напрямку", "Direction guidelines", "行驶轨迹线"),
+                strings.text("Недоступно в цій версії", "Not available in this build", "当前版本暂不可用"),
+                state.directionGuidelines,
+                { onAction(BydExtendUiAction.Toggle(ToggleTarget.ReverseSource(
+                    ToggleId.ReverseDirectionGuidelines, state.selectedSource), it)) }, colors,
+                enabled = false) }
+            row("reverse-camera-shift-with-steering") { SwitchLine(
+                strings.text("Зміщення від оберту керма", "Camera shift with steering", "随方向盘转动偏移画面"), "",
+                state.cameraShiftWithSteering,
+                { onAction(BydExtendUiAction.Toggle(ToggleTarget.ReverseSource(
+                    ToggleId.ReverseCameraShiftWithSteering, state.selectedSource), it)) }, colors) }
+        }
         row("profile-presets") { ProfilePresetButtons(profileId, profile.presetAvailable,
             selected == ReverseElement.RearLeft || selected == ReverseElement.RearRight ||
-                selected == ReverseElement.Rear && state.selectedSource == ReverseSource.Rear,
+                selected == ReverseElement.Rear,
             strings, colors, onAction) }
         this
     }

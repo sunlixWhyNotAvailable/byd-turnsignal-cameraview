@@ -195,6 +195,8 @@ enum class ToggleId {
     ReverseEnabled,
     ReverseElementVisible,
     ReverseFrontIntegration,
+    ReverseDirectionGuidelines,
+    ReverseCameraShiftWithSteering,
     ReverseSwitchByGear,
     MirrorEnabled,
     MirrorFrontIntegration,
@@ -636,6 +638,10 @@ data class ReverseUiState(
     val selectedTarget: DisplayTarget = DisplayTarget.Tablet,
     val selectedSource: ReverseSource = ReverseSource.Rear,
     val showFront: Boolean = false,
+    val rearDirectionGuidelines: Boolean = true,
+    val rearCameraShiftWithSteering: Boolean = true,
+    val frontDirectionGuidelines: Boolean = true,
+    val frontCameraShiftWithSteering: Boolean = true,
     val steeringKeyCode: Int = -1,
     val frontIntegration: Map<ReverseElement, Boolean> = emptyMap(),
     val geometry: Map<ReverseElement, ReverseGeometryUiState> = emptyMap(),
@@ -644,7 +650,14 @@ data class ReverseUiState(
     val profiles: Map<CameraProfileId.Reverse, CameraProfileUiState> = emptyMap(),
     val displayGeometry: CameraDisplayGeometry = CameraDisplayGeometry(),
     val zOrder: List<ReverseElement> = listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight),
-)
+) {
+    val directionGuidelines: Boolean
+        get() = if (selectedSource == ReverseSource.Front) frontDirectionGuidelines
+        else rearDirectionGuidelines
+    val cameraShiftWithSteering: Boolean
+        get() = if (selectedSource == ReverseSource.Front) frontCameraShiftWithSteering
+        else rearCameraShiftWithSteering
+}
 
 @Immutable
 data class MirrorGeometryUiState(
@@ -683,6 +696,14 @@ data class MirrorUiState(
 internal fun ReverseUiState.hasAnyFrontIntegration(): Boolean =
     listOf(ReverseElement.Rear, ReverseElement.RearLeft, ReverseElement.RearRight)
         .any { frontIntegration[it] == true }
+
+internal fun ReverseUiState.sourceFor(
+    element: ReverseElement,
+    source: ReverseSource,
+): ReverseSource = if (source == ReverseSource.Front &&
+    (element != ReverseElement.Rear && element != ReverseElement.RearLeft &&
+        element != ReverseElement.RearRight || frontIntegration[element] != true))
+    ReverseSource.Rear else source
 
 @Immutable
 data class CameraOutputUiState(
@@ -810,6 +831,10 @@ sealed interface ToggleTarget {
     @Immutable data class Blind(val id: ToggleId, val group: CameraGroup) : ToggleTarget
     @Immutable data class Parking(val id: ToggleId, val view: ParkingView? = null) : ToggleTarget
     @Immutable data class Reverse(val id: ToggleId, val element: ReverseElement? = null) : ToggleTarget
+    @Immutable data class ReverseSource(
+        val id: ToggleId,
+        val source: com.byd.extend.ui.ReverseSource,
+    ) : ToggleTarget
     @Immutable data class Profile @JvmOverloads constructor(
         val id: ToggleId, val profile: CameraProfileId, val mirrorFront: Boolean? = null,
     ) : ToggleTarget

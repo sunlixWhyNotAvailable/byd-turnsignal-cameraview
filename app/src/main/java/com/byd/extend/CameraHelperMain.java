@@ -270,6 +270,11 @@ final class CameraHelperMain {
             return turnController.setReverseSideMode(requestId, mode);
         }
 
+        synchronized void updateReverseSteering(int requestId, ReverseSteeringSample sample) {
+            if (requestId <= 0 || activeReverseControllerRequestId != requestId) return;
+            turnController.updateReverseSteering(requestId, sample);
+        }
+
         synchronized void emitControllerEvent(String kind, Object... fields) {
             activeReverseControllerRequestId = updateReverseControllerRequestId(
                     activeReverseControllerRequestId, kind, requestId(fields));

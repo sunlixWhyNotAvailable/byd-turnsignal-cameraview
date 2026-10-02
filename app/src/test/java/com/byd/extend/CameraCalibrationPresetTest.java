@@ -1157,6 +1157,10 @@ public final class CameraCalibrationPresetTest {
     public void centralReverseRearCopiesCalibrationOnlyToCentralFront() {
         TestSharedPreferences preferences = new TestSharedPreferences();
         int center = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, true, true);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, true, true);
         ReverseCameraLayout.Rect destination = ReverseCameraLayout.destination(
                 0.17f, 0.23f, 0.61f, 0.54f);
         ReverseCameraLayout.Rect raw = ReverseCameraLayout.sourceCrop(
@@ -1191,6 +1195,8 @@ public final class CameraCalibrationPresetTest {
         assertRect(destination, front.destination);
         assertFalse(ReverseCameraController.loadVisibility(preferences, center));
         assertFalse(ReverseCameraController.loadFrontIntegrated(preferences, center));
+        assertFalse(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true));
+        assertFalse(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
     }
 
     @Test
@@ -1215,6 +1221,10 @@ public final class CameraCalibrationPresetTest {
         CameraDewarpConfig.saveForReverseFront(preferences, center, frontConfig);
         CameraBorderSettings.writeReverse(preferences, center, true,
                 new CameraBorderSettings.Border(7, 0xFF123456));
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, false, true);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, true, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, true, true);
         preferences.putBoolean("reverse_camera_switch_by_gear", true);
         preferences.putString("unrelated_setting", "keep");
         Map<String, ?> before = preferences.getAll();
@@ -1237,11 +1247,15 @@ public final class CameraCalibrationPresetTest {
         assertEquals(42, rearConfig.strengthPercent);
         assertEquals(7, CameraBorderSettings.forReverse(preferences, center, false).borderDp);
         assertEquals(0xFF123456, CameraBorderSettings.forReverse(preferences, center, false).borderArgb);
+        assertFalse(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, false));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false));
 
         Set<String> allowed = new HashSet<>();
         allowed.add(ReverseCameraController.paneSettingKey(center, "rotation_degrees"));
         allowed.add(ReverseCameraController.displayModeKey(center));
         allowed.add(ReverseCameraController.mirrorKey(center));
+        allowed.add(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES);
+        allowed.add(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT);
         for (String field : new String[]{"left", "top", "width", "height"}) {
             allowed.add(ReverseCameraController.sourceCropKey(center, field, false));
             allowed.add("reverse_camera_" + center + "_corrected_v3_crop_" + field);
@@ -1256,6 +1270,46 @@ public final class CameraCalibrationPresetTest {
         Map<String, Object> untouchedAfter = new HashMap<>(preferences.getAll());
         allowed.forEach(key -> { untouchedBefore.remove(key); untouchedAfter.remove(key); });
         assertEquals(untouchedBefore, untouchedAfter);
+    }
+
+    @Test
+    public void centralRearAndFrontPresetsRoundTripGuidanceAndOldSlotsDefaultOn() {
+        TestSharedPreferences preferences = new TestSharedPreferences();
+        int center = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, false, false);
+        CameraCalibrationPreset.saveReverse(preferences, center);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, false, true);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, false, true);
+        assertTrue(CameraCalibrationPreset.loadReverse(preferences, center));
+        assertFalse(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, false));
+        assertFalse(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false));
+
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, true, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, true, true);
+        CameraCalibrationPreset.saveReverseFront(preferences, center);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, true, true);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, true, false);
+        assertTrue(CameraCalibrationPreset.loadReverseFront(preferences, center));
+        assertFalse(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
+
+        String rearPrefix = "reverse_calibration_preset_v1_1_";
+        String frontPrefix = "reverse_front_calibration_preset_v1_1_";
+        preferences.remove(rearPrefix + "direction_guidelines");
+        preferences.remove(rearPrefix + "steering_shift");
+        preferences.remove(frontPrefix + "direction_guidelines");
+        preferences.remove(frontPrefix + "steering_shift");
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, false, false);
+        ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, true, false);
+        ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, true, false);
+        assertTrue(CameraCalibrationPreset.loadReverse(preferences, center));
+        assertTrue(CameraCalibrationPreset.loadReverseFront(preferences, center));
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, false));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false));
+        assertTrue(ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true));
+        assertTrue(ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
     }
 
     private static void assertInvalidReversePreset(String suffix, Object invalidValue) {

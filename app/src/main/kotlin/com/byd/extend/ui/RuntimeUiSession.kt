@@ -19,33 +19,36 @@ data class RuntimeUiSelections(
     val avmSelection: Int?,
     val avmOrientation: AvmOrientation,
 ) {
-    fun applyTo(state: BydExtendUiState): BydExtendUiState = state.copy(
-        activeTab = activeTab,
-        signals = state.signals.copy(category = signalsCategory),
-        blind = state.blind.copy(
-            section = blindSection,
-            selectedGroup = blindGroup,
-            selectedSide = blindSide,
-        ),
-        parking = state.parking.copy(section = parkingSection, selectedView = parkingView),
-        reverse = state.reverse.copy(
-            section = reverseSection,
-            selectedElement = reverseElement,
-            selectedSource = reverseSource,
-            showFront = reverseSource == ReverseSource.Front,
-        ),
-        // Mirror target/source select actual saved runtime output and choose which source-specific
-        // calibration is loaded. Restore only its transient editor section so fresh model values
-        // cannot be paired with a different process-session source.
-        mirror = state.mirror.copy(section = mirrorSection),
-        settings = state.settings.copy(category = settingsCategory),
-        debug = state.debug.copy(
-            mode = diagnosticMode,
-            directSelection = directSelection,
-            avmSelection = avmSelection,
-            avmOrientation = avmOrientation,
-        ),
-    )
+    fun applyTo(state: BydExtendUiState): BydExtendUiState {
+        val source = state.reverse.sourceFor(reverseElement, reverseSource)
+        return state.copy(
+            activeTab = activeTab,
+            signals = state.signals.copy(category = signalsCategory),
+            blind = state.blind.copy(
+                section = blindSection,
+                selectedGroup = blindGroup,
+                selectedSide = blindSide,
+            ),
+            parking = state.parking.copy(section = parkingSection, selectedView = parkingView),
+            reverse = state.reverse.copy(
+                section = reverseSection,
+                selectedElement = reverseElement,
+                selectedSource = source,
+                showFront = source == ReverseSource.Front,
+            ),
+            // Mirror target/source select actual saved runtime output and choose which source-specific
+            // calibration is loaded. Restore only its transient editor section so fresh model values
+            // cannot be paired with a different process-session source.
+            mirror = state.mirror.copy(section = mirrorSection),
+            settings = state.settings.copy(category = settingsCategory),
+            debug = state.debug.copy(
+                mode = diagnosticMode,
+                directSelection = directSelection,
+                avmSelection = avmSelection,
+                avmOrientation = avmOrientation,
+            ),
+        )
+    }
 
     companion object {
         fun from(state: BydExtendUiState) = RuntimeUiSelections(
@@ -58,7 +61,8 @@ data class RuntimeUiSelections(
             parkingView = state.parking.selectedView,
             reverseSection = state.reverse.section,
             reverseElement = state.reverse.selectedElement,
-            reverseSource = state.reverse.selectedSource,
+            reverseSource = state.reverse.sourceFor(
+                state.reverse.selectedElement, state.reverse.selectedSource),
             mirrorSection = state.mirror.section,
             settingsCategory = state.settings.category,
             diagnosticMode = state.debug.mode,

@@ -12,6 +12,9 @@
     <string name="layout">"Layout"</string>
     <string name="placement">"Placement"</string>
     <string name="calibration">"Calibration"</string>
+    <string name="direction_lines">"Direction guidelines"</string>
+    <string name="steering_camera_shift">"Camera shift with steering"</string>
+    <string name="guidance_unavailable">"Not available in this build"</string>
     <string name="preset_saved">"Preset saved"</string>
     <string name="preset_loaded">"Preset loaded"</string>
     <string name="settings_transferred_value">"Settings transferred • %1$s"</string>

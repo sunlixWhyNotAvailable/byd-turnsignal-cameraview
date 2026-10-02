@@ -232,17 +232,33 @@ final class CameraCalibrationPreset {
 
     static void saveReverse(SharedPreferences preferences, int cameraIndex) {
         ReverseValue value = activeReverse(preferences, cameraIndex);
+        String prefix = reversePrefix(cameraIndex);
         SharedPreferences.Editor editor = preferences.edit();
-        writeReverse(editor, reversePrefix(cameraIndex), value);
-        editor.putInt(reversePrefix(cameraIndex) + "version", VERSION).apply();
+        writeReverse(editor, prefix, value);
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            editor.putBoolean(prefix + "direction_guidelines",
+                            ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, false))
+                    .putBoolean(prefix + "steering_shift",
+                            ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false));
+        }
+        editor.putInt(prefix + "version", VERSION).apply();
     }
 
     static boolean loadReverse(SharedPreferences preferences, int cameraIndex) {
         if (!hasReverse(preferences, cameraIndex)) return false;
         try {
+            String prefix = reversePrefix(cameraIndex);
             applyReverse(preferences, cameraIndex,
-                    readReverse(preferences, reversePrefix(cameraIndex),
+                    readReverse(preferences, prefix,
                             CameraDewarpConfig.lensForReverseCamera(cameraIndex), cameraIndex));
+            if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+                preferences.edit()
+                        .putBoolean(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES,
+                                preferences.getBoolean(prefix + "direction_guidelines", true))
+                        .putBoolean(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT,
+                                preferences.getBoolean(prefix + "steering_shift", true))
+                        .apply();
+            }
             return true;
         } catch (RuntimeException invalidPreset) {
             return false;
@@ -469,17 +485,33 @@ final class CameraCalibrationPreset {
 
     static void saveReverseFront(SharedPreferences preferences, int cameraIndex) {
         ReverseFrontValue value = activeReverseFront(preferences, cameraIndex);
+        String prefix = reverseFrontPrefix(cameraIndex);
         SharedPreferences.Editor editor = preferences.edit();
-        writeReverseFront(editor, reverseFrontPrefix(cameraIndex), value);
-        editor.putInt(reverseFrontPrefix(cameraIndex) + "version", VERSION).apply();
+        writeReverseFront(editor, prefix, value);
+        if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+            editor.putBoolean(prefix + "direction_guidelines",
+                            ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true))
+                    .putBoolean(prefix + "steering_shift",
+                            ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
+        }
+        editor.putInt(prefix + "version", VERSION).apply();
     }
 
     static boolean loadReverseFront(SharedPreferences preferences, int cameraIndex) {
         if (!hasReverseFront(preferences, cameraIndex)) return false;
         try {
+            String prefix = reverseFrontPrefix(cameraIndex);
             applyReverseFront(preferences, cameraIndex,
-                    readReverseFront(preferences, reverseFrontPrefix(cameraIndex),
+                    readReverseFront(preferences, prefix,
                             CameraDewarpConfig.lensForReverseFrontCamera(cameraIndex)));
+            if (cameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
+                preferences.edit()
+                        .putBoolean(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES,
+                                preferences.getBoolean(prefix + "direction_guidelines", true))
+                        .putBoolean(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT,
+                                preferences.getBoolean(prefix + "steering_shift", true))
+                        .apply();
+            }
             return true;
         } catch (RuntimeException invalidPreset) {
             return false;
@@ -516,6 +548,12 @@ final class CameraCalibrationPreset {
                         value.dewarp.enabled, value.dewarp.fovDegrees,
                         value.dewarp.projection, value.dewarp.strengthPercent, value.dewarp.preciseFovDegrees),
                 value.mirrorHorizontally, value.border));
+        preferences.edit()
+                .putBoolean(ReverseGuidanceSettings.PREF_FRONT_DIRECTION_GUIDELINES,
+                        ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, false))
+                .putBoolean(ReverseGuidanceSettings.PREF_FRONT_STEERING_SHIFT,
+                        ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false))
+                .apply();
         return true;
     }
 
@@ -528,7 +566,11 @@ final class CameraCalibrationPreset {
                         cameraIndex, "rotation_degrees"), value.rotationDegrees)
                 .putInt(ReverseCameraController.displayModeKey(cameraIndex), value.displayMode)
                 .putBoolean(ReverseCameraController.mirrorKey(cameraIndex),
-                        value.mirrorHorizontally);
+                        value.mirrorHorizontally)
+                .putBoolean(ReverseGuidanceSettings.PREF_REAR_DIRECTION_GUIDELINES,
+                        ReverseGuidanceSettings.isDirectionGuidelinesEnabled(preferences, true))
+                .putBoolean(ReverseGuidanceSettings.PREF_REAR_STEERING_SHIFT,
+                        ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.raw, false);
         ReverseCameraController.writeSourceCrop(editor, cameraIndex, value.corrected, true);
         CameraDewarpConfig.writeForReverse(editor, cameraIndex, CameraDewarpConfig.of(

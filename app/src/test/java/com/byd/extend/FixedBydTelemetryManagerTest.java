@@ -175,6 +175,42 @@ public final class FixedBydTelemetryManagerTest {
         avasSubscription.close();
     }
 
+    @Test public void byteCallbacksReachOnlyByteConsumersAsDefensiveCopies() throws Exception {
+        FakeManager backend = new FakeManager();
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+        RecordingListener steering = new RecordingListener();
+        RecordingListener power = new RecordingListener();
+        FixedBydTelemetryManager.Subscription steeringSubscription = owner.subscribe(
+                new FixedBydTelemetryManager.Request[]{new FixedBydTelemetryManager.Request(
+                        1023, FixedBydTelemetryManager.ValueType.BYTES, -1728052840)}, steering);
+        FixedBydTelemetryManager.Subscription powerSubscription = owner.subscribe(
+                request(1023, POWER), power);
+        byte[] source = new byte[]{1, 2, 3, 4, 5, 6};
+
+        backend.listener.onChanged(1023, -1728052840, source, null);
+
+        assertArrayEquals(source, steering.lastBytes);
+        assertTrue(steering.lastBytes != source);
+        assertEquals(0, power.byteCalls);
+        source[0] = 9;
+        assertEquals(1, steering.lastBytes[0]);
+        steeringSubscription.close();
+        powerSubscription.close();
+    }
+
+    @Test public void fixedReadBufferReturnsDefensiveCopy() throws Exception {
+        FakeManager backend = new FakeManager();
+        backend.buffer = new byte[]{7, 8, 9};
+        FixedBydTelemetryManager owner =
+                new FixedBydTelemetryManager(backend, FakeOnAutoListener.class);
+
+        byte[] first = owner.readBuffer(1023, -1728052840);
+        first[0] = 0;
+
+        assertArrayEquals(new byte[]{7, 8, 9}, owner.readBuffer(1023, -1728052840));
+    }
+
     private static FixedBydTelemetryManager.Request[] request(int device, int fid) {
         return new FixedBydTelemetryManager.Request[]{
                 new FixedBydTelemetryManager.Request(device, fid)};
@@ -183,6 +219,7 @@ public final class FixedBydTelemetryManagerTest {
     public interface FakeOnAutoListener {
         void onChanged(int device, int fid, int value, Object client);
         void onChanged(int device, int fid, float value, Object client);
+        void onChanged(int device, int fid, byte[] value, Object client);
         void onError(int code, String message);
     }
 
@@ -191,9 +228,11 @@ public final class FixedBydTelemetryManagerTest {
         final Queue<Integer> failDevices = new ArrayDeque<>();
         int disableStatus;
         int unregisterCount;
+        byte[] buffer = new byte[0];
         FakeOnAutoListener listener;
         public void registerListener(FakeOnAutoListener listener) { this.listener = listener; }
         public void unregisterListener(FakeOnAutoListener listener) { unregisterCount++; }
+        public byte[] getBuffer(int device, int fid) { return buffer.clone(); }
         public int enableDevice(int device, int[] fids) {
             if (!failDevices.isEmpty() && failDevices.peek() == device) {
                 failDevices.remove();
@@ -230,9 +269,15 @@ public final class FixedBydTelemetryManagerTest {
     private static final class RecordingListener implements FixedBydTelemetryManager.Listener {
         int errors;
         int lastValue;
+        int byteCalls;
+        byte[] lastBytes;
         String lastError = "";
         @Override public void onValue(int device, int fid, int value, long receivedMs) {
             lastValue = value;
+        }
+        @Override public void onBytes(int device, int fid, byte[] value, long receivedMs) {
+            byteCalls++;
+            lastBytes = value;
         }
         @Override public void onError(String reason, long receivedMs) {
             errors++;

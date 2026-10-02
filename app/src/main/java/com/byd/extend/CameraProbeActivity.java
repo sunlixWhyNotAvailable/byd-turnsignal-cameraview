@@ -637,6 +637,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private FrameLayout calibrationResultHost;
     private View calibrationResultFrame;
     private ReverseCameraCompositionView reverseCameraPreview;
+    private ReverseSteeringSample reverseSteeringSample = ReverseSteeringSample.UNKNOWN;
+    private final Runnable reverseSteeringExpired = this::applyReverseSteering;
     private FrameLayout productionReverseHost;
     private ReverseCameraEditorView productionReverseEditor;
     private boolean productionReverseEditorEditable;
@@ -1286,6 +1288,8 @@ public final class CameraProbeActivity extends ComponentActivity
             armResumeAutoPreviewIfNeeded();
         }
         activityResumed = false;
+        reverseSteeringSample = ReverseSteeringSample.UNKNOWN;
+        applyReverseSteering();
         publishReverseOwnerIneligible();
         cancelReverseButtonLearningIfVisible();
         stopCalibrationCopies(true);
@@ -1418,6 +1422,7 @@ public final class CameraProbeActivity extends ComponentActivity
         cancelReverseButtonLearningIfVisible();
         clearReverseOwnerPresence();
         activityDestroyed = true;
+        mainHandler.removeCallbacks(reverseSteeringExpired);
         UpdateHintRuntime.get(this).removeCheckListener(updateCheckListener);
         UpdateHintRuntime.get(this).removeDownloadListener(updateDownloadListener);
         LocalAdbClient.clearAccessStateListener(adbAccessListener);
@@ -4680,6 +4685,20 @@ public final class CameraProbeActivity extends ComponentActivity
             notifyParkingSettingsChanged();
             return;
         }
+        if (target instanceof ToggleTarget.ReverseSource) {
+            ToggleTarget.ReverseSource guidance = (ToggleTarget.ReverseSource) target;
+            boolean front = guidance.getSource() == ReverseSource.Front;
+            if (guidance.getId() == ToggleId.ReverseDirectionGuidelines) {
+                ReverseGuidanceSettings.setDirectionGuidelinesEnabled(preferences, front, value);
+            } else if (guidance.getId() == ToggleId.ReverseCameraShiftWithSteering) {
+                ReverseGuidanceSettings.setCameraShiftWithSteeringEnabled(preferences, front, value);
+            } else {
+                return;
+            }
+            CameraHelperService.reverseCameraSettingsChanged(this);
+            applyProductionReverseState();
+            return;
+        }
         if (target instanceof ToggleTarget.Reverse) {
             ToggleTarget.Reverse reverse = (ToggleTarget.Reverse) target;
             int pane = reverseElementIndex(reverse.getElement());
@@ -4875,6 +4894,15 @@ public final class CameraProbeActivity extends ComponentActivity
             boolean front = productionUi.getState().getReverse().getShowFront();
             reverseCameraPreview.setSideMode(front
                     ? ReverseSideSelectorView.MODE_FRONT : ReverseSideSelectorView.MODE_REAR);
+            if (!isProductionCalibrationSection()) {
+                // Both integrated inputs already belong to the retained composition.
+                // Only the calibration workspace needs to reopen its selected single input.
+                if (productionReverseEditor != null) {
+                    ReverseCameraController.applyBorders(
+                            preferences, productionReverseEditor, front);
+                }
+                return;
+            }
         }
         if (id == SelectionId.BlindGroup || id == SelectionId.BlindSide) {
             preferences.edit().putInt("camera_selected_profile", selectedCameraId).apply();
@@ -6346,7 +6374,22 @@ public final class CameraProbeActivity extends ComponentActivity
         CameraHelperService.reverseCameraSettingsChanged(this);
     }
 
+    private void applyReverseSteering() {
+        mainHandler.removeCallbacks(reverseSteeringExpired);
+        if (reverseCameraPreview == null || activityDestroyed) return;
+        long now = SystemClock.elapsedRealtime();
+        float angle = activityResumed ? reverseSteeringSample.freshAngle(now) : Float.NaN;
+        reverseCameraPreview.setSteeringShift(angle,
+                reverseSteeringSample.minimumDegrees, reverseSteeringSample.maximumDegrees,
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, false),
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(preferences, true));
+        if (Float.isFinite(angle)) mainHandler.postDelayed(reverseSteeringExpired,
+                Math.max(1, reverseSteeringSample.observedMs
+                        + ReverseSteeringSample.MAX_AGE_MS + 1 - now));
+    }
+
     private void applyProductionReverseState() {
+        if (productionUi != null) productionUi.reload();
         reverseRawCalibrationLayout = ReverseCameraController.loadRawLayout(preferences);
         reverseCameraLayout = ReverseCameraController.loadLayout(preferences);
         reverseFrontRawCalibrationLayout = ReverseCameraController.loadFrontRawLayout(preferences);
@@ -6358,6 +6401,7 @@ public final class CameraProbeActivity extends ComponentActivity
             reverseCameraPreview.applyVisibility(
                     ReverseCameraController.loadVisibilityMask(preferences));
             ReverseCameraController.applyBorders(preferences, reverseCameraPreview);
+            applyReverseSteering();
         }
         if (productionReverseEditor != null) {
             boolean front = productionUi != null
@@ -6365,7 +6409,6 @@ public final class CameraProbeActivity extends ComponentActivity
             ReverseCameraController.applyBorders(
                     preferences, productionReverseEditor, front);
         }
-        if (productionUi != null) productionUi.reload();
     }
 
     @Override
@@ -7162,6 +7205,7 @@ public final class CameraProbeActivity extends ComponentActivity
             reverseCameraPreview.setAutomaticBufferQuality(CameraBufferQuality.load(preferences));
             reverseCameraPreview.setForceDewarpPipeline(true);
             reverseCameraPreview.enablePreviewBase();
+            record("reverse_guidelines_unavailable", "reason", "oem_projection_not_compatible");
             applyProductionReverseState();
         }
         if (productionReverseHost == null) {
@@ -11001,7 +11045,7 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         boolean centralIntegrated = ReverseCameraController.loadCentralFrontIntegrated(
                 preferences);
-        if (reverseCalibrationFront
+        if (productionUi == null && reverseCalibrationFront
                 && reverseCalibrationCameraIndex == ReverseCameraLayout.REAR_CAMERA_INDEX) {
             // Keep the central front source visible while calibrating it even when
             // the persisted integration toggle is still off.
@@ -11017,7 +11061,10 @@ public final class CameraProbeActivity extends ComponentActivity
                 centralIntegrated,
                 true,
                 ReverseCameraController.loadWidgetVisible(preferences));
-        if (reverseCalibrationFront && isReverseCameraPane(reverseCalibrationCameraIndex)) {
+        boolean showFront = productionUi != null
+                ? productionUi.getState().getReverse().getShowFront()
+                : reverseCalibrationFront && isReverseCameraPane(reverseCalibrationCameraIndex);
+        if (showFront) {
             reverseCameraPreview.setSideMode(ReverseSideSelectorView.MODE_FRONT);
         }
     }
@@ -14764,6 +14811,15 @@ public final class CameraProbeActivity extends ComponentActivity
             try {
                 JSONObject json = parsed;
                 String kind = json.optString("kind");
+                if ("reverse_steering_state".equals(kind)) {
+                    reverseSteeringSample = ReverseSteeringSample.fromEvent(json);
+                    applyReverseSteering();
+                    return;
+                }
+                if ("helper_death".equals(kind) || "helper_ping_failed".equals(kind)) {
+                    reverseSteeringSample = ReverseSteeringSample.UNKNOWN;
+                    applyReverseSteering();
+                }
                 if ("avas_status".equals(kind)) {
                     acceptAvasStatus(json);
                     return;

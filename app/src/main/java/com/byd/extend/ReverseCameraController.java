@@ -43,6 +43,7 @@ final class ReverseCameraController {
         evaluate();
     };
     private CameraHelperMain.HelperBinder helper;
+    private ReverseSteeringSample steeringSample = ReverseSteeringSample.UNKNOWN;
     private boolean gearValid;
     private boolean reverse;
     private boolean panoVisible;
@@ -162,7 +163,12 @@ final class ReverseCameraController {
     private void acceptEventOnMain(JSONObject event) {
         try {
             String kind = event.optString("kind");
-            if ("reverse_gear_state".equals(kind)) {
+            if ("reverse_steering_state".equals(kind)) {
+                steeringSample = ReverseSteeringSample.fromEvent(event);
+                if (!shutdown && !stopping && activeRequestId > 0 && helper != null)
+                    helper.updateReverseSteering(activeRequestId, steeringSample);
+                return;
+            } else if ("reverse_gear_state".equals(kind)) {
                 gearValid = event.optBoolean("valid", false)
                         && event.optBoolean("listener_ok", false);
                 reverse = gearValid && event.optBoolean("reverse", false);
@@ -184,6 +190,7 @@ final class ReverseCameraController {
                 applySourceState(-1, false, "gear_listener_unavailable");
             } else if ("helper_death".equals(kind)
                     || "helper_ping_failed".equals(kind)) {
+                steeringSample = ReverseSteeringSample.UNKNOWN;
                 boolean preserveDirection = sessionPolicy.eligible
                         || direction.hasRetryMode();
                 ReverseGearSessionPolicy.Gear previousGear = sessionPolicy.gear;
@@ -577,7 +584,11 @@ final class ReverseCameraController {
                         settings, ReverseCameraLayout.REAR_CAMERA_INDEX),
                 loadCentralFrontIntegrated(settings),
                 loadWidgetVisible(settings),
-                switchByGear(settings));
+                switchByGear(settings),
+                ReverseGuidanceSettings.isDirectionGuidelinesEnabled(settings, false),
+                ReverseGuidanceSettings.isDirectionGuidelinesEnabled(settings, true),
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(settings, false),
+                ReverseGuidanceSettings.isCameraShiftWithSteeringEnabled(settings, true));
         loadBorders(settings, result);
         return result;
     }
@@ -670,6 +681,7 @@ final class ReverseCameraController {
                         value.surfaces, value.sourceIndexes, activeRequestId);
                 applyInitialTargetActivity(activeHelper, value);
             }
+            activeHelper.updateReverseSteering(activeRequestId, steeringSample);
             applyPendingAutomaticMode(activeHelper);
         } catch (Throwable error) {
             emit("reverse_camera_error", "stage", "open_surfaces",
@@ -969,6 +981,7 @@ final class ReverseCameraController {
     }
 
     private void resetRuntime(String reason) {
+        steeringSample = ReverseSteeringSample.UNKNOWN;
         cancelTimers();
         clearCleanupRetry();
         activeRequestId = 0;

@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -46,6 +47,7 @@ final class TurnSignalController {
     private final AvasAudioLibrary avasLibrary;
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final AtomicReference<Runnable> pendingReverseSteering = new AtomicReference<>();
     private final Binder controllerToken = new Binder();
     private final Binder callback = new Binder() {
         @Override
@@ -1193,6 +1195,51 @@ final class TurnSignalController {
         } catch (RejectedExecutionException ignored) {
             // A shutdown worker consumes no further direction commands.
             return false;
+        }
+    }
+
+    /** Latest angle wins while a camera operation occupies the existing worker. */
+    void updateReverseSteering(int requestId, ReverseSteeringSample sample) {
+        if (requestId <= 0 || sample == null) return;
+        final IBinder value;
+        final long epoch;
+        synchronized (this) {
+            if (stopped) return;
+            value = cameraHelper;
+            epoch = cameraHelperEpoch;
+        }
+        if (value == null || !value.isBinderAlive()) return;
+        Runnable latest = () -> {
+            synchronized (TurnSignalController.this) {
+                if (stopped || cameraHelper != value || cameraHelperEpoch != epoch) return;
+            }
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+                data.writeInt(requestId);
+                data.writeFloat(sample.angleDegrees);
+                data.writeFloat(sample.minimumDegrees);
+                data.writeFloat(sample.maximumDegrees);
+                data.writeLong(sample.observedMs);
+                requireTransact(value, CameraShellProtocol.TX_REVERSE_STEERING, data, reply);
+            } catch (Throwable error) {
+                // Steering loss restores the saved crop; it must not close a working camera.
+                emit("reverse_steering_unavailable", "stage", "camera_shell",
+                        "error", summary(error));
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
+        };
+        if (pendingReverseSteering.getAndSet(latest) != null) return;
+        try {
+            worker.execute(() -> {
+                Runnable pending = pendingReverseSteering.getAndSet(null);
+                if (pending != null) pending.run();
+            });
+        } catch (RejectedExecutionException ignored) {
+            pendingReverseSteering.set(null);
         }
     }
 
