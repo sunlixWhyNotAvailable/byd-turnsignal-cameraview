@@ -72,6 +72,7 @@ final class CameraHelperMain {
             implements CameraHelperService.RuntimeSettingsSink {
         private final Handler callbackHandler;
         private final TurnSignalController turnController;
+        private final CameraRuntimeClient cameraRuntime;
         private final Consumer<String> logSink;
         private final SharedPreferences counters;
         private final SharedPreferences settings;
@@ -134,9 +135,20 @@ final class CameraHelperMain {
             this.logSink = logSink;
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
-            migrateLegacyCounters(context);
+            if (!(context instanceof CameraRuntimeContext)) migrateLegacyCounters(context);
             turnController = new TurnSignalController(
                     context, callbackHandler, this::acceptShellEvent, this::acceptControllerEvent);
+            cameraRuntime = context instanceof CameraRuntimeContext ? null
+                    : new CameraRuntimeClient(context, callbackHandler, this::forwardLine);
+        }
+
+        CameraRuntimeClient cameraRuntime() { return cameraRuntime; }
+
+        void reportRetainedCameraState() {
+            turnController.reportCameraShellState();
+            emit("reverse_camera_state", "active", activeReverseControllerRequestId > 0,
+                    "request_id", activeReverseControllerRequestId);
+            discoverCamera();
         }
 
         void startGuardRuntime() {
@@ -282,6 +294,7 @@ final class CameraHelperMain {
         }
 
         void shutdown(boolean terminateShells) {
+            if (cameraRuntime != null) cameraRuntime.detach();
             turnController.shutdown(terminateShells);
             closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
@@ -289,6 +302,7 @@ final class CameraHelperMain {
         }
 
         void shutdownKeepingAvas() {
+            if (cameraRuntime != null) cameraRuntime.detach();
             turnController.shutdownKeepingAvas();
             closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
@@ -298,6 +312,8 @@ final class CameraHelperMain {
         @Override
         protected synchronized boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
+            if (cameraRuntime != null && CameraRuntimeClient.isCameraTransaction(code))
+                return cameraRuntime.transactCamera(code, data, reply, flags);
             try {
                 data.enforceInterface(DESCRIPTOR);
                 if (code == TX_REGISTER_CALLBACK) {
@@ -330,7 +346,7 @@ final class CameraHelperMain {
                             reason, ACTIVITY_RESUME_COLD_RESET)) {
                         result = shouldDeferActivityColdReset(activeReverseControllerRequestId)
                                 ? result(COLD_RESET_DEFERRED_REVERSE, null)
-                                : closeCamera(reason);
+                                : closeCameraForOwner(CAMERA_OWNER_ACTIVITY, reason);
                     } else {
                         requireActivityRequestId(requestId);
                         result = closeCameraForOwner(
@@ -507,6 +523,7 @@ final class CameraHelperMain {
         }
 
         synchronized boolean discoverCamera() {
+            if (cameraRuntime != null) return cameraRuntime.connect();
             cameraId = -1;
             cameraTag = "none";
             discoveryError = null;
@@ -562,6 +579,7 @@ final class CameraHelperMain {
                 throw error;
             }
             emit("helper_connected", "uid", Process.myUid());
+            if (cameraRuntime != null) cameraRuntime.reportStatus();
             // onTransact holds this callback lock until the snapshot is sent.
             turnController.reportCameraShellState();
             emitCounters();

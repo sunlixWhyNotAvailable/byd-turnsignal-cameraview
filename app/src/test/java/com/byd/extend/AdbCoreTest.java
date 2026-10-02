@@ -1248,7 +1248,8 @@ public final class AdbCoreTest {
         assertFalse(CameraHelperService.shouldResumeOverlay(true, false));
         assertFalse(CameraHelperService.shouldResumeOverlay(false, true));
         assertTrue(CameraShellProtocol.isCallerAllowed(10058, 10058));
-        assertFalse(CameraShellProtocol.isCallerAllowed(2000, 10058));
+        assertTrue(CameraShellProtocol.isCallerAllowed(2000, 10058)); // independent camera runtime
+        assertFalse(CameraShellProtocol.isCallerAllowed(10059, 10058));
         String cameraLaunch = TurnSignalController.cameraLaunchCommand(
                 "/data/app/a'b/base.apk", 10058, 5);
         assertTrue(cameraLaunch.contains("bydextend_camera"));
@@ -1650,7 +1651,7 @@ public final class AdbCoreTest {
 
     @Test
     public void cameraConfigRejectsUntrustedValues() {
-        assertEquals(34, CameraShellProtocol.VERSION);
+        assertEquals(35, CameraShellProtocol.VERSION);
         assertEquals(IBinder.FIRST_CALL_TRANSACTION + 10,
                 CameraHelperMain.TX_UPDATE_VISUALS);
         assertTrue(CameraShellProtocol.TX_OVERLAY_PREPARE > CameraShellProtocol.TX_SHUTDOWN);

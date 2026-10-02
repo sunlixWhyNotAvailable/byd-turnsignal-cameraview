@@ -248,17 +248,12 @@ public final class CameraHelperService extends Service {
     private HandlerThread runtimeThread;
     private Handler runtimeHandler;
     private RuntimeLifecycleGate.Queue runtimeQueue;
-    private OemCameraVisibilityRuntime oemCameraVisibility;
     private AsyncServiceLog serviceLog;
     private AvasRecoveryDaemonController avasRecoveryDaemon;
     private PowerManager.WakeLock avasWakeLock;
     private volatile CameraHelperMain.HelperBinder helper;
     private volatile boolean helperRuntimeStarted;
-    private BlindSpotOverlayController overlay;
-    private ParkingCameraController parkingCameras;
-    private ReverseCameraController reverseCameras;
-    private RearviewMirrorController mirror;
-    private ClusterFullscreenController clusterFullscreen;
+    private CameraRuntimeClient cameraRuntime;
     private WeatherRuntime weatherRuntime;
     private boolean controllersInitialized;
     private boolean foreground;
@@ -425,8 +420,7 @@ public final class CameraHelperService extends Service {
 
     private void resumeOverlayIfIdle() {
         if (shouldResumeOverlay(cameraPreviewActive, activityVisible)) {
-            if (overlay != null) overlay.setSuspended(false);
-            if (parkingCameras != null) parkingCameras.setSuspended(false);
+            if (cameraRuntime != null) cameraRuntime.preview(false);
         }
     }
 
@@ -622,8 +616,8 @@ public final class CameraHelperService extends Service {
             // An Activity may have resumed between the initial snapshot and this queued runtime
             // action.  Abort automatic fallback if ownership changed in that interval.
             if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
-            ReverseCameraController controller = service.reverseCameras;
-            if (controller != null) controller.requestSteeringToggle(ownerEpoch);
+            CameraRuntimeClient cameras = service.cameraRuntime;
+            if (cameras != null) cameras.toggleReverse();
         });
     }
 
@@ -759,19 +753,8 @@ public final class CameraHelperService extends Service {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
-        overlay = new BlindSpotOverlayController(this, runtimeHandler, this::lifecycle);
-        parkingCameras = new ParkingCameraController(this, runtimeHandler, this::parkingEvent);
-        reverseCameras = new ReverseCameraController(
-                this, runtimeHandler, this::reverseEvent, value -> {
-                    overlay.setReversePriority(value);
-                    if (parkingCameras != null) parkingCameras.setReversePriority(value);
-                });
-        clusterFullscreen = new ClusterFullscreenController(
-                this, settings, runtimeHandler, this::lifecycle);
-        mirror = new RearviewMirrorController(this, runtimeHandler, this::lifecycle);
-        mirror.appVisibility(activityVisible);
+        ensureHelperCreated();
         controllersInitialized = true;
-        oemCameraVisibility.reportStatus();
     }
 
     private void ensureControllersInitialized() {
@@ -816,10 +799,6 @@ public final class CameraHelperService extends Service {
                                         GuardRecovery.shouldRecover(this), owns));
                     }
                 }));
-        oemCameraVisibility = new OemCameraVisibilityRuntime(
-                getApplicationContext(), runtimeHandler, this::oemVisibilityChanged,
-                this::lifecycle);
-        oemCameraVisibility.start();
         activeInstance = this;
         lifecycle("service_create", "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
@@ -938,6 +917,7 @@ public final class CameraHelperService extends Service {
             DiagnosticLogPolicy.configure(getSharedPreferences("settings", MODE_PRIVATE)
                     .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
             if (helper != null) helper.configureLogging();
+            if (cameraRuntime != null) cameraRuntime.settingsChanged("logging");
             reconcileAvasRecovery(false, "diagnostic_settings_changed");
             return;
         }
@@ -979,32 +959,26 @@ public final class CameraHelperService extends Service {
         } else {
             ensureControllersInitialized();
         }
-        mirror.setRuntimeAllowed(true);
         boolean refreshMusicAfterClose = false;
         if (ACTION_ACTIVITY_OPEN.equals(action)) {
             activityVisible = true;
-            mirror.appVisibility(true);
-            overlay.setUiHidden(true);
-            parkingCameras.setUiHidden(true);
+            cameraRuntime.visibility(true);
         } else if (ACTION_ACTIVITY_CLOSED.equals(action)) {
             activityVisible = false;
-            mirror.appVisibility(false);
+            cameraRuntime.visibility(false);
             cameraPreviewActive = false;
-            overlay.setUiHidden(false);
-            parkingCameras.setUiHidden(false);
             runtimeHandler.removeCallbacks(resumeOverlay);
             runtimeHandler.postDelayed(resumeOverlay, 250);
             refreshMusicAfterClose = true;
         } else if (ACTION_CAMERA_PREVIEW_STARTED.equals(action)) {
             cameraPreviewActive = true;
             runtimeHandler.removeCallbacks(resumeOverlay);
-            overlay.setSuspended(true);
-            parkingCameras.setSuspended(true);
+            cameraRuntime.preview(true);
         } else if (ACTION_CAMERA_PREVIEW_STOPPED.equals(action)) {
             cameraPreviewActive = false;
             runtimeHandler.removeCallbacks(resumeOverlay);
             if (!activityVisible) runtimeHandler.postDelayed(resumeOverlay, 250);
-            parkingCameras.setSuspended(false);
+            cameraRuntime.preview(false);
         }
         ensureHelperStarted();
         weatherRuntime.start();
@@ -1017,26 +991,20 @@ public final class CameraHelperService extends Service {
                     settings.getBoolean("music_capture_focus_on_open", true),
                     settings.getBoolean("music_engine_visualization_enabled", false));
         } else if (ACTION_CAMERA_SETTINGS_CHANGED.equals(action)) {
-            mirror.settingsChanged();
-            overlay.applySettings();
-            parkingCameras.settingsChanged();
-            reverseCameras.settingsChanged();
-            clusterFullscreen.settingsChanged();
+            cameraRuntime.settingsChanged("all");
         } else if (ACTION_CAMERA_WARNING_SETTINGS_CHANGED.equals(action)) {
-            overlay.applyWarningSettings();
+            cameraRuntime.settingsChanged("warning");
         } else if (ACTION_CAMERA_TRIGGER_SETTINGS_CHANGED.equals(action)) {
-            overlay.applyTriggerSettings();
+            cameraRuntime.settingsChanged("trigger");
         } else if (ACTION_PARKING_CAMERA_SETTINGS_CHANGED.equals(action)) {
-            if (parkingCameras != null) parkingCameras.settingsChanged();
+            cameraRuntime.settingsChanged("parking");
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
-            reverseCameras.settingsChanged();
+            cameraRuntime.settingsChanged("reverse");
         } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {
-            mirror.settingsChanged();
-            clusterFullscreen.settingsChanged();
+            cameraRuntime.settingsChanged("mirror");
         } else if (ACTION_MIRROR_BUTTON.equals(action)
                 && mirrorButton != null && mirrorButton.changed()) {
-            mirror.settingsChanged();
-            clusterFullscreen.settingsChanged();
+            cameraRuntime.settingsChanged("mirror");
         } else if (ACTION_MUSIC_SETTINGS_CHANGED.equals(action)) {
             helper.applyMusic(settings.getBoolean("music_visualizer_enabled", false),
                     settings.getBoolean("music_capture_focus_on_open", true),
@@ -1341,6 +1309,7 @@ public final class CameraHelperService extends Service {
         ensureHelperCreated();
         CameraHelperMain.HelperBinder boundHelper = helper;
         if (boundHelper == null) return null;
+        cameraRuntime.setUiState(true, cameraPreviewActive);
         postRuntime(() -> {
             if (LegacySettingsImporter.blocksRuntime(this)
                     || GuardRecovery.isUserShutdownActive(this)) return;
@@ -1407,12 +1376,7 @@ public final class CameraHelperService extends Service {
                     logcatRecordingRequested(settings), "service_teardown");
             avasRecoveryDaemon.close();
         }
-        if (oemCameraVisibility != null) oemCameraVisibility.stopForTeardown();
-        if (reverseCameras != null) reverseCameras.shutdown();
-        if (mirror != null) mirror.shutdown();
-        if (overlay != null) overlay.shutdown();
-        if (parkingCameras != null) parkingCameras.shutdown();
-        if (clusterFullscreen != null) clusterFullscreen.shutdown();
+        if (explicitShutdown && cameraRuntime != null) cameraRuntime.shutdown();
         if (weatherRuntime != null) weatherRuntime.shutdown();
         HelperTeardownMode teardownMode = helperTeardownMode(recover, explicitShutdown);
         if (helper != null) {
@@ -1422,7 +1386,6 @@ public final class CameraHelperService extends Service {
         controllersInitialized = false;
         helper = null;
         helperRuntimeStarted = false;
-        oemCameraVisibility = null;
         weatherAccessibilityExecutor.shutdownNow();
         List<AccessibilityRecoveryCallback> cancelledCallbacks;
         synchronized (weatherAccessibilityCallbackLock) {
@@ -1445,6 +1408,8 @@ public final class CameraHelperService extends Service {
         if (helper != null) return;
         helper = new CameraHelperMain.HelperBinder(
                 getApplicationContext(), runtimeHandler, this::acceptHelperLine);
+        cameraRuntime = helper.cameraRuntime();
+        cameraRuntime.setUiState(activityVisible, cameraPreviewActive);
         helperRuntimeStarted = false;
     }
 
@@ -1455,19 +1420,13 @@ public final class CameraHelperService extends Service {
         GuardRecovery.sessionStarted(this);
         helperRuntimeStarted = true;
         boolean cameraReady = helper.discoverCamera();
-        mirror.attachHelper(helper);
         helper.startGuardRuntime();
         helper.configureAvas();
 
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
-        overlay.attachHelper(helper);
-        parkingCameras.attachHelper(helper);
-        parkingCameras.setUiHidden(activityVisible);
-        parkingCameras.setSuspended(cameraPreviewActive);
-        reverseCameras.attachHelper(helper);
-        overlay.setUiHidden(activityVisible);
-        overlay.setSuspended(cameraPreviewActive);
+        cameraRuntime.visibility(activityVisible);
+        if (cameraPreviewActive) cameraRuntime.preview(true);
         if (shouldRetryCameraDiscovery(cameraReady, helperRuntimeStarted)) {
             scheduleCameraDiscoveryRetry(CAMERA_DISCOVERY_RETRY_MS);
         }
@@ -1477,18 +1436,10 @@ public final class CameraHelperService extends Service {
         runtimeHandler.removeCallbacks(heartbeat);
         runtimeHandler.removeCallbacks(resumeOverlay);
         runtimeHandler.removeCallbacks(retryCameraDiscovery);
-        if (reverseCameras != null) reverseCameras.shutdown();
-        if (mirror != null) mirror.shutdown();
-        if (overlay != null) overlay.shutdown();
-        if (parkingCameras != null) parkingCameras.shutdown();
-        if (clusterFullscreen != null) clusterFullscreen.shutdown();
+        if (terminateShells && cameraRuntime != null) cameraRuntime.shutdown();
         if (weatherRuntime != null) weatherRuntime.shutdown();
         if (helper != null) helper.shutdown(terminateShells);
-        overlay = null;
-        parkingCameras = null;
-        reverseCameras = null;
-        mirror = null;
-        clusterFullscreen = null;
+        cameraRuntime = null;
         weatherRuntime = null;
         controllersInitialized = false;
         helper = null;
@@ -1511,13 +1462,7 @@ public final class CameraHelperService extends Service {
             RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
             helper.configureAvas();
         }
-        overlay.applySettings();
-        overlay.applyWarningSettings();
-        overlay.applyTriggerSettings();
-        parkingCameras.settingsChanged();
-        reverseCameras.settingsChanged();
-        if (mirror != null) mirror.settingsChanged();
-        clusterFullscreen.settingsChanged();
+        cameraRuntime.settingsChanged("all");
         if (fullImport) {
             GuardRecovery.setAutoStartEnabled(this,
                     settings.getBoolean("auto_start_enabled", true));
@@ -1664,23 +1609,15 @@ public final class CameraHelperService extends Service {
                 || line.contains("helper_ping_failed"))
             WeatherRefreshAccessibilityService.microphoneEvent(line);
         postRuntime(() -> {
-            if (isShellOemVisibilityEvent(line)) {
-                lifecycle("oem_camera_visibility_upstream_ignored");
-                return;
+            if (cameraRuntime != null && line.contains("\"helper_ping\"")) {
+                try {
+                    org.json.JSONObject event = new org.json.JSONObject(line);
+                    if ("helper_ping".equals(event.optString("kind")) && event.optBoolean("ok"))
+                        cameraRuntime.connect();
+                } catch (org.json.JSONException ignored) { }
             }
-            if (overlay != null) overlay.acceptEvent(line);
-            if (parkingCameras != null) parkingCameras.acceptEvent(line);
-            if (reverseCameras != null) reverseCameras.acceptEvent(line);
-            if (mirror != null) mirror.acceptEvent(line);
-            if (clusterFullscreen != null) clusterFullscreen.acceptEvent(line);
             serviceLog.appendRaw(line);
         });
-    }
-
-    private void oemVisibilityChanged(boolean known, boolean visible, String source) {
-        if (overlay != null) overlay.oemVisibility(known, visible);
-        if (reverseCameras != null) reverseCameras.oemVisibility(known, visible, source);
-        if (mirror != null) mirror.oemVisibility(known, visible);
     }
 
     static boolean isShellOemVisibilityEvent(String line) {

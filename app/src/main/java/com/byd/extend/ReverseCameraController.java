@@ -32,6 +32,7 @@ final class ReverseCameraController {
     private static final long RETRY_MS = 3_000;
 
     private final Handler handler;
+    private final boolean independentRuntime;
     private final SharedPreferences settings;
     private final BiConsumer<String, Object[]> eventSink;
     private final Consumer<Boolean> prioritySink;
@@ -85,6 +86,7 @@ final class ReverseCameraController {
             BiConsumer<String, Object[]> eventSink,
             Consumer<Boolean> prioritySink) {
         this.handler = handler;
+        independentRuntime = context instanceof CameraRuntimeContext;
         this.eventSink = eventSink;
         this.prioritySink = prioritySink;
         settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
@@ -125,7 +127,7 @@ final class ReverseCameraController {
                 || activeHelper == null || !enabled() || !sessionPolicy.eligible
                 || !loadWidgetVisible(settings) || !hasAnyFrontIntegration(settings)) return;
         if (ownerEpoch < 0) return;
-        if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+        if (!independentRuntime && !CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
         try {
             activeHelper.toggleReverseSideMode(activeRequestId, ownerEpoch);
             emit("reverse_steering_toggle", "request_id", activeRequestId);

@@ -110,6 +110,7 @@ public final class TurnSignalShellMain {
         private boolean processTerminationRequested;
         private boolean avasCloseClaimed;
         private boolean nonAvasStopped;
+        private volatile CameraRuntimeHost cameraRuntime;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
             this(context, handler, appUid, versionCode, TurnSignalShellMain::terminateProcess);
@@ -174,6 +175,8 @@ public final class TurnSignalShellMain {
         }
 
         void stop() {
+            CameraRuntimeHost cameras = cameraRuntime;
+            if (cameras != null) cameras.shutdown();
             handler.removeCallbacks(recoveryRunnable);
             handler.removeCallbacks(wakeCheckRunnable);
             unregisterPowerReceiver();
@@ -199,6 +202,29 @@ public final class TurnSignalShellMain {
             }
             try {
                 data.enforceInterface(TurnSignalShellProtocol.DESCRIPTOR);
+                if (code == TurnSignalShellProtocol.TX_CAMERA_RUNTIME) {
+                    CameraRuntimeHost cameras;
+                    synchronized (this) {
+                        if (cameraRuntime == null || cameraRuntime.isStopped()) cameraRuntime = new CameraRuntimeHost(
+                                context, appUid, line -> {
+                                    if (DiagnosticLogPolicy.shouldPersist(DiagnosticLogPolicy.kind(line))) {
+                                        DiagnosticLogPolicy.print(line);
+                                        scheduleStdoutFlush();
+                                    }
+                                });
+                        cameras = cameraRuntime;
+                    }
+                    int cameraOperation = cameras.transact(data, reply);
+                    if (cameraOperation == CameraRuntimeHost.ATTACH) handler.post(() -> {
+                        runtime.reportStatus(); warningRuntime.reportStatus();
+                        reverseGearRuntime.reportStatus(); reverseSteeringRuntime.reportStatus();
+                        emitPowerState("camera_runtime", false);
+                    });
+                    if (cameraOperation == CameraRuntimeHost.STOP) {
+                        synchronized (this) { if (cameraRuntime == cameras) cameraRuntime = null; }
+                    }
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_LOGGING) {
                     int enabled = data.readInt();
                     if (enabled != 0 && enabled != 1) throw new IllegalArgumentException("invalid logging flag");
@@ -439,6 +465,9 @@ public final class TurnSignalShellMain {
                     recoveryEnabled = false;
                     reply.writeNoException();
                     handler.post(() -> {
+                        CameraRuntimeHost cameras = cameraRuntime;
+                        if (cameras != null) cameras.shutdown();
+                        cameraRuntime = null;
                         musicRuntime.stop();
                         parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
@@ -461,6 +490,9 @@ public final class TurnSignalShellMain {
                     recoveryEnabled = false;
                     reply.writeNoException();
                     handler.post(() -> {
+                        CameraRuntimeHost cameras = cameraRuntime;
+                        if (cameras != null) cameras.shutdown();
+                        cameraRuntime = null;
                         nonAvasStopped = true;
                         if (avasRuntime != null) {
                             avasRuntime.stopAllAuditions();
@@ -1045,6 +1077,8 @@ public final class TurnSignalShellMain {
         }
 
         private void forwardEventLine(String line) {
+            CameraRuntimeHost cameras = cameraRuntime;
+            if (cameras != null) cameras.acceptTelemetry(line);
             if (DiagnosticLogPolicy.shouldPersist(DiagnosticLogPolicy.kind(line))) {
                 DiagnosticLogPolicy.print(line);
                 scheduleStdoutFlush();

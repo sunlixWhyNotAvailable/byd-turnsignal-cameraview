@@ -13,7 +13,7 @@ final class TurnSignalShellProtocol {
             "com.byd.extend.ITurnSignalShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_helper.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_helper.log";
-    static final int VERSION = 20;
+    static final int VERSION = 21;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -42,6 +42,7 @@ final class TurnSignalShellProtocol {
     static final int TX_MUSIC_FOREGROUND = IBinder.FIRST_CALL_TRANSACTION + 24;
     static final int TX_TOGGLE_AVAS_ENGINE = IBinder.FIRST_CALL_TRANSACTION + 25;
     static final int TX_CONFIGURE_REVERSE_STEERING = IBinder.FIRST_CALL_TRANSACTION + 26;
+    static final int TX_CAMERA_RUNTIME = IBinder.FIRST_CALL_TRANSACTION + 27;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 
     static final int AVAS_MIC_FORMAT_PCM_S16LE_MONO_16KHZ = 1;

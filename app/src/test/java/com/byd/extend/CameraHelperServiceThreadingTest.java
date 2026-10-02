@@ -202,9 +202,12 @@ public final class CameraHelperServiceThreadingTest {
                 text.indexOf("private void initializeControllers"),
                 text.indexOf("public void onCreate"));
         assertFalse(controllers.contains(", mainHandler,"));
-        assertTrue(controllers.contains("BlindSpotOverlayController(this, runtimeHandler"));
-        assertTrue(controllers.contains("ParkingCameraController(this, runtimeHandler"));
-        assertTrue(controllers.contains("this, runtimeHandler, this::reverseEvent"));
+        assertFalse(controllers.contains("new BlindSpotOverlayController"));
+        String host = CameraRuntimeContinuityTest.source("CameraRuntimeHost");
+        assertTrue(host.contains("new HandlerThread(\"camera-runtime\")"));
+        assertTrue(host.contains("BlindSpotOverlayController(context, handler"));
+        assertTrue(host.contains("ParkingCameraController(context, handler"));
+        assertTrue(host.contains("context, handler, helper::emitControllerEvent"));
 
         String helperCreation = text.substring(
                 text.indexOf("private synchronized void ensureHelperCreated"),
@@ -287,15 +290,11 @@ public final class CameraHelperServiceThreadingTest {
             source = Path.of("src/main/java/com/byd/extend/CameraHelperService.java");
         }
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
-        assertTrue(text.contains("oemCameraVisibility = new OemCameraVisibilityRuntime("));
-        String controllers = text.substring(
-                text.indexOf("private void initializeControllers"),
-                text.indexOf("private void ensureControllersInitialized"));
-        assertTrue(controllers.contains("oemCameraVisibility.reportStatus()"));
-        String teardown = text.substring(
-                text.indexOf("private void destroyRuntime"),
-                text.indexOf("private synchronized void ensureHelperCreated"));
-        assertTrue(teardown.contains("oemCameraVisibility.stopForTeardown()"));
+        assertFalse(text.contains("new OemCameraVisibilityRuntime("));
+        String host = CameraRuntimeContinuityTest.source("CameraRuntimeHost");
+        assertTrue(host.contains("pano = new OemCameraVisibilityRuntime("));
+        assertTrue(host.contains("pano.reportStatus()"));
+        assertTrue(host.contains("pano.stopForTeardown()"));
 
         Path shellSource = Path.of("app/src/main/java/com/byd/extend/TurnSignalShellMain.java");
         if (!Files.exists(shellSource)) {

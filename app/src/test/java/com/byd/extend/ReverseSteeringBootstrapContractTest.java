@@ -24,20 +24,34 @@ public final class ReverseSteeringBootstrapContractTest {
         assertFalse(model.contains("StockAvmPreview.readConfig"));
     }
 
-    @Test public void existingHandlerPreparesModelAndWorkerReadsAndSendsIt() throws Exception {
+    @Test public void dedicatedMainHandlerPreparesModelDespiteServiceRuntimeInjection() throws Exception {
         String controller = source("java/com/byd/extend/TurnSignalController.java");
         String sync = between(controller, "private void syncSteeringModel(",
                 "private void prepareSteeringModelOnMain()");
         String prepare = between(controller, "private void prepareSteeringModelOnMain()",
                 "private void reportSteeringModelFailure(");
-        assertTrue(sync.contains("handler.post(this::prepareSteeringModelOnMain)"));
+        assertTrue(controller.contains(
+                "private final Handler steeringMainHandler = new Handler(Looper.getMainLooper());"));
+        assertTrue(sync.contains("steeringMainHandler.post(this::prepareSteeringModelOnMain)"));
+        assertFalse(sync.contains("handler.post(this::prepareSteeringModelOnMain)"));
         assertFalse(sync.contains("ReverseSteeringModelConfig.load(context)"));
         assertBefore(prepare, "ReverseSteeringModelConfig.prepareLoad(context)", "worker.execute(");
         assertBefore(prepare, "worker.execute(", "prepared.call()");
         assertFalse(prepare.contains("requireTransact("));
         assertTrue(sync.contains("TX_CONFIGURE_REVERSE_STEERING"));
-        assertTrue(source("java/com/byd/extend/CameraHelperMain.java")
-                .contains("new Handler(Looper.getMainLooper())"));
+        // Follow the actual three-argument service path, not the unused main-thread overload.
+        String service = source("java/com/byd/extend/CameraHelperService.java");
+        String create = between(service, "private synchronized void ensureHelperCreated()",
+                "private void ensureHelperStarted()");
+        assertTrue(service.contains("runtimeHandler = new Handler(runtimeThread.getLooper())"));
+        assertTrue(create.contains("getApplicationContext(), runtimeHandler, this::acceptHelperLine"));
+        String helper = source("java/com/byd/extend/CameraHelperMain.java");
+        String constructor = between(helper,
+                "HelperBinder(Context context, Handler callbackHandler, Consumer<String> logSink)",
+                "void startGuardRuntime()");
+        assertTrue(constructor.contains(
+                "context, callbackHandler, this::acceptShellEvent, this::acceptControllerEvent"));
+        assertTrue(controller.contains("this.handler = handler;"));
     }
 
     @Test public void pendingShutdownReconnectAndFailureKeepExistingRuntimeSafe() throws Exception {

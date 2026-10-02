@@ -11,7 +11,7 @@ final class StockAvmShellProtocol {
     static final String CALLBACK_DESCRIPTOR = "com.byd.extend.IStockAvmShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_avm.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_avm.log";
-    static final int VERSION = 3;
+    static final int VERSION = 4;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -24,6 +24,6 @@ final class StockAvmShellProtocol {
     private StockAvmShellProtocol() {}
 
     static boolean isCallerAllowed(int actualUid, int appUid) {
-        return actualUid == appUid;
+        return actualUid == appUid || actualUid == 2000;
     }
 }

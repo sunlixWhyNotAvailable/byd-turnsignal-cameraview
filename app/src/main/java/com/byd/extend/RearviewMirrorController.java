@@ -200,7 +200,7 @@ final class RearviewMirrorController {
                 RearviewMirrorSettings.hidden(preferences), appVisible, oemKnown, oemVisible,
                 RearviewMirrorSettings.suppressWhilePanorama(preferences),
                 RearviewMirrorSettings.target(preferences),
-                runtimeAllowed, Settings.canDrawOverlays(context), shutdown)
+                runtimeAllowed, CameraRuntimeContext.overlayAllowed(context), shutdown)
                 && !GuardRecovery.isUserShutdownActive(context)
                 && !LegacySettingsImporter.blocksRuntime(context);
     }

@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
@@ -42,7 +43,9 @@ final class TurnSignalController {
     static final String KEY_HELPER_NAMESPACE_MIGRATED = "helper_namespace_extend";
 
     private final Context context;
+    private final boolean cameraRuntimeHost;
     private final Handler handler;
+    private final Handler steeringMainHandler = new Handler(Looper.getMainLooper());
     private final Consumer<String> shellEventSink;
     private final BiConsumer<String, Object[]> eventSink;
     private final SharedPreferences settings;
@@ -132,16 +135,18 @@ final class TurnSignalController {
             Consumer<String> shellEventSink,
             BiConsumer<String, Object[]> eventSink) {
         this.context = context.getApplicationContext();
+        cameraRuntimeHost = this.context instanceof CameraRuntimeContext;
         this.handler = handler;
         this.shellEventSink = shellEventSink;
         this.eventSink = eventSink;
         settings = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        avasLibrary = new AvasAudioLibrary(this.context, settings);
+        avasLibrary = cameraRuntimeHost ? null : new AvasAudioLibrary(this.context, settings);
         apkMarker = currentApkMarker(this.context);
-        migrateLegacyLatchState();
+        if (!cameraRuntimeHost) migrateLegacyLatchState();
     }
 
     void start() {
+        if (cameraRuntimeHost) return;
         if (LegacySettingsImporter.blocksRuntime(context)) {
             emit("runtime_blocked", "reason", "legacy_handover");
             return;
@@ -205,7 +210,7 @@ final class TurnSignalController {
         } else if (terminateShells) {
             shutdownTurnHelper();
             shutdownCameraHelper();
-        } else {
+        } else if (cameraRuntimeHost) {
             for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 closeCameraOverlayNow(profile.id, "controller_shutdown");
             }
@@ -222,7 +227,7 @@ final class TurnSignalController {
             }
             if (terminateShells || keepAvas) {
                 worker.execute(this::shutdownAvmShell);
-            } else if (canceledOpen == null) {
+            } else if (cameraRuntimeHost && canceledOpen == null) {
                 worker.execute(() -> closeStockAvmNow("controller_shutdown"));
             }
         } catch (RejectedExecutionException ignored) {
@@ -351,6 +356,7 @@ final class TurnSignalController {
     }
 
     boolean isHealthy() {
+        if (cameraRuntimeHost) return !stopped;
         IBinder value = helper;
         return healthy && value != null && value.isBinderAlive();
     }
@@ -1152,7 +1158,8 @@ final class TurnSignalController {
                 synchronized (TurnSignalController.this) {
                     if (stopped || cameraHelper != value || cameraHelperEpoch != epoch) return;
                 }
-                if (!CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+                if (!cameraRuntimeHost && !CameraProbeActivity.reverseOwnerStillAbsent(ownerEpoch)) return;
+                if (cameraRuntimeHost && ((CameraRuntimeContext) context).uiVisible) return;
                 try {
                     transactReverseToggle(value, requestId);
                 } catch (Throwable error) {
@@ -1279,6 +1286,7 @@ final class TurnSignalController {
     }
 
     void reportStatus() {
+        if (cameraRuntimeHost) return;
         emit("adb_auth_state", "pending", authorizationPending,
                 "mode", modeName(authorizationMode));
         worker.execute(() -> {
@@ -2090,7 +2098,7 @@ final class TurnSignalController {
         steeringModelAttemptAt = now;
         if (steeringModel == null) {
             steeringModelLoadPending = true;
-            if (!handler.post(this::prepareSteeringModelOnMain)) {
+            if (!steeringMainHandler.post(this::prepareSteeringModelOnMain)) {
                 steeringModelLoadPending = false;
                 reportSteeringModelFailure(new IllegalStateException("app main handler rejected task"));
             }
@@ -2301,13 +2309,11 @@ final class TurnSignalController {
                     return candidate == stale ? null : candidate;
                 } : this::resolveCameraHelper,
                 () -> {
-                    if (stopped || !migrateHelperNamespace()) {
+                    if (stopped || (!cameraRuntimeHost && !migrateHelperNamespace())) {
                         return LocalAdbClient.Result.failed(
                                 "helper_namespace_migration_failed", "", -1, "unavailable");
                     }
-                    LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
-                            context, cameraLaunchCommand(context.getApplicationInfo().sourceDir,
-                                    Process.myUid(), BuildConfig.VERSION_CODE), this::emit);
+                    LocalAdbClient.Result result = launchCameraProcess(false);
                     if (result.ok) {
                         emit("camera_shell_launch", "ok", true, "output", result.output);
                     }
@@ -2387,9 +2393,7 @@ final class TurnSignalController {
                 avmShell,
                 this::avmPing,
                 this::resolveAvmShell,
-                () -> LocalAdbClient.executeAuthorized(
-                        context, avmLaunchCommand(context.getApplicationInfo().sourceDir,
-                                Process.myUid(), BuildConfig.VERSION_CODE), this::emit),
+                () -> launchCameraProcess(true),
                 SystemClock::elapsedRealtime,
                 Thread::sleep,
                 3_000);
@@ -2456,12 +2460,33 @@ final class TurnSignalController {
 
     private void resetAvmShell() throws Exception {
         clearAvmShell(null);
-        LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
-                context, avmLaunchCommand(context.getApplicationInfo().sourceDir,
-                        Process.myUid(), BuildConfig.VERSION_CODE), this::emit);
+        LocalAdbClient.Result result = launchCameraProcess(true);
         if (!result.ok) throw new IllegalStateException(
                 "stock_avm_shell_reset_failed: " + result.error);
         ensureAvmShell();
+    }
+
+    private LocalAdbClient.Result launchCameraProcess(boolean avm) {
+        String apk = context.getApplicationInfo().sourceDir;
+        int owner = context.getApplicationInfo().uid;
+        String command = avm ? avmLaunchCommand(apk, owner, BuildConfig.VERSION_CODE)
+                : cameraLaunchCommand(apk, owner, BuildConfig.VERSION_CODE);
+        if (!cameraRuntimeHost) return LocalAdbClient.executeAuthorized(context, command, this::emit);
+        // Already shell UID: launch only our two fixed, package-derived camera entry points.
+        // No app RSA key, app callback, user-supplied command, or 5555 connection is involved.
+        try {
+            java.lang.Process process = new ProcessBuilder("/system/bin/sh", "-c", command)
+                    .redirectErrorStream(true).redirectOutput(new java.io.File("/dev/null")).start();
+            if (!process.waitFor(8, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroy();
+                return LocalAdbClient.Result.failed("camera_launch_timeout", "", -1, "shell");
+            }
+            return process.exitValue() == 0 ? LocalAdbClient.Result.ok("", 0, "shell", false)
+                    : LocalAdbClient.Result.failed("camera_launch_failed", "", process.exitValue(), "shell");
+        } catch (Exception error) {
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            return LocalAdbClient.Result.failed(summary(error), "", -1, "shell");
+        }
     }
 
     private boolean cameraPing(IBinder value) {
@@ -3056,6 +3081,7 @@ final class TurnSignalController {
     }
 
     private void shutdownTurnHelper() {
+        if (cameraRuntimeHost) return;
         IBinder value = helper;
         if (value == null || !value.isBinderAlive()) value = resolveHelper();
         if (value == null || !value.isBinderAlive()) return;
