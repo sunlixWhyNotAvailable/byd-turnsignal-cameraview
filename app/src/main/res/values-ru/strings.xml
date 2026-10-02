@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="avas_engine_navigation_priority">Приоритет навигации</string>
+    <string name="avas_engine_navigation_priority_hint">Освобождать внешний аудиоканал для навигации. Начало сообщения может быть потеряно.</string>
     <string name="correction_strength">"Сила"</string>
     <string name="horizontal_fov">Горизонтальный угол обзора</string>
     <string name="signals_integrations">"Интеграции BYD"</string>

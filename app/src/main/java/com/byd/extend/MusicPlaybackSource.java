@@ -77,6 +77,21 @@ public final class MusicPlaybackSource {
         if (RELEASED.size() > 64) RELEASED.remove(RELEASED.keySet().iterator().next());
     }
 
+    static boolean isOwned(AudioPlaybackConfiguration configuration) {
+        int id = playerId(CONFIG_ID, configuration);
+        Set<String> tags = sourceTagsAvailable() ? tags(configuration.getAudioAttributes()) : null;
+        if (isOwnedPlayer(id, tags)) return true;
+        if ((id <= 0 || !playerIdentityAvailable()) && tags == null) {
+            throw new IllegalStateException("Playback identity unavailable");
+        }
+        return false;
+    }
+
+    static boolean isOwnedPlayer(int id, Set<String> tags) {
+        return source(id) != null || tags != null
+                && (tags.contains(ENGINE) || tags.contains(EVENT) || tags.contains(MICROPHONE));
+    }
+
     static boolean isEligibleForVisualization(
             AudioPlaybackConfiguration configuration, boolean engineVisualizationEnabled) {
         int id = playerId(CONFIG_ID, configuration);

@@ -43,6 +43,7 @@ public final class AvasEnginePackTest {
         }
         assertEquals(id + " full start recording", expectedFrames[0], pack.start.length);
         assertEquals(id + " full stop recording", expectedFrames[1], pack.stop.length);
+        verifyStartTransition(pack);
         assertTrue(id + " idle has headroom", peak(pack.idle) <= 0.503f);
         assertTrue(id + " start has headroom", peak(pack.start) <= 0.503f);
         assertTrue(id + " stop has headroom", peak(pack.stop) <= 0.503f);
@@ -84,6 +85,35 @@ public final class AvasEnginePackTest {
             float renderedPeak = peak(block);
             assertTrue(id + " produced clipped output", renderedPeak <= 0.503f);
             assertTrue(id + " produced silent output", renderedPeak > 0.0001f);
+        }
+    }
+
+    private static void verifyStartTransition(AvasEnginePack pack) {
+        AvasEngineSynth synth = new AvasEngineSynth(pack);
+        AvasEngineSynth reference = new AvasEngineSynth(pack);
+        float[] mixed = new float[480];
+        float[] running = new float[480];
+        int copied = 0;
+        for (int at = 0; at < pack.start.length; at += mixed.length) {
+            int count = Math.min(mixed.length, pack.start.length - at);
+            synth.renderStart(mixed, count, at, pack.idleRpm, 0);
+            if (pack.startBlendFull != 0) reference.render(running, 0, count, pack.idleRpm, 0);
+            for (int i = 0; i < count; i++) {
+                assertTrue(Float.isFinite(mixed[i]) && Math.abs(mixed[i]) <= 1f);
+                if (pack.startBlendFull == 0 || at + i <= pack.startBlendFrom) {
+                    assertEquals(pack.id + " unchanged cue prefix", pack.start[at + i], mixed[i], 0f);
+                } else if (at + i >= pack.startBlendFull) {
+                    assertEquals(pack.id + " full running overlap", pack.start[at + i] + running[i],
+                            mixed[i], .000001f);
+                }
+            }
+            copied += count;
+        }
+        assertEquals(pack.start.length, copied);
+        if (pack.startBlendFull != 0) {
+            synth.render(mixed, 0, mixed.length, pack.idleRpm, 0);
+            reference.render(running, 0, running.length, pack.idleRpm, 0);
+            org.junit.Assert.assertArrayEquals("running phase must continue", running, mixed, 0f);
         }
     }
 

@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 1800,
+  "startBlendFullMs": 3500,
   "id": "huracan_v10",
   "name": "Lamborghini Huracán V10",
   "idleRpm": 900,

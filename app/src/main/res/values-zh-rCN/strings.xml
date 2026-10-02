@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="avas_engine_navigation_priority">导航优先</string>
+    <string name="avas_engine_navigation_priority_hint">为导航提示释放车外音频通道，提示开头可能丢失。</string>
     <string name="correction_strength">"强度"</string>
     <string name="horizontal_fov">"水平视场角"</string>
     <string name="signals_integrations">"BYD 集成"</string>

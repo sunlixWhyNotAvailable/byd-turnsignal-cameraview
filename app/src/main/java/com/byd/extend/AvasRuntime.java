@@ -121,6 +121,7 @@ final class AvasRuntime implements AutoCloseable {
         // Recover a route left dirty by helper death even when no new sound is requested.
         try {
             player = new AvasAudioPlayer(context, this::emit, cueGate);
+            player.setNavigationPriority(config.engine.navigationPriority);
         } catch (Exception failure) {
             // The dirty marker remains set; the existing next-play construction retries cleanup.
             event("avas_error", "stage", "recovery", "error", failure.toString());
@@ -138,6 +139,7 @@ final class AvasRuntime implements AutoCloseable {
         Set<String> deleted = assetIds(config);
         deleted.removeAll(assetIds(next));
         config = next;
+        if (player != null) player.setNavigationPriority(next.engine.navigationPriority);
         engine.configure(next.engine);
         telemetryController.eligibilityChanged(skipEligible(next, "power_on"),
                 skipEligible(next, "power_off"));
@@ -423,6 +425,7 @@ final class AvasRuntime implements AutoCloseable {
         AvasAudioPlayer current = player;
         if (current == null) {
             current = new AvasAudioPlayer(context, this::emit, cueGate);
+            current.setNavigationPriority(config.engine.navigationPriority);
             player = current;
         }
         return current;

@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 3500,
+  "startBlendFullMs": 4400,
   "id": "harley_vtwin",
   "name": "Harley-Davidson V-twin",
   "idleRpm": 900,

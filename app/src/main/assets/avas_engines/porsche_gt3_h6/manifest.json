@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 1800,
+  "startBlendFullMs": 3200,
   "id": "porsche_gt3_h6",
   "name": "Porsche 911 GT3 H6",
   "idleRpm": 800,

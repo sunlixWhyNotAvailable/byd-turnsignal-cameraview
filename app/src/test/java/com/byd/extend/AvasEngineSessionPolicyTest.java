@@ -181,7 +181,8 @@ public final class AvasEngineSessionPolicyTest {
         AvasEngineSessionPolicy p = enabled();
         p.observePower(2, true);
         assertEquals(RESTORE, p.observeReady(true));
-        assertEquals(STOP_NOW, p.toggleLive());
+        assertEquals(STOP_WITH_TAIL, p.toggleLive());
+        assertEquals(NONE, p.playbackTailFinished());
         assertEquals(NONE, p.observeReady(null));
         assertEquals(NONE, p.observeReady(true));
         assertFalse(p.liveRequested());
@@ -196,10 +197,24 @@ public final class AvasEngineSessionPolicyTest {
         AvasEngineSessionPolicy p = enabled();
         p.observePower(2, true);
         assertEquals(RESTORE, p.observeReady(true));
-        assertEquals(STOP_NOW, p.toggleLive());
+        assertEquals(STOP_WITH_TAIL, p.toggleLive());
         assertEquals(NONE, p.configure(true, true));
         assertEquals(NONE, p.observeReady(true));
         assertFalse(p.liveRequested());
+    }
+
+    @Test public void hotkeyTailDefersTogglesAndDisableStillCancelsImmediately() {
+        AvasEngineSessionPolicy p = enabled();
+        assertEquals(START, p.toggleLive());
+        assertEquals(STOP_WITH_TAIL, p.toggleLive());
+        assertEquals(NONE, p.toggleLive());
+        assertEquals(NONE, p.toggleLive());
+        assertEquals(NONE, p.playbackTailFinished());
+        assertEquals(START, p.toggleLive());
+        assertEquals(STOP_WITH_TAIL, p.toggleLive());
+        assertEquals(NONE, p.toggleLive());
+        assertEquals(STOP_NOW, p.configure(false, true));
+        assertEquals(NONE, p.playbackTailFinished());
     }
 
     @Test public void tailDefersTogglesAndUsesOnlyTheLatestLiveDemand() {

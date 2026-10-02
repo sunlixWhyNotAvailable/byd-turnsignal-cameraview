@@ -279,6 +279,14 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_REVERSE_STEERING) {
+                    String model = data.readString();
+                    ReverseSteeringModelConfig config = model == null ? null
+                            : new ReverseSteeringModelConfig(data.readFloat(), data.readFloat(), model);
+                    reverseSteeringRuntime.configure(config);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_AVAS) {
                     AvasConfig config = AvasConfig.parse(data.readString());
                     requireAvasRuntime().configure(config);

@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 1500,
+  "startBlendFullMs": 3100,
   "id": "g500_v8",
   "name": "Mercedes G500 V8",
   "idleRpm": 650,

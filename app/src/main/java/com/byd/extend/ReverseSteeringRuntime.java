@@ -58,7 +58,21 @@ final class ReverseSteeringRuntime {
         this.eventSink = eventSink;
     }
 
-    /** Starts asynchronously so OEM model/config and BYDAuto reads never block camera setup. */
+    /** Model lookup belongs to the app UID; only fixed telemetry runs in this shell process. */
+    void configure(ReverseSteeringModelConfig config) {
+        synchronized (lifecycleLock) {
+            ensureWorkerLocked();
+            worker.post(() -> {
+                if (config != null && config.sameModel(modelConfig) && startedOnWorker) return;
+                resetSource();
+                modelConfig = config;
+                invalidate("model_changed", "");
+                startOnWorker();
+            });
+        }
+    }
+
+    /** Starts asynchronously so BYDAuto reads never block camera setup. */
     void start() {
         try {
             synchronized (lifecycleLock) {
@@ -110,12 +124,16 @@ final class ReverseSteeringRuntime {
     private void startOnWorker() {
         synchronized (lifecycleLock) {
             if (!startRequested || startedOnWorker) return;
+            if (modelConfig == null) {
+                updateCapability("model_unavailable");
+                invalidate("model_unavailable", "Waiting for app-side active model");
+                return;
+            }
             startedOnWorker = true;
         }
         callbackAvailable = false;
         readAvailable = false;
         try {
-            modelConfig = ReverseSteeringModelConfig.load(context);
             telemetryManager = FixedBydTelemetryManager.get(context);
             try {
                 subscription = telemetryManager.subscribe(
@@ -147,27 +165,21 @@ final class ReverseSteeringRuntime {
             scheduleReconcile();
         } catch (Throwable failure) {
             closeSubscription();
+            startedOnWorker = false;
             warnOnce(failure);
             String reason = modelConfig == null ? "model_unavailable" : "source_unavailable";
             String detail = summary(failure);
             updateCapability(reason + ": " + detail);
             invalidate(reason, detail);
+            scheduleReconcile();
         }
     }
 
     private void stopOnWorker() {
-        Handler target = worker;
-        if (target != null) target.removeCallbacks(reconcile);
-        closeSubscription();
-        telemetryManager = null;
-        modelConfig = null;
-        startedOnWorker = false;
-        callbackAvailable = false;
-        readAvailable = false;
+        resetSource();
         valid = false;
         angleDegrees = Float.NaN;
         observedMs = -1L;
-        lastTimestamp = Long.MIN_VALUE;
         invalidReason = "stopped";
         updateCapability("stopped");
         emitState(false, "stopped", "", -1L);
@@ -184,6 +196,18 @@ final class ReverseSteeringRuntime {
         }
         if (restart) startOnWorker();
         else if (finishedThread != null) finishedThread.quitSafely();
+    }
+
+    private void resetSource() {
+        Handler target = worker;
+        if (target != null) target.removeCallbacks(reconcile);
+        closeSubscription();
+        telemetryManager = null;
+        startedOnWorker = false;
+        callbackAvailable = false;
+        readAvailable = false;
+        lastTimestamp = Long.MIN_VALUE;
+        warned = false;
     }
 
     private void readCurrent(String source) {
@@ -204,14 +228,15 @@ final class ReverseSteeringRuntime {
     }
 
     private void reconcile() {
-        if (!startedOnWorker) return;
-        readCurrent("reconcile");
+        synchronized (lifecycleLock) { if (!startRequested) return; }
+        if (!startedOnWorker) startOnWorker();
+        else readCurrent("reconcile");
         scheduleReconcile();
     }
 
     private void scheduleReconcile() {
         Handler target = worker;
-        if (startedOnWorker && target != null) {
+        if (modelConfig != null && target != null) {
             target.removeCallbacks(reconcile);
             target.postDelayed(reconcile, RECONCILE_INTERVAL_MS);
         }

@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 1000,
+  "startBlendFullMs": 1300,
   "id": "ferrari_v8",
   "name": "Ferrari 430 V8",
   "idleRpm": 900,

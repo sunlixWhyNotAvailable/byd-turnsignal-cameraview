@@ -61,6 +61,11 @@ internal fun AvasEngineCard(
                     ?: AvasEngineSettings.DEFAULT_PACK_ID)
             }, colors, Modifier.height(40.dp), enabled = state.enabled, hudCompact = true)
 
+            SwitchLine(strings.resource(R.string.avas_engine_navigation_priority),
+                strings.resource(R.string.avas_engine_navigation_priority_hint), state.navigationPriority,
+                { send(AvasActionKind.SetEngineNavigationPriority, enabled = it) }, colors,
+                enabled = state.enabled)
+
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                 .background(colors.panelAlt).border(1.dp, colors.borderStrong, RoundedCornerShape(8.dp))
                 .padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

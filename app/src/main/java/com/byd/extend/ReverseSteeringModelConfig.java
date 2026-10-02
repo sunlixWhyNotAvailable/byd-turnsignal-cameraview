@@ -20,8 +20,14 @@ final class ReverseSteeringModelConfig {
     final float maximumDegrees;
     final String model;
 
-    private ReverseSteeringModelConfig(
+    ReverseSteeringModelConfig(
             float minimumDegrees, float maximumDegrees, String model) {
+        if (!ReverseSteeringShift.hasValidBounds(minimumDegrees, maximumDegrees)) {
+            throw new IllegalArgumentException("invalid active-model steering bounds");
+        }
+        if (model == null || model.trim().isEmpty() || model.length() > 256) {
+            throw new IllegalArgumentException("active model identity unavailable");
+        }
         this.minimumDegrees = minimumDegrees;
         this.maximumDegrees = maximumDegrees;
         this.model = model;
@@ -72,13 +78,12 @@ final class ReverseSteeringModelConfig {
         int maximumMilliDegrees = exactInt(project.get("AngleMax"), "AngleMax");
         float minimum = minimumMilliDegrees / 1000.0f;
         float maximum = maximumMilliDegrees / 1000.0f;
-        if (!ReverseSteeringShift.hasValidBounds(minimum, maximum)) {
-            throw new IllegalArgumentException("invalid active-model steering bounds");
-        }
-        if (model == null || model.isEmpty()) {
-            throw new IllegalArgumentException("active model identity unavailable");
-        }
         return new ReverseSteeringModelConfig(minimum, maximum, model);
+    }
+
+    boolean sameModel(ReverseSteeringModelConfig other) {
+        return other != null && model.equals(other.model)
+                && minimumDegrees == other.minimumDegrees && maximumDegrees == other.maximumDegrees;
     }
 
     /** Mirrors the stock VehicleConfiguration line cleanup before reading the JSON object. */

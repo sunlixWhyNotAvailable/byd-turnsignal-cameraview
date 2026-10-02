@@ -9,6 +9,34 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.Assert.*;
 
 public final class AvasEngineCueGateTest {
+    @Test public void navigationRaceBeforeFirstPcmWaitsWithoutStartingOrReplayingEvent() throws Exception {
+        AvasEngineCueGate gate = new AvasEngineCueGate();
+        AtomicBoolean paused = new AtomicBoolean();
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicInteger writes = new AtomicInteger();
+        CountDownLatch waiting = new CountDownLatch(1);
+        FutureTask<Integer> event = new FutureTask<>(() -> gate.writeEventStart(cancelled::get, () -> {
+            if (paused.get()) waiting.countDown();
+            return paused.get();
+        }, () -> {
+            if (writes.incrementAndGet() == 1) { paused.set(true); return 0; }
+            return 64;
+        }));
+        Thread worker = new Thread(event);
+        worker.start();
+        try {
+            assertTrue(waiting.await(1, TimeUnit.SECONDS));
+            assertEquals(1, writes.get());
+            assertFalse(event.isDone());
+            paused.set(false);
+            assertEquals(64, (int) event.get(1, TimeUnit.SECONDS));
+            assertEquals(2, writes.get());
+        } finally {
+            cancelled.set(true);
+            worker.join(1000);
+        }
+    }
+
     @Test public void newEventWaitsForCueAndStaleCompletionCannotReleaseReplacement() throws Exception {
         AvasEngineCueGate gate = new AvasEngineCueGate();
         Object start = gate.begin();

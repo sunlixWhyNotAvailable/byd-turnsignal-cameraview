@@ -60,6 +60,21 @@ public final class AvasEngineSynth {
         }
     }
 
+    /** Preserve the whole cue while bringing in the same phase-continuous running mixer. */
+    void renderStart(float[] output, int frames, int cueFrame, float rpm, float load) {
+        if (pack.startBlendFull == 0) {
+            System.arraycopy(pack.start, cueFrame, output, 0, frames);
+            return;
+        }
+        render(output, 0, frames, rpm, load);
+        for (int index = 0; index < frames; index++) {
+            float weight = Math.max(0f, Math.min(1f, (cueFrame + index - pack.startBlendFrom)
+                    / (float) (pack.startBlendFull - pack.startBlendFrom)));
+            weight = weight * weight * (3f - 2f * weight);
+            output[index] = limit(pack.start[cueFrame + index] + output[index] * weight);
+        }
+    }
+
     public void reset() {
         Arrays.fill(onPosition, 0.0);
         Arrays.fill(offPosition, 0.0);

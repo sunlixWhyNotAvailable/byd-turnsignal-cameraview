@@ -33,13 +33,22 @@ public final class AvasEngineOutputTest {
     }
 
     @Test public void engineDrainHandlesUnsignedPlaybackCounterWrap() {
-        assertFalse(AvasAudioPlayer.engineFramesPending(0, 0));
-        assertTrue(AvasAudioPlayer.engineFramesPending(0xffff_ffffL, -2));
-        assertFalse(AvasAudioPlayer.engineFramesPending(0xffff_ffffL, -1));
-        assertTrue(AvasAudioPlayer.engineFramesPending(0x1_0000_0000L, -1));
-        assertFalse(AvasAudioPlayer.engineFramesPending(0x1_0000_0000L, 0));
-        assertTrue(AvasAudioPlayer.engineFramesPending(0x1_0000_0010L, 15));
-        assertFalse(AvasAudioPlayer.engineFramesPending(0x1_0000_0010L, 16));
+        AvasPcmTransfer.PlaybackHead head = new AvasPcmTransfer.PlaybackHead();
+        assertTrue(head.completed(0));
+        head.submitted = 0xffff_ffffL;
+        head.observe(-2);
+        assertFalse(head.completed(head.submitted));
+        head.observe(-1);
+        assertTrue(head.completed(head.submitted));
+        head.submitted = 0x1_0000_0000L;
+        assertFalse(head.completed(head.submitted));
+        head.observe(0);
+        assertTrue(head.completed(head.submitted));
+        head.submitted = 0x1_0000_0010L;
+        head.observe(15);
+        assertFalse(head.completed(head.submitted));
+        head.observe(16);
+        assertTrue(head.completed(head.submitted));
     }
 
     @Test public void independentVolumesClampWithoutWrappingOrPropagatingInvalidSamples() {

@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 700,
+  "startBlendFullMs": 1500,
   "id": "golf_gti_l4",
   "name": "Volkswagen Golf GTI L4",
   "idleRpm": 800,

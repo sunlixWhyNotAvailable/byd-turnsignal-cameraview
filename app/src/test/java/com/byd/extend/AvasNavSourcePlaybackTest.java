@@ -11,6 +11,25 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class AvasNavSourcePlaybackTest {
+    @Test public void navigationPauseDuringPreparationDoesNotSpendSourceDeadline() throws Exception {
+        FakeClock clock = new FakeClock();
+        TimedTransport transport = new TimedTransport(clock, 1, 1, 31_000);
+        AvasNavSourceGate gate = gate(transport, clock);
+        boolean[] waited = {false};
+        AvasNavSourcePlayback.Result result = AvasNavSourcePlayback.await(gate, 100, 20,
+                () -> false, new CountingZeros(new ArrayList<>(), 1), clock::now, clock::now,
+                new AvasNavSourcePlayback.Trace(), () -> {
+                    if (clock.now >= 30 && !waited[0]) {
+                        clock.now += 30_000;
+                        waited[0] = true;
+                    }
+                });
+        assertTrue(waited[0]);
+        assertFalse(result.cancelled);
+        assertTrue(result.gateOpenedMs >= 31_000);
+        gate.close();
+    }
+
     @Test public void initialZeroStartsAtFileBoundaryWithoutAnyZeros() throws Exception {
         FakeClock clock = new FakeClock();
         TimedTransport transport = new TimedTransport(clock, 0, 0, Long.MAX_VALUE);

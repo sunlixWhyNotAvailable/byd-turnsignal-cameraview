@@ -154,7 +154,7 @@ public final class AvasNavigationAudioContractTest {
         assertFalse(read.contains("transact(6"));
     }
 
-    @Test public void exteriorEffectIsPrivateOptionalAndUpdatedOnlyWhenVolumeChanges() throws Exception {
+    @Test public void exteriorEffectRemainsPrivateAndDoesNotWriteSharedVolume() throws Exception {
         String player = source("AvasAudioPlayer.java");
         String gain = player.substring(player.indexOf("private final class ExteriorGain"),
                 player.indexOf("private final class SessionDiagnostics"));
@@ -164,34 +164,26 @@ public final class AvasNavigationAudioContractTest {
         assertTrue(gain.contains("AvasPlaybackPlan.exteriorTargetGainMb(volume)"));
         assertTrue(gain.contains("loudness.setEnabled(true)"));
         assertTrue(gain.contains("result != AudioEffect.SUCCESS || !loudness.getEnabled()"));
-        assertTrue(gain.contains("if (volume == appliedVolume) return"));
         assertTrue(gain.contains("AvasPlaybackPlan.exteriorPlayerVolume(volume)"));
         assertTrue(gain.contains("\"fallback\", \"unboosted_pcm\""));
         assertTrue(gain.contains("owned.release()"));
         assertTrue(gain.contains("loudness = null"));
         assertFalse(gain.contains("Thread.sleep"));
         assertFalse(gain.contains("settings.putInt"));
+        assertFalse(gain.contains("setStreamVolume"));
     }
 
     @Test public void exteriorRouteIsDirtyBeforeItsFirstSideEffect() throws Exception {
         String player = source("AvasAudioPlayer.java");
-        String exterior = player.substring(player.indexOf("private void acquireExteriorSession("),
+        String preparation = player.substring(player.indexOf("private void prepareExteriorRoute("),
                 player.indexOf("private void restoreUnownedExteriorSession("));
-        // Joining an already journaled engine route may request transient focus earlier.
-        exterior = exterior.substring(exterior.indexOf("AvasNavVolumePolicy.Snapshot navSnapshot"));
-        int dirty = exterior.indexOf(
+        int dirty = preparation.indexOf(
                 "settings.putInt(AvasShellSettings.DIRTY, AvasShellSettings.EXTERIOR_UNACQUIRED)");
-        assertTrue(dirty >= 0);
-        assertTrue(exterior.indexOf("AvasNavVolumePolicy.capture(") >= 0
-                && exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV") > exterior.indexOf("AvasNavVolumePolicy.capture("));
-        assertTrue(exterior.contains("AvasNavVolumePolicy.journal(navSnapshot,"));
-        assertTrue(exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE") >= 0
-                && exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_NAV") > exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE"));
-        assertTrue(exterior.indexOf("settings.putInt(AvasShellSettings.SAVED_MUTE") < dirty);
-        assertTrue(dirty < exterior.indexOf("route.naviFocus(true, diagnostics)"));
-        assertTrue(dirty < exterior.indexOf("manager.requestAudioFocus(focus)"));
-        assertFalse(exterior.contains("route.mute(true, diagnostics)"));
-        assertTrue(exterior.matches("(?s).*route\\.prepare\\(focus, diagnostics,\\s+dirty -> settings\\.putInt\\(.*"));
+        assertTrue(dirty >= 0 && dirty < preparation.indexOf("route.naviFocus(true, diagnostics)"));
+        String exterior = player.substring(0, player.indexOf("void playNavigation(File wav"));
+        assertFalse(exterior.contains("setStreamVolume("));
+        assertFalse(exterior.contains("SAVED_NAV"));
+        assertFalse(exterior.contains("SAVED_MUTE"));
     }
 
     @Test public void exteriorSharedSetupAndCleanupAreNotGatedOnPrimaryAcceptance() throws Exception {

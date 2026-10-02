@@ -98,7 +98,8 @@ public final class AvasConfig {
                     .put("exteriorEnabled", engine.exteriorEnabled)
                     .put("exteriorVolume", engine.exteriorVolume)
                     .put("interiorEnabled", engine.interiorEnabled)
-                    .put("interiorVolume", engine.interiorVolume);
+                    .put("interiorVolume", engine.interiorVolume)
+                    .put("navigationPriority", engine.navigationPriority);
             return root.put("profiles", values).put("engine", engineValue).toString();
         } catch (Exception error) {
             throw new IllegalStateException("AVAS serialization failed", error);
@@ -175,14 +176,20 @@ public final class AvasConfig {
     }
 
     private static Engine parseEngine(JSONObject value) throws org.json.JSONException {
-        requireKeys(value, "enabled", "packId", "exteriorEnabled", "exteriorVolume",
-                "interiorEnabled", "interiorVolume");
+        if (value.has("navigationPriority")) {
+            requireKeys(value, "enabled", "packId", "exteriorEnabled", "exteriorVolume",
+                    "interiorEnabled", "interiorVolume", "navigationPriority");
+        } else {
+            requireKeys(value, "enabled", "packId", "exteriorEnabled", "exteriorVolume",
+                    "interiorEnabled", "interiorVolume");
+        }
         return new Engine(strictBoolean(value.get("enabled")),
                 strictString(value.get("packId"), "packId"),
                 strictBoolean(value.get("exteriorEnabled")),
                 strictInt(value.get("exteriorVolume"), "exteriorVolume"),
                 strictBoolean(value.get("interiorEnabled")),
-                strictInt(value.get("interiorVolume"), "interiorVolume"));
+                strictInt(value.get("interiorVolume"), "interiorVolume"),
+                !value.has("navigationPriority") || strictBoolean(value.get("navigationPriority")));
     }
 
     private static int strictInt(Object value, String field) {
@@ -204,9 +211,15 @@ public final class AvasConfig {
         public final int exteriorVolume;
         public final boolean interiorEnabled;
         public final int interiorVolume;
+        public final boolean navigationPriority;
 
         public Engine(boolean enabled, String packId, boolean exteriorEnabled,
                 int exteriorVolume, boolean interiorEnabled, int interiorVolume) {
+            this(enabled, packId, exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume, true);
+        }
+
+        public Engine(boolean enabled, String packId, boolean exteriorEnabled,
+                int exteriorVolume, boolean interiorEnabled, int interiorVolume, boolean navigationPriority) {
             if (!AvasEngineSettings.PACK_IDS.contains(packId)) {
                 throw new IllegalArgumentException("invalid engine pack id");
             }
@@ -220,6 +233,7 @@ public final class AvasConfig {
             this.exteriorVolume = exteriorVolume;
             this.interiorEnabled = interiorEnabled;
             this.interiorVolume = interiorVolume;
+            this.navigationPriority = navigationPriority;
         }
 
         public static Engine defaults() {

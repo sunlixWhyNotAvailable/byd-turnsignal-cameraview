@@ -16,6 +16,21 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public final class AvasConfigTest {
+    @Test public void navigationPriorityDefaultsOnForOldConfigAndPreservesExplicitOff() throws Exception {
+        AvasConfig disabled = AvasConfig.empty().withEngine(new AvasConfig.Engine(true,
+                "harley_vtwin", true, 45, true, 32, false));
+        assertFalse(AvasConfig.parse(disabled.toJson()).engine.navigationPriority);
+        JSONObject legacy = new JSONObject(disabled.toJson());
+        legacy.getJSONObject("engine").remove("navigationPriority");
+        AvasConfig migrated = AvasConfig.parse(legacy.toString());
+        assertTrue(migrated.engine.navigationPriority);
+        assertEquals(45, migrated.engine.exteriorVolume);
+        assertEquals(32, migrated.engine.interiorVolume);
+        assertEquals("harley_vtwin", migrated.engine.packId);
+        legacy.getJSONObject("engine").put("navigationPriority", "false");
+        assertThrows(IllegalArgumentException.class, () -> AvasConfig.parse(legacy.toString()));
+    }
+
     @Test
     public void emptyHasFixedSafeDefaults() {
         AvasConfig config = AvasConfig.empty();

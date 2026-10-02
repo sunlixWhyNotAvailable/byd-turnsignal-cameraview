@@ -40,9 +40,12 @@ public final class AvasEnginePack {
     public final float[] start;
     public final float[] stop;
     public final Layer[] layers;
+    final int startBlendFrom;
+    final int startBlendFull;
 
     private AvasEnginePack(String id, String name, int idleRpm, int maxRpm,
-            float[] idle, float[] start, float[] stop, Layer[] layers) {
+            float[] idle, float[] start, float[] stop, Layer[] layers,
+            int startBlendFrom, int startBlendFull) {
         this.id = id;
         this.name = name;
         this.idleRpm = idleRpm;
@@ -52,6 +55,8 @@ public final class AvasEnginePack {
         this.start = start;
         this.stop = stop;
         this.layers = layers;
+        this.startBlendFrom = startBlendFrom;
+        this.startBlendFull = startBlendFull;
     }
 
     /** Loads only the requested built-in pack. */
@@ -111,7 +116,15 @@ public final class AvasEnginePack {
                 layers[index] = new Layer(rpm, on, off);
                 previousRpm = rpm;
             }
-            return new AvasEnginePack(id, name, idleRpm, maxRpm, idle, start, stop, layers);
+            int blendFromMs = manifest.optInt("startBlendFromMs", 0);
+            int blendFullMs = manifest.optInt("startBlendFullMs", 0);
+            if (blendFromMs < 0 || blendFullMs < 0 || blendFullMs > start.length / 48
+                    || (blendFullMs != 0 && blendFromMs >= blendFullMs)
+                    || (blendFullMs == 0 && blendFromMs != 0)) {
+                throw new IOException("invalid engine start blend range");
+            }
+            return new AvasEnginePack(id, name, idleRpm, maxRpm, idle, start, stop, layers,
+                    blendFromMs * 48, blendFullMs * 48);
         } catch (JSONException exception) {
             throw new IOException("invalid engine manifest", exception);
         }

@@ -480,6 +480,7 @@ enum class AvasActionKind {
     SetEnabled, SetRandom, SetSkipConcurrentLockUnlock, SelectAsset, SetVolume, ImportFiles, StartManual, StopManual,
     DeleteAsset, StartAudition, StopAudition, SetNoiseSuppression, SetEchoCancellation,
     SetEnginePack, SetEngineExterior, SetEngineInterior, SetEngineExteriorVolume, SetEngineInteriorVolume,
+    SetEngineNavigationPriority,
 }
 
 @Immutable
@@ -560,6 +561,7 @@ data class AvasEngineUiState @JvmOverloads constructor(
     val testActive: Boolean = false,
     val binding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(
         -1, CameraButtonBindings.Press.Single),
+    val navigationPriority: Boolean = true,
 ) {
     val hasOutput: Boolean get() = exteriorEnabled || interiorEnabled
     val busy: Boolean get() = state == "starting" || state == "active" || state == "stopping"

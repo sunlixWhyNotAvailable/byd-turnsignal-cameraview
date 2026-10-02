@@ -9,6 +9,47 @@ import java.util.List;
 import org.junit.Test;
 
 public final class AvasPcmTransferTest {
+    @Test public void repeatedFlushesNeverCountResumedPcmAsDiscardedOrPlayed() {
+        AvasPcmTransfer.PlaybackHead head = new AvasPcmTransfer.PlaybackHead();
+        head.submitted = 480;
+        head.flushed(120);
+        assertEquals(120, head.drained);
+        assertEquals(360, head.discarded);
+        head.flushed(0); // A second NAV prompt before another PCM write.
+        assertEquals(360, head.discarded);
+        head.submitted += 480;
+        assertFalse(head.completed(960));
+        head.observe(240);
+        assertFalse(head.completed(960));
+        head.observe(480);
+        assertTrue(head.completed(960));
+        assertEquals(600, head.drained);
+        assertEquals(360, head.discarded);
+    }
+
+    @Test public void navigationPausePreservesCursorAndDoesNotSpendStallBudget() throws Exception {
+        Clock clock = new Clock();
+        Output output = new Output(4, 0, 12) {
+            @Override public void awaitReady() { if (frames == 1) clock.now += 30_000; }
+        };
+        assertEquals(16, AvasPcmTransfer.write(16, 4, () -> false, output, clock));
+        assertArrayEquals(output.pcm, output.accepted.toByteArray());
+        assertEquals(List.of("0:16", "4:12", "4:12"), output.calls);
+        long[] head = {0};
+        AvasPcmTransfer.drain(4, 3000, () -> false, () -> head[0], () -> head[0]++, clock,
+                () -> clock.now += 30_000);
+        assertEquals(4, head[0]);
+    }
+
+    @Test public void cancellationDuringNavigationPauseDoesNotResumeOldAudio() throws Exception {
+        boolean[] cancelled = {false};
+        Output output = new Output(16) {
+            @Override public void awaitReady() { cancelled[0] = true; }
+        };
+        assertEquals(0, AvasPcmTransfer.write(16, 4, () -> cancelled[0], output, new Clock()));
+        assertTrue(output.calls.isEmpty());
+    }
+
     @Test public void partialAndZeroWritesDeliverEveryByteOnceBeforeDrain() throws Exception {
         Clock clock = new Clock();
         Output output = new Output(4, 0, 8, 4);

@@ -78,7 +78,7 @@ final class AvasEngineRuntime implements AutoCloseable {
             lastLoggedPower = value;
             loggedPower = true;
         }
-        apply(action);
+        apply(action, "power_off");
     }
 
     private synchronized void onReady(Boolean present) {
@@ -111,10 +111,7 @@ final class AvasEngineRuntime implements AutoCloseable {
         if (closed) return;
         AvasEngineSessionPolicy.Action action = policy.toggleLive();
         logPolicy("live_toggle", policy.rawPower(), false, action);
-        if (action == AvasEngineSessionPolicy.Action.STOP_NOW && current != null) {
-            log("avas_engine_cancel", "source", "live_toggle", "pack", current.pack);
-        }
-        apply(action);
+        apply(action, "live_toggle");
     }
 
     synchronized JSONObject status() {
@@ -130,6 +127,10 @@ final class AvasEngineRuntime implements AutoCloseable {
     }
 
     private void apply(AvasEngineSessionPolicy.Action action) {
+        apply(action, "policy");
+    }
+
+    private void apply(AvasEngineSessionPolicy.Action action, String reason) {
         switch (action) {
             case START: start(true); break;
             case RESTORE: start(false); break;
@@ -137,6 +138,7 @@ final class AvasEngineRuntime implements AutoCloseable {
                 if (current != null && !current.cancelled) {
                     // Published synchronously before the Power/Lock sink enqueues its event.
                     current.cue = cueGate.begin();
+                    current.tailReason = reason;
                     current.tail = true;
                     setState("stopping", "");
                 }
@@ -211,10 +213,15 @@ final class AvasEngineRuntime implements AutoCloseable {
                 logCue("start", "begin", intro.length, 0, 0, "ignition");
             }
             while (!cancelled.getAsBoolean()) {
+                if (exterior != null && exterior.suspended() && interior == null
+                        && (session.tail || intro != null && introAt < intro.length)) {
+                    Thread.sleep(10);
+                    continue;
+                }
                 if (session.tail && !stopping) {
                     stopping = true;
                     stopCueStarted = true;
-                    logCue("stop", "begin", pack.stop.length, 0, 0, "power_off");
+                    logCue("stop", "begin", pack.stop.length, 0, 0, session.tailReason);
                 }
                 int frames = block.length;
                 int cue = 0;
@@ -228,7 +235,9 @@ final class AvasEngineRuntime implements AutoCloseable {
                     cue = 2;
                 } else if (intro != null && introAt < intro.length) {
                     frames = Math.min(frames, intro.length - introAt);
-                    System.arraycopy(intro, introAt, block, 0, frames);
+                    AvasEngineModel.State drive = telemetry.updateSnapshot(
+                            model, SystemClock.elapsedRealtime()).state;
+                    synth.renderStart(block, frames, introAt, drive.rpm, drive.load);
                     introAt += frames;
                     cue = 1;
                 } else {
@@ -307,6 +316,10 @@ final class AvasEngineRuntime implements AutoCloseable {
                     if (cue == 1) startInteriorSubmitted += written;
                     else if (cue == 2) stopInteriorSubmitted += written;
                 }
+                if (interior == null && exterior != null && exterior.suspended()) {
+                    // Keep current telemetry/synthesis moving without spinning or replaying stale RPM.
+                    Thread.sleep(Math.max(1, frames * 1000L / AvasEnginePack.SAMPLE_RATE));
+                }
                 if (cue == 1 && introAt >= intro.length) {
                     startExteriorEnd = exterior == null ? 0 : exterior.submittedFrames();
                     startInteriorEnd = interior == null ? 0 : interior.submittedFrames();
@@ -317,7 +330,9 @@ final class AvasEngineRuntime implements AutoCloseable {
                         && !cancelled.getAsBoolean()) {
                     startCueEnded = true;
                     logCue("start", "end", intro.length,
-                            startExteriorSubmitted, startInteriorSubmitted, "drained");
+                            startExteriorSubmitted, startInteriorSubmitted,
+                            exterior != null && exterior.discardedFrames() > 0
+                                    ? "exterior_interrupted" : "drained");
                     synchronized (this) {
                         if (!session.tail) cueGate.finish(session.cue);
                     }
@@ -453,6 +468,7 @@ final class AvasEngineRuntime implements AutoCloseable {
         volatile Object cue;
         volatile boolean cancelled;
         volatile boolean tail;
+        String tailReason = "";
         Session(AvasConfig.Engine settings, boolean ignition) {
             pack = settings.packId;
             exterior = settings.exteriorEnabled;

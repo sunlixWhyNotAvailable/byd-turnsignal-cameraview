@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="avas_engine_navigation_priority">Navigation priority</string>
+    <string name="avas_engine_navigation_priority_hint">Release the exterior audio channel for navigation. The beginning of a prompt may be lost.</string>
     <string name="correction_strength">"Strength"</string>
     <string name="horizontal_fov">"Horizontal FOV"</string>
     <string name="signals_integrations">"BYD integrations"</string>

@@ -3240,7 +3240,8 @@ public final class CameraProbeActivity extends ComponentActivity
                         config.engine.exteriorEnabled, config.engine.exteriorVolume,
                         config.engine.interiorEnabled, config.engine.interiorVolume,
                         avasEngineState, avasEngineError, avasEngineTestActive,
-                        CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine)));
+                        CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine),
+                        config.engine.navigationPriority));
     }
 
     @Override
@@ -3393,8 +3394,12 @@ public final class CameraProbeActivity extends ComponentActivity
             int exteriorVolume = engine.exteriorVolume;
             boolean interiorEnabled = engine.interiorEnabled;
             int interiorVolume = engine.interiorVolume;
+            boolean navigationPriority = engine.navigationPriority;
             if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
                 enabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetEngineNavigationPriority
+                    && action.getBooleanValue() != null) {
+                navigationPriority = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetEnginePack && action.getStringValue() != null) {
                 packId = action.getStringValue();
             } else if (kind == AvasActionKind.SetEngineExterior
@@ -3413,7 +3418,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 return;
             }
             AvasConfig.Engine updated = new AvasConfig.Engine(enabled, packId,
-                    exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume);
+                    exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume, navigationPriority);
             avasLibrary.saveConfig(config.withEngine(updated));
             if (!enabled && productionUi != null
                     && productionUi.getState().getDialog() != null

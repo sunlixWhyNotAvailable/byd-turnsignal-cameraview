@@ -1,4 +1,6 @@
 {
+  "startBlendFromMs": 2600,
+  "startBlendFullMs": 3900,
   "id": "jaguar_v6",
   "name": "Jaguar F-Type V6",
   "idleRpm": 800,

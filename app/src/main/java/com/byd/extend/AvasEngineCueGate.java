@@ -28,11 +28,16 @@ final class AvasEngineCueGate {
     /** Linearize cue registration against the first non-blocking file PCM write. */
     synchronized int writeEventStart(BooleanSupplier cancelled, IntSupplier write)
             throws InterruptedException {
+        return writeEventStart(cancelled, () -> false, write);
+    }
+
+    synchronized int writeEventStart(BooleanSupplier cancelled, BooleanSupplier paused,
+            IntSupplier write) throws InterruptedException {
         long stalledAt = System.nanoTime();
         while (!cancelled.getAsBoolean()) {
-            if (cue != null) {
+            if (cue != null || paused.getAsBoolean()) {
                 wait(50);
-                stalledAt = System.nanoTime(); // Waiting for a cue is not an AudioTrack stall.
+                stalledAt = System.nanoTime(); // A cue/NAV pause is not an AudioTrack stall.
                 continue;
             }
             int count = write.getAsInt();

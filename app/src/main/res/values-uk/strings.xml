@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="avas_engine_navigation_priority">Пріоритет навігації</string>
+    <string name="avas_engine_navigation_priority_hint">Звільняти зовнішній аудіоканал для навігації. Початок повідомлення може бути втрачено.</string>
     <string name="correction_strength">"Сила"</string>
     <string name="horizontal_fov">"Горизонтальний огляд"</string>
     <string name="signals_integrations">"Інтеграції BYD"</string>

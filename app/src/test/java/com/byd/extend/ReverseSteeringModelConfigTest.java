@@ -13,6 +13,18 @@ import org.junit.Assume;
 import org.junit.Test;
 
 public final class ReverseSteeringModelConfigTest {
+    @Test public void shellSnapshotValidatesBoundsAndIdentityWithoutOemLookup() {
+        ReverseSteeringModelConfig snapshot = new ReverseSteeringModelConfig(-543.163f, 543.163f,
+                "286/ocean/uked");
+        org.junit.Assert.assertTrue(snapshot.sameModel(
+                new ReverseSteeringModelConfig(-543.163f, 543.163f, "286/ocean/uked")));
+        org.junit.Assert.assertFalse(snapshot.sameModel(null));
+        org.junit.Assert.assertThrows(IllegalArgumentException.class,
+                () -> new ReverseSteeringModelConfig(Float.NaN, 543f, "model"));
+        org.junit.Assert.assertThrows(IllegalArgumentException.class,
+                () -> new ReverseSteeringModelConfig(-543f, 543f, ""));
+    }
+
     @Test public void readsOnlyExplicitActiveModelBoundsInMillidegrees() throws Exception {
         ReverseSteeringModelConfig config = ReverseSteeringModelConfig.fromJson(
                 "series/body/trim",

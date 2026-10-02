@@ -125,7 +125,8 @@ public final class AvasEngineSessionPolicy {
             ignitionPending = false;
             if (testing || tailing || !active) return Action.NONE;
             active = false;
-            return Action.STOP_NOW;
+            tailing = true;
+            return Action.STOP_WITH_TAIL;
         }
         if (testing) {
             ignitionPending = false;
@@ -143,7 +144,7 @@ public final class AvasEngineSessionPolicy {
         return start(false, false);
     }
 
-    /** Reconciles only after the existing Power-OFF tail and its cue gate have finished. */
+    /** Reconciles only after the current shutdown recording and its cue gate have finished. */
     public Action playbackTailFinished() {
         if (!tailing) return Action.NONE;
         tailing = false;

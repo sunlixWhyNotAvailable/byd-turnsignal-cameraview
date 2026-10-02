@@ -86,6 +86,9 @@ final class TurnSignalController {
 
     private volatile boolean stopped;
     private volatile boolean healthy;
+    private ReverseSteeringModelConfig steeringModel;
+    private IBinder steeringModelHelper;
+    private long steeringModelAttemptAt;
     private volatile boolean authorizationPending;
     private volatile LocalAdbClient.PromptMode authorizationMode;
     private volatile IBinder helper;
@@ -1349,7 +1352,8 @@ final class TurnSignalController {
                 attach(ping);
                 return;
             }
-            // TX_PING is the only steady-state health probe.  Full status is emitted only on
+            syncSteeringModel(ping.binder, false);
+            // TX_PING is the steady-state health probe. Full status is emitted only on
             // attach/reconnect, explicit reportStatus(), or a material/error transition.
             return;
         }
@@ -1682,6 +1686,7 @@ final class TurnSignalController {
             failPendingAvas(primaryError);
         }
         if (healthy && helper == value) {
+            syncSteeringModel(value, true);
             syncAvas(value);
             if (pendingAvas.completeAttachSync()) reportAvasStatus(value);
         }
@@ -2063,6 +2068,36 @@ final class TurnSignalController {
         } finally {
             data.recycle();
             reply.recycle();
+        }
+    }
+
+    private void syncSteeringModel(IBinder value, boolean attaching) {
+        if (!attaching && steeringModel != null && steeringModelHelper == value) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!attaching && now - steeringModelAttemptAt < RETRY_BACKOFF_MS) return;
+        steeringModelAttemptAt = now;
+        try {
+            if (steeringModel == null) steeringModel = ReverseSteeringModelConfig.load(context);
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                data.writeString(steeringModel.model);
+                data.writeFloat(steeringModel.minimumDegrees);
+                data.writeFloat(steeringModel.maximumDegrees);
+                requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_REVERSE_STEERING,
+                        data, reply);
+                steeringModelHelper = value;
+                emit("reverse_steering_model", "available", true, "model", steeringModel.model,
+                        "minimum_degrees", steeringModel.minimumDegrees,
+                        "maximum_degrees", steeringModel.maximumDegrees);
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
+        } catch (Throwable failure) {
+            // Model availability must never make the camera/AVAS helper unavailable.
+            emit("reverse_steering_model", "available", false, "error", summary(failure));
         }
     }
 

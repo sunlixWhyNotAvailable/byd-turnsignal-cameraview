@@ -58,6 +58,13 @@ final class AvasNavSourcePlayback {
             BooleanSupplier cancelled, ZeroWriter zeros, Starter starter, LongSupplier now,
             Trace trace)
             throws Exception {
+        return await(gate, prefillFrames, chunkFrames, cancelled, zeros, starter, now, trace, () -> { });
+    }
+
+    static Result await(AvasNavSourceGate gate, long prefillFrames, long chunkFrames,
+            BooleanSupplier cancelled, ZeroWriter zeros, Starter starter, LongSupplier now,
+            Trace trace, AvasPcmTransfer.Waiter waiter) throws Exception {
+        waiter.awaitReady();
         AvasNavSourceGate.Snapshot initial = gate.refresh();
         trace.initialStatus = initial.status;
         trace.initialValue = initial.value;
@@ -84,6 +91,12 @@ final class AvasNavSourcePlayback {
         AvasNavSourceGate.Snapshot finalSnapshot = gate.refresh();
         gate.beginWait();
         while (!cancelled.getAsBoolean()) {
+            long beforeWait = now.getAsLong();
+            waiter.awaitReady();
+            long pausedMillis = now.getAsLong() - beforeWait;
+            deadline += pausedMillis;
+            if (cancelled.getAsBoolean()) break;
+            if (pausedMillis > 0) finalSnapshot = gate.refresh();
             if (now.getAsLong() >= deadline) {
                 finalSnapshot = gate.refresh();
                 break;
