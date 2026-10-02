@@ -1,356 +1,429 @@
 # BYD Extend
 
-> Experimental open-source companion app for selected Chinese BYD vehicles running DiLink.
->
-> This project is not affiliated with or endorsed by BYD. Configure and test all driving-related
-> features while the vehicle is parked.
+**English** | [Українська](README.uk.md)
 
-## Project status
+<img align="right" src="app/src/main/res/drawable-nodpi/byd_extend_launcher.png" alt="BYD Extend icon" width="112">
 
-Current source target: `1.5.1` (version code `111`), with Ukrainian, English, Simplified Chinese and Russian
-interfaces, dark and light themes, and a Compose UI. Published builds are listed in the
-[GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
+BYD Extend adds configurable camera views, a rearview-mirror widget, turn-signal assistance, and optional music, weather, and exterior-audio integrations to compatible BYD vehicles.
 
-The source target and published release are separate states; a local test APK is not a publication.
+**This is an independent companion app, not a replacement for the vehicle's safety systems. Unlike a read-only telemetry viewer, its enabled turn-signal functions can change the turn-signal state. Configure and test it only while parked.**
 
-## Building
+- **Compatibility:** primarily tested on the Chinese-market BYD Sea Lion 07 EV 2025 with DiLink 5.0. Features on other models and firmware, including instrument-cluster output, are not guaranteed.
+- **Download:** [latest GitHub release](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest).
+- **Package:** `com.byd.extend` — a separate application from the older BYD Turn Signal.
+- **Help:** [ADB requirements](#which-functions-need-adb) · [Troubleshooting](#troubleshooting) · [Report a problem](#report-a-problem).
 
-Use `./gradlew :app:assemblePerformance` (`.\gradlew.bat :app:assemblePerformance` on Windows)
-for all distributable APKs. The release-based `performance` variant is non-debuggable,
-with code minification, obfuscation and resource shrinking disabled. Debug-only Compose tooling
-is not included. The APK is copied to `build_output/byd-extend-v<versionName>.apk`;
-debug builds are not distribution artifacts and do not populate that path.
+## Installation and first start
 
-The variant retains the existing `debug` signing configuration for update continuity; this
-signing-configuration name does not enable debugging. Use the same existing signing key when
-updating installed copies. In-app diagnostics and log export remain available; debugger attachment,
-private-file `run-as` access and debug-only AVM diagnostic Intent commands are not available.
+You need Android 8.0 or newer, a compatible DiLink system, and permission to install APK files. Local ADB is required for the functions listed below, not for every screen or feature. It lets the app start privileged helper processes and perform system operations.
 
-## Features
+1. Download the **BYD Extend** APK from the release page. If several apps are attached, choose `byd-extend-v<version>.apk`. Compare its SHA-256 checksum with the published value when available.
+2. Install and open the app while parked.
+3. Follow the background-work prompt: in DiLink settings, set `Disable background Apps -> BYD Extend` to `OFF`.
+4. For ADB-dependent features, enable local ADB using the method supported by your firmware, then accept Android's authorization prompt for BYD Extend. Use `Grant ADB` in Settings to provision the required access.
+5. Grant the requested permissions: camera access for camera views, display over other apps for widgets, location for weather, and microphone access for exterior speech. Steering-wheel actions and some integrations also need the app's Accessibility service; follow the permission status in Settings.
+6. Enable `Auto-start` if you want automatic startup and recovery. Configure only the features you need.
+7. Check each camera's source, orientation, placement, and calibration before relying on its view.
 
-- Turn-signal guard with configurable steering, delay, speed, telemetry, and cancellation safety
-  checks.
-- Turn-triggered side-camera overlays on the tablet or instrument cluster.
-- Independent parking-camera views driven by compatible proximity and speed telemetry.
-- Reverse composition, direct camera preview, calibration, fisheye correction, mirroring, crop,
-  rotation, placement, scale, transparency, corner rounding, and image-quality controls.
-- User-selectable Reverse panes with optional integrated front side and central camera profiles.
-- Optional gear-driven front/rear selection while Reverse gear or the stock camera UI is active.
-- An independent rearview-mirror widget on the tablet or a supported instrument cluster,
-  with optional front-camera integration and separate source/visibility button gestures.
-- A learned steering-wheel button for switching the active Reverse widget and integrated cameras
-  between front and rear views.
-- Optional music metadata and local weather for the stock BYD weather UI.
-- Four independent AVAS exterior-audio profiles for locking, unlocking, powering off and on.
-- Diagnostics and explicit log sharing.
+**ADB recovery is not an initial unlock.** It requires an already authorized key and the necessary system permission. It cannot authorize a fresh installation while all ADB access is closed. Firmware updates and tablet resets can require setup again.
 
-## Camera presets and settings migration
+### Which functions need ADB?
 
-`Налаштування` provides three file/settings actions:
+Here, **Yes** means authorized local ADB is needed to start/restart a privileged helper or perform the specified operation. An already running helper can continue communicating with the app without a permanent ADB connection, but starting it again after a reboot, failure, or replacement requires ADB. A laptop does **not** need to remain connected.
 
-- `Вивантажити пресети камер` shares a versioned JSON camera preset through Android.
-- `Завантажити пресети камер` loads a selected JSON preset through the native document picker.
-- `Імпортувати всі налаштування` imports all user settings from the installed legacy
-  `com.byd.turnsignalguard.capture` `0.52.1` / code `96` app through authorized local ADB.
+| Function | Is authorized ADB needed? |
+| --- | --- |
+| Turn-signal guard and manual turn-signal controls | **Yes**, to start/restart the vehicle-control helper. |
+| Blind-zone, parking, reverse, and mirror camera output | **Yes**, to start/restart camera and vehicle-state helpers, including the normal in-app camera preview. This applies to tablet and instrument-cluster output. |
+| Music metadata, visualization/lighting, and steering-wheel player routing | **Yes**, to start/restart the music helper. Player routing also needs Accessibility. |
+| AVAS event sounds, file audition, exterior microphone speech, and engine simulation | **Yes**, to start/restart the audio helper. Microphone speech additionally needs microphone permission and the app's connected Accessibility service. |
+| Weather retrieval and updating the stock weather card | **No** for routine updates on supported firmware. Location permission, internet, and access to the stock weather provider are required. Intercepting the stock weather Refresh button also needs Accessibility. |
+| Learning buttons and recognizing Single/Hold/Double | **No**, once Accessibility is enabled and connected. Executing the assigned camera, music, or audio action still has the requirements listed above. |
+| Language/theme, editing saved settings, and camera-preset JSON import/export | **No** for local configuration and file operations. Applying them to a live camera or vehicle function still requires its working helper. |
+| Update checks/downloads and the Support dialog | **No**. Network access and Android's APK-install permission are needed where applicable; hint widgets need overlay permission. |
+| Automatic permission setup, including WRITE_SECURE_SETTINGS and Accessibility | **Yes**. An already granted permission is not the same as a currently available ADB connection. |
+| Importing settings from BYD Turn Signal | **Yes**, to read the old app's data and complete the runtime handover. This is separate from loading a camera-preset JSON file. |
+| Sharing/saving the app's own local diagnostic files | **No** for those files. Export still attempts the system collectors; without ADB, unavailable sections are marked and the archive is incomplete. |
+| Full-system logcat snapshot, exporting continuous-logcat history, and compatibility collection | **Yes**, to read system data through the shell. Starting/restarting the continuous recorder also needs ADB. |
 
-Camera presets include the active Blind Zone, Parking, Reverse and Rearview Mirror visual configuration, including
-integrated Reverse Front profiles, display targets, placement, scale, aspect, crop, correction,
-rotation, mirror, fill mode, camera switches, Reverse background, widget/stacking, and global
-buffer quality, transparency, and corner radius. They deliberately exclude numeric speed,
-steering-angle, and distance triggers, non-camera settings, and saved local calibration slots.
-The learned steering-button bindings are also excluded and preserved when loading camera presets
-or importing legacy settings.
+**ADB recovery is a separate case:** it is designed to run while ordinary ADB is unavailable, but needs a previously authorized key and previously granted WRITE_SECURE_SETTINGS. The Wi-Fi recovery path also needs Wi-Fi and any required system consent. It does not replace first-time setup.
 
-Preset format v3 stores both tablet and instrument-cluster rectangles for Mirror and all four
-Blind profiles. Existing v1/v2 files remain supported: their placement is applied only to the
-declared display (the current display when omitted), preserving the other display. Importing
-a file without Mirror leaves its settings unchanged.
-Optional Mirror front integration, selected source and front calibration fields are included without
-changing the v2/v3 format versions. Older files without these fields preserve the destination values.
-Panorama-suppression preferences are included when present; older presets without these fields
-preserve the current values, with suppression enabled by default on fresh settings.
-Local saved calibration slots and temporary Mirror hiding are not part of a camera preset.
-Built-in camera geometry and calibration use the approved reference baseline only for absent
-values and explicit section resets; updating the application preserves existing effective settings,
-including never-edited values. New cluster placements and placement resets are centered using the
-corresponding factory tablet width/height. Editing or resetting one display does not change the other.
+ADB authorization does not replace camera, microphone, location, overlay, or Accessibility access. Conversely, granting these Android permissions does not make helper-dependent functions ADB-free.
 
-Reverse output rotation, display mode and mirroring are saved for the selected camera only.
-Moving, resizing or reordering composition elements does not change RAW or corrected calibration
-areas. Existing presets remain available; an update does not automatically restore earlier values.
+### Moving from BYD Turn Signal
 
-Full migration includes those numeric rules, guard, music, weather, auto-start, and saved
-calibration slots. It does not copy transient runtime data, logs, ADB credentials, or Android-granted
-permissions. When imported weather is enabled, BYD Extend requests its own location permission
-without requiring the weather switch to be toggled again. Denying the request leaves weather off.
-Existing local ADB authorization is retained when updating BYD Extend.
+BYD Extend installs separately; it does not overwrite BYD Turn Signal. The first-start flow offers settings import, and the same action is available later in Settings.
 
-Validation, read, or cancellation failure leaves the destination unchanged. If the
-settings have already been saved but shutting down the old app or stopping its helpers fails, the
-imported settings remain and BYD Extend keeps its runtime blocked until the handover is retried.
-The legacy source data is never deleted.
+Keep the old app installed until import succeeds. Import requires authorized ADB and access to the old app's data. It transfers settings and calibration, not Android permissions or ADB authorization. Successful handover stops the old runtime without deleting its app or source data. Do not run both applications as competing camera or turn-signal controllers.
 
-After a validated migration, the old application is shut down before BYD Extend starts. Its APK,
-data, and launcher icon remain available, so it can still be opened or uninstalled normally.
-For an earlier migration that disabled the old application, Settings offers a confirmed action
-to restore its launcher access while keeping its runtime stopped; current BYD Extend settings
-are not imported again or overwritten. Shut down BYD Extend before deliberately reopening the
-old application. A first legacy-to-Extend installation is a manual APK install because the
-package identity changes.
+## Everyday use
 
-## Turn-signal telemetry recovery
+The interface supports English, Ukrainian, Simplified Chinese, and Russian, with dark and light themes. A new installation starts in English; the language selector is independent of the tablet's language.
 
-Turn-signal protection rejects invalid stalk/blink samples without treating them as a neutral
-position. A transient sample gap can recover after valid listener evidence and fresh telemetry;
-the interrupted action is discarded and a new stalk cycle is required after returning to neutral.
-A broken telemetry subscription remains unavailable until it is successfully reinitialized.
+### Turn signals
 
-## Reverse Widget steering button
+In `BYD integrations -> Turn signals`, configure the turn-signal guard using steering-angle, return-to-centre, delay, and speed settings. Manual left, right, hazard, and reset controls are also available.
 
-In Reverse, select `Widget` and use `Select button…` below `Enhanced reverse view`. A confirmed
-single short steering-wheel press assigns its Android key code without switching cameras. Cancel or Android
-Back leaves the previous assignment unchanged; the square reset clears only the assignment.
+This feature depends on valid vehicle telemetry and compatible BYD controls. It is not a lane-change assistant; always check the actual indicators and surroundings.
 
-Subsequent single short presses switch the existing composition and its widget together after
-Android's inclusive multi-press window expires. Double presses and holds do not switch cameras
-or fall back to single presses. After their release, the next press starts a new gesture: three
-quick short presses are Double + Single; four are two Doubles. A known OEM long code means Hold,
-which has no Reverse action; otherwise Hold is timed from the ordinary DOWN. Timer/native feedback
-for the same hold is deduplicated. Learning stores the base button code and consumes its release
-without executing a camera action.
-Enhanced reverse, the widget and at least one front-camera integration must be
-enabled, and the composition must already be active. Existing per-camera visibility/integration
-rules apply; the button does not open cameras, change calibration or add automatic switching in D.
-Calibration and other foreground app tabs do not redirect the button to a background composition.
+Key screenshots are shown inline; detailed views are available in expandable sections. All images show the English dark-theme Preview with demonstration data; scrollable pages are stitched.
 
-The separate global `Switch by gear` setting is off by default. Its row appears immediately below
-front-camera integration for Rear, Left and Right, and below `Enhanced reverse view` for Background
-and Widget. It is available only while at least one camera is integrated; disabling every integration
-does not erase the saved preference. Unavailable switches use a neutral track and dimmed thumb/text
-while retaining their saved ON/OFF position, in both themes. R activation never waits for the stock
-camera UI. With gear selection enabled, the session remains active while R or the stock camera UI is active. Entering D selects
-integrated front cameras, and entering R selects rear cameras. N and P retain the selected view
-during a session, or select Front on a cold opening. Repeated telemetry does not undo manual
-selection. Nonintegrated panes keep their rear view in either mode. Automatic selection does not
-require the selector widget to be visible.
+<p align="center"><img src="docs/screenshots/en/turn-signals.png" alt="BYD Extend turn-signal settings" width="100%"></p>
 
-All assigned-button gestures, repeats and releases are consumed immediately, including when no
-eligible composition is active. Only our single-press action is delayed; consumed events are not
-forwarded or replayed. Other eligible Accessibility key filters receive their own event copies,
-but arbitrary apps and downstream stock handlers are not guaranteed delivery.
-Reset the assignment to restore normal handling. Explicit app Shutdown
-ends interception until the app is reopened. The assignment survives app restarts.
+### Blind-zone cameras
 
-This feature uses the app's existing Accessibility service. If the key filter is unavailable,
-learning reports that condition instead of saving a simulated assignment. Some BYD firmware
-handles keys before Android Accessibility receives them; support for every physical button is
-not guaranteed.
+Configure the rear and front groups independently: enable the required views, choose their activation conditions, and adjust tablet or instrument-cluster placement.
 
-## Rearview mirror and UI preferences
+- Available conditions include turn signals, speed, steering angle, and blind-spot detection where the vehicle supplies those signals.
+- `Hold camera` can retain the corresponding view for **1–5 seconds** after a short turn signal; the default duration is three seconds.
+- `Do not show while panorama is open` applies **only to tablet output**, not the instrument cluster.
+- Adjust image crop, correction strength, rotation, mirroring, dimensions, and border for each view.
 
-Front-camera integration is off by default. When enabled, the rear/front selector remembers its
-choice; each source has independent calibration and a local preset, with an explicit rear-to-front
-copy. Turning integration off returns to the rear source without erasing front settings or bindings.
-The sources share one widget's placement, display target and border.
+<p align="center"><img src="docs/screenshots/en/blind-zones.png" alt="BYD Extend blind-zone cameras" width="100%"></p>
 
-Two independent learned-button rows switch source or show/hide the widget using Single, Hold or
-Double. Reset clears only that row's button, retaining its gesture. Duplicate assignments are
-allowed: every eligible matching action runs, and simultaneous Mirror effects use one state update.
-Source switching requires Mirror and front integration; visibility requires Mirror enabled and never
-enables it. Switching a hidden source does not reveal the widget, and normal app/panorama gates remain.
-Confirmed base/long pairs are `305/306` (star), `304/312` (microphone), `88/303` (previous track),
-`87/302` (next track). Panorama `294` and wheel `353` have no assumed native-long code and use timed Hold.
+<details>
+<summary>Placement and calibration</summary>
 
-Enable the rearview mirror and grant Android overlay permission when prompted. Its independent
-placement, calibration, preset and border settings do not modify Reverse or Blind profiles.
-Drag the external widget to move it; touch and hold to hide it until BYD Extend is opened again.
-It is hidden while BYD Extend is open. The default-enabled `Do not show while panorama is open`
-option also hides tablet output during the stock camera UI, not cluster output; switching it off does not disable
-app-foreground or long-press hiding. A hidden widget leaves no input window blocking other apps,
-while taps inside the visible widget do not pass through.
+#### Placement
 
-Blind cameras have the same default-enabled panorama option independently for the rear and front
-groups, directly below each group's enable switch. Panorama opening/error status appears next
-to the Reverse camera-section title; direct-camera readiness remains a separate status.
+<p align="center"><img src="docs/screenshots/en/blind-zones-placement.png" alt="Blind-zone cameras — Placement" width="100%"></p>
 
-Global Auto-start controls autonomous startup and recovery; turning it off still permits manual
-Mirror use. An unavailable instrument cluster does not redirect the widget to the tablet.
-Blind and Mirror editors support bounded independent width/height and drag/resize, with 0.1%
-placement precision. Each tab/subsection has an independent scroll position, including Integrations
-and Settings categories and their separate sidebars. A data-only process session captures current
-selections and measured viewports on navigation and Activity pause/stop/destroy/disposal, then
-restores them after layout. Android saved-state restoration remains available when the system
-restores the task. Explicit Shutdown detaches the old session; scrolling never writes configuration.
+#### Calibration: original
 
-Fresh installations start in English regardless of the tablet language. Existing effective
-language choices are preserved, and the Chinese selector label remains `中文` in every language.
+<p align="center"><img src="docs/screenshots/en/blind-zones-calibration.png" alt="Blind-zone cameras — Calibration: original" width="100%"></p>
 
-Switches retain their ON/OFF appearance while an operation is pending, without a yellow or centered
-intermediate state; normal toggle and press feedback remain. Mirror uses the standard compact
-enable switch. The six text navigation tabs have equal widths; Debug remains a compact square,
-bug-icon-only button with a localized accessibility label.
+#### Calibration: correction
 
-## BYD integrations and exterior sounds
+<p align="center"><img src="docs/screenshots/en/blind-zones-correction.png" alt="Blind-zone cameras — Calibration: correction" width="100%"></p>
 
-BYD integrations uses the same category layout as Settings: Turn signals, Music and lighting,
-Weather, AVAS (external speaker), and ADB recovery. Existing integration settings are preserved.
+#### Calibration: output
 
-ADB recovery restores previously opened and authorized local ADB; it cannot perform the first
-unlock or authorize an unknown key. It is enabled by default and runs in the app service before
-shell-helper startup. A working authenticated port5555 is left alone. Otherwise, previously granted
-WRITE_SECURE_SETTINGS access lets the app request system ADB/Wi-Fi debugging startup and discover
-the tablet's local TLS endpoint. The existing Extend RSA identity authenticates that endpoint;
-the app requests port5555, verifies it with a real command, and cleans up only TLS it enabled.
-No arbitrary port scan, test port5556, forced Wi-Fi0-to-1 bounce or new watchdog is used.
+<p align="center"><img src="docs/screenshots/en/blind-zones-output.png" alt="Blind-zone cameras — Calibration: output" width="100%"></p>
 
-While Wi-Fi is connected and recovery remains unresolved, the app requests Wi-Fi debugging every
-15 seconds only when its setting is0. Manual Retry is immediate. A setting value does not prove
-consent refusal, dialog visibility or successful ADB. The real status and Retry rows remain visible
-when disabled. An optional movable reminder starts after5 seconds waiting for Wi-Fi and disappears
-on connection or a one-second hold, without canceling recovery or returning in the same cycle.
-Its appearance and placement are configurable. Full daemon-OFF/reboot recovery on the vehicle
-remains unverified; this is not a guaranteed way around firmware restrictions.
+</details>
 
-AVAS has separate Lock, Unlock, Power off and Power on profiles. Each starts disabled, with a
-protected one-second Test sound, random playback off and volume15%. Existing settings and
-selections, including an empty selection, are preserved on upgrade. Add audio files through the
-system document picker; supported audio is copied privately and prepared before playback.
-Each profile has its own file list and selection. Imports preserve the selected file and do not
-overwrite duplicates. Audio libraries are not included in camera-preset JSON files.
+### Parking cameras
 
-The profile header toggles its automation. Volume is independent per profile, from0% (silent)
-to100%, with the slider and percentage below its title. Start plays the selected ready
-file through the exterior route even when that profile's automatic switch is off. Stop cancels
-only the same profile's manual playback or queued request, not automatic event sounds.
-Automatic random playback excludes Test and skips an event when no imported file is ready.
-Nearby ordinary events
-play sequentially; a ready enabled Power-off sound replaces its associated automatic Unlock.
-Initial, repeated and unknown vehicle states do not trigger playback.
+Select the views you need and configure their distance and speed thresholds. Automatic activation requires compatible proximity and speed telemetry; support can differ between vehicles.
 
-The file list stays open when selecting a sound and shows its duration. Long names are shortened
-visually without changing the stored filename. Imported files can be deleted; deleting the
-selected file selects Test. Only private copies are removed, never the original document.
-The note button plays that exact row through the OEM driver-navigation speaker, not ordinary
-cabin media, regardless of selection, random mode or automation enablement. It becomes Stop
-while playing; another note replaces it. Closing the list, leaving the screen/backgrounding,
-process death or deleting that file stops only this listening session. Start and automatic
-events take precedence and use the exterior speaker; a note cannot interrupt or queue behind
-exterior playback. Stopped notes do not resume. Both routes apply the profile's volume and
-restore their saved route/volume state without a media-channel fallback.
+Each camera has its own visual settings. These views supplement the stock cameras and parking sensors, not replace them.
 
-Exterior playback uses a private AudioTrack LoudnessEnhancer instead of clipping PCM samples
-with a fixed multiplier. Player volume follows the stored percentage; the effect target ranges
-from0 to2800mB (+28dB). Live volume adjustments update both controls, and0% remains silent.
-If the effect is unavailable, playback continues with player volume only and records that fallback.
-The stored0–100% setting and internal note audition are unchanged. Actual loudness depends on
-the file and vehicle audio path; the effect target is not a measured speaker-level increase.
+<p align="center"><img src="docs/screenshots/en/parking.png" alt="BYD Extend parking cameras" width="100%"></p>
 
-The existing shell helper owns playback so losing the application process does not itself
-destroy the player. A helper restart starts from current telemetry without replaying old events.
-Explicit Shutdown stops playback and automatic recovery until BYD Extend is opened again.
-The exterior route uses device3 and the complete selected file without an added silent prefix;
-internal note audition also has no added silence. The existing80ms OEM preparation remains.
-This A/B candidate preloads the complete exterior PCM into a STATIC AudioTrack before playback;
-internal note audition remains STREAM. STATIC uses memory proportional to the decoded file
-length. Initial STATIC playback was audibly complete, but a later morning session still lost
-the beginning, including with an experimental 500 ms prefix. The remaining acoustic cause
-has not been established; complete PCM accounting is not proof of complete audible output.
-NAV volume and mute are saved, NAV is muted during preparation, then volume1 and unmute are
-applied for exterior playback. Cleanup restores the original values. Transient-exclusive focus
-is requested again approximately every120ms only while an exterior sound is playing, including
-buffer drain, and released afterward; simultaneous navigation speech is not guaranteed.
-Main-route rejection is not treated as success merely because an optional SDK or audio-focus
-request succeeded. Partial preparation and interrupted older device3/CHANNEL0 sessions retain
-their matching cleanup. Saved user settings are not reset.
+<details>
+<summary>Placement and calibration</summary>
 
-With Auto-start and either automatic AVAS profiles or ADB recovery enabled, notification-listener access is required
-for early recovery. The application provisions its own listener through already authorized local
-ADB and verifies access locally; the Permissions indicator does not need ADB for that readback.
-Notification contents are not read or recorded. Listener callbacks, a separate shell keepalive
-and the existing service/alarm restore the runtime without waiting for the screen to turn on.
-Automatic recovery still respects Auto-start, explicit Shutdown and migration gates.
+#### Placement
 
-While the runtime is active and an automatic AVAS profile is enabled, it holds a partial wake
-lock even with the screen or ignition off. Disabling all profiles, explicit Shutdown or service
-teardown releases it. This may increase parked power consumption; the additional cost has not
-been measured. A wake lock does not survive kernel reboot: the recovery chain must restart the
-application and shell processes. Local ADB must still be available for a cold helper launch;
-the separate app-owned ADB integration can request system recovery before that launch.
-When authorized ADB is available, the app provisions and locally reads back its own user's
-WRITE_SECURE_SETTINGS, exact notification listener and Accessibility access regardless of feature
-switches. Existing grants are not revoked when a feature is disabled, and other apps' components
-are retained. The accepted ADB authorization-expiry setting is read/written/read back as0.
+<p align="center"><img src="docs/screenshots/en/parking-placement.png" alt="Parking cameras — Placement" width="100%"></p>
 
-The combined Production path and recovery after kernel reboot still require vehicle validation;
-compatibility with other firmware is not established. Configure and audition at low volume while parked. AVAS does not
-replace the vehicle's stock pedestrian-warning sounds or silently fall back to a cabin speaker.
+#### Calibration: original
 
-## Sharing diagnostics
+<p align="center"><img src="docs/screenshots/en/parking-calibration.png" alt="Parking cameras — Calibration: original" width="100%"></p>
 
-Settings can share logs or create a compatibility package. Compatibility export displays the
-current phase, file, file count, and transferred bytes, and can be cancelled without sharing a
-partial archive. It supports individual files up to 2 GiB and a total source payload up to 4 GiB;
-missing or inaccessible optional files are reported in the package instead of stopping the export.
-Individual text captures remain limited to 16 MiB. Data is streamed rather than held in RAM;
-temporary files and ZIP overhead can require additional disk space beyond the source-data budget.
+#### Calibration: correction
 
-Diagnostic archives also retain early AVAS listener/recovery events and current/previous shell
-keepalive journals. Settings -> Logs -> **Record logcat** enables continuous capture of all buffers;
-the switch defaults OFF and remembers your choice. OFF stops recording without deleting history.
-While enabled, the recorder uses the existing shell daemon independently of AVAS profiles or
-Auto-start, including with ignition/screen off. Logging alone does not start audio or revive the
-app. Auto-start controls automatic startup/recovery, not ongoing recording; explicit Shutdown
-still stops it. No new AVAS profile or runtime setting is enabled by recording.
-It resumes after daemon recovery and replays the system buffers still available at that time;
-session markers distinguish that replay from new events. No process records while the kernel
-is stopped, and already-overwritten buffers from an unavailable interval cannot be recovered.
+<p align="center"><img src="docs/screenshots/en/parking-correction.png" alt="Parking cameras — Calibration: correction" width="100%"></p>
 
-History is appended without a size/time quota or rotating deletion. Recording pauses below
-512 MiB free space, retaining existing evidence, and resumes when space is available. It adds
-storage/I/O load and contains other apps' system messages; share only with the intended analyst.
-Clear logs stops the writer, clears its history and resumes without reimporting pre-clear records.
-The ZIP includes the complete bounded-at-export file as `system/logcat-continuous.txt` and writer
-state as `system/logcat-continuous-status.txt`, alongside the unchanged export-time snapshot.
-Both Share and Save as show an archive progress dialog: processed source volume, total and
-remaining bytes, and percentage once the total is known. Earlier system collectors show
-indeterminate progress because their output size is not yet known; continuous history uses one
-fixed size bound, so a growing Logcat cannot extend the export indefinitely. Save as then shows
-the actual ZIP-copy progress for the chosen destination. Finalization is separate from byte
-consumption; success is reported only after closing the ZIP/destination. Canceling preparation
-or copy leaves source logs intact and removes only the incomplete export where possible.
-This diagnostic build removes the experimental 500 ms exterior silent lead; player mode,
-gain, routing and focus policy remain unchanged. Complete audible playback is not yet verified.
+#### Calibration: output
 
-## Compatibility and requirements
+<p align="center"><img src="docs/screenshots/en/parking-output.png" alt="Parking cameras — Calibration: output" width="100%"></p>
 
-- Primarily tested on the Chinese `BYD Sea Lion 07 EV 2025` with `DiLink 5.0`.
-- Camera overlays have also been exercised on a `BYD Sea Lion 06 EV` with older DiLink firmware;
-  this does not establish full feature parity.
-- Other BYD models and firmware versions are not confirmed compatible.
-- BYD Extend has its own Android permissions and local ADB authorization. Enable local ADB on the
-  tablet and accept its authorization prompt; authorization is not shared with the legacy package.
-- Camera access is required. Parking views require compatible proximity and speed telemetry.
-- Weather requires location permission and internet access. Stock weather refresh and the optional
-  learned Reverse button share the app's Accessibility service, enabled through local ADB.
-- Instrument-cluster camera and music output require compatible BYD display services.
+</details>
 
-## Installation
+### Reverse cameras
 
-1. Download `byd-extend-v1.0.0.apk` from
-   [GitHub Releases](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases).
-2. Install it manually, grant camera/location access as requested, and accept the BYD Extend local
-   ADB authorization prompt.
-3. Open `Налаштування`, configure background start, and enable `Авто-запуск` if recovery after
-   boot and application replacement is required.
-4. Configure and validate the guard and every camera view while parked before normal use.
+Enable `Enhanced reverse view`, choose the composition elements, and arrange them in the preview. Elements have separate tablet/cluster placement and size settings; front-camera integration adds a corresponding front profile where enabled.
 
-Do not uninstall the legacy app before a successful full migration if its settings or calibration
-slots are needed. Do not run both applications as competing vehicle-control owners.
+- Entering Reverse requests the rear views without waiting for the stock panorama window.
+- Optional `Switch cameras by gear` selects integrated front views in D and rear views in R. N and P retain the current selection during a session.
+- Gear selection is available only when at least one front-camera integration is enabled. Nonintegrated cameras retain their rear view.
+- The selector widget and a learned steering-wheel button can switch an active composition manually. The button uses a single short press and does not open an inactive composition.
+- Background, camera, and selector-widget borders are configurable.
+
+<p align="center"><img src="docs/screenshots/en/reverse-placement.png" alt="BYD Extend reverse-camera composition" width="100%"></p>
+
+<details>
+<summary>Reverse-camera parameters and calibration</summary>
+
+#### Parameters
+
+<p align="center"><img src="docs/screenshots/en/reverse.png" alt="Reverse cameras — parameters" width="100%"></p>
+
+#### Calibration: original
+
+<p align="center"><img src="docs/screenshots/en/reverse-calibration.png" alt="Reverse cameras — Calibration: original" width="100%"></p>
+
+#### Calibration: correction
+
+<p align="center"><img src="docs/screenshots/en/reverse-correction.png" alt="Reverse cameras — Calibration: correction" width="100%"></p>
+
+#### Calibration: output
+
+<p align="center"><img src="docs/screenshots/en/reverse-output.png" alt="Reverse cameras — Calibration: output" width="100%"></p>
+
+</details>
+
+### Rearview mirror
+
+The independent mirror widget displays a rear camera on the tablet or a supported instrument cluster. Optional front integration adds a separately calibrated front view.
+
+Drag the visible widget to move it. Hold it for **one second** to hide it until the app is opened again. Taps inside the visible widget do not pass through to apps underneath. The widget is hidden while BYD Extend is in the foreground.
+
+Learn separate button actions for switching front/rear and showing/hiding the widget, with **Single, Hold, or Double** gestures. `Return when opening the app` controls whether a widget hidden by a button returns automatically. Panorama suppression applies only to tablet output.
+
+Assigned buttons can replace their original actions. Reset a binding to release it; recognition depends on which key events the firmware exposes.
+
+<p align="center"><img src="docs/screenshots/en/mirror.png" alt="BYD Extend rearview-mirror settings" width="100%"></p>
+
+<details>
+<summary>Placement and calibration</summary>
+
+#### Placement
+
+<p align="center"><img src="docs/screenshots/en/mirror-placement.png" alt="Rearview mirror — Placement" width="100%"></p>
+
+#### Calibration: original
+
+<p align="center"><img src="docs/screenshots/en/mirror-calibration.png" alt="Rearview mirror — Calibration: original" width="100%"></p>
+
+#### Calibration: correction
+
+<p align="center"><img src="docs/screenshots/en/mirror-correction.png" alt="Rearview mirror — Calibration: correction" width="100%"></p>
+
+#### Calibration: output
+
+<p align="center"><img src="docs/screenshots/en/mirror-output.png" alt="Rearview mirror — Calibration: output" width="100%"></p>
+
+</details>
+
+## Optional integrations
+
+Enable these separately under `BYD integrations`.
+
+### Music, lighting, and weather
+
+- **Music and lighting:** send available player metadata to the BYD interface and enable audio-reactive visualization/lighting on supported firmware.
+- **Steering-wheel player control:** the optional focus setting targets an eligible opened player. It does not automatically start playback and cannot make every third-party player compatible.
+- **Engine visualization:** a separate, default-off option controls visualization of engine-only interior audio, not its playback. If other audio is mixed with it, the visualizer cannot isolate the engine from the combined signal.
+- **Weather:** update the stock BYD weather card using location and Open-Meteo data. This needs location permission and internet access. The city name depends on the system geocoder; when unavailable, a localized “Current location” label is used.
+
+<details>
+<summary>Music and weather settings screenshots</summary>
+
+#### Music and lighting
+
+<p align="center"><img src="docs/screenshots/en/music.png" alt="Music and lighting settings" width="100%"></p>
+
+#### Weather
+
+<p align="center"><img src="docs/screenshots/en/weather.png" alt="Weather integration settings" width="100%"></p>
+
+</details>
+
+### AVAS: event sounds, microphone, and engine simulation
+
+These optional features use the vehicle's supported audio routes. Start at low volume and observe local rules for exterior sound.
+
+| Feature | How to use it |
+| --- | --- |
+| Lock, unlock, power-on, and power-off sounds | Import audio files, choose a sound or random selection, and set volume separately for each event. Event sounds play sequentially; power-event profiles can suppress the associated lock/unlock sound. |
+| File audition | The note button previews a file through the interior navigation route. This is different from exterior playback and can have a different perceived volume. |
+| Microphone speech | Enable the feature, grant microphone access, and use Start/Stop or a learned button to toggle exterior speech. An on-screen microphone indicator remains visible while broadcasting. Noise suppression and echo cancellation are available when supported by Android. |
+| Engine simulation | Choose a built-in sound pack, enable exterior and/or interior output, and set their volumes independently. Available packs include V6, V8, V10, four-cylinder, flat-six, and V-twin sounds. |
+
+Engine simulation starts automatically from the confirmed vehicle **OK / ready-to-drive** state, not merely ACC. It uses pedal input for stationary revving and available motor/speed signals in motion, with smoothed response. Engine sounds are simulated, not measurements of a combustion engine.
+
+`Test` temporarily overrides live engine playback; `Stop test` returns to the current live state. You do not need to press Test for automatic operation. A learned **Start/stop engine** button can toggle live sound for the current power session, including before OK. If sound is already running, entering OK does not repeat the start sound. The manual state resets when the vehicle powers off.
+
+High microphone volume can cause acoustic feedback; suppression does not guarantee its removal. AVAS features do not replace the stock pedestrian-warning system, and audible behaviour after vehicle sleep can vary by firmware.
+
+<p align="center"><img src="docs/screenshots/en/avas.png" alt="BYD Extend AVAS audio settings" width="100%"></p>
+
+## Presets and diagnostics
+
+In `Settings -> Logs`:
+
+- **Export/load camera presets:** save or load a JSON file containing camera visual settings, including placement, calibration, display selection, and borders. A camera preset is not a full backup: it excludes steering/speed/distance rules, learned buttons, and audio files.
+- **Import settings:** migrate from the older BYD Turn Signal app; this is separate from loading a camera preset.
+- **Share / Save as:** prepare a diagnostic ZIP and share it or choose a destination. Progress shows the current stage and, when known, processed/remaining volume and percentage. Cancel leaves source logs intact.
+- **Compatibility package:** collect system details for investigating model or firmware compatibility.
+- **Record logcat:** continuously record system logs. This is **off by default**; turn it on before reproducing an intermittent issue and off afterward.
+
+Continuous logcat can grow very large and is not automatically rotated away. Turning recording off retains history. Clear logs after sending the required evidence, and keep enough free storage for both source files and the ZIP. Without continuous recording, export still captures the system-log buffer available at that moment; it cannot recover overwritten history from before a reboot.
+
+**Review files before sharing.** System logs and compatibility packages may contain identifiers, locations, and information from other apps. Share only what is needed and do not publish credentials. Weather requests send coordinates to the weather provider; update checks contact GitHub.
+
+<p align="center"><img src="docs/screenshots/en/settings.png" alt="BYD Extend settings and diagnostics" width="100%"></p>
+
+<details>
+<summary>Screenshot: camera output settings</summary>
+
+<p align="center"><img src="docs/screenshots/en/settings-camera-output.png" alt="General camera output settings" width="100%"></p>
+
+</details>
+
+## Background operation and updates
+
+`Auto-start` controls automatic startup and recovery, not whether manually opened features may run. Keep DiLink's background-app restriction disabled for BYD Extend. Use `Shutdown` in Settings to stop the app and its runtime until you open it again.
+
+Optional ADB recovery attempts to restore previously authorized access. It needs previously granted `WRITE_SECURE_SETTINGS`; the Wi-Fi debugging path also needs a Wi-Fi connection and any system consent required by the firmware. A saved authorization key does not mean that ADB is currently listening.
+
+The app uses notification-listener access for runtime recovery without reading notification contents. Background operation, camera services, and continuous logs can consume power and storage while the vehicle is parked. No Android process survives a kernel reboot; recovery depends on the system and available permissions.
+
+Check updates manually in Settings or enable automatic checks. The update dialog includes release notes and download progress, with cancellation while downloading. An optional update-hint widget requires display-over-other-apps permission. Updating normally preserves settings; do not clear app data when installing an update.
+
+<details>
+<summary>Permissions, runtime, and ADB recovery</summary>
+
+### Permissions and runtime
+
+<p align="center"><img src="docs/screenshots/en/settings-permissions.png" alt="Permissions, startup, and update settings" width="100%"></p>
+
+### ADB recovery
+
+<p align="center"><img src="docs/screenshots/en/adb-recovery.png" alt="ADB recovery settings" width="100%"></p>
+
+</details>
+
+## Dialogs and widgets
+
+The examples below show the English dark-theme Preview. Version numbers, archive sizes, and progress are demonstration data. Scrollable dialog content is stitched into a single image.
+
+<details>
+<summary>ADB recovery reminder</summary>
+
+The reminder editor previews the Wi-Fi prompt and retry action and lets you adjust the widget's appearance and position. It is a reminder for recovery, not a first-time ADB authorization dialog.
+
+<p align="center"><img src="docs/screenshots/en/adb-reminder-dialog.png" alt="ADB recovery reminder editor" width="100%"></p>
+
+</details>
+
+<details>
+<summary>Update-hint widget</summary>
+
+Configure the update hint's appearance, then see how the floating notification of a new version looks. This is separate from the update download dialog.
+
+<p align="center"><img src="docs/screenshots/en/update-hint-dialog.png" alt="Update-hint appearance settings" width="100%"></p>
+
+<p align="center"><img src="docs/screenshots/en/update-hint-widget.png" alt="Floating update-hint widget" width="100%"></p>
+
+</details>
+
+<details>
+<summary>Learning a steering-wheel button</summary>
+
+Open the button-learning dialog for the desired action, then press the steering-wheel button you want to assign. The same dialog is shared by the camera and audio controls; one example illustrates it.
+
+<p align="center"><img src="docs/screenshots/en/button-learning-dialog.png" alt="Steering-wheel button-learning dialog" width="100%"></p>
+
+</details>
+
+<details>
+<summary>AVAS sound library</summary>
+
+Choose an imported sound for an event and audition it before assigning it. The library shows the available files and the current selection.
+
+<p align="center"><img src="docs/screenshots/en/avas-sound-library-dialog.png" alt="AVAS sound library" width="100%"></p>
+
+</details>
+
+<details>
+<summary>Diagnostic archive progress</summary>
+
+When sharing or saving logs, the progress dialog shows the total, processed, and remaining data volume and the percentage when available. One example covers both export actions; Preview uses simulated progress.
+
+<p align="center"><img src="docs/screenshots/en/log-export-progress-dialog.png" alt="Diagnostic archive preparation progress" width="100%"></p>
+
+</details>
+
+<details>
+<summary>Border colour picker</summary>
+
+Choose a camera-border colour visually or enter its hexadecimal value. One example illustrates the shared colour picker.
+
+<p align="center"><img src="docs/screenshots/en/border-colour-dialog.png" alt="Camera border colour picker" width="100%"></p>
+
+</details>
+
+## Debug screens
+
+<details>
+<summary>Signals, AVM, and direct camera access</summary>
+
+### Signals
+
+<p align="center"><img src="docs/screenshots/en/debug-signals.png" alt="Debug — Signals" width="100%"></p>
+
+### AVM
+
+<p align="center"><img src="docs/screenshots/en/debug-avm.png" alt="Debug — AVM" width="100%"></p>
+
+### Direct camera access
+
+<p align="center"><img src="docs/screenshots/en/debug-direct.png" alt="Debug — Direct camera access" width="100%"></p>
+
+</details>
+
+## Troubleshooting
+
+| Problem | What to check |
+| --- | --- |
+| ADB or permissions show an error | Keep the tablet awake, verify that local ADB is enabled, accept the authorization prompt, and use Grant ADB. Check the individual permissions as well; ADB access alone is not sufficient for every feature. |
+| A camera is black or does not appear | Check its enable switch, activation conditions, selected display, panorama suppression, and camera access. Note the exact time and collect logs if it repeats. |
+| Nothing appears on the instrument cluster | Verify that your firmware supports cluster output and that the selected view targets it. An unavailable cluster is not automatically replaced with tablet output. |
+| A learned button does nothing | Check Accessibility access, the assigned gesture, and the feature's conditions. Not every firmware exposes every physical key. |
+| No AVAS sound or microphone speech | Check feature/output switches, selected file or engine pack, volume, permissions, and the displayed status. Test while parked at low volume; interior audition and exterior playback use different routes. |
+| Weather is missing or the city name differs | Check location permission, network access, and refresh status. Naming comes from the system geocoder, not a built-in list of translated cities. |
+| Logs take a long time to export | Check the displayed phase and free space. Large continuous logs can require substantial time and temporary storage; use Cancel if needed. |
+
+### Report a problem
+
+1. If possible, enable `Settings -> Logs -> Record logcat` **before** reproducing the problem, then stop recording afterward.
+2. Use `Share` or `Save as` for diagnostic logs. Include a compatibility package when the issue concerns a new vehicle or firmware.
+3. Open a [GitHub issue](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/issues). Include the app version, vehicle/model year, firmware version, approximate local time, reproduction steps, and expected versus actual behaviour.
+
+For camera issues, include the output display and relevant preset/settings. For audio issues, state whether the route was interior or exterior and whether it was the first playback after vehicle sleep. Avoid clearing logs before collecting the evidence.
+
+## Building from source
+
+Use JDK 17 and the Android SDK required by the Gradle project. Distribution builds use the non-debuggable `performance` variant without minification, obfuscation, or resource shrinking.
+
+```sh
+./gradlew :app:assemblePerformance
+```
+
+On Windows, use `.\gradlew.bat :app:assemblePerformance`. The APK is copied to `build_output/byd-extend-v<version>.apk`.
+
+The current build script uses the existing `debug` signing configuration for update continuity; its name does not make this variant debuggable. A local build can update an installed copy only if its signing certificate matches. Do not confuse the source version with a published release.
+
+## Support the project
+
+Donations voluntarily support the development and improvement of BYD Extend and apps for BYD cars.
+
+**Jar card number — primary donation method:**
+
+```text
+4874 1000 3354 3078
+```
+
+Copy this number and use your bank's card-to-card transfer feature. You do not need the mono app for this method; availability, limits, and fees depend on your bank or transfer provider. Check the recipient details before confirming.
+
+<details>
+<summary>Alternative: monobank Jar link and QR code</summary>
+
+[Open the donation Jar](https://send.monobank.ua/jar/bKFV15i9e), or scan the QR code:
+
+<p><a href="https://send.monobank.ua/jar/bKFV15i9e"><img src="app/src/main/res/drawable-nodpi/mono_support_qr.jpg" alt="QR code for the Support BYD app donation Jar" width="240"></a></p>
+
+</details>
+
+The same details are available under `Support` beside the app title. Donations are optional; the app never makes a payment automatically.
 
 ## License
 
-Copyright (C) 2026 sunlixWhyNotAvailable.
+BYD Extend is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). It is an independent project, not affiliated with or endorsed by BYD or the services mentioned here. Trademarks belong to their respective owners.
 
-This project is free software licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE). Modified versions that are distributed or
-offered for remote network use must provide their corresponding source under the same license.
+Generative AI tools are used for development, testing, diagnostic analysis, and documentation.
+
+Use the app at your own risk. Camera images and telemetry can be incomplete, delayed, or unavailable. Keep the vehicle's stock safety systems in use and install, configure, and troubleshoot only while parked.
