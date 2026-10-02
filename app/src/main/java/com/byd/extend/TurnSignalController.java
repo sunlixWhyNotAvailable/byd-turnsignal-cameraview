@@ -2250,7 +2250,7 @@ final class TurnSignalController {
         reply.readException();
     }
 
-    private Ping ping(IBinder value) {
+    static Ping ping(IBinder value) {
         if (value == null || !value.isBinderAlive()) return Ping.failed("helper_unavailable");
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();

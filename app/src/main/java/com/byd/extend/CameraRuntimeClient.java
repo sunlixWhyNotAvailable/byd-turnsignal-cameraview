@@ -73,7 +73,8 @@ final class CameraRuntimeClient {
         try {
             IBinder candidate = (IBinder) Class.forName("android.os.ServiceManager")
                     .getMethod("getService", String.class).invoke(null, TurnSignalShellProtocol.SERVICE_NAME);
-            if (candidate == null) return false;
+            // A retained host may belong to the previous APK. The existing launcher replaces it.
+            if (!TurnSignalController.ping(candidate).healthy()) return false;
             Parcel data = Parcel.obtain(), reply = Parcel.obtain();
             try {
                 data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);

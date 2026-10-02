@@ -76,6 +76,47 @@ public class CameraRuntimeContinuityTest {
         assertEquals(new java.util.HashSet<>(java.util.Arrays.asList("right", "left")), fromParcel);
     }
 
+    @Test public void reconnectChecksHelperIdentityBeforeAttachButReusesLiveEndpoint() throws Exception {
+        String client = source("CameraRuntimeClient");
+        String connect = client.substring(client.indexOf("synchronized boolean connect()"),
+                client.indexOf("private synchronized void applyRuntimeSettings"));
+        int reuse = connect.indexOf("if (camera != null && camera.isBinderAlive()) return true;");
+        int identity = connect.indexOf("!TurnSignalController.ping(candidate).healthy()");
+        int attach = connect.indexOf("data.writeInt(CameraRuntimeHost.ATTACH)");
+        assertTrue(reuse >= 0);
+        assertTrue("Check identity only when reconnecting, before any settings/ATTACH", identity > reuse);
+        assertTrue(attach > identity);
+        assertTrue(connect.substring(identity, attach).contains("return false;"));
+        assertFalse(connect.contains("TX_SHUTDOWN"));
+
+        String controller = source("TurnSignalController");
+        assertTrue(controller.contains("static Ping ping(IBinder value)"));
+        assertTrue(controller.contains("TurnSignalShellProtocol.compatibilityError(protocol, build)"));
+        assertEquals("", TurnSignalShellProtocol.compatibilityError(
+                TurnSignalShellProtocol.VERSION, BuildConfig.VERSION_CODE));
+        assertEquals("protocol_mismatch", TurnSignalShellProtocol.compatibilityError(
+                TurnSignalShellProtocol.VERSION - 1, BuildConfig.VERSION_CODE));
+        assertEquals("build_mismatch", TurnSignalShellProtocol.compatibilityError(
+                TurnSignalShellProtocol.VERSION, BuildConfig.VERSION_CODE - 1));
+    }
+
+    @Test public void descriptorQueryBypassesCustomTokenButNotCallerCheck() throws Exception {
+        String shell = source("CameraShellMain");
+        int dispatch = shell.indexOf("protected boolean onTransact(");
+        int caller = shell.indexOf("CameraShellProtocol.isCallerAllowed", dispatch);
+        int descriptor = shell.indexOf("if (code == IBinder.INTERFACE_TRANSACTION)", dispatch);
+        int nativeDispatch = shell.indexOf("return super.onTransact(code, data, reply, flags);", descriptor);
+        int token = shell.indexOf("data.enforceInterface(CameraShellProtocol.DESCRIPTOR)", dispatch);
+        assertTrue(caller > dispatch);
+        assertTrue("Descriptor queries still enforce caller identity", descriptor > caller);
+        assertTrue(nativeDispatch > descriptor);
+        assertTrue("Native descriptor query has no custom interface token", token > nativeDispatch);
+        assertTrue(shell.contains("binder.attachInterface(null, CameraShellProtocol.DESCRIPTOR)"));
+        assertTrue(CameraShellProtocol.isCallerAllowed(2000, 10123));
+        assertTrue(CameraShellProtocol.isCallerAllowed(10123, 10123));
+        assertFalse(CameraShellProtocol.isCallerAllowed(10124, 10123));
+    }
+
     @Test public void productionOwnsSourcesAndControllersOutsideServiceAndRestrictsIpc() throws Exception {
         String service = source("CameraHelperService"), host = source("CameraRuntimeHost"),
                 helper = source("CameraHelperMain"), turn = source("TurnSignalController"),
