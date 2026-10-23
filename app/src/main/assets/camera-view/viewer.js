@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 3;
+  const WEB_REVISION = 4;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   const bootstrapNode = document.getElementById('viewer-bootstrap');
@@ -19,6 +19,7 @@
       lowBattery: 'Viewing is paused by the battery protection limit.', ended: 'This session has ended.', replacedTitle: 'Session ended', replaced: 'Another device connected.', errorTitle: 'Connection unavailable', error: 'The camera connection could not be completed.', retry: 'Try again', signInAgain: 'Sign in again',
       invalidPassword: 'Incorrect password.', busy: 'The session is in use. Try again shortly.', retryLater: 'Please wait before trying again.', unauthorized: 'This session is no longer authorized.',
       chargeUnavailable: 'Battery protection data unavailable:', soc: 'SOC', voltage: '12 V', chargeSuffix: 'Protection is unavailable for the missing readings.',
+      battery12v: '12 V battery', voltsUnit: 'V', batteryCurrent: 'Current vehicle state', batteryUnavailable: 'Current data unavailable', batteryPartial: 'Some readings unavailable',
       selectView: 'Choose camera view', expand: 'Full screen', minimize: 'Exit full screen', loading: 'Loading recordings…', loadError: 'Recordings could not be loaded.', retryLoad: 'Reload recordings',
       clips: 'Recordings', tablet: 'Tablet', sd: 'SD card', noRecordings: 'No recordings for this day.', archiveError: 'This recording is unavailable.', back: 'Back to recordings',
       yellowEvents: 'Yellow events', redEvents: 'Red events', duration: 'Duration', allRecordings: 'All recordings',
@@ -39,6 +40,7 @@
       lowBattery: 'Перегляд призупинено через обмеження захисту акумулятора.', ended: 'Цей сеанс завершено.', replacedTitle: 'Сеанс завершено', replaced: 'Під’єднався інший пристрій.', errorTitle: 'З’єднання недоступне', error: 'Не вдалося встановити з’єднання з камерами.', retry: 'Спробувати знову', signInAgain: 'Увійти знову',
       invalidPassword: 'Неправильний пароль.', busy: 'Сеанс зайнятий. Спробуйте трохи пізніше.', retryLater: 'Зачекайте перед наступною спробою.', unauthorized: 'Цей сеанс більше не авторизований.',
       chargeUnavailable: 'Дані захисту акумулятора недоступні:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Захист за відсутніми показниками недоступний.',
+      battery12v: 'АКБ 12 V', voltsUnit: 'V', batteryCurrent: 'Поточний стан авто', batteryUnavailable: 'Поточні дані недоступні', batteryPartial: 'Частина показників недоступна',
       selectView: 'Виберіть зображення камери', expand: 'На весь екран', minimize: 'Вийти з повного екрана', loading: 'Завантаження записів…', loadError: 'Не вдалося завантажити записи.', retryLoad: 'Завантажити записи знову',
       clips: 'Записи', tablet: 'Планшет', sd: 'SD-карта', noRecordings: 'За цей день записів немає.', archiveError: 'Цей запис недоступний.', back: 'До записів',
       yellowEvents: 'Жовті події', redEvents: 'Червоні події', duration: 'Тривалість', allRecordings: 'Усі записи',
@@ -59,6 +61,7 @@
       lowBattery: 'Просмотр приостановлен из-за ограничения защиты аккумулятора.', ended: 'Этот сеанс завершён.', replacedTitle: 'Сеанс завершён', replaced: 'Подключилось другое устройство.', errorTitle: 'Подключение недоступно', error: 'Не удалось подключиться к камерам.', retry: 'Повторить', signInAgain: 'Войти снова',
       invalidPassword: 'Неверный пароль.', busy: 'Сеанс занят. Повторите попытку позже.', retryLater: 'Подождите перед следующей попыткой.', unauthorized: 'Этот сеанс больше не авторизован.',
       chargeUnavailable: 'Данные защиты аккумулятора недоступны:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Защита по отсутствующим показателям недоступна.',
+      battery12v: 'АКБ 12 V', voltsUnit: 'V', batteryCurrent: 'Текущее состояние авто', batteryUnavailable: 'Текущие данные недоступны', batteryPartial: 'Часть показателей недоступна',
       selectView: 'Выберите вид камеры', expand: 'На весь экран', minimize: 'Выйти из полного экрана', loading: 'Загрузка записей…', loadError: 'Не удалось загрузить записи.', retryLoad: 'Загрузить записи снова',
       clips: 'Записи', tablet: 'Планшет', sd: 'SD-карта', noRecordings: 'За этот день записей нет.', archiveError: 'Эта запись недоступна.', back: 'К записям',
       yellowEvents: 'Жёлтые события', redEvents: 'Красные события', duration: 'Длительность', allRecordings: 'Все записи',
@@ -79,6 +82,7 @@
       lowBattery: '电池保护限制已暂停查看。', ended: '此会话已结束。', replacedTitle: '会话已结束', replaced: '另一台设备已连接。', errorTitle: '连接不可用', error: '无法完成摄像头连接。', retry: '重试', signInAgain: '重新登录',
       invalidPassword: '密码错误。', busy: '会话正在使用，请稍后重试。', retryLater: '请稍候再试。', unauthorized: '此会话已不再授权。',
       chargeUnavailable: '电池保护数据不可用：', soc: 'SOC', voltage: '12 V', chargeSuffix: '缺少读数时无法启用保护。',
+      battery12v: '12 V 电池', voltsUnit: 'V', batteryCurrent: '车辆当前状态', batteryUnavailable: '当前数据不可用', batteryPartial: '部分读数不可用',
       selectView: '选择摄像头画面', expand: '全屏', minimize: '退出全屏', loading: '正在加载录像…', loadError: '无法加载录像。', retryLoad: '重新加载录像',
       clips: '录像', tablet: '平板', sd: 'SD 卡', noRecordings: '这一天没有录像。', archiveError: '此录像不可用。', back: '返回录像列表',
       yellowEvents: '黄色事件', redEvents: '红色事件', duration: '时长', allRecordings: '全部录像',
@@ -108,6 +112,7 @@
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
     playerError: false, playerFrameReported: false, missingCharge: 0, hls: null, poll: null, mainKey: '', seeking: false,
     localFirstFrame: false, liveRequest: null, livePlaylist: null,
+    battery: null, batteryExpiresAt: 0,
     modes: { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null },
     lastKnownModes: { tabletEnabled: null, recordingEnabled: null }, modePending: null, modeError: null, modesOpen: false
   };
@@ -176,7 +181,9 @@
     skipBack: '<path d="M5 5v14m14-14L8 12l11 7z"/>', skipForward: '<path d="M19 5v14M5 5l11 7-11 7z"/>',
     empty: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 14h.01M12 14h.01M16 14h.01"/>',
     sliders: '<path d="M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-5m0-4V3"/><path d="M2 14h4m4-6h4m4 8h4"/>',
-    chevronDown: '<path d="m6 9 6 6 6-6"/>'
+    chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    battery: '<rect x="2" y="6" width="18" height="12" rx="2"/><path d="M22 10v4M6 10v4m4-4v4"/>',
+    zap: '<path d="m13 2-10 12h8l-1 8 11-12h-8z"/>'
   };
   const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || iconPaths.camera}</svg>`;
   const clock = (seconds) => {
@@ -241,6 +248,7 @@
   }
 
   function renderLogin(message = '') {
+    applyBatterySnapshot(null);
     app.classList.remove('is-expanded', 'has-player');
     if (contractBlocked) {
       app.innerHTML = `${pageHeader()}<div class="login-wrap"><section class="login-card" role="alert"><p>${escapeHtml(text.updateRequired)}</p></section></div>`;
@@ -263,6 +271,39 @@
     if (mask & 1) missing.push(text.soc);
     if (mask & 2) missing.push(text.voltage);
     return missing.length ? `<p class="charge-note">${escapeHtml(text.chargeUnavailable)} ${escapeHtml(missing.join(' / '))}. ${escapeHtml(text.chargeSuffix)}</p>` : '';
+  }
+
+  function batteryPanel() {
+    return `<section class="telemetry" aria-label="${escapeHtml(text.batteryCurrent)}"><span class="telemetry-item">${icon('battery')}<span class="telemetry-label">${escapeHtml(text.soc)}</span><strong id="battery-soc">—</strong></span><span class="telemetry-item">${icon('zap')}<span class="telemetry-label">${escapeHtml(text.battery12v)}</span><strong id="battery-voltage">—</strong></span><span class="telemetry-note" id="battery-note">${escapeHtml(text.batteryUnavailable)}</span></section>`;
+  }
+
+  function applyBatterySnapshot(battery, requestedAt = Date.now()) {
+    state.battery = battery && typeof battery === 'object' ? battery : null;
+    const lifetime = state.battery?.validForMs;
+    // Include request transit time; never extend an old helper sample on each HTTP poll.
+    state.batteryExpiresAt = Number.isFinite(lifetime) && lifetime > 0
+      ? requestedAt + Math.min(lifetime, 15000) : 0;
+    updateBattery();
+  }
+
+  function updateBattery() {
+    const socNode = document.getElementById('battery-soc');
+    const voltageNode = document.getElementById('battery-voltage');
+    const note = document.getElementById('battery-note');
+    if (!socNode || !voltageNode || !note) return;
+    const value = state.authenticated && !state.replaced && state.status !== 'ended' &&
+      Date.now() < state.batteryExpiresAt ? state.battery : null;
+    const mask = value?.missingMetrics;
+    const validMask = Number.isInteger(mask) && mask >= 0 && mask <= 3;
+    const soc = validMask && !(mask & 1) && Number.isInteger(value.socPercent) &&
+      value.socPercent >= 0 && value.socPercent <= 100 ? value.socPercent : null;
+    const voltage = validMask && !(mask & 2) && Number.isFinite(value.voltageVolts) &&
+      value.voltageVolts > 0 && value.voltageVolts <= 20 ? value.voltageVolts : null;
+    socNode.textContent = soc === null ? '—' : `${soc} %`;
+    voltageNode.textContent = voltage === null ? '—' : `${new Intl.NumberFormat(localeTags[locale], {
+      minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(voltage)} ${text.voltsUnit}`;
+    note.textContent = soc === null && voltage === null ? text.batteryUnavailable
+      : soc === null || voltage === null ? `${text.batteryCurrent} · ${text.batteryPartial}` : text.batteryCurrent;
   }
 
   function modePanel() {
@@ -410,7 +451,7 @@
     if (contractBlocked) { renderLogin(); return; }
     app.classList.remove('is-expanded');
     app.classList.remove('has-player');
-    app.innerHTML = `${pageHeader()}<div class="statusrow"><div class="connection" id="connection" data-state="ready" role="status"><span class="dot"></span><span id="connection-label"></span></div><button class="quiet" type="button" data-action="end">${icon('stop')}${escapeHtml(text.end)}</button></div><div class="viewer-workspace"><section class="viewer-main"><nav class="nav" aria-label="${escapeHtml(text.title)}"><button type="button" data-action="tab" data-mode="live" aria-pressed="true">${icon('video')}${escapeHtml(text.live)}</button><button type="button" data-action="tab" data-mode="archive" aria-pressed="false">${icon('archive')}${escapeHtml(text.archive)}</button></nav><main class="content" id="main-panel"></main></section>${modePanel()}</div>`;
+    app.innerHTML = `${pageHeader()}<div class="statusrow"><div class="connection" id="connection" data-state="ready" role="status"><span class="dot"></span><span id="connection-label"></span></div><button class="quiet" type="button" data-action="end">${icon('stop')}${escapeHtml(text.end)}</button></div>${batteryPanel()}<div class="viewer-workspace"><section class="viewer-main"><nav class="nav" aria-label="${escapeHtml(text.title)}"><button type="button" data-action="tab" data-mode="live" aria-pressed="true">${icon('video')}${escapeHtml(text.live)}</button><button type="button" data-action="tab" data-mode="archive" aria-pressed="false">${icon('archive')}${escapeHtml(text.archive)}</button></nav><main class="content" id="main-panel"></main></section>${modePanel()}</div>`;
     const disclosure = document.getElementById('mode-disclosure');
     syncModeDisclosure();
     disclosure.addEventListener('toggle', (event) => {
@@ -421,6 +462,7 @@
   }
 
   function updateStatusBar() {
+    updateBattery();
     const connection = document.getElementById('connection');
     if (!connection) return;
     connection.dataset.state = statusClass();
@@ -961,6 +1003,7 @@
   }
 
   function handleUnauthorized(failure) {
+    applyBatterySnapshot(null);
     actionGeneration++;
     stopLiveMedia();
     const video = document.getElementById('archive-video');
@@ -977,7 +1020,9 @@
   }
 
   async function pollStatus() {
+    updateBattery();
     if (!state.authenticated || state.replaced) return;
+    const requestedAt = Date.now();
     const action = actionGeneration;
     const modeWrite = modeWriteGeneration;
     const request = ++statusRequestGeneration;
@@ -992,9 +1037,11 @@
       if (!state.modePending) applyModeSnapshot(data.modes);
       updateModePanel();
       if (!['ready', 'preparing', 'connected', 'low_battery', 'error', 'ended'].includes(data.status)) {
+        applyBatterySnapshot(null);
         console.warn('Unexpected camera viewer status', data.status);
         return;
       }
+      applyBatterySnapshot(data.battery, requestedAt);
       if (state.mode === 'live' && state.wantsLive) {
         if (!state.liveRequest || data.request !== state.liveRequest) return;
         const playlist = typeof data.playlist === 'string' && /^\/media\/[0-9a-f-]{36}\/live\.m3u8$/.test(data.playlist)
@@ -1014,12 +1061,14 @@
       renderMain();
     } catch (failure) {
       if (action !== actionGeneration || !state.authenticated || modeWrite !== modeWriteGeneration || request !== statusRequestGeneration) return;
+      applyBatterySnapshot(null);
       if (failure.statusCode === 401) handleUnauthorized(failure);
       else console.warn('Camera viewer status poll failed', failure);
     }
   }
 
   async function endSession() {
+    applyBatterySnapshot(null);
     const action = ++actionGeneration;
     clearInterval(state.poll);
     state.poll = null;
@@ -1231,6 +1280,9 @@
     updateFullscreenButton();
   });
   window.addEventListener('resize', applyArchiveCrop);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) updateBattery();
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && app.classList.contains('is-expanded') && !document.fullscreenElement) {
       app.classList.remove('is-expanded');

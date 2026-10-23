@@ -51,7 +51,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private var chargeObservation: AutoCloseable? = null
     private var networkRegistered = false
     private var activeNetwork: Network? = null
-    @Volatile private var chargeState: CameraChargePolicy.State? = null
+    @Volatile private var chargeSnapshot = ViewerBatteryStatus(null, 0L)
     private val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -254,9 +254,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private fun observeCharge() {
         chargeObservation?.close()
         chargeObservation = null
-        chargeState = null
+        chargeSnapshot = ViewerBatteryStatus(null, 0L)
         chargeObservation = RemoteCameraPreparation.observeCharge(context) { value ->
-            chargeState = value
+            chargeSnapshot = ViewerBatteryStatus(value, SystemClock.elapsedRealtime())
             execute { chargeChanged(value) }
         }
     }
@@ -383,8 +383,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     val request = active?.request ?: ""
                     val window = run.encoder?.window
                     val playable = window != null && window.request == request && window.isReady
+                    val battery = chargeSnapshot.toJson(SystemClock.elapsedRealtime())
                     return JSONObject().put("status", if (p.phase == "connected" && !playable) "preparing" else p.phase)
-                        .put("missingCharge", chargeState?.missingMetrics() ?: 3)
+                        .put("missingCharge", battery.getInt("missingMetrics"))
+                        .put("battery", battery)
                         .put("mode", active?.mode ?: "pending")
                         .put("view", VIEWS[(active?.direction ?: -1) + 1])
                         .put("request", request)
@@ -454,6 +456,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         run.viewer = true; run.deadline = SystemClock.elapsedRealtime() + 30_000
         p.phase = "ready"
         sessionEvent("admitted", next)
+        // Archive-first viewers need telemetry too, without preparing any camera source.
+        if (chargeObservation == null) try { observeCharge() }
+        catch (failure: Exception) { CameraViewingDiagnostics.failure("viewer_charge_observe", p.method, failure) }
         publish()
         return true
     }
@@ -477,7 +482,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         run.preparing = false
         val charge = try {
             if (chargeObservation == null) observeCharge()
-            RemoteCameraPreparation.readChargeState(context).also { chargeState = it }
+            RemoteCameraPreparation.readChargeState(context).also {
+                chargeSnapshot = ViewerBatteryStatus(it, SystemClock.elapsedRealtime())
+            }
         } catch (failure: Exception) {
             val diagnostic = CameraViewingDiagnostics.describe(failure,
                 p.config.optString("password"), p.config.optString("token"))

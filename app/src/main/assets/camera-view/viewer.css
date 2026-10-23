@@ -24,6 +24,13 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 .brand { font-size:18px; font-weight:650; letter-spacing:.01em; }
 .subtitle { color:var(--muted); font-size:12px; }
 .statusrow { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 0 15px; }
+.telemetry { display:flex; align-items:center; flex-wrap:wrap; gap:8px 22px; padding:0 0 17px; }
+.telemetry-item { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; }
+.telemetry-item svg { width:16px; height:16px; flex:none; }
+.telemetry-item strong { font-weight:500; font-variant-numeric:tabular-nums; }
+.telemetry-label,.telemetry-note { color:var(--muted); font-size:12px; }
+.telemetry-note { flex-basis:100%; }
+#app.is-expanded > .telemetry { display:none; }
 .connection { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
 .connection[data-state="connected"] { color:var(--green); }
 .connection[data-state="error"],.connection[data-state="replaced"] { color:var(--red); }
