@@ -1027,8 +1027,7 @@ public final class CameraHelperService extends Service {
                 || ACTION_ACTIVITY_OPEN.equals(action))) {
             if (ACTION_ADB_WIFI_RETRY.equals(action)) adbRecovery.retryWifi();
             else if (!ACTION_ADB_READY.equals(action)) adbRecovery.startOrReconfigure(
-                    command.reason.contains("BOOT_COMPLETED")
-                            ? AdbRecoveryRuntime.Reason.BOOT : AdbRecoveryRuntime.Reason.START);
+                    AdbRecoveryPolicy.wakeReason(command.reason));
             publishAdbRecoveryUi();
         }
         if (ACTION_ADB_WIFI_RETRY.equals(action)
