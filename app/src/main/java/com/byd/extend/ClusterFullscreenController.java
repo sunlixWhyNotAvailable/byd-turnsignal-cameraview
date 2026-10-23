@@ -30,6 +30,11 @@ final class ClusterFullscreenController {
     private final long bootId;
     private long awakeSessionId = -1;
     private boolean interactive;
+    private boolean vehiclePowerKnown;
+    private boolean vehiclePowerOff;
+    private int consecutiveFailedPowerReads;
+    private long vehiclePowerSourceEpoch = -1;
+    private long vehiclePowerRevision = -1;
     private boolean displayObserved;
     private boolean displayWasReady;
     private String lastGate = "";
@@ -61,10 +66,49 @@ final class ClusterFullscreenController {
         if (line == null || stopped) return;
         try {
             JSONObject event = new JSONObject(line);
-            if (!"shell_power_state".equals(event.optString("kind"))) return;
-            awakeSessionId = event.optLong("awake_session_id", -1);
-            interactive = event.optBoolean("interactive", false);
-            evaluate("power_state");
+            String kind = event.optString("kind");
+            if ("shell_power_state".equals(kind)) {
+                awakeSessionId = event.optLong("awake_session_id", -1);
+                interactive = event.optBoolean("interactive", false);
+                evaluate("power_state");
+            } else if ("camera_vehicle_power_state".equals(kind)) {
+                Object knownValue = event.opt("known");
+                Object offValue = event.opt("off");
+                Object failureCountValue = event.opt("consecutive_failed_reads");
+                Object sourceEpochValue = event.opt("source_epoch");
+                Object revisionValue = event.opt("revision");
+                if (!(knownValue instanceof Boolean) || !(offValue instanceof Boolean)
+                        || !(failureCountValue instanceof Number)
+                        || !(sourceEpochValue instanceof Number)
+                        || !(revisionValue instanceof Number)) {
+                    throw new IllegalArgumentException("camera Power state fields missing");
+                }
+                boolean known = (Boolean) knownValue;
+                boolean off = (Boolean) offValue;
+                int failures = ((Number) failureCountValue).intValue();
+                long sourceEpoch = ((Number) sourceEpochValue).longValue();
+                long revision = ((Number) revisionValue).longValue();
+                if (sourceEpoch < 0 || revision < 0 || off && !known
+                        || failures < 0 || failures > 5
+                        || known && failures == 5) {
+                    throw new IllegalArgumentException("camera Power state out of range");
+                }
+                if (sourceEpoch < vehiclePowerSourceEpoch
+                        || sourceEpoch == vehiclePowerSourceEpoch
+                        && revision < vehiclePowerRevision) return;
+                if (sourceEpoch == vehiclePowerSourceEpoch && revision == vehiclePowerRevision
+                        && (known != vehiclePowerKnown || off != vehiclePowerOff
+                        || failures != consecutiveFailedPowerReads)) {
+                    throw new IllegalArgumentException(
+                            "camera Power decision changed without a new revision");
+                }
+                vehiclePowerKnown = known;
+                vehiclePowerOff = off;
+                consecutiveFailedPowerReads = failures;
+                vehiclePowerSourceEpoch = sourceEpoch;
+                vehiclePowerRevision = revision;
+                evaluate("vehicle_power_state");
+            }
         } catch (Throwable error) {
             emit("cluster_fullscreen_error", "stage", "parse_power_state",
                     "error", summary(error));
@@ -119,7 +163,8 @@ final class ClusterFullscreenController {
                         rearEnabled, rearLeftTarget, rearRightTarget,
                         frontEnabled, frontLeftTarget, frontRightTarget,
                         mirror.enabled, mirror.target);
-        boolean ready = eligible && displayReady && interactive && awakeSessionId >= 0;
+        boolean ready = eligible && displayReady && interactive && awakeSessionId >= 0
+                && !(vehiclePowerKnown && vehiclePowerOff);
         if (trackedSession != awakeSessionId || trackedDisplay != displayId || eligibleNow != ready) {
             generation++;
             cancelRetry();
@@ -133,6 +178,7 @@ final class ClusterFullscreenController {
                 bootId, succeededBoot, displayId, succeededDisplay);
         String gate = !eligible ? "no_enabled_cluster_target"
                 : !displayReady ? "waiting_for_cluster_display"
+                : vehiclePowerKnown && vehiclePowerOff ? "vehicle_power_off"
                 : awakeSessionId < 0 ? "waiting_for_power_state"
                 : !interactive ? "waiting_for_wake"
                 : !needsCommand ? "already_succeeded"
@@ -144,7 +190,10 @@ final class ClusterFullscreenController {
             emit("cluster_fullscreen_gate", "reason", gate, "trigger", trigger,
                     "boot_id", bootId, "awake_session_id", awakeSessionId,
                     "shell_interactive", interactive, "display_id", displayId,
-                    "display_state", displayState, "mirror_hidden", mirror.manualHidden);
+                    "display_state", displayState, "vehicle_power_known", vehiclePowerKnown,
+                    "vehicle_power_off", vehiclePowerOff,
+                    "consecutive_failed_power_reads", consecutiveFailedPowerReads,
+                    "mirror_hidden", mirror.manualHidden);
         }
         if (!needsCommand || inFlight || pendingRetry != null || terminal) {
             return;
@@ -170,7 +219,8 @@ final class ClusterFullscreenController {
     }
 
     private synchronized boolean isCurrentAttempt(long expectedGeneration) {
-        return !stopped && eligibleNow && generation == expectedGeneration;
+        return !stopped && eligibleNow && !(vehiclePowerKnown && vehiclePowerOff)
+                && generation == expectedGeneration;
     }
 
     private synchronized void finishAttempt(long expectedGeneration, long session, int displayId,

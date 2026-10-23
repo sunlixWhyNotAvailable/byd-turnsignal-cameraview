@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 43;
+    static final int VERSION = 44;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -46,6 +46,7 @@ final class CameraShellProtocol {
 
     static final int PREPARE_OK = 0;
     static final int PREPARE_RESTART_REQUIRED = 1;
+    static final int PREPARE_DEFERRED = 2;
 
     static final class PrepareRestartRequired extends IllegalStateException {
         final String reason;

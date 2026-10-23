@@ -34,6 +34,7 @@ import java.util.function.Consumer;
 
 /** Isolated AVAS state, telemetry and one-player FIFO owned by the shell helper. */
 final class AvasRuntime implements AutoCloseable {
+    private final long cameraPowerSourceEpoch = SystemClock.elapsedRealtimeNanos();
     private static final File CACHE = new File("/data/local/tmp/bydextend_avas");
     private static final File CONFIG = new File(CACHE, "config.json");
     private final Context context;
@@ -135,6 +136,10 @@ final class AvasRuntime implements AutoCloseable {
                         engine.onPower(power, baseline);
                         publishMotionTelemetry("power", power, baseline);
                     }
+                    @Override public void onCameraPowerState(
+                            CameraSourceDemand.PowerGate.Snapshot state, boolean baseline) {
+                        publishCameraPowerState(state, baseline);
+                    }
                     @Override public void onRawLock(int lock, boolean baseline) {
                         publishMotionTelemetry("lock", lock, baseline);
                     }
@@ -220,6 +225,10 @@ final class AvasRuntime implements AutoCloseable {
         if (!started) return;
         if (enabled) telemetryController.activateForMotion();
         else updateTelemetry();
+    }
+
+    String cameraPowerStateSnapshot() {
+        return cameraPowerStateLine(telemetryController.cameraPowerStateSnapshot(), true);
     }
 
     void installAsset(String assetId, ParcelFileDescriptor descriptor) throws IOException {
@@ -720,6 +729,32 @@ final class AvasRuntime implements AutoCloseable {
             emit(new JSONObject().put("kind", "motion_vehicle_state")
                     .put("signal", signal).put("value", value).put("baseline", resync));
         } catch (Exception ignored) {
+        }
+    }
+
+    private void publishCameraPowerState(
+            CameraSourceDemand.PowerGate.Snapshot state, boolean baseline) {
+        if (!cameraTelemetryEnabled) return;
+        emit(cameraPowerStateEvent(state, baseline));
+    }
+
+    private String cameraPowerStateLine(
+            CameraSourceDemand.PowerGate.Snapshot state, boolean baseline) {
+        return cameraPowerStateEvent(state, baseline).toString();
+    }
+
+    private JSONObject cameraPowerStateEvent(
+            CameraSourceDemand.PowerGate.Snapshot state, boolean baseline) {
+        try {
+            return new JSONObject().put("kind", "camera_vehicle_power_state")
+                    .put("known", state.known).put("off", state.off)
+                    .put("consecutive_failed_reads", state.consecutiveFailedReads)
+                    .put("source_epoch", cameraPowerSourceEpoch)
+                    .put("revision", state.revision)
+                    .put("baseline", baseline).put("source", "avas_runtime")
+                    .put("t_ms", SystemClock.elapsedRealtime());
+        } catch (Exception failure) {
+            throw new IllegalStateException("camera Power state serialization failed", failure);
         }
     }
 

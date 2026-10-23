@@ -1,6 +1,8 @@
 package com.byd.extend;
 
 import java.util.List;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -37,15 +39,39 @@ final class AvasTelemetryController implements AutoCloseable {
         default void onPowerOffObserved() {}
         default void onRawPower(int power, boolean baseline) {}
         default void onRawLock(int lock, boolean baseline) {}
+        default void onCameraPowerState(
+                CameraSourceDemand.PowerGate.Snapshot state, boolean baseline) {}
         void onSuppressed(String profile, String powerProfile, long deltaMs);
         void log(String kind, Object... fields);
+    }
+    static final class ReadResult {
+        final int value;
+        final Throwable failure;
+        ReadResult(int value, Throwable failure) {
+            this.value = value;
+            this.failure = failure;
+        }
+        static ReadResult value(int value) { return new ReadResult(value, null); }
+        static ReadResult failure(Throwable failure) { return new ReadResult(-1, failure); }
     }
     static final class Snapshot {
         final int power;
         final int lock;
-        Snapshot(int power, int lock) { this.power = power; this.lock = lock; }
+        final Throwable powerFailure;
+        final Throwable lockFailure;
+        Snapshot(int power, int lock) { this(power, lock, null, null); }
+        Snapshot(int power, int lock, Throwable powerFailure, Throwable lockFailure) {
+            this.power = power;
+            this.lock = lock;
+            this.powerFailure = powerFailure;
+            this.lockFailure = lockFailure;
+        }
+        boolean validPower() {
+            return powerFailure == null && AvasEventPolicy.normalizedPower(power) >= 0;
+        }
+        boolean validLock() { return lockFailure == null && (lock == 1 || lock == 2); }
         boolean valid() {
-            return AvasEventPolicy.normalizedPower(power) >= 0 && (lock == 1 || lock == 2);
+            return validPower() && validLock();
         }
     }
 
@@ -54,6 +80,7 @@ final class AvasTelemetryController implements AutoCloseable {
     private final Transport transport;
     private final Sink sink;
     private final AvasEventPolicy policy;
+    private final CameraSourceDemand.PowerGate cameraPower = new CameraSourceDemand.PowerGate();
     private volatile ArrivalState arrivals = new ArrivalState();
     private volatile long generation;
     private int power = -1;
@@ -67,6 +94,9 @@ final class AvasTelemetryController implements AutoCloseable {
     private Cancellable task;
     private boolean telemetryHealthy;
     private boolean gapLogged;
+    private boolean powerGetDegraded;
+    private String lastPowerReadFailure = "";
+    private String lastLockReadFailure = "";
 
     AvasTelemetryController(Clock clock, Executor executor, Transport transport,
             Sink sink, AvasEventPolicy policy) {
@@ -81,9 +111,16 @@ final class AvasTelemetryController implements AutoCloseable {
     void deactivate() { executor.execute(this::deactivateSerialized); }
     void activateForMotion() {
         executor.execute(() -> {
-            if (active) readAndApply(true, "motion_request");
+            if (active) {
+                sink.onCameraPowerState(cameraPower.snapshot(), true);
+                readAndApply(true, "motion_request");
+                scheduleNext(nextDelay());
+            }
             else activateSerialized();
         });
+    }
+    CameraSourceDemand.PowerGate.Snapshot cameraPowerStateSnapshot() {
+        return cameraPower.snapshot();
     }
     void eligibilityChanged(boolean onReady, boolean offReady) {
         executor.execute(() -> {
@@ -103,9 +140,10 @@ final class AvasTelemetryController implements AutoCloseable {
         telemetryHealthy = false;
         gapLogged = false;
         resetBaseline();
+        sink.onCameraPowerState(cameraPower.snapshot(), true);
         trySubscribe();
         readAndApply(true, subscribed ? "initial" : "fallback_initial");
-        scheduleNext(subscribed ? RECONCILE_MS : FALLBACK_MS);
+        scheduleNext(nextDelay());
     }
 
     private void deactivateSerialized() {
@@ -173,6 +211,7 @@ final class AvasTelemetryController implements AutoCloseable {
                 invalidCallback(receivedMs);
                 return;
             }
+            observeValidPower(value, "callback");
             if (AvasEventPolicy.normalizedPower(value) == 0) {
                 sink.onPowerOffObserved();
             }
@@ -191,6 +230,65 @@ final class AvasTelemetryController implements AutoCloseable {
         if (!initialized && (AvasEventPolicy.normalizedPower(power) < 0
                 || (lock != 1 && lock != 2))) return;
         observe(receivedMs, "callback");
+    }
+
+    private void observeValidPower(int raw, String source) {
+        CameraSourceDemand.PowerGate.Snapshot previous = cameraPower.snapshot();
+        boolean recovered = powerGetDegraded || previous.consecutiveFailedReads > 0;
+        powerGetDegraded = false;
+        if (cameraPower.observeValid(raw))
+            sink.onCameraPowerState(cameraPower.snapshot(), false);
+        if (recovered) {
+            sink.log("avas_power_get_recovered", "operation", "GET", "source", source,
+                    "previous_failed_reads", previous.consecutiveFailedReads);
+            scheduleNext(nextDelay());
+        }
+        lastPowerReadFailure = "";
+    }
+
+    private void observeFailedPower(int raw, Throwable failure, String source) {
+        CameraSourceDemand.PowerGate.Snapshot previous = cameraPower.snapshot();
+        Throwable cause = failure != null ? failure : invalidValue("Power", raw);
+        powerGetDegraded = true;
+        boolean changed = cameraPower.failedRead();
+        CameraSourceDemand.PowerGate.Snapshot current = cameraPower.snapshot();
+        logReadFailure("power", source, cause);
+        if (previous.consecutiveFailedReads < 5 && current.consecutiveFailedReads == 5) {
+            sink.log("avas_power_get_failure_threshold", "operation", "GET",
+                    "device", POWER_DEVICE, "fid", POWER_FID,
+                    "source", source, "consecutive_failed_reads", 5,
+                    "cause", cause.getClass().getName() + ": " + safeMessage(cause));
+        }
+        if (changed) sink.onCameraPowerState(current, false);
+    }
+
+    private void logReadFailure(String signal, String source, Throwable failure) {
+        String diagnostic = stackTrace(failure);
+        String previous = "power".equals(signal) ? lastPowerReadFailure : lastLockReadFailure;
+        if (diagnostic.equals(previous)) return;
+        if ("power".equals(signal)) lastPowerReadFailure = diagnostic;
+        else lastLockReadFailure = diagnostic;
+        sink.log("avas_" + signal + "_get_error", "operation", "GET",
+                "device", "power".equals(signal) ? POWER_DEVICE : LOCK_DEVICE,
+                "fid", "power".equals(signal) ? POWER_FID : LOCK_FID,
+                "source", source,
+                "consecutive_failed_reads", "power".equals(signal)
+                        ? cameraPower.snapshot().consecutiveFailedReads : 0,
+                "error", diagnostic);
+    }
+
+    private static IllegalStateException invalidValue(String signal, int value) {
+        return new IllegalStateException(signal + " GET returned invalid value " + value);
+    }
+
+    private static String stackTrace(Throwable failure) {
+        StringWriter text = new StringWriter();
+        failure.printStackTrace(new PrintWriter(text));
+        return text.toString();
+    }
+
+    private static String safeMessage(Throwable failure) {
+        return failure.getMessage() == null ? "" : failure.getMessage();
     }
 
     private void invalidCallback(long receivedMs) {
@@ -221,9 +319,14 @@ final class AvasTelemetryController implements AutoCloseable {
                         "reason", "subscription_recovered");
             }
         }
-        if (subscribed) readAndApply(true, "reconcile_60s");
-        else readAndApply(false, "fallback_250ms");
-        scheduleNext(subscribed ? RECONCILE_MS : FALLBACK_MS);
+        if (!subscribed) readAndApply(false, "fallback_250ms");
+        else readAndApply(true, powerGetDegraded
+                ? "power_get_fallback_250ms" : "reconcile_60s");
+        scheduleNext(nextDelay());
+    }
+
+    private long nextDelay() {
+        return subscribed && !powerGetDegraded ? RECONCILE_MS : FALLBACK_MS;
     }
 
     private long elapsedSinceSubscribeAttempt() {
@@ -245,9 +348,20 @@ final class AvasTelemetryController implements AutoCloseable {
                 && powerBefore == before.powerApplied;
         boolean applyLock = sameSubscription && lockBefore == before.lockArrival.get()
                 && lockBefore == before.lockApplied;
-        // Engine Power is independent of Lock readiness, and precedes OFF event enqueueing.
-        if (applyPower) publishRawPower(snapshot.power, silent);
-        if (applyLock) sink.onRawLock(snapshot.lock, silent || !initialized);
+        // Power health is independent of Lock readiness and callback delivery.
+        if (applyPower) {
+            if (snapshot.validPower()) observeValidPower(snapshot.power, source);
+            else observeFailedPower(snapshot.power, snapshot.powerFailure, source);
+            publishRawPower(snapshot.power, silent);
+            if (snapshot.validPower() && AvasEventPolicy.normalizedPower(snapshot.power) == 0)
+                sink.onPowerOffObserved();
+        }
+        if (applyLock) {
+            if (snapshot.validLock()) lastLockReadFailure = "";
+            else logReadFailure("lock", source, snapshot.lockFailure != null
+                    ? snapshot.lockFailure : invalidValue("Lock", snapshot.lock));
+            sink.onRawLock(snapshot.lock, silent || !initialized);
+        }
         if (!applyPower || !applyLock) {
             sink.log("avas_telemetry_snapshot_raced", "source", source,
                     "power_discarded", !applyPower, "lock_discarded", !applyLock);
@@ -256,25 +370,17 @@ final class AvasTelemetryController implements AutoCloseable {
             // During initial seeding retain the non-racing half so the queued callback can
             // complete the baseline. Once initialized, discard the whole racing snapshot.
             if (!initialized) {
-                boolean invalidAppliedPower = applyPower
-                        && AvasEventPolicy.normalizedPower(snapshot.power) < 0;
-                boolean invalidAppliedLock = applyLock
-                        && snapshot.lock != 1 && snapshot.lock != 2;
+                boolean invalidAppliedPower = applyPower && !snapshot.validPower();
+                boolean invalidAppliedLock = applyLock && !snapshot.validLock();
                 if (invalidAppliedPower || invalidAppliedLock) {
                     logGapOnce(source, snapshot.power, snapshot.lock, clock.now());
-                    enterFallback("invalid_initial_get", true);
+                    if (invalidAppliedLock) enterFallback("invalid_initial_get", true);
                     return;
                 }
                 if (applyPower) power = snapshot.power;
                 if (applyLock) lock = snapshot.lock;
             }
-            if (applyPower && AvasEventPolicy.normalizedPower(snapshot.power) == 0) {
-                sink.onPowerOffObserved();
-            }
             return;
-        }
-        if (AvasEventPolicy.normalizedPower(snapshot.power) == 0) {
-            sink.onPowerOffObserved();
         }
         reconcileSnapshot(snapshot, silent, source, oldPower, oldLock);
     }
@@ -284,7 +390,7 @@ final class AvasTelemetryController implements AutoCloseable {
         if (!snapshot.valid()) {
             resetBaseline();
             logGapOnce(source, snapshot.power, snapshot.lock, clock.now());
-            if (subscribed) enterFallback("invalid_get", true);
+            if (subscribed && snapshot.validPower()) enterFallback("invalid_get", true);
             return;
         }
         if (silent) {

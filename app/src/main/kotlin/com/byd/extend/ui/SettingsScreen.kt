@@ -224,19 +224,6 @@ private fun FormScope.CameraOutputSettings(state: SettingsUiState, strings: UiSt
             state.cameraOutput.quality, colors, Modifier.fillMaxWidth()) {
             onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraQuality), it))
         } }
-        val frameRates = listOf(15, 25, 30)
-        row("frame-rate-title") { Text(strings.text("Частота кадрів", "Frame rate", "帧率"), color = colors.text,
-            fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
-        row("frame-rate") { Segmented(frameRates.map { it.toString() },
-            frameRates.indexOf(state.cameraOutput.frameRate).takeIf { it >= 0 } ?: 1,
-            colors, Modifier.fillMaxWidth()) {
-            onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraFrameRate), it))
-        } }
-        row("frame-rate-description") { Text(strings.text(
-            "Глобальний запит частоти кадрів до OEM-камери. Зміна ненадовго перепідключає камеру; це не програмне обмеження частоти відображення.",
-            "Global OEM camera frame-rate request. Changing it briefly reconnects the camera; it does not cap the software display rate.",
-            "全局 OEM 摄像头帧率请求。更改后摄像头会短暂重新连接；这不会限制软件显示帧率。",
-        ), color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) }
         row("corner-radius") { NumericSetting(strings.text("Заокруглення камер", "Camera corner radius"),
             state.cameraOutput.cornerRadius, "dp", colors,
             { onAction(BydExtendUiAction.CommitNumber(NumberTarget.Output(OutputNumber.CornerRadius), it)) },

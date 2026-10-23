@@ -5043,12 +5043,6 @@ public final class CameraProbeActivity extends ComponentActivity
             int quality = clamp(index, 0, 3);
             preferences.edit().putInt(CameraBufferQuality.PREF_QUALITY, quality).apply();
             onCameraBufferQualityChanged(quality);
-        } else if (id == SelectionId.CameraFrameRate) {
-            int fps = CameraFrameRate.fromSelection(index);
-            if (CameraFrameRate.load(preferences) == fps) return;
-            preferences.edit().putInt(CameraFrameRate.PREF, fps).apply();
-            record("camera_frame_rate_selected", "requested_fps", fps);
-            // The preference sync reconnects sources without closing unchanged consumer windows.
         }
     }
 

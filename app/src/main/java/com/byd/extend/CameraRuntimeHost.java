@@ -59,21 +59,13 @@ final class CameraRuntimeHost {
     private final MotionWakeOwnership motionWake = new MotionWakeOwnership();
     private JSONObject motionPower, motionLock, motionDisplay;
     private final CameraSourceDemand.PowerGate vehiclePower = new CameraSourceDemand.PowerGate();
+    private String vehiclePowerStateLine;
+    private long vehiclePowerSourceEpoch = -1L;
+    private long vehiclePowerRevision = -1L;
+    private boolean vehiclePowerKnown;
+    private boolean vehiclePowerOff;
+    private int vehiclePowerFailureCount;
     private final Runnable discoveryRetry = this::retryCameraDiscovery;
-    private final Runnable applyCameraFrameRate = this::applyCameraFrameRateOnHandler;
-
-    private void applyCameraFrameRateOnHandler() {
-        if (lifetime.stopped()) return;
-        int oldEpoch = helper.motionProducerEpoch();
-        helper.applyCameraFrameRate();
-        int newEpoch = helper.motionProducerEpoch();
-        if (motionSession != null && oldEpoch > 0 && newEpoch > 0 && oldEpoch != newEpoch) {
-            boolean rebound = motionWake.rebindProducerEpoch(motionSession, oldEpoch, newEpoch);
-            event("motion_wake_producer_epoch_rebound", "session", motionSession,
-                    "old_producer_epoch", oldEpoch, "producer_epoch", newEpoch,
-                    "wake_rebound", rebound);
-        }
-    }
     private IBinder cameraEndpointFor(IBinder owner) { return new Binder() {
         @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
             if (Binder.getCallingUid() != appUid) throw new SecurityException("camera caller denied");
@@ -135,7 +127,6 @@ final class CameraRuntimeHost {
                     boolean initialAppSnapshot = !appSettingsReceived;
                     Bundle changes = context.settings.reconcile(settings, initialAppSnapshot);
                     appSettingsReceived = true;
-                    scheduleCameraFrameRateApply();
                     if (!lifetime.started()) {
                         visible = initialVisible; preview = initialPreview;
                         context.uiVisible = visible;
@@ -149,16 +140,19 @@ final class CameraRuntimeHost {
                         changes = context.settings.reconcile(settings, false);
                     }
                     event("camera_runtime_attached", "pid", android.os.Process.myPid(), "retained", retained);
+                    replayCameraPowerState();
                     helper.reportRetainedCameraState();
                     return changes;
                 case SETTINGS:
                     context.overlayAllowed = flag;
                     Bundle unsaved = context.settings.updateFromClient(settings);
-                    scheduleCameraFrameRateApply();
                     if (!"sync".equals(scope)) applySettings(scope);
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
-                case STATUS: helper.reportRetainedCameraState(); break;
+                case STATUS:
+                    replayCameraPowerState();
+                    helper.reportRetainedCameraState();
+                    break;
                 case PANO:
                     if (platformValue < -1 || platformValue > 1 || scope == null || scope.length() > 64)
                         throw new IllegalArgumentException("invalid pano state");
@@ -460,11 +454,6 @@ final class CameraRuntimeHost {
         }
     }
 
-    private void scheduleCameraFrameRateApply() {
-        handler.removeCallbacks(applyCameraFrameRate);
-        handler.post(applyCameraFrameRate);
-    }
-
     private void setVisibility(boolean next) {
         context.uiVisible = next;
         if (visible == next) return;
@@ -524,13 +513,12 @@ final class CameraRuntimeHost {
         handler.post(() -> {
             if (lifetime.stopped()) return;
             JSONObject event = parseEvent(line);
+            if (event != null && "camera_vehicle_power_state".equals(event.optString("kind"))) {
+                acceptCameraVehiclePowerState(event, line);
+            }
             if (event != null && "motion_vehicle_state".equals(event.optString("kind"))) {
                 if ("power".equals(event.optString("signal"))) {
                     motionPower = event;
-                    if (vehiclePower.observe(event.optInt("value", -1))) {
-                        helper.setVehiclePowerOff(!vehiclePower.ordinaryAllowed());
-                        if (lifetime.started()) applyVehiclePower();
-                    }
                     if (AvasEventPolicy.normalizedPower(event.optInt("value", -1)) == 1) {
                         if (motionWake.takeRetainedForPowerOn(helper.motionProducerEpoch())) {
                             event("motion_retained_source_power_on", "session", motionSession);
@@ -555,6 +543,69 @@ final class CameraRuntimeHost {
             }
             if (lifetime.started()) dispatch(line, event);
         });
+    }
+
+    private void acceptCameraVehiclePowerState(JSONObject event, String line) {
+        Object sourceEpochValue = event.opt("source_epoch");
+        Object revisionValue = event.opt("revision");
+        Object knownValue = event.opt("known");
+        Object offValue = event.opt("off");
+        Object failuresValue = event.opt("consecutive_failed_reads");
+        if (!(sourceEpochValue instanceof Number) || !(revisionValue instanceof Number)
+                || !(knownValue instanceof Boolean) || !(offValue instanceof Boolean)
+                || !(failuresValue instanceof Number)) {
+            event("camera_vehicle_power_state_rejected", "reason", "required_field_missing");
+            return;
+        }
+        long sourceEpoch = ((Number) sourceEpochValue).longValue();
+        long revision = ((Number) revisionValue).longValue();
+        boolean known = (Boolean) knownValue;
+        boolean off = (Boolean) offValue;
+        int failures = event.optInt("consecutive_failed_reads", -1);
+        if (sourceEpoch < 0 || revision < 0 || failures < 0 || failures > 5
+                || off && !known || known && failures == 5) {
+            event("camera_vehicle_power_state_rejected", "reason", "invalid_state",
+                    "source_epoch", sourceEpoch, "revision", revision,
+                    "known", known, "off", off, "consecutive_failed_reads", failures);
+            return;
+        }
+        if (sourceEpoch < vehiclePowerSourceEpoch
+                || sourceEpoch == vehiclePowerSourceEpoch && revision < vehiclePowerRevision) return;
+        if (sourceEpoch == vehiclePowerSourceEpoch && revision == vehiclePowerRevision
+                && (known != vehiclePowerKnown || off != vehiclePowerOff
+                || failures != vehiclePowerFailureCount)) {
+            event("camera_vehicle_power_state_rejected", "reason", "decision_changed_without_revision",
+                    "source_epoch", sourceEpoch, "revision", revision);
+            return;
+        }
+        boolean wasAllowed = vehiclePower.ordinaryAllowed();
+        try {
+            vehiclePower.update(new CameraSourceDemand.PowerGate.Snapshot(
+                    known, off, failures, revision));
+        } catch (IllegalArgumentException invalid) {
+            event("camera_vehicle_power_state_rejected", "reason", invalid.getMessage());
+            return;
+        }
+        vehiclePowerSourceEpoch = sourceEpoch;
+        vehiclePowerRevision = revision;
+        vehiclePowerKnown = known;
+        vehiclePowerOff = off;
+        vehiclePowerFailureCount = failures;
+        vehiclePowerStateLine = line;
+        helper.setVehiclePowerOff(!vehiclePower.ordinaryAllowed());
+        if (lifetime.started() && wasAllowed != vehiclePower.ordinaryAllowed()) {
+            applyVehiclePower();
+        }
+        if (lifetime.started()) send(EVENT, line, null);
+    }
+
+    /** Queues the cached app-owned power snapshot before a new host's ATTACH transaction. */
+    void seedCameraPowerState(String line) {
+        if (line != null && !line.isEmpty()) acceptTelemetry(line);
+    }
+
+    private void replayCameraPowerState() {
+        if (vehiclePowerStateLine != null) send(EVENT, vehiclePowerStateLine, null);
     }
 
     private boolean motionPowerOff() {
@@ -713,7 +764,6 @@ final class CameraRuntimeHost {
             clearMotion();
             unlinkClient();
             handler.removeCallbacks(discoveryRetry);
-            handler.removeCallbacks(applyCameraFrameRate);
             if (reverse != null) reverse.shutdown();
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();

@@ -4,20 +4,88 @@ package com.byd.extend;
 final class CameraSourceDemand {
     private CameraSourceDemand() {}
 
-    /** Unknown readings do not undo the last confirmed vehicle power state. */
+    /** Startup is permissive; only five completed failed GETs release a confirmed OFF. */
     static final class PowerGate {
-        private boolean off;
+        static final class Snapshot {
+            final boolean known;
+            final boolean off;
+            final int consecutiveFailedReads;
+            final long revision;
+
+            Snapshot(boolean known, boolean off, int consecutiveFailedReads) {
+                this(known, off, consecutiveFailedReads, 0);
+            }
+
+            Snapshot(boolean known, boolean off, int consecutiveFailedReads, long revision) {
+                this.known = known;
+                this.off = off;
+                this.consecutiveFailedReads = consecutiveFailedReads;
+                this.revision = revision;
+            }
+
+            boolean sameAs(Snapshot other) {
+                return other != null && known == other.known && off == other.off
+                        && consecutiveFailedReads == other.consecutiveFailedReads
+                        && revision == other.revision;
+            }
+
+            boolean sameDecisionAs(Snapshot other) {
+                return other != null && known == other.known && off == other.off
+                        && consecutiveFailedReads == other.consecutiveFailedReads;
+            }
+        }
+
+        private volatile Snapshot state = new Snapshot(false, false, 0);
 
         boolean observe(int raw) {
             int normalized = AvasEventPolicy.normalizedPower(raw);
             if (normalized < 0) return false;
-            boolean next = normalized == 0;
-            if (off == next) return false;
-            off = next;
+            return observeValid(normalized);
+        }
+
+        boolean observeValid(int raw) {
+            int normalized = AvasEventPolicy.normalizedPower(raw);
+            if (normalized < 0) return false;
+            Snapshot previous = state;
+            return updateDecision(previous, true, normalized == 0, 0);
+        }
+
+        boolean failedRead() {
+            Snapshot previous = state;
+            int failures = Math.min(5, previous.consecutiveFailedReads + 1);
+            boolean known = previous.known;
+            boolean off = previous.off;
+            if (failures == 5) {
+                known = false;
+                off = false;
+            }
+            return updateDecision(previous, known, off, failures);
+        }
+
+        boolean update(Snapshot next) {
+            if (next == null || next.consecutiveFailedReads < 0
+                    || next.consecutiveFailedReads > 5 || next.revision < 0
+                    || next.off && !next.known
+                    || next.known && next.consecutiveFailedReads == 5)
+                throw new IllegalArgumentException("invalid camera power state");
+            Snapshot previous = state;
+            if (next.sameAs(previous)) return false;
+            state = next;
             return true;
         }
 
-        boolean ordinaryAllowed() { return !off; }
+        private boolean updateDecision(Snapshot previous,
+                boolean known, boolean off, int consecutiveFailedReads) {
+            Snapshot next = new Snapshot(known, off, consecutiveFailedReads,
+                    previous.revision + 1);
+            if (next.sameDecisionAs(previous)) return false;
+            state = next;
+            return true;
+        }
+
+        Snapshot snapshot() { return state; }
+
+        boolean ordinaryAllowed() { return !state.known || !state.off; }
     }
 
     static int bit(int sourceIndex) {

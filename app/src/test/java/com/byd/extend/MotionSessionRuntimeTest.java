@@ -4,6 +4,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class MotionSessionRuntimeTest {
+    @Test public void asyncCompletionsAreFencedBySessionAndGeneration() {
+        assertTrue(MotionDetectorShellMain.operationIsCurrent("session-a", 7L, "session-a", 7L));
+        assertFalse(MotionDetectorShellMain.operationIsCurrent("session-a", 7L, "session-b", 7L));
+        assertFalse(MotionDetectorShellMain.operationIsCurrent("session-a", 7L, "session-a", 8L));
+        assertFalse(MotionDetectorShellMain.operationIsCurrent(null, 7L, "session-a", 7L));
+    }
+
     @Test public void modeOnlyEnableFromRemoteOnlyRetainsTelemetryAndSession() throws Exception {
         MotionSessionRuntime runtime = new MotionSessionRuntime();
         String id = "0123456789abcdef0123456789abcdef";

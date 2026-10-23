@@ -36,11 +36,13 @@ final class AvasVehicleTelemetryTransport implements AvasTelemetryController.Tra
     }
 
     @Override public AvasTelemetryController.Snapshot read() {
-        return new AvasTelemetryController.Snapshot(readInt(POWER_DEVICE, POWER_FID),
-                readInt(LOCK_DEVICE, LOCK_FID));
+        AvasTelemetryController.ReadResult power = readInt(POWER_DEVICE, POWER_FID);
+        AvasTelemetryController.ReadResult lock = readInt(LOCK_DEVICE, LOCK_FID);
+        return new AvasTelemetryController.Snapshot(
+                power.value, lock.value, power.failure, lock.failure);
     }
 
-    private int readInt(int device, int fid) {
+    private AvasTelemetryController.ReadResult readInt(int device, int fid) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -48,13 +50,21 @@ final class AvasVehicleTelemetryTransport implements AvasTelemetryController.Tra
             data.writeInterfaceToken(autoservice.getInterfaceDescriptor());
             data.writeInt(device);
             data.writeInt(fid);
-            if (!autoservice.transact(5, data, reply, 0) || reply.dataAvail() < 8) return -1;
+            if (!autoservice.transact(5, data, reply, 0))
+                return AvasTelemetryController.ReadResult.failure(
+                        new IllegalStateException("vehicle GET transaction 5 rejected"));
+            if (reply.dataAvail() < 8)
+                return AvasTelemetryController.ReadResult.failure(new IllegalStateException(
+                        "vehicle GET reply incomplete: " + reply.dataAvail() + " bytes"));
             int status = reply.readInt();
             int value = reply.readInt();
-            return status == 0 ? value : -1;
-        } catch (Exception ignored) {
+            if (status != 0)
+                return AvasTelemetryController.ReadResult.failure(new IllegalStateException(
+                        "vehicle GET returned status " + status + " with value " + value));
+            return AvasTelemetryController.ReadResult.value(value);
+        } catch (Exception failure) {
             synchronized (this) { service = null; }
-            return -1;
+            return AvasTelemetryController.ReadResult.failure(failure);
         } finally {
             data.recycle();
             reply.recycle();

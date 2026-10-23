@@ -16,7 +16,6 @@ import com.byd.extend.readProductionUiState
 import com.byd.extend.AppLanguage
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
-import com.byd.extend.CameraFrameRate
 import com.byd.extend.UpdateHintAppearance
 import com.byd.extend.ReverseCameraUiContract
 import com.byd.extend.CallsSettings
@@ -1260,9 +1259,6 @@ class ProductionUiController @JvmOverloads constructor(
                 preferences.edit().putInt(UiSelectionPreferences.SETTINGS_CATEGORY, value.ordinal).apply()
                 state = state.copy(settings = state.settings.copy(category = value))
             }
-            SelectionId.CameraFrameRate -> state = state.copy(settings = state.settings.copy(
-                cameraOutput = state.settings.cameraOutput.copy(
-                    frameRate = CameraFrameRate.fromSelection(index))))
             SelectionId.DiagnosticMode -> {
                 val value = DiagnosticMode.entries.getOrElse(index) { DiagnosticMode.Signals }
                 preferences.edit().putInt(UiSelectionPreferences.DEBUG_MODE, value.ordinal).apply()

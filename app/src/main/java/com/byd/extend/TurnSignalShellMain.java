@@ -247,6 +247,8 @@ public final class TurnSignalShellMain {
                                         scheduleStdoutFlush();
                                     }
                                 }, this::platformSignal);
+                        if (created && avasRuntime != null)
+                            cameraRuntime.seedCameraPowerState(avasRuntime.cameraPowerStateSnapshot());
                         cameras = cameraRuntime;
                     }
                     if (created && avasRuntime != null) handler.post(() -> {

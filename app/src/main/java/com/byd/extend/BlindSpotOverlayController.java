@@ -645,7 +645,7 @@ final class BlindSpotOverlayController {
     }
 
     void setSuspended(boolean value) {
-        handler.post(() -> {
+        runOnHandler(() -> {
             if (suspended == value) return;
             suspended = value;
             updateHardBlock("preview_handoff");
@@ -653,7 +653,7 @@ final class BlindSpotOverlayController {
     }
 
     void setReversePriority(boolean value) {
-        handler.post(() -> {
+        runOnHandler(() -> {
             if (reversePriority == value) return;
             reversePriority = value;
             updateHardBlock("reverse_priority");
@@ -687,11 +687,16 @@ final class BlindSpotOverlayController {
     }
 
     void setUiHidden(boolean value) {
-        handler.post(() -> {
+        runOnHandler(() -> {
             if (uiHidden == value) return;
             uiHidden = value;
             updateHardBlock("ui_hidden");
         });
+    }
+
+    private void runOnHandler(Runnable action) {
+        if (android.os.Looper.myLooper() == handler.getLooper()) action.run();
+        else handler.post(action);
     }
 
     void applySettings() {
@@ -1124,6 +1129,7 @@ final class BlindSpotOverlayController {
     }
 
     private void preparePane(PaneState pane) {
+        if (isHardBlocked() || shutdown) return;
         int requestId = nextRequestId();
         CameraShellProtocol.OverlaySpec spec = buildOverlaySpec(pane.profile, requestId);
         pane.requestId = requestId;
@@ -1131,7 +1137,21 @@ final class BlindSpotOverlayController {
         pane.displayId = targetDisplayIds[spec.target];
         helper.prepareOverlayWindow(spec,
                 this::overlaySurfaceAvailable,
-                () -> overlayPrepared(pane.profile.id, requestId));
+                result -> {
+                    PaneState current = pane(pane.profile.id);
+                    if (current == null || current.requestId != requestId) return;
+                    if (result == CameraShellProtocol.PREPARE_DEFERRED) {
+                        current.requestId = 0;
+                        current.generation = 0;
+                        current.resolved = false;
+                        if (!isHardBlocked()) scheduleCameraRetry("prepare_deferred");
+                    } else if (result == CameraShellProtocol.PREPARE_OK) {
+                        overlayPrepared(pane.profile.id, requestId);
+                    } else {
+                        paneUnavailable(pane.profile.id, requestId,
+                                "overlay_prepare_result_" + result);
+                    }
+                });
         emit("overlay_geometry", "camera_id", pane.profile.id,
                 "camera_profile", pane.profile.wireName,
                 "request_id", requestId,
@@ -1156,7 +1176,7 @@ final class BlindSpotOverlayController {
 
     private void overlaySurfaceAvailable(TurnSignalController.OverlaySurface value) {
         PaneState pane = pane(value.cameraId);
-        if (pane == null || !pane.expected || pane.requestId != value.requestId
+        if (isHardBlocked() || pane == null || !pane.expected || pane.requestId != value.requestId
                 || value.surface == null || !value.surface.isValid()) {
             if (value.surface != null) value.surface.release();
             return;

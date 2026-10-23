@@ -235,7 +235,6 @@ enum class SelectionId {
     AvmMode,
     AvmOrientation,
     CameraQuality,
-    CameraFrameRate,
 }
 
 enum class CommandId {
@@ -716,7 +715,6 @@ internal fun ReverseUiState.sourceFor(
 @Immutable
 data class CameraOutputUiState(
     val quality: Int = 1,
-    val frameRate: Int = 25,
     val cornerRadius: String = "10",
     val transparency: String = "0",
 )

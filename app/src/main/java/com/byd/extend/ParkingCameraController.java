@@ -79,19 +79,28 @@ final class ParkingCameraController {
 
     void setSuspended(boolean value) {
         suspended = value;
-        if (value) closeParkingGroup("camera_preview_preempt");
+        if (value) {
+            handler.removeCallbacks(retry);
+            closeParkingGroup("camera_preview_preempt");
+        }
         evaluate();
     }
 
     void setUiHidden(boolean value) {
         activityVisible = value;
-        if (value) closeParkingGroup("activity_preempt");
+        if (value) {
+            handler.removeCallbacks(retry);
+            closeParkingGroup("activity_preempt");
+        }
         evaluate();
     }
 
     void setReversePriority(boolean value) {
         reversePriority = value;
-        if (value && !allowDuringReverse) closeParkingGroup("reverse_priority");
+        if (value && !allowDuringReverse) {
+            handler.removeCallbacks(retry);
+            closeParkingGroup("reverse_priority");
+        }
         evaluate();
     }
 
@@ -417,6 +426,7 @@ final class ParkingCameraController {
         if (isHardBlocked(suspended, activityVisible, reversePriority,
                 allowDuringReverse)) {
             desiredMask = 0;
+            handler.removeCallbacks(retry);
             if (!closeParkingGroup("parking_preempted")) return;
             handler.removeCallbacks(closeTick);
             return;
@@ -491,9 +501,30 @@ final class ParkingCameraController {
             pane.prepared = true;
             pane.preparing = false;
             attachParkingGroup();
-        }, () -> emit("parking_camera_prepare", "camera_id",
-                CameraOverlayProfile.overlayIdForParking(pane.profile.id),
-                "request_id", pane.requestId));
+        }, result -> {
+            if (generation != membershipGeneration || pane.requestId != requestId) return;
+            if (result == CameraShellProtocol.PREPARE_DEFERRED) {
+                pane.preparing = false;
+                pane.requestId = 0;
+                pane.prepared = false;
+                if (!isHardBlocked(suspended, activityVisible, reversePriority,
+                        allowDuringReverse)) {
+                    handler.removeCallbacks(retry);
+                    handler.postDelayed(retry, RETRY_MS);
+                }
+                return;
+            }
+            if (result == CameraShellProtocol.PREPARE_OK) {
+                emit("parking_camera_prepare", "camera_id",
+                        CameraOverlayProfile.overlayIdForParking(pane.profile.id),
+                        "request_id", requestId);
+            } else {
+                pane.preparing = false;
+                pane.requestId = 0;
+                handler.removeCallbacks(retry);
+                handler.postDelayed(retry, RETRY_MS);
+            }
+        });
     }
 
     private void attachParkingGroup() {

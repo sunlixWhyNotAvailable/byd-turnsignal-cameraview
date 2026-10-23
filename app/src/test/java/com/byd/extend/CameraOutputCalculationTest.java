@@ -5,6 +5,45 @@ import static org.junit.Assert.*;
 import org.junit.Test;
 
 public final class CameraOutputCalculationTest {
+    @Test public void vehiclePowerOffSuppressesOrdinaryDemandButKeepsIndependentOwners() {
+        int demand = CameraSourceDemand.bit(0) | CameraSourceDemand.bit(1)
+                | CameraSourceDemand.bit(2) | CameraSourceDemand.bit(3)
+                | CameraSourceDemand.bit(4);
+        String[] ordinaryOwners = {
+                CameraHelperMain.CAMERA_OWNER_ACTIVITY,
+                CameraHelperMain.CAMERA_OWNER_OVERLAY,
+                CameraHelperMain.CAMERA_OWNER_REVERSE,
+                CameraHelperMain.CAMERA_OWNER_PARKING,
+                CameraHelperMain.CAMERA_OWNER_MIRROR
+        };
+        for (String owner : ordinaryOwners) {
+            assertEquals(0, CameraHelperMain.HelperBinder.PersistentSession
+                    .effectiveGroupSourceDemandMask(true, owner, demand));
+            assertEquals(demand, CameraHelperMain.HelperBinder.PersistentSession
+                    .effectiveGroupSourceDemandMask(false, owner, demand));
+        }
+        for (String owner : new String[]{
+                "motion_recording", "motion_preview_front", "camera_viewing"}) {
+            assertEquals(demand, CameraHelperMain.HelperBinder.PersistentSession
+                    .effectiveGroupSourceDemandMask(true, owner, demand));
+        }
+    }
+
+    @Test public void onlyOffOrdinaryDirectDetachDefersSharedProducerTeardown() {
+        assertTrue(CameraHelperMain.HelperBinder.PersistentSession
+                .shouldPreserveSharedProducerForOffDirectDetach(
+                        true, CameraHelperMain.CAMERA_OWNER_ACTIVITY, true));
+        assertFalse(CameraHelperMain.HelperBinder.PersistentSession
+                .shouldPreserveSharedProducerForOffDirectDetach(
+                        false, CameraHelperMain.CAMERA_OWNER_ACTIVITY, true));
+        assertFalse(CameraHelperMain.HelperBinder.PersistentSession
+                .shouldPreserveSharedProducerForOffDirectDetach(
+                        true, CameraHelperMain.CAMERA_OWNER_ACTIVITY, false));
+        assertFalse(CameraHelperMain.HelperBinder.PersistentSession
+                .shouldPreserveSharedProducerForOffDirectDetach(
+                        true, "motion_recording", true));
+    }
+
     @Test public void idleRetirementWaitsForDemandAndTheCurrentReverseLease() throws Exception {
         CameraHelperMain.HelperBinder.PersistentSession session =
                 new CameraHelperMain.HelperBinder.PersistentSession();

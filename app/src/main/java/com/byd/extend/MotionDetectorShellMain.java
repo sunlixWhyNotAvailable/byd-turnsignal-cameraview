@@ -94,6 +94,10 @@ public final class MotionDetectorShellMain {
     private final Handler control;
     private final ExecutorService hostOperations = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "motion-camera-host-ops"));
+    private final ExecutorService nativeOperations = Executors.newSingleThreadExecutor(r ->
+            new Thread(r, "motion-native-ops"));
+    private final Object analysisLock = new Object();
+    private final AtomicLong operationSequence = new AtomicLong();
     private final MotionEventPolicy policy = new MotionEventPolicy();
     private final ShellBinder binder = new ShellBinder();
     private final MotionScreenControl screen;
@@ -139,6 +143,17 @@ public final class MotionDetectorShellMain {
     private boolean teardownHostUnbound;
     private boolean teardownUnbindAttempted;
     private boolean teardownDemandCleared;
+    private boolean teardownHostOperationPending;
+    private long teardownGeneration;
+    private boolean chargeStartupPending;
+    private long chargeStartupGeneration;
+    private boolean nativePreparationPending;
+    private boolean nativeDeletePending;
+    private boolean nativeDeleteComplete;
+    private boolean readerAttachPending;
+    private boolean readerDetachPending;
+    private boolean recordingDetachPending;
+    private long sessionGeneration;
     private String teardownFinalState = "idle";
     private String teardownReason = "";
     private IBinder teardownCallback;
@@ -180,14 +195,15 @@ public final class MotionDetectorShellMain {
     private volatile boolean eligible;
     private boolean attached;
     private boolean nativeInitialized;
-    private int sensitivity;
+    private volatile int sensitivity;
     private AssetManager assets;
     private MotionNativeLibrary nativeApi;
-    private byte[] nativeInput;
+    private volatile byte[] nativeInput;
     private volatile ImageReader reader;
     private MotionSharedSource sharedSource;
     private Surface surface;
     private long frameNumber;
+    private boolean analysisBusy;
     private final FramePerformance framePerformance = new FramePerformance();
     private final FrameCadence frameCadence = new FrameCadence();
     private final int[] loggedFrameLayout = new int[8];
@@ -219,6 +235,168 @@ public final class MotionDetectorShellMain {
         }
     }
 
+    private static final class OperationTrace {
+        final long id;
+        final String kind;
+        final String sessionId;
+        final long queuedNs;
+
+        OperationTrace(long id, String kind, String sessionId, long queuedNs) {
+            this.id = id;
+            this.kind = kind;
+            this.sessionId = sessionId;
+            this.queuedNs = queuedNs;
+        }
+    }
+
+    private static final class PendingResult<T> extends FutureTask<T> {
+        PendingResult() { super(() -> null); }
+        void succeed(T value) { set(value); }
+        void fail(Throwable error) { setException(error); }
+    }
+
+    private static final class CameraOperationResult {
+        final long operationId;
+        final long queuedNs;
+        final long startedNs;
+        final long finishedNs;
+        final boolean accepted;
+        final Throwable failure;
+
+        CameraOperationResult(long operationId, long queuedNs, long startedNs,
+                long finishedNs, boolean accepted, Throwable failure) {
+            this.operationId = operationId;
+            this.queuedNs = queuedNs;
+            this.startedNs = startedNs;
+            this.finishedNs = finishedNs;
+            this.accepted = accepted;
+            this.failure = failure;
+        }
+    }
+
+    private static final class TeardownHostResult {
+        final long operationId;
+        final long queuedNs;
+        final long startedNs;
+        final long finishedNs;
+        final long telemetryNs;
+        final long wakeNs;
+        final long unbindNs;
+        final boolean unbound;
+        final Throwable telemetryFailure;
+        final Throwable wakeFailure;
+        final Throwable unbindFailure;
+
+        TeardownHostResult(long operationId, long queuedNs, long startedNs, long finishedNs,
+                long telemetryNs, long wakeNs, long unbindNs, boolean unbound,
+                Throwable telemetryFailure, Throwable wakeFailure, Throwable unbindFailure) {
+            this.operationId = operationId;
+            this.queuedNs = queuedNs;
+            this.startedNs = startedNs;
+            this.finishedNs = finishedNs;
+            this.telemetryNs = telemetryNs;
+            this.wakeNs = wakeNs;
+            this.unbindNs = unbindNs;
+            this.unbound = unbound;
+            this.telemetryFailure = telemetryFailure;
+            this.wakeFailure = wakeFailure;
+            this.unbindFailure = unbindFailure;
+        }
+    }
+
+    private static final class NativeCleanupFailure {
+        final String operation;
+        final Throwable failure;
+
+        NativeCleanupFailure(String operation, Throwable failure) {
+            this.operation = operation;
+            this.failure = failure;
+        }
+    }
+
+    private static final class NativeDeleteResult {
+        final long operationId;
+        final long queuedNs;
+        final long startedNs;
+        final long finishedNs;
+        final ArrayList<NativeCleanupFailure> failures;
+        final Throwable failure;
+
+        NativeDeleteResult(long operationId, long queuedNs, long startedNs,
+                long finishedNs, ArrayList<NativeCleanupFailure> failures, Throwable failure) {
+            this.operationId = operationId;
+            this.queuedNs = queuedNs;
+            this.startedNs = startedNs;
+            this.finishedNs = finishedNs;
+            this.failures = failures;
+            this.failure = failure;
+        }
+    }
+
+    private interface CameraOperationCompletion {
+        void complete(CameraOperationResult result);
+    }
+
+    private interface NativeDeleteCompletion {
+        void complete(NativeDeleteResult result);
+    }
+
+    private interface CheckPowerCompletion {
+        void complete(Throwable failure);
+    }
+
+    private static final class NativeSetupResult {
+        final int modelValue;
+        final int mirrorSetting;
+        final int sensitivity;
+        final String stage;
+        final long operationId;
+        final long queuedNs;
+        final long startedNs;
+        final long finishedNs;
+        final long setupNs;
+        final long initNs;
+        final Throwable failure;
+
+        NativeSetupResult(MotionNativeSetup setup, long operationId, long queuedNs,
+                long startedNs, long finishedNs, long setupNs, long initNs, Throwable failure) {
+            this.modelValue = setup.modelValue;
+            this.mirrorSetting = setup.mirrorSetting;
+            this.sensitivity = setup.sensitivity;
+            this.stage = setup.stage;
+            this.operationId = operationId;
+            this.queuedNs = queuedNs;
+            this.startedNs = startedNs;
+            this.finishedNs = finishedNs;
+            this.setupNs = setupNs;
+            this.initNs = initNs;
+            this.failure = failure;
+        }
+    }
+
+    private static final class NativeFrameResult {
+        final long operationId;
+        final long queuedNs;
+        final long startedNs;
+        final long finishedNs;
+        final long detectNs;
+        final int raw;
+        final int nativeState;
+        final Throwable failure;
+
+        NativeFrameResult(long operationId, long queuedNs, long startedNs,
+                long finishedNs, long detectNs, int raw, int nativeState, Throwable failure) {
+            this.operationId = operationId;
+            this.queuedNs = queuedNs;
+            this.startedNs = startedNs;
+            this.finishedNs = finishedNs;
+            this.detectNs = detectNs;
+            this.raw = raw;
+            this.nativeState = nativeState;
+            this.failure = failure;
+        }
+    }
+
     private final class ManualCheck {
         final String id;
         final IBinder owner;
@@ -230,14 +408,28 @@ public final class MotionDetectorShellMain {
         final Runnable timeout;
         volatile boolean cancelled;
         boolean ownsSession, ownsReader, ownsRecording, ownsNative, finishing, completing;
+        boolean waitingForReaderDetach, waitingForRecordingDetach, waitingForNativeDelete;
+        boolean waitingForSessionTeardown;
         String previousState;
+        String completionReason, completionDetail;
+        int completionStatus;
+        Throwable cleanupFailure;
         int stage = MotionCheckupClient.ACCESS;
         ManualCheck(String id, IBinder owner, ResultReceiver results, MotionConfig recordingConfig) {
             this.id = id; this.owner = owner; this.results = results;
             this.recordingConfig = recordingConfig;
             death = () -> cancelCheck(this);
-            timeout = () -> completeCheck(this, MotionCheckupClient.ERROR, "timeout",
-                    "Check-up stage did not complete before its deadline", true);
+            timeout = () -> {
+                if (manualCheck == this && completing && waitingForSessionTeardown) {
+                    waitingForSessionTeardown = false;
+                    markCheckCleanupPending(this,
+                            new IllegalStateException("temporary Motion session teardown did not finish within the bounded cleanup wait"));
+                    finishManualCheck(this);
+                    return;
+                }
+                completeCheck(this, MotionCheckupClient.ERROR, "timeout",
+                        "Check-up stage did not complete before its deadline", true);
+            };
         }
     }
 
@@ -472,11 +664,7 @@ public final class MotionDetectorShellMain {
                     case MotionDetectorProtocol.TX_READ_CHARGE: {
                         if (data.dataAvail() != 0)
                             throw new IllegalArgumentException("charge refresh payload not empty");
-                        CameraChargePolicy.State fresh = callControl(() -> {
-                            if (cameraChargeOwner == null || !cameraChargeOwner.isMonitoring())
-                                throw new IllegalStateException("shared camera charge telemetry is not active");
-                            return cameraChargeOwner.readNow();
-                        });
+                        CameraChargePolicy.State fresh = readChargeStateFromBinder();
                         reply.writeNoException();
                         MotionDetectorProtocol.writeChargeState(reply, fresh);
                         return true;
@@ -521,7 +709,7 @@ public final class MotionDetectorShellMain {
                         if (!MotionDetectorProtocol.validSession(id) || owner == null
                                 || data.dataAvail() != 0)
                             throw new IllegalArgumentException("invalid remote camera preparation request");
-                        boolean ready = callControl(() -> prepareRemoteViewOnControl(id, owner));
+                        boolean ready = prepareRemoteViewFromBinder(id, owner);
                         reply.writeNoException();
                         reply.writeInt(ready ? 1 : 0);
                         return true;
@@ -723,38 +911,122 @@ public final class MotionDetectorShellMain {
             stopRecording("recording_disabled");
         if (!previous.recordingEnabled && config.recordingEnabled && eligible) startRecording(id);
         if (!previous.motionEnabled() && config.motionEnabled() && !prepared
-                && !cameraChargeState.isBlocked() && !control.post(() -> prepareSession(id)))
+                && !cameraChargeState.isBlocked() && !chargeStartupPending
+                && !control.post(() -> prepareSession(id)))
             throw new IllegalStateException("Motion control thread refused detector preparation");
     }
 
-    private void startChargeTelemetry(MotionConfig next) {
+    private boolean startChargeTelemetry(MotionConfig next, String id, long generation) {
         try {
             if (cameraChargeOwner == null)
                 cameraChargeOwner = new CameraChargeTelemetry.Owner(
-                        systemContext, control, this::onChargeStateChanged);
-            cameraChargeOwner.start(next);
-            cameraChargeState = cameraChargeOwner.snapshot();
+                        systemContext, control, hostOperations, this::onChargeStateChanged);
+            chargeStartupPending = true;
+            chargeStartupGeneration = generation;
+            cameraChargeOwner.start(next,
+                    (fresh, failure) -> onChargeTelemetryStarted(id, generation, fresh, failure));
+            return true;
         } catch (Throwable failure) {
+            chargeStartupPending = false;
             cameraChargeState = new CameraChargePolicy.State(null, null,
                     CameraChargePolicy.MISSING_SOC | CameraChargePolicy.MISSING_VOLTAGE,
                     CameraChargePolicy.CAUSE_SOC | CameraChargePolicy.CAUSE_VOLTAGE, true, false);
             logEvent("camera_charge_owner_failed", sessionId, "error", summary(failure));
+            return false;
         }
     }
 
-    private boolean prepareRemoteViewOnControl(String id, IBinder owner) throws Exception {
+    private void onChargeTelemetryStarted(String id, long generation,
+            CameraChargePolicy.State fresh, Throwable failure) {
+        if (!chargeStartupPending || chargeStartupGeneration != generation
+                || !operationIsCurrent(id, generation, sessionId, sessionGeneration)) return;
+        chargeStartupPending = false;
+        if (failure != null || fresh == null) {
+            Throwable cause = failure == null
+                    ? new IllegalStateException("fresh camera charge read returned no state") : failure;
+            cameraChargeState = new CameraChargePolicy.State(null, null,
+                    CameraChargePolicy.MISSING_SOC | CameraChargePolicy.MISSING_VOLTAGE,
+                    CameraChargePolicy.CAUSE_SOC | CameraChargePolicy.CAUSE_VOLTAGE, true, false);
+            logEvent("camera_charge_owner_failed", id, "operation", "initial_read",
+                    "error", summary(cause));
+        } else cameraChargeState = fresh;
+        chargeHandlingEnabled = true;
+        continueConfiguredStart(id);
+    }
+
+    private CameraChargePolicy.State readChargeStateFromBinder() throws Exception {
+        PendingResult<CameraChargePolicy.State> result = new PendingResult<>();
+        if (!control.post(() -> {
+            CameraChargeTelemetry.Owner chargeOwner = cameraChargeOwner;
+            if (chargeOwner == null || !chargeOwner.isMonitoring()) {
+                result.fail(new IllegalStateException("shared camera charge telemetry is not active"));
+                return;
+            }
+            String requestedSession = sessionId;
+            long generation = sessionGeneration;
+            chargeOwner.readNow((fresh, failure) -> {
+                if (result.isDone()) return;
+                if (failure != null) result.fail(failure);
+                else if (generation != sessionGeneration || !sameNullableSession(requestedSession, sessionId))
+                    result.fail(new IllegalStateException("camera charge read completed for a stale session"));
+                else result.succeed(fresh);
+            });
+        })) throw new IllegalStateException("Motion control thread refused charge refresh");
+        return awaitPendingResult(result, "camera charge refresh");
+    }
+
+    private boolean prepareRemoteViewFromBinder(String id, IBinder owner) throws Exception {
+        PendingResult<Boolean> result = new PendingResult<>();
+        if (!control.post(() -> {
+            try { prepareRemoteViewOnControl(id, owner, result); }
+            catch (Throwable failure) { result.fail(failure); }
+        })) throw new IllegalStateException("Motion control thread refused remote camera preparation");
+        return awaitPendingResult(result, "remote camera preparation");
+    }
+
+    private void prepareRemoteViewOnControl(String id, IBinder owner, PendingResult<Boolean> result) {
+        if (result.isDone()) return;
         if (sessionId == null || shuttingDown || teardownPending || sessionRuntime.suspended()
                 || config == null || !config.remoteViewingEnabled || owner == null
                 || !owner.isBinderAlive() || cameraChargeOwner == null
-                || !cameraChargeOwner.isMonitoring()) return false;
-
+                || !cameraChargeOwner.isMonitoring()) {
+            result.succeed(false);
+            return;
+        }
         RemoteViewLease lease = remoteViewLeases.get(owner);
-        CameraChargePolicy.State fresh = lease == null ? cameraChargeOwner.readNow() : cameraChargeState;
-        if (!fresh.isMonitoring() || fresh.isBlocked()) return false;
+        if (lease != null) {
+            result.succeed(completeRemoteViewPreparation(id, owner, lease,
+                    cameraChargeState, sessionId, sessionGeneration));
+            return;
+        }
+        String requestedSession = sessionId;
+        long generation = sessionGeneration;
+        cameraChargeOwner.readNow((fresh, failure) -> {
+            if (result.isDone()) return;
+            if (failure != null) {
+                result.fail(failure);
+                return;
+            }
+            if (!operationIsCurrent(requestedSession, generation, sessionId, sessionGeneration)) {
+                result.succeed(false);
+                return;
+            }
+            try {
+                result.succeed(completeRemoteViewPreparation(id, owner,
+                        remoteViewLeases.get(owner), fresh, requestedSession, generation));
+            } catch (Throwable error) { result.fail(error); }
+        });
+    }
 
+    private boolean completeRemoteViewPreparation(String id, IBinder owner, RemoteViewLease lease,
+            CameraChargePolicy.State fresh, String requestedSession, long generation) {
+        if (!operationIsCurrent(requestedSession, generation, sessionId, sessionGeneration)
+                || shuttingDown || teardownPending || sessionRuntime.suspended()
+                || config == null || !config.remoteViewingEnabled || owner == null
+                || !owner.isBinderAlive() || fresh == null || !fresh.isMonitoring() || fresh.isBlocked())
+            return false;
         int power = sessionRuntime.power();
         if (power != 0 && power != 1 && power != 2) return false;
-
         if (lease != null && !lease.id.equals(id)) return false;
         if (lease == null) {
             lease = new RemoteViewLease(id, owner);
@@ -762,10 +1034,13 @@ public final class MotionDetectorShellMain {
             catch (RemoteException deadOwner) { return false; }
             remoteViewLeases.put(owner, lease);
         }
-
         updateCameraDemand();
         // OFF uses the same owner as Motion preparation. ON/standby viewing has no IDC requirement.
         return power != 0 || cameraPreparation.ready(sessionId);
+    }
+
+    private static boolean sameNullableSession(String left, String right) {
+        return left == null ? right == null : left.equals(right);
     }
 
     private static boolean isViewingHelperOperation(int code) {
@@ -783,9 +1058,12 @@ public final class MotionDetectorShellMain {
     }
 
     private void registerViewingHelper(IBinder helper, int pid) throws Exception {
+        synchronized (binder) {
+            if (viewingHelper == helper && viewingHelperPid == pid && helper.isBinderAlive()) return;
+        }
         callControl(() -> {
             synchronized (binder) {
-                if (viewingHelper == helper && viewingHelperPid == pid) return null;
+                if (viewingHelper == helper && viewingHelperPid == pid && helper.isBinderAlive()) return null;
                 if (viewingHelper != null && viewingHelper.isBinderAlive())
                     throw new SecurityException("another viewing helper is already registered");
                 clearViewingHelperLocked();
@@ -958,27 +1236,29 @@ public final class MotionDetectorShellMain {
         check.results.send(status, result);
     }
 
-    private void requireCheckPowerOn() throws Exception {
-        FutureTask<Integer> read = new FutureTask<>(MotionScreenControl::readPowerRaw);
-        hostOperations.execute(read);
-        try {
-            if (AvasEventPolicy.normalizedPower(read.get(1_500L, TimeUnit.MILLISECONDS)) != 1)
-                throw new IllegalStateException("power_not_on");
-        } finally { read.cancel(false); }
-    }
-
     private void beginCheck(ManualCheck check) {
         if (!checkLive(check)) {
             completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up is no longer active", true);
             return;
         }
         control.postDelayed(check.timeout, Math.max(0L, check.deadline - SystemClock.elapsedRealtime()));
-        try {
-            requireCheckPowerOn();
-            if (!checkLive(check)) {
-                completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up ended during Power read", true);
+        readCheckPower(check, "check_power_begin", failure -> {
+            if (failure != null) {
+                boolean off = "power_not_on".equals(failure.getMessage());
+                completeCheck(check, off ? MotionCheckupClient.NOT_CHECKED : MotionCheckupClient.ERROR,
+                        off ? "power_not_on" : "check_failed", summary(failure), true);
                 return;
             }
+            continueBeginCheck(check);
+        });
+    }
+
+    private void continueBeginCheck(ManualCheck check) {
+        if (!checkLive(check)) {
+            completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up ended during Power read", true);
+            return;
+        }
+        try {
             checkResult(check, MotionCheckupClient.OK, "access_ok", "Authenticated shell worker; Power=ON", false);
             check.stage = MotionCheckupClient.DETECTOR;
             checkResult(check, MotionCheckupClient.RUNNING, "", "", false);
@@ -1018,58 +1298,207 @@ public final class MotionDetectorShellMain {
         }
     }
 
-    private void startCheckFrames(ManualCheck check) throws Exception {
-        requireCheckPowerOn();
+    private void readCheckPower(ManualCheck check, String operation, CheckPowerCompletion completion) {
+        long operationId = operationSequence.incrementAndGet();
+        long queuedNs = SystemClock.elapsedRealtimeNanos();
+        AtomicBoolean completed = new AtomicBoolean();
+        Runnable timeout = () -> {
+            if (!completed.compareAndSet(false, true) || !checkLive(check)) return;
+            completion.complete(new java.util.concurrent.TimeoutException(
+                    "Power read timed out after 1500 ms"));
+        };
+        control.postDelayed(timeout, 1_500L);
+        try {
+            hostOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                Throwable failure = null;
+                try {
+                    if (AvasEventPolicy.normalizedPower(MotionScreenControl.readPowerRaw()) != 1)
+                        throw new IllegalStateException("power_not_on");
+                } catch (Throwable error) { failure = error; }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                Throwable result = failure;
+                control.post(() -> {
+                    if (!completed.compareAndSet(false, true)) return;
+                    control.removeCallbacks(timeout);
+                    logEvent("motion_camera_host_operation", sessionId,
+                            "operation_id", operationId, "operation", operation,
+                            "queue_ms", nanosToMillis(startedNs - queuedNs),
+                            "run_ms", nanosToMillis(finishedNs - startedNs),
+                            "outcome", result == null ? "ok" : "error",
+                            "error", result == null ? "" : summary(result),
+                            "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                            "context_package", systemContext.getPackageName(),
+                            "thread", "motion-camera-host-ops");
+                    if (checkLive(check)) completion.complete(result);
+                });
+            });
+        } catch (Throwable error) {
+            control.post(() -> {
+                if (!completed.compareAndSet(false, true)) return;
+                control.removeCallbacks(timeout);
+                logEvent("motion_camera_host_operation", sessionId,
+                        "operation_id", operationId, "operation", operation,
+                        "queue_ms", nanosToMillis(SystemClock.elapsedRealtimeNanos() - queuedNs),
+                        "run_ms", 0.0, "outcome", "error", "error", summary(error),
+                        "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                        "context_package", systemContext.getPackageName(),
+                        "thread", "motion-detector-control");
+                if (checkLive(check)) completion.complete(error);
+            });
+        }
+    }
+
+    private void startCheckFrames(ManualCheck check) {
         if (!checkLive(check)) {
             completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up is no longer active", true);
             return;
         }
-        checkResult(check, MotionCheckupClient.OK, "detector_ok", "OEM native detector initialized", false);
-        check.stage = MotionCheckupClient.FRAMES;
-        checkResult(check, MotionCheckupClient.RUNNING, "", "", false);
-        check.ownsReader = true;
-        attachReader(sessionId);
-        control.removeCallbacks(check.timeout);
-        control.postDelayed(check.timeout, Math.min(FIRST_INFERENCE_TIMEOUT_MS,
-                Math.max(0L, check.deadline - SystemClock.elapsedRealtime())));
+        readCheckPower(check, "check_power_frames", failure -> {
+            if (failure != null) {
+                completeCheck(check, MotionCheckupClient.ERROR, "check_failed", summary(failure), true);
+                return;
+            }
+            startCheckFramesAfterPower(check);
+        });
+    }
+
+    private void startCheckFramesAfterPower(ManualCheck check) {
+        if (!checkLive(check)) {
+            completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up is no longer active", true);
+            return;
+        }
+        try {
+            checkResult(check, MotionCheckupClient.OK, "detector_ok", "OEM native detector initialized", false);
+            check.stage = MotionCheckupClient.FRAMES;
+            checkResult(check, MotionCheckupClient.RUNNING, "", "", false);
+            check.ownsReader = true;
+            attachReader(sessionId, check);
+            control.removeCallbacks(check.timeout);
+            control.postDelayed(check.timeout, Math.min(FIRST_INFERENCE_TIMEOUT_MS,
+                    Math.max(0L, check.deadline - SystemClock.elapsedRealtime())));
+        } catch (Throwable error) {
+            completeCheck(check, MotionCheckupClient.ERROR, "check_failed", summary(error), true);
+        }
     }
 
     private void completeCheck(ManualCheck check, int status, String reason, String detail, boolean release) {
         if (manualCheck != check || check.completing) return;
         check.completing = true;
         check.cancelled = true;
+        check.completionStatus = status;
+        check.completionReason = reason;
+        check.completionDetail = detail;
         control.removeCallbacks(check.timeout);
         try { check.owner.unlinkToDeath(check.death, 0); } catch (java.util.NoSuchElementException ignored) { }
-        if (release) {
-            boolean released = true;
-            if (check.ownsSession && check.id.equals(sessionId)) {
-                stopOnControl(sessionId, "manual_check_finished");
-                released = sessionId == null;
-            } else {
-                if (check.ownsRecording) released = stopRecording("manual_check_finished");
-                if (check.ownsReader) released &= detachAndCloseReader(false);
-                if (released && check.ownsNative) {
-                    deleteNative();
-                    prepared = false;
-                    if (!teardownPending && !shuttingDown) {
-                        state = cameraChargeState.isBlocked() ? "charge_blocked" : check.previousState;
-                        sendStatus(sessionId, state, "Temporary detector released; saved camera configuration is unchanged");
-                    }
-                }
-            }
-            if (!released) {
-                status = MotionCheckupClient.ERROR;
-                reason = "cleanup_pending";
-                detail += "; camera resource release has not been confirmed";
-            }
+        if (!release) {
+            finishManualCheck(check);
+            return;
         }
-        synchronized (binder) { manualCheck = null; }
-        if (!teardownPending) holdCpu(false);
-        checkResult(check, status, reason, detail, true);
+        if (check.ownsSession && check.id.equals(sessionId)) {
+            stopOnControl(sessionId, "manual_check_finished");
+            if (sameSession(check.id)) {
+                check.waitingForSessionTeardown = true;
+                control.postDelayed(check.timeout, CONTROL_TIMEOUT_MS);
+                return;
+            }
+            finishManualCheck(check);
+            return;
+        }
+
+        boolean released = true;
+        if (check.ownsRecording) released = stopRecording("manual_check_finished");
+        if (check.ownsReader) released &= detachAndCloseReader(false);
+        check.waitingForReaderDetach = readerAttachPending || readerDetachPending;
+        check.waitingForRecordingDetach = recordingDetachPending;
+        if (check.waitingForReaderDetach || check.waitingForRecordingDetach) return;
+        if (!released) {
+            markCheckCleanupPending(check,
+                    new IllegalStateException("camera resource release has not been confirmed"));
+            finishManualCheck(check);
+            return;
+        }
+        continueManualCheckCleanup(check);
     }
 
-    private void startCheckRecording(ManualCheck check) throws Exception {
-        requireCheckPowerOn();
+    private void continueManualCheckCleanup(ManualCheck check) {
+        if (manualCheck != check || !check.completing || check.waitingForReaderDetach
+                || check.waitingForRecordingDetach || check.waitingForNativeDelete) return;
+        if (check.cleanupFailure != null || teardownPending || shuttingDown) {
+            if (check.cleanupFailure != null) markCheckCleanupPending(check, check.cleanupFailure);
+            else markCheckCleanupPending(check,
+                    new IllegalStateException("session teardown owns Motion resource cleanup"));
+            finishManualCheck(check);
+            return;
+        }
+        if (check.ownsNative) {
+            String id = sessionId;
+            if (id == null) {
+                markCheckCleanupPending(check,
+                        new IllegalStateException("Motion session ended before native cleanup completed"));
+                finishManualCheck(check);
+                return;
+            }
+            check.waitingForNativeDelete = true;
+            nativeDeletePending = true;
+            submitNativeDelete(id, "manual_check", result -> {
+                if (manualCheck != check || !check.completing) return;
+                nativeDeletePending = false;
+                check.waitingForNativeDelete = false;
+                if (result.failure != null) markCheckCleanupPending(check, result.failure);
+                for (NativeCleanupFailure cleanup : result.failures) {
+                    recordNativeCleanupFailure(cleanup.operation, cleanup.failure, null);
+                    markCheckCleanupPending(check,
+                            new IllegalStateException(cleanup.operation + ": " + summary(cleanup.failure)));
+                }
+                if (result.failure == null) {
+                    prepared = false;
+                    if (teardownPending && sameSession(id)) nativeDeleteComplete = true;
+                    if (!teardownPending && !shuttingDown) {
+                        state = cameraChargeState.isBlocked() ? "charge_blocked" : check.previousState;
+                        sendStatus(id, state, "Temporary detector released; saved camera configuration is unchanged");
+                    }
+                }
+                finishManualCheck(check);
+                if (teardownPending) continuePendingTeardown();
+            });
+            return;
+        }
+        finishManualCheck(check);
+    }
+
+    private void markCheckCleanupPending(ManualCheck check, Throwable failure) {
+        check.completionStatus = MotionCheckupClient.ERROR;
+        check.completionReason = "cleanup_pending";
+        String detail = failure == null ? "camera resource release has not been confirmed" : summary(failure);
+        if (check.completionDetail == null || check.completionDetail.isEmpty())
+            check.completionDetail = detail;
+        else if (!check.completionDetail.contains(detail)) check.completionDetail += "; " + detail;
+    }
+
+    private void finishManualCheck(ManualCheck check) {
+        if (manualCheck != check) return;
+        synchronized (binder) { manualCheck = null; }
+        if (!teardownPending) holdCpu(false);
+        checkResult(check, check.completionStatus, check.completionReason,
+                check.completionDetail == null ? "" : check.completionDetail, true);
+    }
+
+    private void startCheckRecording(ManualCheck check) {
+        if (!checkLive(check)) {
+            completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up ended", true);
+            return;
+        }
+        readCheckPower(check, "check_power_recording", failure -> {
+            if (failure != null) {
+                completeCheck(check, MotionCheckupClient.ERROR, "check_failed", summary(failure), true);
+                return;
+            }
+            startCheckRecordingAfterPower(check);
+        });
+    }
+
+    private void startCheckRecordingAfterPower(ManualCheck check) {
         if (!checkLive(check)) {
             completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", "Check-up ended", true);
             return;
@@ -1123,6 +1552,7 @@ public final class MotionDetectorShellMain {
             }
         }
         String id = snapshot.sessionId;
+        synchronized (analysisLock) { sessionGeneration++; }
         config = snapshot.config;
         sessionRuntime.configure(id, config);
         shuttingDown = false;
@@ -1165,8 +1595,18 @@ public final class MotionDetectorShellMain {
         expectedSourceEpoch = "";
         screen.beginSession(id);
         chargeHandlingEnabled = false;
-        startChargeTelemetry(config);
+        long generation = sessionGeneration;
+        if (startChargeTelemetry(config, id, generation)) {
+            sendStatus(id, "preparing", "waiting for a fresh charge sample before camera or native preparation");
+            return true;
+        }
         chargeHandlingEnabled = true;
+        continueConfiguredStart(id);
+        return true;
+    }
+
+    private void continueConfiguredStart(String id) {
+        if (!sameSession(id) || shuttingDown || teardownPending) return;
         if (cameraChargeState.isBlocked()) {
             state = "charge_blocked";
             sendStatus(id, state, "shared charge protection is latched; Motion surfaces and recording are suspended");
@@ -1175,14 +1615,13 @@ public final class MotionDetectorShellMain {
         }
         if (config.motionEnabled() && cameraChargeState.isBlocked() && !config.remoteViewingEnabled) {
             attachPendingUiOnControl(id);
-            return true;
+            return;
         }
         beginWorkerBinding(id);
-        return true;
     }
 
     private void beginWorkerBinding(String id) {
-        if (!sameSession(id) || workerBinding || workerBound || config == null) return;
+        if (!sameSession(id) || chargeStartupPending || workerBinding || workerBound || config == null) return;
         workerBinding = true;
         cameraHostPending = false;
         hostOperations.execute(() -> {
@@ -1370,7 +1809,7 @@ public final class MotionDetectorShellMain {
     }
 
     private void prepareSession(String id) {
-        if (!sameSession(id)) return;
+        if (!sameSession(id) || chargeStartupPending) return;
         ManualCheck pendingCheck = manualCheck;
         boolean checkOwnsPreparation = pendingCheck != null && (pendingCheck.ownsSession || pendingCheck.ownsNative);
         if (config == null || !config.motionEnabled() && !checkOwnsPreparation || cameraChargeState.isBlocked()) {
@@ -1393,64 +1832,137 @@ public final class MotionDetectorShellMain {
                     "Check-up ended while the camera host was binding", true);
             return;
         }
-        MotionNativeSetup setup = new MotionNativeSetup(systemContext);
+        if (prepared || nativePreparationPending) return;
+        nativePreparationPending = true;
+        long generation = sessionGeneration;
+        OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
+                "setup", id, SystemClock.elapsedRealtimeNanos());
         try {
-            logEvent("motion_native_environment", id, "sdk", Build.VERSION.SDK_INT,
-                    "release", Build.VERSION.RELEASE, "display", Build.DISPLAY,
-                    "incremental", Build.VERSION.INCREMENTAL, "model", Build.MODEL);
-            setup.prepare();
-            ApplicationInfo owner = systemContext.getPackageManager().getApplicationInfo(
-                    MotionShellMediaContext.OWNER_PACKAGE, 0);
-            MotionYuvPacker.loadNative(new File(owner.nativeLibraryDir, "libmotion_yuv.so").getPath());
-            logEvent("motion_packer_ready", id, "implementation", "native_nv12");
-            assets = setup.assets;
-            sensitivity = setup.sensitivity;
-            setup.stage = "native_init";
-            nativeApi = new MotionNativeLibrary();
-            nativeInput = new byte[MotionDetectorProtocol.INPUT_BYTES];
-            logEvent("motion_native_init_begin", id, "model_value", setup.modelValue,
-                    "mirrors_open", setup.mirrorSetting == 0, "sensitivity", sensitivity);
-            int init = nativeApi.init(assets, MotionDetectorProtocol.PREVIEW_WIDTH,
-                    MotionDetectorProtocol.PREVIEW_HEIGHT, setup.mirrorSetting == 0, setup.modelValue);
-            logEvent("motion_native_init", id, "result", init,
-                    "preview_width", MotionDetectorProtocol.PREVIEW_WIDTH,
-                    "preview_height", MotionDetectorProtocol.PREVIEW_HEIGHT,
-                    "model_value", setup.modelValue, "sensitivity", sensitivity);
-            if (init != 0 && init != 1) throw new IOException("native init refused: " + init);
-            nativeInitialized = true;
-            prepared = true;
-            setup.stage = "prepared_session";
-            state = "prepared";
-            sendPrepared(id);
-            sendStatus(id, "prepared", "OEM artifacts and native init accepted; awaiting fresh shell telemetry");
-            ManualCheck check = manualCheck;
-            if (check != null && checkOwnsPreparation) startCheckFrames(check);
-            else if (sessionRuntime.armed()) setEligibleOnControl(id, true);
-            else if (!sessionRuntime.arming()) holdCpu(false);
-            updateCameraDemand();
+            nativeOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                long setupStartNs = startedNs;
+                long setupNs = 0L;
+                long initNs = 0L;
+                MotionNativeSetup setup = new MotionNativeSetup(systemContext);
+                Throwable failure = null;
+                try {
+                    logEvent("motion_native_environment", id, "operation_id", trace.id,
+                            "sdk", Build.VERSION.SDK_INT, "release", Build.VERSION.RELEASE,
+                            "display", Build.DISPLAY, "incremental", Build.VERSION.INCREMENTAL,
+                            "model", Build.MODEL, "process_uid", Process.myUid(),
+                            "process_pid", Process.myPid(), "context_package", systemContext.getPackageName(),
+                            "thread", Thread.currentThread().getName());
+                    setup.prepare();
+                    ApplicationInfo owner = systemContext.getPackageManager().getApplicationInfo(
+                            MotionShellMediaContext.OWNER_PACKAGE, 0);
+                    MotionYuvPacker.loadNative(new File(owner.nativeLibraryDir, "libmotion_yuv.so").getPath());
+                    logEvent("motion_packer_ready", id, "operation_id", trace.id,
+                            "implementation", "native_nv12");
+                    assets = setup.assets;
+                    setupNs = SystemClock.elapsedRealtimeNanos() - setupStartNs;
+                    setup.stage = "native_init";
+                    long initStartNs = SystemClock.elapsedRealtimeNanos();
+                    nativeApi = new MotionNativeLibrary();
+                    nativeInput = new byte[MotionDetectorProtocol.INPUT_BYTES];
+                    logEvent("motion_native_init_begin", id, "operation_id", trace.id,
+                            "model_value", setup.modelValue,
+                            "mirrors_open", setup.mirrorSetting == 0, "sensitivity", sensitivity);
+                    int init = nativeApi.init(assets, MotionDetectorProtocol.PREVIEW_WIDTH,
+                            MotionDetectorProtocol.PREVIEW_HEIGHT, setup.mirrorSetting == 0,
+                            setup.modelValue);
+                    initNs = SystemClock.elapsedRealtimeNanos() - initStartNs;
+                    logEvent("motion_native_init", id, "operation_id", trace.id, "result", init,
+                            "preview_width", MotionDetectorProtocol.PREVIEW_WIDTH,
+                            "preview_height", MotionDetectorProtocol.PREVIEW_HEIGHT,
+                            "model_value", setup.modelValue, "sensitivity", sensitivity);
+                    if (init != 0 && init != 1) throw new IOException("native init refused: " + init);
+                    nativeInitialized = true;
+                    setup.stage = "prepared_session";
+                } catch (Throwable error) {
+                    failure = error;
+                    if (setupNs == 0L) setupNs = SystemClock.elapsedRealtimeNanos() - setupStartNs;
+                    if (assets == null && setup.assets != null) assets = setup.assets;
+                    deleteNative(error);
+                }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                NativeSetupResult result = new NativeSetupResult(setup, trace.id, trace.queuedNs,
+                        startedNs, finishedNs, setupNs, initNs, failure);
+                control.post(() -> onNativePreparationComplete(id, generation, result));
+            });
         } catch (Throwable error) {
-            if (assets == null && setup.assets != null) {
-                try { setup.assets.close(); }
-                catch (Throwable cleanup) { if (cleanup != error) error.addSuppressed(cleanup); }
-            }
+            nativePreparationPending = false;
+            long now = SystemClock.elapsedRealtimeNanos();
+            MotionNativeSetup setup = new MotionNativeSetup(systemContext);
+            setup.stage = "native_queue";
+            onNativePreparationComplete(id, generation, new NativeSetupResult(setup, trace.id,
+                    trace.queuedNs, now, now, 0L, 0L, error));
+        }
+    }
+
+    private void onNativePreparationComplete(String id, long generation, NativeSetupResult result) {
+        nativePreparationPending = false;
+        logNativeOperation(id, "setup", result.operationId, result.queuedNs,
+                result.startedNs, result.finishedNs, result.setupNs, result.initNs,
+                result.failure == null ? "ok" : "error",
+                result.failure == null ? "" : summary(result.failure), result.stage);
+        if (!operationIsCurrent(id, generation, sessionId, sessionGeneration)) {
+            if (teardownPending) continuePendingTeardown();
+            return;
+        }
+        if (result.failure != null) {
             String reference = Process.myPid() + "-" + UUID.randomUUID().toString().replace("-", "");
-            String detail = setup.stage + ": " + summary(error) + " (diagnostic ref " + reference + ")";
+            String detail = result.stage + ": " + summary(result.failure)
+                    + " (diagnostic ref " + reference + ")";
             if (!prepared && config != null && config.remoteViewingEnabled
                     && !remoteViewLeases.isEmpty()) {
                 lastError = detail;
-                deleteNative(error);
                 CameraViewingDiagnostics.failure("motion_native_setup_ref_" + reference,
-                        "shell_worker", error);
+                        "shell_worker", result.failure);
                 state = "viewing_only";
-                sendError(id, setup.stage, lastError);
+                sendError(id, result.stage, lastError);
                 sendStatus(id, state, "Motion detector preparation failed; remote viewing remains active; " + lastError);
                 updateCameraDemand();
                 return;
             }
             CameraViewingDiagnostics.failure("motion_native_setup_ref_" + reference,
-                    "shell_worker", error);
-            fail(id, setup.stage, new IllegalStateException(detail, error));
+                    "shell_worker", result.failure);
+            fail(id, result.stage, new IllegalStateException(detail, result.failure));
+            return;
         }
+        sensitivity = result.sensitivity;
+        prepared = true;
+        state = "prepared";
+        sendPrepared(id);
+        sendStatus(id, "prepared", "OEM artifacts and native init accepted; awaiting fresh shell telemetry");
+        try {
+            ManualCheck check = manualCheck;
+            boolean checkOwnsPreparation = check != null && (check.ownsSession || check.ownsNative);
+            if (checkOwnsPreparation) {
+                if (checkLive(check)) startCheckFrames(check);
+                return;
+            }
+            else if (sessionRuntime.armed()) setEligibleOnControl(id, true);
+            else if (!sessionRuntime.arming()) holdCpu(false);
+            updateCameraDemand();
+        } catch (Throwable error) {
+            fail(id, "prepared_session", error);
+        }
+    }
+
+    private void logNativeOperation(String id, String operation, long operationId,
+            long queuedNs, long startedNs, long finishedNs, long setupNs, long initNs,
+            String outcome, String error, String stage) {
+        logEvent("motion_native_operation", id, "operation_id", operationId,
+                "operation", operation, "queue_ms", nanosToMillis(startedNs - queuedNs),
+                "run_ms", nanosToMillis(finishedNs - startedNs),
+                "setup_ms", nanosToMillis(setupNs), "init_ms", nanosToMillis(initNs),
+                "stage", stage, "outcome", outcome, "error", error,
+                "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                "thread", Thread.currentThread().getName());
+    }
+
+    private static double nanosToMillis(long value) {
+        return value / 1_000_000.0;
     }
 
     private int setEligibleOnControl(String id, boolean next) throws Exception {
@@ -1463,7 +1975,7 @@ public final class MotionDetectorShellMain {
         if (!config.motionEnabled() && next)
             throw new IllegalStateException("Motion eligibility is disabled for remote-only configuration");
         if (!prepared) throw new IllegalStateException("detector is not prepared");
-        if (eligible == next) return 1;
+        if (eligible == next && !(readerAttachPending && !next)) return 1;
         if (!next) {
             policy.setEligible(false, SystemClock.elapsedRealtime());
             eligible = false;
@@ -1495,10 +2007,21 @@ public final class MotionDetectorShellMain {
             }
             return 1;
         }
+        if (readerAttachPending) return 1;
         if (cameraRecovering) {
             if (!stopRecording("camera_recovery", false) || !detachAndCloseReader(false)) return 1;
         }
-        attachReader(id);
+        if (attached && reader != null && surface != null) {
+            activateEligibleReader(id);
+            return 1;
+        }
+        attachReader(id, null);
+        return 1;
+    }
+
+    private void activateEligibleReader(String id) {
+        if (!sameSession(id) || !attached || reader == null || cameraChargeState.isBlocked()
+                || !sessionRuntime.armed() || teardownPending) return;
         cameraRecovering = false;
         eligible = true;
         policy.setEligible(true, SystemClock.elapsedRealtime() - MotionDetectorProtocol.WARMUP_MS);
@@ -1514,13 +2037,14 @@ public final class MotionDetectorShellMain {
         control.postDelayed(firstInferenceTimeout, FIRST_INFERENCE_TIMEOUT_MS);
         if (config.recordingEnabled) startRecording(id);
         sendStatus(id, "waiting_for_frames", "camera Surface attached; status remains pending until first successful native inference");
-        return 1;
     }
 
-    private void attachReader(String id) throws Exception {
+    private void attachReader(String id, ManualCheck check) throws Exception {
         if (attached && reader != null && surface != null) return;
+        if (readerAttachPending) return;
         if (attached || reader != null || surface != null)
             throw new IllegalStateException("motion Surface attachment is in an uncertain state");
+        final long generation = sessionGeneration;
         framePerformance.reset();
         frameCadence.reset();
         java.util.Arrays.fill(loggedFrameLayout, 0);
@@ -1531,39 +2055,101 @@ public final class MotionDetectorShellMain {
         surface = reader.getSurface();
         ImageReader ownerReader = reader;
         MotionSharedSource ownerSource = sharedSource;
-        AtomicBoolean analysisBusy = new AtomicBoolean();
         reader.setOnImageAvailableListener(source -> {
-            drainLatestFrame(ownerReader, ownerSource, id, analysisBusy);
+            drainLatestFrame(ownerReader, ownerSource, id, generation);
         }, ownerSource.handler());
-        boolean accepted;
-        try { accepted = cameraOperation(MotionDetectorProtocol.CAMERA_ATTACH, id, surface); }
-        catch (Throwable uncertain) {
-            attached = true;
-            throw uncertain;
-        }
-        if (!accepted) {
-            detachAndCloseReader(false);
-            throw new IllegalStateException("existing camera owner refused Surface index 4123");
-        }
-        attached = true;
+        readerAttachPending = true;
+        submitCameraOperation(MotionDetectorProtocol.CAMERA_ATTACH, id, surface,
+                "surface_attach", result -> {
+                    readerAttachPending = false;
+                    if (!sameSession(id) || reader != ownerReader) {
+                        if (result.accepted || result.failure != null) attached = true;
+                        if (check != null && check.completing
+                                && check.waitingForReaderDetach) {
+                            check.waitingForReaderDetach = false;
+                            check.cleanupFailure = new IllegalStateException(
+                                    "camera Surface attach completed for a stale session");
+                            continueManualCheckCleanup(check);
+                        }
+                        return;
+                    }
+                    if (result.failure != null) {
+                        attached = true;
+                        if (check != null && check.completing) {
+                            detachAndCloseReader(false);
+                            if (!readerDetachPending) {
+                                check.waitingForReaderDetach = false;
+                                check.cleanupFailure = result.failure;
+                                continueManualCheckCleanup(check);
+                            }
+                            return;
+                        }
+                        if (check != null) completeCheck(check, MotionCheckupClient.ERROR,
+                                "camera_attach", summary(result.failure), true);
+                        else fail(id, "camera_attach", result.failure);
+                        return;
+                    }
+                    if (!result.accepted) {
+                        IllegalStateException failure = new IllegalStateException(
+                                "existing camera owner refused Surface index 4123");
+                        boolean closed = closeReaderLocally(ownerReader, ownerSource, surface);
+                        if (check != null && check.completing) {
+                            check.waitingForReaderDetach = false;
+                            if (!closed) check.cleanupFailure = failure;
+                            continueManualCheckCleanup(check);
+                            return;
+                        }
+                        if (check != null) completeCheck(check, MotionCheckupClient.ERROR,
+                                "camera_attach", summary(failure), true);
+                        else fail(id, "camera_attach", failure);
+                        return;
+                    }
+                    attached = true;
+                    if (!operationIsCurrent(id, generation, sessionId, sessionGeneration)
+                            || teardownPending) {
+                        continuePendingTeardown();
+                    } else if (check != null) {
+                        if (checkLive(check)) return;
+                        detachAndCloseReader(false);
+                        if (check.completing && !readerDetachPending) {
+                            check.waitingForReaderDetach = false;
+                            check.cleanupFailure = new IllegalStateException(
+                                    "camera Surface was not confirmed detached after check completion");
+                            continueManualCheckCleanup(check);
+                        }
+                    } else if (sessionRuntime.armed() && !cameraChargeState.isBlocked()) {
+                        activateEligibleReader(id);
+                    } else detachAndCloseReader(false);
+                });
     }
 
     private void drainLatestFrame(ImageReader ownerReader, MotionSharedSource source,
-            String id, AtomicBoolean analysisBusy) {
+            String id, long generation) {
         try {
             if (reader != ownerReader) return;
             Image frame = ownerReader.acquireLatestImage();
             if (frame == null) return;
-            processFrame(frame, ownerReader, source, id, analysisBusy);
+            processFrame(frame, ownerReader, source, id, generation);
         } catch (Throwable error) {
-            control.post(() -> { if (sameSession(id) && reader == ownerReader) fail(id, "frame", error); });
+            control.post(() -> {
+                if (sameSession(id) && reader == ownerReader) {
+                    if (teardownPending) continuePendingTeardown();
+                    else fail(id, "frame", error);
+                }
+            });
         }
     }
 
     private void processFrame(Image frame, ImageReader ownerReader, MotionSharedSource source,
-            String id, AtomicBoolean analysisBusy) throws Exception {
-        Runnable inference = null;
+            String id, long generation) throws Exception {
         boolean reserved = false;
+        ManualCheck check = null;
+        MotionYuvPacker.Plane y = null, u = null, v = null;
+        int width = 0, height = 0;
+        byte[] input = null;
+        long frameTimeNs = 0L, packStartNs = 0L, packEndNs = 0L;
+        Throwable primaryFailure = null;
+        Throwable closeFailure = null;
         try {
             if (frame.getFormat() != ImageFormat.YUV_420_888
                     || frame.getWidth() != MotionDetectorProtocol.INPUT_WIDTH
@@ -1577,68 +2163,146 @@ public final class MotionDetectorShellMain {
                     || crop.bottom != frame.getHeight())
                 throw new IllegalStateException("motion frame crop is not the full composition: crop="
                         + crop + " size=" + frame.getWidth() + "x" + frame.getHeight());
-            ManualCheck check = manualCheck;
+            check = manualCheck;
             boolean wantsAnalysis = eligible || check != null && checkLive(check) && !check.finishing;
-            if (wantsAnalysis && !analysisBusy.get()
-                    && frameCadence.take(SystemClock.elapsedRealtimeNanos())
-                    && analysisBusy.compareAndSet(false, true)) {
+            if (wantsAnalysis && frameCadence.take(SystemClock.elapsedRealtimeNanos())
+                    && reserveAnalysis(ownerReader, generation)) {
                 reserved = true;
                 Image.Plane[] planes = frame.getPlanes();
                 if (planes == null || planes.length != 3)
                     throw new IllegalStateException("YUV_420_888 requires three planes");
-                int width = frame.getWidth(), height = frame.getHeight();
-                MotionYuvPacker.Plane y = plane(planes[0]), u = plane(planes[1]), v = plane(planes[2]);
-                byte[] input = nativeInput;
-                long packStartNs = SystemClock.elapsedRealtimeNanos();
+                width = frame.getWidth();
+                height = frame.getHeight();
+                y = plane(planes[0]);
+                u = plane(planes[1]);
+                v = plane(planes[2]);
+                input = nativeInput;
+                if (input == null) throw new IllegalStateException("native input is not prepared");
+                packStartNs = SystemClock.elapsedRealtimeNanos();
                 MotionYuvPacker.pack(y, u, v, width, height, input);
-                long packEndNs = SystemClock.elapsedRealtimeNanos();
-                long frameTimeNs = frame.getTimestamp();
-                inference = () -> {
-                    try {
-                        if (reader == ownerReader && sameSession(id)
-                                && (eligible || check != null && checkLive(check) && !check.finishing))
-                            detectFrame(check, frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input);
-                    } catch (Throwable error) { if (sameSession(id)) fail(id, "frame", error); }
-                    finally { analysisBusy.set(false); }
-                };
+                packEndNs = SystemClock.elapsedRealtimeNanos();
+                frameTimeNs = frame.getTimestamp();
             }
             source.snapshot(frame);
         } catch (Throwable error) {
-            if (reserved) analysisBusy.set(false);
+            primaryFailure = error;
+            if (reserved) releaseAnalysis();
             throw error;
         } finally {
-            frame.close();
+            try { frame.close(); }
+            catch (Throwable error) {
+                if (primaryFailure != null) {
+                    if (error != primaryFailure) primaryFailure.addSuppressed(error);
+                } else closeFailure = error;
+            }
         }
-        if (inference != null && !control.post(inference)) analysisBusy.set(false);
+        if (closeFailure != null) {
+            if (reserved) releaseAnalysis();
+            if (closeFailure instanceof RuntimeException) throw (RuntimeException) closeFailure;
+            if (closeFailure instanceof Error) throw (Error) closeFailure;
+            throw new IllegalStateException("OEM image close failed", closeFailure);
+        }
+        if (reserved) enqueueNativeDetection(id, generation, ownerReader, check,
+                frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input);
+    }
+
+    private boolean reserveAnalysis(ImageReader ownerReader, long generation) {
+        synchronized (analysisLock) {
+            if (generation != sessionGeneration || reader != ownerReader || analysisBusy) return false;
+            analysisBusy = true;
+            return true;
+        }
+    }
+
+    private void releaseAnalysis() {
+        synchronized (analysisLock) { analysisBusy = false; }
+    }
+
+    private boolean analysisInFlight() {
+        synchronized (analysisLock) { return analysisBusy; }
+    }
+
+    private void enqueueNativeDetection(String id, long generation, ImageReader ownerReader,
+            ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
+            int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
+            MotionYuvPacker.Plane v, byte[] input) {
+        OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
+                "frame", id, SystemClock.elapsedRealtimeNanos());
+        try {
+            nativeOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                long detectStartNs = startedNs;
+                long detectNs = 0L;
+                int raw = MotionEventPolicy.ERROR_RESULT;
+                int nativeState = MotionEventPolicy.ERROR_RESULT;
+                Throwable failure = null;
+                try {
+                    raw = nativeApi.detect(input, MotionDetectorProtocol.INPUT_WIDTH,
+                            MotionDetectorProtocol.INPUT_HEIGHT, sensitivity);
+                    detectNs = SystemClock.elapsedRealtimeNanos() - detectStartNs;
+                    if (raw != MotionEventPolicy.ERROR_RESULT) nativeState = nativeApi.getState();
+                } catch (Throwable error) { failure = error; }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                NativeFrameResult result = new NativeFrameResult(trace.id, trace.queuedNs,
+                        startedNs, finishedNs, detectNs, raw, nativeState, failure);
+                if (!control.post(() -> onNativeFrameComplete(id, generation, ownerReader, check,
+                        frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, result)))
+                    releaseAnalysis();
+            });
+        } catch (Throwable error) {
+            control.post(() -> {
+                try {
+                    if (operationIsCurrent(id, generation, sessionId, sessionGeneration))
+                        fail(id, "native_detect", error);
+                } finally {
+                    releaseAnalysis();
+                    if (teardownPending) continuePendingTeardown();
+                }
+            });
+        }
+    }
+
+    private void onNativeFrameComplete(String id, long generation, ImageReader ownerReader,
+            ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
+            int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
+            MotionYuvPacker.Plane v, NativeFrameResult result) {
+        try {
+            if (!operationIsCurrent(id, generation, sessionId, sessionGeneration)
+                    || teardownPending || reader != ownerReader
+                    || !(eligible || check != null && checkLive(check) && !check.finishing)) return;
+            if (result.failure != null) {
+                fail(id, "native_detect", result.failure);
+                return;
+            }
+            detectFrame(check, frameTimeNs, packStartNs, packEndNs, width, height,
+                    y, u, v, result);
+        } catch (Throwable error) {
+            if (sameSession(id) && !teardownPending) fail(id, "frame", error);
+        } finally {
+            releaseAnalysis();
+            if (teardownPending) continuePendingTeardown();
+        }
     }
 
     private void detectFrame(ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, byte[] input) throws Exception {
+            MotionYuvPacker.Plane v, NativeFrameResult result) throws Exception {
         long now = SystemClock.elapsedRealtime();
-        long detectStartNs = SystemClock.elapsedRealtimeNanos();
-        int raw = nativeApi.detect(input, MotionDetectorProtocol.INPUT_WIDTH,
-                MotionDetectorProtocol.INPUT_HEIGHT, sensitivity);
-        long detectEndNs = SystemClock.elapsedRealtimeNanos();
+        int raw = result.raw;
+        int nativeState = result.nativeState;
         frameNumber++;
-        framePerformance.record(packStartNs, packEndNs, detectStartNs, detectEndNs);
+        framePerformance.record(packStartNs, packEndNs, result.queuedNs,
+                result.startedNs, result.finishedNs, result.detectNs, result.operationId);
         noteFrameLayout(width, height, y, u, v);
         if (framePerformance.due()) flushFramePerformance();
         if (check != null && check.ownsReader) {
             boolean done = check.frames.observe(frameTimeNs, raw);
-            int nativeState = nativeApi.getState();
             logEvent("motion_checkup_frame", sessionId, "check_id", check.id,
                     "timestamp_ns", frameTimeNs, "raw_result", raw, "native_state", nativeState);
             if (done && !check.finishing) {
                 check.finishing = true;
                 // Release the Image before detaching or closing its ImageReader.
-                control.post(() -> {
-                    try {
-                        startCheckRecording(check);
-                    } catch (Throwable error) {
-                        completeCheck(check, MotionCheckupClient.ERROR, "check_failed", summary(error), true);
-                    }
-                });
+                control.post(() -> startCheckRecording(check));
             }
             return;
         }
@@ -1649,7 +2313,6 @@ public final class MotionDetectorShellMain {
                     "native detect returned -2; getState was not called"));
             return;
         }
-        int nativeState = nativeApi.getState();
         noteFirstInference(raw, nativeState, frameTimeNs);
         MotionEventPolicy.Decision decision = policy.observe(raw, now);
         state = policy.warningActive(now) ? "warning_active" : "observing";
@@ -1692,8 +2355,14 @@ public final class MotionDetectorShellMain {
         logEvent("motion_frame_performance", sessionId,
                 "window_ms", framePerformance.windowNs() / 1_000_000.0,
                 "frames", framePerformance.frames,
+                "operation_id_first", framePerformance.firstOperationId,
+                "operation_id_last", framePerformance.lastOperationId,
                 "pack_avg_ms", framePerformance.packTotalNs / 1_000_000.0 / framePerformance.frames,
                 "pack_max_ms", framePerformance.packMaxNs / 1_000_000.0,
+                "native_queue_avg_ms", framePerformance.nativeQueueTotalNs / 1_000_000.0 / framePerformance.frames,
+                "native_queue_max_ms", framePerformance.nativeQueueMaxNs / 1_000_000.0,
+                "native_run_avg_ms", framePerformance.nativeRunTotalNs / 1_000_000.0 / framePerformance.frames,
+                "native_run_max_ms", framePerformance.nativeRunMaxNs / 1_000_000.0,
                 "detect_avg_ms", framePerformance.detectTotalNs / 1_000_000.0 / framePerformance.frames,
                 "detect_max_ms", framePerformance.detectMaxNs / 1_000_000.0);
         framePerformance.reset();
@@ -1712,19 +2381,31 @@ public final class MotionDetectorShellMain {
         void reset() { nextStartNs = 0L; }
     }
 
-    /** Control-thread measurements of completed pack/detect calls, not process CPU time. */
+    /** Control-thread aggregates of completed pack/native calls, not process CPU time. */
     static final class FramePerformance {
         long frames, startNs, endNs;
-        long packTotalNs, packMaxNs, detectTotalNs, detectMaxNs;
+        long firstOperationId, lastOperationId;
+        long packTotalNs, packMaxNs, nativeQueueTotalNs, nativeQueueMaxNs;
+        long nativeRunTotalNs, nativeRunMaxNs, detectTotalNs, detectMaxNs;
 
-        void record(long packStartNs, long packEndNs, long detectStartNs, long detectEndNs) {
-            if (frames == 0) startNs = packStartNs;
-            endNs = detectEndNs;
+        void record(long packStartNs, long packEndNs, long queuedNs, long nativeStartNs,
+                long nativeEndNs, long detectNs, long operationId) {
+            if (frames == 0) {
+                startNs = packStartNs;
+                firstOperationId = operationId;
+            }
+            endNs = nativeEndNs;
+            lastOperationId = operationId;
             frames++;
             long packNs = packEndNs - packStartNs;
-            long detectNs = detectEndNs - detectStartNs;
+            long queueNs = nativeStartNs - queuedNs;
+            long nativeNs = nativeEndNs - nativeStartNs;
             packTotalNs += packNs;
             packMaxNs = Math.max(packMaxNs, packNs);
+            nativeQueueTotalNs += queueNs;
+            nativeQueueMaxNs = Math.max(nativeQueueMaxNs, queueNs);
+            nativeRunTotalNs += nativeNs;
+            nativeRunMaxNs = Math.max(nativeRunMaxNs, nativeNs);
             detectTotalNs += detectNs;
             detectMaxNs = Math.max(detectMaxNs, detectNs);
         }
@@ -1734,7 +2415,9 @@ public final class MotionDetectorShellMain {
 
         void reset() {
             frames = startNs = endNs = 0;
-            packTotalNs = packMaxNs = detectTotalNs = detectMaxNs = 0;
+            firstOperationId = lastOperationId = 0L;
+            packTotalNs = packMaxNs = nativeQueueTotalNs = nativeQueueMaxNs = 0;
+            nativeRunTotalNs = nativeRunMaxNs = detectTotalNs = detectMaxNs = 0;
         }
     }
 
@@ -1814,6 +2497,126 @@ public final class MotionDetectorShellMain {
         return cameraOperation(operation, id, detector, null, 0);
     }
 
+    private void submitCameraOperation(int operation, String id, Surface detector,
+            String operationName, CameraOperationCompletion completion) {
+        long operationId = operationSequence.incrementAndGet();
+        long queuedNs = SystemClock.elapsedRealtimeNanos();
+        try {
+            hostOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                boolean accepted = false;
+                Throwable failure = null;
+                try { accepted = cameraOperation(operation, id, detector); }
+                catch (Throwable error) { failure = error; }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                CameraOperationResult result = new CameraOperationResult(operationId,
+                        queuedNs, startedNs, finishedNs, accepted, failure);
+                control.post(() -> {
+                    logEvent("motion_camera_host_operation", id,
+                            "operation_id", result.operationId, "operation", operationName,
+                            "queue_ms", nanosToMillis(result.startedNs - result.queuedNs),
+                            "run_ms", nanosToMillis(result.finishedNs - result.startedNs),
+                            "outcome", result.failure != null ? "error" : result.accepted ? "accepted" : "refused",
+                            "error", result.failure == null ? "" : summary(result.failure),
+                            "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                            "context_package", systemContext.getPackageName(),
+                            "thread", "motion-camera-host-ops");
+                    completion.complete(result);
+                });
+            });
+        } catch (Throwable error) {
+            long now = SystemClock.elapsedRealtimeNanos();
+            CameraOperationResult result = new CameraOperationResult(operationId,
+                    queuedNs, now, now, false, error);
+            control.post(() -> {
+                logEvent("motion_camera_host_operation", id,
+                        "operation_id", result.operationId, "operation", operationName,
+                        "queue_ms", nanosToMillis(result.startedNs - result.queuedNs),
+                        "run_ms", 0.0, "outcome", "error", "error", summary(error),
+                        "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                        "context_package", systemContext.getPackageName(),
+                        "thread", "motion-detector-control");
+                completion.complete(result);
+            });
+        }
+    }
+
+    private void submitTeardownHostOperation(String id, long generation,
+            boolean unsubscribe, boolean releaseWake, boolean unbind) {
+        teardownHostOperationPending = true;
+        long operationId = operationSequence.incrementAndGet();
+        long queuedNs = SystemClock.elapsedRealtimeNanos();
+        try {
+            hostOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                long telemetryNs = 0L, wakeNs = 0L, unbindNs = 0L;
+                Throwable telemetryFailure = null, wakeFailure = null, unbindFailure = null;
+                boolean unbound = false;
+                if (unsubscribe) {
+                    long stageNs = SystemClock.elapsedRealtimeNanos();
+                    try { setMotionTelemetryDemand(id, false); }
+                    catch (Throwable error) { telemetryFailure = error; }
+                    telemetryNs = SystemClock.elapsedRealtimeNanos() - stageNs;
+                }
+                if (releaseWake) {
+                    long stageNs = SystemClock.elapsedRealtimeNanos();
+                    try { cameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null, null, 0); }
+                    catch (Throwable error) { wakeFailure = error; }
+                    wakeNs = SystemClock.elapsedRealtimeNanos() - stageNs;
+                }
+                if (unbind) {
+                    long stageNs = SystemClock.elapsedRealtimeNanos();
+                    try {
+                        if (!cameraOperation(MotionDetectorProtocol.CAMERA_UNBIND_WORKER, id, null, null, 0))
+                            throw new IllegalStateException("camera runtime did not confirm Motion worker unbind");
+                        unbound = true;
+                    } catch (Throwable error) { unbindFailure = error; }
+                    unbindNs = SystemClock.elapsedRealtimeNanos() - stageNs;
+                }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                TeardownHostResult result = new TeardownHostResult(operationId, queuedNs,
+                        startedNs, finishedNs, telemetryNs, wakeNs, unbindNs, unbound,
+                        telemetryFailure, wakeFailure, unbindFailure);
+                control.post(() -> onTeardownHostOperationComplete(id, generation, result));
+            });
+        } catch (Throwable error) {
+            teardownHostOperationPending = false;
+            sendError(id, "teardown_host_queue", summary(error));
+        }
+    }
+
+    private void onTeardownHostOperationComplete(String id, long generation, TeardownHostResult result) {
+        if (!sameSession(id) || !teardownPending || generation != teardownGeneration
+                || generation != sessionGeneration) return;
+        teardownHostOperationPending = false;
+        logEvent("motion_camera_host_operation", id,
+                "operation_id", result.operationId, "operation", "teardown",
+                "queue_ms", nanosToMillis(result.startedNs - result.queuedNs),
+                "run_ms", nanosToMillis(result.finishedNs - result.startedNs),
+                "telemetry_unsubscribe_ms", nanosToMillis(result.telemetryNs),
+                "wake_release_ms", nanosToMillis(result.wakeNs),
+                "worker_unbind_ms", nanosToMillis(result.unbindNs),
+                "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                "context_package", systemContext.getPackageName(),
+                "thread", "motion-camera-host-ops");
+        if (result.telemetryFailure != null)
+            sendError(id, "telemetry_unsubscribe", summary(result.telemetryFailure));
+        if (result.wakeFailure != null)
+            sendError(id, "wake_release", summary(result.wakeFailure));
+        if (result.unbindFailure != null) {
+            sendError(id, "worker_unbind", summary(result.unbindFailure));
+            logEvent("motion_teardown_pending", id, "resource", "camera_host",
+                    "reason", summary(result.unbindFailure));
+        }
+        if (result.unbound) {
+            teardownHostUnbound = true;
+            teardownSurfacesDrained = true;
+            stopRecording(teardownReason, true);
+            detachAndCloseReader(true);
+        }
+        continuePendingTeardown();
+    }
+
     private void requestWarningWake(String id) {
         if (!sameSession(id) || !eligible || warning || warningClosing || sessionRuntime.warningRetryBlocked()
                 || config == null || !config.warningEnabled || cameraChargeState.isBlocked()) return;
@@ -1835,19 +2638,34 @@ public final class MotionDetectorShellMain {
         int generation = ++warningWindowGeneration;
         control.removeCallbacks(warningTimeout);
         holdCpu(true);
-        try {
-            if (!cameraOperation(MotionDetectorProtocol.CAMERA_OWN_WAKE, id, null, null, 0))
-                throw new IllegalStateException("camera host refused Motion-owned wake token");
-            warningWakeTokenOwned = true;
-            screen.wakeForWarning(id, generation);
-            sendStatus(id, "warning_waking", "shell registered the current OFF-state camera producer before wake reason 13");
-        } catch (Throwable error) {
-            sessionRuntime.blockWarningRetry();
-            warningWindowFailure = summary(error);
-            sendError(id, "wake_registration", warningWindowFailure);
-            sendStatus(id, "warning_error", warningWindowFailure);
-            finishWarning(id, false);
-        }
+        submitCameraOperation(MotionDetectorProtocol.CAMERA_OWN_WAKE, id, null,
+                "wake_acquire", result -> {
+                    if (!sameSession(id) || generation != warningWindowGeneration || !warning) {
+                        if (result.accepted) releaseStaleWake(id);
+                        return;
+                    }
+                    if (result.failure != null || !result.accepted) {
+                        Throwable failure = result.failure == null
+                                ? new IllegalStateException("camera host refused Motion-owned wake token")
+                                : result.failure;
+                        sessionRuntime.blockWarningRetry();
+                        warningWindowFailure = summary(failure);
+                        sendError(id, "wake_registration", warningWindowFailure);
+                        sendStatus(id, "warning_error", warningWindowFailure);
+                        finishWarning(id, false);
+                        return;
+                    }
+                    warningWakeTokenOwned = true;
+                    screen.wakeForWarning(id, generation);
+                    sendStatus(id, "warning_waking", "shell registered the current OFF-state camera producer before wake reason 13");
+                });
+    }
+
+    private void releaseStaleWake(String id) {
+        submitCameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null,
+                "stale_wake_release", result -> {
+                    if (result.failure != null) sendError(id, "wake_release", summary(result.failure));
+                });
     }
 
     private void launchWarningWindow(String id, int generation) {
@@ -2180,8 +2998,10 @@ public final class MotionDetectorShellMain {
     private void endOwnedWake(String id) {
         if (!warningWakeTokenOwned) return;
         warningWakeTokenOwned = false;
-        try { cameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null, null, 0); }
-        catch (Throwable error) { sendError(id, "wake_release", summary(error)); }
+        submitCameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null,
+                "wake_release", result -> {
+                    if (result.failure != null) sendError(id, "wake_release", summary(result.failure));
+                });
     }
 
     private void holdCpu(boolean required) {
@@ -2628,17 +3448,45 @@ public final class MotionDetectorShellMain {
         recordingGeneration++;
         String id = sessionId;
         if (recordingAttached && id != null && !surfacesDrained) {
+            if (recordingDetachPending) return false;
             deliberatelyDetachedProducerReason = "motion_recording_stop";
-            try {
-                if (!cameraOperation(MotionDetectorProtocol.CAMERA_RECORD_DETACH, id, null, null, 0))
-                    throw new IllegalStateException("camera owner did not confirm Motion encoder detach");
-                recordingAttached = false;
-            } catch (Throwable error) {
-                if (sameSession(id)) sendError(id, "recording_detach", summary(error));
-                logEvent("motion_teardown_pending", id, "resource", "encoder_surface",
-                        "reason", summary(error));
-                return false;
-            }
+            long generation = sessionGeneration;
+            recordingDetachPending = true;
+            submitCameraOperation(MotionDetectorProtocol.CAMERA_RECORD_DETACH, id, null,
+                    "recording_surface_detach", result -> {
+                        recordingDetachPending = false;
+                        ManualCheck check = manualCheck;
+                        boolean checkWaiting = check != null && check.completing
+                                && check.waitingForRecordingDetach;
+                        if (!sameSession(id)) return;
+                        if (result.failure != null || !result.accepted) {
+                            Throwable failure = result.failure == null
+                                    ? new IllegalStateException("camera owner did not confirm Motion encoder detach")
+                                    : result.failure;
+                            sendError(id, "recording_detach", summary(failure));
+                            logEvent("motion_teardown_pending", id, "resource", "encoder_surface",
+                                    "reason", summary(failure));
+                            if (checkWaiting) {
+                                check.waitingForRecordingDetach = false;
+                                check.cleanupFailure = failure;
+                                continueManualCheckCleanup(check);
+                            }
+                            if (teardownPending) continuePendingTeardown();
+                            return;
+                        }
+                        recordingAttached = false;
+                        boolean stopped = stopRecording(reason, false);
+                        if (checkWaiting) {
+                            check.waitingForRecordingDetach = false;
+                            if (!stopped) check.cleanupFailure = new IllegalStateException(
+                                    "encoder cleanup remains pending after Surface detach");
+                            continueManualCheckCleanup(check);
+                        }
+                        if (!operationIsCurrent(id, generation, sessionId, sessionGeneration)
+                                && !teardownPending) return;
+                        finishRecordingStop(id, reason, stopped);
+                    });
+            return false;
         } else if (surfacesDrained) recordingAttached = false;
 
         MotionRecordingOutput oldComposer = composer;
@@ -2699,6 +3547,18 @@ public final class MotionDetectorShellMain {
         return !recordingAttached && composer == null && recorder == null;
     }
 
+    private void finishRecordingStop(String id, String reason, boolean stopped) {
+        if (teardownPending) continuePendingTeardown();
+        else if (stopped && sameSession(id)) {
+            if (eligible && config != null && config.recordingEnabled) startRecording(id);
+            else if (!eligible && manualCheck == null) {
+                if (recordingTailPending()) finishRecordingTailIfReady(id);
+                else detachAndCloseReader(false);
+            }
+        }
+        updateCameraDemand();
+    }
+
     private void shutdownFromHost(String id, String reason, boolean surfacesDrained) {
         if (!sameSession(id)) return;
         pendingConfig = null;
@@ -2729,6 +3589,12 @@ public final class MotionDetectorShellMain {
         if (check != null) completeCheck(check, MotionCheckupClient.NOT_CHECKED, "cancelled", reason, false);
         if (teardownPending && sameSession(id)) return;
         teardownPending = true;
+        chargeStartupPending = false;
+        chargeHandlingEnabled = false;
+        synchronized (analysisLock) {
+            sessionGeneration++;
+            teardownGeneration = sessionGeneration;
+        }
         clearRemoteViewLeases();
         cameraPreparation.stop();
         control.removeCallbacks(telemetryRefresh);
@@ -2774,30 +3640,23 @@ public final class MotionDetectorShellMain {
         boolean recorderStopped = stopRecording(teardownReason, teardownSurfacesDrained);
         boolean readerDetached = detachAndCloseReader(teardownSurfacesDrained);
 
-        if (teardownNotifyHost && workerBound && !teardownDemandCleared) {
-            teardownDemandCleared = true;
-            try { setMotionTelemetryDemand(id, false); }
-            catch (Throwable error) { sendError(id, "telemetry_unsubscribe", summary(error)); }
-            try { cameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null, null, 0); }
-            catch (Throwable ignored) { }
+        boolean surfacesNeedHostDrain = (!recorderStopped && recordingAttached)
+                || (!readerDetached && attached) || readerAttachPending || readerDetachPending
+                || recordingDetachPending;
+        boolean unsubscribe = teardownNotifyHost && workerBound && !teardownDemandCleared;
+        boolean unbind = workerBound && !teardownHostUnbound && !teardownUnbindAttempted
+                && (teardownNotifyHost || surfacesNeedHostDrain);
+        if (teardownHostOperationPending) {
+            state = "teardown_pending";
+            return;
         }
-
-        boolean surfacesNeedHostDrain = !recorderStopped && recordingAttached || !readerDetached && attached;
-        if (workerBound && !teardownHostUnbound && !teardownUnbindAttempted
-                && (teardownNotifyHost || surfacesNeedHostDrain)) {
-            teardownUnbindAttempted = true;
-            try {
-                if (!cameraOperation(MotionDetectorProtocol.CAMERA_UNBIND_WORKER, id, null, null, 0))
-                    throw new IllegalStateException("camera runtime did not confirm Motion worker unbind");
-                teardownHostUnbound = true;
-                teardownSurfacesDrained = true;
-                recorderStopped = stopRecording(teardownReason, true);
-                readerDetached = detachAndCloseReader(true);
-            } catch (Throwable error) {
-                sendError(id, "worker_unbind", summary(error));
-                logEvent("motion_teardown_pending", id, "resource", "camera_host",
-                        "reason", summary(error));
-            }
+        if (unsubscribe || unbind) {
+            if (unsubscribe) teardownDemandCleared = true;
+            if (unbind) teardownUnbindAttempted = true;
+            submitTeardownHostOperation(id, teardownGeneration, unsubscribe,
+                    unsubscribe, unbind);
+            state = "teardown_pending";
+            return;
         }
 
         boolean resourcesSafe = recorderStopped && readerDetached
@@ -2811,7 +3670,31 @@ public final class MotionDetectorShellMain {
             return;
         }
 
-        deleteNative();
+        if (nativePreparationPending || analysisInFlight()) {
+            state = "teardown_pending";
+            return;
+        }
+        if (!nativeDeleteComplete) {
+            if (!nativeDeletePending) {
+                nativeDeletePending = true;
+                submitNativeDelete(id, "teardown", result -> {
+                    if (!sameSession(id) || !teardownPending
+                            || !operationIsCurrent(id, teardownGeneration, sessionId, sessionGeneration)) return;
+                    nativeDeletePending = false;
+                    if (result.failure != null) {
+                        sendError(id, "native_teardown", summary(result.failure));
+                        state = "teardown_pending";
+                        return;
+                    }
+                    for (NativeCleanupFailure cleanup : result.failures)
+                        recordNativeCleanupFailure(cleanup.operation, cleanup.failure, null);
+                    nativeDeleteComplete = true;
+                    continuePendingTeardown();
+                });
+            }
+            state = "teardown_pending";
+            return;
+        }
         control.removeCallbacks(warningCloseTimeout);
         warningWindowGeneration++;
         warningWindowCommands = null;
@@ -2840,11 +3723,26 @@ public final class MotionDetectorShellMain {
         String finishedReason = teardownReason;
         if (teardownHostShutdown && teardownSurfacesDrained) workerBound = false;
         teardownPending = false;
+        teardownGeneration = 0L;
+        teardownHostOperationPending = false;
+        nativePreparationPending = false;
+        nativeDeletePending = false;
+        nativeDeleteComplete = false;
+        readerAttachPending = false;
+        readerDetachPending = false;
+        recordingDetachPending = false;
         teardownCallback = null;
         cameraHostPending = false;
         cameraHostReadyDuringBinding = false;
         sessionId = null;
         state = finishedState;
+        ManualCheck teardownCheck = manualCheck;
+        if (teardownCheck != null && teardownCheck.id.equals(id)
+                && teardownCheck.completing && teardownCheck.waitingForSessionTeardown) {
+            control.removeCallbacks(teardownCheck.timeout);
+            teardownCheck.waitingForSessionTeardown = false;
+            finishManualCheck(teardownCheck);
+        }
         IBinder statusCallback = callback == null ? pendingCallback : callback;
         if ("suspended".equals(finishedState))
             sendStatus(statusCallback, id, "suspended", "explicit host shutdown; saved Motion config retained until authenticated configure");
@@ -2875,44 +3773,103 @@ public final class MotionDetectorShellMain {
     private boolean detachAndCloseReader(boolean surfacesDrained) {
         if (composer != null) return false; // Recording tail still owns the same OEM source.
         flushFramePerformance();
+        if (readerAttachPending || readerDetachPending && !surfacesDrained) return false;
         if (attached && !surfacesDrained) {
+            String id = sessionId;
+            if (id == null) return false;
             deliberatelyDetachedProducerReason = "motion_detector_idle";
-            try {
-                if (!cameraOperation(MotionDetectorProtocol.CAMERA_DETACH, sessionId, null))
-                    throw new IllegalStateException("existing camera owner did not confirm Surface detach");
-                attached = false;
-            } catch (Throwable error) {
-                String id = sessionId;
-                if (id != null) sendError(id, "camera_detach", summary(error));
-                return false;
-            }
-        } else if (surfacesDrained) attached = false;
-        if (attached) return false;
+            ImageReader ownerReader = reader;
+            MotionSharedSource ownerSource = sharedSource;
+            Surface ownerSurface = surface;
+            ManualCheck check = manualCheck;
+            readerDetachPending = true;
+            submitCameraOperation(MotionDetectorProtocol.CAMERA_DETACH, id, null,
+                    "surface_detach", result -> {
+                        readerDetachPending = false;
+                        if (teardownPending && teardownSurfacesDrained) {
+                            attached = false;
+                            closeReaderLocally(ownerReader, ownerSource, ownerSurface);
+                            if (check != null && check.completing
+                                    && check.waitingForReaderDetach) {
+                                check.waitingForReaderDetach = false;
+                                continueManualCheckCleanup(check);
+                            }
+                            continuePendingTeardown();
+                            return;
+                        }
+                        if (!sameSession(id) || reader != ownerReader) return;
+                        if (result.failure != null || !result.accepted) {
+                            Throwable failure = result.failure == null
+                                    ? new IllegalStateException("existing camera owner did not confirm Surface detach")
+                                    : result.failure;
+                            sendError(id, "camera_detach", summary(failure));
+                            if (check != null && check.completing
+                                    && check.waitingForReaderDetach) {
+                                check.waitingForReaderDetach = false;
+                                check.cleanupFailure = failure;
+                                continueManualCheckCleanup(check);
+                            }
+                            if (teardownPending) continuePendingTeardown();
+                            return;
+                        }
+                        attached = false;
+                        if (!closeReaderLocally(ownerReader, ownerSource, ownerSurface)) {
+                            if (check != null && check.completing
+                                    && check.waitingForReaderDetach) {
+                                check.waitingForReaderDetach = false;
+                                check.cleanupFailure = new IllegalStateException(
+                                        "camera consumer resources were not fully released after Surface detach");
+                                continueManualCheckCleanup(check);
+                            }
+                            if (teardownPending) continuePendingTeardown();
+                            return;
+                        }
+                        if (check != null && check.completing
+                                && check.waitingForReaderDetach) {
+                            check.waitingForReaderDetach = false;
+                            continueManualCheckCleanup(check);
+                        }
+                        if (teardownPending) continuePendingTeardown();
+                        else if (sessionRuntime.armed() && !eligible && prepared
+                                && !cameraChargeState.isBlocked()) {
+                            try { setEligibleOnControl(id, true); }
+                            catch (Throwable error) { fail(id, "camera_reattach", error); }
+                        } else if (!eligible && "recording_detach_pending".equals(state)) {
+                            state = "prepared";
+                            sendStatus(id, state, "shared Surface detach was confirmed");
+                        }
+                    });
+            return false;
+        }
+        if (surfacesDrained) {
+            attached = false;
+            readerDetachPending = false;
+        } else if (attached) return false;
+        return closeReaderLocally(reader, sharedSource, surface);
+    }
 
-        ImageReader oldReader = reader;
-        Surface oldSurface = surface;
+    private boolean closeReaderLocally(ImageReader oldReader, MotionSharedSource oldSource,
+            Surface oldSurface) {
         if (oldReader != null) oldReader.setOnImageAvailableListener(null, null);
         try {
-            if (sharedSource != null) sharedSource.close();
-            sharedSource = null;
+            if (oldSource != null) oldSource.close();
+            if (sharedSource == oldSource) sharedSource = null;
         } catch (Throwable error) {
             if (sessionId != null) sendError(sessionId, "shared_source_close", summary(error));
             return false;
         }
         try {
             if (oldReader != null) oldReader.close();
-            reader = null;
+            if (reader == oldReader) reader = null;
         } catch (Throwable error) {
-            String id = sessionId;
-            if (id != null) sendError(id, "camera_reader_close", summary(error));
+            if (sessionId != null) sendError(sessionId, "camera_reader_close", summary(error));
             return false;
         }
         try {
             if (oldSurface != null) oldSurface.release();
-            surface = null;
+            if (surface == oldSurface) surface = null;
         } catch (Throwable error) {
-            String id = sessionId;
-            if (id != null) sendError(id, "camera_surface_release", summary(error));
+            if (sessionId != null) sendError(sessionId, "camera_surface_release", summary(error));
             return false;
         }
         return true;
@@ -2931,21 +3888,62 @@ public final class MotionDetectorShellMain {
         beginTeardown(id, "runtime_error", true, false, false, appCallback, "error");
     }
 
-    private void deleteNative() { deleteNative(null); }
-
-    private void deleteNative(Throwable primaryFailure) {
+    private ArrayList<NativeCleanupFailure> deleteNative(Throwable primaryFailure) {
+        ArrayList<NativeCleanupFailure> failures = new ArrayList<>();
         if (nativeInitialized) {
             nativeInitialized = false;
             try { nativeApi.delete(); }
-            catch (Throwable error) { recordNativeCleanupFailure("native_delete", error, primaryFailure); }
+            catch (Throwable error) { preserveNativeCleanupFailure("native_delete", error, primaryFailure, failures); }
         }
         nativeApi = null;
         nativeInput = null;
         if (assets != null) {
             try { assets.close(); }
-            catch (Throwable error) { recordNativeCleanupFailure("asset_close", error, primaryFailure); }
+            catch (Throwable error) { preserveNativeCleanupFailure("asset_close", error, primaryFailure, failures); }
             assets = null;
         }
+        return failures;
+    }
+
+    private void submitNativeDelete(String id, String operation, NativeDeleteCompletion completion) {
+        OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
+                operation, id, SystemClock.elapsedRealtimeNanos());
+        try {
+            nativeOperations.execute(() -> {
+                long startedNs = SystemClock.elapsedRealtimeNanos();
+                ArrayList<NativeCleanupFailure> failures = new ArrayList<>();
+                Throwable failure = null;
+                try { failures = deleteNative(null); }
+                catch (Throwable error) { failure = error; }
+                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                NativeDeleteResult result = new NativeDeleteResult(trace.id, trace.queuedNs,
+                        startedNs, finishedNs, failures, failure);
+                control.post(() -> {
+                    logNativeOperation(id, operation, result.operationId, result.queuedNs,
+                            result.startedNs, result.finishedNs, 0L, 0L,
+                            result.failure == null ? "ok" : "error",
+                            result.failure == null ? "" : summary(result.failure), "native_teardown");
+                    completion.complete(result);
+                });
+            });
+        } catch (Throwable error) {
+            long now = SystemClock.elapsedRealtimeNanos();
+            NativeDeleteResult result = new NativeDeleteResult(trace.id, trace.queuedNs,
+                    now, now, new ArrayList<>(), error);
+            control.post(() -> {
+                logNativeOperation(id, operation, result.operationId, result.queuedNs,
+                        result.startedNs, result.finishedNs, 0L, 0L, "error",
+                        summary(error), "native_queue");
+                completion.complete(result);
+            });
+        }
+    }
+
+    private static void preserveNativeCleanupFailure(String operation, Throwable failure,
+            Throwable primaryFailure, ArrayList<NativeCleanupFailure> failures) {
+        if (primaryFailure != null) {
+            if (failure != primaryFailure) primaryFailure.addSuppressed(failure);
+        } else failures.add(new NativeCleanupFailure(operation, failure));
     }
 
     private void recordNativeCleanupFailure(String operation, Throwable failure, Throwable primaryFailure) {
@@ -2957,6 +3955,23 @@ public final class MotionDetectorShellMain {
         String reference = Process.myPid() + "-" + UUID.randomUUID().toString().replace("-", "");
         CameraViewingDiagnostics.failure("motion_native_cleanup_" + operation + "_ref_" + reference,
                 "shell_worker", failure);
+    }
+
+    private <T> T awaitPendingResult(PendingResult<T> result, String operation) throws Exception {
+        try { return result.get(CONTROL_TIMEOUT_MS, TimeUnit.MILLISECONDS); }
+        catch (InterruptedException interrupted) {
+            result.cancel(false);
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            result.cancel(false);
+            throw new IllegalStateException(operation + " timed out after " + CONTROL_TIMEOUT_MS + " ms", timeout);
+        } catch (java.util.concurrent.ExecutionException failed) {
+            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw new IllegalStateException(operation + " failed", cause);
+        }
     }
 
     private <T> T callControl(ControlCall<T> call) throws Exception {
@@ -3018,6 +4033,12 @@ public final class MotionDetectorShellMain {
     private void requireSession(String id) {
         if (!sameSession(id) || shuttingDown || sessionRuntime.suspended())
             throw new IllegalStateException("motion session expired");
+    }
+
+    static boolean operationIsCurrent(String operationSession, long operationGeneration,
+            String currentSession, long currentGeneration) {
+        return operationSession != null && operationSession.equals(currentSession)
+                && operationGeneration == currentGeneration;
     }
 
     private boolean sameSession(String id) { return id != null && id.equals(sessionId); }

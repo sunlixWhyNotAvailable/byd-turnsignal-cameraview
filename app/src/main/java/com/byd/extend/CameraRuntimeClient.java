@@ -12,6 +12,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
 import android.provider.Settings;
+import org.json.JSONObject;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -30,6 +31,12 @@ final class CameraRuntimeClient {
     private volatile boolean detached;
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
+    private String lastVehiclePowerState;
+    private long lastVehiclePowerSourceEpoch = -1;
+    private long lastVehiclePowerRevision = -1;
+    private boolean lastVehiclePowerKnown;
+    private boolean lastVehiclePowerOff;
+    private int lastVehiclePowerFailureCount;
     private volatile OemCameraVisibilityRuntime pano;
     private boolean platformRegistered;
     private final BroadcastReceiver platformReceiver = new BroadcastReceiver() {
@@ -230,6 +237,7 @@ final class CameraRuntimeClient {
         if (detached || shell == null) return;
         if (cluster == null)
             cluster = new ClusterFullscreenController(context, settings, handler, this::platformEvent);
+        if (lastVehiclePowerState != null) cluster.acceptEvent(lastVehiclePowerState);
         if (!platformRegistered) {
             IntentFilter filter = new IntentFilter();
             filter.addAction(Intent.ACTION_SCREEN_ON);
@@ -264,8 +272,60 @@ final class CameraRuntimeClient {
     }
 
     synchronized void acceptPlatformEvent(String line) {
-        if (!detached && cluster != null && line.contains("\"shell_power_state\""))
-            cluster.acceptEvent(line);
+        if (detached || line == null) return;
+        try {
+            String kind = new JSONObject(line).optString("kind");
+            if ("camera_vehicle_power_state".equals(kind)) {
+                JSONObject event = new JSONObject(line);
+                Object epochValue = event.opt("source_epoch");
+                Object revisionValue = event.opt("revision");
+                Object knownValue = event.opt("known");
+                Object offValue = event.opt("off");
+                Object failuresValue = event.opt("consecutive_failed_reads");
+                if (!(epochValue instanceof Number) || !(revisionValue instanceof Number)
+                        || !(knownValue instanceof Boolean) || !(offValue instanceof Boolean)
+                        || !(failuresValue instanceof Number)) {
+                    platformEvent("camera_runtime_platform_event_error", "stage",
+                            "invalid_camera_power_state", "reason", "required field missing");
+                    return;
+                }
+                long sourceEpoch = ((Number) epochValue).longValue();
+                long revision = ((Number) revisionValue).longValue();
+                boolean known = (Boolean) knownValue;
+                boolean off = (Boolean) offValue;
+                int failures = ((Number) failuresValue).intValue();
+                if (sourceEpoch < 0 || revision < 0 || failures < 0 || failures > 5
+                        || off && !known || known && failures == 5) {
+                    platformEvent("camera_runtime_platform_event_error", "stage",
+                            "invalid_camera_power_state", "reason", "field out of range");
+                    return;
+                }
+                if (sourceEpoch < lastVehiclePowerSourceEpoch
+                        || sourceEpoch == lastVehiclePowerSourceEpoch
+                        && revision < lastVehiclePowerRevision) return;
+                if (sourceEpoch == lastVehiclePowerSourceEpoch
+                        && revision == lastVehiclePowerRevision
+                        && (known != lastVehiclePowerKnown || off != lastVehiclePowerOff
+                        || failures != lastVehiclePowerFailureCount)) {
+                    platformEvent("camera_runtime_platform_event_error", "stage",
+                            "invalid_camera_power_state", "reason",
+                            "decision changed without a new revision");
+                    return;
+                }
+                lastVehiclePowerState = line;
+                lastVehiclePowerSourceEpoch = sourceEpoch;
+                lastVehiclePowerRevision = revision;
+                lastVehiclePowerKnown = known;
+                lastVehiclePowerOff = off;
+                lastVehiclePowerFailureCount = failures;
+                if (cluster != null) cluster.acceptEvent(line);
+            } else if ("shell_power_state".equals(kind) && cluster != null) {
+                cluster.acceptEvent(line);
+            }
+        } catch (org.json.JSONException | IllegalArgumentException failure) {
+            platformEvent("camera_runtime_platform_event_error", "stage", "parse_helper_event",
+                    "error", failure.toString());
+        }
     }
 
     private synchronized void platformCommand(int operation, int value, String source) {

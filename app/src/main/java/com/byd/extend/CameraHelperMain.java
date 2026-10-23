@@ -102,9 +102,6 @@ final class CameraHelperMain {
         private int producerCameraId = -1;
         private int producerEpoch;
         private int sourceHubGeneration;
-        private int requestedFrameRate = CameraFrameRate.DEFAULT;
-        private boolean frameRateRequestAccepted;
-        private long frameRateRequestElapsedMs;
         private DirectCameraSourceHub rawSourceHub;
         private boolean unconfirmedOneShotOwner;
         private Surface surface;
@@ -122,17 +119,6 @@ final class CameraHelperMain {
         private int reverseStockRetainedCallbackEpoch;
         private MotionRecordingOutput motionRecordingOutput;
         private MotionRecordingOutput viewingOutput;
-        private CameraFpsOemDiagnostics fpsOemDiagnostics;
-        private String fpsOperationId;
-        private long fpsOperationStartedAtMs;
-        private int fpsOldProducerEpoch;
-        private int fpsMeasurementSourceIndex = -1;
-        private boolean fpsHubFrameMeasurement;
-        private boolean fpsRebindWarmWasScheduled;
-        private long fpsRebindWarmRemainingMs;
-        private long fpsWindowId;
-        private Runnable fpsFirstFrameTimeout;
-        private Runnable fpsMeasurementFinish;
         private final ConsumerGroup activityGroup = persistentSession.activityGroup;
         private final ConsumerGroup overlayGroup = persistentSession.overlayGroup;
         private final ConsumerGroup parkingGroup = persistentSession.parkingGroup;
@@ -797,7 +783,6 @@ final class CameraHelperMain {
                         new Class<?>[]{Surface.class, int.class}, requestedSurface, requestedIndex);
                 boolean set = invokeBoolean(avm, opened, "setPreviewSurface",
                         new Class<?>[]{Surface.class, int.class}, requestedSurface, requestedIndex);
-                requestCameraFrameRate(opened, requestedCameraId, requestedCameraTag, "open");
                 boolean started = invokeBoolean(avm, opened, "startPreview", new Class<?>[0]);
                 if (!set || !started) {
                     throw new IllegalStateException(
@@ -1229,7 +1214,6 @@ final class CameraHelperMain {
                         }
                     }
                 }
-                requestCameraFrameRate(opened, requestedCameraId, "pano_h", "open_multi");
                 boolean started = invokeBoolean(avm, opened,
                         "startPreview", new Class<?>[0]);
                 if (!started) throw new IllegalStateException("startPreview returned false");
@@ -1293,8 +1277,8 @@ final class CameraHelperMain {
         void prepareOverlayWindow(
                 CameraShellProtocol.OverlaySpec spec,
                 Consumer<TurnSignalController.OverlaySurface> surfaceSink,
-                Runnable preparedSink) {
-            turnController.prepareCameraOverlay(spec, surfaceSink, preparedSink);
+                Consumer<Integer> prepareResultSink) {
+            turnController.prepareCameraOverlay(spec, surfaceSink, prepareResultSink);
         }
 
         void armOverlayFirstFrame(OverlayFrameArm arm) {
@@ -1317,19 +1301,42 @@ final class CameraHelperMain {
         synchronized void setVehiclePowerOff(boolean off) {
             if (persistentSession.vehiclePowerOff == off) return;
             persistentSession.vehiclePowerOff = off;
+            persistentSession.clearVehiclePowerOffReconcileFailure();
             emit("camera_vehicle_power_gate", "off", off,
                     "motion_retained", persistentSession.motionDetectionWanted);
+            ArrayList<String> retryDirectDetachOwners = new ArrayList<>();
             if (off) {
                 cancelReverseWarmExpiry();
                 persistentSession.reverseWarmLease.clear();
                 // Close only ordinary consumers; Motion owns its detector/recorder independently.
                 for (String owner : new String[]{CAMERA_OWNER_ACTIVITY, CAMERA_OWNER_OVERLAY,
                         CAMERA_OWNER_REVERSE, CAMERA_OWNER_PARKING, CAMERA_OWNER_MIRROR}) {
-                    closeCameraForOwner(owner, "vehicle_power_off");
+                    String closeResult = closeCameraForOwner(owner, "vehicle_power_off");
+                    if (!isSuccessfulCameraCloseResult(closeResult)) {
+                        emit("camera_vehicle_power_off_close_unconfirmed",
+                                "camera_owner", owner,
+                                "producer_epoch", producerEpoch,
+                                "close_result", closeResult);
+                        if (persistentSession.hasUnconfirmedOffDirectDetach(owner)) {
+                            retryDirectDetachOwners.add(owner);
+                        }
+                    }
                 }
             }
-            updateSourceDemand("vehicle_power", () ->
-                    persistentSession.reconcileIfOpen(persistentPort()));
+            updateSourceDemand("vehicle_power", () -> {
+                for (String owner : retryDirectDetachOwners) {
+                    String retryResult = closeCameraForOwner(
+                            owner, "vehicle_power_off_reconcile");
+                    if (!isSuccessfulCameraCloseResult(retryResult)) {
+                        emit("camera_vehicle_power_off_close_unconfirmed",
+                                "camera_owner", owner,
+                                "producer_epoch", producerEpoch,
+                                "close_result", retryResult,
+                                "retry", true);
+                    }
+                }
+                persistentSession.reconcileIfOpen(persistentPort());
+            });
         }
 
         synchronized void setBlindSourceDemand(boolean rearEnabled, boolean frontEnabled) {
@@ -1543,7 +1550,23 @@ final class CameraHelperMain {
                 emit("camera_error", "stage", "source_demand_reconcile_failed",
                         "camera_owner", owner, "producer_epoch", producerEpoch,
                         "error", summary(error));
-                tearDownPersistentProducer("source_demand_reconcile_failed", error);
+                if (persistentSession.vehiclePowerOff) {
+                    emit("camera_error", "stage", "vehicle_power_off_source_reconcile_failed",
+                            "camera_owner", owner, "producer_epoch", producerEpoch,
+                            "error_stack", android.util.Log.getStackTraceString(error));
+                } else {
+                    tearDownPersistentProducer("source_demand_reconcile_failed", error);
+                }
+            }
+            if (persistentSession.vehiclePowerOff) {
+                Throwable powerOffFailure =
+                        persistentSession.takeVehiclePowerOffReconcileFailure();
+                if (powerOffFailure != null) {
+                    emit("camera_error", "stage", "vehicle_power_off_source_reconcile_failed",
+                            "camera_owner", owner, "producer_epoch", producerEpoch,
+                            "error", summary(powerOffFailure),
+                            "error_stack", android.util.Log.getStackTraceString(powerOffFailure));
+                }
             }
         }
 
@@ -1572,8 +1595,8 @@ final class CameraHelperMain {
         void prepareParkingOverlayWindow(
                 CameraShellProtocol.OverlaySpec spec,
                 Consumer<TurnSignalController.OverlaySurface> surfaceSink,
-                Runnable preparedSink) {
-            turnController.prepareCameraOverlay(spec, surfaceSink, preparedSink);
+                Consumer<Integer> prepareResultSink) {
+            turnController.prepareCameraOverlay(spec, surfaceSink, prepareResultSink);
         }
 
         void armParkingOverlayFirstFrame(OverlayFrameArm arm) {
@@ -1900,417 +1923,6 @@ final class CameraHelperMain {
             if (persistentPanoProducer) tearDownPersistentProducer(VEHICLE_WAKE_RECOVERY, null);
         }
 
-        private void requestCameraFrameRate(Object opened, int id, String tag, String reason) {
-            requestedFrameRate = CameraFrameRate.load(settings);
-            frameRateRequestElapsedMs = SystemClock.elapsedRealtime();
-            frameRateRequestAccepted = false;
-            String error = "";
-            try {
-                frameRateRequestAccepted = CameraFrameRate.request(opened, requestedFrameRate);
-            } catch (ReflectiveOperationException | RuntimeException failure) {
-                error = summary(failure);
-            }
-            emit("camera_frame_rate_request", "camera_id", id, "camera_tag", tag,
-                    "requested_fps", requestedFrameRate, "api_accepted", frameRateRequestAccepted,
-                    "effective_fps_verified", false, "reason", reason,
-                    "request_elapsed_ms", frameRateRequestElapsedMs, "error", error);
-        }
-
-        synchronized void applyCameraFrameRate() {
-            int requestedFps = CameraFrameRate.load(settings);
-            if (camera == null || requestedFrameRate == requestedFps) return;
-            if (persistentPanoProducer) reconnectPersistentCameraForFps(requestedFps);
-            else reconnectOneShotCameraForFps(requestedFps);
-        }
-
-        private void reconnectPersistentCameraForFps(int requestedFps) {
-            Object oldCamera = camera;
-            DirectCameraSourceHub oldHub = rawSourceHub;
-            PersistentCameraPort oldPort = new ReflectivePersistentCameraPort(oldCamera);
-            int cameraId = producerCameraId >= 0 ? producerCameraId : activeCameraId;
-            String cycleId = UUID.randomUUID().toString();
-            int oldEpoch = producerEpoch;
-            int oldHubGeneration = sourceHubGeneration;
-            int demandMask = persistentSession.retainedSourceDemandMask();
-            ConsumerGroup.Snapshot[] consumersBefore = persistentSession.activeSnapshots();
-            int measuredSource = firstDemandedIndex(demandMask);
-            beginFpsMeasurement(cycleId, cameraId, "pano_h", measuredSource,
-                    requestedFps, oldEpoch, measuredSource >= 0,
-                    measuredSource < 0 ? "no_direct_hub_source" : null);
-            emitFpsConsumerSnapshots(cycleId, "before_suspend", consumersBefore);
-            emit("camera_frame_rate_reconnect", "operation_id", cycleId,
-                    "stage", "stop_old_producer", "camera_id", cameraId,
-                    "camera_tag", "pano_h", "requested_fps", requestedFps,
-                    "old_producer_epoch", oldEpoch,
-                    "new_producer_epoch", oldEpoch + 1,
-                    "source_hub_generation", oldHubGeneration,
-                    "retained_source_demand_mask", demandMask,
-                    "geometry_untouched", true);
-
-            fpsRebindWarmWasScheduled = reverseWarmExpiry != null;
-            fpsRebindWarmRemainingMs = fpsRebindWarmWasScheduled
-                    ? Math.max(0L, reverseWarmExpiryAtMs - SystemClock.elapsedRealtime()) : 0L;
-            cancelReverseWarmExpiry();
-            sourceHubGeneration++;
-            ConsumerGroup.Snapshot[] retainedConsumers;
-            try {
-                retainedConsumers = persistentSession.suspendForPlannedReconnect(
-                        oldPort, accepted -> {
-                            if (fpsOemDiagnostics != null) {
-                                fpsOemDiagnostics.event("stop_preview_result",
-                                        "accepted", accepted,
-                                        "old_producer_epoch", oldEpoch);
-                            }
-                        });
-                emitFpsConsumerSnapshots(cycleId, "suspended_for_reconnect", retainedConsumers);
-            } catch (Throwable failure) {
-                emit("camera_frame_rate_restart_failed", "operation_id", cycleId,
-                        "requested_fps", requestedFps,
-                        "old_producer_epoch", oldEpoch,
-                        "producer_epoch", oldEpoch,
-                        "error", summary(failure));
-                finishFpsMeasurement("old_producer_stop_or_detach_failed");
-                tearDownPersistentProducer("frame_rate_restart_failed", failure);
-                return;
-            }
-
-            Throwable closeFailure = null;
-            try {
-                if (oldHub != null) oldHub.close();
-            } catch (Throwable failure) {
-                closeFailure = root(failure);
-            }
-            try {
-                oldPort.close();
-            } catch (Throwable failure) {
-                closeFailure = mergeFailure(closeFailure, failure);
-            }
-            if (closeFailure != null) {
-                emit("camera_frame_rate_restart_failed", "operation_id", cycleId,
-                        "requested_fps", requestedFps,
-                        "old_producer_epoch", oldEpoch,
-                        "producer_epoch", oldEpoch,
-                        "error", summary(closeFailure));
-                finishFpsMeasurement("old_producer_close_failed");
-                tearDownPersistentProducer("frame_rate_restart_failed", closeFailure);
-                return;
-            }
-            if (fpsOemDiagnostics != null) {
-                fpsOemDiagnostics.event("old_camera_close_result", "accepted", true,
-                        "old_producer_epoch", oldEpoch);
-            }
-
-            rawSourceHub = null;
-            persistentSession.fanout = null;
-            camera = null;
-            eventCallback = null;
-            persistentPanoProducer = false;
-            producerCameraId = -1;
-            producerEpoch = oldEpoch + 1;
-            if (reverseStockActive) {
-                if (!reverseStockInputAttached && reverseStockRetainedCallbackEpoch == 0) {
-                    reverseStockRetainedCallbackEpoch = reverseStockProducerEpoch;
-                }
-                reverseStockProducerEpoch = producerEpoch;
-            }
-            emit("camera_frame_rate_reconnect", "operation_id", cycleId,
-                    "stage", "open_new_producer", "requested_fps", requestedFps,
-                    "old_producer_epoch", oldEpoch,
-                    "producer_epoch", producerEpoch);
-            String result = reopenPersistentProducerForFps(
-                    cameraId, cycleId, retainedConsumers);
-            if (!persistentPanoProducer) {
-                reverseStockRetainedCallbackEpoch = 0;
-                return;
-            }
-            emit("camera_frame_rate_reconnect", "operation_id", cycleId,
-                    "stage", "complete", "requested_fps", requestedFrameRate,
-                    "api_accepted", frameRateRequestAccepted,
-                    "old_producer_epoch", oldEpoch,
-                    "producer_epoch", producerEpoch,
-                    "elapsed_ms", SystemClock.elapsedRealtime() - fpsOperationStartedAtMs,
-                    "open_result", result);
-        }
-
-        private void reconnectOneShotCameraForFps(int requestedFps) {
-            Object oldCamera = camera;
-            if (oldCamera == null) return;
-
-            int cameraId = activeCameraId;
-            String cameraTag = activeCameraTag == null ? "unknown" : activeCameraTag;
-            String cameraOwner = activeCameraOwner == null ? "unknown" : activeCameraOwner;
-            int requestId = activeCameraRequestId;
-            String activeView = viewName == null ? "unknown" : viewName;
-            int oldEpoch = producerEpoch;
-            String cycleId = UUID.randomUUID().toString();
-            boolean multiInput = multiSurfaces != null && multiSurfaces.length > 0;
-            Surface[] inputs = multiInput
-                    ? multiSurfaces : surface == null ? new Surface[0] : new Surface[]{surface};
-            int[] indexes = multiInput
-                    ? multiPreviewIndexes : surface == null
-                            ? new int[0] : new int[]{previewIndex};
-            ActivityPreviewState.Snapshot<Surface> oldActivityPreview = activityPreview.has()
-                    ? new ActivityPreviewState.Snapshot<>(activityPreview.value(),
-                            activityPreview.index(), activityPreview.attached(), false)
-                    : null;
-            int sourceIndex = indexes.length > 0 ? indexes[0] : -1;
-            beginFpsMeasurement(cycleId, cameraId, cameraTag, sourceIndex,
-                    requestedFps, oldEpoch, false,
-                    "measurement_unavailable_for_direct_oem_path");
-            emitOneShotFpsConsumerSnapshot(cycleId, "before_suspend", cameraOwner,
-                    requestId, inputs, indexes,
-                    oldActivityPreview != null && oldActivityPreview.attached,
-                    oldActivityPreview == null ? -1 : oldActivityPreview.index);
-            emit("camera_frame_rate_reconnect", "operation_id", cycleId,
-                    "stage", "stop_old_producer", "camera_id", cameraId,
-                    "camera_tag", cameraTag, "camera_owner", cameraOwner,
-                    "request_id", requestId, "view", activeView,
-                    "requested_fps", requestedFps, "old_producer_epoch", oldEpoch,
-                    "consumer_indexes", Arrays.toString(indexes));
-
-            PersistentCameraPort oldPort = new ReflectivePersistentCameraPort(oldCamera);
-            Throwable oldCloseFailure = stopPersistentProducer(oldPort);
-            boolean stopped = oldCloseFailure == null;
-            if (fpsOemDiagnostics != null) {
-                fpsOemDiagnostics.event("stop_preview_result", "accepted", stopped,
-                        "old_producer_epoch", oldEpoch);
-            }
-            if (stopped) {
-                for (int i = 0; i < inputs.length; i++) {
-                    try {
-                        if (!oldPort.remove(inputs[i], indexes[i])) {
-                            throw new IllegalStateException(
-                                    "rmPreviewSurface returned false for index " + indexes[i]);
-                        }
-                    } catch (Throwable failure) {
-                        oldCloseFailure = mergeFailure(oldCloseFailure, failure);
-                    }
-                }
-                if (oldActivityPreview != null && oldActivityPreview.attached) {
-                    try {
-                        if (!oldPort.remove(oldActivityPreview.value, oldActivityPreview.index)) {
-                            throw new IllegalStateException(
-                                    "rmPreviewSurface returned false for Activity preview");
-                        }
-                    } catch (Throwable failure) {
-                        oldCloseFailure = mergeFailure(oldCloseFailure, failure);
-                    }
-                }
-            }
-            try {
-                oldPort.close();
-            } catch (Throwable failure) {
-                oldCloseFailure = mergeFailure(oldCloseFailure, failure);
-            }
-            if (oldCloseFailure != null) {
-                if (fpsOemDiagnostics != null) {
-                    fpsOemDiagnostics.event("old_camera_close_result", "accepted", false,
-                            "error", summary(oldCloseFailure), "old_producer_epoch", oldEpoch);
-                }
-                emit("camera_frame_rate_restart_failed", "operation_id", cycleId,
-                        "stage", "old_producer_close", "camera_id", cameraId,
-                        "camera_tag", cameraTag, "camera_owner", cameraOwner,
-                        "request_id", requestId, "requested_fps", requestedFps,
-                        "old_producer_epoch", oldEpoch,
-                        "producer_epoch", oldEpoch,
-                        "error", summary(oldCloseFailure));
-                finishFpsMeasurement("old_producer_close_failed");
-                closeOneShotCamera("frame_rate_restart_failed", false);
-                return;
-            }
-            if (fpsOemDiagnostics != null) {
-                fpsOemDiagnostics.event("old_camera_close_result", "accepted", true,
-                        "old_producer_epoch", oldEpoch);
-            }
-
-            camera = null;
-            eventCallback = null;
-            Object opened = null;
-            boolean[] newAttached = new boolean[inputs.length];
-            boolean newActivityAttached = false;
-            try {
-                Class<?> avm = Class.forName("android.hardware.AVMCamera");
-                opened = openAvmCamera(avm, cameraId);
-                Class<?> callbackType = Class.forName("android.hardware.AVMCamera$IEventCallback");
-                Object callbackProxy = Proxy.newProxyInstance(
-                        callbackType.getClassLoader(), new Class<?>[]{callbackType},
-                        eventHandler(opened));
-                avm.getMethod("setEventCallback", callbackType).invoke(opened, callbackProxy);
-
-                for (int i = 0; i < inputs.length; i++) {
-                    if (multiInput) {
-                        newAttached[i] = invokeBoolean(avm, opened, "addPreviewSurface",
-                                new Class<?>[]{Surface.class, int.class}, inputs[i], indexes[i]);
-                    } else {
-                        boolean added = invokeBoolean(avm, opened, "addPreviewSurface",
-                                new Class<?>[]{Surface.class, int.class}, inputs[i], indexes[i]);
-                        // A failed set still needs cleanup of the attempted input, matching the
-                        // normal one-shot open path's rollback behavior.
-                        newAttached[i] = true;
-                        boolean set = invokeBoolean(avm, opened, "setPreviewSurface",
-                                new Class<?>[]{Surface.class, int.class}, inputs[i], indexes[i]);
-                        if (!added || !set) {
-                            throw new IllegalStateException("Preview setup failed: add=" + added
-                                    + ", set=" + set + " for index " + indexes[i]);
-                        }
-                    }
-                    if (!newAttached[i]) {
-                        throw new IllegalStateException(
-                                "addPreviewSurface returned false for index " + indexes[i]);
-                    }
-                }
-                if (oldActivityPreview != null) {
-                    if (oldActivityPreview.value == null || !oldActivityPreview.value.isValid()) {
-                        releaseActivityPreview();
-                        oldActivityPreview = null;
-                    } else {
-                        newActivityAttached = invokeBoolean(avm, opened, "addPreviewSurface",
-                                new Class<?>[]{Surface.class, int.class},
-                                oldActivityPreview.value, oldActivityPreview.index);
-                        if (!newActivityAttached) {
-                            throw new IllegalStateException(
-                                    "addPreviewSurface returned false for Activity preview");
-                        }
-                    }
-                }
-
-                requestCameraFrameRate(opened, cameraId, cameraTag,
-                        "settings_changed_reconnect");
-                if (fpsOemDiagnostics != null) {
-                    fpsOemDiagnostics.event("fps_request_result",
-                            "api_accepted", frameRateRequestAccepted,
-                            "requested_fps", requestedFrameRate,
-                            "request_elapsed_ms", frameRateRequestElapsedMs);
-                }
-                boolean started = invokeBoolean(avm, opened, "startPreview", new Class<?>[0]);
-                if (fpsOemDiagnostics != null) {
-                    fpsOemDiagnostics.event("start_preview_result", "accepted", started,
-                            "producer_epoch", oldEpoch + 1);
-                }
-                if (!started) throw new IllegalStateException("startPreview returned false");
-
-                camera = opened;
-                eventCallback = callbackProxy;
-                producerEpoch = oldEpoch + 1;
-                activityPreview.setAttached(newActivityAttached);
-                if (reverseStockActive) reverseStockProducerEpoch = producerEpoch;
-                emitOneShotFpsConsumerSnapshot(cycleId, "after_restore", cameraOwner,
-                        requestId, inputs, indexes, newActivityAttached,
-                        oldActivityPreview == null ? -1 : oldActivityPreview.index);
-                String restoredConsumer = cameraOwner + ":" + requestId + "@"
-                        + Arrays.toString(indexes);
-                emit("camera_producer_reconnected", "operation_id", cycleId,
-                        "camera_id", cameraId, "camera_tag", cameraTag,
-                        "camera_owner", cameraOwner, "request_id", requestId,
-                        "view", activeView, "requested_fps", requestedFrameRate,
-                        "api_accepted", frameRateRequestAccepted,
-                        "old_producer_epoch", oldEpoch, "producer_epoch", producerEpoch,
-                        "consumers_restored", 1,
-                        "restored_consumers", restoredConsumer,
-                        "activity_preview_restored", newActivityAttached,
-                        "start_preview", true);
-                emit("camera_frame_rate_reconnect", "operation_id", cycleId,
-                        "stage", "complete", "camera_id", cameraId,
-                        "camera_tag", cameraTag, "camera_owner", cameraOwner,
-                        "request_id", requestId, "requested_fps", requestedFrameRate,
-                        "api_accepted", frameRateRequestAccepted,
-                        "old_producer_epoch", oldEpoch, "producer_epoch", producerEpoch,
-                        "consumers_restored", restoredConsumer,
-                        "elapsed_ms", SystemClock.elapsedRealtime() - fpsOperationStartedAtMs);
-                scheduleFpsMeasurementEnd(cycleId, 0L);
-            } catch (Throwable error) {
-                Throwable newProducerCleanupFailure = null;
-                if (opened != null) {
-                    try {
-                        ActivityPreviewState.Snapshot<Surface> attemptedActivityPreview =
-                                oldActivityPreview != null && newActivityAttached
-                                        ? new ActivityPreviewState.Snapshot<>(
-                                                oldActivityPreview.value,
-                                                oldActivityPreview.index, true, false)
-                                        : null;
-                        tryClose(opened, inputs, indexes, newAttached,
-                                attemptedActivityPreview);
-                    } catch (Throwable cleanupError) {
-                        newProducerCleanupFailure = root(cleanupError);
-                        error.addSuppressed(root(cleanupError));
-                    }
-                }
-                camera = null;
-                eventCallback = null;
-                if (fpsOemDiagnostics != null) {
-                    fpsOemDiagnostics.event("reconnect_failed", "error", summary(error),
-                            "old_producer_epoch", oldEpoch,
-                            "producer_epoch", producerEpoch);
-                }
-                emit("camera_frame_rate_restart_failed", "operation_id", cycleId,
-                        "stage", "new_producer_open", "camera_id", cameraId,
-                        "camera_tag", cameraTag, "camera_owner", cameraOwner,
-                        "request_id", requestId, "view", activeView,
-                        "requested_fps", requestedFps,
-                        "old_producer_epoch", oldEpoch,
-                        "producer_epoch", producerEpoch,
-                        "error", summary(error));
-                finishFpsMeasurement("reconnect_failed");
-                retireFailedOneShotFpsReconnect("frame_rate_restart_failed",
-                        cameraId, cameraTag, cameraOwner, requestId, activeView,
-                        oldEpoch, newProducerCleanupFailure);
-            }
-        }
-
-        private void retireFailedOneShotFpsReconnect(
-                String reason, int cameraId, String cameraTag, String cameraOwner,
-                int requestId, String activeView, int closedEpoch,
-                Throwable cleanupFailure) {
-            boolean closeStock = stockRequest.isActive();
-            int stockRequestId = closeStock ? stockRequest.id() : requestId;
-            Surface activeSurface = surface;
-            int closedPreviewIndex = previewIndex;
-            Surface[] activeMultiSurfaces = multiSurfaces;
-            int[] closedMultiIndexes = multiPreviewIndexes;
-            ActivityPreviewState.Snapshot<Surface> activeActivityPreview =
-                    activityPreview.close(false);
-            Surface[] staleReverseSurfaces = pendingReversePreviewSurfaces;
-            stockRequest.clear();
-            pendingReversePreviewSurfaces = new Surface[0];
-            pendingReversePreviewRequestId = 0;
-            camera = null;
-            eventCallback = null;
-            surface = null;
-            previewIndex = 0;
-            multiSurfaces = new Surface[0];
-            multiPreviewIndexes = new int[0];
-            viewName = null;
-            activeCameraId = -1;
-            activeCameraTag = "none";
-            activeCameraOwner = "none";
-            activeCameraRequestId = 0;
-            unconfirmedOneShotOwner |= cleanupFailure != null;
-            releaseSurface(activeSurface);
-            releaseSurfaces(activeMultiSurfaces);
-            if (activeActivityPreview.release && activeActivityPreview.value != null) {
-                activeActivityPreview.value.release();
-            }
-            releaseSurfaces(staleReverseSurfaces);
-            emit("camera_closed", "reason", reason, "view", activeView,
-                    "preview_index", closedPreviewIndex,
-                    "preview_indexes", Arrays.toString(closedMultiIndexes),
-                    "camera_id", cameraId, "camera_tag", cameraTag,
-                    "camera_owner", cameraOwner, "request_id", requestId,
-                    "producer_epoch", closedEpoch,
-                    "error", cleanupFailure == null ? "" : summary(cleanupFailure));
-            if (closeStock) {
-                turnController.closeStockAvm(reason, stockRequestId);
-                emit("camera_shell_request", "action", "close", "view", activeView,
-                        "reason", reason, "request_id", stockRequestId);
-            }
-        }
-
-        private static int firstDemandedIndex(int demandMask) {
-            for (int index = 0; index <= 4; index++) {
-                if ((demandMask & CameraSourceDemand.bit(index)) != 0) return index;
-            }
-            return -1;
-        }
 
         synchronized String closeCamera(String reason) {
             if (CameraTransition.reasonEquals(reason, ACTIVITY_RESUME_COLD_RESET)
@@ -2597,9 +2209,9 @@ final class CameraHelperMain {
             }
 
             try {
-                if (target == reverseGroup && rawSourceHub != null && fpsOperationId == null) {
+                if (target == reverseGroup && rawSourceHub != null) {
                     // Reused producers also need a bounded post-open measurement window.
-                    rawSourceHub.collectStatsForWindow(requestedFrameRate);
+                    rawSourceHub.collectStatsForWindow(0);
                 }
                 persistentSession.attach(
                         new ReflectivePersistentCameraPort(camera), target,
@@ -2708,42 +2320,10 @@ final class CameraHelperMain {
                 int requestedCameraId,
                 boolean firstSurfaceDirect,
                 int sourceDemandMask, boolean[] initialActive) {
-            return openPersistentProducer(target, requestedSurfaces, requestedIndexes,
-                    requestId, requestedView, exclusive, shellOwned, profileIds, errorStage,
-                    requestedCameraId, firstSurfaceDirect, sourceDemandMask, initialActive,
-                    null, null);
-        }
-
-        private String reopenPersistentProducerForFps(
-                int requestedCameraId, String cycleId,
-                ConsumerGroup.Snapshot[] retainedConsumers) {
-            return openPersistentProducer(null, new Surface[0], new int[0], 0,
-                    "fps_reconnect", false, false, null, "frame_rate_restart",
-                    requestedCameraId, false, 0, null, cycleId, retainedConsumers);
-        }
-
-        private String openPersistentProducer(
-                ConsumerGroup target,
-                Surface[] requestedSurfaces,
-                int[] requestedIndexes,
-                int requestId,
-                String requestedView,
-                boolean exclusive,
-                boolean shellOwned,
-                int[] profileIds,
-                String errorStage,
-                int requestedCameraId,
-                boolean firstSurfaceDirect,
-                int sourceDemandMask, boolean[] initialActive,
-                String reconnectCycleId,
-                ConsumerGroup.Snapshot[] retainedConsumers) {
-            boolean reconnect = reconnectCycleId != null;
             Object opened = null;
             PersistentCameraPort openedPort = null;
             DirectCameraSourceHub openedHub = null;
-            int openedProducerEpoch = reconnect ? producerEpoch : producerEpoch + 1;
-            long openedOperationStartedAtMs = reconnect ? fpsOperationStartedAtMs : 0L;
-            int openedOldProducerEpoch = reconnect ? fpsOldProducerEpoch : producerEpoch;
+            int openedProducerEpoch = producerEpoch + 1;
             try {
                 Class<?> avm = Class.forName("android.hardware.AVMCamera");
                 opened = openAvmCamera(avm, requestedCameraId);
@@ -2755,7 +2335,6 @@ final class CameraHelperMain {
                 PersistentCameraPort port = new ReflectivePersistentCameraPort(opened);
                 openedPort = port;
                 int openedHubGeneration = ++sourceHubGeneration;
-                long[] openedWindowId = {0L};
                 openedHub = DirectCameraSourceHub.create(renderingContext, new DirectCameraSourceHub.Listener() {
                     @Override
                     public void onConsumerFailure(
@@ -2785,22 +2364,11 @@ final class CameraHelperMain {
                                     - stats.producerTimestampRepeated
                                     - stats.producerTimestampInvalid, stats.intervalNs);
                             if (stats.fpsWindow && !stats.outputStage) {
-                                boolean operationWindow = reconnectCycleId != null
-                                        && stats.fpsWindowId == openedWindowId[0];
                                 emit("camera_fps_window_stats",
-                                        "operation_id", operationWindow ? reconnectCycleId : "",
-                                        "operation_start_elapsed_ms", operationWindow
-                                                ? openedOperationStartedAtMs : 0L,
-                                        "old_producer_epoch", operationWindow
-                                                ? openedOldProducerEpoch : openedProducerEpoch,
                                         "producer_epoch", openedProducerEpoch,
-                                        "requested_fps", stats.requestedFps,
                                         "measured_new_buffer_fps", measuredNewBufferFps,
                                         "new_buffer_fps_valid", stats.producerTimestampInvalid == 0,
-                                        "effective_fps_verified", false,
                                         "fps_window_id", stats.fpsWindowId,
-                                        "fps_api_accepted", frameRateRequestAccepted,
-                                        "fps_request_elapsed_ms", frameRateRequestElapsedMs,
                                         "fps_requested_elapsed_ns", stats.fpsRequestedNs,
                                         "fps_first_frame_elapsed_ns", stats.fpsFirstFrameNs,
                                         "sample_elapsed_ms", observedAt,
@@ -2819,27 +2387,15 @@ final class CameraHelperMain {
                                                 stats.callbacks, stats.intervalNs));
                             }
                             if (extended || (stats.outputStage && stats.fpsWindow)) {
-                                boolean operationWindow = reconnectCycleId != null
-                                        && stats.fpsWindowId == openedWindowId[0];
                                 emit(stats.outputStage ? "camera_source_output_stats" : "camera_source_hub_stats",
                                     "stage", stats.outputStage ? "output" : "acquisition",
-                                    "operation_id", operationWindow ? reconnectCycleId : "",
-                                    "operation_start_elapsed_ms", operationWindow
-                                            ? openedOperationStartedAtMs : 0L,
-                                    "old_producer_epoch", operationWindow
-                                            ? openedOldProducerEpoch : openedProducerEpoch,
                                     "producer_epoch", openedProducerEpoch,
                                     "fps_window", stats.fpsWindow,
                                     "fps_window_id", stats.fpsWindowId,
                                     "dropped_snapshots", stats.droppedSnapshots,
                                     "output_age_max_ms", milliseconds(stats.outputAgeMaxNs),
-                                    "requested_fps", requestedFrameRate,
-                                    "fps_api_accepted", frameRateRequestAccepted,
-                                    "fps_request_elapsed_ms", frameRateRequestElapsedMs,
                                     "sample_elapsed_ms", observedAt,
                                     "sample_interval_ms", milliseconds(stats.intervalNs),
-                                    "fps_window_stable", observedAt - frameRateRequestElapsedMs
-                                            >= milliseconds(stats.intervalNs),
                                     "process_cpu_time_ms", processCpuMs,
                                     "process_pid", Process.myPid(),
                                     "new_buffer_fps", measuredNewBufferFps,
@@ -2898,13 +2454,6 @@ final class CameraHelperMain {
                     }
 
                     @Override
-                    public void onFirstFrame(int index, long windowId, long elapsedNs) {
-                        callbackHandler.post(() -> acceptRawFirstFrame(
-                                openedHubGeneration, reconnectCycleId, openedProducerEpoch,
-                                index, windowId, elapsedNs, openedWindowId[0]));
-                    }
-
-                    @Override
                     public void onTargetStall(
                             Surface surface, int index, long swapWaitNs) {
                         callbackHandler.post(() -> {
@@ -2920,116 +2469,28 @@ final class CameraHelperMain {
                     }
                 });
                 rawSourceHub = openedHub;
-                final Object producerForStart = opened;
                 final DirectCameraSourceHub hubForStart = openedHub;
-                Runnable beforeStart = () -> {
-                    requestCameraFrameRate(producerForStart, requestedCameraId, "pano_h",
-                            reconnect ? "settings_changed_reconnect" : "open_persistent");
-                    openedWindowId[0] = hubForStart.collectStatsForWindow(requestedFrameRate);
-                    if (reconnect) {
-                        fpsWindowId = openedWindowId[0];
-                        if (fpsOemDiagnostics != null) {
-                            fpsOemDiagnostics.event("fps_request_result",
-                                    "api_accepted", frameRateRequestAccepted,
-                                    "requested_fps", requestedFrameRate,
-                                    "request_elapsed_ms", frameRateRequestElapsedMs);
-                        }
-                    }
-                };
-                if (reconnect) {
-                    if (motionRecordingOutput != null) motionRecordingOutput.register();
-                    if (viewingOutput != null) viewingOutput.register();
-                    try {
-                        persistentSession.restartProducer(port, openedHub,
-                                openedProducerEpoch, retainedConsumers, beforeStart,
-                                accepted -> {
-                                    if (fpsOemDiagnostics != null) {
-                                        fpsOemDiagnostics.event("start_preview_result",
-                                                "accepted", accepted,
-                                                "producer_epoch", openedProducerEpoch);
-                                    }
-                                });
-                    } finally {
-                        if (motionRecordingOutput != null) motionRecordingOutput.unregister();
-                        if (viewingOutput != null) viewingOutput.unregister();
-                    }
-                } else {
-                    persistentSession.startProducer(
-                            port, openedHub, target, requestedSurfaces, requestedIndexes,
-                            requestId, requestedView, exclusive, shellOwned,
-                            firstSurfaceDirect, sourceDemandMask, openedProducerEpoch,
-                            initialActive, beforeStart);
-                }
-                if (!reconnect && isReverseGroup(target, requestedView)) cancelReverseWarmExpiry();
+                Runnable beforeStart = () -> hubForStart.collectStatsForWindow(0);
+                persistentSession.startProducer(
+                        port, openedHub, target, requestedSurfaces, requestedIndexes,
+                        requestId, requestedView, exclusive, shellOwned,
+                        firstSurfaceDirect, sourceDemandMask, openedProducerEpoch,
+                        initialActive, beforeStart);
+                if (isReverseGroup(target, requestedView)) cancelReverseWarmExpiry();
 
                 camera = opened;
                 eventCallback = callbackProxy;
                 persistentPanoProducer = true;
                 producerCameraId = requestedCameraId;
-                if (!reconnect) producerEpoch = openedProducerEpoch;
-                if (reconnect && reverseStockActive) {
-                    reverseStockProducerEpoch = producerEpoch;
-                }
+                producerEpoch = openedProducerEpoch;
                 refreshPersistentLegacyState();
-                if (reconnect) {
-                    int restoredCount = 0;
-                    StringBuilder restoredOwners = new StringBuilder();
-                    ConsumerGroup.Snapshot[] restoredConsumers = persistentSession.activeSnapshots();
-                    emitFpsConsumerSnapshots(reconnectCycleId, "after_restore", restoredConsumers);
-                    for (ConsumerGroup.Snapshot consumer : retainedConsumers) {
-                        if (!isFpsConsumerRestored(consumer, restoredConsumers)) continue;
-                        restoredCount++;
-                        if (restoredOwners.length() != 0) restoredOwners.append(',');
-                        restoredOwners.append(consumer.owner).append(':').append(consumer.requestId);
-                    }
-                    emit("camera_producer_reconnected", "operation_id", reconnectCycleId,
-                            "camera_id", requestedCameraId, "camera_tag", "pano_h",
-                            "requested_fps", requestedFrameRate,
-                            "old_producer_epoch", openedOldProducerEpoch,
-                            "producer_epoch", producerEpoch,
-                            "consumers_restored", restoredCount,
-                            "restored_consumers", restoredOwners.toString(),
-                            "api_accepted", frameRateRequestAccepted,
-                            "start_preview", true);
-                    if (reverseWarmLeaseNeedsRebind(openedOldProducerEpoch)) {
-                        rebindReverseWarmExpiry(producerEpoch);
-                    }
-                    scheduleFpsMeasurementEnd(reconnectCycleId, openedWindowId[0]);
-                } else {
-                    emit("camera_producer_opened", "camera_id", requestedCameraId,
-                            "camera_tag", "pano_h", "producer_epoch", producerEpoch,
-                            "start_preview", true);
-                    emitConsumerOpened(target, profileIds, true);
-                }
+                emit("camera_producer_opened", "camera_id", requestedCameraId,
+                        "camera_tag", "pano_h", "producer_epoch", producerEpoch,
+                        "start_preview", true);
+                emitConsumerOpened(target, profileIds, true);
                 return result("camera_opened", null, requestedCameraId, "pano_h");
             } catch (Throwable error) {
                 if (rawSourceHub == openedHub) rawSourceHub = null;
-                if (reconnect && camera == opened && opened != null) {
-                    finishFpsMeasurement("reconnect_failed_after_start");
-                    String message = summary(error);
-                    emit("camera_frame_rate_restart_failed", "operation_id", reconnectCycleId,
-                            "requested_fps", CameraFrameRate.load(settings),
-                            "old_producer_epoch", openedOldProducerEpoch,
-                            "producer_epoch", producerEpoch, "error", message);
-                    return tearDownPersistentProducer("frame_rate_restart_failed", error);
-                }
-                if (reconnect) {
-                    Throwable closeError = persistentSession.abortReconnect(
-                            openedPort, openedHub);
-                    if (closeError != null) error.addSuppressed(closeError);
-                    camera = null;
-                    eventCallback = null;
-                    persistentPanoProducer = false;
-                    producerCameraId = -1;
-                    finishFpsMeasurement("reconnect_failed");
-                    String message = summary(error);
-                    emit("camera_frame_rate_restart_failed", "operation_id", reconnectCycleId,
-                            "requested_fps", CameraFrameRate.load(settings),
-                            "old_producer_epoch", openedOldProducerEpoch,
-                            "producer_epoch", producerEpoch, "error", message);
-                    tearDownPersistentProducer("frame_rate_restart_failed", error);
-                    return result("camera_error", message, requestedCameraId, "pano_h");
-                }
                 if (openedPort != null) {
                     Throwable closeError = closeFailedPersistentProducer(
                             openedPort, openedHub, persistentSession);
@@ -3067,203 +2528,6 @@ final class CameraHelperMain {
             }
         }
 
-        private void beginFpsMeasurement(
-                String cycleId, int id, String tag, int sourceIndex,
-                int requestedFps, int oldEpoch, boolean hasHubFrameMeasurement,
-                String unavailableReason) {
-            finishFpsMeasurement("superseded");
-            fpsOperationId = cycleId;
-            fpsOperationStartedAtMs = SystemClock.elapsedRealtime();
-            fpsOldProducerEpoch = oldEpoch;
-            fpsMeasurementSourceIndex = sourceIndex;
-            fpsHubFrameMeasurement = hasHubFrameMeasurement;
-            fpsWindowId = 0L;
-            fpsOemDiagnostics = CameraFpsOemDiagnostics.start(
-                    cycleId, id, tag, sourceIndex, requestedFps, Process.myPid(), this::emit);
-            fpsOemDiagnostics.event("reconnect_begin",
-                    "requested_fps", requestedFps,
-                    "old_producer_epoch", oldEpoch,
-                    "producer_epoch", oldEpoch + 1,
-                    "measurement_source_index", sourceIndex,
-                    "operation_start_elapsed_ms", fpsOperationStartedAtMs);
-            if (hasHubFrameMeasurement) {
-                Runnable timeout = () -> {
-                    synchronized (HelperBinder.this) {
-                        if (!cycleId.equals(fpsOperationId)) return;
-                        fpsFirstFrameTimeout = null;
-                        emit("camera_fps_reconnect_measurement", "operation_id", cycleId,
-                                "status", "first_frame_timeout",
-                                "requested_fps", requestedFps,
-                                "old_producer_epoch", oldEpoch,
-                                "producer_epoch", producerEpoch,
-                                "timeout_ms", DirectCameraSourceHub.FPS_STATS_WINDOW_NS
-                                        / 1_000_000L);
-                        if (fpsOemDiagnostics != null) {
-                            fpsOemDiagnostics.event("first_frame_timeout",
-                                    "producer_epoch", producerEpoch);
-                        }
-                        finishFpsMeasurement("first_frame_timeout");
-                    }
-                };
-                fpsFirstFrameTimeout = timeout;
-                callbackHandler.postDelayed(timeout,
-                        DirectCameraSourceHub.FPS_STATS_WINDOW_NS / 1_000_000L);
-            } else {
-                emit("camera_fps_measurement_unavailable",
-                        "operation_id", cycleId,
-                        "reason", unavailableReason == null
-                                ? "no_direct_hub_source" : unavailableReason,
-                        "requested_fps", requestedFps,
-                        "producer_epoch", oldEpoch + 1);
-            }
-        }
-
-        private void emitFpsConsumerSnapshots(
-                String cycleId, String stage, ConsumerGroup.Snapshot[] snapshots) {
-            if (snapshots == null) return;
-            for (ConsumerGroup.Snapshot snapshot : snapshots) {
-                if (snapshot == null) continue;
-                int[] surfaceIds = new int[snapshot.surfaces.length];
-                for (int i = 0; i < snapshot.surfaces.length; i++) {
-                    surfaceIds[i] = System.identityHashCode(snapshot.surfaces[i]);
-                }
-                emit("camera_fps_reconnect_consumer_snapshot",
-                        "operation_id", cycleId, "stage", stage,
-                        "camera_owner", snapshot.owner, "request_id", snapshot.requestId,
-                        "preview_indexes", Arrays.toString(snapshot.indexes),
-                        "target_surface_ids", Arrays.toString(surfaceIds),
-                        "active_mask", Arrays.toString(snapshot.active),
-                        "source_demand_mask", snapshot.sourceDemandMask,
-                        "attached", snapshot.attached,
-                        "first_surface_direct", snapshot.firstSurfaceDirect,
-                        "geometry_untouched", true);
-            }
-        }
-
-        private static boolean isFpsConsumerRestored(
-                ConsumerGroup.Snapshot expected, ConsumerGroup.Snapshot[] current) {
-            if (expected == null || current == null) return false;
-            for (ConsumerGroup.Snapshot candidate : current) {
-                if (candidate == null || !candidate.attached
-                        || !expected.owner.equals(candidate.owner)
-                        || expected.requestId != candidate.requestId
-                        || !Arrays.equals(expected.indexes, candidate.indexes)
-                        || !Arrays.equals(expected.active, candidate.active)
-                        || expected.sourceDemandMask != candidate.sourceDemandMask
-                        || expected.surfaces.length != candidate.surfaces.length) continue;
-                boolean sameTargets = true;
-                for (int i = 0; i < expected.surfaces.length; i++) {
-                    if (expected.surfaces[i] != candidate.surfaces[i]) {
-                        sameTargets = false;
-                        break;
-                    }
-                }
-                if (sameTargets) return true;
-            }
-            return false;
-        }
-
-        private void emitOneShotFpsConsumerSnapshot(
-                String cycleId, String stage, String owner, int requestId,
-                Surface[] surfaces, int[] indexes, boolean activityPreviewAttached,
-                int activityPreviewIndex) {
-            boolean[] active = new boolean[indexes.length];
-            Arrays.fill(active, true);
-            int[] surfaceIds = new int[surfaces.length];
-            for (int i = 0; i < surfaces.length; i++) {
-                surfaceIds[i] = System.identityHashCode(surfaces[i]);
-            }
-            emit("camera_fps_reconnect_consumer_snapshot",
-                    "operation_id", cycleId, "stage", stage,
-                    "camera_owner", owner, "request_id", requestId,
-                    "preview_indexes", Arrays.toString(indexes),
-                    "target_surface_ids", Arrays.toString(surfaceIds),
-                    "active_mask", Arrays.toString(active),
-                    "source_demand_mask", CameraSourceDemand.fromIndexes(indexes, false),
-                    "attached", true, "geometry_untouched", true,
-                    "activity_preview_attached", activityPreviewAttached,
-                    "activity_preview_index", activityPreviewAttached
-                            ? activityPreviewIndex : -1);
-        }
-
-        private synchronized void acceptRawFirstFrame(
-                int hubGeneration, String cycleId, int callbackProducerEpoch,
-                int index, long windowId, long elapsedNs, long openedWindowId) {
-            if (cycleId == null || !cycleId.equals(fpsOperationId)
-                    || !fpsHubFrameMeasurement
-                    || windowId != openedWindowId || windowId != fpsWindowId
-                    || !matchesSourceHubGeneration(sourceHubGeneration, hubGeneration)
-                    || !persistentPanoProducer || callbackProducerEpoch != producerEpoch) return;
-            if (fpsFirstFrameTimeout != null) {
-                callbackHandler.removeCallbacks(fpsFirstFrameTimeout);
-                fpsFirstFrameTimeout = null;
-            }
-            emit("camera_fps_reconnect_first_fresh_frame",
-                    "operation_id", cycleId,
-                    "preview_index", index,
-                    "fps_window_id", windowId,
-                    "first_frame_elapsed_ns", elapsedNs,
-                    "reconnect_to_first_buffer_ms",
-                            elapsedNs / 1_000_000L - fpsOperationStartedAtMs,
-                    "old_producer_epoch", fpsOldProducerEpoch,
-                    "producer_epoch", producerEpoch,
-                    "requested_fps", requestedFrameRate);
-            if (fpsOemDiagnostics != null) {
-                fpsOemDiagnostics.event("first_fresh_frame",
-                        "preview_index", index,
-                        "fps_window_id", windowId,
-                        "first_frame_elapsed_ns", elapsedNs,
-                        "old_producer_epoch", fpsOldProducerEpoch,
-                        "producer_epoch", producerEpoch);
-            }
-            scheduleFpsMeasurementEnd(cycleId, windowId);
-        }
-
-        private void scheduleFpsMeasurementEnd(String cycleId, long windowId) {
-            if (cycleId == null || !cycleId.equals(fpsOperationId)) return;
-            if (fpsHubFrameMeasurement && fpsWindowId != windowId) return;
-            if (fpsMeasurementFinish != null) callbackHandler.removeCallbacks(fpsMeasurementFinish);
-            long delayMs = DirectCameraSourceHub.FPS_STATS_WINDOW_NS / 1_000_000L + 500L;
-            Runnable finish = () -> {
-                synchronized (HelperBinder.this) {
-                    if (!cycleId.equals(fpsOperationId)) return;
-                    fpsMeasurementFinish = null;
-                    emit("camera_fps_reconnect_measurement", "operation_id", cycleId,
-                            "status", "window_complete",
-                            "fps_window_id", windowId,
-                            "requested_fps", requestedFrameRate,
-                            "old_producer_epoch", fpsOldProducerEpoch,
-                            "producer_epoch", producerEpoch);
-                    finishFpsMeasurement("measurement_window_complete");
-                }
-            };
-            fpsMeasurementFinish = finish;
-            callbackHandler.postDelayed(finish, delayMs);
-        }
-
-        private void finishFpsMeasurement(String reason) {
-            String cycleId = fpsOperationId;
-            CameraFpsOemDiagnostics diagnostics = fpsOemDiagnostics;
-            if (fpsFirstFrameTimeout != null) {
-                callbackHandler.removeCallbacks(fpsFirstFrameTimeout);
-                fpsFirstFrameTimeout = null;
-            }
-            if (fpsMeasurementFinish != null) {
-                callbackHandler.removeCallbacks(fpsMeasurementFinish);
-                fpsMeasurementFinish = null;
-            }
-            fpsOemDiagnostics = null;
-            fpsOperationId = null;
-            fpsWindowId = 0L;
-            fpsMeasurementSourceIndex = -1;
-            fpsHubFrameMeasurement = false;
-            if (diagnostics != null) {
-                diagnostics.event("measurement_end", "reason", reason,
-                        "old_producer_epoch", fpsOldProducerEpoch,
-                        "producer_epoch", producerEpoch);
-                diagnostics.finish();
-            }
-        }
 
         private synchronized void acceptRawConsumerFailure(
                 int hubGeneration, Surface failedSurface, int index,
@@ -3346,17 +2610,29 @@ final class CameraHelperMain {
                                 && settings.getBoolean(ReverseCameraController.PREF_ENABLED,
                                 ReverseCameraController.DEFAULT_ENABLED));
             } catch (PersistentSessionFailure error) {
-                if (error.fatal) {
+                boolean preserveProducerForOffDirectDetach = error.fatal
+                        && persistentSession.hasUnconfirmedOffDirectDetach(group);
+                if (error.fatal && !preserveProducerForOffDirectDetach) {
                     return tearDownPersistentProducer(
                             error.reason, error.getCause(), error.shellCloseQueued);
                 }
                 String message = error.getCause() == null
                         ? error.reason : summary(error.getCause());
-                emit("camera_error", "stage", error.reason,
-                        "camera_id", producerCameraId,
-                        "camera_tag", "pano_h", "camera_owner", group.owner,
-                        "request_id", expectedRequestId,
-                        "producer_epoch", producerEpoch, "error", message);
+                if (preserveProducerForOffDirectDetach) {
+                    Throwable cause = error.getCause() == null ? error : error.getCause();
+                    emit("camera_error", "stage", error.reason,
+                            "camera_id", producerCameraId,
+                            "camera_tag", "pano_h", "camera_owner", group.owner,
+                            "request_id", expectedRequestId,
+                            "producer_epoch", producerEpoch, "error", message,
+                            "error_stack", Log.getStackTraceString(cause));
+                } else {
+                    emit("camera_error", "stage", error.reason,
+                            "camera_id", producerCameraId,
+                            "camera_tag", "pano_h", "camera_owner", group.owner,
+                            "request_id", expectedRequestId,
+                            "producer_epoch", producerEpoch, "error", message);
+                }
                 return result("camera_error", message, producerCameraId, "pano_h");
             }
             if (outcome.decision == PersistentCloseDecision.ALREADY_CLOSED) {
@@ -3431,27 +2707,6 @@ final class CameraHelperMain {
             callbackHandler.postDelayed(expiry, Math.max(0L, delayMs));
         }
 
-        private boolean reverseWarmLeaseNeedsRebind(int oldEpoch) {
-            return persistentSession.reverseWarmLease.requestId() > 0
-                    && persistentSession.reverseWarmLease.producerEpoch() == oldEpoch;
-        }
-
-        private void rebindReverseWarmExpiry(int newEpoch) {
-            int oldEpoch = fpsOldProducerEpoch;
-            int requestId = persistentSession.reverseWarmLease.requestId();
-            boolean hadTimer = fpsRebindWarmWasScheduled;
-            long remainingMs = fpsRebindWarmRemainingMs;
-            long leaseGeneration = persistentSession.rebindReverseWarmLease(oldEpoch, newEpoch);
-            if (leaseGeneration > 0L && hadTimer) {
-                scheduleReverseWarmExpiry(
-                        leaseGeneration, requestId, newEpoch, remainingMs);
-            }
-            emit("camera_reverse_warm_lease_rebound", "request_id", requestId,
-                    "old_producer_epoch", oldEpoch, "producer_epoch", newEpoch,
-                    "remaining_ms", remainingMs, "expiry_rearmed", leaseGeneration > 0L && hadTimer);
-            fpsRebindWarmWasScheduled = false;
-            fpsRebindWarmRemainingMs = 0L;
-        }
 
         private void cancelReverseWarmExpiry() {
             reverseWarmExpiryGeneration++;
@@ -4134,6 +3389,7 @@ final class CameraHelperMain {
             final boolean[] sourceAttached = new boolean[5];
             boolean producerOpen;
             boolean vehiclePowerOff;
+            private Throwable vehiclePowerOffReconcileFailure;
             boolean failedOpenStopAttempted;
             Throwable failedOpenStopFailure;
             int activeProducerEpoch;
@@ -4157,6 +3413,56 @@ final class CameraHelperMain {
                 if (group == motionGroup) return true;
                 for (ConsumerGroup preview : motionPreviewGroups) if (group == preview) return true;
                 return false;
+            }
+
+            static int effectiveGroupSourceDemandMask(
+                    boolean vehiclePowerOff, String owner, int sourceDemandMask) {
+                return vehiclePowerOff && isOrdinaryCameraGroupOwner(owner)
+                        ? 0 : sourceDemandMask;
+            }
+
+            static boolean shouldPreserveSharedProducerForOffDirectDetach(
+                    boolean vehiclePowerOff, String owner, boolean directSurfaceAttached) {
+                return vehiclePowerOff && directSurfaceAttached
+                        && isOrdinaryCameraGroupOwner(owner);
+            }
+
+            boolean hasUnconfirmedOffDirectDetach(String owner) {
+                for (ConsumerGroup group : consumerGroups()) {
+                    if (owner.equals(group.owner) && hasUnconfirmedOffDirectDetach(group)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            boolean hasUnconfirmedOffDirectDetach(ConsumerGroup group) {
+                return shouldPreserveSharedProducerForOffDirectDetach(
+                        vehiclePowerOff, group.owner,
+                        group.firstSurfaceDirect && group.directSurfaceAttached);
+            }
+
+            private static boolean isOrdinaryCameraGroupOwner(String owner) {
+                return CAMERA_OWNER_ACTIVITY.equals(owner)
+                        || CAMERA_OWNER_OVERLAY.equals(owner)
+                        || CAMERA_OWNER_REVERSE.equals(owner)
+                        || CAMERA_OWNER_PARKING.equals(owner)
+                        || CAMERA_OWNER_MIRROR.equals(owner);
+            }
+
+            void clearVehiclePowerOffReconcileFailure() {
+                vehiclePowerOffReconcileFailure = null;
+            }
+
+            Throwable takeVehiclePowerOffReconcileFailure() {
+                Throwable failure = vehiclePowerOffReconcileFailure;
+                vehiclePowerOffReconcileFailure = null;
+                return failure;
+            }
+
+            private void recordVehiclePowerOffReconcileFailure(Throwable error) {
+                vehiclePowerOffReconcileFailure = mergeFailure(
+                        vehiclePowerOffReconcileFailure, error);
             }
 
             private ConsumerGroup[] consumerGroups() {
@@ -4284,119 +3590,6 @@ final class CameraHelperMain {
                 }
             }
 
-            ConsumerGroup.Snapshot[] suspendForPlannedReconnect(
-                    PersistentCameraPort port, Consumer<Boolean> stopResult) throws Exception {
-                if (!producerOpen || fanout == null) {
-                    throw new IllegalStateException("persistent producer is not open");
-                }
-                boolean stopped = port.stop();
-                if (stopResult != null) stopResult.accept(stopped);
-                if (!stopped) throw new IllegalStateException("stopPreview returned false");
-                ArrayList<ConsumerGroup.Snapshot> retained = new ArrayList<>();
-                for (ConsumerGroup group : consumerGroups()) {
-                    if (!group.has() || !group.attached) continue;
-                    retained.add(group.snapshot());
-                    detachGroup(port, group);
-                }
-                Throwable sourceFailure = detachSources(port);
-                if (sourceFailure != null) throw new Exception(sourceFailure);
-                producerOpen = false;
-                activeProducerEpoch = 0;
-                Arrays.fill(sourceSurfaces, null);
-                Arrays.fill(sourceAttached, false);
-                return retained.toArray(new ConsumerGroup.Snapshot[0]);
-            }
-
-            void restartProducer(
-                    PersistentCameraPort port, PersistentSurfaceFanout requestedFanout,
-                    int producerEpoch, ConsumerGroup.Snapshot[] retained,
-                    Runnable beforeStart, Consumer<Boolean> startResult) throws Exception {
-                fanout = requestedFanout;
-                failedOpenStopAttempted = false;
-                failedOpenStopFailure = null;
-                activeProducerEpoch = producerEpoch;
-                try {
-                    ensureSources(port, indexesFromMask(retainedSourceDemandMask()));
-                    attachMotionInput(port);
-                    if (beforeStart != null) beforeStart.run();
-                    boolean started = port.start();
-                    if (startResult != null) startResult.accept(started);
-                    if (!started) throw new IllegalStateException("startPreview returned false");
-                    producerOpen = true;
-                    for (ConsumerGroup.Snapshot snapshot : retained) {
-                        ConsumerGroup group = groupForSnapshot(snapshot);
-                        if (group == null || !group.has()
-                                || group.requestId != snapshot.requestId
-                                || group.surfaces != snapshot.surfaces) continue;
-                        for (Surface target : snapshot.surfaces) {
-                            if (target == null || !target.isValid()) {
-                                throw new IllegalStateException(
-                                        "retained consumer Surface is no longer valid: "
-                                                + snapshot.owner + "/" + snapshot.requestId);
-                            }
-                        }
-                        group.fanoutAttached = attachGroup(port,
-                                snapshot.surfaces, snapshot.indexes,
-                                snapshot.firstSurfaceDirect, snapshot.sourceDemandMask,
-                                snapshot.requestId, producerEpoch, false, null, snapshot.active);
-                        group.attached = true;
-                        group.directSurfaceAttached = snapshot.firstSurfaceDirect;
-                        group.restoreActive(snapshot.active);
-                        applyActiveState(group);
-                    }
-                    reconcileSourceDemand(port);
-                    restoreFailure = null;
-                    restoreFailureFatal = false;
-                } catch (Throwable error) {
-                    producerOpen = false;
-                    throw error;
-                }
-            }
-
-            Throwable abortReconnect(
-                    PersistentCameraPort port, PersistentSurfaceFanout failedFanout) {
-                Throwable first = null;
-                Throwable stopFailure = port == null ? null : stopPersistentProducer(port);
-                boolean stopped = stopFailure == null;
-                first = mergeFailure(first, stopFailure);
-                if (port != null && stopped) {
-                    first = mergeFailure(first, detachDirectInputs(port));
-                    first = mergeFailure(first, detachSources(port));
-                }
-                if (port != null) {
-                    try {
-                        port.close();
-                    } catch (Throwable error) {
-                        first = mergeFailure(first, error);
-                    }
-                }
-                if (failedFanout != null) {
-                    try {
-                        failedFanout.close();
-                    } catch (Throwable error) {
-                        first = mergeFailure(first, error);
-                    }
-                }
-                for (ConsumerGroup group : consumerGroups()) {
-                    group.attached = false;
-                    group.directSurfaceAttached = false;
-                    Arrays.fill(group.fanoutAttached, false);
-                }
-                Arrays.fill(sourceSurfaces, null);
-                Arrays.fill(sourceAttached, false);
-                motionDetectionAttached = false;
-                fanout = null;
-                producerOpen = false;
-                activeProducerEpoch = 0;
-                return first;
-            }
-
-            private ConsumerGroup groupForSnapshot(ConsumerGroup.Snapshot snapshot) {
-                for (ConsumerGroup group : consumerGroups()) {
-                    if (group.owner.equals(snapshot.owner)) return group;
-                }
-                return null;
-            }
 
             private void clearFailedOpenState() {
                 failedOpenStopAttempted = false;
@@ -5473,7 +4666,10 @@ final class CameraHelperMain {
                 int mask = vehiclePowerOff ? 0 : blindStandbyDemandMask | mirrorDemandMask
                         | reverseWarmLease.sourceMask();
                 for (ConsumerGroup group : consumerGroups()) {
-                    if (group.has()) mask |= group.sourceDemandMask;
+                    if (group.has()) {
+                        mask |= effectiveGroupSourceDemandMask(
+                                vehiclePowerOff, group.owner, group.sourceDemandMask);
+                    }
                 }
                 return mask;
             }
@@ -5507,37 +4703,94 @@ final class CameraHelperMain {
                 // The owner checks Activity preview too, then stops the producer before detaching.
                 if (isIdle()) return;
                 int required = retainedSourceDemandMask();
-                ensureSources(port, indexesFromMask(required));
+                try {
+                    ensureSources(port, indexesFromMask(required));
+                } catch (Exception error) {
+                    if (!vehiclePowerOff) throw error;
+                    recordVehiclePowerOffReconcileFailure(error);
+                }
                 for (ConsumerGroup group : consumerGroups()) {
                     if (!group.has() || !group.attached) continue;
                     for (int i = 0; i < group.surfaces.length; i++) {
                         int index = group.indexes[i];
-                        boolean demanded = (group.sourceDemandMask
+                        int groupDemand = effectiveGroupSourceDemandMask(
+                                vehiclePowerOff, group.owner, group.sourceDemandMask);
+                        boolean demanded = (groupDemand
                                 & CameraSourceDemand.bit(index)) != 0;
                         if (group.fanoutAttached[i] && !demanded) {
-                            fanout.detach(new Surface[]{group.surfaces[i]});
-                            group.fanoutAttached[i] = false;
+                            boolean ordinarySuppressed = vehiclePowerOff
+                                    && isOrdinaryCameraGroupOwner(group.owner);
+                            if (ordinarySuppressed) {
+                                try {
+                                    fanout.setActive(group.surfaces[i], false);
+                                    group.active[i] = false;
+                                } catch (Exception error) {
+                                    recordVehiclePowerOffReconcileFailure(error);
+                                }
+                            }
+                            try {
+                                fanout.detach(new Surface[]{group.surfaces[i]});
+                                group.fanoutAttached[i] = false;
+                                if (ordinarySuppressed) group.active[i] = false;
+                            } catch (Exception error) {
+                                if (!vehiclePowerOff) throw error;
+                                recordVehiclePowerOffReconcileFailure(error);
+                            }
                         } else if (!group.fanoutAttached[i] && demanded) {
-                            fanout.attach(new Surface[]{group.surfaces[i]}, new int[]{index},
-                                    group.requestId, activeProducerEpoch);
-                            group.fanoutAttached[i] = true;
-                            if (!group.active[i]) fanout.setActive(group.surfaces[i], false);
+                            try {
+                                fanout.attach(new Surface[]{group.surfaces[i]}, new int[]{index},
+                                        group.requestId, activeProducerEpoch);
+                                group.fanoutAttached[i] = true;
+                                if (!group.active[i]) fanout.setActive(group.surfaces[i], false);
+                            } catch (Exception error) {
+                                if (!vehiclePowerOff) throw error;
+                                recordVehiclePowerOffReconcileFailure(error);
+                            }
                         }
                     }
                 }
                 for (int index = 0; index < sourceAttached.length; index++) {
-                    if (!sourceAttached[index]
-                            || (required & CameraSourceDemand.bit(index)) != 0) continue;
-                    Surface source = sourceSurfaces[index];
-                    if (!port.remove(source, index)) {
-                        throw new IllegalStateException(
-                                "rmPreviewSurface returned false for idle RAW source index "
-                                        + index);
+                    if ((required & CameraSourceDemand.bit(index)) != 0) continue;
+                    if (sourceAttached[index]) {
+                        Surface source = sourceSurfaces[index];
+                        try {
+                            if (!port.remove(source, index)) {
+                                throw new IllegalStateException(
+                                        "rmPreviewSurface returned false for idle RAW source index "
+                                                + index);
+                            }
+                        } catch (Exception error) {
+                            if (!vehiclePowerOff) throw error;
+                            recordVehiclePowerOffReconcileFailure(error);
+                            continue;
+                        }
+                        sourceAttached[index] = false;
                     }
-                    sourceAttached[index] = false;
-                    sourceSurfaces[index] = null;
-                    fanout.releaseSource(index);
+                    // A fanout target may still own this RAW Surface after a failed detach.
+                    // Keep its source worker and reference until a later reconcile confirms
+                    // that the target is gone; the OEM input above is already detached.
+                    if (hasAttachedFanoutTarget(index)) continue;
+                    Surface source = sourceSurfaces[index];
+                    if (source == null) continue;
+                    try {
+                        fanout.releaseSource(index);
+                        sourceSurfaces[index] = null;
+                    } catch (Exception error) {
+                        if (!vehiclePowerOff) throw error;
+                        recordVehiclePowerOffReconcileFailure(error);
+                    }
                 }
+            }
+
+            private boolean hasAttachedFanoutTarget(int sourceIndex) {
+                for (ConsumerGroup group : consumerGroups()) {
+                    for (int i = 0; i < group.fanoutAttached.length; i++) {
+                        if (group.fanoutAttached[i] && group.indexes[i] == sourceIndex) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
             }
 
             private static int[] indexesFromMask(int mask) {

@@ -17,6 +17,7 @@ final class RearviewMirrorController {
     static final long PREPARE_TIMEOUT_MS = 30_000;
     static final long SURFACE_TIMEOUT_MS = 8_000;
     static final long FIRST_FRAME_TIMEOUT_MS = 3_000;
+    static final long DEFERRED_PREPARE_RETRY_MS = 1_000;
 
     static final class Readiness {
         static final int IDLE = 0;
@@ -92,6 +93,7 @@ final class RearviewMirrorController {
     private final BiConsumer<String, Object[]> eventSink;
     private final CameraShellRecoveryGate recovery = new CameraShellRecoveryGate();
     private final Readiness readiness = new Readiness();
+    private final Runnable deferredPrepareRetry = this::evaluate;
     private final DisplayManager displays;
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
         @Override public void onDisplayAdded(int id) {
@@ -273,7 +275,26 @@ final class RearviewMirrorController {
                     PREPARE_TIMEOUT_MS, "prepare_timeout", false);
             helper.prepareOverlayWindow(spec,
                     surface -> handler.post(() -> acceptSurface(expected, surface)),
-                    () -> prepared(expected));
+                    result -> {
+                        if (requestId != expected) return;
+                        if (result == CameraShellProtocol.PREPARE_DEFERRED) {
+                            cancelDeadline();
+                            requestId = 0;
+                            generation = 0;
+                            readiness.clear();
+                            emit("mirror_prepare_deferred", "request_id", expected,
+                                    "reason", "reverse_priority");
+                            handler.removeCallbacks(deferredPrepareRetry);
+                            handler.postDelayed(deferredPrepareRetry,
+                                    DEFERRED_PREPARE_RETRY_MS);
+                        } else if (result == CameraShellProtocol.PREPARE_OK) {
+                            prepared(expected);
+                        } else {
+                            emit("mirror_error", "stage", "prepare_result",
+                                    "request_id", expected, "result", result);
+                            fail("prepare_result", false);
+                        }
+                    });
             emit("mirror_prepare", "request_id", expected, "target", spec.target);
         } catch (Throwable error) {
             emit("mirror_error", "stage", "prepare", "error", error.toString());
@@ -481,6 +502,7 @@ final class RearviewMirrorController {
     }
 
     private void freshCycle() {
+        handler.removeCallbacks(deferredPrepareRetry);
         readiness.freshCycle();
     }
 

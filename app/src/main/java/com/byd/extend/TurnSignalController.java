@@ -905,8 +905,8 @@ final class TurnSignalController {
     void prepareCameraOverlay(
             CameraShellProtocol.OverlaySpec spec,
             Consumer<OverlaySurface> surfaceSink,
-            Runnable preparedSink) {
-        if (spec == null || surfaceSink == null || preparedSink == null) {
+            Consumer<Integer> prepareResultSink) {
+        if (spec == null || surfaceSink == null || prepareResultSink == null) {
             throw new IllegalArgumentException("overlay spec/sinks required");
         }
         long shellGeneration = cameraHelperInvalidationGeneration;
@@ -931,6 +931,18 @@ final class TurnSignalController {
                     if (!isCurrentPendingOverlay(pending)) return;
                     prepareResult = transactOverlayPrepare(value, spec);
                 }
+                if (prepareResult == CameraShellProtocol.PREPARE_DEFERRED) {
+                    if (!isCurrentPendingOverlay(pending)) return;
+                    transactionComplete = true;
+                    clearPendingOverlaySurface(spec.cameraId, spec.requestId);
+                    emit("camera_overlay_prepare_deferred", "camera_id", spec.cameraId,
+                            "request_id", spec.requestId, "reason", "reverse_priority");
+                    if (!handler.post(() -> prepareResultSink.accept(
+                            CameraShellProtocol.PREPARE_DEFERRED))) {
+                        throw new IllegalStateException("main handler rejected deferred overlay result");
+                    }
+                    return;
+                }
                 if (prepareResult != CameraShellProtocol.PREPARE_OK) {
                     throw new IllegalStateException("unknown overlay prepare result: "
                             + prepareResult);
@@ -943,7 +955,8 @@ final class TurnSignalController {
                         "target", CameraDisplayTarget.name(spec.target),
                         "width", spec.width, "height", spec.height,
                         "x", spec.x, "y", spec.y);
-                if (!handler.post(preparedSink)) {
+                if (!handler.post(() -> prepareResultSink.accept(
+                        CameraShellProtocol.PREPARE_OK))) {
                     throw new IllegalStateException("main handler rejected overlay prepare");
                 }
             } catch (Throwable error) {
@@ -2856,7 +2869,7 @@ final class TurnSignalController {
             spec.writeToParcel(data);
             requireTransact(value, CameraShellProtocol.TX_OVERLAY_PREPARE, data, reply);
             return reply.dataAvail() > 0
-                    ? requirePrepareResult(reply.readInt()) : CameraShellProtocol.PREPARE_OK;
+                    ? requireOverlayPrepareResult(reply.readInt()) : CameraShellProtocol.PREPARE_OK;
         } finally {
             data.recycle();
             reply.recycle();
@@ -3000,6 +3013,15 @@ final class TurnSignalController {
         if (result != CameraShellProtocol.PREPARE_OK
                 && result != CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
             throw new IllegalStateException("invalid camera prepare result: " + result);
+        }
+        return result;
+    }
+
+    private static int requireOverlayPrepareResult(int result) {
+        if (result != CameraShellProtocol.PREPARE_OK
+                && result != CameraShellProtocol.PREPARE_RESTART_REQUIRED
+                && result != CameraShellProtocol.PREPARE_DEFERRED) {
+            throw new IllegalStateException("invalid camera overlay prepare result: " + result);
         }
         return result;
     }

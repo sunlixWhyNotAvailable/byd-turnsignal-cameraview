@@ -34,7 +34,6 @@ fun readProductionUiState(
         automaticStart = automaticStart,
         cameraOutput = CameraOutputUiState(
             quality = CameraBufferQuality.load(preferences),
-            frameRate = CameraFrameRate.load(preferences),
             cornerRadius = BlindSpotOverlayController.readCornerRadius(preferences).toString(),
             transparency = BlindSpotOverlayController.readTransparencyPercent(preferences).toString(),
         ),

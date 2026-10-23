@@ -9,7 +9,6 @@ public final class TurnSignalGuardApplication extends Application {
         super.onCreate();
         CompatibilityExportArtifacts.checkAsync(this);
         SharedPreferences preferences = getSharedPreferences("settings", MODE_PRIVATE);
-        CameraFrameRate.migrateLegacyPreference(preferences);
         DiagnosticLogPolicy.configure(preferences.getBoolean(
                 DiagnosticLogPolicy.PREF_ENABLED, false));
         // Inspect the untouched store before language initialization writes keys, then let

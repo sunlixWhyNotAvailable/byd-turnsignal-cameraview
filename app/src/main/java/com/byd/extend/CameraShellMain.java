@@ -243,17 +243,22 @@ public final class CameraShellMain {
                 if (code == CameraShellProtocol.TX_OVERLAY_PREPARE) {
                     CameraShellProtocol.OverlaySpec spec =
                             CameraShellProtocol.OverlaySpec.readFromParcel(data);
-                    if (isReverseOverlayOpen()
-                            && !overlayAllowedWhileReverseActive(spec.cameraId)) {
-                        throw new IllegalStateException("reverse overlay has camera priority");
-                    }
                     int prepareResult;
                     try {
-                        runOnMain(() -> {
+                        prepareResult = runOnMain(() -> {
+                            if (isReverseOverlayOpen()
+                                    && !overlayAllowedWhileReverseActive(spec.cameraId)) {
+                                return CameraShellProtocol.PREPARE_DEFERRED;
+                            }
                             overlay(spec.cameraId).prepare(spec);
-                            return null;
+                            return CameraShellProtocol.PREPARE_OK;
                         });
-                        prepareResult = CameraShellProtocol.PREPARE_OK;
+                        if (prepareResult == CameraShellProtocol.PREPARE_DEFERRED) {
+                            emit("camera_shell_prepare_deferred",
+                                    "camera_id", spec.cameraId,
+                                    "request_id", spec.requestId,
+                                    "reason", "reverse_priority");
+                        }
                     } catch (CameraShellProtocol.PrepareRestartRequired restart) {
                         prepareResult = CameraShellProtocol.PREPARE_RESTART_REQUIRED;
                         emit("camera_shell_prepare_restart_required",
