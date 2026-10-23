@@ -897,7 +897,10 @@ public final class TurnSignalShellMain {
         private long bootCount() {
             try (AvasShellSettings settings = new AvasShellSettings(shellContext(context))) {
                 return settings.getInt(Settings.Global.BOOT_COUNT, -1);
-            } catch (Throwable ignored) {
+            } catch (Throwable error) {
+                emit("shell_boot_count_failed", "operation", "read_boot_count",
+                        "key", Settings.Global.BOOT_COUNT,
+                        "error", android.util.Log.getStackTraceString(error));
                 return -1;
             }
         }

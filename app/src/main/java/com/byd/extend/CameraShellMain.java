@@ -17,7 +17,9 @@ import android.view.Surface;
 
 import org.json.JSONObject;
 
+import java.io.PrintWriter;
 import java.io.RandomAccessFile;
+import java.io.StringWriter;
 import java.lang.reflect.Method;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -924,10 +926,62 @@ public final class CameraShellMain {
     }
 
     static void initializeSystemFontsForShell() throws Exception {
-        Class<?> typeface = Class.forName("android.graphics.Typeface");
-        Object current = typeface.getMethod("getSystemFontMap").invoke(null);
-        if (current instanceof Map && !((Map<?, ?>) current).isEmpty()) return;
-        typeface.getMethod("loadPreinstalledSystemFontMap").invoke(null);
+        String operation = "Class.forName(android.graphics.Typeface)";
+        try {
+            Class<?> typeface = Class.forName("android.graphics.Typeface");
+            Method getSystemFontMap;
+            try {
+                operation = "Typeface.getSystemFontMap";
+                getSystemFontMap = typeface.getMethod("getSystemFontMap");
+            } catch (NoSuchMethodException missingGetter) {
+                logSystemFontEvent("camera_shell_font_path_selected",
+                        "Typeface.getSystemFontMap", "legacy_static/method_absent", null);
+                operation = "Typeface.DEFAULT";
+                if (typeface.getField("DEFAULT").get(null) == null)
+                    throw new IllegalStateException("Typeface.DEFAULT is null");
+                operation = "Typeface.NORMAL";
+                int normal = typeface.getField("NORMAL").getInt(null);
+                operation = "Typeface.create(sans-serif, NORMAL)";
+                Object sansSerif = typeface.getMethod("create", String.class, int.class)
+                        .invoke(null, "sans-serif", normal);
+                if (sansSerif == null)
+                    throw new IllegalStateException(
+                            "Typeface.create(sans-serif, NORMAL) returned null");
+                return;
+            }
+            logSystemFontEvent("camera_shell_font_path_selected",
+                    "Typeface.getSystemFontMap", "modern_system_font_map", null);
+            operation = "Typeface.getSystemFontMap";
+            Object current = getSystemFontMap.invoke(null);
+            if (current instanceof Map && !((Map<?, ?>) current).isEmpty()) return;
+            operation = "Typeface.loadPreinstalledSystemFontMap";
+            typeface.getMethod("loadPreinstalledSystemFontMap").invoke(null);
+        } catch (Exception | Error failure) {
+            logSystemFontEvent("camera_shell_font_init_failed", operation, null, failure);
+            throw failure;
+        }
+    }
+
+    private static void logSystemFontEvent(
+            String kind, String operation, String reason, Throwable error) {
+        try {
+            Map<String, Object> fields = eventFieldMap(
+                    "kind", kind, "source", "camera_shell", "operation", operation);
+            if (reason != null) fields.put("reason", reason);
+            if (error != null) {
+                fields.put("error_type", error.getClass().getName());
+                fields.put("error_message", error.getMessage());
+                StringWriter stackTrace = new StringWriter();
+                PrintWriter writer = new PrintWriter(stackTrace);
+                error.printStackTrace(writer);
+                writer.flush();
+                fields.put("error", stackTrace.toString());
+            }
+            DiagnosticLogPolicy.print(new JSONObject(fields).toString());
+            DiagnosticLogPolicy.flushOutput();
+        } catch (Throwable loggingFailure) {
+            if (error != null && loggingFailure != error) error.addSuppressed(loggingFailure);
+        }
     }
 
     private static void terminateProcess() {

@@ -33,8 +33,8 @@ android {
         applicationId = "com.byd.extend"
         minSdk = 26
         targetSdk = 29
-        versionCode = 120
-        versionName = "1.8.0"
+        versionCode = 121
+        versionName = "1.8.1"
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
         buildConfigField(
             "String",
