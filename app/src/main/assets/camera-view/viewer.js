@@ -1,7 +1,14 @@
 (() => {
-  const WEB_REVISION = 4;
+  const WEB_REVISION = 5;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
+  // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
+  const desktopFirefox = /\bFirefox\/\d+/.test(navigator.userAgent)
+    && /\b(?:Windows NT|Macintosh|X11)\b/.test(navigator.userAgent)
+    && !/Android|Mobile|Tablet|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    && !/Android|iPhone|iPad|iPod|arm|aarch/i.test(navigator.platform)
+    && !(navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  document.documentElement.classList.toggle('firefox-video-composition', desktopFirefox);
   const bootstrapNode = document.getElementById('viewer-bootstrap');
   const fallbackBootstrap = { locale: 'en', theme: 'dark', provider: 'tailscale', passwordRequired: true };
   let bootstrap = fallbackBootstrap;

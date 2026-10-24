@@ -145,6 +145,11 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 .archive-viewer { position:relative; width:100%; aspect-ratio:16/9; overflow:hidden; background:#05080b; }
 .archive-video { position:absolute; top:0; left:0; display:block; width:100%; height:100%; object-fit:contain; background:#05080b; }
 .archive-video.cropped { max-width:none; object-fit:fill; }
+/* Screen blending over black is neutral, while keeping Firefox video in page composition. */
+.firefox-video-composition .viewer,
+.firefox-video-composition .archive-viewer { isolation:isolate; background:#000; }
+.firefox-video-composition .live-video,
+.firefox-video-composition .archive-video { mix-blend-mode:screen; background:#000; }
 .play-controls { padding:10px 12px 12px; background:var(--panel); }
 .timeline { position:relative; height:30px; }
 .timeline-track { position:absolute; top:9px; right:0; left:0; height:12px; overflow:hidden; border-radius:6px; background:var(--panel-raised); }
