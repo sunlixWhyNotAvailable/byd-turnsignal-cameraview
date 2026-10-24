@@ -3,6 +3,7 @@ package com.byd.extend.ui
 import com.byd.extend.AdbRecoverySnapshot
 import com.byd.extend.AdbReminderOverlayRequest
 import com.byd.extend.AdbReminderSettings
+import com.byd.extend.WifiRetentionSettings
 
 /** Small Java-facing bridge; native owners never need to reconstruct Kotlin data classes. */
 object AdbRecoveryUiBridge {
@@ -10,15 +11,18 @@ object AdbRecoveryUiBridge {
     fun state(
         snapshot: AdbRecoverySnapshot?,
         settings: AdbReminderSettings,
+        wifiRetentionSettings: WifiRetentionSettings,
     ): AdbRecoveryUiState {
         val appearance = settings.readAppearance()
         return snapshot?.let {
             AdbRecoveryUiState.fromSnapshot(it, appearance)
-                .copy(enabled = settings.recoveryEnabled())
+                .copy(enabled = settings.recoveryEnabled(),
+                    keepWifiCarOff = wifiRetentionSettings.enabled())
         }
             ?: AdbRecoveryUiState(
                 enabled = settings.recoveryEnabled(),
                 appearance = appearance,
+                keepWifiCarOff = wifiRetentionSettings.enabled(),
             )
     }
 

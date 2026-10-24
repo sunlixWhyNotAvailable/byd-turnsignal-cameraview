@@ -284,6 +284,7 @@
     <string name="runtime_avas_import_result">Added: %1$d. Failed: %2$d.</string>
     <string name="runtime_avas_import_failed">Audio import failed.</string>
     <string name="runtime_avas_action_failed">Unable to update AVAS settings.</string>
+    <string name="runtime_wifi_retention_update_failed">Unable to update Wi-Fi retention settings.</string>
     <string name="runtime_avas_command_failed">AVAS command failed: %1$s</string>
     <string name="update_hint_title">New version hint widget</string>
     <string name="update_hint_description">Show a hint for 10 seconds when a check finds an update</string>
@@ -299,5 +300,7 @@
     <string name="adb_reminder_retry">Repeat Wi-Fi request</string>
     <string name="adb_recovery_wait_authorization">Waiting for ADB authorization</string>
     <string name="adb_recovery_wait_permissions">Waiting for recovery permission</string>
+    <string name="keep_wifi_car_off">"Keep Wi-Fi on while the car is off"</string>
+    <string name="keep_wifi_car_off_hint">"Staying connected to a Wi-Fi network during shutdown and while the car is off prevents Wi-Fi disconnection from disabling ADB."</string>
     <string name="avm_mode_deferred">Support for this mode is deferred</string>
 </resources>

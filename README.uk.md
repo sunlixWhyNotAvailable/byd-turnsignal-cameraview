@@ -631,6 +631,8 @@ BYD Extend встановлюється окремо й не замінює BYD 
 
 Використовуйте JDK 17 та Android SDK, потрібний проєкту Gradle. Для розповсюдження використовується варіант `performance` без налагодження, мініфікації, обфускації та скорочення ресурсів.
 
+`gradle/gradle-daemon-jvm.properties` задає Java 17 для Gradle daemon в Android Studio та командному рядку. Встановіть JDK 17 локально: поточний Gradle 8.9 не завантажує відсутній JDK для daemon автоматично.
+
 ```sh
 ./gradlew :app:assemblePerformance
 ```

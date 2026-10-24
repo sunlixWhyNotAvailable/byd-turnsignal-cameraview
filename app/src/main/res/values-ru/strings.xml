@@ -284,6 +284,7 @@
     <string name="runtime_avas_import_result">Добавлено: %1$d. Ошибок: %2$d.</string>
     <string name="runtime_avas_import_failed">Не удалось импортировать аудио.</string>
     <string name="runtime_avas_action_failed">Не удалось изменить настройки AVAS.</string>
+    <string name="runtime_wifi_retention_update_failed">Не удалось обновить настройки удержания Wi-Fi.</string>
     <string name="runtime_avas_command_failed">Ошибка команды AVAS: %1$s</string>
     <string name="update_hint_title">"Виджет новой версии"</string>
     <string name="update_hint_description">"Показать подсказку на 10 секунд, если найдено обновление"</string>
@@ -299,5 +300,7 @@
     <string name="adb_reminder_retry">Повторить запрос Wi-Fi</string>
     <string name="adb_recovery_wait_authorization">Ожидание авторизации ADB</string>
     <string name="adb_recovery_wait_permissions">Ожидание разрешения на восстановление</string>
+    <string name="keep_wifi_car_off">"Удерживать Wi-Fi на выключенном авто"</string>
+    <string name="keep_wifi_car_off_hint">"Сохранение подключения к сети Wi-Fi при выключении и на выключенном авто предотвращает закрытие ADB из-за потери Wi-Fi."</string>
     <string name="avm_mode_deferred">Поддержка этого режима отложена</string>
 </resources>

@@ -18,6 +18,7 @@ data class AdbRecoveryUiState @JvmOverloads constructor(
     val cycleId: Long = 0L,
     val hintSuppressedForCycle: Boolean = false,
     val appearance: AdbReminderAppearance = AdbReminderAppearance(),
+    val keepWifiCarOff: Boolean = false,
 ) {
     val retryAllowed: Boolean get() = enabled && !authenticated5555 &&
         stage in setOf(AdbRecoveryStage.WAIT_WIFI, AdbRecoveryStage.RESTORING, AdbRecoveryStage.FAILED)
@@ -58,6 +59,7 @@ data class AdbRecoveryUiState @JvmOverloads constructor(
 
 sealed interface AdbRecoveryUiAction {
     @Immutable data class SetRecoveryEnabled(val enabled: Boolean) : AdbRecoveryUiAction
+    @Immutable data class SetKeepWifiCarOff(val enabled: Boolean) : AdbRecoveryUiAction
     data object Retry : AdbRecoveryUiAction
     @Immutable data class SetReminderEnabled(val enabled: Boolean) : AdbRecoveryUiAction
     @Immutable data class UpdateReminderAppearance(

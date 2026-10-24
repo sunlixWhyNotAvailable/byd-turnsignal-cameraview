@@ -284,6 +284,7 @@
     <string name="runtime_avas_import_result">已添加：%1$d。失败：%2$d。</string>
     <string name="runtime_avas_import_failed">音频导入失败。</string>
     <string name="runtime_avas_action_failed">无法更新 AVAS 设置。</string>
+    <string name="runtime_wifi_retention_update_failed">无法更新车辆熄火后保持 Wi-Fi 的设置。</string>
     <string name="runtime_avas_command_failed">AVAS 命令失败：%1$s</string>
     <string name="update_hint_title">新版本提示悬浮窗</string>
     <string name="update_hint_description">检测到新版本时显示提示 10 秒</string>
@@ -299,5 +300,7 @@
     <string name="adb_reminder_retry">重试 Wi-Fi 请求</string>
     <string name="adb_recovery_wait_authorization">等待 ADB 授权</string>
     <string name="adb_recovery_wait_permissions">等待恢复权限</string>
+    <string name="keep_wifi_car_off">"车辆关闭后保持 Wi-Fi 开启"</string>
+    <string name="keep_wifi_car_off_hint">"在车辆关闭过程中及关闭后保持连接到 Wi-Fi 网络，可防止因 Wi-Fi 断开而关闭 ADB。"</string>
     <string name="avm_mode_deferred">此模式的支持已暂缓</string>
 </resources>

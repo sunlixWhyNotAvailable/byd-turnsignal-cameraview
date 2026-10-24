@@ -47,6 +47,8 @@ public final class CameraHelperService extends Service {
             new CopyOnWriteArrayList<>();
     private static final String ACTION_ADB_RECOVERY_CHANGED =
             "com.byd.extend.action.ADB_RECOVERY_CHANGED";
+    private static final String ACTION_WIFI_RETENTION_CHANGED =
+            "com.byd.extend.action.WIFI_RETENTION_CHANGED";
     private static final String ACTION_ADB_WIFI_RETRY =
             "com.byd.extend.action.ADB_WIFI_RETRY";
     private static final String ACTION_ADB_READY =
@@ -386,6 +388,11 @@ public final class CameraHelperService extends Service {
     public static void adbRecoverySettingsChanged(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_ADB_RECOVERY_CHANGED));
+    }
+
+    public static void wifiRetentionSettingsChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_WIFI_RETENTION_CHANGED));
     }
 
     public static void retryAdbWifi(Context context) {
@@ -1018,6 +1025,11 @@ public final class CameraHelperService extends Service {
             reconcileAvasRecovery(false, "diagnostic_settings_changed");
             return;
         }
+        if (ACTION_WIFI_RETENTION_CHANGED.equals(action)) {
+            reconcileAvasRecovery(false, "wifi_retention_settings_changed");
+            publishAdbRecoveryUi();
+            return;
+        }
         // Rights are provisioned independently; feature execution still observes runtime gates.
         if (ACTION_START.equals(action) || ACTION_ACTIVITY_OPEN.equals(action)
                 || ACTION_SETTINGS_RELOADED.equals(action) || ACTION_CALLS_CONFIGURE.equals(action)) {
@@ -1472,8 +1484,9 @@ public final class CameraHelperService extends Service {
         setAvasWakeLock(false, "service_teardown");
         if (avasRecoveryDaemon != null) {
             SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-            avasRecoveryDaemon.reconcile(avasDaemonRequired(settings),
-                    logcatRecordingRequested(settings), "service_teardown");
+            boolean keepWifi = wifiRetentionRequested();
+            avasRecoveryDaemon.reconcile(avasDaemonRequired(settings) || (keepWifi && recover),
+                    logcatRecordingRequested(settings), keepWifi, "service_teardown");
             avasRecoveryDaemon.close();
         }
         if (explicitShutdown && cameraRuntime != null) cameraRuntime.shutdown();
@@ -1555,7 +1568,7 @@ public final class CameraHelperService extends Service {
         setAvasWakeLock(false, terminateShells ? "runtime_shutdown" : "runtime_stop");
         if (avasRecoveryDaemon != null && (terminateShells || (!avasDaemonRequired(
                 getSharedPreferences("settings", MODE_PRIVATE)) && !logcatRecordingRequested(
-                getSharedPreferences("settings", MODE_PRIVATE))))) {
+                getSharedPreferences("settings", MODE_PRIVATE)) && !wifiRetentionRequested()))) {
             avasRecoveryDaemon.reconcile(false, "runtime_stop");
         }
         postForegroundStop("stop_runtime", reason, action, requestStartId, false);
@@ -1602,15 +1615,23 @@ public final class CameraHelperService extends Service {
                 && settings.getBoolean(ContinuousLogcatRecorder.PREF_ENABLED, false);
     }
 
+    private boolean wifiRetentionRequested() {
+        return !LegacySettingsImporter.blocksRuntime(this)
+                && !GuardRecovery.isUserShutdownActive(this)
+                && new WifiRetentionSettings(this).enabled();
+    }
+
     private void reconcileAvasRecovery(boolean permissionTrigger, String reason) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         boolean anyProfile = AvasNotificationAccess.hasEnabledAvasAudio(settings);
         boolean daemonRequired = avasDaemonRequired(settings);
+        boolean keepWifi = wifiRetentionRequested();
         boolean wakeRequired = AvasRecoveryPolicy.wakeRequired(
                 helperRuntimeStarted, GuardRecovery.isUserShutdownActive(this), anyProfile);
         setAvasWakeLock(wakeRequired, reason);
         if (avasRecoveryDaemon != null) avasRecoveryDaemon.reconcile(
-                daemonRequired, logcatRecordingRequested(settings), reason);
+                daemonRequired || (keepWifi && GuardRecovery.shouldRecover(this)),
+                logcatRecordingRequested(settings), keepWifi, reason);
         if (permissionTrigger) provisionAppPermissions(reason);
     }
 

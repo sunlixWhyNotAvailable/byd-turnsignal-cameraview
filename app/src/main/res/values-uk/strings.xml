@@ -284,6 +284,7 @@
     <string name="runtime_avas_import_result">Додано: %1$d. Не вдалося: %2$d.</string>
     <string name="runtime_avas_import_failed">Не вдалося імпортувати аудіофайли.</string>
     <string name="runtime_avas_action_failed">Не вдалося оновити налаштування AVAS.</string>
+    <string name="runtime_wifi_retention_update_failed">Не вдалося оновити налаштування утримання Wi-Fi.</string>
     <string name="runtime_avas_command_failed">Помилка команди AVAS: %1$s</string>
     <string name="update_hint_title">Віджет-підказка нової версії</string>
     <string name="update_hint_description">Показувати підказку на 10 секунд, коли перевірка виявить оновлення</string>
@@ -299,5 +300,7 @@
     <string name="adb_reminder_retry">Повторити запит Wi-Fi</string>
     <string name="adb_recovery_wait_authorization">Очікування авторизації ADB</string>
     <string name="adb_recovery_wait_permissions">Очікування дозволу відновлення</string>
+    <string name="keep_wifi_car_off">"Утримувати Wi-Fi на вимкненому авто"</string>
+    <string name="keep_wifi_car_off_hint">"Збереження підключення до мережі Wi-Fi під час вимкнення та на вимкненому авто запобігає закриттю ADB через втрату Wi-Fi."</string>
     <string name="avm_mode_deferred">Підтримку цього режиму відкладено</string>
 </resources>

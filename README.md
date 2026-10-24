@@ -631,6 +631,8 @@ For camera issues, include the output display and relevant preset/settings. For 
 
 Use JDK 17 and the Android SDK required by the Gradle project. Distribution builds use the non-debuggable `performance` variant without minification, obfuscation, or resource shrinking.
 
+`gradle/gradle-daemon-jvm.properties` selects Java 17 for the Gradle daemon in both Android Studio and the command line. Install JDK 17 locally; the current Gradle 8.9 wrapper does not download a missing daemon JDK automatically.
+
 ```sh
 ./gradlew :app:assemblePerformance
 ```

@@ -3188,14 +3188,37 @@ public final class CameraProbeActivity extends ComponentActivity
     @Override
     public com.byd.extend.ui.AdbRecoveryUiState productionAdbRecoveryState() {
         return com.byd.extend.ui.AdbRecoveryUiBridge.state(
-                CameraHelperService.adbRecoverySnapshot(), new AdbReminderSettings(this));
+                CameraHelperService.adbRecoverySnapshot(), new AdbReminderSettings(this),
+                new WifiRetentionSettings(this));
     }
 
     @Override
     public void onProductionAdbRecoveryAction(com.byd.extend.ui.AdbRecoveryUiAction action) {
         if (shutdownRequested || activityDestroyed) return;
         AdbReminderSettings settings = new AdbReminderSettings(this);
-        if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetRecoveryEnabled) {
+        if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetKeepWifiCarOff) {
+            boolean enabled = ((com.byd.extend.ui.AdbRecoveryUiAction.SetKeepWifiCarOff) action)
+                    .getEnabled();
+            try {
+                new WifiRetentionSettings(this).setEnabled(enabled);
+            } catch (RuntimeException error) {
+                AdbRecoveryDiagnostics.failure(this::record, "wifi_retention_update_failed",
+                        "set_wifi_retention", error, "requested_enabled", enabled, "stage", "save");
+                Toast.makeText(this, runtimeText(R.string.runtime_wifi_retention_update_failed),
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            try {
+                CameraHelperService.wifiRetentionSettingsChanged(this);
+            } catch (RuntimeException error) {
+                AdbRecoveryDiagnostics.failure(this::record, "wifi_retention_update_failed",
+                        "set_wifi_retention", error, "requested_enabled", enabled,
+                        "stage", "service_dispatch");
+                Toast.makeText(this, runtimeText(R.string.runtime_wifi_retention_update_failed),
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        } else if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetRecoveryEnabled) {
             settings.setRecoveryEnabled(
                     ((com.byd.extend.ui.AdbRecoveryUiAction.SetRecoveryEnabled) action).getEnabled());
         } else if (action instanceof com.byd.extend.ui.AdbRecoveryUiAction.SetReminderEnabled) {

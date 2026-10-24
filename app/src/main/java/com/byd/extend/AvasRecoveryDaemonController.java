@@ -25,12 +25,14 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "avas-recovery-control"));
     private final String apkIdentity;
+    private final WifiPolicyRecovery wifiPolicy;
     private long retryAfterMs;
     private boolean closed;
     private long desiredGeneration;
     private boolean desiredRequired;
     private boolean desiredRecovery;
     private boolean desiredRecording;
+    private boolean desiredWifi;
     private volatile boolean ownsRecovery;
 
     AvasRecoveryDaemonController(Context context, BiConsumer<String, Object[]> events,
@@ -39,6 +41,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         this.events = events;
         this.ownershipChanged = ownershipChanged;
         apkIdentity = currentApkIdentity(this.context);
+        wifiPolicy = new WifiPolicyRecovery(this.context, this::emit);
     }
 
     synchronized void reconcile(boolean required, String reason) {
@@ -46,19 +49,33 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
     }
 
     synchronized void reconcile(boolean recovery, boolean recording, String reason) {
+        reconcile(recovery, recording, false, reason);
+    }
+
+    synchronized void reconcile(boolean recovery, boolean recording, boolean keepWifi, String reason) {
         if (closed) return;
-        boolean required = recovery || recording;
-        if (desiredRequired != required || desiredRecovery != recovery || desiredRecording != recording) {
+        boolean required = recovery || recording || keepWifi;
+        if (desiredRequired != required || desiredRecovery != recovery
+                || desiredRecording != recording || desiredWifi != keepWifi) {
             desiredRequired = required;
             desiredRecovery = recovery;
             desiredRecording = recording;
+            desiredWifi = keepWifi;
             desiredGeneration++;
         }
         long generation = desiredGeneration;
-        worker.execute(() -> reconcileOnWorker(required, recovery, recording, reason, generation));
+        worker.execute(() -> {
+            try {
+                reconcileOnWorker(required, recovery, recording, keepWifi, reason, generation);
+            } finally {
+                // Policy restoration remains necessary even when the daemon is no longer needed.
+                if (isCurrent(required, generation)
+                        && !LegacySettingsImporter.blocksRuntime(context)) wifiPolicy.reconcile();
+            }
+        });
     }
 
-    private void reconcileOnWorker(boolean required, boolean recovery, boolean recording,
+    private void reconcileOnWorker(boolean required, boolean recovery, boolean recording, boolean keepWifi,
             String reason, long generation) {
         if (!isCurrent(required, generation)) return;
         DaemonPing current = ping(resolve());
@@ -72,7 +89,8 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         }
         if (current.healthy(apkIdentity)) {
             retryAfterMs = 0L;
-            control(current.binder, recovery, false, recording);
+            if (!isCurrent(required, generation)) return;
+            control(current.binder, recovery, false, recording, keepWifi);
             emit("avas_recovery_daemon_reconcile", "required", true,
                     "reason", reason, "pid", current.pid, "status", "ready");
             return;
@@ -87,7 +105,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         }
         LocalAdbClient.Result launch = LocalAdbClient.executeAuthorized(
                 context, launchCommand(context.getApplicationInfo().sourceDir,
-                        android.os.Process.myUid(), apkIdentity, recovery, recording), this::emit);
+                        android.os.Process.myUid(), apkIdentity, recovery, recording, keepWifi), this::emit);
         if (!isCurrent(true, generation)) {
             DaemonPing staleLaunch = ping(resolve());
             if (staleLaunch.binder != null) control(staleLaunch.binder, false, true);
@@ -123,7 +141,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
                 return;
             }
             retryAfterMs = 0L;
-            control(started.binder, recovery, false, recording);
+            control(started.binder, recovery, false, recording, keepWifi);
             setOwnsRecovery(recovery);
             if (launch.commandReadTimeout) {
                 emit("avas_recovery_daemon_launch", "ok", true,
@@ -225,10 +243,11 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
     }
 
     private void control(IBinder binder, boolean enabled, boolean shutdown) {
-        control(binder, enabled, shutdown, false);
+        control(binder, enabled, shutdown, false, false);
     }
 
-    private void control(IBinder binder, boolean enabled, boolean shutdown, boolean recording) {
+    private void control(IBinder binder, boolean enabled, boolean shutdown,
+            boolean recording, boolean keepWifi) {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -238,6 +257,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             if (!shutdown) {
                 data.writeInt(enabled ? 1 : 0);
                 data.writeInt(recording ? 1 : 0);
+                data.writeInt(keepWifi ? 1 : 0);
             }
             if (!binder.transact(transaction, data, reply, 0)) {
                 throw new IllegalStateException("daemon transaction rejected");
@@ -245,7 +265,8 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             reply.readException();
         } catch (Throwable failure) {
             emit("avas_recovery_daemon_control_failed", "shutdown", shutdown,
-                    "enabled", enabled, "error", summary(failure));
+                    "enabled", enabled, "keep_wifi", keepWifi, "error", summary(failure),
+                    "error_stack", android.util.Log.getStackTraceString(failure));
         } finally {
             data.recycle();
             reply.recycle();
@@ -336,6 +357,11 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
 
     static String launchCommand(String apkPath, int appUid, String identity,
             boolean recovery, boolean recording) {
+        return launchCommand(apkPath, appUid, identity, recovery, recording, false);
+    }
+
+    static String launchCommand(String apkPath, int appUid, String identity,
+            boolean recovery, boolean recording, boolean keepWifi) {
         String apk = shellQuote(apkPath);
         String quotedIdentity = shellQuote(identity);
         String process = AvasRecoveryDaemonProtocol.PROCESS_NAME;
@@ -352,6 +378,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
                 + " setsid app_process /system/bin --nice-name=" + process + " "
                 + AvasRecoveryDaemonProtocol.MAIN_CLASS + " " + appUid + " " + quotedIdentity
                 + " " + (recovery ? "1" : "0") + " " + (recording ? "1" : "0")
+                + " " + (keepWifi ? "1" : "0")
                 + " </dev/null >>" + AvasRecoveryDaemonProtocol.BOOT_LOG_PATH + " 2>&1 & "
                 + "for i in 1 2 3 4 5 6; do service list 2>/dev/null | grep -q "
                 + AvasRecoveryDaemonProtocol.SERVICE_NAME

@@ -99,6 +99,13 @@ internal fun FormScope.AdbRecoveryScreen(
             { onAction(AdbRecoveryUiAction.SetRecoveryEnabled(it)) },
             colors,
         ) }
+        row("keep-wifi-car-off") { SwitchLine(
+            strings.resource(R.string.keep_wifi_car_off),
+            strings.resource(R.string.keep_wifi_car_off_hint),
+            state.keepWifiCarOff,
+            { onAction(AdbRecoveryUiAction.SetKeepWifiCarOff(it)) },
+            colors,
+        ) }
         row("status") { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(strings.text("Стан", "Status", "状态"), color = colors.muted, fontSize = 13.sp)
