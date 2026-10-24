@@ -114,7 +114,7 @@ final class WifiPolicyState {
         }
 
         boolean intentConsistent() {
-            return APPLY.equals(operation) == enabled;
+            return IDLE.equals(operation) || (pending() && (APPLY.equals(operation) == enabled));
         }
 
         boolean mayAttempt(long nowElapsed) {
@@ -142,9 +142,9 @@ final class WifiPolicyState {
         }
 
         boolean isCurrent(Request request) {
-            return request != null && generation == request.generation
+            return request != null && pending() && generation == request.generation
                     && operation.equals(request.operation)
-                    && (APPLY.equals(operation) == enabled);
+                    && intentConsistent();
         }
 
         Request request() {

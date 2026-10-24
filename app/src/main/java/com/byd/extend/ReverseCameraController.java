@@ -73,6 +73,7 @@ final class ReverseCameraController {
     private int[] outputSourceIndexes = new int[0];
     private int[] outputGenerations = new int[0];
     private Surface[] outputSurfaces = new Surface[0];
+    private long outputHelperEpoch;
     private boolean clusterVisible;
     // Pending or acknowledged shows. Failed commands are removed so they can be retried.
     private final SparseArray<int[]> shownGenerations = new SparseArray<>();
@@ -98,6 +99,10 @@ final class ReverseCameraController {
     }
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
+        CameraHelperMain.HelperBinder previous = helper;
+        if (previous != null) {
+            previous.invalidateReverseOverlayShows(0, "helper_replaced");
+        }
         helper = value;
         resetRuntime("helper_attached");
         evaluate();
@@ -354,6 +359,9 @@ final class ReverseCameraController {
     void shutdown() {
         shutdown = true;
         CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) {
+            activeHelper.invalidateReverseOverlayShows(0, "controller_shutdown");
+        }
         if (activeHelper != null) activeHelper.clearReverseSourceDemand();
         cancelTimers();
         clearCleanupRetry();
@@ -401,6 +409,7 @@ final class ReverseCameraController {
     private void start() {
         CameraHelperMain.HelperBinder activeHelper = helper;
         if (activeHelper == null) return;
+        activeHelper.invalidateReverseOverlayShows(0, "request_replaced");
         int requestId = nextRequestId();
         pendingShellRecoveryRequestId = 0;
         activeRequestId = requestId;
@@ -560,6 +569,10 @@ final class ReverseCameraController {
     }
 
     private void resetAfterShellDeath(boolean preserveDirection) {
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) {
+            activeHelper.invalidateReverseOverlayShows(activeRequestId, "helper_lost");
+        }
         cancelTimers();
         clearCleanupRetry();
         if (preserveDirection) direction.rememberForRetry();
@@ -675,12 +688,28 @@ final class ReverseCameraController {
             if (value != null) release(value.surfaces);
             return;
         }
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (activeHelper != null) {
+            int[] nextTabletGenerations = generationsForDisplay(
+                    CameraDisplayTarget.TABLET, value.displayTargets, value.generations);
+            int[] nextClusterGenerations = generationsForDisplay(
+                    CameraDisplayTarget.CLUSTER, value.displayTargets, value.generations);
+            if (!Arrays.equals(generations, nextTabletGenerations)) {
+                activeHelper.invalidateReverseOverlayShow(
+                        activeRequestId, CameraDisplayTarget.TABLET, "surface_replaced");
+            }
+            if (!Arrays.equals(clusterGenerations, nextClusterGenerations)) {
+                activeHelper.invalidateReverseOverlayShow(
+                        activeRequestId, CameraDisplayTarget.CLUSTER, "surface_replaced");
+            }
+        }
         handler.removeCallbacks(surfaceTimeout);
         preparedDisplayTargets = value.preparedDisplayTargets.clone();
         outputDisplayTargets = value.displayTargets.clone();
         outputSourceIndexes = value.sourceIndexes.clone();
         outputGenerations = value.generations.clone();
         outputSurfaces = value.surfaces;
+        outputHelperEpoch = value.helperEpoch;
         generations = generationsForDisplay(
                 CameraDisplayTarget.TABLET, value.displayTargets, value.generations);
         clusterGenerations = generationsForDisplay(
@@ -696,7 +725,6 @@ final class ReverseCameraController {
             fail("tablet_surfaces_unavailable");
             return;
         }
-        CameraHelperMain.HelperBinder activeHelper = helper;
         if (activeHelper == null) {
             release(value.surfaces);
             fail("helper_unavailable");
@@ -868,24 +896,25 @@ final class ReverseCameraController {
         int[] showing = targetGenerations.clone();
         shownGenerations.put(displayTarget, showing);
         try {
-            helper.setReverseOverlayVisible(requestId, displayTarget, showing, true, success -> {
-                if (activeRequestId != requestId || stopping
-                        || shownGenerations.get(displayTarget) != showing
-                        || !Arrays.equals(generationsForTarget(displayTarget), showing)) return;
-                if (!success) {
-                    shownGenerations.remove(displayTarget);
-                    return;
-                }
-                if (displayTarget == CameraDisplayTarget.TABLET) {
-                    handler.removeCallbacks(firstFrameTimeout);
-                    visible = true;
-                } else {
-                    clusterVisible = true;
-                }
-                emit("reverse_camera_visible", "request_id", requestId,
-                        "display_target", displayTarget,
-                        "generations", Arrays.toString(showing));
-            });
+            helper.setReverseOverlayVisible(
+                    requestId, displayTarget, showing, true, outputHelperEpoch, success -> {
+                        if (activeRequestId != requestId || stopping
+                                || shownGenerations.get(displayTarget) != showing
+                                || !Arrays.equals(generationsForTarget(displayTarget), showing)) return;
+                        if (!success) {
+                            shownGenerations.remove(displayTarget);
+                            return;
+                        }
+                        if (displayTarget == CameraDisplayTarget.TABLET) {
+                            handler.removeCallbacks(firstFrameTimeout);
+                            visible = true;
+                        } else {
+                            clusterVisible = true;
+                        }
+                        emit("reverse_camera_visible", "request_id", requestId,
+                                "display_target", displayTarget,
+                                "generations", Arrays.toString(showing));
+                    });
         } catch (Throwable error) {
             shownGenerations.remove(displayTarget);
             emit("reverse_camera_error", "stage", "queue_show", "request_id", requestId,
@@ -907,6 +936,10 @@ final class ReverseCameraController {
         if (stopping) return;
         cancelTimers();
         int closingRequestId = activeRequestId;
+        CameraHelperMain.HelperBinder activeHelper = helper;
+        if (closingRequestId > 0 && activeHelper != null) {
+            activeHelper.invalidateReverseOverlayShows(closingRequestId, "stop:" + reason);
+        }
         int[] closingGenerations = generations;
         int[] closingClusterGenerations = clusterGenerations;
         int[] closingDisplayTargets = preparedDisplayTargets;
@@ -927,7 +960,6 @@ final class ReverseCameraController {
             return;
         }
         stopping = true;
-        CameraHelperMain.HelperBinder activeHelper = helper;
         CleanupCloseCoordinator cleanup = new CleanupCloseCoordinator(
                 closingRequestId,
                 candidate -> !shutdown && stopping && activeCleanup == candidate,
@@ -1913,6 +1945,7 @@ final class ReverseCameraController {
         outputSourceIndexes = new int[0];
         outputGenerations = new int[0];
         outputSurfaces = new Surface[0];
+        outputHelperEpoch = 0;
         clusterVisible = false;
     }
 

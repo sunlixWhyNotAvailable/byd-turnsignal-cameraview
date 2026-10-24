@@ -4,21 +4,22 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Message;
 import android.os.Parcel;
 import android.os.SystemClock;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
-import java.util.function.LongPredicate;
+import java.util.function.Consumer;
 
 final class TurnSignalGuardRuntime {
     private static final int PERIOD_MS = 50;
     static final int MAX_POLL_GAP_MS = 250;
-    private static final int RECENT_CANCEL_MS = 250;
-    private static final int DEFERRED_BLINK_START_TIMEOUT_MS = 2_000;
     private static final int DEFAULT_CORRECTION_DELAY_MS = 100;
     private static final int DEFAULT_MAX_SPEED_KPH = 30;
     private static final int CORRECTION_CONFIRM_MS = 1_500;
@@ -38,8 +39,11 @@ final class TurnSignalGuardRuntime {
     private final Context context;
     private final Handler handler;
     private final BiConsumer<String, Object[]> eventSink;
-    private final LongPredicate startupCleanupAttemptMarker;
+    private final StartupCleanupAttemptMarker startupCleanupAttemptMarker;
+    private final Object dispatchLock = new Object();
     private final Runnable pollRunnable = this::pollAndSchedule;
+    private Object timerToken = new Object();
+    private boolean shutdownRequested;
 
     private IBinder autoservice;
     private String autoserviceDescriptor;
@@ -52,12 +56,8 @@ final class TurnSignalGuardRuntime {
     private boolean requestedEnabled;
     private boolean listenerHealthy;
     private boolean pollHealthy;
-    private final TurnSignalListenerRecovery listenerSampleRecovery =
-            new TurnSignalListenerRecovery();
-    private boolean gestureLatched;
-    private int gestureDirection;
-    private boolean gestureLongSeen;
-    private boolean gestureWasActivation;
+    private final TurnSignalGestureState gestures = new TurnSignalGestureState();
+    private String lastRejectedGesture;
     private float outwardDeg = 90.0f;
     private float centerDeg = 10.0f;
     private int correctionDelayMs = DEFAULT_CORRECTION_DELAY_MS;
@@ -66,16 +66,12 @@ final class TurnSignalGuardRuntime {
     private float latestSpeedKph = Float.NaN;
     private int latestStalk = -1;
     private int latestBlink = -1;
-    private int blinkBeforeLastChange = -1;
-    private long lastBlinkChangeAt;
     private long lastPollAt;
-    private long lastGestureAt;
     private long lastSampleAt;
     private long lastCameraStateAt;
 
     private boolean sessionActive;
     private int sessionDirection;
-    private boolean outwardSeen;
     private final CenterReturnTracker centerReturnTracker = new CenterReturnTracker();
     private boolean matchingBlinkSeen;
     private int corrections;
@@ -87,9 +83,7 @@ final class TurnSignalGuardRuntime {
     private boolean speedLimitCleanupPending;
     private final TelemetryRecoveryCleanup telemetryRecoveryCleanup =
             new TelemetryRecoveryCleanup();
-    private int speedDeferredDirection;
-    private boolean speedDeferredBlinkSeen;
-    private long speedDeferredAt;
+    private final TurnSignalDeferredIntent speedDeferred = new TurnSignalDeferredIntent();
     private int assumedLatchState;
     private boolean confirmationPending;
     private long confirmationDeadline;
@@ -105,20 +99,26 @@ final class TurnSignalGuardRuntime {
     private long startupCleanupArmedGeneration;
     private long startupCleanupFreshGeneration;
     private long startupCleanupPersistFailedGeneration;
+    private long startupCleanupMarkerPendingGeneration;
+    private long lifecycleGeneration;
     private boolean writeInFlight;
+    private long lastControlInitAttemptAt = Long.MIN_VALUE;
+    private boolean controlInitRetryStopped;
+    private String lastControlInitError;
+    private String lastControlInitDiagnostic;
 
     TurnSignalGuardRuntime(
             Context context,
             Handler handler,
             BiConsumer<String, Object[]> eventSink,
-            LongPredicate startupCleanupAttemptMarker) {
+            StartupCleanupAttemptMarker startupCleanupAttemptMarker) {
         this.context = context;
         this.handler = handler;
         this.eventSink = eventSink;
         this.startupCleanupAttemptMarker = startupCleanupAttemptMarker;
         telemetryController = new TurnSignalTelemetryController(
                 SystemClock::elapsedRealtime,
-                action -> runOnHandler(action),
+                action -> runOnHandler(action, "telemetry_callback"),
                 new TurnSignalTelemetryTransport(context),
                 new TurnSignalTelemetryController.Sink() {
                     @Override public void onSnapshot(TurnSignalTelemetryController.Snapshot snapshot,
@@ -130,16 +130,39 @@ final class TurnSignalGuardRuntime {
                             boolean subscribed, boolean seeded, String reason) {
                         telemetryModeChanged(subscribed, seeded, reason);
                     }
+                    @Override public void onDiagnostic(String event, Object... fields) {
+                        emit(event, fields);
+                    }
                 });
         assumedLatchState = LATCH_UNKNOWN;
     }
 
     void start() {
-        runOnHandler(this::startOnHandler);
+        runOnHandler(this::startOnHandler, "start");
     }
 
     void stop() {
-        runOnHandler(this::stopOnHandler);
+        runOnHandler(this::stopOnHandler, "stop");
+    }
+
+    void stop(Runnable completed) {
+        runOnHandler(() -> {
+            stopOnHandler();
+            if (completed != null) completed.run();
+        }, "stop");
+    }
+
+    boolean shutdown(Runnable completed) {
+        boolean runInline;
+        boolean posted = true;
+        synchronized (dispatchLock) {
+            if (shutdownRequested) return false;
+            shutdownRequested = true;
+            runInline = Looper.myLooper() == handler.getLooper();
+            if (!runInline) posted = handler.post(() -> shutdownOnHandler(completed));
+        }
+        if (runInline) shutdownOnHandler(completed);
+        return runInline || posted;
     }
 
     void configure(
@@ -151,13 +174,13 @@ final class TurnSignalGuardRuntime {
             int initialAssumedLatchState) {
         runOnHandler(() -> configureOnHandler(
                 enabled, outward, center, correctionDelay, maxSpeed,
-                initialAssumedLatchState));
+                initialAssumedLatchState), "configure");
     }
 
     void vehiclePowerStateChanged(
             boolean interactive, long generation, long cleanupAttemptedGeneration) {
         runOnHandler(() -> vehiclePowerStateChangedOnHandler(
-                interactive, generation, cleanupAttemptedGeneration));
+                interactive, generation, cleanupAttemptedGeneration), "vehicle_power_state");
     }
 
     void reportStatus() {
@@ -170,27 +193,33 @@ final class TurnSignalGuardRuntime {
                     "assumed_latch_state", assumedLatchState);
             emitCameraState();
             emitGuardConfig();
-        });
+        }, "report_status");
     }
 
     void setManualTurnState(int payload) {
-        runOnHandler(() -> setManualTurnStateOnHandler(payload));
+        runOnHandler(() -> setManualTurnStateOnHandler(payload), "manual_state_set");
     }
 
     private void startOnHandler() {
         if (started) return;
+        lifecycleGeneration++;
         selfCheck();
         started = true;
+        lastControlInitAttemptAt = Long.MIN_VALUE;
+        controlInitRetryStopped = false;
+        lastControlInitError = null;
+        lastControlInitDiagnostic = null;
+        initializeControlIfNeeded();
         String error = null;
         try {
-            connectAutoservice();
-            prepareControl();
             telemetryController.start();
         } catch (Throwable failure) {
             error = summary(failure);
             primaryTelemetryError = error;
             listenerHealthy = false;
             pollHealthy = false;
+            emit("telemetry_start_failed", "operation", "telemetry_start",
+                    "error", diagnostic(failure));
         }
         emit("guard_self_check", "ok", true);
         emit("telemetry_ready", "ok", telemetryReady(),
@@ -198,10 +227,15 @@ final class TurnSignalGuardRuntime {
                 "control_ready", setLightFeature != null,
                 "error", telemetryReady() ? ""
                         : error == null ? telemetryError() : error);
-        handler.postDelayed(pollRunnable, PERIOD_MS);
+        postTimer(pollRunnable, PERIOD_MS);
     }
 
     private void stopOnHandler() {
+        lifecycleGeneration++;
+        startupCleanupMarkerPendingGeneration = 0;
+        Object oldTimerToken = timerToken;
+        timerToken = new Object();
+        handler.removeCallbacksAndMessages(oldTimerToken);
         if (!started) return;
         started = false;
         boolean resetLatch = requestedEnabled;
@@ -215,15 +249,20 @@ final class TurnSignalGuardRuntime {
         speedLimitCleanupPending = false;
         telemetryRecoveryCleanup.clear();
         clearSpeedDeferredSession();
-        handler.removeCallbacks(pollRunnable);
         resetSession();
         resetGesture();
         telemetryController.close();
         cameraShortTurn.reset();
         listenerHealthy = false;
         pollHealthy = false;
-        listenerSampleRecovery.reset();
         emit("telemetry_stopped", "listener_unregistered", true, "error", "");
+    }
+
+    private void shutdownOnHandler(Runnable completed) {
+        handler.removeCallbacksAndMessages(null);
+        stopOnHandler();
+        handler.removeCallbacksAndMessages(null);
+        if (completed != null) completed.run();
     }
 
     private void setManualTurnStateOnHandler(int payload) {
@@ -324,7 +363,7 @@ final class TurnSignalGuardRuntime {
                     "assumed_latch_state", assumedLatchState);
             return;
         }
-        handler.postDelayed(() -> awaitManualTurnStateConfirmation(
+        postTimer(() -> awaitManualTurnStateConfirmation(
                 payload, blinkBefore, deadline, generation), PERIOD_MS);
     }
 
@@ -374,6 +413,7 @@ final class TurnSignalGuardRuntime {
         }
         if (enabled) guardDisableResetPending = false;
         if (configurationChanged) {
+            if (enabled) queueOwnedLatchCleanup("configuration_changed");
             resetSession();
             clearSpeedDeferredSession();
         }
@@ -391,7 +431,11 @@ final class TurnSignalGuardRuntime {
             boolean interactive, long generation, long cleanupAttemptedGeneration) {
         boolean waking = interactive && !vehicleInteractive;
         vehicleInteractive = interactive;
-        awakeSessionGeneration = Math.max(0, generation);
+        long nextGeneration = Math.max(0, generation);
+        if (!interactive || awakeSessionGeneration != nextGeneration) {
+            startupCleanupMarkerPendingGeneration = 0;
+        }
+        awakeSessionGeneration = nextGeneration;
         startupCleanupAttemptedGeneration = Math.max(0, cleanupAttemptedGeneration);
         if (!interactive) {
             startupCleanupArmedGeneration = 0;
@@ -416,7 +460,8 @@ final class TurnSignalGuardRuntime {
         clearSpeedDeferredSession();
         hazardCleanupPending = false;
         speedLimitCleanupPending = false;
-        telemetryRecoveryCleanup.clear();
+        queueOwnedLatchCleanup("startup_reseed");
+        resetGesture();
         startupCleanupArmedGeneration = generation;
         startupCleanupFreshGeneration = 0;
         startupCleanupPersistFailedGeneration = 0;
@@ -438,9 +483,10 @@ final class TurnSignalGuardRuntime {
 
     private void pollAndSchedule() {
         if (!started) return;
+        initializeControlIfNeeded();
         telemetryController.tick();
         evaluateTelemetryDeadlines();
-        if (started) handler.postDelayed(pollRunnable, PERIOD_MS);
+        if (started) postTimer(pollRunnable, PERIOD_MS);
     }
 
     private void applyTelemetrySnapshot(
@@ -466,6 +512,7 @@ final class TurnSignalGuardRuntime {
         boolean gapOk = telemetryController.dataFresh(now);
 
         if (!valid || !gapOk) {
+            if (!gapOk) telemetryController.reportFreshnessFailure(now);
             boolean wasHealthy = pollHealthy;
             pollHealthy = false;
             invalidateTelemetryOwnership("telemetry_gap_or_invalid");
@@ -475,10 +522,13 @@ final class TurnSignalGuardRuntime {
                     || now - lastTelemetryErrorAt >= TELEMETRY_ERROR_REPEAT_MS)) {
                 lastTelemetryErrorAt = now;
                 lastTelemetryErrorReason = reason;
+                TurnSignalTelemetryController.Metrics timing = telemetryController.metrics(now);
                 emit("telemetry_error", "reason", reason,
                         "gap_ms", gap, "stalk_status", stalk.status,
                         "steering_status", steering.status, "blink_status", blink.status,
-                        "speed_status", speed.status);
+                        "speed_status", speed.status, "get_age_ms", timing.getAgeMs,
+                        "get_duration_ms", timing.readDurationMs,
+                        "callback_dispatch_age_ms", timing.callbackDispatchAgeMs);
             }
             if (wasHealthy || now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) {
                 emitCameraState();
@@ -489,6 +539,7 @@ final class TurnSignalGuardRuntime {
         boolean recovered = !pollHealthy;
         listenerHealthy = telemetryController.subscriptionHealthy();
         pollHealthy = true;
+        if (recovered) telemetryRecoveryCleanup.recovered();
         if (recovered && lastTelemetryErrorReason != null) {
             emit("telemetry_recovered", "previous_reason", lastTelemetryErrorReason);
             lastTelemetryErrorReason = null;
@@ -496,11 +547,11 @@ final class TurnSignalGuardRuntime {
         latestAngle = angle;
         latestSpeedKph = speedKph;
         latestStalk = stalk.raw;
-        listenerSampleRecovery.reset();
-        listenerSampleRecovery.validCallback(TurnSignalListenerRecovery.STALK);
-        listenerSampleRecovery.validCallback(TurnSignalListenerRecovery.BLINK);
-        if ((liveMask & TurnSignalTelemetryController.LIVE_SPEED) != 0
-                && sessionActive && !speedAllowed(latestSpeedKph, maxSpeedKph)) {
+        if (!wasTelemetryReady && telemetryReady()) telemetryRecoveryCleanup.recovered();
+        if (source == TurnSignalTelemetryController.Source.RECONCILE && conflict) {
+            cancelForReconciliationConflict();
+        }
+        if (sessionActive && !speedAllowed(latestSpeedKph, maxSpeedKph)) {
             int deferredDirection = sessionDirection;
             boolean deferredBlinkSeen = matchingBlinkSeen;
             boolean cleanupNeeded = isDirectionLatch(assumedLatchState);
@@ -515,19 +566,22 @@ final class TurnSignalGuardRuntime {
             }
         }
         boolean live = source == TurnSignalTelemetryController.Source.CALLBACK;
+        expireSpeedDeferredSession(live ? observedMs : now);
+        if (!live) {
+            gestures.observeHealthySnapshot(stalk.raw, blink.raw, observedMs);
+        } else if ((liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0) {
+            gestures.observeBlink(blink.raw, observedMs,
+                    sessionActive ? sessionDirection : speedDeferred.direction());
+        }
         boolean cameraShortTurnEnded = cameraShortTurn.observe(
                 stalk.raw, blink.raw, source, liveMask, conflict, observedMs);
-        if (source == TurnSignalTelemetryController.Source.RECONCILE && conflict) {
-            cancelForReconciliationConflict();
-        }
         if (live && listenerHealthy
-                && (liveMask & TurnSignalTelemetryController.LIVE_STALK) != 0
-                && listenerSampleRecovery.acceptStalkObservation()) {
+                && (liveMask & TurnSignalTelemetryController.LIVE_STALK) != 0) {
             observeStalk(stalk.raw, "callback", observedMs);
         }
-        if (live && listenerHealthy
-                && (liveMask & TurnSignalTelemetryController.LIVE_STEERING) != 0) {
-            observeAngle(angle);
+        if (listenerHealthy) {
+            observeAngle(angle, live
+                    && (liveMask & TurnSignalTelemetryController.LIVE_STEERING) != 0);
         }
         if (live && listenerHealthy
                 && (liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0) {
@@ -558,28 +612,35 @@ final class TurnSignalGuardRuntime {
         if (!wasTelemetryReady && telemetryReady() && requestedEnabled) emitGuardConfig();
 
         if (DiagnosticLogPolicy.extended()
-                && (sessionActive || speedDeferredDirection != 0)
+                && (sessionActive || speedDeferred.direction() != 0)
                 && now - lastSampleAt >= 200) {
             lastSampleAt = now;
             emit("telemetry_sample", "stalk", stalk.raw, "steering_deg", angle,
                     "speed_kph", speedKph, "max_speed_kph", maxSpeedKph,
                     "blink", blink.raw, "poll_gap_ms", gap,
                     "listener_ok", listenerHealthy, "guard_active", guardActive(),
-                    "session", sessionActive, "armed", outwardSeen,
-                    "speed_deferred", speedDeferredDirection != 0,
+                    "session", sessionActive, "armed", centerReturnTracker.armed(),
+                    "speed_deferred", speedDeferred.direction() != 0,
                     "direction", directionName(sessionActive
-                            ? sessionDirection : speedDeferredDirection));
+                            ? sessionDirection : speedDeferred.direction()));
         }
     }
 
     private void evaluateTelemetryDeadlines() {
         long now = SystemClock.elapsedRealtime();
+        gestures.tick(now);
         boolean fresh = telemetryController.dataFresh(now);
         if (!fresh && pollHealthy) {
+            telemetryController.reportFreshnessFailure(now);
             pollHealthy = false;
             invalidateTelemetryOwnership("telemetry_gap_or_invalid");
+            TurnSignalTelemetryController.Metrics timing = telemetryController.metrics(now);
             emit("telemetry_error", "reason", "reconciliation_deadline",
-                    "deadline_ms", TurnSignalTelemetryController.CALLBACK_GET_DEADLINE_MS);
+                    "deadline_ms", listenerHealthy
+                            ? TurnSignalTelemetryController.CALLBACK_GET_DEADLINE_MS
+                            : TurnSignalTelemetryController.FALLBACK_GET_DEADLINE_MS,
+                    "get_age_ms", timing.getAgeMs, "get_duration_ms", timing.readDurationMs,
+                    "callback_dispatch_age_ms", timing.callbackDispatchAgeMs);
         }
         if (now - lastCameraStateAt >= CAMERA_STATE_PERIOD_MS) emitCameraState();
         evaluateSpeedDeferredSession(now);
@@ -597,19 +658,21 @@ final class TurnSignalGuardRuntime {
         if (confirmationPending || sessionActive || pendingNeutralizeReason != null) {
             suppress("reconciliation_conflict");
         }
-        if (speedDeferredDirection != 0) cancelSpeedDeferredSession("reconciliation_conflict");
+        if (speedDeferred.direction() != 0) cancelSpeedDeferredSession("reconciliation_conflict");
         if (hazardCleanupPending) cancelHazardCleanup("reconciliation_conflict");
         emit("telemetry_reconciled", "action", "silent_no_gesture_or_correction");
     }
 
     private void telemetryModeChanged(boolean subscribed, boolean seeded, String reason) {
         boolean wasReady = telemetryReady();
+        boolean wasListenerHealthy = listenerHealthy;
         listenerHealthy = subscribed && seeded;
         if (!listenerHealthy) {
             primaryTelemetryError = "listener_error: " + reason;
             invalidateTelemetryOwnership("listener_error");
         } else {
             primaryTelemetryError = null;
+            if (!wasListenerHealthy) telemetryRecoveryCleanup.recovered();
         }
         emit("telemetry_subscription", "registered", subscribed, "seeded", seeded,
                 "mode", subscribed ? "callback_1000ms_reconcile" : "fallback_50ms",
@@ -618,10 +681,11 @@ final class TurnSignalGuardRuntime {
     }
 
     private void invalidateTelemetryOwnership(String reason) {
+        queueOwnedLatchCleanup(reason);
         cameraShortTurn.reset();
         resetGesture();
         if (hazardCleanupPending) cancelHazardCleanup(reason);
-        if (speedDeferredDirection != 0) cancelSpeedDeferredSession(reason);
+        if (speedDeferred.direction() != 0) cancelSpeedDeferredSession(reason);
         if (sessionActive || pendingNeutralizeReason != null || confirmationPending) {
             suppress(reason);
         }
@@ -629,6 +693,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateStartupAwakeSessionCleanup() {
         long generation = awakeSessionGeneration;
+        if (startupCleanupMarkerPendingGeneration == generation) return;
         if (!canRunStartupAwakeSessionCleanup(
                 vehicleInteractive,
                 requestedEnabled,
@@ -637,20 +702,64 @@ final class TurnSignalGuardRuntime {
                 startupCleanupFreshGeneration,
                 startupCleanupAttemptedGeneration,
                 startupCleanupPersistFailedGeneration,
-                telemetryReady(),
+                telemetryReady()
+                        && telemetryController.dataFresh(SystemClock.elapsedRealtime()),
                 latestStalk,
                 latestBlink,
                 writeInFlight,
                 manualCommandPending,
                 confirmationPending,
                 !sessionActive
-                        && speedDeferredDirection == 0
+                        && speedDeferred.direction() == 0
                         && pendingNeutralizeReason == null
                         && !hazardCleanupPending
                         && !speedLimitCleanupPending)) {
             return;
         }
-        if (!startupCleanupAttemptMarker.test(generation)) {
+        long lifecycle = lifecycleGeneration;
+        startupCleanupMarkerPendingGeneration = generation;
+        try {
+            startupCleanupAttemptMarker.mark(generation, persisted -> runOnHandler(
+                    () -> startupCleanupMarkerCompleted(
+                            lifecycle, generation, persisted), "startup_cleanup_marker_result"));
+        } catch (Throwable failure) {
+            startupCleanupMarkerPendingGeneration = 0;
+            startupCleanupPersistFailedGeneration = generation;
+            emit("startup_awake_session_cleanup_failed",
+                    "awake_session_id", generation,
+                    "stage", "persist_attempted_session",
+                    "error", diagnostic(failure));
+        }
+    }
+
+    private void startupCleanupMarkerCompleted(
+            long lifecycle, long generation, boolean persisted) {
+        if (!started || lifecycle != lifecycleGeneration
+                || generation != awakeSessionGeneration
+                || startupCleanupMarkerPendingGeneration != generation) return;
+        boolean telemetryIsFresh = telemetryController.dataFresh(SystemClock.elapsedRealtime());
+        boolean currentlyReady = telemetryReady();
+        boolean stillSafe = canRunStartupAwakeSessionCleanup(
+                vehicleInteractive,
+                requestedEnabled,
+                generation,
+                startupCleanupArmedGeneration,
+                startupCleanupFreshGeneration,
+                startupCleanupAttemptedGeneration,
+                startupCleanupPersistFailedGeneration,
+                currentlyReady && telemetryIsFresh,
+                latestStalk,
+                latestBlink,
+                writeInFlight,
+                manualCommandPending,
+                confirmationPending,
+                !sessionActive
+                        && speedDeferred.direction() == 0
+                        && pendingNeutralizeReason == null
+                        && !hazardCleanupPending
+                        && !speedLimitCleanupPending);
+        startupCleanupMarkerPendingGeneration = 0;
+        if (!persisted) {
             startupCleanupPersistFailedGeneration = generation;
             emit("startup_awake_session_cleanup_failed",
                     "awake_session_id", generation,
@@ -660,6 +769,22 @@ final class TurnSignalGuardRuntime {
         startupCleanupAttemptedGeneration = generation;
         startupCleanupArmedGeneration = 0;
         startupCleanupFreshGeneration = 0;
+        if (!stillSafe) {
+            emit("startup_awake_session_cleanup_skipped",
+                    "awake_session_id", generation,
+                    "reason", "safety_preconditions_changed_during_persistence",
+                    "interactive", vehicleInteractive,
+                    "guard_enabled", requestedEnabled,
+                    "telemetry_ready", currentlyReady,
+                    "telemetry_fresh", telemetryIsFresh,
+                    "stalk", latestStalk, "blink", latestBlink,
+                    "manual_command_pending", manualCommandPending,
+                    "confirmation_pending", confirmationPending,
+                    "session_active", sessionActive,
+                    "speed_deferred", speedDeferred.direction() != 0,
+                    "write_in_flight", writeInFlight);
+            return;
+        }
         try {
             int status = writeTurnSignal(0, "startup_awake_session_cleanup");
             emit("startup_awake_session_cleanup",
@@ -722,7 +847,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateTelemetryRecoveryCleanup() {
         boolean controlIdle = !sessionActive
-                && speedDeferredDirection == 0
+                && speedDeferred.direction() == 0
                 && pendingNeutralizeReason == null
                 && !hazardCleanupPending
                 && !guardDisableResetPending
@@ -730,6 +855,7 @@ final class TurnSignalGuardRuntime {
                 && (startupCleanupArmedGeneration == 0
                         || startupCleanupArmedGeneration != awakeSessionGeneration);
         int previous = assumedLatchState;
+        String cleanupReason = telemetryRecoveryCleanup.reason();
         int result = telemetryRecoveryCleanup.evaluate(
                 requestedEnabled,
                 telemetryReady(),
@@ -742,17 +868,19 @@ final class TurnSignalGuardRuntime {
                 controlIdle,
                 (featureId, payload) -> featureId == TURN_SIGNAL_SET_FID
                         && payload == 0
-                        && neutralizeControlLatch("telemetry_recovered_off_cleanup", true));
+                        && neutralizeControlLatch("owned_latch_" + cleanupReason, true));
         if (result == TelemetryRecoveryCleanup.SKIPPED) {
             emit("telemetry_recovery_latch_cleanup_skipped", "reason", "already_neutral",
                     "assumed_latch_state", assumedLatchState);
         } else if (result == TelemetryRecoveryCleanup.COMPLETED) {
             emit("telemetry_recovery_latch_cleanup_completed",
+                    "reason", cleanupReason,
                     "previous_assumed_latch_state", previous,
                     "assumed_latch_state", assumedLatchState,
                     "blink", latestBlink, "stalk", latestStalk);
         } else if (result == TelemetryRecoveryCleanup.FAILED) {
             emit("telemetry_recovery_latch_cleanup_failed",
+                    "reason", cleanupReason,
                     "previous_assumed_latch_state", previous,
                     "assumed_latch_state", assumedLatchState,
                     "blink", latestBlink, "stalk", latestStalk);
@@ -760,40 +888,29 @@ final class TurnSignalGuardRuntime {
     }
 
     private void observeStalk(int raw, String source, long now) {
-        if (raw == 1) {
-            if (now - lastGestureAt >= 150) {
-                gestureLatched = false;
-                gestureDirection = 0;
-                gestureLongSeen = false;
-                gestureWasActivation = false;
-            }
+        int activeDirection = sessionActive ? sessionDirection : speedDeferred.direction();
+        TurnSignalGestureState.Result gesture =
+                gestures.observeStalk(raw, now, latestBlink, activeDirection);
+        if (gesture.event == TurnSignalGestureState.Event.NONE) {
+            if (gesture.rejection == TurnSignalGestureState.Rejection.AWAITING_NEUTRAL) {
+                logRejectedGesture(gesture, source);
+            } else if (raw == 1) lastRejectedGesture = null;
             return;
         }
-        if (raw < 2 || raw > 5) return;
         if (hazardCleanupPending) cancelHazardCleanup("new_stalk_event");
-
-        int direction = directionForStalk(raw);
-        boolean longMode = raw == 3 || raw == 5;
-        if (gestureLatched) {
-            if (longMode && !gestureLongSeen && direction == gestureDirection) {
-                gestureLongSeen = true;
-                if (gestureWasActivation && requestedEnabled) {
-                    emit("driver_activation_promoted", "direction", directionName(direction),
-                            "mode", "long", "stalk", raw, "source", source,
-                            "origin", "driver_stalk");
-                    startSession(direction, now);
-                }
+        int direction = gesture.direction;
+        if (gesture.event == TurnSignalGestureState.Event.PROMOTION) {
+            if (gesture.activation && requestedEnabled) {
+                emit("driver_activation_promoted", "direction", directionName(direction),
+                        "mode", "long", "stalk", raw, "source", source,
+                        "origin", "driver_stalk");
+                startSession(direction, now);
             }
             return;
         }
-        gestureLatched = true;
-        gestureDirection = direction;
-        gestureLongSeen = longMode;
-        gestureWasActivation = false;
-        lastGestureAt = now;
 
-        if (speedDeferredDirection != 0) {
-            int canceledDirection = speedDeferredDirection;
+        if (speedDeferred.direction() != 0) {
+            int canceledDirection = speedDeferred.direction();
             emit("manual_cancel", "direction", directionName(canceledDirection),
                     "stalk", raw, "source", source,
                     "reason", direction == canceledDirection
@@ -812,15 +929,25 @@ final class TurnSignalGuardRuntime {
             if (direction == canceledDirection) return;
         }
 
-        boolean activation = isActivationGesture(
-                direction, latestBlink, blinkBeforeLastChange, now - lastBlinkChangeAt);
-        gestureWasActivation = activation;
-        if (!activation) return;
+        if (!gesture.activation) {
+            logRejectedGesture(gesture, source);
+            return;
+        }
+        lastRejectedGesture = null;
 
         emit("driver_activation", "direction", directionName(direction),
-                "mode", longMode ? "long" : "short", "stalk", raw, "source", source,
+                "mode", gesture.longMode ? "long" : "short", "stalk", raw, "source", source,
                 "origin", "driver_stalk");
-        if (longMode && requestedEnabled) startSession(direction, now);
+        if (gesture.longMode && requestedEnabled) startSession(direction, now);
+    }
+
+    private void logRejectedGesture(TurnSignalGestureState.Result gesture, String source) {
+        String key = gesture.rejection.name() + ":" + gesture.stalk + ":" + latestBlink;
+        if (key.equals(lastRejectedGesture)) return;
+        lastRejectedGesture = key;
+        emit("driver_activation_rejected", "reason", gesture.rejection.name(),
+                "direction", directionName(gesture.direction), "stalk", gesture.stalk,
+                "blink", latestBlink, "source", source);
     }
 
     private void startSession(int direction, long now) {
@@ -846,9 +973,7 @@ final class TurnSignalGuardRuntime {
         sessionActive = true;
         pendingNeutralizeReason = null;
         sessionDirection = direction;
-        outwardSeen = towardAngle(direction, latestAngle) >= outwardDeg;
-        centerReturnTracker.reset();
-        centerReturnTracker.seed(latestAngle);
+        centerReturnTracker.start(direction, latestAngle, outwardDeg);
         matchingBlinkSeen = latestBlink == direction;
         corrections = 0;
         offCandidateAt = 0;
@@ -857,21 +982,23 @@ final class TurnSignalGuardRuntime {
         confirmationDeadline = 0;
         emit("guard_session", "direction", directionName(direction),
                 "initial_angle", latestAngle, "speed_kph", latestSpeedKph,
-                "max_speed_kph", maxSpeedKph, "armed", outwardSeen);
-        if (outwardSeen) {
+                "max_speed_kph", maxSpeedKph, "armed", centerReturnTracker.armed());
+        if (centerReturnTracker.armed()) {
             emit("guard_armed", "direction", directionName(direction),
                     "steering_deg", latestAngle, "initial", true);
         }
     }
 
-    private void observeAngle(float angle) {
+    private void observeAngle(float angle, boolean allowArming) {
         if (!sessionActive) return;
-        if (!outwardSeen && towardAngle(sessionDirection, angle) >= outwardDeg) {
-            outwardSeen = true;
+        boolean wasArmed = centerReturnTracker.armed();
+        boolean complete = centerReturnTracker.observeSession(
+                sessionDirection, allowArming, outwardDeg, centerDeg, angle);
+        if (!wasArmed && centerReturnTracker.armed()) {
             emit("guard_armed", "direction", directionName(sessionDirection),
                     "steering_deg", angle, "initial", false);
         }
-        if (centerReturnTracker.observe(sessionDirection, outwardSeen, centerDeg, angle)) {
+        if (complete) {
             emit("guard_completed", "direction", directionName(sessionDirection),
                     "steering_deg", angle, "corrections", corrections);
             finishSessionForOff("maneuver_completed");
@@ -880,10 +1007,6 @@ final class TurnSignalGuardRuntime {
 
     private void observeBlink(int blink, long now) {
         boolean changed = blink != latestBlink;
-        if (changed) {
-            blinkBeforeLastChange = latestBlink;
-            lastBlinkChangeAt = now;
-        }
         latestBlink = blink;
         if (changed) emitCameraState();
         observeSpeedDeferredBlink(blink, now);
@@ -931,56 +1054,48 @@ final class TurnSignalGuardRuntime {
 
     private void deferSessionForSpeed(
             int direction, boolean blinkSeen, String reason, long now) {
-        speedDeferredDirection = direction;
-        speedDeferredBlinkSeen = blinkSeen;
-        speedDeferredAt = now;
+        speedDeferred.start(direction, blinkSeen, now);
         emit("guard_speed_deferred", "reason", reason,
                 "direction", directionName(direction), "blink_seen", blinkSeen,
                 "speed_kph", latestSpeedKph, "max_speed_kph", maxSpeedKph);
     }
 
     private void observeSpeedDeferredBlink(int blink, long now) {
-        if (speedDeferredDirection == 0) return;
-        if (blink == speedDeferredDirection) {
-            speedDeferredBlinkSeen = true;
-            return;
-        }
-        if (shouldCancelSpeedDeferredSession(
-                speedDeferredDirection, speedDeferredBlinkSeen, blink)) {
-            cancelSpeedDeferredSession("blink_changed");
-            return;
-        }
-        if (!speedDeferredBlinkSeen
-                && now - speedDeferredAt >= DEFERRED_BLINK_START_TIMEOUT_MS) {
-            cancelSpeedDeferredSession("blink_start_timeout");
-        }
+        String cancellation = speedDeferred.observeBlink(blink, now);
+        if (cancellation != null) cancelSpeedDeferredSession(cancellation);
     }
 
     private void evaluateSpeedDeferredSession(long now) {
-        if (!canResumeSpeedDeferredSession(speedDeferredDirection,
-                speedDeferredBlinkSeen, requestedEnabled, telemetryReady(),
+        if (expireSpeedDeferredSession(now)) return;
+        if (!canResumeSpeedDeferredSession(speedDeferred.direction(),
+                speedDeferred.blinkSeen(), requestedEnabled, telemetryReady(),
                 latestSpeedKph, maxSpeedKph, latestBlink)) {
             return;
         }
-        int direction = speedDeferredDirection;
+        int direction = speedDeferred.direction();
         clearSpeedDeferredSession();
         emit("guard_speed_deferred_resumed", "direction", directionName(direction),
                 "speed_kph", latestSpeedKph, "max_speed_kph", maxSpeedKph);
         startSession(direction, now);
     }
 
+    private boolean expireSpeedDeferredSession(long now) {
+        if (!speedDeferred.expired(now)) return false;
+        cancelSpeedDeferredSession("blink_start_timeout");
+        return true;
+    }
+
     private void cancelSpeedDeferredSession(String reason) {
-        int direction = speedDeferredDirection;
+        int direction = speedDeferred.direction();
         clearSpeedDeferredSession();
+        if ("blink_start_timeout".equals(reason)) gestures.forgetExpiredIntent();
         emit("guard_speed_deferred_canceled", "reason", reason,
                 "direction", directionName(direction), "blink", latestBlink,
                 "speed_kph", latestSpeedKph);
     }
 
     private void clearSpeedDeferredSession() {
-        speedDeferredDirection = 0;
-        speedDeferredBlinkSeen = false;
-        speedDeferredAt = 0;
+        speedDeferred.clear();
     }
 
     private void evaluateCorrection(long now) {
@@ -1161,33 +1276,90 @@ final class TurnSignalGuardRuntime {
                     "reason", reason, "requested_payload", payload,
                     "previous_assumed_latch_state", previous,
                     "blink_before", latestBlink, "stalk", latestStalk,
-                    "error", summary(failure));
+                    "error", diagnostic(failure));
             throw failure;
         } finally {
             writeInFlight = false;
         }
     }
 
+    private void initializeControlIfNeeded() {
+        if (setLightFeature != null || controlInitRetryStopped) return;
+        long now = SystemClock.elapsedRealtime();
+        if (lastControlInitAttemptAt != Long.MIN_VALUE
+                && now - lastControlInitAttemptAt < TurnSignalTelemetryController.SUBSCRIBE_RETRY_MS) {
+            return;
+        }
+        lastControlInitAttemptAt = now;
+        boolean wasReady = telemetryReady();
+        String operation = "connect_autoservice";
+        try {
+            connectAutoservice();
+            operation = "prepare_light_control";
+            prepareControl();
+            boolean recovering = lastControlInitError != null;
+            lastControlInitError = null;
+            lastControlInitDiagnostic = null;
+            telemetryRecoveryCleanup.recovered();
+            if (recovering) {
+                invalidateTelemetryOwnership("control_recovered");
+                telemetryController.reseed();
+            }
+            emit("turn_control_initialization_ready", "operation", operation);
+            if (!wasReady && telemetryReady()) {
+                emit("telemetry_ready", "ok", true, "listener_ok", listenerHealthy,
+                        "poll_ok", pollHealthy, "control_ready", true, "error", "");
+                emitGuardConfig();
+            }
+        } catch (Throwable failure) {
+            Throwable cause = failure;
+            while (cause instanceof InvocationTargetException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            boolean retryable = cause instanceof ControlServiceUnavailableException
+                    || cause instanceof android.os.RemoteException;
+            controlInitRetryStopped = !retryable;
+            lastControlInitError = summary(failure);
+            String detail = diagnostic(failure);
+            if (!detail.equals(lastControlInitDiagnostic)) {
+                lastControlInitDiagnostic = detail;
+                emit("turn_control_initialization_failed", "operation", operation,
+                        "retryable", retryable, "error", detail);
+            }
+        }
+    }
+
+    private static final class ControlServiceUnavailableException extends Exception {
+        ControlServiceUnavailableException(String message) { super(message); }
+    }
+
     private void connectAutoservice() throws Exception {
         Class<?> serviceManager = Class.forName("android.os.ServiceManager");
         Method getService = serviceManager.getMethod("getService", String.class);
         autoservice = (IBinder) getService.invoke(null, "autoservice");
-        if (autoservice == null) throw new IllegalStateException("autoservice not found");
+        if (autoservice == null) throw new ControlServiceUnavailableException("autoservice not found");
         autoserviceDescriptor = autoservice.getInterfaceDescriptor();
         if (autoserviceDescriptor == null || autoserviceDescriptor.isEmpty()) {
-            throw new IllegalStateException("autoservice descriptor unavailable");
+            throw new ControlServiceUnavailableException("autoservice descriptor unavailable");
         }
     }
 
     private void prepareControl() throws Exception {
         Class<?> lightType = Class.forName("android.hardware.bydauto.light.BYDAutoLightDevice");
-        lightDevice = lightType.getMethod("getInstance", Context.class).invoke(null, context);
-        eventValueType = Class.forName("android.hardware.bydauto.BYDAutoEventValue");
-        setLightFeature = lightDevice.getClass().getMethod("set", int[].class, eventValueType);
+        Object device = lightType.getMethod("getInstance", Context.class).invoke(null, context);
+        Class<?> valueType = Class.forName("android.hardware.bydauto.BYDAutoEventValue");
+        Method setter = device.getClass().getMethod("set", int[].class, valueType);
+        lightDevice = device;
+        eventValueType = valueType;
+        setLightFeature = setter;
     }
 
     private ReadResult read(Signal signal) {
-        if (autoservice == null || autoserviceDescriptor == null) return new ReadResult(-900, null);
+        if (autoservice == null || autoserviceDescriptor == null) {
+            emit("manual_turn_read_failed", "operation", "gear_get", "device", signal.dev,
+                    "fid", signal.fid, "reason", "autoservice_not_initialized");
+            return new ReadResult(-900, null);
+        }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -1195,12 +1367,22 @@ final class TurnSignalGuardRuntime {
             data.writeInt(signal.dev);
             data.writeInt(signal.fid);
             if (!autoservice.transact(signal.tx, data, reply, 0)) {
+                emit("manual_turn_read_failed", "operation", "gear_get", "device", signal.dev,
+                        "fid", signal.fid, "reason", "transact_returned_false");
                 return new ReadResult(-901, null);
             }
+            int bytes = reply.dataAvail();
             int status = reply.dataAvail() >= 4 ? reply.readInt() : -902;
             Integer raw = reply.dataAvail() >= 4 ? reply.readInt() : null;
+            if (status != 0 || raw == null) {
+                emit("manual_turn_read_failed", "operation", "gear_get", "device", signal.dev,
+                        "fid", signal.fid, "status", status, "reply_bytes", bytes,
+                        "reason", bytes < 8 ? "short_reply" : "oem_status");
+            }
             return new ReadResult(status, raw);
         } catch (Throwable error) {
+            emit("manual_turn_read_failed", "operation", "gear_get", "device", signal.dev,
+                    "fid", signal.fid, "error", diagnostic(error));
             return new ReadResult(-903, null);
         } finally {
             data.recycle();
@@ -1209,14 +1391,16 @@ final class TurnSignalGuardRuntime {
     }
 
     private void suppress(String reason) {
-        boolean queueTelemetryRecoveryCleanup =
-                telemetryRecoveryCleanup.queue(reason, assumedLatchState);
+        queueOwnedLatchCleanup(reason);
         emit("guard_suppressed", "reason", reason,
                 "direction", directionName(sessionDirection),
                 "steering_deg", Float.isFinite(latestAngle) ? latestAngle : "unknown",
                 "blink", latestBlink, "corrections", corrections);
         resetSession();
-        if (queueTelemetryRecoveryCleanup) {
+    }
+
+    private void queueOwnedLatchCleanup(String reason) {
+        if (telemetryRecoveryCleanup.queue(reason, assumedLatchState)) {
             emit("telemetry_recovery_latch_cleanup_pending",
                     "previous_reason", reason,
                     "assumed_latch_state", assumedLatchState,
@@ -1238,7 +1422,6 @@ final class TurnSignalGuardRuntime {
     private void resetSession() {
         sessionActive = false;
         sessionDirection = 0;
-        outwardSeen = false;
         centerReturnTracker.reset();
         matchingBlinkSeen = false;
         corrections = 0;
@@ -1250,23 +1433,12 @@ final class TurnSignalGuardRuntime {
     }
 
     private void resetGesture() {
-        gestureLatched = false;
-        gestureDirection = 0;
-        gestureLongSeen = false;
-        gestureWasActivation = false;
+        gestures.resetForRecovery();
+        lastRejectedGesture = null;
     }
 
     private boolean telemetryReady() {
-        return telemetryReady(listenerHealthy, pollHealthy,
-                setLightFeature != null, listenerSampleRecovery);
-    }
-
-    static boolean telemetryReady(
-            boolean listenerHealthy,
-            boolean pollHealthy,
-            boolean controlReady,
-            TurnSignalListenerRecovery listenerSampleRecovery) {
-        return listenerHealthy && pollHealthy && controlReady && listenerSampleRecovery.ready();
+        return listenerHealthy && pollHealthy && setLightFeature != null;
     }
 
     private boolean guardActive() {
@@ -1280,12 +1452,19 @@ final class TurnSignalGuardRuntime {
     }
 
     private String telemetryError() {
+        if (lastControlInitError != null && setLightFeature == null) return lastControlInitError;
         return primaryTelemetryError == null
                 ? "telemetry_or_control_not_ready" : primaryTelemetryError;
     }
 
     private void emit(String kind, Object... fields) {
         eventSink.accept(kind, fields);
+    }
+
+    private void postTimer(Runnable task, long delayMs) {
+        Message message = Message.obtain(handler, task);
+        message.obj = timerToken;
+        handler.sendMessageDelayed(message, delayMs);
     }
 
     private void emitCameraState() {
@@ -1302,8 +1481,26 @@ final class TurnSignalGuardRuntime {
     }
 
     private void runOnHandler(Runnable action) {
-        if (Looper.myLooper() == handler.getLooper()) action.run();
-        else handler.post(action);
+        runOnHandler(action, "runtime_dispatch");
+    }
+
+    private void runOnHandler(Runnable action, String operation) {
+        boolean runInline;
+        boolean posted = true;
+        synchronized (dispatchLock) {
+            if (shutdownRequested) return;
+            runInline = Looper.myLooper() == handler.getLooper();
+            if (!runInline) posted = handler.post(action);
+        }
+        if (runInline) action.run();
+        else if (!posted) {
+            throw new IllegalStateException("guard handler rejected " + operation
+                    + " on looper " + handler.getLooper().getThread().getName());
+        }
+    }
+
+    interface StartupCleanupAttemptMarker {
+        void mark(long generation, Consumer<Boolean> completed);
     }
 
     private static Float decodeAngle(ReadResult result) {
@@ -1373,8 +1570,7 @@ final class TurnSignalGuardRuntime {
     }
 
     static boolean shouldQueueTelemetryRecoveryCleanup(String reason, int assumedPayload) {
-        return "telemetry_gap_or_invalid".equals(reason)
-                && isDirectionLatch(assumedPayload);
+        return isDirectionLatch(assumedPayload);
     }
 
     static boolean canRunTelemetryRecoveryCleanup(
@@ -1403,12 +1599,21 @@ final class TurnSignalGuardRuntime {
         static final int FAILED = 3;
 
         private boolean pending;
+        private boolean attempted;
+        private String reason = "unknown";
 
         boolean queue(String reason, int assumedPayload) {
             boolean queued = shouldQueueTelemetryRecoveryCleanup(reason, assumedPayload);
-            if (queued) pending = true;
-            return queued;
+            if (!queued || pending) return false;
+            pending = true;
+            attempted = false;
+            this.reason = reason;
+            return true;
         }
+
+        void recovered() { attempted = false; }
+
+        String reason() { return reason; }
 
         int evaluate(
                 boolean enabled,
@@ -1423,20 +1628,25 @@ final class TurnSignalGuardRuntime {
                 BiPredicate<Integer, Integer> writer) {
             if (!pending) return WAIT;
             if (!isDirectionLatch(assumedPayload)) {
-                pending = false;
+                clear();
                 return SKIPPED;
             }
+            if (attempted) return WAIT;
             if (!canRunTelemetryRecoveryCleanup(
                     true, enabled, telemetryReady, assumedPayload, blink, stalk,
                     writeInFlight, manualCommandPending, confirmationPending, controlIdle)) {
                 return WAIT;
             }
-            pending = false;
-            return writer.test(TURN_SIGNAL_SET_FID, 0) ? COMPLETED : FAILED;
+            attempted = true;
+            if (!writer.test(TURN_SIGNAL_SET_FID, 0)) return FAILED;
+            clear();
+            return COMPLETED;
         }
 
         void clear() {
             pending = false;
+            attempted = false;
+            reason = "unknown";
         }
     }
 
@@ -1445,13 +1655,6 @@ final class TurnSignalGuardRuntime {
             float speedKph, int maxSpeedKph, int blink) {
         return direction != 0 && blinkSeen && enabled && telemetryReady
                 && speedAllowed(speedKph, maxSpeedKph) && blink == direction;
-    }
-
-    static boolean shouldCancelSpeedDeferredSession(
-            int direction, boolean blinkSeen, int blink) {
-        if (direction == 0 || blink == direction) return false;
-        if (!blinkSeen) return blink == BLINK_HAZARD || blink == 3 || blink == 5 || blink >= 7;
-        return true;
     }
 
     static boolean guardConfigurationChanged(
@@ -1492,6 +1695,21 @@ final class TurnSignalGuardRuntime {
     static final class CenterReturnTracker {
         private boolean hasPrevious;
         private float previousAngle;
+        private boolean armed;
+
+        void start(int direction, float angle, float outwardDeg) {
+            reset();
+            seed(angle);
+            armed = towardAngle(direction, angle) >= outwardDeg;
+        }
+
+        boolean armed() { return armed; }
+
+        boolean observeSession(int direction, boolean liveSteering,
+                float outwardDeg, float centerDeg, float angle) {
+            if (liveSteering && towardAngle(direction, angle) >= outwardDeg) armed = true;
+            return observe(direction, armed, centerDeg, angle);
+        }
 
         void seed(float angle) {
             previousAngle = angle;
@@ -1510,6 +1728,7 @@ final class TurnSignalGuardRuntime {
         void reset() {
             hasPrevious = false;
             previousAngle = 0.0f;
+            armed = false;
         }
     }
 
@@ -1616,14 +1835,6 @@ final class TurnSignalGuardRuntime {
         return "unsupported_payload_confirmed";
     }
 
-    private static boolean isActivationGesture(
-            int direction, int blink, int previousBlink, long blinkAgeMs) {
-        boolean normalBlink = blink == BLINK_OFF || blink == BLINK_LEFT || blink == BLINK_RIGHT;
-        boolean justCanceled = blinkAgeMs >= 0 && blinkAgeMs <= RECENT_CANCEL_MS
-                && blink == BLINK_OFF && previousBlink == direction;
-        return normalBlink && !justCanceled && blink != direction;
-    }
-
     private static String directionName(int direction) {
         if (direction == BLINK_LEFT) return "left";
         if (direction == BLINK_RIGHT) return "right";
@@ -1649,10 +1860,6 @@ final class TurnSignalGuardRuntime {
                 && expectedBlinkForPayload(2) == BLINK_LEFT
                 && expectedBlinkForPayload(3) == BLINK_RIGHT
                 && GEAR.tx == 5 && GEAR.dev == 1011 && GEAR.fid == 555745336
-                && isActivationGesture(BLINK_LEFT, BLINK_OFF, -1, 1_000)
-                && isActivationGesture(BLINK_RIGHT, BLINK_LEFT, BLINK_OFF, 500)
-                && !isActivationGesture(BLINK_LEFT, BLINK_LEFT, BLINK_OFF, 100)
-                && !isActivationGesture(BLINK_LEFT, BLINK_OFF, BLINK_LEFT, 100)
                 && validThresholds(90.0f, 10.0f)
                 && validThresholds(0.0f, 0.0f)
                 && validThresholds(360.0f, 45.0f)
@@ -1679,6 +1886,12 @@ final class TurnSignalGuardRuntime {
         }
         String message = root.getMessage();
         return root.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+    }
+
+    private static String diagnostic(Throwable error) {
+        StringWriter text = new StringWriter();
+        error.printStackTrace(new PrintWriter(text));
+        return text.toString();
     }
 
     private static final class Signal {

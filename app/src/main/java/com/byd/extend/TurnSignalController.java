@@ -56,6 +56,8 @@ final class TurnSignalController {
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicReference<Runnable> pendingReverseSteering = new AtomicReference<>();
+    private final ReverseOverlayVisibilityGate reverseVisibilityGate =
+            new ReverseOverlayVisibilityGate();
     private final Binder controllerToken = new Binder();
     private final Binder callback = new Binder() {
         @Override
@@ -196,6 +198,11 @@ final class TurnSignalController {
     }
 
     private void shutdown(boolean terminateShells, boolean keepAvas) {
+        cancelReverseOverlayShows(0, -1, 0, "controller_shutdown");
+        for (ReverseOverlayVisibilityGate.Show canceled
+                : reverseVisibilityGate.close()) {
+            finishCanceledReverseShow(canceled, "controller_shutdown");
+        }
         synchronized (this) {
             stopped = true;
             desiredAvasAudition = "";
@@ -1177,25 +1184,304 @@ final class TurnSignalController {
     void setReverseOverlayVisible(
             int requestId, int displayTarget, int[] generations, boolean visible,
             Consumer<Boolean> completion) {
+        setReverseOverlayVisible(requestId, displayTarget, generations, visible, 0, completion);
+    }
+
+    void setReverseOverlayVisible(
+            int requestId, int displayTarget, int[] generations, boolean visible,
+            long expectedHelperEpoch, Consumer<Boolean> completion) {
         long queuedMs = SystemClock.elapsedRealtime();
         String stage = visible ? "show" : "hide";
         reverseTiming(stage, "queued", requestId, displayTarget, queuedMs, -1, false);
-        worker.execute(() -> {
-            long startedMs = SystemClock.elapsedRealtime();
-            reverseTiming(stage, "start", requestId, displayTarget, queuedMs, startedMs, false);
-            boolean success = false;
-            try {
-                IBinder value = ensureCameraHelper();
-                transactReverseVisibility(value, requestId, displayTarget, generations, visible);
-                success = true;
-            } catch (Throwable error) {
-                emit("reverse_overlay_error", "stage", visible ? "show" : "hide",
-                        "request_id", requestId, "error", summary(error));
-            } finally {
-                reverseTiming(stage, "end", requestId, displayTarget, queuedMs, startedMs, success);
-                postCompletion(completion, success, "reverse_visibility", requestId);
+        final int[] visibilityGenerations = generations == null ? null : generations.clone();
+        ReverseOverlayVisibilityGate.Show show = null;
+        if (visible) {
+            ReverseHelperGeneration expected = currentReverseHelperGeneration();
+            show = new ReverseOverlayVisibilityGate.Show(
+                            requestId, displayTarget, visibilityGenerations,
+                            expectedHelperEpoch > 0
+                                    ? expectedHelperEpoch : expected.helperEpoch,
+                            expected.invalidationGeneration, completion);
+            ReverseOverlayVisibilityGate.Show replaced = reverseVisibilityGate.queue(show);
+            if (replaced != null) finishCanceledReverseShow(replaced, replaced.cancelReason());
+            if (show.isCancelled()) {
+                finishCanceledReverseShow(show, show.cancelReason());
+                return;
             }
-        });
+        } else {
+            cancelReverseOverlayShows(requestId, displayTarget, 0, "hide_requested");
+        }
+        final ReverseOverlayVisibilityGate.Show pendingShow = show;
+        try {
+            worker.execute(() -> {
+                long startedMs = SystemClock.elapsedRealtime();
+                reverseTiming(stage, "start", requestId, displayTarget, queuedMs, startedMs, false);
+                boolean success = false;
+                try {
+                    if (visible && !isCurrentReverseShow(pendingShow)) {
+                        finishCanceledReverseShow(pendingShow, pendingShow.cancelReason());
+                        return;
+                    }
+                    IBinder value = ensureCameraHelper();
+                    if (visible && !beginReverseShow(pendingShow, cameraHelperEpoch(value))) {
+                        finishCanceledReverseShow(pendingShow, pendingShow.cancelReason());
+                        return;
+                    }
+                    transactReverseVisibility(value, requestId, displayTarget,
+                            pendingShow == null ? visibilityGenerations : pendingShow.generations,
+                            visible);
+                    success = true;
+                } catch (Throwable error) {
+                    emit("reverse_overlay_error", "stage", visible ? "show" : "hide",
+                            "request_id", requestId, "error", summary(error));
+                } finally {
+                    reverseTiming(stage, "end", requestId, displayTarget, queuedMs, startedMs, success);
+                    if (pendingShow == null) {
+                        postCompletion(completion, success, "reverse_visibility", requestId);
+                    } else {
+                        completeReverseShow(pendingShow, success);
+                    }
+                }
+            });
+        } catch (RejectedExecutionException error) {
+            if (pendingShow != null) {
+                reverseVisibilityGate.cancel(pendingShow, "worker_rejected");
+                finishCanceledReverseShow(pendingShow, "worker_rejected");
+            }
+            throw error;
+        }
+    }
+
+    void invalidateReverseOverlayShows(int requestId, String reason) {
+        cancelReverseOverlayShows(requestId, -1, 0, reason);
+    }
+
+    void invalidateReverseOverlayShow(int requestId, int displayTarget, String reason) {
+        cancelReverseOverlayShows(requestId, displayTarget, 0, reason);
+    }
+
+    private void cancelReverseOverlayShows(
+            int requestId, int displayTarget, long helperEpoch, String reason) {
+        for (ReverseOverlayVisibilityGate.Show canceled
+                : reverseVisibilityGate.invalidate(
+                        requestId, displayTarget, helperEpoch, reason)) {
+            finishCanceledReverseShow(canceled, reason);
+        }
+    }
+
+    private void invalidateReverseShowsForHelperLoss(long helperEpoch, String reason) {
+        cancelReverseOverlayShows(0, -1, helperEpoch, reason);
+    }
+
+    private boolean isCurrentReverseShow(ReverseOverlayVisibilityGate.Show show) {
+        if (show == null) return false;
+        ReverseHelperGeneration current = currentReverseHelperGeneration();
+        return reverseVisibilityGate.isCurrent(
+                show, current.helperEpoch, current.invalidationGeneration);
+    }
+
+    private boolean beginReverseShow(
+            ReverseOverlayVisibilityGate.Show show, long actualHelperEpoch) {
+        return show != null && reverseVisibilityGate.begin(
+                show, actualHelperEpoch, cameraHelperInvalidationGeneration);
+    }
+
+    private ReverseHelperGeneration currentReverseHelperGeneration() {
+        synchronized (this) {
+            return new ReverseHelperGeneration(
+                    cameraHelperEpoch, cameraHelperInvalidationGeneration);
+        }
+    }
+
+    private void finishCanceledReverseShow(
+            ReverseOverlayVisibilityGate.Show show, String reason) {
+        if (show == null) return;
+        String cancellationReason = reason == null || reason.isEmpty()
+                ? show.cancelReason() : reason;
+        if (!show.completeCancelled((completion, result) -> postCompletion(
+                completion, result, "reverse_visibility_cancelled", show.requestId))) return;
+        emit("reverse_overlay_show_cancelled",
+                "request_id", show.requestId,
+                "display_target", show.displayTarget,
+                "surface_generations", Arrays.toString(show.generations),
+                "camera_shell_epoch", show.helperEpoch,
+                "reason", cancellationReason == null ? "cancelled" : cancellationReason);
+    }
+
+    private void completeReverseShow(
+            ReverseOverlayVisibilityGate.Show show, boolean success) {
+        if (show != null) {
+            show.complete(success, (completion, result) -> postCompletion(
+                    completion, result, "reverse_visibility", show.requestId));
+        }
+    }
+
+    private static final class ReverseHelperGeneration {
+        final long helperEpoch;
+        final long invalidationGeneration;
+
+        ReverseHelperGeneration(long helperEpoch, long invalidationGeneration) {
+            this.helperEpoch = helperEpoch;
+            this.invalidationGeneration = invalidationGeneration;
+        }
+    }
+
+    static final class ReverseOverlayVisibilityGate {
+        private static final int QUEUED = 0;
+        private static final int IN_FLIGHT = 1;
+        private static final int CANCELLED = 2;
+        private static final int COMPLETED = 3;
+        private final Show[] currentByTarget = new Show[2];
+        private boolean closed;
+
+        synchronized Show queue(Show show) {
+            if (closed) {
+                show.cancel("controller_shutdown");
+                return null;
+            }
+            int target = slot(show.displayTarget);
+            if (target < 0) {
+                show.cancel("invalid_display_target");
+                return null;
+            }
+            Show previous = currentByTarget[target];
+            currentByTarget[target] = show;
+            return previous != null && previous.cancel("replaced") ? previous : null;
+        }
+
+        synchronized boolean isCurrent(
+                Show show, long helperEpoch, long invalidationGeneration) {
+            return matches(show, helperEpoch, invalidationGeneration, false);
+        }
+
+        synchronized boolean begin(
+                Show show, long helperEpoch, long invalidationGeneration) {
+            if (!matches(show, helperEpoch, invalidationGeneration, true)) return false;
+            if (show.helperEpoch == 0) show.helperEpoch = helperEpoch;
+            show.state = IN_FLIGHT;
+            currentByTarget[slot(show.displayTarget)] = null;
+            return true;
+        }
+
+        synchronized boolean cancel(Show show, String reason) {
+            if (show == null || !show.cancel(reason)) return false;
+            int target = slot(show.displayTarget);
+            if (target >= 0 && currentByTarget[target] == show) currentByTarget[target] = null;
+            return true;
+        }
+
+        synchronized Show[] invalidate(
+                int requestId, int displayTarget, long helperEpoch, String reason) {
+            Show[] canceled = new Show[currentByTarget.length];
+            int count = 0;
+            for (int target = 0; target < currentByTarget.length; target++) {
+                Show show = currentByTarget[target];
+                if (show == null || (requestId > 0 && show.requestId != requestId)
+                        || (displayTarget >= 0 && show.displayTarget != displayTarget)
+                        || (helperEpoch > 0 && show.helperEpoch != helperEpoch
+                                && !(helperEpoch == 1 && show.helperEpoch == 0))) continue;
+                currentByTarget[target] = null;
+                if (show.cancel(reason)) canceled[count++] = show;
+            }
+            return Arrays.copyOf(canceled, count);
+        }
+
+        synchronized Show[] close() {
+            closed = true;
+            return invalidate(0, -1, 0, "controller_shutdown");
+        }
+
+        private void cancelCurrent(Show show, String reason) {
+            int target = slot(show.displayTarget);
+            if (target >= 0 && currentByTarget[target] == show) currentByTarget[target] = null;
+            show.cancel(reason);
+        }
+
+        private boolean matches(
+                Show show, long helperEpoch, long invalidationGeneration,
+                boolean beforeTransact) {
+            int target = slot(show.displayTarget);
+            if (show.state != QUEUED || target < 0 || currentByTarget[target] != show) {
+                show.cancel("replaced");
+                return false;
+            }
+            boolean initialBind = show.helperEpoch == 0
+                    && (beforeTransact ? helperEpoch == 1 : helperEpoch <= 1);
+            if (invalidationGeneration != show.invalidationGeneration
+                    || helperEpoch <= 0 && beforeTransact
+                    || (!initialBind && show.helperEpoch != helperEpoch)) {
+                cancelCurrent(show, "helper_generation_changed");
+                return false;
+            }
+            return true;
+        }
+
+        private static int slot(int displayTarget) {
+            return CameraDisplayTarget.isValid(displayTarget) ? displayTarget : -1;
+        }
+
+        static final class Show {
+            final int requestId;
+            final int displayTarget;
+            final int[] generations;
+            final long invalidationGeneration;
+            final Consumer<Boolean> completion;
+            private final AtomicBoolean completionClaimed = new AtomicBoolean();
+            private volatile long helperEpoch;
+            private volatile String cancellationReason;
+            private volatile int state = QUEUED;
+
+            Show(
+                    int requestId, int displayTarget, int[] generations,
+                    long helperEpoch, long invalidationGeneration,
+                    Consumer<Boolean> completion) {
+                this.requestId = requestId;
+                this.displayTarget = displayTarget;
+                this.generations = generations == null ? new int[0] : generations.clone();
+                this.helperEpoch = helperEpoch;
+                this.invalidationGeneration = invalidationGeneration;
+                this.completion = completion;
+            }
+
+            private boolean cancel(String reason) {
+                if (state != QUEUED) return false;
+                state = CANCELLED;
+                cancellationReason = reason;
+                return true;
+            }
+
+            boolean isCancelled() {
+                return state == CANCELLED;
+            }
+
+            boolean isInFlight() {
+                return state == IN_FLIGHT;
+            }
+
+            long helperEpoch() {
+                return helperEpoch;
+            }
+
+            String cancelReason() {
+                return cancellationReason;
+            }
+
+            private boolean complete(boolean success, CompletionDispatcher dispatcher) {
+                if (!completionClaimed.compareAndSet(false, true)) return false;
+                state = COMPLETED;
+                dispatcher.dispatch(completion, success);
+                return true;
+            }
+
+            boolean completeCancelled(CompletionDispatcher dispatcher) {
+                return state == CANCELLED && complete(false, dispatcher);
+            }
+
+        }
+
+        interface CompletionDispatcher {
+            void dispatch(Consumer<Boolean> completion, boolean success);
+        }
     }
 
     void closeReverseOverlay(String reason, Consumer<Boolean> completion) {
@@ -3082,7 +3368,7 @@ final class TurnSignalController {
     }
 
     private static ReverseSurfaces transactReverseAcquire(
-            IBinder value, int requestId, boolean clusterExpected,
+            IBinder value, int requestId, long helperEpoch, boolean clusterExpected,
             boolean forceTabletFallback) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -3145,7 +3431,7 @@ final class TurnSignalController {
                 }
             }
             return new ReverseSurfaces(
-                    returnedRequestId, preparedDisplayTargets,
+                    returnedRequestId, helperEpoch, preparedDisplayTargets,
                     Arrays.copyOf(targets, total), Arrays.copyOf(sourceIndexes, total),
                     Arrays.copyOf(generations, total), Arrays.copyOf(surfaces, total));
         } catch (Throwable error) {
@@ -3305,7 +3591,8 @@ final class TurnSignalController {
             }
             reverseTiming("acquire_binder", "start", requestId, -1, queuedMs, startedMs, false);
             ReverseSurfaces result = transactReverseAcquire(
-                    value, requestId, pendingReverseClusterExpected, forceTabletFallback);
+                    value, requestId, currentEpoch,
+                    pendingReverseClusterExpected, forceTabletFallback);
             clearPendingReverseSurfaces(requestId);
             pendingCleared = true;
             long acquiredMs = SystemClock.elapsedRealtime();
@@ -3736,11 +4023,14 @@ final class TurnSignalController {
     private long installCameraHelper(IBinder value) throws Exception {
         IBinder previous;
         IBinder.DeathRecipient previousRecipient;
+        long previousEpoch;
         long epoch;
         synchronized (this) {
             if (cameraHelper == value) return cameraHelperEpoch;
+            previousEpoch = cameraHelperEpoch;
             epoch = cameraHelperEpoch + 1;
             IBinder.DeathRecipient recipient = () -> {
+                invalidateReverseShowsForHelperLoss(epoch, "helper_lost");
                 try {
                     worker.execute(() -> cameraHelperLost(
                             value, epoch, "camera helper Binder died"));
@@ -3756,6 +4046,9 @@ final class TurnSignalController {
             cameraHelperDeathRecipient = recipient;
         }
         unlinkDeathRecipient(previous, previousRecipient);
+        if (previousEpoch > 0) {
+            invalidateReverseShowsForHelperLoss(previousEpoch, "helper_replaced");
+        }
         emit("camera_shell_attached", "camera_shell_epoch", epoch);
         return epoch;
     }
@@ -3793,6 +4086,8 @@ final class TurnSignalController {
     private void cameraHelperLost(
             IBinder value, long epoch, String error, boolean plannedRestart) {
         if (!clearCameraHelper(value, epoch)) return;
+        invalidateReverseShowsForHelperLoss(epoch,
+                plannedRestart ? "helper_replaced" : "helper_lost");
         cameraHelperInvalidationGeneration++;
         int[] overlayRequestIds = pendingOverlayRequestIds();
         int reverseRequestId = pendingReverseRequestId;
@@ -4217,6 +4512,7 @@ final class TurnSignalController {
 
     static final class ReverseSurfaces {
         final int requestId;
+        final long helperEpoch;
         final int[] preparedDisplayTargets;
         final int[] displayTargets;
         final int[] sourceIndexes;
@@ -4224,9 +4520,11 @@ final class TurnSignalController {
         final Surface[] surfaces;
 
         ReverseSurfaces(
-                int requestId, int[] preparedDisplayTargets, int[] displayTargets,
+                int requestId, long helperEpoch,
+                int[] preparedDisplayTargets, int[] displayTargets,
                 int[] sourceIndexes, int[] generations, Surface[] surfaces) {
             this.requestId = requestId;
+            this.helperEpoch = helperEpoch;
             this.preparedDisplayTargets = preparedDisplayTargets;
             this.displayTargets = displayTargets;
             this.sourceIndexes = sourceIndexes;

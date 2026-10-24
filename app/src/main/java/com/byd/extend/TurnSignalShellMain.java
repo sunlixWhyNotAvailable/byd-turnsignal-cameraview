@@ -3,6 +3,7 @@ package com.byd.extend;
 import android.content.Context;
 import android.os.Binder;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
@@ -24,10 +25,13 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.ArrayDeque;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public final class TurnSignalShellMain {
     private static final String RECOVERY_COMPONENT =
@@ -106,6 +110,8 @@ public final class TurnSignalShellMain {
 
         private final Context context;
         private final Handler handler;
+        private final HandlerThread guardThread;
+        private final Handler guardHandler;
         private final int appUid;
         private final int versionCode;
         private final TurnSignalGuardRuntime runtime;
@@ -124,6 +130,15 @@ public final class TurnSignalShellMain {
         private final Runnable recoveryRunnable = this::attemptRecovery;
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
         private final AwakeSessionState awakeSession;
+        private final Object guardEventLock = new Object();
+        private final ArrayDeque<String> pendingGuardEvents = new ArrayDeque<>();
+        private final CountDownLatch guardRuntimeStopped = new CountDownLatch(1);
+        private boolean guardEventDrainPosted;
+        private volatile boolean guardEventsClosed;
+        private boolean guardShutdownRequested;
+        private boolean guardShutdownFailed;
+        private boolean guardShutdownCompleted;
+        private long guardDetachGeneration;
         private IBinder callback;
         private IBinder.DeathRecipient callbackDeathRecipient;
         private IBinder controllerToken;
@@ -136,6 +151,7 @@ public final class TurnSignalShellMain {
         private boolean processTerminationRequested;
         private boolean avasCloseClaimed;
         private boolean nonAvasStopped;
+        private boolean guardDetachPending;
         private volatile CameraRuntimeHost cameraRuntime;
         private volatile boolean appMotionTelemetry;
         private volatile boolean workerMotionTelemetry;
@@ -157,8 +173,13 @@ public final class TurnSignalShellMain {
             this.processTerminator = processTerminator;
             powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             awakeSession = loadAwakeSession();
+            guardThread = new HandlerThread(
+                    "bydextend_guard_runtime", Process.THREAD_PRIORITY_DEFAULT);
+            guardThread.start();
+            guardHandler = new Handler(guardThread.getLooper());
             runtime = new TurnSignalGuardRuntime(
-                    context, handler, this::emit, this::markStartupCleanupAttempted);
+                    context, guardHandler, this::queueGuardEvent,
+                    this::markStartupCleanupAttempted);
             warningRuntime = new BlindSpotWarningRuntime(context, handler, this::emit);
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             reverseSteeringRuntime = new ReverseSteeringRuntime(context, handler, this::emit);
@@ -208,7 +229,7 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.stop();
             reverseSteeringRuntime.stop();
             warningRuntime.stop();
-            runtime.stop();
+            stopGuardForProcess();
             closeAvasOnce();
             avasCloseWorker.shutdownNow();
             saveAwakeSession();
@@ -553,15 +574,7 @@ public final class TurnSignalShellMain {
                         reverseGearRuntime.stop();
                         reverseSteeringRuntime.stop();
                         warningRuntime.stop();
-                        runtime.stop();
-                        emit("shell_shutdown", "reason", "controller_request");
-                        avasCloseWorker.execute(() -> {
-                            try {
-                                closeAvasOnce();
-                            } finally {
-                                terminateProcessOnce();
-                            }
-                        });
+                        shutdownGuardForProcess("controller_request");
                     });
                     return true;
                 }
@@ -579,6 +592,8 @@ public final class TurnSignalShellMain {
                             if (avasRuntime != null) avasRuntime.setCameraTelemetryEnabled(false);
                         }
                         nonAvasStopped = true;
+                        guardDetachPending = true;
+                        long detachGeneration = ++guardDetachGeneration;
                         if (avasRuntime != null) {
                             avasRuntime.stopAllAuditions();
                             avasRuntime.stopCurrentMicrophone("controller_detached");
@@ -589,9 +604,14 @@ public final class TurnSignalShellMain {
                         reverseGearRuntime.stop();
                         reverseSteeringRuntime.stop();
                         warningRuntime.stop();
-                        runtime.stop();
-                        emit("shell_shutdown", "reason", "controller_detached_avas_retained",
-                                "motion_retained", keepMotion);
+                        runtime.stop(() -> handler.post(() -> {
+                            drainPendingGuardEvents();
+                            if (detachGeneration != guardDetachGeneration) return;
+                            emit("shell_shutdown", "reason", "controller_detached_avas_retained",
+                                    "motion_retained", keepMotion);
+                            guardDetachPending = false;
+                            if (!nonAvasStopped) runtime.start();
+                        }));
                     });
                     return true;
                 }
@@ -719,7 +739,7 @@ public final class TurnSignalShellMain {
                         completedRecovery ? "controller_recovered" : "controller_attached");
                 if (nonAvasStopped) {
                     nonAvasStopped = false;
-                    runtime.start();
+                    if (!guardDetachPending) runtime.start();
                     warningRuntime.start();
                     reverseGearRuntime.start();
                     reverseSteeringRuntime.start();
@@ -881,12 +901,27 @@ public final class TurnSignalShellMain {
                 return true;
             } catch (Throwable error) {
                 emit("shell_power_state_error", "stage", "persist_session",
-                        "error", summary(error));
+                        "operation", "write_awake_session", "awake_session_id", awakeSession.generation,
+                        "error", android.util.Log.getStackTraceString(error));
                 return false;
             }
         }
 
-        private boolean markStartupCleanupAttempted(long generation) {
+        private void markStartupCleanupAttempted(
+                long generation, Consumer<Boolean> completed) {
+            Runnable mark = () -> completed.accept(markStartupCleanupAttemptedOnHandler(generation));
+            if (Looper.myLooper() == handler.getLooper()) {
+                mark.run();
+            } else if (!handler.post(mark)) {
+                queueGuardEvent("startup_awake_session_cleanup_marker_dispatch_failed",
+                        new Object[]{"operation", "persist_attempted_session",
+                                "awake_session_id", generation,
+                                "reason", "service_handler_rejected_callback"});
+                completed.accept(false);
+            }
+        }
+
+        private boolean markStartupCleanupAttemptedOnHandler(long generation) {
             if (generation <= 0 || generation != awakeSession.generation) return false;
             if (awakeSession.cleanupAttemptedGeneration == generation) return true;
             long previous = awakeSession.cleanupAttemptedGeneration;
@@ -894,6 +929,239 @@ public final class TurnSignalShellMain {
             if (saveAwakeSession()) return true;
             awakeSession.cleanupAttemptedGeneration = previous;
             return false;
+        }
+
+        private void shutdownGuardForProcess(String reason) {
+            if (guardShutdownRequested) return;
+            guardShutdownRequested = true;
+            if (!runtime.shutdown(() -> {
+                guardRuntimeStopped.countDown();
+                if (!handler.post(() -> completeGuardShutdown(reason))) {
+                    queueGuardEvent("turn_guard_shutdown_finalize_dispatch_failed",
+                            new Object[]{"operation", "flush_terminal_events",
+                                    "reason", "service_handler_rejected_callback"});
+                }
+            })) {
+                guardShutdownFailed = true;
+                guardRuntimeStopped.countDown();
+                emit("turn_guard_shutdown_failed", "operation", "stop",
+                        "reason", "guard_handler_rejected_shutdown");
+                completeGuardShutdown(reason);
+            }
+        }
+
+        private void stopGuardForProcess() {
+            if (!guardShutdownRequested) {
+                guardShutdownRequested = true;
+                if (!runtime.shutdown(guardRuntimeStopped::countDown)) {
+                    guardShutdownFailed = true;
+                    guardRuntimeStopped.countDown();
+                    emit("turn_guard_shutdown_failed", "operation", "stop",
+                            "reason", "guard_handler_rejected_shutdown");
+                }
+            }
+            awaitUninterruptibly(guardRuntimeStopped);
+            completeGuardShutdown(null);
+        }
+
+        private void completeGuardShutdown(String reason) {
+            if (guardShutdownCompleted) return;
+            closeAndDrainGuardEvents();
+            if (reason != null) emit("shell_shutdown", "reason", reason);
+            DiagnosticLogPolicy.flushOutput();
+            guardThread.quitSafely();
+            joinUninterruptibly(guardThread);
+            guardShutdownCompleted = true;
+            if (reason != null && !guardShutdownFailed) {
+                avasCloseWorker.execute(() -> {
+                    try {
+                        closeAvasOnce();
+                    } finally {
+                        terminateProcessOnce();
+                    }
+                });
+            }
+        }
+
+        private void queueGuardEvent(String kind, Object[] fields) {
+            if (guardEventsClosed || !DiagnosticLogPolicy.shouldProduce(kind)) return;
+            long wallTime = System.currentTimeMillis();
+            long elapsedTime = SystemClock.elapsedRealtime();
+            String line = guardEventLine(kind, fields, wallTime, elapsedTime);
+            boolean scheduleDrain = false;
+            synchronized (guardEventLock) {
+                if (guardEventsClosed) return;
+                pendingGuardEvents.addLast(line);
+                if (!guardEventDrainPosted) {
+                    guardEventDrainPosted = true;
+                    scheduleDrain = true;
+                }
+            }
+            if (scheduleDrain && !handler.post(this::drainGuardEvents)) {
+                synchronized (guardEventLock) {
+                    guardEventDrainPosted = false;
+                }
+            }
+        }
+
+        private String guardEventLine(
+                String kind, Object[] fields, long wallTime, long elapsedTime) {
+            String wallTimeText = Long.toString(wallTime);
+            try {
+                wallTimeText = new SimpleDateFormat(
+                        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
+                        .format(new Date(wallTime));
+                JSONObject json = new JSONObject();
+                json.put("kind", kind);
+                json.put("source", "shell_helper");
+                json.put("wall_time", wallTimeText);
+                json.put("t_ms", elapsedTime);
+                for (int i = 0; i + 1 < fields.length; i += 2) {
+                    json.put(String.valueOf(fields[i]), fields[i + 1]);
+                }
+                return json.toString();
+            } catch (Throwable error) {
+                JSONObject originalFields = new JSONObject();
+                JSONObject fieldErrors = new JSONObject();
+                if (fields != null) for (int i = 0; i + 1 < fields.length; i += 2) {
+                    String name = guardEventFieldName(fields[i]);
+                    try {
+                        originalFields.put(name, fields[i + 1]);
+                    } catch (Throwable fieldError) {
+                        try {
+                            JSONObject detail = new JSONObject();
+                            detail.put("exception_class", fieldError.getClass().getName());
+                            detail.put("exception_message", fieldError.getMessage() == null
+                                    ? "" : fieldError.getMessage());
+                            detail.put("stack_trace",
+                                    android.util.Log.getStackTraceString(fieldError));
+                            fieldErrors.put(name, detail);
+                        } catch (Throwable ignored) {
+                            // The primary serialization failure below remains available.
+                        }
+                    }
+                }
+                try {
+                    JSONObject diagnostic = new JSONObject();
+                    diagnostic.put("kind", "shell_event_json_error");
+                    diagnostic.put("source", "shell_helper");
+                    diagnostic.put("wall_time", wallTimeText);
+                    diagnostic.put("t_ms", elapsedTime);
+                    diagnostic.put("operation", "serialize_guard_event");
+                    diagnostic.put("original_event", kind);
+                    diagnostic.put("field_count", fields == null ? -1 : fields.length / 2);
+                    diagnostic.put("fields", originalFields);
+                    diagnostic.put("field_serialization_errors", fieldErrors);
+                    diagnostic.put("exception_class", error.getClass().getName());
+                    diagnostic.put("exception_message",
+                            error.getMessage() == null ? "" : error.getMessage());
+                    diagnostic.put("stack_trace", android.util.Log.getStackTraceString(error));
+                    return diagnostic.toString();
+                } catch (Throwable fallbackError) {
+                    return "{\"kind\":\"shell_event_json_error\",\"source\":\"shell_helper\","
+                            + "\"wall_time\":" + JSONObject.quote(wallTimeText)
+                            + ",\"t_ms\":" + elapsedTime
+                            + ",\"operation\":\"serialize_guard_event\",\"original_event\":"
+                            + JSONObject.quote(kind) + ",\"exception_class\":"
+                            + JSONObject.quote(error.getClass().getName())
+                            + ",\"exception_message\":" + JSONObject.quote(
+                                    error.getMessage() == null ? "" : error.getMessage())
+                            + ",\"stack_trace\":" + JSONObject.quote(
+                                    android.util.Log.getStackTraceString(error))
+                            + ",\"fallback_exception_class\":"
+                            + JSONObject.quote(fallbackError.getClass().getName())
+                            + ",\"fallback_exception_message\":" + JSONObject.quote(
+                                    fallbackError.getMessage() == null
+                                            ? "" : fallbackError.getMessage())
+                            + ",\"fallback_stack_trace\":" + JSONObject.quote(
+                                    android.util.Log.getStackTraceString(fallbackError)) + "}";
+                }
+            }
+        }
+
+        private static String guardEventFieldName(Object value) {
+            try {
+                return String.valueOf(value);
+            } catch (Throwable error) {
+                return value == null ? "null" : value.getClass().getName();
+            }
+        }
+
+        private void drainGuardEvents() {
+            String line;
+            synchronized (guardEventLock) {
+                line = pendingGuardEvents.pollFirst();
+                if (line == null) {
+                    guardEventDrainPosted = false;
+                    return;
+                }
+            }
+            forwardEventLine(line);
+
+            boolean scheduleDrain;
+            synchronized (guardEventLock) {
+                scheduleDrain = !pendingGuardEvents.isEmpty() && !guardEventsClosed;
+                if (!scheduleDrain) guardEventDrainPosted = false;
+            }
+            if (scheduleDrain && !handler.post(this::drainGuardEvents)) {
+                synchronized (guardEventLock) {
+                    guardEventDrainPosted = false;
+                }
+            }
+        }
+
+        private void drainPendingGuardEvents() {
+            while (true) {
+                String line;
+                synchronized (guardEventLock) {
+                    line = pendingGuardEvents.pollFirst();
+                    if (line == null) {
+                        guardEventDrainPosted = false;
+                        return;
+                    }
+                }
+                forwardEventLine(line);
+            }
+        }
+
+        private void closeAndDrainGuardEvents() {
+            while (true) {
+                String line;
+                synchronized (guardEventLock) {
+                    line = pendingGuardEvents.pollFirst();
+                    if (line == null) {
+                        guardEventsClosed = true;
+                        guardEventDrainPosted = false;
+                        return;
+                    }
+                }
+                forwardEventLine(line);
+            }
+        }
+
+        private static void awaitUninterruptibly(CountDownLatch latch) {
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    latch.await();
+                    break;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+
+        private static void joinUninterruptibly(Thread thread) {
+            boolean interrupted = false;
+            while (thread.isAlive()) {
+                try {
+                    thread.join();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
         }
 
         private long bootCount() {

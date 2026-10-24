@@ -1,5 +1,12 @@
 package com.byd.extend;
 
+import android.util.Log;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Serialized callback-first state machine for the guard's four fixed telemetry signals. */
@@ -24,12 +31,15 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     static final int LIVE_STEERING = 1 << 1;
     static final int LIVE_BLINK = 1 << 2;
     static final int LIVE_SPEED = 1 << 3;
+    static final long UNKNOWN_METRIC_MS = -1;
 
     interface Clock { long now(); }
     interface Dispatcher { void execute(Runnable task); }
+    interface DiagnosticSink { void onDiagnostic(String event, Object... fields); }
     interface Transport {
         Subscription subscribe(Listener listener) throws Exception;
         Snapshot read();
+        default void setDiagnosticSink(DiagnosticSink sink) {}
     }
     interface Subscription { void close(); }
     interface Listener {
@@ -40,8 +50,21 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         void onSnapshot(Snapshot snapshot, Source source, int liveMask,
                 boolean conflict, long observedMs);
         void onMode(boolean subscribed, boolean seeded, String reason);
+        default void onDiagnostic(String event, Object... fields) {}
     }
     enum Source { INITIAL, CALLBACK, RECONCILE, FALLBACK, RECOVERY_SEED }
+
+    static final class Metrics {
+        final long getAgeMs;
+        final long readDurationMs;
+        final long callbackDispatchAgeMs;
+
+        Metrics(long getAgeMs, long readDurationMs, long callbackDispatchAgeMs) {
+            this.getAgeMs = getAgeMs;
+            this.readDurationMs = readDurationMs;
+            this.callbackDispatchAgeMs = callbackDispatchAgeMs;
+        }
+    }
 
     static final class Snapshot {
         final int stalk;
@@ -64,6 +87,8 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final Transport transport;
     private final Sink sink;
+    private final Map<String, String> lastDiagnostics = new HashMap<>();
+    private final TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
     private volatile ArrivalState arrivals = new ArrivalState();
     private volatile long generation;
     private Subscription subscription;
@@ -76,8 +101,11 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     private int speed = MISSING;
     private long lastGetAt = Long.MIN_VALUE;
     private long lastReadAttemptAt = Long.MIN_VALUE;
+    private volatile long lastReadDurationMs = UNKNOWN_METRIC_MS;
+    private volatile long lastCallbackDispatchAgeMs = UNKNOWN_METRIC_MS;
     private long lastSubscribeAttempt = Long.MIN_VALUE;
     private boolean fallbackReadsWorking;
+    private boolean freshnessFailureReported;
 
     TurnSignalTelemetryController(
             Clock clock, Dispatcher dispatcher, Transport transport, Sink sink) {
@@ -85,11 +113,15 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         this.dispatcher = dispatcher;
         this.transport = transport;
         this.sink = sink;
+        transport.setDiagnosticSink(this::reportDiagnostic);
     }
 
     void start() {
         if (active) return;
         active = true;
+        history.clear();
+        lastDiagnostics.clear();
+        freshnessFailureReported = false;
         resetBaseline();
         trySubscribe("start");
         readAndApply(subscribed ? Source.INITIAL : Source.FALLBACK);
@@ -123,6 +155,22 @@ final class TurnSignalTelemetryController implements AutoCloseable {
                         ? CALLBACK_GET_DEADLINE_MS : FALLBACK_GET_DEADLINE_MS);
     }
 
+    Metrics metrics(long now) {
+        return new Metrics(lastGetAt == Long.MIN_VALUE
+                        ? UNKNOWN_METRIC_MS : elapsed(now, lastGetAt),
+                lastReadDurationMs, lastCallbackDispatchAgeMs);
+    }
+
+    void reportFreshnessFailure(long now) {
+        if (!active || !seeded || dataFresh(now) || freshnessFailureReported) return;
+        freshnessFailureReported = true;
+        reportDiagnostic("turn_telemetry_freshness_failure",
+                "operation", "GET_FRESHNESS", "reason", "successful_get_too_old",
+                "get_age_ms", metrics(now).getAgeMs,
+                "deadline_ms", subscribed ? CALLBACK_GET_DEADLINE_MS : FALLBACK_GET_DEADLINE_MS,
+                "diagnostic_snapshot", history.snapshot(now, metrics(now).getAgeMs));
+    }
+
     private void trySubscribe(String reason) {
         lastSubscribeAttempt = clock.now();
         long listenerGeneration = ++generation;
@@ -131,14 +179,18 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         try {
             Subscription next = transport.subscribe(new Listener() {
                 @Override public void onValue(int device, int fid, int value, long receivedMs) {
+                    if (listenerGeneration != generation || listenerArrivals != arrivals) return;
                     AtomicLong arrival = listenerArrivals.forSignal(device, fid);
                     if (arrival == null) return;
                     long sequence = arrival.incrementAndGet();
+                    history.received(device, fid, value, receivedMs, listenerGeneration, sequence);
                     safeDispatch(() -> applyCallback(listenerGeneration, listenerArrivals,
-                            device, fid, value, receivedMs, sequence));
+                            device, fid, value, receivedMs, sequence),
+                            "CALLBACK", device, fid, receivedMs);
                 }
                 @Override public void onError(String error, long receivedMs) {
-                    safeDispatch(() -> subscriptionFailed(listenerGeneration, error, receivedMs));
+                    safeDispatch(() -> subscriptionFailed(listenerGeneration, error, receivedMs),
+                            "CALLBACK_ERROR", -1, -1, receivedMs);
                 }
             });
             if (!active || listenerGeneration != generation) {
@@ -152,19 +204,35 @@ final class TurnSignalTelemetryController implements AutoCloseable {
             sink.onMode(true, false, reason);
         } catch (Exception failure) {
             subscribed = false;
+            reportFailure("turn_telemetry_subscribe_error", "SUBSCRIBE", -1, -1,
+                    "fixed_fids=1004:321912876,1004:950009900,1001:300941320,1013:-1807745016",
+                    failure);
             sink.onMode(false, seeded, failure.toString());
         }
     }
 
     private void applyCallback(long listenerGeneration, ArrivalState listenerArrivals,
             int device, int fid, int value, long receivedMs, long sequence) {
+        long appliedAt = clock.now();
         if (!active || !subscribed || listenerGeneration != generation
-                || listenerArrivals != arrivals) return;
+                || listenerArrivals != arrivals) {
+            history.processed(device, fid, listenerGeneration, sequence, appliedAt, "obsolete");
+            return;
+        }
+        long dispatchAge = elapsed(appliedAt, receivedMs);
+        lastCallbackDispatchAgeMs = dispatchAge;
         if (!validSignal(device, fid, value)) {
+            history.processed(device, fid, listenerGeneration, sequence, appliedAt, "invalid");
+            reportInvalidSignal("turn_telemetry_invalid_callback", "CALLBACK",
+                    device, fid, value, dispatchAge);
             enterFallback("invalid_callback");
             return;
         }
-        if (!listenerArrivals.applyIfNewer(device, fid, sequence)) return;
+        if (!listenerArrivals.applyIfNewer(device, fid, sequence)) {
+            history.processed(device, fid, listenerGeneration, sequence, appliedAt, "out_of_order");
+            return;
+        }
+        history.processed(device, fid, listenerGeneration, sequence, appliedAt, "applied");
         set(device, fid, value);
         Snapshot snapshot = snapshot();
         if (!snapshot.valid()) return;
@@ -177,6 +245,13 @@ final class TurnSignalTelemetryController implements AutoCloseable {
 
     private void subscriptionFailed(long listenerGeneration, String reason, long receivedMs) {
         if (!active || listenerGeneration != generation) return;
+        long dispatchAge = elapsed(clock.now(), receivedMs);
+        lastCallbackDispatchAgeMs = dispatchAge;
+        reportDiagnostic("turn_telemetry_listener_error",
+                "operation", "CALLBACK_ERROR", "device", -1, "fid", -1,
+                "fixed_fids", "1004:321912876,1004:950009900,1001:300941320,1013:-1807745016",
+                "reason", reason, "received_t_ms", receivedMs,
+                "callback_dispatch_age_ms", dispatchAge);
         enterFallback(reason + " at " + receivedMs);
     }
 
@@ -197,13 +272,45 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         long[] sequence = before.snapshot();
         Snapshot old = snapshot();
         long readStartedAt = clock.now();
-        Snapshot read = transport.read();
+        long interval = subscribed ? CALLBACK_GET_MS
+                : fallbackReadsWorking ? FALLBACK_GET_MS : SUBSCRIBE_RETRY_MS;
+        long due = lastReadAttemptAt == Long.MIN_VALUE || source == Source.INITIAL
+                || source == Source.RECOVERY_SEED ? readStartedAt : lastReadAttemptAt + interval;
+        history.getStarted(due, readStartedAt);
+        reportFreshnessFailure(readStartedAt);
+        Snapshot read;
+        try {
+            read = transport.read();
+        } catch (RuntimeException failure) {
+            long failedAt = clock.now();
+            lastReadAttemptAt = failedAt;
+            lastReadDurationMs = elapsed(failedAt, readStartedAt);
+            history.getFinished(failedAt, "exception:" + failure.getClass().getName());
+            reportFailure("turn_telemetry_get_error", "GET", -1, -1,
+                    "phase=controller_transport fixed_fids="
+                            + "1004:321912876,1004:950009900,1001:300941320,1013:-1807745016",
+                    failure,
+                    "read_duration_ms", lastReadDurationMs,
+                    "diagnostic_snapshot", history.snapshot(failedAt, metrics(failedAt).getAgeMs));
+            throw failure;
+        }
         long now = clock.now();
+        long readDuration = elapsed(now, readStartedAt);
+        lastReadDurationMs = readDuration;
+        history.getFinished(now, "stalk=" + read.stalk + ",steering_raw=" + read.steering
+                + ",blink=" + read.blink + ",speed_raw=" + read.speed);
         if (!active || before != arrivals) return;
         lastReadAttemptAt = now;
-        long readDuration = elapsed(now, readStartedAt);
         long readDeadline = subscribed ? CALLBACK_GET_DEADLINE_MS : FALLBACK_GET_DEADLINE_MS;
         if (readDuration > readDeadline) {
+            reportDiagnostic("turn_telemetry_get_error",
+                    "operation", "GET", "phase", "duration",
+                    "device", -1, "fid", -1,
+                    "fixed_fids", "1004:321912876,1004:950009900,1001:300941320,1013:-1807745016",
+                    "read_duration_ms", readDuration, "deadline_ms", readDeadline,
+                    "last_successful_get_age_ms", lastGetAt == Long.MIN_VALUE
+                            ? UNKNOWN_METRIC_MS : elapsed(now, lastGetAt),
+                    "diagnostic_snapshot", history.snapshot(now, metrics(now).getAgeMs));
             if (subscribed) {
                 enterFallback("get_duration_" + readDuration + "ms");
                 lastReadAttemptAt = now;
@@ -215,8 +322,27 @@ final class TurnSignalTelemetryController implements AutoCloseable {
             }
             return;
         }
+        long previousGetAge = lastGetAt == Long.MIN_VALUE
+                ? UNKNOWN_METRIC_MS : elapsed(now, lastGetAt);
         lastGetAt = now;
+        freshnessFailureReported = false;
         boolean[] apply = before.unchanged(sequence);
+        if (!validStalk(read.stalk)) {
+            reportInvalidGet("stalk", STALK_DEVICE, STALK_FID,
+                    read.stalk, apply[0], previousGetAge);
+        }
+        if (!validSteering(read.steering)) {
+            reportInvalidGet("steering", STEERING_DEVICE, STEERING_FID,
+                    read.steering, apply[1], previousGetAge);
+        }
+        if (!validBlink(read.blink)) {
+            reportInvalidGet("blink", BLINK_DEVICE, BLINK_FID,
+                    read.blink, apply[2], previousGetAge);
+        }
+        if (!validSpeed(read.speed)) {
+            reportInvalidGet("speed", SPEED_DEVICE, SPEED_FID,
+                    read.speed, apply[3], previousGetAge);
+        }
         if (apply[0]) stalk = read.stalk;
         if (apply[1]) steering = read.steering;
         if (apply[2]) blink = read.blink;
@@ -253,6 +379,9 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         boolean controlMismatch = seeded && source == Source.RECONCILE
                 && ((apply[0] && read.stalk != old.stalk)
                         || (apply[2] && read.blink != old.blink));
+        if (controlMismatch) {
+            reportReconciliationConflict(old, read, apply, previousGetAge, readDuration);
+        }
         if (seeded && !all(apply)) {
             // The raced field belongs to its newer callback. Only non-racing stalk/blink changes
             // make control history ambiguous; numeric steering/speed updates remain state only.
@@ -303,8 +432,136 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         if (old != null) old.close();
     }
 
-    private void safeDispatch(Runnable task) {
-        try { dispatcher.execute(task); } catch (RuntimeException ignored) {}
+    private void safeDispatch(Runnable task, String operation,
+            int device, int fid, long receivedMs) {
+        try { dispatcher.execute(task); }
+        catch (RuntimeException failure) {
+            long dispatchAge = elapsed(clock.now(), receivedMs);
+            lastCallbackDispatchAgeMs = dispatchAge;
+            reportFailure("turn_telemetry_dispatch_error", operation, device, fid,
+                    "phase=dispatcher", failure, "callback_dispatch_age_ms", dispatchAge);
+        }
+    }
+
+    private void reportInvalidSignal(
+            String event, String operation, int device, int fid, int rawValue, long dispatchAge) {
+        reportDiagnostic(event, "operation", operation, "device", device, "fid", fid,
+                "raw_value", rawValue, "value", decodedValue(device, fid, rawValue),
+                "callback_dispatch_age_ms", dispatchAge,
+                "diagnostic_snapshot", history.snapshot(clock.now(), metrics(clock.now()).getAgeMs));
+    }
+
+    private void reportInvalidGet(
+            String field, int device, int fid, int rawValue,
+            boolean applied, long previousGetAge) {
+        reportDiagnostic("turn_telemetry_invalid_get",
+                "operation", "GET", "field", field, "device", device, "fid", fid,
+                "raw_value", rawValue, "value", decodedValue(device, fid, rawValue),
+                "applied", applied, "last_successful_get_age_ms", previousGetAge,
+                "read_duration_ms", lastReadDurationMs,
+                "callback_dispatch_age_ms", lastCallbackDispatchAgeMs,
+                "diagnostic_snapshot", history.snapshot(clock.now(), previousGetAge));
+    }
+
+    private void reportReconciliationConflict(
+            Snapshot old, Snapshot read, boolean[] apply,
+            long previousGetAge, long readDuration) {
+        StringBuilder changed = new StringBuilder();
+        if (apply[0] && read.stalk != old.stalk) changed.append("stalk,");
+        if (apply[2] && read.blink != old.blink) changed.append("blink,");
+        StringBuilder racing = new StringBuilder();
+        appendIf(racing, !apply[0], "stalk");
+        appendIf(racing, !apply[1], "steering");
+        appendIf(racing, !apply[2], "blink");
+        appendIf(racing, !apply[3], "speed");
+        if (changed.length() > 0) changed.setLength(changed.length() - 1);
+        reportDiagnostic("turn_telemetry_reconcile_conflict",
+                "operation", "GET_RECONCILE",
+                "device", STALK_DEVICE, "fid", STALK_FID,
+                "other_device", BLINK_DEVICE, "other_fid", BLINK_FID,
+                "old_stalk", old.stalk, "get_stalk", read.stalk,
+                "old_blink", old.blink, "get_blink", read.blink,
+                "changed_fields", changed.toString(),
+                "ignored_racing_fields", racing.toString(),
+                "last_successful_get_age_ms", previousGetAge,
+                "read_duration_ms", readDuration,
+                "callback_dispatch_age_ms", lastCallbackDispatchAgeMs,
+                "diagnostic_snapshot", history.snapshot(clock.now(), previousGetAge));
+    }
+
+    private static void appendIf(StringBuilder values, boolean include, String field) {
+        if (include) values.append(field).append(',');
+    }
+
+    private void reportFailure(String event, String operation, int device, int fid,
+            String detail, Throwable failure, Object... extraFields) {
+        Object[] fields = new Object[14 + extraFields.length];
+        int index = 0;
+        index = put(fields, index, "operation", operation);
+        index = put(fields, index, "device", device);
+        index = put(fields, index, "fid", fid);
+        index = put(fields, index, "detail", detail);
+        index = put(fields, index, "exception_class", failure.getClass().getName());
+        index = put(fields, index, "exception_message",
+                failure.getMessage() == null ? "" : failure.getMessage());
+        index = put(fields, index, "stack_trace", stackTrace(failure));
+        System.arraycopy(extraFields, 0, fields, index, extraFields.length);
+        reportDiagnostic(event, fields);
+    }
+
+    private synchronized void reportDiagnostic(String event, Object... fields) {
+        String operation = String.valueOf(field(fields, "operation"));
+        String key = event + '|' + operation + '|' + field(fields, "device")
+                + '|' + field(fields, "fid");
+        StringBuilder signature = new StringBuilder();
+        for (int index = 0; index + 1 < fields.length; index += 2) {
+            String name = String.valueOf(fields[index]);
+            if ("last_successful_get_age_ms".equals(name)
+                    || "get_age_ms".equals(name)
+                    || "read_duration_ms".equals(name)
+                    || "callback_dispatch_age_ms".equals(name)
+                    || "diagnostic_snapshot".equals(name)
+                    || "received_t_ms".equals(name)) continue;
+            signature.append(name).append('=').append(fields[index + 1]).append(';');
+        }
+        String previous = lastDiagnostics.put(key, signature.toString());
+        if (signature.toString().equals(previous)
+                && !"turn_telemetry_reconcile_conflict".equals(event)
+                && !"turn_telemetry_freshness_failure".equals(event)) return;
+        try { sink.onDiagnostic(event, fields); }
+        catch (RuntimeException failure) {
+            Log.e("TurnTelemetry", "diagnostic_sink_error event=" + event
+                    + " operation=" + operation + " device=" + field(fields, "device")
+                    + " fid=" + field(fields, "fid") + " diagnostic="
+                    + Arrays.toString(fields), failure);
+        }
+    }
+
+    private static Object field(Object[] fields, String name) {
+        for (int index = 0; index + 1 < fields.length; index += 2) {
+            if (name.equals(fields[index])) return fields[index + 1];
+        }
+        return "unknown";
+    }
+
+    private static int put(Object[] fields, int index, Object name, Object value) {
+        fields[index] = name;
+        fields[index + 1] = value;
+        return index + 2;
+    }
+
+    private static Object decodedValue(int device, int fid, int rawValue) {
+        if (device == STEERING_DEVICE && fid == STEERING_FID
+                || device == SPEED_DEVICE && fid == SPEED_FID) {
+            return Float.intBitsToFloat(rawValue);
+        }
+        return rawValue;
+    }
+
+    private static String stackTrace(Throwable failure) {
+        StringWriter text = new StringWriter();
+        failure.printStackTrace(new PrintWriter(text));
+        return text.toString();
     }
 
     private static long elapsed(long now, long then) {

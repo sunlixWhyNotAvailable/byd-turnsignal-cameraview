@@ -4,6 +4,8 @@ import android.content.Context;
 import android.os.SystemClock;
 import android.util.Log;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -17,10 +19,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Process-wide owner for the small, fixed set of BYDAutoManager telemetry subscriptions. */
 final class FixedBydTelemetryManager {
+    private static final String TAG = "FixedBydTelemetry";
+    private static final int MAX_DISPATCH_FAILURE_KEYS_PER_CLIENT = 32;
+
     interface Listener {
         void onValue(int device, int fid, int value, long receivedMs);
         default void onBytes(int device, int fid, byte[] value, long receivedMs) {}
         void onError(String reason, long receivedMs);
+        default void onDispatchFailure(String operation, int device, int fid,
+                long receivedMs, RuntimeException failure) {}
     }
 
     interface Subscription { void close(); }
@@ -197,23 +204,62 @@ final class FixedBydTelemetryManager {
             if (bytes != null) {
                 try {
                     client.listener.onBytes(device, fid, bytes, receivedMs);
-                } catch (RuntimeException ignored) {
+                } catch (RuntimeException failure) {
+                    reportDispatchFailure(client, "onBytes type=" + expected,
+                            device, fid, receivedMs, failure);
                 }
                 continue;
             }
             Integer raw = callbackRaw(expected, value);
-            try {
-                if (raw != null) {
+            if (raw != null) {
+                try {
                     client.listener.onValue(device, fid, raw, receivedMs);
-                } else {
-                    client.listener.onError("callback_type_mismatch device=" + device
-                            + " fid=" + fid + " expected=" + expected
-                            + " actual=" + (value == null ? "null"
-                                    : value.getClass().getSimpleName()), receivedMs);
+                } catch (RuntimeException failure) {
+                    reportDispatchFailure(client, "onValue type=" + expected,
+                            device, fid, receivedMs, failure);
                 }
-            } catch (RuntimeException ignored) {
+            } else {
+                String actual = value == null ? "null" : value.getClass().getSimpleName();
+                String reason = "callback_type_mismatch device=" + device
+                        + " fid=" + fid + " expected=" + expected + " actual=" + actual;
+                try {
+                    client.listener.onError(reason, receivedMs);
+                } catch (RuntimeException failure) {
+                    reportDispatchFailure(client, "onError type_mismatch expected=" + expected
+                                    + " actual=" + actual,
+                            device, fid, receivedMs, failure);
+                }
             }
         }
+    }
+
+    private static void reportDispatchFailure(Client client, String operation,
+            int device, int fid, long receivedMs, RuntimeException failure) {
+        String signature = stackTrace(failure);
+        if (!client.shouldReportDispatchFailure(operation, device, fid, signature)) return;
+
+        String details = "Telemetry listener failed operation=" + operation
+                + " device=" + device + " fid=" + fid + " receivedMs=" + receivedMs
+                + " exception=" + failure.getClass().getName() + ": " + failure.getMessage();
+        try {
+            Log.e(TAG, details, failure);
+        } catch (RuntimeException | LinkageError ignored) {
+        }
+        try {
+            client.listener.onDispatchFailure(operation, device, fid, receivedMs, failure);
+        } catch (RuntimeException hookFailure) {
+            try {
+                Log.e(TAG, "Telemetry listener failure diagnostic hook failed; primary=" + details,
+                        hookFailure);
+            } catch (RuntimeException | LinkageError ignored) {
+            }
+        }
+    }
+
+    private static String stackTrace(Throwable failure) {
+        StringWriter text = new StringWriter();
+        failure.printStackTrace(new PrintWriter(text));
+        return text.toString();
     }
 
     static Integer callbackRaw(ValueType expected, Object value) {
@@ -232,8 +278,12 @@ final class FixedBydTelemetryManager {
     private synchronized void dispatchError(String reason, long receivedMs) {
         for (Client client : new ArrayList<>(clients.values())) {
             if (client.active) {
-                try { client.listener.onError(reason, receivedMs); }
-                catch (RuntimeException ignored) {}
+                try {
+                    client.listener.onError(reason, receivedMs);
+                } catch (RuntimeException failure) {
+                    reportDispatchFailure(client, "onError reason=" + reason,
+                            -1, -1, receivedMs, failure);
+                }
             }
         }
     }
@@ -318,7 +368,7 @@ final class FixedBydTelemetryManager {
     private static void logDisableFailure(int device, String reason) {
         String message = "disableDevice failed device=" + device + " " + reason;
         if (message.length() > 160) message = message.substring(0, 160);
-        try { Log.w("FixedBydTelemetry", message); }
+        try { Log.w(TAG, message); }
         catch (RuntimeException | LinkageError ignored) {}
     }
 
@@ -334,6 +384,7 @@ final class FixedBydTelemetryManager {
     private static final class Client {
         final Request[] requests;
         final Listener listener;
+        final Map<String, String> dispatchFailures = new LinkedHashMap<>();
         boolean active;
         Client(Request[] requests, Listener listener) {
             this.requests = requests.clone();
@@ -354,6 +405,18 @@ final class FixedBydTelemetryManager {
                 }
             }
             throw new IllegalArgumentException("unsubscribed signal");
+        }
+
+        boolean shouldReportDispatchFailure(
+                String operation, int device, int fid, String signature) {
+            String key = operation + '|' + device + '|' + fid;
+            String previous = dispatchFailures.get(key);
+            if (signature.equals(previous)) return false;
+            dispatchFailures.put(key, signature);
+            if (dispatchFailures.size() > MAX_DISPATCH_FAILURE_KEYS_PER_CLIENT) {
+                dispatchFailures.remove(dispatchFailures.keySet().iterator().next());
+            }
+            return true;
         }
     }
 }

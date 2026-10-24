@@ -1766,6 +1766,22 @@ final class CameraHelperMain {
                     requestId, displayTarget, generations, visible, completion);
         }
 
+        void setReverseOverlayVisible(
+                int requestId, int displayTarget, int[] generations, boolean visible,
+                long expectedHelperEpoch, Consumer<Boolean> completion) {
+            turnController.setReverseOverlayVisible(
+                    requestId, displayTarget, generations, visible,
+                    expectedHelperEpoch, completion);
+        }
+
+        void invalidateReverseOverlayShow(int requestId, int displayTarget, String reason) {
+            turnController.invalidateReverseOverlayShow(requestId, displayTarget, reason);
+        }
+
+        void invalidateReverseOverlayShows(int requestId, String reason) {
+            turnController.invalidateReverseOverlayShows(requestId, reason);
+        }
+
         void closeReverseOverlayWindow(String reason, Consumer<Boolean> completion) {
             turnController.closeReverseOverlay(reason, completion);
         }

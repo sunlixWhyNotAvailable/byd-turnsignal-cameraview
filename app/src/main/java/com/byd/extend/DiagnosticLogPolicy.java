@@ -88,6 +88,13 @@ final class DiagnosticLogPolicy {
                         + '|' + value.optString("requested") + '|' + value.optString("readback")
                         + '|' + value.optString("port");
             }
+            if (kind.startsWith("turn_telemetry_")) {
+                signature += '|' + value.optString("phase") + '|' + value.optString("failure")
+                        + '|' + value.optString("oem_status")
+                        + '|' + value.optString("exception_class")
+                        + '|' + value.optString("exception_message")
+                        + '|' + value.optString("stack_trace");
+            }
         } catch (Exception ignored) { }
         if (signature.equals(lastError) && now - firstAt < 60_000) {
             repeats++; lastAt = now; suppressed = true; return null;
