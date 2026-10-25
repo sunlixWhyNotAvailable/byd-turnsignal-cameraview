@@ -36,6 +36,9 @@ final class DirectCameraSourceHub
         void onSourceFailure(int index, Throwable error);
         void onStats(int index, Stats stats);
 
+        default void onCommandStats(CameraCommandMetrics.Report report) {
+        }
+
         default void onFirstFrame(int index, long windowId, long elapsedNs) {
         }
 
@@ -99,6 +102,7 @@ final class DirectCameraSourceHub
     private final SourceWorker[] workers = new SourceWorker[MAX_INDEX + 1];
     private final IdentityHashMap<Surface, Target> targets = new IdentityHashMap<>();
     private final Listener listener;
+    private final CameraCommandMetrics commandMetrics;
     private long lastSwapFailureLogNs = Long.MIN_VALUE;
     private Handler coordinatorHandler;
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
@@ -114,6 +118,7 @@ final class DirectCameraSourceHub
         this.renderingContext = renderingContext;
         this.meshCache = CameraMeshPreparation.cache(renderingContext);
         this.listener = listener;
+        this.commandMetrics = new CameraCommandMetrics(this::publishCommandStats);
     }
 
     static DirectCameraSourceHub create(android.content.Context context, Listener listener) throws Exception {
@@ -121,7 +126,10 @@ final class DirectCameraSourceHub
         result.coordinatorThread.start();
         result.coordinatorHandler = new Handler(result.coordinatorThread.getLooper());
         try {
-            result.call(() -> {
+            CameraCommandMetrics.Command command = result.command(
+                    CameraCommandMetrics.Operation.HUB_INITIALIZE, -1,
+                    CameraCommandMetrics.Context.EMPTY);
+            result.call(command, () -> {
                 result.initializeDisplay();
                 return null;
             });
@@ -139,7 +147,9 @@ final class DirectCameraSourceHub
     @Override
     public Surface source(int index) throws Exception {
         requireIndex(index);
-        return call(() -> worker(index).sourceSurface());
+        return call(command(CameraCommandMetrics.Operation.SOURCE_ACQUIRE, -1,
+                        context(index, -1, -1, null, false)),
+                () -> worker(index).sourceSurface());
     }
 
     synchronized long collectStatsForWindow(int requestedFps) {
@@ -176,10 +186,17 @@ final class DirectCameraSourceHub
                 || initialActive != null && initialActive.length != surfaces.length) {
             throw new IllegalArgumentException("surface/index batch length mismatch");
         }
-        call(() -> {
+        CameraCommandMetrics.Command command = command(
+                CameraCommandMetrics.Operation.ATTACH_BATCH, -1,
+                context(indexes.length == 0 ? -1 : indexes[0], requestId, producerEpoch,
+                        surfaces.length == 0 ? null : surfaces[0], false));
+        call(command, () -> {
             ArrayList<Target> attached = new ArrayList<>(surfaces.length);
+            Throwable first = null;
             try {
                 for (int i = 0; i < surfaces.length; i++) {
+                    command.context(context(indexes[i], requestId, producerEpoch,
+                            surfaces[i], false));
                     requireIndex(indexes[i]);
                     require(surfaces[i] != null, "downstream Surface is null");
                     synchronized (targets) {
@@ -187,10 +204,16 @@ final class DirectCameraSourceHub
                             throw new IllegalStateException("downstream Surface is already attached");
                         }
                     }
-                    SourceWorker sourceWorker = worker(indexes[i]);
                     MotionRecordingOutput recording = MotionRecordingOutput.find(surfaces[i]);
-                    if (recording != null)
-                        recording.prepare(renderingContext, sharedContext, sharedGlVersion);
+                    command.context(context(indexes[i], requestId, producerEpoch,
+                            surfaces[i], recording != null));
+                    SourceWorker sourceWorker = worker(indexes[i]);
+                    if (recording != null) {
+                        measure(command, CameraCommandMetrics.Phase.RECORDING_PREPARE, () -> {
+                            recording.prepare(renderingContext, sharedContext, sharedGlVersion);
+                            return null;
+                        });
+                    }
                     Target target = sourceWorker.attachTarget(
                             surfaces[i], indexes[i], requestId, producerEpoch,
                             initialActive == null || initialActive[i], initialActive != null);
@@ -200,6 +223,7 @@ final class DirectCameraSourceHub
                     attached.add(target);
                 }
             } catch (Throwable error) {
+                first = error;
                 for (int i = attached.size() - 1; i >= 0; i--) {
                     Target target = attached.get(i);
                     try {
@@ -208,39 +232,27 @@ final class DirectCameraSourceHub
                             targets.remove(target.surface);
                         }
                     } catch (Throwable rollbackError) {
-                        error.addSuppressed(rollbackError);
+                        if (rollbackError != error) error.addSuppressed(rollbackError);
                     }
                 }
-                if (error instanceof Exception) throw (Exception) error;
-                throw new Exception(error);
             } finally {
-                for (Surface surface : surfaces) {
-                    MotionRecordingOutput recording = MotionRecordingOutput.find(surface);
-                    if (recording != null) recording.closeUnused();
-                }
-            }
-            return null;
-        });
-    }
-
-    @Override
-    public void detach(Surface[] surfaces) throws Exception {
-        if (surfaces == null) return;
-        call(() -> {
-            Throwable first = null;
-            for (Surface surface : surfaces) {
-                Target target;
-                synchronized (targets) {
-                    target = targets.get(surface);
-                }
-                if (target == null) continue;
-                try {
-                    target.worker.detachTarget(target);
-                    synchronized (targets) {
-                        targets.remove(surface);
+                for (int i = 0; i < surfaces.length; i++) {
+                    Surface surface = surfaces[i];
+                    try {
+                        MotionRecordingOutput recording = MotionRecordingOutput.find(surface);
+                        if (recording != null) recording.closeUnused();
+                    } catch (Throwable cleanup) {
+                        if (first == null) {
+                            first = cleanup;
+                            command.context(context(indexes[i], requestId, producerEpoch,
+                                    surface, true));
+                        } else if (cleanup != first) {
+                            first.addSuppressed(new IllegalStateException(
+                                    "recording cleanup failed: source_index=" + indexes[i]
+                                            + ", surface_id=" + System.identityHashCode(surface),
+                                    cleanup));
+                        }
                     }
-                } catch (Throwable error) {
-                    if (first == null) first = error;
                 }
             }
             if (first instanceof Exception) throw (Exception) first;
@@ -250,9 +262,57 @@ final class DirectCameraSourceHub
     }
 
     @Override
+    public void detach(Surface[] surfaces) throws Exception {
+        if (surfaces == null) return;
+        CameraCommandMetrics.Command command = command(
+                CameraCommandMetrics.Operation.DETACH_BATCH, -1,
+                context(-1, -1, -1, surfaces.length == 0 ? null : surfaces[0], false));
+        call(command, () -> {
+            Throwable first = null;
+            CameraCommandMetrics.Context firstFailureContext = null;
+            for (Surface surface : surfaces) {
+                Target target;
+                synchronized (targets) {
+                    target = targets.get(surface);
+                }
+                if (target == null) continue;
+                CameraCommandMetrics.Context targetContext = context(target.index,
+                        target.requestId, target.producerEpoch, target.surface,
+                        target.recording != null);
+                command.context(targetContext);
+                try {
+                    target.worker.detachTarget(target);
+                    synchronized (targets) {
+                        targets.remove(surface);
+                    }
+                } catch (Throwable error) {
+                    if (first == null) {
+                        first = error;
+                        firstFailureContext = targetContext;
+                    } else if (error != first) {
+                        first.addSuppressed(new IllegalStateException(
+                                "detach failed: source_index=" + target.index
+                                        + ", request_id=" + target.requestId
+                                        + ", producer_epoch=" + target.producerEpoch
+                                        + ", surface_id=" + targetContext.surfaceIdentity,
+                                error));
+                    }
+                }
+            }
+            if (firstFailureContext != null) command.context(firstFailureContext);
+            if (first instanceof Exception) throw (Exception) first;
+            if (first != null) throw new Exception(first);
+            return null;
+        });
+    }
+
+    @Override
     public void releaseSource(int index) throws Exception {
         requireIndex(index);
-        call(() -> {
+        CameraCommandMetrics.Command command = command(
+                CameraCommandMetrics.Operation.RELEASE_SOURCE, -1,
+                context(index, -1, -1, null, false));
+        call(command, () -> {
             SourceWorker existing = workers[index];
             if (existing == null) return null;
             synchronized (targets) {
@@ -269,12 +329,17 @@ final class DirectCameraSourceHub
 
     @Override
     public void setActive(Surface surface, boolean active) throws Exception {
-        call(() -> {
+        CameraCommandMetrics.Command command = command(
+                CameraCommandMetrics.Operation.ACTIVATE_TARGET, -1,
+                context(-1, -1, -1, surface, false));
+        call(command, () -> {
             Target target;
             synchronized (targets) {
                 target = targets.get(surface);
             }
             if (target == null) throw new IllegalStateException("downstream Surface is not attached");
+            command.context(context(target.index, target.requestId, target.producerEpoch,
+                    surface, target.recording != null));
             target.worker.setTargetActive(target, active);
             return null;
         });
@@ -286,7 +351,10 @@ final class DirectCameraSourceHub
         closed = true;
         Throwable first = null;
         try {
-            callFinal(() -> {
+            CameraCommandMetrics.Command command = command(
+                    CameraCommandMetrics.Operation.HUB_CLOSE, -1,
+                    CameraCommandMetrics.Context.EMPTY);
+            callFinal(command, () -> {
                 Throwable workerError = null;
                 try {
                     closeWorkers(workers);
@@ -312,6 +380,7 @@ final class DirectCameraSourceHub
         } catch (Throwable error) {
             first = error;
         } finally {
+            flushCommandMetrics("hub_close");
             coordinatorThread.quitSafely();
         }
         if (first != null) {
@@ -494,14 +563,16 @@ final class DirectCameraSourceHub
         void start() throws Exception {
             thread.start();
             handler = new Handler(thread.getLooper());
-            call(() -> {
+            call(command(CameraCommandMetrics.Operation.WORKER_INITIALIZE, index,
+                    context(index, -1, -1, null, false)), () -> {
                 initialize();
                 return null;
             });
         }
 
         Surface sourceSurface() throws Exception {
-            return call(() -> {
+            return call(command(CameraCommandMetrics.Operation.WORKER_SOURCE, index,
+                    context(index, -1, -1, surface, false)), () -> {
                 require(surface != null, "camera source unavailable");
                 return surface;
             });
@@ -511,29 +582,56 @@ final class DirectCameraSourceHub
                 Surface value, int targetIndex, int requestId, int producerEpoch,
                 boolean initialActive, boolean activitySpecified)
                 throws Exception {
-            return call(() -> {
+            CameraCommandMetrics.Command command = command(
+                    CameraCommandMetrics.Operation.WORKER_ATTACH, index,
+                    context(targetIndex, requestId, producerEpoch, value, false));
+            return call(command, () -> {
                 require(value != null && value.isValid(), "downstream Surface is invalid");
                 MotionRecordingOutput recording = MotionRecordingOutput.find(value);
+                command.context(context(targetIndex, requestId, producerEpoch, value,
+                        recording != null));
                 // Lease first: the owner must not abandon its TextureView during EGL attachment.
-                CameraGpuOutput.Binding mapping = CameraGpuOutput.bind(value, () -> postCoordinator(() -> {
-                    try {
-                        DirectCameraSourceHub.this.detach(new Surface[]{value});
-                    } catch (Exception error) {
-                        handler.post(() -> reportSourceFailure(error));
-                    }
-                }));
+                CameraGpuOutput.Binding mapping = measure(command,
+                        CameraCommandMetrics.Phase.MAPPING_LEASE_BIND,
+                        () -> CameraGpuOutput.bind(value, () -> postCoordinator(() -> {
+                            try {
+                                DirectCameraSourceHub.this.detach(new Surface[]{value});
+                            } catch (Exception error) {
+                                handler.post(() -> reportSourceFailure(error));
+                            }
+                        })));
                 if (mapping != null && !mapping.lifecycleOnly) {
-                    meshCache.request(mapping.frameConfiguration().mapping.config,
-                            mapping.width, mapping.height);
+                    measure(command, CameraCommandMetrics.Phase.MESH_REQUEST, () -> {
+                        meshCache.request(mapping.frameConfiguration().mapping.config,
+                                mapping.width, mapping.height);
+                        return null;
+                    });
                 }
                 EGLSurface eglSurface;
                 try {
-                    eglSurface = recording == null ? EGL14.eglCreateWindowSurface(display, config, value,
-                            new int[]{EGL14.EGL_NONE}, 0) : EGL14.EGL_NO_SURFACE;
-                    require(recording != null || eglSurface != EGL14.EGL_NO_SURFACE,
-                            "downstream EGL surface failed");
+                    if (recording == null) {
+                        eglSurface = measure(command,
+                                CameraCommandMetrics.Phase.EGL_CREATE_WINDOW_SURFACE, () -> {
+                                    EGLSurface created = EGL14.eglCreateWindowSurface(
+                                            display, config, value,
+                                            new int[]{EGL14.EGL_NONE}, 0);
+                                    if (created == EGL14.EGL_NO_SURFACE) {
+                                        int eglError = EGL14.eglGetError();
+                                        throw new IllegalStateException(
+                                                "downstream EGL surface failed: egl=" + eglError);
+                                    }
+                                    return created;
+                                });
+                    } else {
+                        eglSurface = EGL14.EGL_NO_SURFACE;
+                    }
                 } catch (Throwable failure) {
-                    if (mapping != null) mapping.close();
+                    if (mapping != null) {
+                        try { mapping.close(); }
+                        catch (Throwable cleanup) {
+                            if (cleanup != failure) failure.addSuppressed(cleanup);
+                        }
+                    }
                     throw failure;
                 }
                 Target target = new Target(
@@ -546,10 +644,13 @@ final class DirectCameraSourceHub
                 target.timestampFrames = activitySpecified && initialActive
                         || mapping != null && mapping.lifecycleOnly;
                 try {
-                    updateTargetSize(target);
-                    targets.add(target);
-                    refreshCaptureSize();
-                    resetOutputStats();
+                    measure(command, CameraCommandMetrics.Phase.TARGET_SIZE_REGISTER_CAPTURE, () -> {
+                        updateTargetSize(target);
+                        targets.add(target);
+                        refreshCaptureSize();
+                        resetOutputStats();
+                        return null;
+                    });
                 } catch (Throwable error) {
                     targets.remove(target);
                     try { destroyTarget(target); }
@@ -566,7 +667,9 @@ final class DirectCameraSourceHub
         }
 
         void detachTarget(Target target) throws Exception {
-            call(() -> {
+            call(command(CameraCommandMetrics.Operation.WORKER_DETACH, index,
+                    context(target.index, target.requestId, target.producerEpoch,
+                            target.surface, target.recording != null)), () -> {
                 if (!targets.contains(target)) return null;
                 target.retiring = true;
                 destroyTarget(target);
@@ -595,7 +698,9 @@ final class DirectCameraSourceHub
         }
 
         void setTargetActive(Target target, boolean active) throws Exception {
-            call(() -> {
+            call(command(CameraCommandMetrics.Operation.WORKER_ACTIVATE, index,
+                    context(target.index, target.requestId, target.producerEpoch,
+                            target.surface, target.recording != null)), () -> {
                 if (!targets.contains(target)) {
                     throw new IllegalStateException("downstream Surface is not attached");
                 }
@@ -608,27 +713,34 @@ final class DirectCameraSourceHub
         }
 
         void closeFinal() throws Exception {
-            closeWorkers(new WorkerFinalizer[]{this});
+            try { closeWorkers(new WorkerFinalizer[]{this}); }
+            finally { flushWorkerCommandMetrics(index, "source_retired"); }
         }
 
         @Override
         public void dispatchClose() throws Exception {
             if (closeCall != null) return;
             released = true;
+            CameraCommandMetrics.Command command = command(
+                    CameraCommandMetrics.Operation.WORKER_CLOSE, index,
+                    context(index, -1, -1, surface, false));
             SerializedCall<Void> call = new SerializedCall<>();
             if (!handler.post(() -> {
                 try {
-                    call.run(() -> {
+                    call.run(() -> runMeasured(command, () -> {
                         releaseResources();
                         return null;
-                    });
+                    }, false));
                 } finally {
                     thread.quitSafely();
                 }
             })) {
                 thread.quitSafely();
-                throw new IllegalStateException(
+                IllegalStateException error = new IllegalStateException(
                         "camera source worker stopped before cleanup");
+                command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
+                        SystemClock.elapsedRealtimeNanos(), error);
+                throw error;
             }
             closeCall = call;
         }
@@ -739,6 +851,7 @@ final class DirectCameraSourceHub
                     listener.onFirstFrame(index, generation, started);
                     coordinatorHandler.postDelayed(() -> {
                         if (closed || fpsWindow != measurement) return;
+                        flushCommandMetrics("initial_fps_window_complete");
                         for (SourceWorker worker : workers) {
                             if (worker != null) worker.finishFpsWindow(measurement);
                         }
@@ -1182,39 +1295,147 @@ final class DirectCameraSourceHub
                     "EGL makeCurrent failed");
         }
 
-        private <T> T call(Callable<T> callable) throws Exception {
-            if (Looper.myLooper() == thread.getLooper()) return callable.call();
+        private <T> T call(CameraCommandMetrics.Command command, Callable<T> callable)
+                throws Exception {
+            if (Looper.myLooper() == thread.getLooper()) {
+                return runMeasured(command, callable, true);
+            }
             SerializedCall<T> call = new SerializedCall<>();
-            if (!handler.post(() -> call.run(callable))) {
-                throw new IllegalStateException("camera source worker stopped");
+            if (!handler.post(() -> call.run(() ->
+                    runMeasured(command, callable, false)))) {
+                IllegalStateException error = new IllegalStateException(
+                        "camera source worker stopped");
+                command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
+                        SystemClock.elapsedRealtimeNanos(), error);
+                throw error;
             }
             if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
-                throw new TimeoutException("camera source worker operation queue timed out");
+                TimeoutException error = new TimeoutException(
+                        "camera source worker operation queue timed out");
+                command.complete(CameraCommandMetrics.Outcome.QUEUED_CANCEL,
+                        SystemClock.elapsedRealtimeNanos(), error);
+                throw error;
             }
             return call.result();
         }
 
     }
 
-    private <T> T call(Callable<T> callable) throws Exception {
-        if (Looper.myLooper() == coordinatorThread.getLooper()) return callable.call();
+    private <T> T call(CameraCommandMetrics.Command command, Callable<T> callable)
+            throws Exception {
+        if (Looper.myLooper() == coordinatorThread.getLooper()) {
+            return runMeasured(command, callable, true);
+        }
         SerializedCall<T> call = new SerializedCall<>();
-        if (!coordinatorHandler.post(() -> call.run(callable))) {
-            throw new IllegalStateException("camera source coordinator stopped");
+        if (!coordinatorHandler.post(() -> call.run(() ->
+                runMeasured(command, callable, false)))) {
+            IllegalStateException error = new IllegalStateException(
+                    "camera source coordinator stopped");
+            command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
+                    SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
         }
         if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
-            throw new TimeoutException("camera source operation queue timed out");
+            TimeoutException error = new TimeoutException(
+                    "camera source operation queue timed out");
+            command.complete(CameraCommandMetrics.Outcome.QUEUED_CANCEL,
+                    SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
         }
         return call.result();
     }
 
-    private <T> T callFinal(Callable<T> callable) throws Exception {
-        if (Looper.myLooper() == coordinatorThread.getLooper()) return callable.call();
+    private <T> T callFinal(CameraCommandMetrics.Command command, Callable<T> callable)
+            throws Exception {
+        if (Looper.myLooper() == coordinatorThread.getLooper()) {
+            return runMeasured(command, callable, true);
+        }
         SerializedCall<T> call = new SerializedCall<>();
-        if (!coordinatorHandler.post(() -> call.run(callable))) {
-            throw new IllegalStateException("camera source coordinator stopped before cleanup");
+        if (!coordinatorHandler.post(() -> call.run(() ->
+                runMeasured(command, callable, false)))) {
+            IllegalStateException error = new IllegalStateException(
+                    "camera source coordinator stopped before cleanup");
+            command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
+                    SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
         }
         return awaitFinalizer(call);
+    }
+
+    private static <T> T runMeasured(CameraCommandMetrics.Command command,
+            Callable<T> operation, boolean inline) throws Exception {
+        command.started(SystemClock.elapsedRealtimeNanos(), inline);
+        try {
+            T value = operation.call();
+            command.complete(CameraCommandMetrics.Outcome.SUCCESS,
+                    SystemClock.elapsedRealtimeNanos(), null);
+            return value;
+        } catch (Exception error) {
+            command.complete(CameraCommandMetrics.Outcome.FAILURE,
+                    SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
+        } catch (Error error) {
+            command.complete(CameraCommandMetrics.Outcome.FAILURE,
+                    SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
+        }
+    }
+
+    private CameraCommandMetrics.Command command(CameraCommandMetrics.Operation operation,
+            int workerIndex, CameraCommandMetrics.Context context) {
+        return commandMetrics.begin(operation, workerIndex, context,
+                SystemClock.elapsedRealtimeNanos());
+    }
+
+    private static CameraCommandMetrics.Context context(int sourceIndex, int requestId,
+            int producerEpoch, Surface surface, boolean recordingOutput) {
+        return new CameraCommandMetrics.Context(sourceIndex, requestId, producerEpoch,
+                surface == null ? -1 : System.identityHashCode(surface), recordingOutput);
+    }
+
+    private <T> T measure(CameraCommandMetrics.Command command,
+            CameraCommandMetrics.Phase phase, Callable<T> operation) throws Exception {
+        long startedNs = SystemClock.elapsedRealtimeNanos();
+        try {
+            T value = operation.call();
+            command.phase(phase, startedNs, SystemClock.elapsedRealtimeNanos(), null);
+            return value;
+        } catch (Exception error) {
+            command.phase(phase, startedNs, SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
+        } catch (Error error) {
+            command.phase(phase, startedNs, SystemClock.elapsedRealtimeNanos(), error);
+            throw error;
+        }
+    }
+
+    private void publishCommandStats(CameraCommandMetrics.Report report) {
+        try {
+            listener.onCommandStats(report);
+        } catch (Throwable error) {
+            try {
+                Log.w(LOG_TAG, "camera command stats delivery failed: operation="
+                        + report.operation.key + ", worker=" + report.workerIndex, error);
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    private void flushWorkerCommandMetrics(int index, String reason) {
+        try {
+            commandMetrics.flushWorker(index, reason, SystemClock.elapsedRealtimeNanos());
+        } catch (Throwable error) {
+            try { Log.w(LOG_TAG, "camera worker command stats flush failed: index=" + index, error); }
+            catch (Throwable ignored) { }
+        }
+    }
+
+    private void flushCommandMetrics(String reason) {
+        try {
+            commandMetrics.flushAll(reason, SystemClock.elapsedRealtimeNanos());
+        } catch (Throwable error) {
+            try { Log.w(LOG_TAG, "camera command stats flush failed: reason=" + reason, error); }
+            catch (Throwable ignored) { }
+        }
     }
 
     static <T> T awaitFinalizer(SerializedCall<T> call) throws Exception {

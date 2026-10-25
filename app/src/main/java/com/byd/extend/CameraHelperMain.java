@@ -16,6 +16,8 @@ import android.view.Surface;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -2484,6 +2486,90 @@ final class CameraHelperMain {
                     }
 
                     @Override
+                    public void onCommandStats(CameraCommandMetrics.Report report) {
+                        long observedAt = SystemClock.elapsedRealtime();
+                        Runnable emitReport = () -> {
+                            CameraCommandMetrics.Context last = report.lastContext;
+                            CameraCommandMetrics.Context worst = report.worstContext;
+                            CameraCommandMetrics.Context failed = report.lastFailureContext;
+                            ArrayList<Object> fields = new ArrayList<>();
+                            fields.add("operation"); fields.add(report.operation.key);
+                            fields.add("worker"); fields.add(report.workerIndex < 0 ? "coordinator"
+                                    : DirectCameraSourceHub.workerThreadName(report.workerIndex));
+                            fields.add("worker_index"); fields.add(report.workerIndex);
+                            fields.add("report_reason"); fields.add(report.reason);
+                            fields.add("sample_elapsed_ms"); fields.add(observedAt);
+                            fields.add("source_hub_generation"); fields.add(openedHubGeneration);
+                            fields.add("producer_epoch"); fields.add(last.producerEpoch >= 0
+                                    ? last.producerEpoch : openedProducerEpoch);
+                            fields.add("commands"); fields.add(report.commands);
+                            fields.add("success"); fields.add(report.successes);
+                            fields.add("failure"); fields.add(report.failures);
+                            fields.add("queued_cancel"); fields.add(report.queuedCancels);
+                            fields.add("post_reject"); fields.add(report.postRejects);
+                            fields.add("inline_commands"); fields.add(report.inlineCommands);
+                            fields.add("queue_samples"); fields.add(report.queueSamples);
+                            fields.add("queue_total_ms"); fields.add(milliseconds(report.queueTotalNs));
+                            fields.add("queue_avg_ms"); fields.add(averageMs(
+                                    report.queueTotalNs, report.queueSamples));
+                            fields.add("queue_max_ms"); fields.add(milliseconds(report.queueMaxNs));
+                            fields.add("execution_samples"); fields.add(report.executionSamples);
+                            fields.add("execution_total_ms"); fields.add(milliseconds(report.executionTotalNs));
+                            fields.add("execution_avg_ms"); fields.add(averageMs(
+                                    report.executionTotalNs, report.executionSamples));
+                            fields.add("execution_max_ms"); fields.add(milliseconds(report.executionMaxNs));
+                            fields.add("command_total_ms"); fields.add(milliseconds(report.totalNs));
+                            fields.add("command_avg_ms"); fields.add(averageMs(
+                                    report.totalNs, report.commands));
+                            fields.add("command_max_ms"); fields.add(milliseconds(report.totalMaxNs));
+                            fields.add("last_command_ms"); fields.add(milliseconds(report.lastTotalNs));
+                            fields.add("worst_command_ms"); fields.add(milliseconds(report.worstTotalNs));
+                            appendCommandContext(fields, "last", last);
+                            appendCommandContext(fields, "worst", worst);
+                            appendCommandContext(fields, "last_failure", failed);
+                            fields.add("failed_phase"); fields.add(report.failedPhase == null
+                                    ? "" : report.failedPhase.key);
+                            if (report.operation == CameraCommandMetrics.Operation.WORKER_ATTACH) {
+                                fields.add("egl_create_skipped_recording_output");
+                                fields.add(last.recordingOutput);
+                            }
+                            for (CameraCommandMetrics.PhaseStats phase : report.phases) {
+                                if (phase == null) continue;
+                                String key = "phase_" + phase.phase.key;
+                                fields.add(key + "_count"); fields.add(phase.count);
+                                fields.add(key + "_total_ms"); fields.add(milliseconds(phase.totalNs));
+                                fields.add(key + "_avg_ms"); fields.add(averageMs(
+                                        phase.totalNs, phase.count));
+                                fields.add(key + "_max_ms"); fields.add(milliseconds(phase.maxNs));
+                                fields.add(key + "_failures"); fields.add(phase.failures);
+                            }
+                            if (report.firstFailure != null) {
+                                appendCommandFailure(fields, "first_failure", report.firstFailure);
+                            }
+                            if (report.lastFailure != null
+                                    && report.lastFailure != report.firstFailure) {
+                                appendCommandFailure(fields, "last_failure", report.lastFailure);
+                            }
+                            emit("camera_source_command_stats", fields.toArray());
+                        };
+                        if (!callbackHandler.post(emitReport)) {
+                            String rejected = "camera command stats handler rejected: operation="
+                                    + report.operation.key + ", worker=" + report.workerIndex
+                                    + ", source_hub_generation=" + openedHubGeneration;
+                            if (report.firstFailure != null) {
+                                Log.w(TAG, rejected + ", first failure", report.firstFailure);
+                            }
+                            if (report.lastFailure != null
+                                    && report.lastFailure != report.firstFailure) {
+                                Log.w(TAG, rejected + ", last failure", report.lastFailure);
+                            }
+                            if (report.firstFailure == null && report.lastFailure == null) {
+                                Log.w(TAG, rejected);
+                            }
+                        }
+                    }
+
+                    @Override
                     public void onTargetStall(
                             Surface surface, int index, long swapWaitNs) {
                         callbackHandler.post(() -> {
@@ -2894,6 +2980,31 @@ final class CameraHelperMain {
             fields.add(name + "_total_ms"); fields.add(milliseconds(totalNs));
             fields.add(name + "_avg_ms"); fields.add(averageMs(totalNs, count));
             fields.add(name + "_max_ms"); fields.add(milliseconds(maxNs));
+        }
+
+        private static void appendCommandContext(ArrayList<Object> fields, String prefix,
+                CameraCommandMetrics.Context context) {
+            fields.add(prefix + "_source_index"); fields.add(context.sourceIndex);
+            fields.add(prefix + "_request_id"); fields.add(context.requestId);
+            fields.add(prefix + "_producer_epoch"); fields.add(context.producerEpoch);
+            fields.add(prefix + "_surface_id"); fields.add(context.surfaceIdentity);
+            fields.add(prefix + "_recording_output"); fields.add(context.recordingOutput);
+        }
+
+        private static void appendCommandFailure(
+                ArrayList<Object> fields, String prefix, Throwable failure) {
+            fields.add(prefix + "_class"); fields.add(failure.getClass().getName());
+            fields.add(prefix + "_message");
+            fields.add(failure.getMessage() == null ? "" : failure.getMessage());
+            fields.add(prefix + "_stack_trace"); fields.add(commandStackTrace(failure));
+        }
+
+        private static String commandStackTrace(Throwable failure) {
+            StringWriter text = new StringWriter();
+            try (PrintWriter writer = new PrintWriter(text)) {
+                failure.printStackTrace(writer);
+            }
+            return text.toString();
         }
 
         static Throwable closeFailedPersistentProducer(
