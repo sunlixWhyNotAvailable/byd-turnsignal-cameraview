@@ -174,6 +174,131 @@ public final class CameraOutputCalculationTest {
         assertEquals(4_000_000_000L, second.callbackGapMaxNs);
     }
 
+    @Test public void acquisitionStagesUseSuccessfulSnapshotDenominatorsAndFlushTails() {
+        DirectCameraSourceHub.StatsWindow stats = new DirectCameraSourceHub.StatsWindow();
+        assertNull(acquisitionFrame(stats, acquisition(1_000_000_000L, 1L,
+                10, 20, 30, 40, 50, 60, 180, 2, true, true)));
+        assertNull(acquisitionFrame(stats, repeated(acquisition(
+                2_000_000_000L, 1L, 30, 40, 50, 900, 900, 70, 190,
+                1, false, false))));
+        assertNull(acquisitionFrame(stats, noPreparedBuffer(acquisition(3_000_000_000L, 2L,
+                50, 60, 70, 80, 90, 80, 260, 3, false, true))));
+        assertNull(acquisitionFrame(stats, gpuBusy(acquisition(4_000_000_000L, 3L,
+                70, 80, 90, 900, 900, 100, 340, 4, false, false))));
+        assertNull(acquisitionFrame(stats, mailboxBusy(acquisition(5_000_000_000L, 4L,
+                90, 100, 110, 900, 900, 120, 420, 5, false, false))));
+        DirectCameraSourceHub.Stats report = acquisitionFrame(stats, invalid(acquisition(
+                6_000_000_000L, 0L, 110, 120, 130, 900, 900, 140, 500, 6,
+                false, false)));
+
+        assertNotNull(report);
+        assertEquals(5_000_000_000L, report.intervalNs);
+        DirectCameraSourceHub.AcquisitionMetrics measured = report.acquisitionMetrics;
+        assertNotNull(measured);
+        assertEquals(6, measured.inputCalls);
+        assertEquals(21, measured.signals);
+        assertEquals(1, measured.allocations);
+        assertEquals(2, measured.snapshotCopies);
+        assertEquals(1, measured.invalidTimestamps);
+        assertEquals(1, measured.repeatedTimestamps);
+        assertEquals(1, measured.skippedNoPreparedBuffer);
+        assertEquals(1, measured.skippedGpuBusy);
+        assertEquals(1, measured.skippedMailboxBusy);
+        assertEquals(360L, measured.queueTotalNs);
+        assertEquals(110L, measured.queueMaxNs);
+        assertEquals(420L, measured.preparationTotalNs);
+        assertEquals(120L, measured.preparationMaxNs);
+        assertEquals(480L, measured.updateTotalNs);
+        assertEquals(130L, measured.updateMaxNs);
+        assertEquals(120L, measured.copyTotalNs);
+        assertEquals(80L, measured.copyMaxNs);
+        assertEquals(140L, measured.fenceTotalNs);
+        assertEquals(90L, measured.fenceMaxNs);
+        assertEquals(570L, measured.releaseTotalNs);
+        assertEquals(140L, measured.releaseMaxNs);
+        assertEquals(1_890L, measured.cycleTotalNs);
+        assertEquals(500L, measured.cycleMaxNs);
+
+        assertNull(acquisitionFrame(stats, mailboxBusy(acquisition(7_000_000_000L, 4L,
+                7, 8, 9, 10, 11, 12, 13, 1, false, false))));
+        DirectCameraSourceHub.Stats tail = acquisitionTail(stats, 9_000_000_000L);
+        assertNotNull(tail);
+        assertEquals(3_000_000_000L, tail.intervalNs);
+        assertEquals(1, tail.acquisitionMetrics.inputCalls);
+        assertEquals(1, tail.acquisitionMetrics.skippedMailboxBusy);
+        assertEquals(7L, tail.acquisitionMetrics.queueTotalNs);
+
+        stats.restart();
+        assertNull(acquisitionFrame(stats, acquisition(100_000_000_000L, 5L,
+                17, 18, 19, 20, 21, 22, 23, 1, false, false)));
+        DirectCameraSourceHub.Stats reset = acquisitionTail(stats, 101_000_000_000L);
+        assertNotNull(reset);
+        assertEquals(1, reset.acquisitionMetrics.inputCalls);
+        assertEquals(17L, reset.acquisitionMetrics.queueTotalNs);
+        assertEquals(0, reset.acquisitionMetrics.skippedMailboxBusy);
+    }
+
+    private static CameraFramePump.Acquisition acquisition(long startedNs,
+            long producerTimestampNs, long queueNs, long preparationNs, long updateNs,
+            long copyNs, long fenceNs, long releaseNs, long inputCycleNs,
+            int signals, boolean allocated, boolean copied) {
+        CameraFramePump.Acquisition sample = new CameraFramePump.Acquisition();
+        sample.startedNs = startedNs;
+        sample.producerTimestampNs = producerTimestampNs;
+        sample.queueNs = queueNs;
+        sample.preparationNs = preparationNs;
+        sample.updateNs = updateNs;
+        sample.copyNs = copyNs;
+        sample.fenceNs = fenceNs;
+        sample.releaseNs = releaseNs;
+        sample.inputCycleNs = inputCycleNs;
+        sample.signals = signals;
+        sample.allocated = allocated;
+        sample.copied = copied;
+        return sample;
+    }
+
+    private static DirectCameraSourceHub.Stats acquisitionFrame(
+            DirectCameraSourceHub.StatsWindow stats, CameraFramePump.Acquisition sample) {
+        return stats.recordAcquisition(sample, 1920, 1300, "camera-acquire-0");
+    }
+
+    private static DirectCameraSourceHub.Stats acquisitionTail(
+            DirectCameraSourceHub.StatsWindow stats, long endNs) {
+        return stats.finish(endNs, 0, 0, null, null, 0, 1920, 1300,
+                "camera-acquire-0");
+    }
+
+    private static CameraFramePump.Acquisition invalid(
+            CameraFramePump.Acquisition sample) {
+        sample.invalidTimestamp = true;
+        return sample;
+    }
+
+    private static CameraFramePump.Acquisition repeated(
+            CameraFramePump.Acquisition sample) {
+        sample.repeatedTimestamp = true;
+        return sample;
+    }
+
+    private static CameraFramePump.Acquisition noPreparedBuffer(
+            CameraFramePump.Acquisition sample) {
+        sample.noPreparedBuffer = true;
+        return sample;
+    }
+
+    private static CameraFramePump.Acquisition gpuBusy(
+            CameraFramePump.Acquisition sample) {
+        sample.gpuBusy = true;
+        return sample;
+    }
+
+    private static CameraFramePump.Acquisition mailboxBusy(
+            CameraFramePump.Acquisition sample) {
+        sample.mailboxBusy = true;
+        return sample;
+    }
+
     private static DirectCameraSourceHub.Stats sourceFrame(
             DirectCameraSourceHub.StatsWindow stats, long ms, long timestamp) {
         return stats.record(ms * 1_000_000L, timestamp, 0,

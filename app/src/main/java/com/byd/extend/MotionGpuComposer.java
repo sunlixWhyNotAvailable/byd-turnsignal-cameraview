@@ -550,8 +550,7 @@ final class MotionGpuComposer implements AutoCloseable {
                         handler.post(() -> failLiveChannelOnGlThread(
                                 channelIndex + 4, "camera_acquire", error, true));
                     }
-                    @Override public void acquired(long started, long timestamp, long update,
-                                                   long copy, int signals) { }
+                    @Override public void acquired(CameraFramePump.Acquisition sample) { }
                     private final CameraFramePump[] pumpRef = liveInputPumps;
                 });
                 liveInputPumps[channel] = pump;

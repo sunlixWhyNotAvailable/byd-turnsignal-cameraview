@@ -11,6 +11,7 @@ import android.opengl.GLES20;
 import android.opengl.GLES30;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Process;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
@@ -24,7 +25,23 @@ final class CameraFramePump {
     interface Listener {
         void available();
         void failed(Throwable error);
-        void acquired(long startedNs, long timestampNs, long updateNs, long copyNs, int signals);
+        void acquired(Acquisition sample);
+    }
+
+    static final class Acquisition {
+        long startedNs, producerTimestampNs, queueNs, preparationNs, updateNs;
+        long copyNs, fenceNs, releaseNs, inputCycleNs;
+        int signals;
+        boolean allocated, copied, invalidTimestamp, repeatedTimestamp;
+        boolean noPreparedBuffer, gpuBusy, mailboxBusy;
+
+        void reset() {
+            startedNs = producerTimestampNs = queueNs = preparationNs = updateNs = 0;
+            copyNs = fenceNs = releaseNs = inputCycleNs = 0;
+            signals = 0;
+            allocated = copied = invalidTimestamp = repeatedTimestamp = false;
+            noPreparedBuffer = gpuBusy = mailboxBusy = false;
+        }
     }
 
     static final class Frame {
@@ -38,6 +55,7 @@ final class CameraFramePump {
     private final EGLDisplay display;
     private final EGLConfig config;
     private final EGLContext sharedContext;
+    private final Object outputSizeLock = new Object();
     private final int glVersion, sourceWidth, sourceHeight, index;
     private final Listener listener;
     private Handler handler;
@@ -50,9 +68,16 @@ final class CameraFramePump {
     private final float[] matrix = new float[16];
     private final Runnable capture = this::capture;
     private final IntPredicate readyToWritePredicate = this::readyToWrite;
+    private final IntPredicate preparedForOutputPredicate = this::preparedForOutput;
+    private final Acquisition acquisition = new Acquisition();
     private int signals;
     private boolean queued, failed, matrixReported;
-    private long lastFrameTimestamp;
+    private boolean trackingCaptureFence, captureFenceNotReady;
+    private long firstCallbackNs, lastFrameTimestamp;
+    private int nextPreparationSlot;
+    private int reportedSourceWidth = -1, reportedSourceHeight = -1;
+    private int reportedOutputWidth = Integer.MIN_VALUE, reportedOutputHeight = Integer.MIN_VALUE;
+    private int reserveOutputWidth, reserveOutputHeight;
     private volatile long outputSize;
     private volatile boolean closed;
 
@@ -89,8 +114,10 @@ final class CameraFramePump {
     }
 
     void setOutputSize(int width, int height) {
-        outputSize = ((long) Math.min(sourceWidth, width) << 32)
-                | (Math.min(sourceHeight, height) & 0xffffffffL);
+        synchronized (outputSizeLock) {
+            outputSize = ((long) Math.min(sourceWidth, width) << 32)
+                    | (Math.min(sourceHeight, height) & 0xffffffffL);
+        }
     }
 
     void finishDiagnostics(Runnable action) {
@@ -124,12 +151,16 @@ final class CameraFramePump {
         surface = new Surface(input);
         input.setOnFrameAvailableListener(ignored -> {
             if (closed || failed) return;
+            long callbackNs = SystemClock.elapsedRealtimeNanos();
             signals++;
             if (!queued) {
                 queued = true;
+                firstCallbackNs = callbackNs;
                 handler.post(capture);
             }
         }, handler);
+        long size = outputSize;
+        reportSourceFormat((int) (size >>> 32), (int) size);
     }
 
     Handler acquisitionHandler() { return handler; }
@@ -180,82 +211,271 @@ final class CameraFramePump {
     }
 
     private void capture() {
+        long started = SystemClock.elapsedRealtimeNanos();
+        Acquisition sample = acquisition;
+        sample.reset();
+        sample.startedNs = started;
         queued = false;
         int count = signals;
         signals = 0;
+        long callbackNs = firstCallbackNs;
+        firstCallbackNs = 0;
         if (closed || failed) return;
-        long started = SystemClock.elapsedRealtimeNanos();
+
+        sample.queueNs = callbackNs == 0 ? 0 : Math.max(0, started - callbackNs);
+        sample.signals = count;
+
+        Throwable failure = null;
+        int preparedSlot = -1;
+        long prepareStart = SystemClock.elapsedRealtimeNanos();
         try {
-            input.updateTexImage();
-            long acquired = System.nanoTime();
-            long updated = SystemClock.elapsedRealtimeNanos();
-            long timestamp;
-            int slot = -1;
             try {
-                timestamp = input.getTimestamp();
-                // A late callback can find only the placeholder left by releaseTexImage().
-                if (timestamp <= 0 || timestamp == lastFrameTimestamp) {
-                    listener.acquired(started, timestamp, updated - started, 0, count);
-                    return;
-                }
-                lastFrameTimestamp = timestamp;
-                input.getTransformMatrix(matrix);
-                if (!matrixReported) {
-                    matrixReported = true;
-                    Log.i("BydCameraProbe", "{\"kind\":\"camera_texture_matrix\","
-                            + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","
-                            + "\"preview_index\":" + index + ",\"surface_texture_id\":"
-                            + System.identityHashCode(input) + ",\"matrix\":" + Arrays.toString(matrix)
-                            + ",\"worker\":\"" + thread.getName() + "\"}");
-                }
                 long size = outputSize;
                 int width = (int) (size >>> 32), height = (int) size;
                 if (width > 0 && height > 0) {
-                    slot = mailbox.reserve(readyToWritePredicate);
-                    if (slot >= 0) {
-                        Frame frame = frames[slot];
-                        allocate(frame, width, height);
-                        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frame.framebuffer);
-                        GLES20.glViewport(0, 0, width, height);
-                        GLES20.glUseProgram(program);
-                        GLES20.glEnableVertexAttribArray(positionLocation);
-                        GLES20.glEnableVertexAttribArray(coordsLocation);
-                        GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 0, positions);
-                        GLES20.glVertexAttribPointer(coordsLocation, 2, GLES20.GL_FLOAT, false, 0, coords);
-                        GLES20.glUniformMatrix4fv(matrixLocation, 1, false, matrix, 0);
-                        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-                        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture);
-                        GLES20.glUniform1i(textureLocation, 0);
-                        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-                        require(GLES20.glGetError() == GLES20.GL_NO_ERROR, "camera snapshot draw failed");
-                        frame.acquiredNs = acquired;
-                        frame.producerNs = timestamp;
-                        frame.fence = finishUse();
+                    for (int offset = 0; offset < CameraFrameMailbox.SLOT_COUNT; offset++) {
+                        int candidate = (nextPreparationSlot + offset) % CameraFrameMailbox.SLOT_COUNT;
+                        if (mailbox.reserveFree(candidate) < 0) continue;
+                        preparedSlot = candidate;
+                        if (!readyToWrite(candidate)) {
+                            mailbox.cancel(candidate);
+                            preparedSlot = -1;
+                            continue;
+                        }
+                        sample.allocated = allocate(frames[candidate], width, height);
                         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+                        nextPreparationSlot = (candidate + 1) % CameraFrameMailbox.SLOT_COUNT;
+                        break;
                     }
                 }
-            } finally {
-                // GLConsumer supplies the release fence; do not retain OEM input until the next frame.
-                input.releaseTexImage();
+            } catch (Throwable error) {
+                failure = appendFailure(failure, "prepare camera snapshot", error);
             }
-            if (slot >= 0) {
-                mailbox.publish(slot);
-                listener.available();
+            if (preparedSlot >= 0) {
+                try {
+                    mailbox.cancel(preparedSlot);
+                } catch (Throwable error) {
+                    failure = appendFailure(failure, "release camera preparation reservation", error);
+                }
+                preparedSlot = -1;
             }
-            listener.acquired(started, timestamp, updated - started,
-                    SystemClock.elapsedRealtimeNanos() - updated, count);
-        } catch (Throwable error) {
-            failed = true;
-            listener.failed(error);
+        } finally {
+            sample.preparationNs = SystemClock.elapsedRealtimeNanos() - prepareStart;
         }
+
+        long updateStart = SystemClock.elapsedRealtimeNanos();
+        boolean updated = false;
+        boolean publish = false;
+        boolean published = false;
+        boolean reportMatrix = false;
+        int slot = -1;
+        int copyWidth = 0, copyHeight = 0;
+        try {
+            try {
+                input.updateTexImage();
+                updated = true;
+            } catch (Throwable error) {
+                failure = appendFailure(failure, "update camera SurfaceTexture", error);
+            }
+            sample.updateNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+
+            if (updated && failure == null) {
+                long acquired = System.nanoTime();
+                long timestamp = 0;
+                try {
+                    timestamp = input.getTimestamp();
+                    sample.producerTimestampNs = timestamp;
+                } catch (Throwable error) {
+                    failure = appendFailure(failure, "read camera SurfaceTexture timestamp", error);
+                }
+                if (failure == null && timestamp <= 0) {
+                    sample.invalidTimestamp = true;
+                } else if (failure == null && timestamp == lastFrameTimestamp) {
+                    sample.repeatedTimestamp = true;
+                } else if (failure == null) {
+                    lastFrameTimestamp = timestamp;
+                    try {
+                        input.getTransformMatrix(matrix);
+                        reportMatrix = true;
+                    } catch (Throwable error) {
+                        failure = appendFailure(failure, "read camera SurfaceTexture transform", error);
+                    }
+
+                    if (failure == null) {
+                        long size = outputSize;
+                        int width = (int) (size >>> 32), height = (int) size;
+                        if (width > 0 && height > 0) {
+                            reserveOutputWidth = copyWidth = width;
+                            reserveOutputHeight = copyHeight = height;
+                            captureFenceNotReady = false;
+                            trackingCaptureFence = true;
+                            try {
+                                slot = mailbox.reserve(preparedForOutputPredicate);
+                            } catch (Throwable error) {
+                                failure = appendFailure(failure, "reserve prepared camera snapshot", error);
+                            } finally {
+                                trackingCaptureFence = false;
+                            }
+
+                            if (failure == null && slot < 0) {
+                                boolean compatible = false;
+                                for (Frame frame : frames) {
+                                    if (frame.width == width && frame.height == height) {
+                                        compatible = true;
+                                        break;
+                                    }
+                                }
+                                if (!compatible) sample.noPreparedBuffer = true;
+                                else if (captureFenceNotReady) sample.gpuBusy = true;
+                                else sample.mailboxBusy = true;
+                            } else if (failure == null) {
+                                Frame frame = frames[slot];
+                                long copyStart = SystemClock.elapsedRealtimeNanos();
+                                try {
+                                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frame.framebuffer);
+                                    GLES20.glViewport(0, 0, width, height);
+                                    GLES20.glUseProgram(program);
+                                    GLES20.glEnableVertexAttribArray(positionLocation);
+                                    GLES20.glEnableVertexAttribArray(coordsLocation);
+                                    GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 0, positions);
+                                    GLES20.glVertexAttribPointer(coordsLocation, 2, GLES20.GL_FLOAT, false, 0, coords);
+                                    GLES20.glUniformMatrix4fv(matrixLocation, 1, false, matrix, 0);
+                                    GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+                                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture);
+                                    GLES20.glUniform1i(textureLocation, 0);
+                                    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+                                    int drawError = GLES20.glGetError();
+                                    if (drawError != GLES20.GL_NO_ERROR) {
+                                        throw new IllegalStateException("camera snapshot draw failed: GL error 0x"
+                                                + Integer.toHexString(drawError));
+                                    }
+                                    sample.copyNs = SystemClock.elapsedRealtimeNanos() - copyStart;
+                                    frame.acquiredNs = acquired;
+                                    frame.producerNs = timestamp;
+                                } catch (Throwable error) {
+                                    failure = appendFailure(failure, "copy camera SurfaceTexture frame", error);
+                                }
+                                if (failure == null) {
+                                    long fenceStart = SystemClock.elapsedRealtimeNanos();
+                                    try {
+                                        frame.fence = finishUse();
+                                        sample.fenceNs = SystemClock.elapsedRealtimeNanos() - fenceStart;
+                                        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+                                        sample.copied = true;
+                                        publish = true;
+                                    } catch (Throwable error) {
+                                        failure = appendFailure(failure,
+                                                "finish camera snapshot GPU use", error);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            long releaseStart = SystemClock.elapsedRealtimeNanos();
+            try {
+                // An update may acquire input before throwing; GLConsumer supplies its release fence.
+                input.releaseTexImage();
+            } catch (Throwable error) {
+                failure = appendFailure(failure, "release camera SurfaceTexture image", error);
+            } finally {
+                sample.releaseNs = SystemClock.elapsedRealtimeNanos() - releaseStart;
+                sample.inputCycleNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+            }
+        }
+
+        if (publish && failure == null) {
+            synchronized (outputSizeLock) {
+                long size = outputSize;
+                int width = (int) (size >>> 32), height = (int) size;
+                if (width == copyWidth && height == copyHeight) {
+                    try {
+                        mailbox.publish(slot);
+                        slot = -1;
+                        published = true;
+                    } catch (Throwable error) {
+                        failure = appendFailure(failure, "publish camera snapshot", error);
+                    }
+                } else {
+                    sample.noPreparedBuffer = true;
+                }
+            }
+        }
+        if (slot >= 0) {
+            try {
+                mailbox.cancel(slot);
+            } catch (Throwable error) {
+                failure = appendFailure(failure, "cancel unused camera snapshot", error);
+            }
+        }
+        if (failure != null) {
+            reportFailure(failure);
+            return;
+        }
+
+        Throwable diagnosticFailure = null;
+        long size = outputSize;
+        try {
+            reportSourceFormat((int) (size >>> 32), (int) size);
+        } catch (Throwable error) {
+            diagnosticFailure = appendFailure(diagnosticFailure, "report camera source format", error);
+        }
+        if (reportMatrix && !matrixReported && surface != null) {
+            try {
+                Log.i("BydCameraProbe", "{\"kind\":\"camera_texture_matrix\","
+                        + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","
+                        + "\"source_index\":" + index + ",\"pid\":" + Process.myPid()
+                        + ",\"tid\":" + Process.myTid() + ",\"surface_identity\":"
+                        + System.identityHashCode(surface) + ",\"preview_index\":" + index
+                        + ",\"surface_texture_id\":" + System.identityHashCode(input)
+                        + ",\"source_width\":" + sourceWidth
+                        + ",\"source_height\":" + sourceHeight + ",\"output_width\":"
+                        + (int) (size >>> 32) + ",\"output_height\":" + (int) size
+                        + ",\"matrix\":" + Arrays.toString(matrix)
+                        + ",\"worker\":\"" + thread.getName() + "\"}");
+                matrixReported = true;
+            } catch (Throwable error) {
+                diagnosticFailure = appendFailure(diagnosticFailure,
+                        "report camera texture matrix", error);
+            }
+        }
+        if (published) {
+            try {
+                listener.available();
+            } catch (Throwable error) {
+                diagnosticFailure = appendFailure(diagnosticFailure,
+                        "notify camera frame availability", error);
+            }
+        }
+        try {
+            listener.acquired(sample);
+        } catch (Throwable error) {
+            diagnosticFailure = appendFailure(diagnosticFailure,
+                    "report camera acquisition metrics", error);
+        }
+        if (diagnosticFailure != null) reportFailure(diagnosticFailure);
+    }
+
+    private boolean preparedForOutput(int slot) {
+        Frame frame = frames[slot];
+        return frame.width == reserveOutputWidth && frame.height == reserveOutputHeight
+                && readyToWrite(slot);
     }
 
     private boolean readyToWrite(int slot) {
         Frame frame = frames[slot];
         if (frame.fence == 0) return true;
         int status = GLES30.glClientWaitSync(frame.fence, 0, 0);
-        require(status != GLES30.GL_WAIT_FAILED, "camera snapshot fence failed");
-        if (status == GLES30.GL_TIMEOUT_EXPIRED) return false;
+        if (status == GLES30.GL_WAIT_FAILED) {
+            throw new IllegalStateException("camera snapshot fence wait failed: GL status 0x"
+                    + Integer.toHexString(status));
+        }
+        if (status == GLES30.GL_TIMEOUT_EXPIRED) {
+            if (trackingCaptureFence) captureFenceNotReady = true;
+            return false;
+        }
         GLES30.glDeleteSync(frame.fence);
         frame.fence = 0;
         return true;
@@ -282,7 +502,11 @@ final class CameraFramePump {
     private long finishUse() {
         if (glVersion >= 3) {
             long fence = GLES30.glFenceSync(GLES30.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            require(fence != 0, "camera snapshot fence unavailable");
+            if (fence == 0) {
+                int error = GLES20.glGetError();
+                throw new IllegalStateException("camera snapshot fence unavailable: GL error 0x"
+                        + Integer.toHexString(error));
+            }
             GLES20.glFlush();
             return fence;
         }
@@ -291,8 +515,8 @@ final class CameraFramePump {
         return 0;
     }
 
-    private void allocate(Frame frame, int width, int height) {
-        if (frame.width == width && frame.height == height) return;
+    private boolean allocate(Frame frame, int width, int height) {
+        if (frame.width == width && frame.height == height) return false;
         if (frame.texture == 0) {
             int[] names = new int[1];
             GLES20.glGenTextures(1, names, 0);
@@ -307,10 +531,51 @@ final class CameraFramePump {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frame.framebuffer);
         GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
                 GLES20.GL_TEXTURE_2D, frame.texture, 0);
-        require(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)
-                == GLES20.GL_FRAMEBUFFER_COMPLETE, "camera snapshot framebuffer incomplete");
+        int framebufferStatus = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER);
+        if (framebufferStatus != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+            throw new IllegalStateException("camera snapshot framebuffer incomplete: GL status 0x"
+                    + Integer.toHexString(framebufferStatus));
+        }
         frame.width = width;
         frame.height = height;
+        return true;
+    }
+
+    private void reportSourceFormat(int outputWidth, int outputHeight) {
+        if (surface == null || (reportedSourceWidth == sourceWidth
+                && reportedSourceHeight == sourceHeight
+                && reportedOutputWidth == outputWidth && reportedOutputHeight == outputHeight)) return;
+        Log.i("BydCameraProbe", "{\"kind\":\"camera_source_format\","
+                + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","
+                + "\"source_index\":" + index + ",\"pid\":" + Process.myPid()
+                + ",\"tid\":" + Process.myTid() + ",\"surface_identity\":"
+                + System.identityHashCode(surface) + ",\"surface_texture_id\":"
+                + System.identityHashCode(input) + ",\"source_width\":" + sourceWidth
+                + ",\"source_height\":" + sourceHeight + ",\"output_width\":" + outputWidth
+                + ",\"output_height\":" + outputHeight + ",\"worker\":\""
+                + thread.getName() + "\"}");
+        reportedSourceWidth = sourceWidth;
+        reportedSourceHeight = sourceHeight;
+        reportedOutputWidth = outputWidth;
+        reportedOutputHeight = outputHeight;
+    }
+
+    private static Throwable appendFailure(Throwable primary, String operation, Throwable error) {
+        Throwable contextual = new IllegalStateException(operation + " failed", error);
+        if (primary == null) return contextual;
+        primary.addSuppressed(contextual);
+        return primary;
+    }
+
+    private void reportFailure(Throwable error) {
+        failed = true;
+        try {
+            listener.failed(error);
+        } catch (Throwable listenerError) {
+            error.addSuppressed(new IllegalStateException("report camera acquisition failure failed",
+                    listenerError));
+            Log.e("BydCameraProbe", "camera acquisition failure handler failed", error);
+        }
     }
 
     private static void configureTexture(int target) {

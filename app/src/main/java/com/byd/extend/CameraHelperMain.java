@@ -2371,17 +2371,21 @@ final class CameraHelperMain {
                     public void onStats(int index, DirectCameraSourceHub.Stats stats) {
                         long observedAt = SystemClock.elapsedRealtime();
                         long processCpuMs = Process.getElapsedCpuTime();
-                        callbackHandler.post(() -> {
-                            if (sourceHubGeneration != openedHubGeneration
-                                    || !persistentPanoProducer) return;
+                        Runnable report = () -> {
+                            stats.sourceRetired |= sourceHubGeneration != openedHubGeneration
+                                    || !persistentPanoProducer;
+                            if (stats.acquisitionMetrics == null
+                                    && (sourceHubGeneration != openedHubGeneration
+                                    || !persistentPanoProducer)) return;
                             boolean extended = DiagnosticLogPolicy.extended();
-                            if (!extended && !stats.fpsWindow) return;
+                            if (!extended && !stats.fpsWindow && !stats.sourceClosed) return;
                             double measuredNewBufferFps = ratePerSecond(stats.callbacks
                                     - stats.producerTimestampRepeated
                                     - stats.producerTimestampInvalid, stats.intervalNs);
-                            if (stats.fpsWindow && !stats.outputStage) {
-                                emit("camera_fps_window_stats",
+                            if ((stats.fpsWindow || stats.sourceClosed) && !stats.outputStage) {
+                                Object[] fields = withAcquisitionMetrics(new Object[]{
                                         "producer_epoch", openedProducerEpoch,
+                                        "fps_window", stats.fpsWindow,
                                         "measured_new_buffer_fps", measuredNewBufferFps,
                                         "new_buffer_fps_valid", stats.producerTimestampInvalid == 0,
                                         "fps_window_id", stats.fpsWindowId,
@@ -2400,10 +2404,12 @@ final class CameraHelperMain {
                                                 stats.callbackGapTotalNs, stats.callbackGaps),
                                         "callback_gap_max_ms", milliseconds(stats.callbackGapMaxNs),
                                         "processed_fps", ratePerSecond(
-                                                stats.callbacks, stats.intervalNs));
+                                                stats.callbacks, stats.intervalNs)},
+                                        stats, openedHubGeneration);
+                                emit("camera_fps_window_stats", fields);
                             }
                             if (extended || (stats.outputStage && stats.fpsWindow)) {
-                                emit(stats.outputStage ? "camera_source_output_stats" : "camera_source_hub_stats",
+                                Object[] fields = withAcquisitionMetrics(new Object[]{
                                     "stage", stats.outputStage ? "output" : "acquisition",
                                     "producer_epoch", openedProducerEpoch,
                                     "fps_window", stats.fpsWindow,
@@ -2464,9 +2470,17 @@ final class CameraHelperMain {
                                     "target_pixels_max", stats.targetPixelsMax,
                                     "target_width_max", stats.targetWidthMax,
                                     "target_height_max", stats.targetHeightMax,
-                                    "target_dimensions", stats.targetDimensions);
+                                    "target_dimensions", stats.targetDimensions},
+                                        stats, openedHubGeneration);
+                                emit(stats.outputStage ? "camera_source_output_stats"
+                                        : "camera_source_hub_stats", fields);
                             }
-                        });
+                        };
+                        if (!callbackHandler.post(report) && stats.sourceClosed) {
+                            Log.w(TAG, "camera acquisition close stats handler rejected: producer_epoch="
+                                    + openedProducerEpoch + ", source_hub_generation="
+                                    + openedHubGeneration + ", preview_index=" + index);
+                        }
                     }
 
                     @Override
@@ -2838,6 +2852,48 @@ final class CameraHelperMain {
         private static double ratePerSecond(long count, long intervalNs) {
             return count <= 0 || intervalNs <= 0L
                     ? 0.0d : count * 1_000_000_000.0d / intervalNs;
+        }
+
+        private static Object[] withAcquisitionMetrics(
+                Object[] fields, DirectCameraSourceHub.Stats stats, int sourceHubGeneration) {
+            DirectCameraSourceHub.AcquisitionMetrics metrics = stats.acquisitionMetrics;
+            if (metrics == null) return fields;
+            ArrayList<Object> result = new ArrayList<>(Arrays.asList(fields));
+            result.add("source_closed"); result.add(stats.sourceClosed);
+            result.add("source_retired"); result.add(stats.sourceRetired);
+            result.add("source_hub_generation"); result.add(sourceHubGeneration);
+            result.add("input_calls"); result.add(metrics.inputCalls);
+            result.add("input_signals"); result.add(metrics.signals);
+            result.add("snapshot_allocations"); result.add(metrics.allocations);
+            result.add("snapshot_copies"); result.add(metrics.snapshotCopies);
+            result.add("input_nonpositive_timestamps"); result.add(metrics.invalidTimestamps);
+            result.add("input_repeated_timestamps"); result.add(metrics.repeatedTimestamps);
+            result.add("snapshot_skip_no_prepared_buffer");
+            result.add(metrics.skippedNoPreparedBuffer);
+            result.add("snapshot_skip_gpu_busy"); result.add(metrics.skippedGpuBusy);
+            result.add("snapshot_mailbox_busy"); result.add(metrics.skippedMailboxBusy);
+            appendStageMetrics(result, "input_queue", metrics.queueTotalNs,
+                    metrics.queueMaxNs, metrics.inputCalls);
+            appendStageMetrics(result, "input_preparation", metrics.preparationTotalNs,
+                    metrics.preparationMaxNs, metrics.inputCalls);
+            appendStageMetrics(result, "input_update", metrics.updateTotalNs,
+                    metrics.updateMaxNs, metrics.inputCalls);
+            appendStageMetrics(result, "snapshot_copy", metrics.copyTotalNs,
+                    metrics.copyMaxNs, metrics.snapshotCopies);
+            appendStageMetrics(result, "snapshot_fence", metrics.fenceTotalNs,
+                    metrics.fenceMaxNs, metrics.snapshotCopies);
+            appendStageMetrics(result, "input_release", metrics.releaseTotalNs,
+                    metrics.releaseMaxNs, metrics.inputCalls);
+            appendStageMetrics(result, "input_cycle", metrics.cycleTotalNs,
+                    metrics.cycleMaxNs, metrics.inputCalls);
+            return result.toArray();
+        }
+
+        private static void appendStageMetrics(
+                ArrayList<Object> fields, String name, long totalNs, long maxNs, int count) {
+            fields.add(name + "_total_ms"); fields.add(milliseconds(totalNs));
+            fields.add(name + "_avg_ms"); fields.add(averageMs(totalNs, count));
+            fields.add(name + "_max_ms"); fields.add(milliseconds(maxNs));
         }
 
         static Throwable closeFailedPersistentProducer(

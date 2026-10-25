@@ -678,9 +678,8 @@ final class DirectCameraSourceHub
                         @Override public void failed(Throwable error) {
                             reportSourceFailure(error);
                         }
-                        @Override public void acquired(long started, long timestamp, long update,
-                                                       long copy, int signals) {
-                            recordAcquisition(started, timestamp, update, copy, signals);
+                        @Override public void acquired(CameraFramePump.Acquisition sample) {
+                            recordAcquisition(sample);
                         }
                     });
             try { pump.start(); }
@@ -729,7 +728,9 @@ final class DirectCameraSourceHub
         }
 
         // Only the acquisition thread touches this window; downstream swap stalls cannot lower it.
-        private void recordAcquisition(long started, long timestamp, long update, long copy, int signals) {
+        private void recordAcquisition(CameraFramePump.Acquisition sample) {
+            long started = sample.startedNs;
+            long timestamp = sample.producerTimestampNs;
             FpsMeasurementWindow measurement = fpsWindow;
             long generation = measurement.id;
             boolean newBuffer = timestamp > lastAcquiredProducerTimestamp && timestamp > 0;
@@ -766,11 +767,22 @@ final class DirectCameraSourceHub
                 acquisitionStats.restart();
                 return;
             }
-            Stats report = acquisitionStats.record(started, timestamp, update,
-                    0, 0, 0, 0, 0, 0, update + copy, signals, Math.max(0, signals - 1),
-                    0, 0, 0, 0, 0, null, null, 0, 1920, index == 0 ? 990 : 1300,
-                    "camera-acquire-" + index);
+            Stats report = acquisitionStats.recordAcquisition(sample, 1920,
+                    index == 0 ? 990 : 1300, "camera-acquire-" + index);
             publishStats(report, window, generation);
+        }
+
+        private void finishAcquisitionStatsOnClose() {
+            FpsMeasurementWindow measurement = fpsWindow;
+            long finishedNs = SystemClock.elapsedRealtimeNanos();
+            Stats tail = acquisitionStats.finish(finishedNs, 0, 0,
+                    null, null, 0, 1920, index == 0 ? 990 : 1300,
+                    "camera-acquire-" + index);
+            if (tail == null) return;
+            tail.sourceClosed = true;
+            boolean window = isFpsStatsWindowActive(finishedNs, measurement.id, fpsWindow.id,
+                    measurement.startedNs, measurement.untilNs);
+            publishStats(tail, window, measurement.id);
         }
 
         private void finishFpsWindow(FpsMeasurementWindow measurement) {
@@ -980,7 +992,18 @@ final class DirectCameraSourceHub
                 report.fpsRequestedNs = fpsWindowActive ? measurement.requestedNs : 0;
                 report.fpsFirstFrameNs = fpsWindowActive ? measurement.startedNs : 0;
                 Stats completed = report;
-                postCoordinator(() -> listener.onStats(index, completed));
+                if (completed.acquisitionMetrics != null) {
+                    if (!coordinatorHandler.post(() -> {
+                        completed.sourceRetired = !isCurrentWorker(this);
+                        listener.onStats(index, completed);
+                    })) {
+                        Log.w(LOG_TAG, "camera acquisition stats callback rejected: source_index="
+                                + index + ", source_closed=" + completed.sourceClosed
+                                + ", fps_window_id=" + completed.fpsWindowId);
+                    }
+                } else {
+                    postCoordinator(() -> listener.onStats(index, completed));
+                }
             }
         }
 
@@ -1114,8 +1137,18 @@ final class DirectCameraSourceHub
             }
             targets.clear();
             try { if (pump != null) pump.close(); }
-            catch (Throwable error) { if (first == null) first = error; }
-            pump = null;
+            catch (Throwable error) {
+                if (first == null) first = error;
+                else if (first != error) first.addSuppressed(error);
+            }
+            finally {
+                pump = null;
+                try { finishAcquisitionStatsOnClose(); }
+                catch (Throwable error) {
+                    if (first == null) first = error;
+                    else if (first != error) first.addSuppressed(error);
+                }
+            }
             surface = null;
             if (program != 0) {
                 try {
@@ -1329,6 +1362,9 @@ final class DirectCameraSourceHub
         boolean outputStage;
         long droppedSnapshots;
         long outputAgeMaxNs;
+        AcquisitionMetrics acquisitionMetrics;
+        boolean sourceClosed;
+        boolean sourceRetired;
 
         Stats(
                 long intervalNs,
@@ -1453,9 +1489,21 @@ final class DirectCameraSourceHub
         private int targetWidthMax;
         private int targetHeightMax;
         private String targetDimensions = "";
+        private final AcquisitionMetricsWindow acquisition = new AcquisitionMetricsWindow();
 
         void restart() {
             reset(-1L);
+        }
+
+        Stats recordAcquisition(CameraFramePump.Acquisition sample,
+                int sourceWidth, int sourceHeight, String workerName) {
+            if (startedNs < 0L) startedNs = sample.startedNs;
+            acquisition.record(sample);
+            return record(sample.startedNs, sample.producerTimestampNs, sample.updateNs,
+                    0, 0, 0, 0, 0, 0,
+                    sample.inputCycleNs, sample.signals, Math.max(0, sample.signals - 1),
+                    0, 0, 0, 0, 0, null, null, 0,
+                    sourceWidth, sourceHeight, workerName);
         }
 
         Stats record(
@@ -1563,6 +1611,7 @@ final class DirectCameraSourceHub
                     targetsCurrent, targetsMax, targetPixelsCurrent, targetPixelsMax,
                     targetWidthMax, targetHeightMax, targetDimensions,
                     sourceWidth, sourceHeight);
+            result.acquisitionMetrics = acquisition.finish();
             long lastProducerTimestamp = previousProducerTimestamp;
             long lastCallbackNs = previousCallbackNs;
             reset(endNs);
@@ -1629,6 +1678,108 @@ final class DirectCameraSourceHub
             targetWidthMax = 0;
             targetHeightMax = 0;
             targetDimensions = "";
+            acquisition.restart();
+        }
+    }
+
+    static final class AcquisitionMetrics {
+        final int inputCalls, signals, allocations, snapshotCopies;
+        final int invalidTimestamps, repeatedTimestamps;
+        final int skippedNoPreparedBuffer, skippedGpuBusy, skippedMailboxBusy;
+        final long queueTotalNs, queueMaxNs;
+        final long preparationTotalNs, preparationMaxNs;
+        final long updateTotalNs, updateMaxNs;
+        final long copyTotalNs, copyMaxNs;
+        final long fenceTotalNs, fenceMaxNs;
+        final long releaseTotalNs, releaseMaxNs;
+        final long cycleTotalNs, cycleMaxNs;
+
+        AcquisitionMetrics(AcquisitionMetricsWindow value) {
+            inputCalls = value.inputCalls;
+            signals = value.signals;
+            allocations = value.allocations;
+            snapshotCopies = value.snapshotCopies;
+            invalidTimestamps = value.invalidTimestamps;
+            repeatedTimestamps = value.repeatedTimestamps;
+            skippedNoPreparedBuffer = value.skippedNoPreparedBuffer;
+            skippedGpuBusy = value.skippedGpuBusy;
+            skippedMailboxBusy = value.skippedMailboxBusy;
+            queueTotalNs = value.queueTotalNs;
+            queueMaxNs = value.queueMaxNs;
+            preparationTotalNs = value.preparationTotalNs;
+            preparationMaxNs = value.preparationMaxNs;
+            updateTotalNs = value.updateTotalNs;
+            updateMaxNs = value.updateMaxNs;
+            copyTotalNs = value.copyTotalNs;
+            copyMaxNs = value.copyMaxNs;
+            fenceTotalNs = value.fenceTotalNs;
+            fenceMaxNs = value.fenceMaxNs;
+            releaseTotalNs = value.releaseTotalNs;
+            releaseMaxNs = value.releaseMaxNs;
+            cycleTotalNs = value.cycleTotalNs;
+            cycleMaxNs = value.cycleMaxNs;
+        }
+    }
+
+    private static final class AcquisitionMetricsWindow {
+        int inputCalls, signals, allocations, snapshotCopies;
+        int invalidTimestamps, repeatedTimestamps;
+        int skippedNoPreparedBuffer, skippedGpuBusy, skippedMailboxBusy;
+        long queueTotalNs, queueMaxNs;
+        long preparationTotalNs, preparationMaxNs;
+        long updateTotalNs, updateMaxNs;
+        long copyTotalNs, copyMaxNs;
+        long fenceTotalNs, fenceMaxNs;
+        long releaseTotalNs, releaseMaxNs;
+        long cycleTotalNs, cycleMaxNs;
+
+        void record(CameraFramePump.Acquisition sample) {
+            inputCalls++;
+            signals += Math.max(0, sample.signals);
+            if (sample.allocated) allocations++;
+            if (sample.copied) snapshotCopies++;
+            if (sample.invalidTimestamp) invalidTimestamps++;
+            if (sample.repeatedTimestamp) repeatedTimestamps++;
+            if (sample.noPreparedBuffer) skippedNoPreparedBuffer++;
+            if (sample.gpuBusy) skippedGpuBusy++;
+            if (sample.mailboxBusy) skippedMailboxBusy++;
+            queueTotalNs += add(sample.queueNs);
+            queueMaxNs = Math.max(queueMaxNs, sample.queueNs);
+            preparationTotalNs += add(sample.preparationNs);
+            preparationMaxNs = Math.max(preparationMaxNs, sample.preparationNs);
+            updateTotalNs += add(sample.updateNs);
+            updateMaxNs = Math.max(updateMaxNs, sample.updateNs);
+            releaseTotalNs += add(sample.releaseNs);
+            releaseMaxNs = Math.max(releaseMaxNs, sample.releaseNs);
+            cycleTotalNs += add(sample.inputCycleNs);
+            cycleMaxNs = Math.max(cycleMaxNs, sample.inputCycleNs);
+            if (sample.copied) {
+                copyTotalNs += add(sample.copyNs);
+                copyMaxNs = Math.max(copyMaxNs, sample.copyNs);
+                fenceTotalNs += add(sample.fenceNs);
+                fenceMaxNs = Math.max(fenceMaxNs, sample.fenceNs);
+            }
+        }
+
+        AcquisitionMetrics finish() {
+            if (inputCalls == 0) return null;
+            AcquisitionMetrics result = new AcquisitionMetrics(this);
+            restart();
+            return result;
+        }
+
+        void restart() {
+            inputCalls = signals = allocations = snapshotCopies = 0;
+            invalidTimestamps = repeatedTimestamps = 0;
+            skippedNoPreparedBuffer = skippedGpuBusy = skippedMailboxBusy = 0;
+            queueTotalNs = queueMaxNs = preparationTotalNs = preparationMaxNs = 0L;
+            updateTotalNs = updateMaxNs = copyTotalNs = copyMaxNs = 0L;
+            fenceTotalNs = fenceMaxNs = releaseTotalNs = releaseMaxNs = 0L;
+            cycleTotalNs = cycleMaxNs = 0L;
+        }
+
+        private static long add(long durationNs) {
+            return Math.max(0L, durationNs);
         }
     }
 

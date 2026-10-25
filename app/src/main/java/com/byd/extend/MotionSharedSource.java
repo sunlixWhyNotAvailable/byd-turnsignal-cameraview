@@ -38,7 +38,7 @@ final class MotionSharedSource {
                     if (target == null || !target.offerComposition(pump, slot)) pump.releaseRead(slot);
                 }
                 @Override public void failed(Throwable error) { errors.accept(error); }
-                @Override public void acquired(long start, long timestamp, long update, long copy, int signals) { }
+                @Override public void acquired(CameraFramePump.Acquisition sample) { }
             });
             pump.start();
         } catch (Exception | Error error) {

@@ -31,6 +31,17 @@ final class CameraFrameMailbox {
         return -1;
     }
 
+    synchronized int reserveFree(int slot) {
+        if (closed || states[slot] != FREE) return -1;
+        states[slot] = WRITING;
+        return slot;
+    }
+
+    synchronized void cancel(int slot) {
+        if (states[slot] != WRITING) throw new IllegalStateException("snapshot is not writable");
+        states[slot] = FREE;
+    }
+
     synchronized void publish(int slot) {
         if (states[slot] != WRITING) throw new IllegalStateException("snapshot is not writable");
         if (closed) {
