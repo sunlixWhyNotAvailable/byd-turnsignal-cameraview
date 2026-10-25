@@ -3,7 +3,7 @@
     <string name="motion_title">"Камери"</string>
     <string name="cameras_tablet">"Показ на планшеті"</string>
     <string name="cameras_recording">"Запис відео"</string>
-    <string name="cameras_viewing">"Перегляд"</string>
+    <string name="cameras_viewing">"Віддалений перегляд"</string>
     <string name="cameras_battery_notice">"Ці функції камер можуть залишати камери активними, коли авто вимкнене, і витрачати заряд акумулятора. Споживання залежить від авто та використання; воно не обов’язково таке саме, як у режимі Sentry."</string>
     <string name="cameras_battery_title">"Призупиняти функції камер за низького заряду"</string>
     <string name="cameras_low_voltage">"12В АКБ"</string>
@@ -12,6 +12,11 @@
     <string name="cameras_charge_paused">"Функції камер призупинені: заряд досяг заданого порога або нижчий."</string>
     <string name="cameras_charge_unavailable">"Не вдалося перевірити заряд: %1$s. Захист за цими показниками недоступний. Продовжуйте роботу камер на власний розсуд."</string>
     <string name="cameras_allow_viewing">"Дозволити віддалений перегляд"</string>
+    <string name="cameras_internal">"Показувати внутрішні камери"</string>
+    <string name="cameras_internal_none">"Ні"</string>
+    <string name="cameras_internal_cabin">"Салону"</string>
+    <string name="cameras_internal_driver">"Водія"</string>
+    <string name="cameras_internal_both">"Обидві"</string>
     <string name="cameras_on_demand">"Вмикати камери при підключенні переглядача, лише якщо вони ще не активні."</string>
     <string name="cameras_connection_method">"Спосіб підключення"</string>
     <string name="cameras_vdo_hint">"Приватне посилання для перегляду та пароль; без окремого VPN-клієнта на телефоні."</string>

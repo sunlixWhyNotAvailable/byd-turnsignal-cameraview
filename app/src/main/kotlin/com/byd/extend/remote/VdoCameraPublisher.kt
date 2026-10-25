@@ -213,6 +213,16 @@ internal class VdoCameraPublisher(
         }
     }
 
+    /** Revoke old camera frames before detaching a Surface still owned by the composer. */
+    fun pauseVideo() {
+        try {
+            synchronized(lock) { video?.let { check(it.track.setEnabled(false)) { "VDO track disable failed" } } }
+        } catch (failure: Throwable) {
+            try { stopAccess() } catch (secondary: Throwable) { failure.addSuppressed(secondary) }
+            throw failure
+        }
+    }
+
     /** Removes only the video track and capture resources; authenticated data peers stay connected. */
     fun stopVideo() {
         synchronized(lock) { stopVideoLocked() }

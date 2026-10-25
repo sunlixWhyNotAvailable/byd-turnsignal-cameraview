@@ -58,13 +58,22 @@ final class CameraFramePump {
 
     CameraFramePump(EGLDisplay display, EGLConfig config, EGLContext sharedContext,
                     int glVersion, int index, Listener listener) {
+        this(display, config, sharedContext, glVersion, index,
+                index == 4123 ? 3840 : 1920, index == 4123 ? 2600 : index == 0 ? 990 : 1300,
+                listener);
+    }
+
+    CameraFramePump(EGLDisplay display, EGLConfig config, EGLContext sharedContext,
+                    int glVersion, int index, int sourceWidth, int sourceHeight, Listener listener) {
         this.display = display;
         this.config = config;
         this.sharedContext = sharedContext;
         this.glVersion = glVersion;
         this.index = index;
-        sourceWidth = index == 4123 ? 3840 : 1920;
-        sourceHeight = index == 4123 ? 2600 : index == 0 ? 990 : 1300;
+        if (sourceWidth < 2 || sourceHeight < 2)
+            throw new IllegalArgumentException("camera source dimensions are invalid");
+        this.sourceWidth = sourceWidth;
+        this.sourceHeight = sourceHeight;
         this.listener = listener;
         thread = new HandlerThread("camera-acquire-" + index);
     }

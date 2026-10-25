@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 5;
+  const WEB_REVISION = 6;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -22,12 +22,13 @@
     en: {
       title: 'Remote cameras', subtitle: 'Secure camera viewer', loginTitle: 'Camera access', loginHint: 'Sign in to view cameras and recordings.', password: 'Password', signIn: 'Continue',
       live: 'Live', archive: 'Recordings', end: 'End session', composition: 'Composition', front: 'Front', rear: 'Rear', left: 'Left', right: 'Right',
+      combined: 'Combined', interior: 'Interior', cabin: 'Cabin', driver: 'Driver',
       startLive: 'Start live viewing', resumeLive: 'Open live stream', waiting: 'Waiting for the first displayed frame…', preparing: 'Preparing cameras…', viewing: 'Viewing live', connected: 'Connected · waiting for video', ready: 'Signed in · viewing is off',
       lowBattery: 'Viewing is paused by the battery protection limit.', ended: 'This session has ended.', replacedTitle: 'Session ended', replaced: 'Another device connected.', errorTitle: 'Connection unavailable', error: 'The camera connection could not be completed.', retry: 'Try again', signInAgain: 'Sign in again',
       invalidPassword: 'Incorrect password.', busy: 'The session is in use. Try again shortly.', retryLater: 'Please wait before trying again.', unauthorized: 'This session is no longer authorized.',
       chargeUnavailable: 'Battery protection data unavailable:', soc: 'SOC', voltage: '12 V', chargeSuffix: 'Protection is unavailable for the missing readings.',
       battery12v: '12 V battery', voltsUnit: 'V', batteryCurrent: 'Current vehicle state', batteryUnavailable: 'Current data unavailable', batteryPartial: 'Some readings unavailable',
-      selectView: 'Choose camera view', expand: 'Full screen', minimize: 'Exit full screen', loading: 'Loading recordings…', loadError: 'Recordings could not be loaded.', retryLoad: 'Reload recordings',
+      selectView: 'Choose camera view', selectLayout: 'Choose camera layout', selectCamera: 'Choose individual camera', expand: 'Full screen', minimize: 'Exit full screen', loading: 'Loading recordings…', loadError: 'Recordings could not be loaded.', retryLoad: 'Reload recordings',
       clips: 'Recordings', tablet: 'Tablet', sd: 'SD card', noRecordings: 'No recordings for this day.', archiveError: 'This recording is unavailable.', back: 'Back to recordings',
       yellowEvents: 'Yellow events', redEvents: 'Red events', duration: 'Duration', allRecordings: 'All recordings',
       play: 'Play', pause: 'Pause', restart: 'Restart', previous: 'Previous recording', next: 'Next recording', position: 'Playback position', speed: 'Playback speed',
@@ -43,12 +44,13 @@
     uk: {
       title: 'Віддалені камери', subtitle: 'Захищений перегляд камер', loginTitle: 'Доступ до камер', loginHint: 'Увійдіть, щоб переглядати камери й записи.', password: 'Пароль', signIn: 'Продовжити',
       live: 'Наживо', archive: 'Архів записів', end: 'Завершити сеанс', composition: 'Композиція', front: 'Перед', rear: 'Зад', left: 'Ліво', right: 'Право',
+      combined: 'Усі камери', interior: 'Внутрішні', cabin: 'Салон', driver: 'Водій',
       startLive: 'Почати перегляд', resumeLive: 'Відкрити відео', waiting: 'Очікуємо перше відображене зображення…', preparing: 'Готуємо камери…', viewing: 'Перегляд наживо', connected: 'Підключено · очікуємо відео', ready: 'Вхід виконано · перегляд вимкнено',
       lowBattery: 'Перегляд призупинено через обмеження захисту акумулятора.', ended: 'Цей сеанс завершено.', replacedTitle: 'Сеанс завершено', replaced: 'Під’єднався інший пристрій.', errorTitle: 'З’єднання недоступне', error: 'Не вдалося встановити з’єднання з камерами.', retry: 'Спробувати знову', signInAgain: 'Увійти знову',
       invalidPassword: 'Неправильний пароль.', busy: 'Сеанс зайнятий. Спробуйте трохи пізніше.', retryLater: 'Зачекайте перед наступною спробою.', unauthorized: 'Цей сеанс більше не авторизований.',
       chargeUnavailable: 'Дані захисту акумулятора недоступні:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Захист за відсутніми показниками недоступний.',
       battery12v: 'АКБ 12 V', voltsUnit: 'V', batteryCurrent: 'Поточний стан авто', batteryUnavailable: 'Поточні дані недоступні', batteryPartial: 'Частина показників недоступна',
-      selectView: 'Виберіть зображення камери', expand: 'На весь екран', minimize: 'Вийти з повного екрана', loading: 'Завантаження записів…', loadError: 'Не вдалося завантажити записи.', retryLoad: 'Завантажити записи знову',
+      selectView: 'Виберіть зображення камери', selectLayout: 'Виберіть компонування камер', selectCamera: 'Виберіть окрему камеру', expand: 'На весь екран', minimize: 'Вийти з повного екрана', loading: 'Завантаження записів…', loadError: 'Не вдалося завантажити записи.', retryLoad: 'Завантажити записи знову',
       clips: 'Записи', tablet: 'Планшет', sd: 'SD-карта', noRecordings: 'За цей день записів немає.', archiveError: 'Цей запис недоступний.', back: 'До записів',
       yellowEvents: 'Жовті події', redEvents: 'Червоні події', duration: 'Тривалість', allRecordings: 'Усі записи',
       play: 'Відтворити', pause: 'Пауза', restart: 'З початку', previous: 'Попередній запис', next: 'Наступний запис', position: 'Позиція відтворення', speed: 'Швидкість відтворення',
@@ -64,12 +66,13 @@
     ru: {
       title: 'Удалённые камеры', subtitle: 'Защищённый просмотр камер', loginTitle: 'Доступ к камерам', loginHint: 'Войдите, чтобы смотреть камеры и записи.', password: 'Пароль', signIn: 'Продолжить',
       live: 'Эфир', archive: 'Архив записей', end: 'Завершить сеанс', composition: 'Композиция', front: 'Перед', rear: 'Зад', left: 'Слева', right: 'Справа',
+      combined: 'Все камеры', interior: 'Внутренние', cabin: 'Салон', driver: 'Водитель',
       startLive: 'Начать просмотр', resumeLive: 'Открыть видео', waiting: 'Ожидаем первый отображённый кадр…', preparing: 'Подготовка камер…', viewing: 'Просмотр в эфире', connected: 'Подключено · ожидание видео', ready: 'Вход выполнен · просмотр выключен',
       lowBattery: 'Просмотр приостановлен из-за ограничения защиты аккумулятора.', ended: 'Этот сеанс завершён.', replacedTitle: 'Сеанс завершён', replaced: 'Подключилось другое устройство.', errorTitle: 'Подключение недоступно', error: 'Не удалось подключиться к камерам.', retry: 'Повторить', signInAgain: 'Войти снова',
       invalidPassword: 'Неверный пароль.', busy: 'Сеанс занят. Повторите попытку позже.', retryLater: 'Подождите перед следующей попыткой.', unauthorized: 'Этот сеанс больше не авторизован.',
       chargeUnavailable: 'Данные защиты аккумулятора недоступны:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Защита по отсутствующим показателям недоступна.',
       battery12v: 'АКБ 12 V', voltsUnit: 'V', batteryCurrent: 'Текущее состояние авто', batteryUnavailable: 'Текущие данные недоступны', batteryPartial: 'Часть показателей недоступна',
-      selectView: 'Выберите вид камеры', expand: 'На весь экран', minimize: 'Выйти из полного экрана', loading: 'Загрузка записей…', loadError: 'Не удалось загрузить записи.', retryLoad: 'Загрузить записи снова',
+      selectView: 'Выберите вид камеры', selectLayout: 'Выберите компоновку камер', selectCamera: 'Выберите отдельную камеру', expand: 'На весь экран', minimize: 'Выйти из полного экрана', loading: 'Загрузка записей…', loadError: 'Не удалось загрузить записи.', retryLoad: 'Загрузить записи снова',
       clips: 'Записи', tablet: 'Планшет', sd: 'SD-карта', noRecordings: 'За этот день записей нет.', archiveError: 'Эта запись недоступна.', back: 'К записям',
       yellowEvents: 'Жёлтые события', redEvents: 'Красные события', duration: 'Длительность', allRecordings: 'Все записи',
       play: 'Воспроизвести', pause: 'Пауза', restart: 'С начала', previous: 'Предыдущая запись', next: 'Следующая запись', position: 'Позиция воспроизведения', speed: 'Скорость воспроизведения',
@@ -85,12 +88,13 @@
     zh: {
       title: '远程摄像头', subtitle: '安全摄像头查看器', loginTitle: '摄像头访问', loginHint: '登录以查看摄像头和录像。', password: '密码', signIn: '继续',
       live: '实时', archive: '录像', end: '结束会话', composition: '全景', front: '前方', rear: '后方', left: '左侧', right: '右侧',
+      combined: '组合画面', interior: '车内', cabin: '座舱', driver: '驾驶员',
       startLive: '开始实时查看', resumeLive: '打开实时视频', waiting: '正在等待首帧显示…', preparing: '正在准备摄像头…', viewing: '正在实时查看', connected: '已连接 · 等待视频', ready: '已登录 · 查看未启动',
       lowBattery: '电池保护限制已暂停查看。', ended: '此会话已结束。', replacedTitle: '会话已结束', replaced: '另一台设备已连接。', errorTitle: '连接不可用', error: '无法完成摄像头连接。', retry: '重试', signInAgain: '重新登录',
       invalidPassword: '密码错误。', busy: '会话正在使用，请稍后重试。', retryLater: '请稍候再试。', unauthorized: '此会话已不再授权。',
       chargeUnavailable: '电池保护数据不可用：', soc: 'SOC', voltage: '12 V', chargeSuffix: '缺少读数时无法启用保护。',
       battery12v: '12 V 电池', voltsUnit: 'V', batteryCurrent: '车辆当前状态', batteryUnavailable: '当前数据不可用', batteryPartial: '部分读数不可用',
-      selectView: '选择摄像头画面', expand: '全屏', minimize: '退出全屏', loading: '正在加载录像…', loadError: '无法加载录像。', retryLoad: '重新加载录像',
+      selectView: '选择摄像头画面', selectLayout: '选择摄像头布局', selectCamera: '选择单个摄像头', expand: '全屏', minimize: '退出全屏', loading: '正在加载录像…', loadError: '无法加载录像。', retryLoad: '重新加载录像',
       clips: '录像', tablet: '平板', sd: 'SD 卡', noRecordings: '这一天没有录像。', archiveError: '此录像不可用。', back: '返回录像列表',
       yellowEvents: '黄色事件', redEvents: '红色事件', duration: '时长', allRecordings: '全部录像',
       play: '播放', pause: '暂停', restart: '重新开始', previous: '上一段录像', next: '下一段录像', position: '播放位置', speed: '播放速度',
@@ -105,6 +109,17 @@
     }
   }[locale];
   const cameras = ['composition', 'front', 'rear', 'left', 'right'];
+  function normalizeInteriorCameraMask(value) {
+    return Number.isInteger(value) && value >= 0 && value <= 3 ? value : null;
+  }
+  function liveCameras() {
+    const mask = state.interiorCameras;
+    const views = [...cameras];
+    if (mask) views.push('combined', 'interior');
+    if (mask & 1) views.push('cabin');
+    if (mask & 2) views.push('driver');
+    return views;
+  }
   const preferredMode = () => {
     try { return sessionStorage.getItem('viewer.mode') === 'archive' ? 'archive' : 'live'; }
     catch { return 'live'; }
@@ -115,6 +130,7 @@
   };
   const state = {
     authenticated: false, replaced: false, mode: 'live', status: 'ready', view: 'composition', wantsLive: false,
+    interiorCameras: 0,
     liveFailed: false, firstLiveFrame: false, archiveView: 'composition', recordings: [], archiveLoaded: false,
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
     playerError: false, playerFrameReported: false, missingCharge: 0, hls: null, poll: null, mainKey: '', seeking: false,
@@ -264,11 +280,25 @@
     app.innerHTML = `${pageHeader()}<div class="login-wrap"><section class="login-card" aria-labelledby="login-title"><h1 id="login-title">${escapeHtml(text.loginTitle)}</h1><p>${escapeHtml(text.loginHint)}</p><form id="login-form">${bootstrap.passwordRequired ? `<label>${escapeHtml(text.password)}<input id="password" type="password" maxlength="1024" autocomplete="off" required></label>` : ''}<p class="error-note" id="login-error" role="alert">${escapeHtml(message)}</p><button class="primary" type="submit">${escapeHtml(text.signIn)}</button></form></section></div>`;
   }
 
+  function cameraButton(view, selected) {
+    const glyph = ['combined', 'composition'].includes(view) ? 'grid' : view === 'interior' ? 'camera' : '';
+    return `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${view === 'composition' ? ` data-composition="true"` : ''}>${glyph ? icon(glyph) : ''}${escapeHtml(text[view])}</button>`;
+  }
+
   function cameraTabs(selected, archive = false, order = null) {
-    const views = archive && (!Array.isArray(order) || order.length !== 4)
-      ? ['composition']
-      : archive ? ['composition', ...order.map((direction) => cameras[direction + 1])] : cameras;
-    return `<div class="camera-tabs" role="group" aria-label="${escapeHtml(text.selectView)}">${views.map((view) => `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${view === 'composition' ? ` data-composition="true"` : ''}>${view === 'composition' ? icon('grid') : ''}${escapeHtml(text[view])}</button>`).join('')}</div>`;
+    if (!archive) {
+      const layouts = state.interiorCameras ? ['combined', 'composition', 'interior'] : ['composition'];
+      const individualCameras = liveCameras().filter((view) => !['combined', 'interior', 'composition'].includes(view));
+      return `<div class="camera-controls"><div class="live-layouts" role="group" aria-label="${escapeHtml(text.selectLayout)}">${layouts.map((view) => cameraButton(view, selected)).join('')}</div><div class="camera-tabs live-cameras" role="group" aria-label="${escapeHtml(text.selectCamera)}">${individualCameras.map((view) => cameraButton(view, selected)).join('')}</div></div>`;
+    }
+    const views = !Array.isArray(order) || order.length !== 4
+      ? ['composition'] : ['composition', ...order.map((direction) => cameras[direction + 1])];
+    return `<div class="camera-tabs" role="group" aria-label="${escapeHtml(text.selectView)}">${views.map((view) => cameraButton(view, selected)).join('')}</div>`;
+  }
+
+  function refreshLiveCameraTabs() {
+    const tabs = document.querySelector('#main-panel > .camera-controls');
+    if (tabs) tabs.outerHTML = cameraTabs(state.view);
   }
 
   function chargeNote() {
@@ -693,7 +723,7 @@
     const action = ++actionGeneration;
     state.mode = 'live';
     rememberMode('live');
-    state.view = cameras.includes(view) ? view : 'composition';
+    state.view = liveCameras().includes(view) ? view : 'composition';
     state.wantsLive = true;
     state.liveFailed = false;
     state.firstLiveFrame = false;
@@ -730,7 +760,7 @@
   }
 
   async function selectLiveView(view) {
-    if (!cameras.includes(view)) return;
+    if (!liveCameras().includes(view)) return;
     state.view = view;
     state.mainKey = '';
     if (state.wantsLive) await startLive(view);
@@ -1041,6 +1071,16 @@
         handleUnauthorized({ body: { status: 'replaced' } });
         return;
       }
+      const interiorCameras = normalizeInteriorCameraMask(data.interiorCameras);
+      if (interiorCameras !== null && interiorCameras !== state.interiorCameras) {
+        state.interiorCameras = interiorCameras;
+        if (!liveCameras().includes(state.view)) state.view = 'composition';
+        if (state.mode === 'live' && state.wantsLive) {
+          await startLive(state.view);
+          return;
+        }
+        if (state.mode === 'live') refreshLiveCameraTabs();
+      }
       if (!state.modePending) applyModeSnapshot(data.modes);
       updateModePanel();
       if (!['ready', 'preparing', 'connected', 'low_battery', 'error', 'ended'].includes(data.status)) {
@@ -1143,6 +1183,18 @@
       state.liveFailed = false;
       state.firstLiveFrame = false;
       state.localFirstFrame = false;
+      state.interiorCameras = 0;
+      try {
+        const current = await api('/status');
+        state.interiorCameras = normalizeInteriorCameraMask(current.interiorCameras) ?? 0;
+      } catch (failure) {
+        if (failure.statusCode === 401 || contractBlocked) {
+          state.authenticated = false;
+          throw failure;
+        }
+        console.warn('Initial camera selection unavailable; using exterior composition', failure);
+      }
+      state.view = state.interiorCameras ? 'combined' : 'composition';
       renderShell();
       if (preferredMode() === 'archive') await openArchive();
       else await startLive();

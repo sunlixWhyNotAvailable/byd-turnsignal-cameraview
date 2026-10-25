@@ -77,7 +77,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
 import com.byd.extend.MotionConfig
 import com.byd.extend.CameraModeClient
 import com.byd.extend.CameraModeSettings
@@ -98,11 +97,8 @@ import com.byd.extend.ui.UiPalette
 import com.byd.extend.ui.UiStrings
 import com.byd.extend.ui.icons.DirectionsCar
 import com.byd.extend.ui.icons.Checklist
-import com.byd.extend.ui.icons.Videocam
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.isActive
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -157,21 +153,15 @@ internal fun FormScope.MotionRecordingScreen(
     archiveState: MotionArchiveState,
     showContent: Boolean,
     battery: @Composable () -> Unit,
+    onArchiveRefresh: () -> Unit,
 ): FormScope {
     val context = LocalContext.current
     val preferences = remember(context) {
         context.getSharedPreferences(MotionConfig.RECORDING_PREFS, Context.MODE_PRIVATE)
     }
-    DisposableEffect(archiveState) {
-        onDispose {
-            archiveState.playerEntry = null
-            archiveState.archiveOpen = false
-        }
-    }
     var options by remember(context) { mutableStateOf(RecordingOptions.from(MotionConfig.read(context))) }
     val stats = archiveState.stats
     var composition by rememberSaveable { mutableStateOf(false) }
-    var refreshKey by remember { mutableIntStateOf(0) }
     var microphoneGranted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
     }
@@ -193,14 +183,14 @@ internal fun FormScope.MotionRecordingScreen(
         options = nextWithoutModeChange
         nextWithoutModeChange.write(preferences)
         MotionRuntime.settingsChanged(context)
-        refreshKey++
+        onArchiveRefresh()
     }
 
     fun setRecordingMode(enabled: Boolean) {
         try {
             MotionRuntime.setModeEnabled(context, CameraModeSettings.MODE_RECORDING, enabled)
             options = RecordingOptions.from(MotionConfig.read(context))
-            refreshKey++
+            onArchiveRefresh()
         } catch (failure: CameraModeClient.ModeException) {
             Log.e("MotionRecording", "recording_mode_update_failed code=${failure.code()}", failure)
             options = RecordingOptions.from(MotionConfig.read(context))
@@ -234,7 +224,7 @@ internal fun FormScope.MotionRecordingScreen(
     }
     val recordingStoragePermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val (read, write) = refreshStoragePermissions()
-        refreshKey++
+        onArchiveRefresh()
         if (pendingRecordingEnable) {
             pendingRecordingEnable = false
             if (motionStoragePermissionsGranted(motionStoragePermissionNeeds(Build.VERSION.SDK_INT), read, write)) {
@@ -244,7 +234,7 @@ internal fun FormScope.MotionRecordingScreen(
     }
     val oemStoragePermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val (read, write) = refreshStoragePermissions()
-        refreshKey++
+        onArchiveRefresh()
         if (pendingOemEnable) {
             pendingOemEnable = false
             if (read && write) save(options.copy(oemCleanup = true))
@@ -305,18 +295,6 @@ internal fun FormScope.MotionRecordingScreen(
             lifecycle.removeObserver(observer)
         }
     }
-    val playerOpen = archiveState.playerEntry != null
-    LaunchedEffect(lifecycle, refreshKey, archiveState, archiveState.archiveOpen, playerOpen, showContent) {
-        if (!showContent || playerOpen) return@LaunchedEffect
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            archiveState.refreshSnapshot()
-            while (isActive) {
-                delay(5_000)
-                archiveState.refreshSnapshot(backgroundOnly = true)
-            }
-        }
-    }
-
     if (showContent) {
         FormSection(strings.motionText(R.string.motion_video_title), colors, key = "motion-recording") {
             row("enable") {
@@ -408,14 +386,10 @@ internal fun FormScope.MotionRecordingScreen(
         }
 
         row("motion-storage-gap") { Spacer(Modifier.height(12.dp)) }
-        row("motion-recording-battery-archive") {
+        row("motion-recording-battery") {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Column(Modifier.weight(1f).fillMaxHeight()) { battery() }
-                Section(strings.motionText(R.string.motion_archive), colors, Modifier.weight(.8f).fillMaxHeight()) {
-                    Text(strings.motionText(R.string.motion_archive_hint), color = colors.muted, fontSize = 13.sp)
-                    ActionButton(strings.motionText(R.string.motion_archive), Icons.Outlined.Videocam,
-                        colors, Modifier.fillMaxWidth()) { archiveState.archiveOpen = true }
-                }
+                Spacer(Modifier.weight(.8f))
             }
         }
     }
@@ -447,11 +421,6 @@ internal fun FormScope.MotionRecordingScreen(
             }
         }
     }
-    if (showContent && archiveState.archiveOpen) MotionArchiveDialog(archiveState, colors, strings,
-        onClose = {
-            archiveState.playerEntry = null
-            archiveState.archiveOpen = false
-        })
     return this
 }
 
@@ -682,7 +651,7 @@ private fun DrawScope.motionHatch(color: Color, left: Float, right: Float) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MotionArchiveDialog(
+internal fun MotionArchiveDialog(
     archiveState: MotionArchiveState,
     colors: UiPalette,
     strings: UiStrings,

@@ -7,6 +7,7 @@ import com.byd.extend.CameraChargeSettings
 import com.byd.extend.AppLanguage
 import com.byd.extend.CameraViewingShellClient
 import com.byd.extend.MotionRuntime
+import com.byd.extend.RemoteCameraView
 import com.byd.extend.R
 import com.byd.extend.remote.security.KeystoreSecretStore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +20,7 @@ import java.util.Base64
 import java.util.concurrent.Executors
 
 data class CameraViewingConfig(val enabled: Boolean = false, val transport: String = "vdo",
-    val tailscalePublic: Boolean = false, val streamId: String = "")
+    val tailscalePublic: Boolean = false, val streamId: String = "", val interiorCameras: Int = 0)
 data class CameraViewingState(val config: CameraViewingConfig, val phase: String = "idle",
     val viewerUrl: String? = null, val authorizationUrl: String? = null, val error: String? = null,
     val passwordConfigured: Boolean = false, val tokenConfigured: Boolean = false,
@@ -32,7 +33,8 @@ class CameraViewingController private constructor(private val context: Context) 
     private val preferences = context.getSharedPreferences("camera_viewing", Context.MODE_PRIVATE)
     private val displaySettings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val displayObserver = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == AppLanguage.KEY || key == "ui_dark_theme") execute("viewer_appearance") {
+        if (key == AppLanguage.KEY || key == "ui_dark_theme" || key == RemoteCameraView.PREFERENCE_KEY) execute("viewer_presentation") {
+            refresh()
             client?.let { accept(it.request("configure", presentationPayload()
                 .put("enabled", CameraChargeSettings.isRemoteViewingEnabled(context)))) }
         }
@@ -59,13 +61,25 @@ class CameraViewingController private constructor(private val context: Context) 
 
     private fun presentationPayload() = JSONObject().put("locale", AppLanguage.read(displaySettings))
         .put("theme", if (displaySettings.getBoolean("ui_dark_theme", true)) "dark" else "light")
+        .put("interiorCameras", interiorCameras())
+
+    private fun interiorCameras() = displaySettings.getInt(RemoteCameraView.PREFERENCE_KEY, 0)
+        .also(RemoteCameraView::validateMask)
+
+    fun setInteriorCameras(value: Int) = execute("interior_cameras") {
+        RemoteCameraView.validateMask(value)
+        check(displaySettings.edit().putInt(RemoteCameraView.PREFERENCE_KEY, value).commit()) {
+            "interior_camera_setting_commit_failed"
+        }
+        refresh()
+    }
 
     private fun selected() = preferences.getString("transport", "vdo")?.takeIf { it in METHODS } ?: "vdo"
     private fun draftName(method: String) = preferences.getString("draft_${method}_name",
         preferences.getString("${method}_name", "")) ?: ""
     private fun publicMode() = preferences.getBoolean("draft_tailscale_public", preferences.getBoolean("tailscale_public", false))
     private fun readConfig() = selected().let { CameraViewingConfig(
-        CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it)) }
+        CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it), interiorCameras()) }
     private fun secret(method: String, field: String): String {
         val bytes = secrets.get("draft.camera.$method.$field") ?: secrets.get("camera.$method.$field") ?: return ""
         return try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }

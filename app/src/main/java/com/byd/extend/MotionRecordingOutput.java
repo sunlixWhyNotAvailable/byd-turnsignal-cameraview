@@ -9,10 +9,12 @@ import android.os.RemoteException;
 import android.view.Surface;
 import java.util.IdentityHashMap;
 import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 /** Encoder ownership for local shared-YUV recording and legacy helper consumers. */
 final class MotionRecordingOutput {
     private static final String DESCRIPTOR = "com.byd.extend.MotionRecordingOutput";
+    static final int VIEWING_PARCEL_VERSION = 1;
     private static final IdentityHashMap<Surface, MotionRecordingOutput> OUTPUTS = new IdentityHashMap<>();
     final int width, height;
     final int[] order;
@@ -25,6 +27,14 @@ final class MotionRecordingOutput {
     private MotionSharedSource localSource;
     private final java.util.ArrayList<Surface> viewingEncoders = new java.util.ArrayList<>();
     private int viewingDirection = -1;
+    private boolean remoteLive;
+    private int liveView = RemoteCameraView.COMPOSITION;
+    private int allowedInteriorMask;
+    private int availableInteriorMask;
+    private int[] interiorWidths = new int[2];
+    private int[] interiorHeights = new int[2];
+    private String liveLocale = "en";
+    private boolean includeExterior = true;
 
     MotionRecordingOutput(int width, int height, int[] order, String session,
             MotionFrameTimestamp clock, Consumer<String> errors) {
@@ -37,6 +47,35 @@ final class MotionRecordingOutput {
                 String error = data.readString();
                 if (data.dataAvail() != 0) throw new IllegalArgumentException("invalid composer event");
                 errors.accept(error);
+                return true;
+            }
+        });
+    }
+
+    MotionRecordingOutput(int width, int height, int[] order, String session,
+            MotionFrameTimestamp clock, Consumer<Throwable> errors,
+            BiConsumer<Integer, String> unavailable) {
+        this(width, height, order, session, clock, new Binder() {
+            @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                    throws RemoteException {
+                if (code != FIRST_CALL_TRANSACTION) return super.onTransact(code, data, reply, flags);
+                if (Binder.getCallingUid() != 2000) throw new SecurityException("Motion composer caller denied");
+                data.enforceInterface(DESCRIPTOR);
+                int kind = data.readInt();
+                if (kind == 1) {
+                    String reference = data.readString();
+                    if (reference == null || reference.length() > 128 || data.dataAvail() != 0)
+                        throw new IllegalArgumentException("invalid composer failure event");
+                    if (errors != null) errors.accept(new IllegalStateException(
+                            "GPU composer failure diagnostic_ref=" + reference));
+                } else if (kind == 2) {
+                    int channel = data.readInt();
+                    String reference = data.readString();
+                    if ((channel != 4 && channel != 5) || reference == null
+                            || !reference.matches("[a-f0-9]{32}") || data.dataAvail() != 0)
+                        throw new IllegalArgumentException("invalid composer channel event");
+                    if (unavailable != null) unavailable.accept(channel, reference);
+                } else throw new IllegalArgumentException("unknown composer event");
                 return true;
             }
         });
@@ -70,6 +109,22 @@ final class MotionRecordingOutput {
         data.writeLong(clock.wallTimeMillis(0)); data.writeStrongBinder(callback);
     }
 
+    void writeViewingToParcel(Parcel data, int view, int allowedMask, boolean exteriorReady,
+            int availableMask, int[] widths, int[] heights, String locale) {
+        remoteLive = true; liveView = view; allowedInteriorMask = allowedMask;
+        includeExterior = exteriorReady; availableInteriorMask = availableMask;
+        interiorWidths = widths == null ? null : widths.clone();
+        interiorHeights = heights == null ? null : heights.clone(); liveLocale = locale;
+        validateLiveSelection();
+        data.writeInt(width); data.writeInt(height); data.writeIntArray(order);
+        data.writeLong(clock.wallTimeMillis(0)); data.writeStrongBinder(callback);
+        data.writeInt(VIEWING_PARCEL_VERSION);
+        data.writeInt(view); data.writeInt(allowedMask); data.writeInt(exteriorReady ? 1 : 0);
+        data.writeInt(availableMask);
+        data.writeIntArray(widths); data.writeIntArray(heights);
+        data.writeString(locale);
+    }
+
     static MotionRecordingOutput readFromParcel(Parcel data, String session, Surface[] surfaces) {
         MotionRecordingOutput output = new MotionRecordingOutput(
                 data.readInt(), data.readInt(), data.createIntArray(), session,
@@ -80,12 +135,50 @@ final class MotionRecordingOutput {
         return output;
     }
 
+    static MotionRecordingOutput readViewingFromParcel(Parcel data, String session, Surface[] surfaces) {
+        MotionRecordingOutput output = readFromParcel(data, session, surfaces);
+        if (data.readInt() != VIEWING_PARCEL_VERSION)
+            throw new IllegalArgumentException("stale remote viewing parcel");
+        output.remoteLive = true;
+        output.liveView = data.readInt();
+        output.allowedInteriorMask = data.readInt();
+        int exterior = data.readInt();
+        if (exterior != 0 && exterior != 1) throw new IllegalArgumentException("invalid exterior readiness flag");
+        output.includeExterior = exterior == 1;
+        output.availableInteriorMask = data.readInt();
+        output.interiorWidths = data.createIntArray();
+        output.interiorHeights = data.createIntArray();
+        output.liveLocale = data.readString();
+        output.validateLiveSelection();
+        return output;
+    }
+
     void register() {
         synchronized (OUTPUTS) { for (Surface surface : surfaces) OUTPUTS.put(surface, this); }
     }
 
     void unregister() {
-        synchronized (OUTPUTS) { for (Surface surface : surfaces) OUTPUTS.remove(surface); }
+        synchronized (OUTPUTS) {
+            if (surfaces != null) for (Surface surface : surfaces)
+                if (OUTPUTS.get(surface) == this) OUTPUTS.remove(surface);
+        }
+    }
+
+    void registerAliases(Surface[] aliases) {
+        if (aliases == null || aliases.length != 4) throw new IllegalArgumentException("four encoder aliases required");
+        synchronized (OUTPUTS) {
+            for (Surface surface : aliases) {
+                if (surface == null || !surface.isValid()) throw new IllegalArgumentException("invalid encoder alias");
+                OUTPUTS.put(surface, this);
+            }
+        }
+    }
+
+    void unregisterAliases(Surface[] aliases) {
+        if (aliases == null) return;
+        synchronized (OUTPUTS) {
+            for (Surface surface : aliases) if (OUTPUTS.get(surface) == this) OUTPUTS.remove(surface);
+        }
     }
 
     static MotionRecordingOutput find(Surface surface) {
@@ -95,10 +188,16 @@ final class MotionRecordingOutput {
     synchronized void prepare(Context context, EGLContext sharedContext, int glVersion) throws Exception {
         if (composer != null) return;
         composer = new MotionGpuComposer(context, width, height, order, session, clock,
-                sharedContext, glVersion, this::failed);
+                sharedContext, glVersion, remoteLive, liveView, allowedInteriorMask,
+                availableInteriorMask, interiorWidths, interiorHeights, liveLocale,
+                includeExterior, this::failed, this::notifyLiveChannelUnavailable);
         composer.initialize(viewingEncoders.isEmpty() ? surfaces[0]
                 : viewingEncoders.get(viewingEncoders.size() - 1));
         if (viewingDirection >= 0) composer.updateViewingOutput(null, viewingDirection);
+    }
+
+    synchronized void prepareStandalone(Context context) throws Exception {
+        prepare(context, android.opengl.EGL14.EGL_NO_CONTEXT, 2);
     }
 
     /** Takes ownership even on timeout: the queued GL operation may still use this Surface. */
@@ -112,9 +211,94 @@ final class MotionRecordingOutput {
         }
     }
 
+    synchronized Surface[] updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
+            boolean exteriorReady, int availableMask, int[] widths, int[] heights,
+            String locale) throws Exception {
+        if (!remoteLive) throw new IllegalStateException("remote live composer unavailable");
+        if (encoder != null) viewingEncoders.add(encoder);
+        liveView = view; allowedInteriorMask = allowedMask; includeExterior = exteriorReady;
+        availableInteriorMask = availableMask;
+        interiorWidths = widths.clone(); interiorHeights = heights.clone();
+        liveLocale = locale;
+        validateLiveSelection();
+        Surface[] created = composer.updateLiveViewingOutput(encoder, liveView,
+                allowedInteriorMask, includeExterior, availableInteriorMask,
+                interiorWidths, interiorHeights, liveLocale);
+        if (encoder != null) {
+            for (int i = viewingEncoders.size() - 2; i >= 0; i--)
+                viewingEncoders.remove(i).release();
+        }
+        return created;
+    }
+
+    synchronized Surface[] liveInteriorInputs() throws Exception {
+        return composer == null ? new Surface[]{null, null} : composer.liveInteriorInputs();
+    }
+
+    synchronized void markLiveChannelUnavailable(int channel, String reference) {
+        if (composer != null) composer.markLiveChannelUnavailable(channel, reference);
+    }
+
+    synchronized void closeComposer() {
+        if (composer != null) {
+            MotionGpuComposer closing = composer;
+            // MotionGpuComposer retains a timed-out cleanup task. Keep its owner and all encoder
+            // wrappers reachable until that task reports successful GL teardown; the caller can
+            // safely retry closeComposer() to await the same task.
+            closing.close();
+            composer = null;
+        }
+        releaseViewingEncoders();
+    }
+
+    private void validateLiveSelection() {
+        RemoteCameraView.validateMask(allowedInteriorMask);
+        if (!RemoteCameraView.valid(liveView) || !RemoteCameraView.allowed(liveView, allowedInteriorMask)
+                || availableInteriorMask < 0 || availableInteriorMask > RemoteCameraView.BOTH
+                || interiorWidths == null || interiorWidths.length != 2
+                || interiorHeights == null || interiorHeights.length != 2
+                || (availableInteriorMask & ~RemoteCameraView.interiorMask(liveView, allowedInteriorMask)) != 0
+                || includeExterior && !RemoteCameraView.needsExterior(liveView))
+            throw new IllegalArgumentException("invalid remote camera source configuration");
+        if (includeExterior && !RemoteCameraView.needsExterior(liveView))
+            throw new IllegalArgumentException("exterior source supplied to interior-only view");
+        if ((availableInteriorMask & ~RemoteCameraView.interiorMask(liveView, allowedInteriorMask)) != 0)
+            throw new IllegalArgumentException("unrequested interior source supplied");
+        for (int index = 0; index < 2; index++) {
+            int bit = 1 << index;
+            if ((availableInteriorMask & bit) != 0
+                    && (interiorWidths[index] < 2 || interiorHeights[index] < 2))
+                throw new IllegalArgumentException("invalid interior camera dimensions");
+        }
+        if (liveLocale == null || !liveLocale.matches("[A-Za-z-]{1,16}"))
+            throw new IllegalArgumentException("invalid remote viewer locale");
+    }
+
     private void releaseViewingEncoders() {
-        for (Surface surface : viewingEncoders) surface.release();
-        viewingEncoders.clear();
+        Throwable first = null;
+        for (int index = viewingEncoders.size() - 1; index >= 0; index--) {
+            Surface surface = viewingEncoders.get(index);
+            try {
+                surface.release();
+                viewingEncoders.remove(index);
+            } catch (Throwable failure) {
+                if (first == null) first = failure;
+                else if (failure != first) first.addSuppressed(failure);
+            }
+        }
+        if (first instanceof Error) throw (Error) first;
+        if (first instanceof RuntimeException) throw (RuntimeException) first;
+        if (first != null) throw new IllegalStateException("remote live encoder cleanup failed", first);
+    }
+
+    synchronized void releaseInputs() {
+        if (composer != null) throw new IllegalStateException("cannot release encoder inputs while composer is active");
+        unregister();
+        if (surfaces == null) return;
+        IdentityHashMap<Surface, Boolean> released = new IdentityHashMap<>();
+        for (Surface surface : surfaces)
+            if (surface != null && released.put(surface, Boolean.TRUE) == null) surface.release();
+        surfaces = null;
     }
 
     synchronized void retain() { attached++; }
@@ -154,10 +338,23 @@ final class MotionRecordingOutput {
     void failed(String detail) {
         Parcel data = Parcel.obtain();
         try {
-            data.writeInterfaceToken(DESCRIPTOR); data.writeString(detail);
+            data.writeInterfaceToken(DESCRIPTOR);
+            if (remoteLive) { data.writeInt(1); data.writeString(detail); }
+            else data.writeString(detail);
             callback.transact(IBinder.FIRST_CALL_TRANSACTION, data, null, IBinder.FLAG_ONEWAY);
         } catch (RemoteException ignored) {
             // Host death/session cleanup owns encoder teardown if the Motion worker has gone away.
+        } finally { data.recycle(); }
+    }
+
+    private void notifyLiveChannelUnavailable(int channel, String reference) {
+        if (!remoteLive) return;
+        Parcel data = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(DESCRIPTOR); data.writeInt(2);
+            data.writeInt(channel); data.writeString(reference);
+            callback.transact(IBinder.FIRST_CALL_TRANSACTION, data, null, IBinder.FLAG_ONEWAY);
+        } catch (RemoteException ignored) {
         } finally { data.recycle(); }
     }
 }

@@ -294,6 +294,14 @@ internal fun FormScope.CameraViewingScreen(
                 strings.motionText(R.string.cameras_on_demand), state.config.enabled,
                 { enabled -> clearFocusForAction(); submit(enabled = enabled) }, colors)
         }
+        row("interior-cameras") {
+            Text(strings.motionText(R.string.cameras_internal), color = colors.text, fontSize = 16.sp)
+            Segmented(listOf(R.string.cameras_internal_none, R.string.cameras_internal_cabin,
+                R.string.cameras_internal_driver, R.string.cameras_internal_both)
+                .map { strings.motionText(it) }, state.config.interiorCameras, colors, Modifier.fillMaxWidth()) {
+                controller.setInteriorCameras(it)
+            }
+        }
         row("method") {
             ChoiceField(strings.motionText(R.string.cameras_connection_method),
                 listOf("VDO.Ninja", "Tailscale", "Zrok"), providerIndex, { selected ->

@@ -19,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -75,6 +76,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -94,8 +97,10 @@ import com.byd.extend.ui.Section
 import com.byd.extend.ui.Segmented
 import com.byd.extend.ui.SwitchLine
 import com.byd.extend.ui.FormScope
+import com.byd.extend.ui.FormSection
 import com.byd.extend.ui.icons.Palette
 import com.byd.extend.ui.icons.Visibility
+import com.byd.extend.ui.icons.Videocam
 import com.byd.extend.ui.UiLanguage
 import com.byd.extend.ui.UiPalette
 import com.byd.extend.ui.UiStrings
@@ -150,6 +155,7 @@ internal fun FormScope.MotionIntegrationScreen(
     var draft by rememberSaveable { mutableStateOf<MotionTemplate?>(null) }
     var importing by remember { mutableStateOf(false) }
     var tab by remember(uiSession) { mutableIntStateOf(uiSession.motionCameraTab()) }
+    var archiveRefreshKey by remember { mutableIntStateOf(0) }
     var checkupOpen by rememberSaveable { mutableStateOf(false) }
     val chargeState = rememberCameraChargeState(context)
     var socThreshold by remember(context) {
@@ -168,6 +174,23 @@ internal fun FormScope.MotionIntegrationScreen(
                 voltageThreshold = it
                 CameraChargeSettings.setVoltageThresholdVolts(context, it)
             })
+    }
+    val archivePlayerOpen = archiveState.playerEntry != null
+    DisposableEffect(archiveState) {
+        onDispose {
+            archiveState.playerEntry = null
+            archiveState.archiveOpen = false
+        }
+    }
+    LaunchedEffect(lifecycle, archiveState, archiveState.archiveOpen, archivePlayerOpen, tab, archiveRefreshKey) {
+        if ((tab != 1 && !archiveState.archiveOpen) || archivePlayerOpen) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            archiveState.refreshSnapshot()
+            while (isActive) {
+                delay(5_000)
+                archiveState.refreshSnapshot(backgroundOnly = true)
+            }
+        }
     }
     fun persist(next: MotionTemplates): Boolean = try {
         store.write(next)
@@ -191,6 +214,21 @@ internal fun FormScope.MotionIntegrationScreen(
     }
     row("camera-checkup") {
         MotionCheckupSection(colors, strings, parkedBatteryNotice = tab != 2) { checkupOpen = true }
+        Spacer(Modifier.height(12.dp))
+    }
+    row("motion-shared-archive") {
+        FormSection(strings.motionText(R.string.motion_archive), colors, key = "motion-shared-archive") {
+            row("open") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(strings.motionText(R.string.motion_archive_hint), color = colors.muted, fontSize = 13.sp,
+                        modifier = Modifier.weight(1f))
+                    ActionButton(strings.motionText(R.string.motion_archive), Icons.Outlined.Videocam,
+                        colors, Modifier.weight(.7f)) { archiveState.archiveOpen = true }
+                }
+            }
+            this
+        }
         Spacer(Modifier.height(12.dp))
     }
     row("camera-tabs") {
@@ -264,10 +302,15 @@ internal fun FormScope.MotionIntegrationScreen(
         }
     }
     CompositionLocalProvider(LocalMotionCameraHost provides cameraHost) {
-        MotionRecordingScreen(colors, strings, archiveState, showContent = tab == 1, battery = battery)
+        MotionRecordingScreen(colors, strings, archiveState, showContent = tab == 1, battery = battery,
+            onArchiveRefresh = { archiveRefreshKey++ })
     }
     if (tab == 2) CameraViewingScreen(colors, strings, chargeState)
 
+    if (archiveState.archiveOpen) MotionArchiveDialog(archiveState, colors, strings, onClose = {
+        archiveState.playerEntry = null
+        archiveState.archiveOpen = false
+    })
     if (checkupOpen) MotionCheckupDialog(colors, strings) { checkupOpen = false }
     if (dialog == 1 || dialog == 2) MotionLibraryDialog(dialog == 1, library, store, colors, strings,
         onClose = { dialog = 0 }, onUse = { if (persist(library.copy(activeId = it.id))) dialog = 0 },

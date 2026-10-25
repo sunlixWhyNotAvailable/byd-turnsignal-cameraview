@@ -591,6 +591,9 @@ final class CompatibilityBundleExporter {
         if (preferences == null) return "{}";
         Map<String, ?> all = preferences.getAll();
         List<String> keys = new ArrayList<>(all.keySet());
+        if (!keys.contains(RemoteCameraView.PREFERENCE_KEY)) {
+            keys.add(RemoteCameraView.PREFERENCE_KEY);
+        }
         Collections.sort(keys);
         StringBuilder json = new StringBuilder("{");
         boolean first = true;
@@ -598,6 +601,13 @@ final class CompatibilityBundleExporter {
             String lower = key == null ? "" : key.toLowerCase(Locale.US);
             if (!isSafePreferenceKey(lower)) continue;
             Object value = all.get(key);
+            if (RemoteCameraView.PREFERENCE_KEY.equals(key)) {
+                if (value == null) value = RemoteCameraView.NONE;
+                if (!(value instanceof Integer)) {
+                    throw new IllegalStateException("interior camera preference must be an integer");
+                }
+                RemoteCameraView.validateMask((Integer) value);
+            }
             if (!(value instanceof String || value instanceof Number || value instanceof Boolean)) {
                 continue;
             }
@@ -616,7 +626,8 @@ final class CompatibilityBundleExporter {
                 || key.contains("device_id") || key.contains("vin")
                 || key.contains("token") || key.contains("fingerprint")
                 || key.contains("personal")) return false;
-        return key.startsWith("camera_") || key.startsWith("reverse_")
+        return key.equals(RemoteCameraView.PREFERENCE_KEY)
+                || key.startsWith("camera_") || key.startsWith("reverse_")
                 || key.startsWith("calibration_") || key.startsWith("dewarp_")
                 || key.startsWith("blindspot_") || key.startsWith("guard_");
     }

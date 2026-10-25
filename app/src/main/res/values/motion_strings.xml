@@ -3,7 +3,7 @@
     <string name="motion_title">"Cameras"</string>
     <string name="cameras_tablet">"Tablet display"</string>
     <string name="cameras_recording">"Video recording"</string>
-    <string name="cameras_viewing">"Viewing"</string>
+    <string name="cameras_viewing">"Remote viewing"</string>
     <string name="cameras_battery_notice">"These camera features may keep cameras active while the vehicle is off and use battery power. Consumption varies by vehicle and use; it is not necessarily the same as Sentry mode."</string>
     <string name="cameras_battery_title">"Pause camera features at low battery"</string>
     <string name="cameras_low_voltage">"12V battery"</string>
@@ -12,6 +12,11 @@
     <string name="cameras_charge_paused">"Camera features are paused because charge is at or below a configured threshold."</string>
     <string name="cameras_charge_unavailable">"Unable to verify charge: %1$s. Protection for these readings is unavailable. Continue camera use at your discretion."</string>
     <string name="cameras_allow_viewing">"Allow remote viewing"</string>
+    <string name="cameras_internal">"Show interior cameras"</string>
+    <string name="cameras_internal_none">"None"</string>
+    <string name="cameras_internal_cabin">"Cabin"</string>
+    <string name="cameras_internal_driver">"Driver"</string>
+    <string name="cameras_internal_both">"Both"</string>
     <string name="cameras_on_demand">"Start cameras when a viewer connects, only if they are not already active."</string>
     <string name="cameras_connection_method">"Connection method"</string>
     <string name="cameras_vdo_hint">"A private viewing link and password; no separate phone VPN client."</string>

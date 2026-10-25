@@ -12,6 +12,11 @@
     <string name="cameras_charge_paused">"电量达到或低于设定阈值，摄像头功能已暂停。"</string>
     <string name="cameras_charge_unavailable">"无法检查电量：%1$s。无法使用这些指标的电量保护。是否继续使用摄像头由您决定。"</string>
     <string name="cameras_allow_viewing">"允许远程查看"</string>
+    <string name="cameras_internal">"显示车内摄像头"</string>
+    <string name="cameras_internal_none">"不显示"</string>
+    <string name="cameras_internal_cabin">"车厢"</string>
+    <string name="cameras_internal_driver">"驾驶员"</string>
+    <string name="cameras_internal_both">"两者"</string>
     <string name="cameras_on_demand">"查看者连接时，仅在摄像头尚未运行的情况下启动。"</string>
     <string name="cameras_connection_method">"连接方式"</string>
     <string name="cameras_vdo_hint">"私密查看链接和密码；手机无需额外VPN客户端。"</string>

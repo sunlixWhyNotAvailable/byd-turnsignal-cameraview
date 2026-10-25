@@ -1,6 +1,7 @@
 package com.byd.extend.remote;
 
 import com.byd.extend.CameraModeClient;
+import com.byd.extend.RemoteCameraView;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -44,6 +45,7 @@ public final class CameraViewerServer implements AutoCloseable {
         void disconnected(String session, String reason);
         void failed(Throwable failure);
         void live(String session, int direction, String request);
+        int interiorCameras();
         void archive(String session, boolean leave);
         JSONObject status();
         JSONObject setMode(String session, String mode, boolean enabled) throws Exception;
@@ -336,6 +338,10 @@ public final class CameraViewerServer implements AutoCloseable {
             case "/live":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
                 int direction = direction(bodyObject(request.body).optString("view", "composition"));
+                if (!RemoteCameraView.allowed(direction, stream.interiorCameras())) {
+                    json(socket, reply, 403, "view_not_allowed", null);
+                    return;
+                }
                 closePlayback(request.session);
                 String liveRequest = java.util.UUID.randomUUID().toString();
                 stream.live(request.session, direction, liveRequest);
@@ -709,14 +715,8 @@ public final class CameraViewerServer implements AutoCloseable {
     }
 
     private static int direction(String view) throws IOException {
-        switch (view) {
-            case "composition": return -1;
-            case "front": return 0;
-            case "rear": return 1;
-            case "left": return 2;
-            case "right": return 3;
-            default: throw new HttpFailure(400, "invalid_view", null);
-        }
+        try { return RemoteCameraView.parse(view); }
+        catch (IllegalArgumentException invalid) { throw new HttpFailure(400, "invalid_view", null, invalid); }
     }
 
     private static String archiveId(String path, String prefix) {

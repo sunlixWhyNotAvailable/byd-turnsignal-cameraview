@@ -270,12 +270,21 @@ public final class CameraSettingsTransfer {
             copy.put(entry.getKey(), entry.getValue());
         }
         validateLegacySettings(copy);
+        String interiorKey = RemoteCameraView.PREFERENCE_KEY;
+        boolean preserveInteriorCameras = !copy.containsKey(interiorKey)
+                && preferences.contains(interiorKey);
+        int interiorCameras = RemoteCameraView.NONE;
+        if (preserveInteriorCameras) {
+            interiorCameras = preferences.getInt(interiorKey, RemoteCameraView.NONE);
+            RemoteCameraView.validateMask(interiorCameras);
+        }
         LegacyPlacementPlan placements = geometry == null ? null
                 : legacyPlacementPlan(preferences, copy, geometry, true);
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : preferences.getAll().keySet()) {
             if (isLegacyAllowedKey(key)) editor.remove(key);
         }
+        if (preserveInteriorCameras) editor.putInt(interiorKey, interiorCameras);
         preserveMissingFrameAspects(editor, preferences, copy);
         preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
@@ -1605,6 +1614,7 @@ public final class CameraSettingsTransfer {
                 || key.contains("_speed") || key.endsWith("_distance_cm")
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_DP)
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_ARGB)
+                || key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.equals("mirror_fov") || key.equals("mirror_projection")
                 || key.equals("mirror_output_mode") || key.equals("mirror_rotation")
                 || (key.startsWith("camera_dewarp_")
@@ -1668,6 +1678,9 @@ public final class CameraSettingsTransfer {
             if (key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)) requireRange(n, 0, 100, key);
             if (key.equals(CameraBufferQuality.PREF_QUALITY)) requireRange(n, 0, 3, key);
             if (key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)) requireRange(n, 0, 2, key);
+            if (key.equals(RemoteCameraView.PREFERENCE_KEY)) {
+                RemoteCameraView.validateMask(((Number) value).intValue());
+            }
             if (key.equals("outward_deg")) requireRange(n, 0, 360, key);
             if (key.equals("center_deg")) requireRange(n, 0, 45, key);
             if (key.endsWith("_border_width")) {
@@ -1724,6 +1737,7 @@ public final class CameraSettingsTransfer {
                 || key.equals("reverse_camera_editor_selection") || key.equals("weather_last_success_ms")
                 || key.equals("helper_apk_marker") || key.equals("assumed_latch_state")
                 || key.equals("user_shutdown_active") || key.equals("service_heartbeat_ms")) return false;
+        if (key.equals(RemoteCameraView.PREFERENCE_KEY)) return true;
         if (key.startsWith("camera_") || key.startsWith("direct_crop_")
                 || key.startsWith("camera_dewarp_v2_") || key.startsWith("camera_dewarp_v3_")
                 || key.startsWith("camera_calibration_preset_v1_")) return true;

@@ -7,6 +7,9 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Parcel;
+import android.view.Surface;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -22,7 +25,7 @@ final class CameraRuntimeHost {
             MOTION_OWN_WAKE = 18, MOTION_END_WAKE = 19, MOTION_BIND_WORKER = 20,
             MOTION_UNBIND_WORKER = 21;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
-            VIEW_UPDATE_OUTPUT = 25;
+            VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
@@ -51,6 +54,11 @@ final class CameraRuntimeHost {
     private String viewerSession;
     private long viewerGeneration;
     private IBinder.DeathRecipient viewerDeath;
+    private MotionRecordingOutput viewerOutput;
+    private Surface viewerEncoderReference;
+    private int viewerRequestId;
+    private boolean viewerExteriorAttached;
+    private boolean viewerComposerExternal;
     private volatile IBinder viewingHelper;
     private IBinder.DeathRecipient viewingHelperDeath;
     private volatile int viewingHelperPid;
@@ -99,7 +107,7 @@ final class CameraRuntimeHost {
     int transact(Parcel data, Parcel reply) throws Exception {
         int operation = data.readInt();
         if (operation == VIEW_ATTACH || operation == VIEW_DETACH || operation == VIEW_REGISTER_HELPER
-                || operation == VIEW_UPDATE_OUTPUT)
+                || operation == VIEW_UPDATE_OUTPUT || operation == VIEW_MARK_CHANNEL_UNAVAILABLE)
             return transactViewing(operation, data, reply);
         if (operation >= MOTION_ATTACH && operation <= MOTION_UNBIND_WORKER)
             return transactMotion(operation, data, reply);
@@ -298,7 +306,10 @@ final class CameraRuntimeHost {
                 clearViewingHelper();
                 IBinder.DeathRecipient death = () -> handler.post(() -> {
                     if (viewingHelper == helperProcess) {
-                        if (viewerOwner != null) clearViewer();
+                        if (viewerOwner != null) {
+                            try { clearViewer(); }
+                            catch (Exception error) { reportViewerCleanupFailure("helper_death", error); }
+                        }
                         clearViewingHelper();
                     }
                 });
@@ -314,90 +325,585 @@ final class CameraRuntimeHost {
         }
         if (!isRegisteredViewingCaller(Binder.getCallingUid(), Binder.getCallingPid()))
             throw new SecurityException("unregistered viewing helper caller");
+
         IBinder owner = data.readStrongBinder();
         String session = data.readString();
+        if (owner == null || !owner.isBinderAlive() || !MotionDetectorProtocol.validSession(session))
+            throw new IllegalArgumentException("invalid camera viewer owner");
+
+        if (operation == VIEW_ATTACH) {
+            Surface[] surfaces = data.createTypedArray(Surface.CREATOR);
+            int requestId = 0;
+            MotionRecordingOutput output = null;
+            java.util.concurrent.atomic.AtomicBoolean dispatched = new java.util.concurrent.atomic.AtomicBoolean(false);
+            try {
+                requestId = data.readInt();
+                if (surfaces == null || surfaces.length != 4 || requestId <= 0)
+                    throw new IllegalArgumentException("invalid camera viewer surfaces");
+                for (Surface surface : surfaces)
+                    if (surface == null || !surface.isValid())
+                        throw new IllegalArgumentException("invalid camera viewer surface");
+                Parcel outputPayload = Parcel.obtain();
+                ViewerConfig config;
+                try {
+                    outputPayload.appendFrom(data, data.dataPosition(), data.dataAvail());
+                    outputPayload.setDataPosition(0);
+                    config = readAttachViewerConfig(outputPayload);
+                    outputPayload.setDataPosition(0);
+                    output = MotionRecordingOutput.readViewingFromParcel(outputPayload, session, surfaces);
+                    if (outputPayload.dataAvail() != 0)
+                        throw new IllegalArgumentException("unexpected viewer attach payload");
+                    data.setDataPosition(data.dataSize());
+                } finally { outputPayload.recycle(); }
+                output.register();
+                final MotionRecordingOutput requestedOutput = output;
+                final int requestedId = requestId;
+                Surface[] inputs = callViewerOwned(() -> {
+                    try {
+                        if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
+                        if (viewerOwner != null) throw new IllegalStateException("camera viewer busy");
+                        viewerOwner = owner;
+                        viewerSession = session;
+                        viewerGeneration = 0;
+                        viewerOutput = requestedOutput;
+                        viewerRequestId = requestedId;
+                        viewerExteriorAttached = false;
+                        viewerComposerExternal = false;
+                        viewerEncoderReference = null;
+                        viewerDeath = () -> handler.post(() -> {
+                            if (viewerOwner == owner) {
+                                try { clearViewer(); }
+                                catch (Exception error) { reportViewerCleanupFailure("owner_death", error); }
+                            }
+                        });
+                        owner.linkToDeath(viewerDeath, 0);
+                        return requireViewerInputs(
+                                prepareInitialViewer(requestedOutput, config, requestedId));
+                    } catch (Throwable error) {
+                        try {
+                            if (viewerOutput == requestedOutput) clearViewer();
+                            else cleanupUninstalledOutput(requestedOutput, error);
+                        } catch (Throwable cleanup) {
+                            if (cleanup != error) error.addSuppressed(cleanup);
+                        }
+                        rethrowViewerFailure(error);
+                        throw new AssertionError("unreachable");
+                    }
+                }, dispatched);
+                reply.writeNoException();
+                reply.writeInt(1);
+                reply.writeTypedArray(inputs, 0);
+                return operation;
+            } finally {
+                if (output != null) output.unregister();
+                else releaseSurfaces(surfaces);
+                if (output != null && !dispatched.get()) cleanupUninstalledOutput(output, null);
+            }
+        }
+
         if (operation == VIEW_UPDATE_OUTPUT) {
             long generation = data.readLong();
-            int direction = data.readInt();
-            android.view.Surface surface = data.readInt() == 0 ? null
-                    : android.view.Surface.CREATOR.createFromParcel(data);
+            ViewerConfig config = readLiveViewerConfig(data);
+            int encoderFlag = data.readInt();
+            if (encoderFlag != 0 && encoderFlag != 1)
+                throw new IllegalArgumentException("invalid viewer encoder flag");
+            Surface encoder = encoderFlag == 0 ? null : Surface.CREATOR.createFromParcel(data);
             java.util.concurrent.atomic.AtomicBoolean pending = new java.util.concurrent.atomic.AtomicBoolean(true);
+            java.util.concurrent.atomic.AtomicBoolean encoderTransferred = new java.util.concurrent.atomic.AtomicBoolean(false);
             try {
-                if (direction < -1 || direction > 3 || generation <= 0 || data.dataAvail() != 0
-                        || surface != null && !surface.isValid())
+                if (generation <= 0 || data.dataAvail() != 0
+                        || encoder != null && !encoder.isValid())
                     throw new IllegalArgumentException("invalid viewer output update");
-                call(() -> {
+                Surface[] inputs = call(() -> {
                     if (!pending.compareAndSet(true, false))
                         throw new IllegalStateException("viewer output update expired before dispatch");
                     if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
-                            || generation <= viewerGeneration) {
-                        if (surface != null) surface.release();
+                            || generation <= viewerGeneration || viewerOutput == null) {
+                        if (encoder != null) {
+                            safeRelease(encoder);
+                            encoderTransferred.set(true);
+                        }
                         throw new SecurityException("stale viewer output owner/generation");
                     }
                     viewerGeneration = generation;
-                    helper.updateViewingOutput(surface, direction);
-                    return null;
+                    try {
+                        return updateViewerOutput(viewerOutput, config, encoder, encoderTransferred, false);
+                    } catch (Throwable error) {
+                        if (encoder != null && !encoderTransferred.get()) {
+                            safeRelease(encoder);
+                            encoderTransferred.set(true);
+                        }
+                        try { clearViewer(); }
+                        catch (Throwable cleanup) { if (cleanup != error) error.addSuppressed(cleanup); }
+                        rethrowViewerFailure(error);
+                        throw new AssertionError("unreachable");
+                    }
                 });
-                reply.writeNoException(); reply.writeInt(1);
+                reply.writeNoException();
+                reply.writeInt(1);
+                reply.writeTypedArray(inputs, 0);
                 return operation;
             } finally {
-                if (pending.compareAndSet(true, false) && surface != null) surface.release();
+                if (pending.compareAndSet(true, false) && encoder != null) safeRelease(encoder);
             }
         }
-        android.view.Surface[] surfaces = operation == VIEW_ATTACH
-                ? data.createTypedArray(android.view.Surface.CREATOR) : null;
-        int requestId = operation == VIEW_ATTACH ? data.readInt() : 0;
-        MotionRecordingOutput output = null;
-        boolean[] consumed = {false};
-        try {
-            if (owner == null || !owner.isBinderAlive() || !MotionDetectorProtocol.validSession(session))
-                throw new IllegalArgumentException("invalid camera viewer owner");
-            if (operation == VIEW_ATTACH) {
-                if (surfaces == null || surfaces.length != 4 || requestId <= 0)
-                    throw new IllegalArgumentException("invalid camera viewer surfaces");
-                for (android.view.Surface surface : surfaces)
-                    if (surface == null || !surface.isValid()) throw new IllegalArgumentException("invalid camera viewer surface");
-                output = MotionRecordingOutput.readFromParcel(data, session, surfaces);
-                output.register();
-            }
-            if (data.dataAvail() != 0) throw new IllegalArgumentException("unexpected viewer payload");
+
+        if (operation == VIEW_MARK_CHANNEL_UNAVAILABLE) {
+            int marker = data.readInt();
+            int channel = data.readInt();
+            String reference = data.readString();
+            if (marker != MotionRecordingOutput.VIEWING_PARCEL_VERSION
+                    || (channel != 4 && channel != 5) || reference == null
+                    || !reference.matches("[0-9a-fA-F]{32}") || data.dataAvail() != 0)
+                throw new IllegalArgumentException("invalid viewer channel failure notice");
             call(() -> {
-                if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
-                if (operation == VIEW_ATTACH) {
-                    if (viewerOwner != null) throw new IllegalStateException("camera viewer busy");
-                    lifetime.start(this::initialize);
-                    viewerOwner = owner;
-                    viewerSession = session;
-                    viewerGeneration = 0;
-                    viewerDeath = () -> handler.post(() -> {
-                        if (viewerOwner == owner) clearViewer();
-                    });
-                    try {
-                        owner.linkToDeath(viewerDeath, 0);
-                        consumed[0] = true;
-                        helper.attachViewing(surfaces, requestId);
-                    } catch (Exception error) { clearViewer(); throw error; }
-                } else {
-                    if (viewerOwner != null && (viewerOwner != owner
-                            || !java.util.Objects.equals(viewerSession, session)))
-                        throw new SecurityException("camera viewer owner changed");
-                    clearViewer();
-                }
+                if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
+                        || viewerOutput == null)
+                    throw new SecurityException("stale viewer channel failure owner/session");
+                viewerOutput.markLiveChannelUnavailable(channel, reference.toLowerCase(java.util.Locale.ROOT));
                 return null;
             });
-            reply.writeNoException(); reply.writeInt(1);
+            reply.writeNoException();
+            reply.writeInt(1);
             return operation;
-        } finally {
-            if (output != null) output.unregister();
-            if (!consumed[0] && surfaces != null)
-                for (android.view.Surface surface : surfaces) if (surface != null) surface.release();
+        }
+
+        if (operation == VIEW_DETACH) {
+            if (data.dataAvail() != 0) throw new IllegalArgumentException("unexpected viewer detach payload");
+            call(() -> {
+                if (viewerOwner == null) return null;
+                if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session))
+                    throw new SecurityException("camera viewer owner changed");
+                clearViewer();
+                return null;
+            });
+            reply.writeNoException();
+            reply.writeInt(1);
+            return operation;
+        }
+        throw new IllegalArgumentException("unknown camera viewing operation");
+    }
+
+    private static final class ViewerConfig {
+        final int view, allowedMask, availableMask;
+        final boolean exteriorReady;
+        final int[] widths, heights;
+        final String locale;
+
+        ViewerConfig(int view, int allowedMask, boolean exteriorReady, int availableMask,
+                int[] widths, int[] heights, String locale) {
+            this.view = view;
+            this.allowedMask = allowedMask;
+            this.exteriorReady = exteriorReady;
+            this.availableMask = availableMask;
+            this.widths = widths;
+            this.heights = heights;
+            this.locale = locale;
         }
     }
 
-    private void clearViewer() {
-        helper.detachViewing();
+    private ViewerConfig readAttachViewerConfig(Parcel data) {
+        Parcel copy = Parcel.obtain();
+        try {
+            copy.appendFrom(data, data.dataPosition(), data.dataAvail());
+            copy.setDataPosition(0);
+            copy.readInt(); copy.readInt(); copy.createIntArray();
+            copy.readLong(); copy.readStrongBinder();
+            ViewerConfig config = readLiveViewerConfig(copy);
+            if (copy.dataAvail() != 0) throw new IllegalArgumentException("unexpected viewer attach payload");
+            return config;
+        } finally { copy.recycle(); }
+    }
+
+    private ViewerConfig readLiveViewerConfig(Parcel data) {
+        int marker = data.readInt();
+        int view = data.readInt();
+        int allowedMask = data.readInt();
+        int exterior = data.readInt();
+        int availableMask = data.readInt();
+        int[] widths = data.createIntArray();
+        int[] heights = data.createIntArray();
+        String locale = data.readString();
+        if (marker != MotionRecordingOutput.VIEWING_PARCEL_VERSION)
+            throw new IllegalArgumentException("stale remote viewing payload");
+        if (exterior != 0 && exterior != 1)
+            throw new IllegalArgumentException("invalid exterior readiness flag");
+        ViewerConfig config = new ViewerConfig(view, allowedMask, exterior == 1,
+                availableMask, widths, heights, locale);
+        validateViewerConfig(config);
+        return config;
+    }
+
+    private static void validateViewerConfig(ViewerConfig config) {
+        if (config == null || !RemoteCameraView.valid(config.view)
+                || !RemoteCameraView.allowed(config.view, config.allowedMask)
+                || config.availableMask < 0 || config.availableMask > RemoteCameraView.BOTH
+                || (config.availableMask & ~RemoteCameraView.interiorMask(
+                        config.view, config.allowedMask)) != 0
+                || config.exteriorReady && !RemoteCameraView.needsExterior(config.view)
+                || config.widths == null || config.widths.length != 2
+                || config.heights == null || config.heights.length != 2
+                || config.locale == null || !config.locale.matches("[A-Za-z-]{1,16}"))
+            throw new IllegalArgumentException("invalid remote live camera selection");
+        RemoteCameraView.validateMask(config.allowedMask);
+        RemoteCameraView.validateMask(config.availableMask);
+        for (int index = 0; index < 2; index++) {
+            int width = config.widths[index], height = config.heights[index];
+            if (width < 0 || height < 0 || width > 8192 || height > 8192
+                    || (width == 0) != (height == 0)
+                    || (config.availableMask & (1 << index)) != 0 && (width < 2 || height < 2))
+                throw new IllegalArgumentException("invalid remote interior camera dimensions");
+        }
+    }
+
+    private Surface[] prepareInitialViewer(MotionRecordingOutput output,
+            ViewerConfig config, int requestId) throws Exception {
+        if (!config.exteriorReady) {
+            output.prepareStandalone(context);
+            viewerComposerExternal = false;
+            return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
+                    false, config.availableMask, config.widths, config.heights, config.locale);
+        }
+        try {
+            lifetime.start(this::initialize);
+            attachViewerExterior(output, requestId);
+            viewerComposerExternal = true;
+            return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
+                    true, config.availableMask, config.widths, config.heights, config.locale);
+        } catch (Throwable externalFailure) {
+            return fallbackStandalone(output, config, null,
+                    new java.util.concurrent.atomic.AtomicBoolean(), externalFailure);
+        }
+    }
+
+    private Surface[] updateViewerOutput(MotionRecordingOutput output, ViewerConfig config,
+            Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred,
+            boolean recreateComposer) throws Exception {
+        boolean composerRecreated = false;
+        boolean effectiveExterior = false;
+        Throwable externalFailure = null;
+        Surface effectiveEncoder = encoder;
+        boolean effectiveEncoderOwned = false;
+        boolean effectiveEncoderTransferred = false;
+
+        try {
+            if (config.exteriorReady) {
+                if (!viewerExteriorAttached || !viewerComposerExternal) {
+                    if (viewerExteriorAttached) {
+                        Throwable detachFailure = detachViewerExterior();
+                        if (detachFailure != null) externalFailure = detachFailure;
+                    }
+                    if (externalFailure == null) {
+                        output.closeComposer();
+                        viewerComposerExternal = false;
+                        composerRecreated = true;
+                        try {
+                            lifetime.start(this::initialize);
+                            attachViewerExterior(output, viewerRequestId);
+                            viewerComposerExternal = true;
+                        } catch (Throwable failure) {
+                            externalFailure = failure;
+                        }
+                    }
+                } else {
+                    effectiveExterior = true;
+                }
+                effectiveExterior = externalFailure == null && viewerComposerExternal;
+            } else {
+                if (viewerExteriorAttached) {
+                    Throwable detachFailure = detachViewerExterior();
+                    if (detachFailure != null) {
+                        reportViewerOperationFailure("detach_external_viewing", detachFailure);
+                        rethrowViewerFailure(detachFailure);
+                        throw new AssertionError("unreachable");
+                    }
+                }
+                if (viewerComposerExternal) {
+                    output.closeComposer();
+                    viewerComposerExternal = false;
+                    composerRecreated = true;
+                }
+                output.prepareStandalone(context);
+            }
+
+            if (externalFailure != null) {
+                return fallbackStandalone(output, config, encoder, encoderTransferred, externalFailure);
+            }
+
+            if (encoder == null && (composerRecreated || recreateComposer)
+                    && viewerEncoderReference != null) {
+                effectiveEncoder = duplicateSurface(viewerEncoderReference);
+                effectiveEncoderOwned = true;
+            }
+            Surface nextReference = encoder == null ? null : duplicateSurface(encoder);
+            if (encoder != null) {
+                Surface previous = viewerEncoderReference;
+                viewerEncoderReference = nextReference;
+                nextReference = null;
+                if (previous != null) safeRelease(previous);
+            }
+            if (encoder != null) encoderTransferred.set(true);
+            effectiveEncoderTransferred = true;
+            Surface[] result = output.updateLiveViewingOutput(effectiveEncoder, config.view,
+                    config.allowedMask, effectiveExterior, config.availableMask,
+                    config.widths, config.heights, config.locale);
+            return requireViewerInputs(result);
+        } finally {
+            if (effectiveEncoderOwned && !effectiveEncoderTransferred && effectiveEncoder != null)
+                safeRelease(effectiveEncoder);
+            if (encoder != null && !encoderTransferred.get()) {
+                safeRelease(encoder);
+                encoderTransferred.set(true);
+            }
+        }
+    }
+
+    private Surface[] fallbackStandalone(MotionRecordingOutput output, ViewerConfig config,
+            Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred,
+            Throwable primary) throws Exception {
+        Throwable failure = primary;
+        Throwable detachFailure = detachViewerExterior();
+        if (detachFailure != null) {
+            if (detachFailure != failure) failure.addSuppressed(detachFailure);
+            reportViewerOperationFailure("external_viewing_fallback", failure);
+            rethrowViewerFailure(failure);
+            throw new AssertionError("unreachable");
+        }
+        viewerComposerExternal = false;
+        Surface effectiveEncoder = encoder;
+        boolean effectiveEncoderOwned = false;
+        boolean effectiveEncoderTransferred = false;
+        try {
+            try { output.closeComposer(); }
+            catch (Throwable cleanup) { failure.addSuppressed(cleanup); }
+            output.prepareStandalone(context);
+            if (encoder == null && viewerEncoderReference != null) {
+                effectiveEncoder = duplicateSurface(viewerEncoderReference);
+                effectiveEncoderOwned = true;
+            }
+            if (encoder != null) {
+                Surface nextReference = duplicateSurface(encoder);
+                Surface previous = viewerEncoderReference;
+                viewerEncoderReference = nextReference;
+                if (previous != null) safeRelease(previous);
+                encoderTransferred.set(true);
+            }
+            effectiveEncoderTransferred = true;
+            Surface[] inputs = output.updateLiveViewingOutput(effectiveEncoder, config.view,
+                    config.allowedMask, false, config.availableMask,
+                    config.widths, config.heights, config.locale);
+            reportViewerOperationFailure("external_viewing_fallback", failure);
+            return requireViewerInputs(inputs);
+        } catch (Throwable fallbackFailure) {
+            if (fallbackFailure != failure) failure.addSuppressed(fallbackFailure);
+            reportViewerOperationFailure("external_viewing_fallback", failure);
+            rethrowViewerFailure(failure);
+            throw new AssertionError("unreachable");
+        } finally {
+            if (effectiveEncoderOwned && !effectiveEncoderTransferred && effectiveEncoder != null)
+                safeRelease(effectiveEncoder);
+            if (encoder != null && !encoderTransferred.get()) {
+                safeRelease(encoder);
+                encoderTransferred.set(true);
+            }
+        }
+    }
+
+    private void attachViewerExterior(MotionRecordingOutput output, int requestId) throws Exception {
+        output.closeComposer();
+        viewerComposerExternal = false;
+        Surface[] primary = output.inputs();
+        Surface[] aliases = duplicateSurfaces(primary);
+        boolean registered = false;
+        boolean passedToHelper = false;
+        try {
+            output.registerAliases(aliases);
+            registered = true;
+            viewerExteriorAttached = true;
+            passedToHelper = true;
+            helper.attachViewing(aliases, requestId);
+            viewerComposerExternal = true;
+        } finally {
+            if (registered) output.unregisterAliases(aliases);
+            if (!passedToHelper) releaseSurfaces(aliases);
+        }
+    }
+
+    private Throwable detachViewerExterior() {
+        if (!viewerExteriorAttached) return null;
+        try {
+            helper.detachViewing();
+            viewerExteriorAttached = false;
+            return null;
+        } catch (Throwable failure) {
+            return failure;
+        }
+    }
+
+    private static Surface[] requireViewerInputs(Surface[] inputs) {
+        if (inputs == null || inputs.length != 2)
+            throw new IllegalStateException("remote composer returned an invalid interior Surface pair");
+        for (Surface input : inputs)
+            if (input != null && !input.isValid())
+                throw new IllegalStateException("remote composer returned an invalid interior Surface");
+        return inputs;
+    }
+
+    private static Surface[] duplicateSurfaces(Surface[] primary) throws Exception {
+        if (primary == null || primary.length != 4)
+            throw new IllegalArgumentException("four viewer output surfaces required");
+        Surface[] aliases = new Surface[primary.length];
+        try {
+            for (int index = 0; index < primary.length; index++) {
+                if (primary[index] == null || !primary[index].isValid())
+                    throw new IllegalArgumentException("invalid primary viewer Surface");
+                aliases[index] = duplicateSurface(primary[index]);
+            }
+            return aliases;
+        } catch (Throwable failure) {
+            releaseSurfaces(aliases);
+            rethrowViewerFailure(failure);
+            throw new AssertionError("unreachable");
+        }
+    }
+
+    private static Surface duplicateSurface(Surface source) {
+        if (source == null || !source.isValid()) throw new IllegalArgumentException("invalid viewer Surface alias");
+        Parcel parcel = Parcel.obtain();
+        try {
+            source.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            Surface copy = Surface.CREATOR.createFromParcel(parcel);
+            if (copy == null || !copy.isValid()) {
+                if (copy != null) copy.release();
+                throw new IllegalStateException("viewer Surface alias is invalid");
+            }
+            return copy;
+        } finally { parcel.recycle(); }
+    }
+
+    private <T> T callViewerOwned(java.util.concurrent.Callable<T> task,
+            java.util.concurrent.atomic.AtomicBoolean dispatched) throws Exception {
+        if (android.os.Looper.myLooper() == handler.getLooper()) {
+            dispatched.set(true);
+            return task.call();
+        }
+        java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(0);
+        FutureTask<T> queued = new FutureTask<>(() -> {
+            if (!state.compareAndSet(0, 1)) throw new java.util.concurrent.CancellationException();
+            dispatched.set(true);
+            return task.call();
+        });
+        if (!handler.post(queued)) throw new IllegalStateException("camera runtime handler closed");
+        try {
+            return queued.get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            if (state.compareAndSet(0, 2)) queued.cancel(false);
+            else if (state.get() == 1) dispatched.set(true);
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            if (state.compareAndSet(0, 2)) queued.cancel(false);
+            else if (state.get() == 1) dispatched.set(true);
+            throw timeout;
+        } catch (java.util.concurrent.ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw new IllegalStateException(cause);
+        }
+    }
+
+    private void cleanupUninstalledOutput(MotionRecordingOutput output, Throwable primary) {
+        try { output.closeComposer(); }
+        catch (Throwable failure) {
+            if (primary != null && failure != primary) primary.addSuppressed(failure);
+            reportViewerOperationFailure("uninstalled_viewer_composer_close", failure);
+            return;
+        }
+        try { output.releaseInputs(); }
+        catch (Throwable failure) {
+            if (primary != null && failure != primary) primary.addSuppressed(failure);
+            reportViewerOperationFailure("uninstalled_viewer_input_release", failure);
+        }
+    }
+
+    private void clearViewer() throws Exception {
+        MotionRecordingOutput output = viewerOutput;
+        Throwable detachFailure = detachViewerExterior();
+        if (detachFailure != null) {
+            reportViewerOperationFailure("external_viewing_detach", detachFailure);
+            rethrowViewerFailure(detachFailure);
+            throw new AssertionError("unreachable");
+        }
+        if (output != null) {
+            try { output.closeComposer(); }
+            catch (Throwable failure) {
+                reportViewerOperationFailure("composer_close", failure);
+                rethrowViewerFailure(failure);
+                throw new AssertionError("unreachable");
+            }
+            viewerComposerExternal = false;
+            try { output.releaseInputs(); }
+            catch (Throwable failure) {
+                reportViewerOperationFailure("input_release", failure);
+                rethrowViewerFailure(failure);
+                throw new AssertionError("unreachable");
+            }
+        }
+        Surface encoder = viewerEncoderReference;
+        if (encoder != null) {
+            try { encoder.release(); }
+            catch (Throwable failure) {
+                reportViewerOperationFailure("encoder_release", failure);
+                rethrowViewerFailure(failure);
+                throw new AssertionError("unreachable");
+            }
+        }
         if (viewerOwner != null && viewerDeath != null) viewerOwner.unlinkToDeath(viewerDeath, 0);
-        viewerOwner = null; viewerDeath = null; viewerSession = null; viewerGeneration = 0;
+        viewerOutput = null;
+        viewerEncoderReference = null;
+        viewerRequestId = 0;
+        viewerExteriorAttached = false;
+        viewerComposerExternal = false;
+        viewerOwner = null;
+        viewerDeath = null;
+        viewerSession = null;
+        viewerGeneration = 0;
+    }
+
+    private void reportViewerCleanupFailure(String operation, Throwable failure) {
+        reportViewerOperationFailure("cleanup_" + operation, failure);
+    }
+
+    private void reportViewerOperationFailure(String operation, Throwable failure) {
+        event("camera_viewing_" + operation + "_error", "operation", operation,
+                "error", failure.toString(), "stack_trace", viewerStackTrace(failure));
+    }
+
+    private static String viewerStackTrace(Throwable failure) {
+        StringWriter text = new StringWriter();
+        failure.printStackTrace(new PrintWriter(text));
+        return text.toString();
+    }
+
+    private static void rethrowViewerFailure(Throwable failure) throws Exception {
+        if (failure instanceof Exception) throw (Exception) failure;
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IllegalStateException(failure);
+    }
+
+    private static void releaseSurfaces(Surface[] surfaces) {
+        if (surfaces == null) return;
+        for (Surface surface : surfaces) safeRelease(surface);
+    }
+
+    private static void safeRelease(Surface surface) {
+        if (surface == null) return;
+        try { surface.release(); }
+        catch (Throwable failure) {
+            android.util.Log.e("CameraRuntimeHost", "viewer Surface release failed", failure);
+        }
     }
 
     private void clearViewingHelper() {
@@ -748,7 +1254,7 @@ final class CameraRuntimeHost {
     private void stopOnHandler() {
         lifetime.shutdown(() -> {
             try { clearViewer(); }
-            catch (Exception error) { event("camera_viewing_detach_error", "error", error.getClass().getSimpleName()); }
+            catch (Exception error) { reportViewerCleanupFailure("runtime_shutdown", error); }
             clearViewingHelper();
             boolean motionDrained = false;
             try {
