@@ -238,6 +238,8 @@ final class LocalAdbClient {
                     } catch (SocketTimeoutException timeout) {
                         if (recovery != null) AdbRecoveryDiagnostics.failure(eventSink,
                                 "adb_recovery_transport_failed", "classic_proof_read", timeout);
+                        else AdbRecoveryDiagnostics.failure(eventSink,
+                                "local_adb_command_failed", "command_read", timeout);
                         result = isCancellationTokenCurrent(cancellationToken) && !connection.authorizationPreempted()
                                 ? Result.commandReadTimeout(
                                         summary(timeout), open.fingerprint)
@@ -252,6 +254,8 @@ final class LocalAdbClient {
         } catch (Throwable error) {
             if (recovery != null) AdbRecoveryDiagnostics.failure(eventSink,
                     "adb_recovery_transport_failed", "classic_proof", error);
+            else AdbRecoveryDiagnostics.failure(eventSink,
+                    "local_adb_command_failed", "open_or_execute", error);
             if (!isCancellationTokenCurrent(cancellationToken)
                     || connection != null && connection.authorizationPreempted()) {
                 result = Result.superseded();

@@ -7,6 +7,8 @@ import android.os.Parcel;
 import android.os.Process;
 import android.os.RemoteException;
 
+import com.byd.extend.remote.CameraViewingDiagnostics;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -66,16 +68,36 @@ public final class CameraViewingShellClient implements AutoCloseable {
                     stopObsoleteHelper(identity.pid);
                 }
                 LocalAdbClient.Result launched = LocalAdbClient.executeAuthorized(context,
-                        launchCommand(context, ownerUid, apkIdentity), (kind, fields) -> { });
-                if (launched == null || !launched.ok || launched.authorizationRequired || launched.superseded)
-                    throw new IllegalStateException("authenticated viewing helper launch failed"
-                            + (launched == null ? "" : ": " + launched.error));
-                candidate = awaitHelper(6_000L);
-                identity = CameraViewingShellProtocol.readIdentity(candidate);
-                if (identity == null || !identity.matches(identity.pid, apkIdentity))
-                    throw new IllegalStateException("viewing helper readiness/protocol mismatch");
-                adopt(candidate, identity.pid);
+                        launchCommand(context, ownerUid, apkIdentity), (kind, fields) ->
+                                CameraViewingDiagnostics.detail("helper_launch_transport", "shared",
+                                        java.util.Arrays.toString(AdbRecoveryDiagnostics.transportFields(kind, fields))));
+                String launchDetail = launched == null ? "missing_result" :
+                        "ok=" + launched.ok + " command_read_timeout=" + launched.commandReadTimeout
+                                + " authorization_required=" + launched.authorizationRequired
+                                + " superseded=" + launched.superseded + " exit_code=" + launched.exitCode
+                                + " error=" + launched.error + " output=" + launched.output;
+                CameraViewingDiagnostics.detail("helper_launch_result", "shared", launchDetail);
+                if (launched == null || launched.authorizationRequired || launched.superseded
+                        || (!launched.ok && !launched.commandReadTimeout))
+                    throw new IllegalStateException("viewing helper launch not confirmed: " + launchDetail);
+                // The detached process can become ready even when the shell reply times out.
+                try {
+                    candidate = awaitHelper(6_000L);
+                    identity = CameraViewingShellProtocol.readIdentity(candidate);
+                    if (identity == null || !identity.matches(identity.pid, apkIdentity))
+                        throw new IllegalStateException("viewing helper readiness/protocol mismatch");
+                    adopt(candidate, identity.pid);
+                }
+                catch (Exception readinessFailure) {
+                    if (launched.ok) throw readinessFailure;
+                    IllegalStateException launchFailure = new IllegalStateException(
+                            "viewing helper launch not confirmed: " + launchDetail);
+                    launchFailure.addSuppressed(readinessFailure);
+                    throw launchFailure;
+                }
             }
+            CameraViewingDiagnostics.detail("helper_ready", "shared", "pid=" + helperPid
+                    + " protocol=" + identity.protocol + " build=" + identity.build);
         }
     }
 

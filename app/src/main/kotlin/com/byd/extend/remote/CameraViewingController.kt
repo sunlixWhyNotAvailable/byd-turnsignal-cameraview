@@ -49,6 +49,7 @@ class CameraViewingController private constructor(private val context: Context) 
     private var client: CameraViewingShellClient? = null
     private var runtimeActive = false
     private var helperRecoveryAvailable = true
+    private var initialAttachRecoveryPending = false
     private val snapshots = linkedMapOf<String, JSONObject>()
     init {
         CameraViewingDiagnostics.initializeApp(context)
@@ -125,6 +126,7 @@ class CameraViewingController private constructor(private val context: Context) 
         }
         transport?.let { editor.putString("transport", it) }
         check(editor.commit())
+        if (enabled == false) initialAttachRecoveryPending = false
         if (enabled != null) MotionRuntime.setRemoteViewingEnabled(context, enabled)
         refresh()
         main.post(onSaved)
@@ -165,7 +167,10 @@ class CameraViewingController private constructor(private val context: Context) 
         .put("public", method == "tailscale" && publicMode())
 
     private fun ensureClient(restoreEnabled: Boolean = CameraChargeSettings.isRemoteViewingEnabled(context)): CameraViewingShellClient {
-        client?.let { if (it.isConnected) return it else { it.close(); client = null } }
+        client?.let {
+            if (it.isConnected) { initialAttachRecoveryPending = false; return it }
+            it.close(); client = null
+        }
         val connected = CameraViewingShellClient(context)
         val observer = object : CameraViewingShellClient.Listener {
             override fun onSnapshot(snapshot: JSONObject) = execute("snapshot") { if (client === connected) accept(snapshot) }
@@ -203,6 +208,8 @@ class CameraViewingController private constructor(private val context: Context) 
             accept(connected.request("provision", presentationPayload().put("profiles", profiles)
                 .put("enabled", restoreEnabled)))
             check(preferences.edit().putBoolean("helper_provisioned", true).commit())
+            initialAttachRecoveryPending = false
+            CameraViewingDiagnostics.detail("helper_provisioned", "shared", "enabled=$restoreEnabled")
             if (restoreEnabled) prepareBackend(connected)
             return connected
         } catch (failure: Exception) {
@@ -265,19 +272,31 @@ class CameraViewingController private constructor(private val context: Context) 
     fun runtimeStarted() = execute("runtime_started") {
         runtimeActive = true
         helperRecoveryAvailable = true
-        if (CameraChargeSettings.isRemoteViewingEnabled(context)) prepareBackend(ensureClient())
+        initialAttachRecoveryPending = CameraChargeSettings.isRemoteViewingEnabled(context)
+        if (initialAttachRecoveryPending) prepareBackend(ensureClient())
     }
-    fun runtimeStopped() = execute("runtime_stopped") { runtimeActive = false; client?.close(); client = null; backendError = null }
+    fun runtimeStopped() = execute("runtime_stopped") {
+        runtimeActive = false; initialAttachRecoveryPending = false
+        client?.close(); client = null; backendError = null
+    }
     fun explicitShutdown() = explicitShutdown(Runnable {})
     fun explicitShutdown(onComplete: Runnable) = execute("shutdown") {
         runtimeActive = false
+        initialAttachRecoveryPending = false
         try { (client ?: if (preferences.getBoolean("helper_provisioned", false)) ensureClient(false) else null)
             ?.request("shutdown", JSONObject()) }
         finally { client?.close(); client = null; main.post(onComplete) }
     }
-    fun workerReconfigured() = execute("worker_reconfigured") { client?.let {
-        prepareBackend(it, true)
-    } }
+    fun workerReconfigured() = execute("worker_reconfigured") {
+        val connected = client
+        if (connected != null) prepareBackend(connected, true)
+        else if (initialAttachRecoveryPending && runtimeActive && CameraChargeSettings.isRemoteViewingEnabled(context)) {
+            // Existing camera/Motion readiness events give a failed initial attach one recovery attempt.
+            initialAttachRecoveryPending = false
+            CameraViewingDiagnostics.detail("initial_attach_recovery", "shared", "source=worker_reconfigured attempt=1")
+            ensureClient()
+        }
+    }
     fun authorizationOpened(request: Long) = execute("authorization_opened") {
         client?.let { accept(it.request("authorization_opened", JSONObject().put("transport", selected()).put("request", request))) }
     }
@@ -288,8 +307,9 @@ class CameraViewingController private constructor(private val context: Context) 
         owner.execute {
             try { action() }
             catch (failure: Exception) {
-                val provider = method ?: selected()
-                val knownSecrets = runCatching { arrayOf(secret(provider, "password"), secret(provider, "token")) }
+                val provider = method ?: "shared"
+                val knownSecrets = runCatching { (method?.let { listOf(it) } ?: METHODS)
+                    .flatMap { listOf(secret(it, "password"), secret(it, "token")) }.toTypedArray() }
                     .getOrDefault(emptyArray())
                 CameraViewingDiagnostics.failure("app_$operation", provider, failure, *knownSecrets)
                 mutable.value = state.value.copy(busy = false, error = context.getString(
