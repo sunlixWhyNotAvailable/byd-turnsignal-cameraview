@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -105,11 +106,13 @@ final class DirectCameraSourceHub
     private EGLContext sharedContext = EGL14.EGL_NO_CONTEXT;
     private int sharedGlVersion = 3;
     private final android.content.Context renderingContext;
+    private final CameraMeshCache meshCache;
     private volatile boolean closed;
     private volatile FpsMeasurementWindow fpsWindow = new FpsMeasurementWindow(0, 0, 0);
 
     private DirectCameraSourceHub(android.content.Context renderingContext, Listener listener) {
         this.renderingContext = renderingContext;
+        this.meshCache = CameraMeshPreparation.cache(renderingContext);
         this.listener = listener;
     }
 
@@ -519,6 +522,10 @@ final class DirectCameraSourceHub
                         handler.post(() -> reportSourceFailure(error));
                     }
                 }));
+                if (mapping != null && !mapping.lifecycleOnly) {
+                    meshCache.request(mapping.frameConfiguration().mapping.config,
+                            mapping.width, mapping.height);
+                }
                 EGLSurface eglSurface;
                 try {
                     eglSurface = recording == null ? EGL14.eglCreateWindowSurface(display, config, value,
@@ -870,6 +877,7 @@ final class DirectCameraSourceHub
                 if (!shouldRenderTarget(index, target.index, target.active)) continue;
                 try {
                     DrawTiming timing = draw(target, acquiredFrameTimestampNanos);
+                    if (timing == null) continue;
                     targetCount++;
                     preSwapTotalNs += timing.preSwapNs;
                     preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
@@ -993,6 +1001,11 @@ final class DirectCameraSourceHub
             long startedNs = SystemClock.elapsedRealtimeNanos();
             CameraGpuOutput.FrameConfiguration frame = target.mapping == null
                     ? null : target.mapping.frameConfiguration();
+            CameraDewarpRenderer.MappingRequest rendered = target.mapping == null
+                    || target.mapping.lifecycleOnly ? null
+                    : target.mesh.prepare(frame.mapping, target.mapping.width, target.mapping.height);
+            // Keep the last presented buffer until the exact new mapping is ready.
+            if (target.mapping != null && !target.mapping.lifecycleOnly && rendered == null) return null;
             EGLSurface output = target.eglSurface;
             if (frame != null && frame.slot == 1) {
                 if (target.alternateEglSurface == EGL14.EGL_NO_SURFACE) {
@@ -1011,9 +1024,6 @@ final class DirectCameraSourceHub
             texCoords.position(0);
             GLES20.glEnableVertexAttribArray(positionLocation);
             GLES20.glEnableVertexAttribArray(texCoordLocation);
-            CameraDewarpRenderer.MappingRequest rendered = target.mapping == null
-                    || target.mapping.lifecycleOnly ? null
-                    : target.mesh.prepare(frame.mapping, target.mapping.width, target.mapping.height);
             boolean corrected = rendered != null && rendered.config.enabled && !target.mesh.rawFallback;
             GLES20.glUniform1i(checkBoundsLocation, corrected ? 1 : 0);
             boolean directGeometry = target.mapping != null && !target.mapping.lifecycleOnly;
@@ -1645,13 +1655,14 @@ final class DirectCameraSourceHub
         boolean retiring;
         CameraGpuOutput.Binding mapping;
         MotionRecordingOutput recording;
-        final MappingMesh mesh = new MappingMesh();
+        final MappingMesh mesh;
         final DrawTiming timing = new DrawTiming();
         long acknowledgedToken = -1;
 
         Target(SourceWorker worker, Surface surface, int index, EGLSurface eglSurface,
                 int requestId, int producerEpoch) {
             this.worker = worker;
+            this.mesh = new MappingMesh(meshCache, worker::signalFrame);
             this.surface = surface;
             this.index = index;
             this.eglSurface = eglSurface;
@@ -1661,32 +1672,47 @@ final class DirectCameraSourceHub
     }
 
     static final class MappingMesh {
+        private final CameraMeshCache cache;
+        private final Runnable ready;
+        private CameraDewarpConfig pendingConfig;
+        private int pendingWidth, pendingHeight, appliedWidth, appliedHeight;
+        private CompletableFuture<CameraMeshCache.Prepared> pending;
         CameraDewarpRenderer.MappingRequest applied;
         FloatBuffer vertices;
         ShortBuffer indices;
         boolean rawFallback;
         long generationNs;
 
+        MappingMesh(CameraMeshCache cache, Runnable ready) {
+            this.cache = cache;
+            this.ready = ready;
+        }
+
         CameraDewarpRenderer.MappingRequest prepare(
                 CameraDewarpRenderer.MappingRequest next, int width, int height) {
-            if (next == applied) return applied;
-            if (applied == null || !applied.config.sameMapping(next.config)) {
-                long started = System.nanoTime();
-                CameraFisheyeMapping.Mesh mesh;
-                try {
-                    mesh = CameraFisheyeMapping.buildMesh(next.config, width, height);
-                    rawFallback = false;
-                } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
-                    mesh = CameraFisheyeMapping.buildMesh(CameraDewarpConfig.disabled(next.config.lens),
-                            width, height);
-                    rawFallback = true;
-                }
-                vertices = buffer(mesh.vertices);
-                indices = ByteBuffer.allocateDirect(mesh.indices.length * 2)
-                        .order(ByteOrder.nativeOrder()).asShortBuffer();
-                indices.put(mesh.indices).position(0);
-                generationNs = System.nanoTime() - started;
-            } else generationNs = 0;
+            if (next == applied && width == appliedWidth && height == appliedHeight) return applied;
+            if (applied != null && applied.config.sameMapping(next.config)
+                    && width == appliedWidth && height == appliedHeight) {
+                generationNs = 0;
+                applied = next;
+                return applied;
+            }
+            if (pending == null || !pendingConfig.sameMapping(next.config)
+                    || width != pendingWidth || height != pendingHeight) {
+                pendingConfig = next.config;
+                pendingWidth = width;
+                pendingHeight = height;
+                pending = cache.request(next.config, width, height);
+                pending.whenComplete((value, error) -> ready.run());
+            }
+            if (!pending.isDone()) return null;
+            CameraMeshCache.Prepared mesh = pending.join();
+            vertices = mesh.vertices();
+            indices = mesh.indices();
+            rawFallback = mesh.rawFallback();
+            generationNs = mesh.generationNs();
+            appliedWidth = width;
+            appliedHeight = height;
             applied = next;
             return applied;
         }

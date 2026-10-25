@@ -4,9 +4,13 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.os.CancellationSignal;
 import android.os.IBinder;
 import android.os.Parcel;
+import android.util.Log;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,7 +28,8 @@ final class ClusterFullscreenProtocol {
     private static final int PROTOCOL_INSTRUMENT_NAVIGATION_TYPE = 30011;
     private static final int ACTION_SET = 1;
     private static final int OPERATION_FULLSCREEN = 4;
-    private static final long TIMEOUT_MS = 3_000;
+    private static final long SERVICE_READY_TIMEOUT_MS = 15_000;
+    private static final long TRANSACTION_TIMEOUT_MS = 3_000;
     private static final AtomicBoolean TRANSACTION_IN_FLIGHT = new AtomicBoolean();
 
     static final class Result {
@@ -43,8 +48,8 @@ final class ClusterFullscreenProtocol {
 
     private ClusterFullscreenProtocol() {}
 
-    static Result dispatch(Context context, BooleanSupplier current) {
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS);
+    static Result dispatch(Context context, BooleanSupplier current,
+            CancellationSignal cancellation) {
         CountDownLatch connected = new CountDownLatch(1);
         AtomicReference<IBinder> binder = new AtomicReference<>();
         ServiceConnection connection = new ServiceConnection() {
@@ -63,26 +68,36 @@ final class ClusterFullscreenProtocol {
         boolean bound = false;
         boolean submitted = false;
         try {
-            if (!current.getAsBoolean()) return new Result("cancelled", false, false);
+            cancellation.setOnCancelListener(connected::countDown);
+            if (cancellation.isCanceled() || !current.getAsBoolean())
+                return new Result("cancelled", false, false);
             if (TRANSACTION_IN_FLIGHT.get())
                 return new Result("previous transaction still in flight", false, true);
             Intent intent = new Intent(SERVICE_ACTION).setComponent(SERVICE);
             bound = context.bindService(intent, connection, Context.BIND_AUTO_CREATE);
             if (!bound) return new Result("bind rejected", true, false);
-            if (!await(connected, deadlineNanos)) {
-                return new Result("bind timeout after " + TIMEOUT_MS + "ms", true, false);
+            long serviceDeadlineNanos = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(SERVICE_READY_TIMEOUT_MS);
+            if (!await(connected, serviceDeadlineNanos)) {
+                return new Result("service readiness timeout after "
+                        + SERVICE_READY_TIMEOUT_MS + "ms", true, false);
             }
+            if (cancellation.isCanceled() || !current.getAsBoolean())
+                return new Result("cancelled", false, false);
             IBinder service = binder.get();
             if (service == null) return new Result("service disconnected", true, false);
-            if (!current.getAsBoolean()) return new Result("cancelled", false, false);
+            if (cancellation.isCanceled() || !current.getAsBoolean())
+                return new Result("cancelled", false, false);
             if (!TRANSACTION_IN_FLIGHT.compareAndSet(false, true))
                 return new Result("previous transaction still in flight", false, true);
             CountDownLatch transacted = new CountDownLatch(1);
             AtomicReference<String> result = new AtomicReference<>("transaction failed");
+            long transactionDeadlineNanos = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(TRANSACTION_TIMEOUT_MS);
             try {
                 new Thread(() -> {
                     try {
-                        result.set(current.getAsBoolean()
+                        result.set(!cancellation.isCanceled() && current.getAsBoolean()
                                 ? transact(service, context.getPackageName()) : "cancelled");
                     } finally {
                         TRANSACTION_IN_FLIGHT.set(false);
@@ -94,22 +109,25 @@ final class ClusterFullscreenProtocol {
                 TRANSACTION_IN_FLIGHT.set(false);
                 throw error;
             }
-            if (!await(transacted, deadlineNanos)) {
-                return new Result("transaction outcome indeterminate after " + TIMEOUT_MS + "ms",
+            if (!await(transacted, transactionDeadlineNanos)) {
+                return new Result("transaction outcome indeterminate after "
+                        + TRANSACTION_TIMEOUT_MS + "ms",
                         false, true);
             }
             return new Result(result.get(), false, false);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            return new Result("interrupted", false, submitted);
+            return new Result(stackTrace(error), false, submitted);
         } catch (RuntimeException error) {
-            return new Result(error.getClass().getSimpleName() + ": " + safe(error.getMessage()),
-                    false, submitted);
+            return new Result("cluster fullscreen dispatch failed:\n"
+                    + stackTrace(error), false, submitted);
         } finally {
+            cancellation.setOnCancelListener(null);
             if (bound) {
                 try {
                     context.unbindService(connection);
-                } catch (RuntimeException ignored) {
+                } catch (RuntimeException error) {
+                    Log.e("BydExtendCameraProtocol", "cluster fullscreen unbind failed", error);
                 }
             }
         }
@@ -134,7 +152,8 @@ final class ClusterFullscreenProtocol {
             reply.readException();
             return "";
         } catch (Exception error) {
-            return error.getClass().getSimpleName() + ": " + safe(error.getMessage());
+            return "cluster fullscreen transaction failed:\n"
+                    + stackTrace(error);
         } finally {
             reply.recycle();
             request.recycle();
@@ -172,7 +191,10 @@ final class ClusterFullscreenProtocol {
         return OPERATION_FULLSCREEN;
     }
 
-    private static String safe(String value) {
-        return value == null ? "" : value.trim();
+    private static String stackTrace(Throwable error) {
+        StringWriter trace = new StringWriter();
+        error.printStackTrace(new PrintWriter(trace));
+        return trace.toString();
     }
+
 }

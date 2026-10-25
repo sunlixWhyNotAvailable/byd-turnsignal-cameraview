@@ -3,6 +3,7 @@ package com.byd.extend;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.display.DisplayManager;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.provider.Settings;
@@ -19,6 +20,12 @@ final class ClusterFullscreenController {
     private static final String PREF_SUCCEEDED_SESSION = "cluster_fullscreen_succeeded_session";
     private static final String PREF_SUCCEEDED_BOOT = "cluster_fullscreen_succeeded_boot";
     private static final String PREF_SUCCEEDED_DISPLAY = "cluster_fullscreen_succeeded_display";
+    private static final int TARGET_REAR_LEFT = 1;
+    private static final int TARGET_REAR_RIGHT = 1 << 1;
+    private static final int TARGET_FRONT_LEFT = 1 << 2;
+    private static final int TARGET_FRONT_RIGHT = 1 << 3;
+    private static final int TARGET_MIRROR = 1 << 4;
+    private static final int TARGET_REVERSE = 1 << 5;
     private static final long[] RETRY_DELAYS_MS = {1_000, 3_000, 10_000};
 
     private final Context context;
@@ -40,8 +47,9 @@ final class ClusterFullscreenController {
     private String lastGate = "";
     private boolean stopped;
     private long generation, trackedSession = -1;
-    private int trackedDisplay = -1, attempts;
+    private int trackedDisplay = -1, trackedTargetMask = -1, attempts;
     private boolean eligibleNow, inFlight, terminal;
+    private CancellationSignal inFlightCancellation;
     private Runnable pendingRetry;
     private final DisplayManager.DisplayListener displayListener =
             new DisplayManager.DisplayListener() {
@@ -127,6 +135,7 @@ final class ClusterFullscreenController {
         stopped = true;
         generation++;
         cancelRetry();
+        cancelInFlight();
         if (displays != null) displays.unregisterDisplayListener(displayListener);
         worker.shutdownNow();
     }
@@ -145,6 +154,8 @@ final class ClusterFullscreenController {
                 settings, CameraProfile.of(CameraProfile.FRONT_LEFT));
         int frontRightTarget = BlindSpotOverlayController.readTarget(
                 settings, CameraProfile.of(CameraProfile.FRONT_RIGHT));
+        boolean reverseEnabled = settings.getBoolean(
+                ReverseCameraController.PREF_ENABLED, ReverseCameraController.DEFAULT_ENABLED);
         RearviewMirrorSettings.Settings mirror = new RearviewMirrorSettings(settings).load();
         Display display = CameraDisplayTarget.resolve(context, CameraDisplayTarget.CLUSTER);
         int displayId = display == null ? -1 : display.getDisplayId();
@@ -159,19 +170,26 @@ final class ClusterFullscreenController {
         long succeeded = settings.getLong(PREF_SUCCEEDED_SESSION, -1);
         long succeededBoot = settings.getLong(PREF_SUCCEEDED_BOOT, Long.MIN_VALUE);
         int succeededDisplay = settings.getInt(PREF_SUCCEEDED_DISPLAY, -1);
-        boolean eligible = hasEnabledClusterTarget(
+        int targetMask = clusterTargetMask(
                         rearEnabled, rearLeftTarget, rearRightTarget,
                         frontEnabled, frontLeftTarget, frontRightTarget,
-                        mirror.enabled, mirror.target);
+                        mirror.enabled, mirror.target,
+                        reverseEnabled,
+                        ReverseCameraController.loadRawLayout(settings)
+                                .containsTarget(CameraDisplayTarget.CLUSTER));
+        boolean eligible = targetMask != 0;
         boolean ready = eligible && displayReady && interactive && awakeSessionId >= 0
                 && !(vehiclePowerKnown && vehiclePowerOff);
-        if (trackedSession != awakeSessionId || trackedDisplay != displayId || eligibleNow != ready) {
+        if (trackedSession != awakeSessionId || trackedDisplay != displayId
+                || trackedTargetMask != targetMask || eligibleNow != ready) {
             generation++;
             cancelRetry();
+            cancelInFlight();
             attempts = 0;
             terminal = false;
             trackedSession = awakeSessionId;
             trackedDisplay = displayId;
+            trackedTargetMask = targetMask;
             eligibleNow = ready;
         }
         boolean needsCommand = shouldAttempt(ready, displayReady, awakeSessionId, succeeded,
@@ -202,6 +220,8 @@ final class ClusterFullscreenController {
         long attemptGeneration = generation;
         inFlight = true;
         int attempt = ++attempts;
+        CancellationSignal cancellation = new CancellationSignal();
+        inFlightCancellation = cancellation;
         emit("cluster_fullscreen", "state", "requested",
                 "attempt", attempt,
                 "awake_session_id", session, "trigger", trigger,
@@ -212,7 +232,7 @@ final class ClusterFullscreenController {
                 "operation", ClusterFullscreenProtocol.operationForTest());
         worker.execute(() -> {
             ClusterFullscreenProtocol.Result result = ClusterFullscreenProtocol.dispatch(
-                    context, () -> isCurrentAttempt(attemptGeneration));
+                    context, () -> isCurrentAttempt(attemptGeneration), cancellation);
             long completedAt = SystemClock.uptimeMillis();
             handler.post(() -> finishAttempt(attemptGeneration, session, displayId, attempt, completedAt, result));
         });
@@ -226,6 +246,7 @@ final class ClusterFullscreenController {
     private synchronized void finishAttempt(long expectedGeneration, long session, int displayId,
             int attempt, long completedAt, ClusterFullscreenProtocol.Result result) {
         inFlight = false;
+        inFlightCancellation = null;
         boolean current = isCurrentAttempt(expectedGeneration);
         long retryDelay = current && result.retryable && attempt <= RETRY_DELAYS_MS.length
                 ? RETRY_DELAYS_MS[attempt - 1] : -1;
@@ -259,6 +280,10 @@ final class ClusterFullscreenController {
         pendingRetry = null;
     }
 
+    private void cancelInFlight() {
+        if (inFlightCancellation != null) inFlightCancellation.cancel();
+    }
+
     static boolean shouldAttempt(
             boolean enabled, int leftTarget, int rightTarget,
             boolean displayReady, long sessionId, long attemptedSessionId) {
@@ -267,15 +292,23 @@ final class ClusterFullscreenController {
                 displayReady, sessionId, attemptedSessionId);
     }
 
-    static boolean hasEnabledClusterTarget(
+    static int clusterTargetMask(
             boolean rearEnabled, int rearLeftTarget, int rearRightTarget,
             boolean frontEnabled, int frontLeftTarget, int frontRightTarget,
-            boolean mirrorEnabled, int mirrorTarget) {
-        return rearEnabled && (rearLeftTarget == CameraDisplayTarget.CLUSTER
-                        || rearRightTarget == CameraDisplayTarget.CLUSTER)
-                || frontEnabled && (frontLeftTarget == CameraDisplayTarget.CLUSTER
-                        || frontRightTarget == CameraDisplayTarget.CLUSTER)
-                || mirrorEnabled && mirrorTarget == CameraDisplayTarget.CLUSTER;
+            boolean mirrorEnabled, int mirrorTarget,
+            boolean reverseEnabled, boolean reverseClusterTarget) {
+        int mask = 0;
+        if (rearEnabled && rearLeftTarget == CameraDisplayTarget.CLUSTER)
+            mask |= TARGET_REAR_LEFT;
+        if (rearEnabled && rearRightTarget == CameraDisplayTarget.CLUSTER)
+            mask |= TARGET_REAR_RIGHT;
+        if (frontEnabled && frontLeftTarget == CameraDisplayTarget.CLUSTER)
+            mask |= TARGET_FRONT_LEFT;
+        if (frontEnabled && frontRightTarget == CameraDisplayTarget.CLUSTER)
+            mask |= TARGET_FRONT_RIGHT;
+        if (mirrorEnabled && mirrorTarget == CameraDisplayTarget.CLUSTER) mask |= TARGET_MIRROR;
+        if (reverseEnabled && reverseClusterTarget) mask |= TARGET_REVERSE;
+        return mask;
     }
 
     static boolean shouldAttempt(

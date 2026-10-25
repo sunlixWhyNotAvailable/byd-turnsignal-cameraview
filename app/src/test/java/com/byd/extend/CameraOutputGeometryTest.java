@@ -67,6 +67,61 @@ public final class CameraOutputGeometryTest {
                 new float[]{1, 0, Float.NaN, 0, 1, 0, 0, 0, 1}, 100, 100));
     }
 
+    @Test public void reversePrewarmUsesLiveCropFitRotationAndSteeringGeometry() {
+        ReverseCameraLayout base = ReverseCameraLayout.defaults();
+        int camera = ReverseCameraLayout.REAR_CAMERA_INDEX;
+        ReverseCameraLayout calibrated = ReverseCameraLayout.withPane(base, camera,
+                base.pane(camera).destination,
+                ReverseCameraLayout.sourceCrop(.1f, .1f, .4f, .85f), 0);
+        calibrated = ReverseCameraLayout.withDisplayMode(
+                calibrated, camera, ReverseCameraLayout.DISPLAY_MODE_FIT);
+        ReverseCameraLayout rawFallback = ReverseCameraLayout.withPane(base, camera,
+                base.pane(camera).destination,
+                ReverseCameraLayout.sourceCrop(.2f, .1f, .7f, .85f));
+        CameraDewarpConfig config = CameraDewarpConfig.of(
+                CameraDewarpConfig.LENS_REAR, true, 100);
+
+        ReverseCameraLayout.Rect configuredCrop =
+                ReverseCameraCompositionView.effectiveSourceCrop(
+                        calibrated, rawFallback, config, camera, false,
+                        true, 20f, -30f, 30f);
+        ReverseCameraLayout.Rect fallbackCrop =
+                ReverseCameraCompositionView.effectiveSourceCrop(
+                        calibrated, rawFallback, config, camera, true,
+                        true, 20f, -30f, 30f);
+        assertEquals(.7f, fallbackCrop.width, .00001f);
+        assertEquals(.4f, configuredCrop.width, .00001f);
+        assertTrue(configuredCrop.left != .1f);
+
+        ReverseCameraLayout.PixelRect fit0 =
+                ReverseCameraCompositionView.fittedTextureBounds(
+                        configuredCrop, 1000, 500, 0, ReverseCameraLayout.DISPLAY_MODE_FIT);
+        ReverseCameraLayout.PixelRect fit90 =
+                ReverseCameraCompositionView.fittedTextureBounds(
+                        configuredCrop, 1000, 500, 90, ReverseCameraLayout.DISPLAY_MODE_FIT);
+        ReverseCameraLayout.PixelRect fill =
+                ReverseCameraCompositionView.fittedTextureBounds(
+                        configuredCrop, 1000, 500, 90, ReverseCameraLayout.DISPLAY_MODE_FILL);
+        assertEquals(348, fit0.width); // 500 * (0.4 * 1920) / (0.85 * 1300), rounded.
+        assertEquals(500, fit0.height);
+        assertEquals(719, fit90.width);
+        assertEquals(500, fit90.height);
+        assertEquals(1000, fill.width);
+        assertEquals(500, fill.height);
+
+        ReverseCameraLayout.PixelRect fallbackFit =
+                ReverseCameraCompositionView.fittedTextureBounds(
+                        fallbackCrop, 1000, 500, 0, ReverseCameraLayout.DISPLAY_MODE_FIT);
+        assertEquals(ReverseCameraLayout.fitSourceCrop(
+                        fallbackCrop, 1000, 500, ReverseCameraCompositionView.SOURCE_WIDTH,
+                        ReverseCameraCompositionView.SOURCE_HEIGHT, 0).width,
+                fallbackFit.width);
+        assertEquals(ReverseCameraLayout.fitSourceCrop(
+                        fallbackCrop, 1000, 500, ReverseCameraCompositionView.SOURCE_WIDTH,
+                        ReverseCameraCompositionView.SOURCE_HEIGHT, 0).height,
+                fallbackFit.height);
+    }
+
     private static float[] project(float[] m, float x, float y) {
         float w = m[3] * x + m[7] * y + m[15];
         return new float[]{(m[0] * x + m[4] * y + m[12]) / w,

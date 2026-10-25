@@ -3,8 +3,15 @@ package com.byd.extend;
 import static org.junit.Assert.*;
 
 import org.junit.Test;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 public final class CameraOutputCalculationTest {
+    @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
     @Test public void vehiclePowerOffSuppressesOrdinaryDemandButKeepsIndependentOwners() {
         int demand = CameraSourceDemand.bit(0) | CameraSourceDemand.bit(1)
                 | CameraSourceDemand.bit(2) | CameraSourceDemand.bit(3)
@@ -182,28 +189,44 @@ public final class CameraOutputCalculationTest {
                 1, 527L * 357, 527, 357, new int[]{527}, new int[]{357}, 1, 1920, 1300);
     }
 
-    @Test public void directOutputKeepsIndependentQualitySizedMappingsDuringLiveChanges() {
-        DirectCameraSourceHub.MappingMesh left = new DirectCameraSourceHub.MappingMesh();
-        DirectCameraSourceHub.MappingMesh right = new DirectCameraSourceHub.MappingMesh();
-        CameraDewarpConfig original = CameraDewarpConfig.of(
-                CameraDewarpConfig.LENS_LEFT, true, 100);
-        left.prepare(new CameraDewarpRenderer.MappingRequest(original, 1), 527, 357);
-        right.prepare(new CameraDewarpRenderer.MappingRequest(original, 2), 800, 357);
-        float[] rightBefore = meshVertices(right);
-        CameraDewarpConfig moved = original.withRoiCenter(0.6f, 0.45f);
-        CameraDewarpRenderer.MappingRequest update = new CameraDewarpRenderer.MappingRequest(moved, 3);
-        assertEquals(update, left.prepare(update, 527, 357));
-        assertFalse(left.rawFallback);
-        assertArrayEquals(CameraFisheyeMapping.buildMesh(moved, 527, 357).vertices,
-                meshVertices(left), 0f);
-        assertArrayEquals(rightBefore, meshVertices(right), 0f);
-        java.nio.FloatBuffer retained = left.vertices;
-        left.prepare(new CameraDewarpRenderer.MappingRequest(moved, 4), 527, 357);
-        assertTrue(retained == left.vertices); // Acknowledgement-only change keeps the mesh.
-        CameraDewarpConfig raw = CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
-        left.prepare(new CameraDewarpRenderer.MappingRequest(raw, 5), 527, 357);
-        assertArrayEquals(CameraFisheyeMapping.buildMesh(raw, 527, 357).vertices,
-                meshVertices(left), 0f);
+    @Test public void directOutputKeepsIndependentQualitySizedMappingsDuringLiveChanges() throws Exception {
+        List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+        try (CameraMeshCache cache = new CameraMeshCache(temporaryFolder.newFolder("mesh"),
+                (operation, error) -> errors.add(error))) {
+            DirectCameraSourceHub.MappingMesh left = new DirectCameraSourceHub.MappingMesh(cache, () -> { });
+            DirectCameraSourceHub.MappingMesh right = new DirectCameraSourceHub.MappingMesh(cache, () -> { });
+            CameraDewarpConfig original = CameraDewarpConfig.of(
+                    CameraDewarpConfig.LENS_LEFT, true, 100);
+            prepareMesh(cache, left, new CameraDewarpRenderer.MappingRequest(original, 1), 527, 357);
+            prepareMesh(cache, right, new CameraDewarpRenderer.MappingRequest(original, 2), 800, 357);
+            float[] rightBefore = meshVertices(right);
+            CameraDewarpConfig moved = original.withRoiCenter(0.6f, 0.45f);
+            CameraDewarpRenderer.MappingRequest update = new CameraDewarpRenderer.MappingRequest(moved, 3);
+            assertEquals(update, prepareMesh(cache, left, update, 527, 357));
+            assertFalse(left.rawFallback);
+            assertArrayEquals(CameraFisheyeMapping.buildMesh(moved, 527, 357).vertices,
+                    meshVertices(left), 0f);
+            assertArrayEquals(rightBefore, meshVertices(right), 0f);
+            java.nio.FloatBuffer retained = left.vertices;
+            left.prepare(new CameraDewarpRenderer.MappingRequest(moved, 4), 527, 357);
+            assertTrue(retained == left.vertices); // Acknowledgement-only change keeps the mesh.
+            CameraDewarpConfig raw = CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT);
+            prepareMesh(cache, left, new CameraDewarpRenderer.MappingRequest(raw, 5), 527, 357);
+            assertArrayEquals(CameraFisheyeMapping.buildMesh(raw, 527, 357).vertices,
+                    meshVertices(left), 0f);
+            prepareMesh(cache, left, update, 800, 357);
+            assertArrayEquals(CameraFisheyeMapping.buildMesh(moved, 800, 357).vertices,
+                    meshVertices(left), 0f);
+            assertTrue(errors.isEmpty());
+        }
+    }
+
+    private static CameraDewarpRenderer.MappingRequest prepareMesh(CameraMeshCache cache,
+            DirectCameraSourceHub.MappingMesh target, CameraDewarpRenderer.MappingRequest request,
+            int width, int height) throws Exception {
+        target.prepare(request, width, height);
+        cache.request(request.config, width, height).get(30, TimeUnit.SECONDS);
+        return target.prepare(request, width, height);
     }
 
     private static float[] meshVertices(DirectCameraSourceHub.MappingMesh mesh) {

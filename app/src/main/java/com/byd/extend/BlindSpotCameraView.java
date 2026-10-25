@@ -484,7 +484,7 @@ final class BlindSpotCameraView extends FrameLayout
             int rendererGeneration = ++dewarpGeneration;
             rendererTexture = texture;
             dewarpRenderer = CameraDewarpRenderer.startAsync(
-                    texture, bufferWidth, bufferHeight,
+                    getContext(), texture, bufferWidth, bufferHeight,
                     dewarpConfig, dewarpRequestToken, cameraGeneration,
                     dewarpStatsRequestId, dewarpStatsGeneration,
                     getWidth(), getHeight(),

@@ -15,8 +15,6 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
 import java.util.Arrays;
@@ -72,6 +70,7 @@ final class CameraDewarpRenderer {
     private final Consumer<Stats> statsSink;
     private final Consumer<Event> eventSink;
     private final LifecycleCallback lifecycleCallback;
+    private final CameraMeshCache meshCache;
     private final Runnable metricsTick = this::emitStatsTick;
     private final AtomicBoolean mappingUpdatePosted = new AtomicBoolean();
     private final AtomicBoolean startupFailureReported = new AtomicBoolean();
@@ -107,6 +106,7 @@ final class CameraDewarpRenderer {
     private ShortBuffer rawIndices;
     private int rawIndexCount;
     private MappingRequest appliedRequest;
+    private MappingRequest preparingRequest;
     private MappingRequest pendingMeshRequest;
     private MappingRequest pendingRenderedRequest;
     private String pendingEventKind;
@@ -350,12 +350,13 @@ final class CameraDewarpRenderer {
     }
 
     private CameraDewarpRenderer(
-            SurfaceTexture outputTexture, int width, int height,
+            CameraMeshCache meshCache, SurfaceTexture outputTexture, int width, int height,
             CameraDewarpConfig config, long requestToken, int inputGeneration,
             int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
             Consumer<Stats> statsSink, Consumer<Event> eventSink,
             LifecycleCallback lifecycleCallback) {
         this.outputTexture = outputTexture;
+        this.meshCache = meshCache;
         this.width = width;
         this.height = height;
         this.inputGeneration = inputGeneration;
@@ -371,14 +372,15 @@ final class CameraDewarpRenderer {
     }
 
     static CameraDewarpRenderer startAsync(
-            SurfaceTexture outputTexture, int width, int height,
+            android.content.Context context, SurfaceTexture outputTexture, int width, int height,
             CameraDewarpConfig config, long requestToken, int inputGeneration,
             int statsRequestId, int statsGeneration, int viewWidth, int viewHeight,
             boolean fuseWithSource,
             Consumer<Stats> statsSink, Consumer<Event> eventSink,
             LifecycleCallback lifecycleCallback) {
         CameraDewarpRenderer renderer = new CameraDewarpRenderer(
-                outputTexture, width, height, config, requestToken, inputGeneration,
+                CameraMeshPreparation.cache(context), outputTexture, width, height,
+                config, requestToken, inputGeneration,
                 statsRequestId, statsGeneration, viewWidth, viewHeight,
                 statsSink, eventSink, lifecycleCallback);
         if (fuseWithSource) renderer.startFused();
@@ -501,14 +503,18 @@ final class CameraDewarpRenderer {
     private void startInternal() {
         thread.start();
         handler = new Handler(thread.getLooper());
-        handler.post(() -> {
+        Handler owner = handler;
+        meshCache.request(CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), width, height)
+                .whenComplete((rawMesh, preparationError) -> owner.post(() -> {
             Throwable failure = null;
             try {
                 if (released.get()) {
                     cleanupAndStop(null);
                     return;
                 }
-                initializeGl();
+                if (preparationError != null) throw new IllegalStateException(
+                        "Dewarp raw mesh preparation failed", preparationError);
+                initializeGl(rawMesh);
                 if (released.get()) {
                     cleanupAndStop(null);
                     return;
@@ -525,7 +531,7 @@ final class CameraDewarpRenderer {
                 released.set(true);
                 cleanupAndStop(failure);
             }
-        });
+        }));
     }
 
     private void cleanupAndStop(Throwable startupError) {
@@ -561,7 +567,7 @@ final class CameraDewarpRenderer {
         }
     }
 
-    private void initializeGl() {
+    private void initializeGl(CameraMeshCache.Prepared rawMesh) {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         require(eglDisplay != EGL14.EGL_NO_DISPLAY, "EGL display unavailable");
         require(EGL14.eglInitialize(eglDisplay, null, 0, null, 0), "EGL init failed");
@@ -604,18 +610,11 @@ final class CameraDewarpRenderer {
                 GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
                 GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        CameraFisheyeMapping.Mesh rawMesh = CameraFisheyeMapping.buildMesh(
-                CameraDewarpConfig.disabled(CameraDewarpConfig.LENS_LEFT), width, height);
-        rawVertices = floatBuffer(rawMesh.vertices);
-        rawIndices = shortBuffer(rawMesh.indices);
-        rawIndexCount = rawMesh.indices.length;
+        rawVertices = rawMesh.vertices();
+        rawIndices = rawMesh.indices();
+        rawIndexCount = rawIndices.capacity();
         createCameraInput();
-        MappingRequest initial = request;
-        try {
-            installMapping(initial, initial.config, "dewarp_mesh_applied");
-        } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
-            installRawFallback(initial);
-        }
+        applyLatestMapping();
         metricsStartedNs = SystemClock.elapsedRealtimeNanos();
         metricsWindowMapping = appliedRequest;
         metricsWindowContext = statsContext;
@@ -728,6 +727,7 @@ final class CameraDewarpRenderer {
             cameraTexture.updateTexImage();
             // Keep draining while detach is pending, without drawing into removed UI hosts.
             if (released.get()) return;
+            if (vertices == null || indices == null) return;
             long updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
             updateSamples++;
             updateTotalNs += updateNs;
@@ -832,78 +832,41 @@ final class CameraDewarpRenderer {
         if (canReuseAppliedMapping(appliedRequest, latest)) {
             armPendingAck("dewarp_mesh_applied", latest, appliedRequest,
                     vertices.capacity() / 4, 0);
-        } else {
-            try {
-                installMapping(latest, latest.config, "dewarp_mesh_applied");
-            } catch (CameraFisheyeMapping.CalibratedDomainException unsupported) {
-                try {
-                    installRawFallback(latest);
-                } catch (Throwable fallbackError) {
-                    Log.e(TAG, "Dewarp raw fallback mesh failed", fallbackError);
-                    emitEvent(new Event(
-                            "dewarp_pipeline_failed", latest,
-                            vertices == null ? 0 : vertices.capacity() / 4,
-                            -1, fallbackError));
-                }
-            } catch (Throwable error) {
-                Log.e(TAG, "Dewarp mesh update failed", error);
-                String kind = mappingFailureKind(
-                        appliedRequest == null ? null : appliedRequest.config,
-                        latest.config);
-                emitEvent(new Event(
-                        kind, latest,
-                        vertices == null ? 0 : vertices.capacity() / 4, -1, error));
-            }
+        } else if (preparingRequest != latest) {
+            preparingRequest = latest;
+            Handler owner = handler;
+            meshCache.request(latest.config, width, height).whenComplete((mesh, error) ->
+                    owner.post(() -> {
+                        if (released.get() || request != latest) return;
+                        preparingRequest = null;
+                        if (error != null) {
+                            Log.e(TAG, "Dewarp mesh update failed", error);
+                            if (appliedRequest == null) {
+                                reportStartupFailure(error);
+                                released.set(true);
+                                cleanupAndStop(error);
+                                return;
+                            }
+                            emitEvent(new Event(mappingFailureKind(
+                                    appliedRequest.config,
+                                    latest.config), latest,
+                                    vertices == null ? 0 : vertices.capacity() / 4, -1, error));
+                            return;
+                        }
+                        vertices = mesh.vertices();
+                        indices = mesh.indices();
+                        indexCount = indices.capacity();
+                        appliedRequest = mesh.rawFallback()
+                                ? new MappingRequest(CameraDewarpConfig.disabled(latest.config.lens), latest.token)
+                                : latest;
+                        armPendingAck(mesh.rawFallback() ? "dewarp_fallback_raw" : "dewarp_mesh_applied",
+                                latest, appliedRequest, vertices.capacity() / 4, mesh.generationNs());
+                    }));
         }
         if (!released.get() && request != latest
                 && mappingUpdatePosted.compareAndSet(false, true)) {
             handler.post(this::applyLatestMapping);
         }
-    }
-
-    private void installRawFallback(MappingRequest value) {
-        CameraDewarpConfig identity = CameraDewarpConfig.disabled(value.config.lens);
-        if (appliedRequest != null && appliedRequest.config.sameMapping(identity)) {
-            armPendingAck("dewarp_fallback_raw", value, appliedRequest,
-                    vertices.capacity() / 4, 0);
-            return;
-        }
-        installMapping(value, identity, "dewarp_fallback_raw");
-    }
-
-    private void installMapping(
-            MappingRequest value, CameraDewarpConfig renderedConfig,
-            String eventKind) {
-        long startedNs = SystemClock.elapsedRealtimeNanos();
-        CameraFisheyeMapping.Mesh mesh = CameraFisheyeMapping.buildMesh(
-                renderedConfig, width, height);
-        FloatBuffer nextVertices = ByteBuffer.allocateDirect(mesh.vertices.length * 4)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        nextVertices.put(mesh.vertices).position(0);
-        ShortBuffer nextIndices = ByteBuffer.allocateDirect(mesh.indices.length * 2)
-                .order(ByteOrder.nativeOrder()).asShortBuffer();
-        nextIndices.put(mesh.indices).position(0);
-        vertices = nextVertices;
-        indices = nextIndices;
-        indexCount = mesh.indices.length;
-        appliedRequest = renderedConfig == value.config
-                ? value : new MappingRequest(renderedConfig, value.token);
-        armPendingAck(eventKind, value, appliedRequest, mesh.vertexCount(),
-                SystemClock.elapsedRealtimeNanos() - startedNs);
-    }
-
-    private static FloatBuffer floatBuffer(float[] values) {
-        FloatBuffer buffer = ByteBuffer.allocateDirect(values.length * 4)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        buffer.put(values).position(0);
-        return buffer;
-    }
-
-    private static ShortBuffer shortBuffer(short[] values) {
-        ShortBuffer buffer = ByteBuffer.allocateDirect(values.length * 2)
-                .order(ByteOrder.nativeOrder()).asShortBuffer();
-        buffer.put(values).position(0);
-        return buffer;
     }
 
     private void armPendingAck(

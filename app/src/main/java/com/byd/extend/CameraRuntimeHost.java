@@ -144,6 +144,7 @@ final class CameraRuntimeHost {
                     catch (RuntimeException error) { stopOnHandler(); throw error; }
                     if (retained && initialAppSnapshot) {
                         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
+                        CameraMeshPreparation.warmSettings(context);
                         applySettings("");
                         changes = context.settings.reconcile(settings, false);
                     }
@@ -154,6 +155,7 @@ final class CameraRuntimeHost {
                 case SETTINGS:
                     context.overlayAllowed = flag;
                     Bundle unsaved = context.settings.updateFromClient(settings);
+                    CameraMeshPreparation.warmSettings(context);
                     if (!"sync".equals(scope)) applySettings(scope);
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
@@ -929,6 +931,7 @@ final class CameraRuntimeHost {
 
     private void initialize() {
         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
+        CameraMeshPreparation.warmSettings(context);
         blind = new BlindSpotOverlayController(context, handler, this::event);
         parking = new ParkingCameraController(context, handler, this::event);
         reverse = new ReverseCameraController(context, handler, helper::emitControllerEvent,

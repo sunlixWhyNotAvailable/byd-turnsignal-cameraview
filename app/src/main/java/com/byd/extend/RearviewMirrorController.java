@@ -312,7 +312,15 @@ final class RearviewMirrorController {
     private CameraShellProtocol.OverlaySpec buildSpec(int id, boolean front) {
         int displayTarget = RearviewMirrorSettings.target(preferences);
         int[] size = CameraDisplayTarget.displaySize(context, displayTarget);
-        int[] rect = RearviewMirrorSettings.placement(preferences, displayTarget).toPixelRect(size[0], size[1]);
+        return buildMeshPreparationSpec(
+                preferences, id, front, displayTarget, size[0], size[1]);
+    }
+
+    static CameraShellProtocol.OverlaySpec buildMeshPreparationSpec(
+            android.content.SharedPreferences preferences, int id, boolean front,
+            int displayTarget, int displayWidth, int displayHeight) {
+        int[] rect = RearviewMirrorSettings.placement(preferences, displayTarget)
+                .toPixelRect(displayWidth, displayHeight);
         DirectCameraCrop raw = RearviewMirrorSettings.raw(preferences, front);
         CameraDewarpConfig dewarp = RearviewMirrorSettings.dewarp(preferences, front);
         DirectCameraCrop crop = dewarp.enabled

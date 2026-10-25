@@ -6,7 +6,9 @@ import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Display;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
@@ -14,6 +16,7 @@ import android.view.ViewOutlineProvider;
 import android.widget.FrameLayout;
 
 import java.util.Arrays;
+import java.util.List;
 
 final class ReverseCameraCompositionView extends FrameLayout {
     private static final String TAG = "ReverseCameraView";
@@ -21,6 +24,103 @@ final class ReverseCameraCompositionView extends FrameLayout {
     static final int SOURCE_HEIGHT = 1300;
     private static final int PREVIEW_BASE_SOURCE_HEIGHT = 990;
     private static final int DEFAULT_CORNER_RADIUS_DP = 8;
+
+    static void collectConfiguredMeshRequests(Context context,
+            android.content.SharedPreferences settings,
+            List<CameraMeshCache.Request> requests) {
+        if (context == null || settings == null || requests == null)
+            throw new IllegalArgumentException("mesh preparation inputs are required");
+        CameraShellProtocol.ReverseOverlaySpec spec =
+                ReverseCameraController.buildOverlaySpec(settings, 1);
+        ReverseCameraLayout frontLayout = withCentralAndSideCalibration(
+                spec.layout, spec.frontLayout);
+        ReverseCameraLayout frontRawLayout = withCentralAndSideCalibration(
+                spec.rawFallbackLayout, spec.frontRawFallbackLayout);
+        appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
+                spec.rearDewarp, ReverseCameraLayout.REAR_CAMERA_INDEX,
+                spec.bufferQuality, spec.rearSteeringShift);
+        appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
+                spec.leftDewarp, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
+                spec.bufferQuality, false);
+        appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
+                spec.rightDewarp, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX,
+                spec.bufferQuality, false);
+        if (spec.frontLeftIntegrated) {
+            appendMeshRequest(context, requests, frontLayout,
+                    frontRawLayout, spec.frontLeftDewarp,
+                    ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, spec.bufferQuality, false);
+        }
+        if (spec.frontRightIntegrated) {
+            appendMeshRequest(context, requests, frontLayout,
+                    frontRawLayout, spec.frontRightDewarp,
+                    ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, spec.bufferQuality, false);
+        }
+        if (spec.centralFrontIntegrated) {
+            appendMeshRequest(context, requests, frontLayout,
+                    frontRawLayout, spec.centralFrontDewarp,
+                    ReverseCameraLayout.REAR_CAMERA_INDEX, spec.bufferQuality,
+                    spec.frontSteeringShift);
+        }
+    }
+
+    private static void appendMeshRequest(Context context,
+            List<CameraMeshCache.Request> requests,
+            ReverseCameraLayout layout, ReverseCameraLayout rawLayout,
+            CameraDewarpConfig config, int cameraIndex, int quality,
+            boolean steeringShiftEnabled) {
+        int target = layout.targetFor(cameraIndex);
+        Display display = CameraDisplayTarget.resolve(context, target);
+        if (display == null) return;
+        DisplayMetrics metrics = new DisplayMetrics();
+        display.getRealMetrics(metrics);
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) return;
+        ReverseCameraLayout.PixelRect pane = ReverseCameraLayout.project(
+                layout.rectFor(cameraIndex, target), metrics.widthPixels, metrics.heightPixels);
+        if (pane.width <= 0 || pane.height <= 0) return;
+        ReverseCameraLayout.Pane calibrated = layout.pane(cameraIndex);
+        ReverseCameraLayout.Rect rawCrop = rawLayout.pane(cameraIndex).sourceCrop;
+        ReverseCameraLayout.Rect sourceCrop = effectiveSourceCrop(
+                layout, rawLayout, config, cameraIndex, false, steeringShiftEnabled,
+                Float.NaN, Float.NaN, Float.NaN);
+        ReverseCameraLayout.PixelRect texture = fittedTextureBounds(
+                sourceCrop, pane.width, pane.height, calibrated.rotationDegrees,
+                calibrated.displayMode);
+        int[] size = CameraBufferQuality.bufferSizeForPane(
+                texture.width, texture.height, SOURCE_WIDTH, SOURCE_HEIGHT, quality);
+        if (size[0] <= 0 || size[1] <= 0) return;
+        CameraMeshCache.Request request = CameraMeshPreparation.request(
+                config, rawCrop.left, rawCrop.top, rawCrop.width, rawCrop.height,
+                size[0], size[1]);
+        if (request != null) requests.add(request);
+    }
+
+    /** Resolves the same configured/raw crop and transient steering shift as a live pane. */
+    static ReverseCameraLayout.Rect effectiveSourceCrop(
+            ReverseCameraLayout calibrated, ReverseCameraLayout rawFallback,
+            CameraDewarpConfig config, int cameraIndex, boolean rawFallbackActive,
+            boolean steeringShiftEnabled, float steeringAngleDegrees,
+            float steeringMinimumDegrees, float steeringMaximumDegrees) {
+        ReverseCameraLayout.Pane value = calibrated.pane(cameraIndex);
+        ReverseCameraLayout.Rect rawCrop = rawFallback.pane(cameraIndex).sourceCrop;
+        ReverseCameraLayout.Rect sourceCrop = config.enabled && !rawFallbackActive
+                ? value.sourceCrop : rawCrop;
+        return steeringShiftEnabled
+                ? ReverseSteeringShift.apply(sourceCrop, steeringAngleDegrees,
+                        steeringMinimumDegrees, steeringMaximumDegrees,
+                        value.mirrorHorizontally)
+                : sourceCrop;
+    }
+
+    /** Returns the real TextureView bounds selected by the live pane transform. */
+    static ReverseCameraLayout.PixelRect fittedTextureBounds(
+            ReverseCameraLayout.Rect sourceCrop, int targetWidth, int targetHeight,
+            int rotationDegrees, int displayMode) {
+        int mode = ReverseCameraLayout.normalizeDisplayMode(displayMode);
+        return mode == ReverseCameraLayout.DISPLAY_MODE_FIT
+                ? ReverseCameraLayout.fitSourceCrop(sourceCrop, targetWidth, targetHeight,
+                        SOURCE_WIDTH, SOURCE_HEIGHT, CameraRotation.clamp(rotationDegrees))
+                : new ReverseCameraLayout.PixelRect(0, 0, targetWidth, targetHeight);
+    }
 
     interface Callback {
         void onReverseSurfacesReady(int[] generations);
@@ -1738,15 +1838,9 @@ final class ReverseCameraCompositionView extends FrameLayout {
     private ReverseCameraLayout.Rect sourceCropFor(
             PaneView pane, ReverseCameraLayout calibrated,
             ReverseCameraLayout rawFallback, boolean shiftEnabled) {
-        ReverseCameraLayout.Pane value = calibrated.pane(pane.cameraIndex);
-        ReverseCameraLayout.Rect rawCrop = rawFallback.pane(pane.cameraIndex).sourceCrop;
-        ReverseCameraLayout.Rect sourceCrop = pane.dewarpConfig.enabled
-                && !pane.texture.usesRawFallback() ? value.sourceCrop : rawCrop;
-        return shiftEnabled
-                ? ReverseSteeringShift.apply(sourceCrop,
-                        steeringAngleDegrees, steeringMinimumDegrees, steeringMaximumDegrees,
-                        value.mirrorHorizontally)
-                : sourceCrop;
+        return effectiveSourceCrop(calibrated, rawFallback, pane.dewarpConfig,
+                pane.cameraIndex, pane.texture.usesRawFallback(), shiftEnabled,
+                steeringAngleDegrees, steeringMinimumDegrees, steeringMaximumDegrees);
     }
 
     /** Applies projected bounds only when they differ, avoiding retained layout churn. */
@@ -2087,11 +2181,8 @@ final class ReverseCameraCompositionView extends FrameLayout {
             if (width <= 0 || height <= 0) return;
 
             int safeMode = ReverseCameraLayout.normalizeDisplayMode(nextDisplayMode);
-            boolean fit = safeMode == ReverseCameraLayout.DISPLAY_MODE_FIT;
-            ReverseCameraLayout.PixelRect fitted = fit
-                    ? ReverseCameraLayout.fitSourceCrop(
-                            value, width, height, SOURCE_WIDTH, SOURCE_HEIGHT, rotationDegrees)
-                    : new ReverseCameraLayout.PixelRect(0, 0, width, height);
+            ReverseCameraLayout.PixelRect fitted = fittedTextureBounds(
+                    value, width, height, rotationDegrees, safeMode);
             FrameLayout.LayoutParams textureParams =
                     (FrameLayout.LayoutParams) texture.getLayoutParams();
             if (!stagingLayout && (textureParams.width != fitted.width || textureParams.height != fitted.height
