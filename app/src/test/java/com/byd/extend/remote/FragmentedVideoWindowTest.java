@@ -36,7 +36,7 @@ public class FragmentedVideoWindowTest {
         FragmentedVideoWindow oldView = new FragmentedVideoWindow();
         oldView.write(bytes);
         assertTrue(oldView.isReady());
-        FragmentedVideoWindow nextView = new FragmentedVideoWindow(oldView.getRequest(), () -> {});
+        FragmentedVideoWindow nextView = new FragmentedVideoWindow(java.util.UUID.randomUUID().toString(), () -> {});
         String oldBase = oldView.getPlaylistPath().replace("live.m3u8", "");
         String nextBase = nextView.getPlaylistPath().replace("live.m3u8", "");
         for (String resource : new String[]{"live.m3u8", "init.mp4", "segment/0.m4s"}) {
@@ -52,6 +52,16 @@ public class FragmentedVideoWindowTest {
         oldView.clear();
         assertTrue(nextView.isReady());
         assertNotNull(nextView.segment(0));
+    }
+
+    @Test public void streamIdOwnsTheStableMediaResourcePath() {
+        String streamId = java.util.UUID.randomUUID().toString();
+        FragmentedVideoWindow window = new FragmentedVideoWindow(streamId, () -> {});
+
+        assertEquals(streamId, window.getStreamId());
+        assertEquals("/media/" + streamId + "/live.m3u8", window.getPlaylistPath());
+        assertEquals("/live.m3u8", window.resourcePath(window.getPlaylistPath()));
+        assertNull(window.resourcePath("/media/" + java.util.UUID.randomUUID() + "/live.m3u8"));
     }
 
     @Test public void readinessWaitsForTheWholeFirstFragmentAndSignalsOnlyOnce() throws Exception {

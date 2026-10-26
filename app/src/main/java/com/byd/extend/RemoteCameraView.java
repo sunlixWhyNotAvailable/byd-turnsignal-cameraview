@@ -44,6 +44,14 @@ public final class RemoteCameraView {
         if (view == DRIVER) return ALLOW_DRIVER;
         return view == INTERIOR || view == COMBINED ? allowedMask : NONE;
     }
+    static int retainedInteriors(int previousMask, int requestedMask, int allowedMask) {
+        validateMask(previousMask);
+        validateMask(requestedMask);
+        validateMask(allowedMask);
+        if ((requestedMask & ~allowedMask) != 0)
+            throw new IllegalArgumentException("requested_interior_not_allowed");
+        return (previousMask | requestedMask) & allowedMask;
+    }
     public static boolean needsExterior(int view) {
         if (!valid(view)) throw new IllegalArgumentException("invalid_view");
         return view <= RIGHT || view == COMBINED;

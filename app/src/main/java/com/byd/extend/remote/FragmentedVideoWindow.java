@@ -25,18 +25,17 @@ public final class FragmentedVideoWindow extends OutputStream {
     private boolean closed;
     private IOException writeFailure;
     private final Runnable onReady;
-    private final String id = UUID.randomUUID().toString();
-    private final String request;
+    private final String streamId;
     public FragmentedVideoWindow() { this(UUID.randomUUID().toString(), () -> {}); }
     public FragmentedVideoWindow(Runnable onReady) { this(UUID.randomUUID().toString(), onReady); }
-    public FragmentedVideoWindow(String request, Runnable onReady) {
-        this.request = UUID.fromString(request).toString();
+    public FragmentedVideoWindow(String streamId, Runnable onReady) {
+        this.streamId = UUID.fromString(streamId).toString();
         this.onReady = onReady;
     }
-    public String getRequest() { return request; }
-    public String getPlaylistPath() { return "/media/" + id + "/live.m3u8"; }
+    public String getStreamId() { return streamId; }
+    public String getPlaylistPath() { return "/media/" + streamId + "/live.m3u8"; }
     public String resourcePath(String path) {
-        String prefix = "/media/" + id;
+        String prefix = "/media/" + streamId;
         return path.startsWith(prefix + "/") ? path.substring(prefix.length()) : null;
     }
     public synchronized boolean isReady() { return initialization != null && !segments.isEmpty(); }

@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 6;
+  const WEB_REVISION = 7;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -134,7 +134,7 @@
     liveFailed: false, firstLiveFrame: false, archiveView: 'composition', recordings: [], archiveLoaded: false,
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
     playerError: false, playerFrameReported: false, missingCharge: 0, hls: null, poll: null, mainKey: '', seeking: false,
-    localFirstFrame: false, liveRequest: null, livePlaylist: null,
+    localFirstFrame: false, liveRequest: null, liveStreamId: null, liveSelectionRevision: 0, livePlaylist: null,
     battery: null, batteryExpiresAt: 0,
     modes: { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null },
     lastKnownModes: { tabletEnabled: null, recordingEnabled: null }, modePending: null, modeError: null, modesOpen: false
@@ -541,7 +541,7 @@
   }
 
   function liveMain() {
-    if (state.wantsLive && state.status === 'connected' && !state.liveFailed && !state.replaced) {
+    if (state.wantsLive && (state.status === 'connected' || state.livePlaylist) && !state.liveFailed && !state.replaced) {
       return `${cameraTabs(state.view)}<section class="viewer" aria-label="${escapeHtml(text.live)}"><video id="live-video" class="live-video" muted playsinline preload="none" aria-label="${escapeHtml(text.live)}"></video><div class="viewer-foot"><span class="muted" id="live-caption">${escapeHtml(text.waiting)}</span><div class="viewer-actions"><button class="icon-button" type="button" data-action="fullscreen" aria-label="${escapeHtml(text.expand)}" title="${escapeHtml(text.expand)}">${icon('maximize')}</button></div></div></section>`;
     }
     return `${cameraTabs(state.view)}${liveGate()}`;
@@ -626,7 +626,7 @@
   function mainKey() {
     if (state.replaced) return 'replaced';
     if (state.mode === 'archive') return 'archive';
-    if (state.wantsLive && state.status === 'connected' && !state.liveFailed) return 'live';
+    if (state.wantsLive && !state.liveFailed && (state.status === 'connected' || state.livePlaylist)) return 'live';
     return `gate:${state.status}:${state.wantsLive}`;
   }
 
@@ -635,6 +635,13 @@
     const main = document.getElementById('main-panel');
     if (!main) return;
     const key = mainKey();
+    if (key === 'live' && main.querySelector('#live-video')) {
+      state.mainKey = key;
+      if (force) refreshLiveCameraTabs();
+      updateStatusBar();
+      startLiveMedia();
+      return;
+    }
     if (!force && key === state.mainKey) return;
     state.mainKey = key;
     stopLiveMedia();
@@ -691,15 +698,23 @@
     if (state.mode === 'archive') return;
     const action = ++actionGeneration;
     if (!await closeArchivePlayer() || action !== actionGeneration) return;
-    stopLiveMedia();
+    const selectionRevision = ++state.liveSelectionRevision;
     try {
-      const result = await post('/archive/open');
+      const result = await post('/archive/open', { revision: selectionRevision });
       if (action !== actionGeneration) return;
+      if (result.selectionRevision !== selectionRevision || result.mode !== 'archive') {
+        await pollStatus();
+        return;
+      }
+      stopLiveMedia();
       state.mode = 'archive';
       rememberMode('archive');
       state.status = result.status || 'ready';
       state.wantsLive = false;
       state.localFirstFrame = false;
+      state.liveRequest = null;
+      state.liveStreamId = null;
+      state.livePlaylist = null;
       state.mainKey = '';
       renderMain(true);
       if (!state.archiveLoaded) await loadArchive();
@@ -721,24 +736,45 @@
   async function startLive(view = state.view) {
     if (state.replaced) return;
     if (!state.authenticated) { await signIn(); return; }
+    const previousView = state.view;
+    const previousStatus = state.status;
+    const previousLiveFailed = state.liveFailed;
+    const previousSelectionRevision = state.liveSelectionRevision;
+    const newLive = state.mode !== 'live' || !state.wantsLive;
     const action = ++actionGeneration;
     state.mode = 'live';
     rememberMode('live');
     state.view = liveCameras().includes(view) ? view : 'composition';
     state.wantsLive = true;
     state.liveFailed = false;
-    state.firstLiveFrame = false;
-    state.localFirstFrame = false;
     state.status = 'preparing';
-    state.liveRequest = null; state.livePlaylist = null;
-    state.mainKey = '';
-    stopLiveMedia();
+    if (newLive) {
+      state.firstLiveFrame = false;
+      state.localFirstFrame = false;
+      state.liveRequest = null;
+      state.liveStreamId = null;
+      state.livePlaylist = null;
+      state.mainKey = '';
+      stopLiveMedia();
+    }
+    const selectionRevision = ++state.liveSelectionRevision;
     renderMain(true);
     try {
-      const result = await post('/live', { view: state.view });
-      if (action !== actionGeneration) return;
+      const result = await post('/live', { view: state.view, revision: selectionRevision });
+      if (action !== actionGeneration || selectionRevision !== state.liveSelectionRevision) return;
       if (typeof result.request !== 'string' || !/^[0-9a-f-]{36}$/.test(result.request))
         throw new Error('Missing live media request');
+      if (result.selectionRevision !== selectionRevision || typeof result.streamId !== 'string'
+          || !/^[0-9a-f-]{36}$/.test(result.streamId)) throw new Error('Missing live stream identity');
+      const streamChanged = state.liveStreamId !== result.streamId;
+      if (streamChanged) {
+        stopLiveMedia();
+        state.livePlaylist = null;
+        state.liveStreamId = result.streamId;
+        state.firstLiveFrame = false;
+        state.localFirstFrame = false;
+        state.mainKey = '';
+      }
       state.liveRequest = result.request;
       state.status = result.status === 'ready' || !result.status ? 'preparing' : result.status;
       if (['error', 'ended'].includes(state.status)) state.wantsLive = false;
@@ -746,8 +782,17 @@
       if (state.status === 'connected') startLiveMedia();
       updateStatusBar();
     } catch (failure) {
-      if (action !== actionGeneration) return;
+      if (action !== actionGeneration || selectionRevision !== state.liveSelectionRevision) return;
       if (failure.statusCode === 401) handleUnauthorized(failure);
+      else if (!newLive) {
+        console.warn('Could not switch live camera view', failure);
+        state.view = previousView;
+        state.status = previousStatus;
+        state.liveFailed = previousLiveFailed;
+        if (failure.statusCode) state.liveSelectionRevision = previousSelectionRevision;
+        refreshLiveCameraTabs();
+        updateStatusBar();
+      }
       else {
         console.warn('Could not start live camera view', failure);
         const lowBattery = failure.body?.status === 'low_battery';
@@ -762,10 +807,9 @@
 
   async function selectLiveView(view) {
     if (!liveCameras().includes(view)) return;
-    state.view = view;
-    state.mainKey = '';
+    if (view === state.view) return;
     if (state.wantsLive) await startLive(view);
-    else renderMain(true);
+    else { state.view = view; renderMain(true); }
   }
 
   async function openRecording(id) {
@@ -787,7 +831,8 @@
     if (!state.selectedRecord && !video && !leave) return true;
     if (video) video.pause();
     try {
-      await post('/archive/close', leave ? { leave: true } : {});
+      const selectionRevision = leave ? ++state.liveSelectionRevision : null;
+      await post('/archive/close', leave ? { leave: true, revision: selectionRevision } : {});
       if (action !== actionGeneration) return false;
     }
     catch (failure) {
@@ -812,6 +857,11 @@
     state.selectedRecord = null;
     state.playerFrameReported = false;
     state.playerError = false;
+    if (leave) {
+      state.liveRequest = null;
+      state.liveStreamId = null;
+      state.livePlaylist = null;
+    }
     return true;
   }
 
@@ -875,6 +925,47 @@
   function disconnectArchiveResizeObserver() {
     if (archiveResizeObserver) archiveResizeObserver.disconnect();
     archiveResizeObserver = null;
+  }
+
+  function clearArchivePlayerLocally() {
+    archiveFrameToken++;
+    disconnectArchiveResizeObserver();
+    const video = document.getElementById('archive-video');
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
+    state.selectedRecord = null;
+    state.playerFrameReported = false;
+    state.playerError = false;
+  }
+
+  function reconcileViewerMode(data) {
+    const nextMode = data.mode;
+    if (!['live', 'archive'].includes(nextMode)) return false;
+    if (nextMode !== state.mode) {
+      stopLiveMedia();
+      clearArchivePlayerLocally();
+      state.mode = nextMode;
+      rememberMode(nextMode);
+      state.mainKey = '';
+      state.localFirstFrame = false;
+      if (nextMode === 'archive') {
+        state.wantsLive = false;
+        state.liveRequest = null;
+        state.liveStreamId = null;
+        state.livePlaylist = null;
+      } else {
+        state.wantsLive = true;
+        state.liveFailed = false;
+        state.liveRequest = null;
+        state.liveStreamId = null;
+        state.livePlaylist = null;
+      }
+    }
+    if (nextMode === 'live' && liveCameras().includes(data.view)) state.view = data.view;
+    return true;
   }
 
   function attachArchivePlayer() {
@@ -1051,6 +1142,9 @@
     state.replaced = failure.body?.status === 'replaced';
     state.status = state.replaced ? 'replaced' : 'ended';
     state.wantsLive = false;
+    state.liveRequest = null;
+    state.liveStreamId = null;
+    state.livePlaylist = null;
     state.selectedRecord = null;
     state.mainKey = '';
     updateStatusBar();
@@ -1072,11 +1166,15 @@
         handleUnauthorized({ body: { status: 'replaced' } });
         return;
       }
+      const selectionRevision = data.selectionRevision;
+      const currentSelectionSnapshot = Number.isSafeInteger(selectionRevision)
+        && selectionRevision >= state.liveSelectionRevision;
       const interiorCameras = normalizeInteriorCameraMask(data.interiorCameras);
       if (interiorCameras !== null && interiorCameras !== state.interiorCameras) {
         state.interiorCameras = interiorCameras;
         if (!liveCameras().includes(state.view)) state.view = 'composition';
-        if (state.mode === 'live' && state.wantsLive) {
+        if (currentSelectionSnapshot && data.mode === 'live' && liveCameras().includes(data.view)) state.view = data.view;
+        if (state.mode === 'live' && state.wantsLive && currentSelectionSnapshot && data.mode !== 'archive') {
           await startLive(state.view);
           return;
         }
@@ -1090,9 +1188,29 @@
         return;
       }
       applyBatterySnapshot(data.battery, requestedAt);
+      if (currentSelectionSnapshot && reconcileViewerMode(data)) {
+        state.liveSelectionRevision = selectionRevision;
+      }
       if (state.mode === 'live' && state.wantsLive) {
-        if (!state.liveRequest || data.request !== state.liveRequest) return;
-        const playlist = typeof data.playlist === 'string' && /^\/media\/[0-9a-f-]{36}\/live\.m3u8$/.test(data.playlist)
+        if (!Number.isSafeInteger(selectionRevision) || selectionRevision < state.liveSelectionRevision) return;
+        if (selectionRevision > state.liveSelectionRevision) state.liveSelectionRevision = selectionRevision;
+        state.liveRequest = typeof data.request === 'string' && /^[0-9a-f-]{36}$/.test(data.request)
+          ? data.request : null;
+        if (liveCameras().includes(data.view)) state.view = data.view;
+        if (data.streamId && !/^[0-9a-f-]{36}$/.test(data.streamId)) {
+          console.warn('Camera viewer returned an invalid live stream identity');
+        }
+        const streamId = typeof data.streamId === 'string' && /^[0-9a-f-]{36}$/.test(data.streamId)
+          ? data.streamId : null;
+        if (streamId !== state.liveStreamId) {
+          stopLiveMedia();
+          state.liveStreamId = streamId;
+          state.livePlaylist = null;
+          state.firstLiveFrame = false;
+          state.localFirstFrame = false;
+          state.mainKey = '';
+        }
+        const playlist = streamId && data.playlist === `/media/${streamId}/live.m3u8`
           ? data.playlist : null;
         if (playlist !== state.livePlaylist) state.mainKey = '';
         state.livePlaylist = playlist;
@@ -1101,12 +1219,12 @@
       state.status = data.status;
       if (state.status === 'ready' && state.wantsLive) state.status = previous === 'connected' ? 'connected' : 'preparing';
       state.missingCharge = Number(data.missingCharge) || 0;
-      if (state.status !== 'connected') stopLiveMedia();
       if (['error', 'ended'].includes(state.status)) state.wantsLive = false;
       if (state.status === 'ready' && !state.wantsLive) state.liveFailed = false;
       if (state.status !== previous) state.mainKey = '';
       updateStatusBar();
       renderMain();
+      if (state.mode === 'archive' && !state.archiveLoaded && !state.archiveLoading) await loadArchive();
     } catch (failure) {
       if (action !== actionGeneration || !state.authenticated || modeWrite !== modeWriteGeneration || request !== statusRequestGeneration) return;
       applyBatterySnapshot(null);
@@ -1131,6 +1249,10 @@
     state.status = 'ended';
     state.wantsLive = false;
     state.mode = 'live';
+    state.liveRequest = null;
+    state.liveStreamId = null;
+    state.liveSelectionRevision = 0;
+    state.livePlaylist = null;
     state.archiveLoaded = false;
     state.recordings = [];
     state.selectedDay = null;
@@ -1182,12 +1304,18 @@
       state.status = 'ready';
       state.wantsLive = false;
       state.liveFailed = false;
+      state.liveRequest = null;
+      state.liveStreamId = null;
+      state.liveSelectionRevision = 0;
+      state.livePlaylist = null;
       state.firstLiveFrame = false;
       state.localFirstFrame = false;
       state.interiorCameras = 0;
       try {
         const current = await api('/status');
         state.interiorCameras = normalizeInteriorCameraMask(current.interiorCameras) ?? 0;
+        if (Number.isSafeInteger(current.selectionRevision) && current.selectionRevision >= 0)
+          state.liveSelectionRevision = current.selectionRevision;
       } catch (failure) {
         if (failure.statusCode === 401 || contractBlocked) {
           state.authenticated = false;

@@ -50,8 +50,10 @@ final class MotionGpuComposer implements AutoCloseable {
     private final float[][] transforms = new float[6][16];
     private final int[] names = new int[6];
     private final CameraFramePump[] liveInputPumps = new CameraFramePump[2];
+    private final long[] liveInputGenerations = new long[2];
     private final int[] liveInputWidths = new int[2];
     private final int[] liveInputHeights = new int[2];
+    private long nextLiveInputGeneration;
     private final int[] unavailableTextures = new int[6];
     private final int[] unavailableTextureWidths = new int[6];
     private final int[] unavailableTextureHeights = new int[6];
@@ -76,10 +78,11 @@ final class MotionGpuComposer implements AutoCloseable {
     private String liveLocale;
     private boolean includeExterior;
     private final EGLContext sharedContext;
-    private final int glVersion;
+    private int glVersion;
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
     private EGLContext context = EGL14.EGL_NO_CONTEXT;
     private EGLConfig config;
+    private CameraEglDisplay.SharedGroup sharedGroup;
     private EGLSurface window = EGL14.EGL_NO_SURFACE;
     private int selectedDirection = -1;
     private int program, iconProgram, position, uv, matrix, sampler;
@@ -319,7 +322,7 @@ final class MotionGpuComposer implements AutoCloseable {
                     require(EGL14.eglMakeCurrent(display, window, window, context), "live source current");
                     for (int channel = 0; channel < 2; channel++) {
                         int bit = 1 << channel;
-                        if ((RemoteCameraView.interiorMask(liveView, allowedInteriorMask) & bit) != 0
+                        if ((allowedInteriorMask & bit) != 0
                                 && (availableInteriorMask & bit) == 0)
                             unavailable[channel + 4] = true;
                     }
@@ -341,18 +344,28 @@ final class MotionGpuComposer implements AutoCloseable {
     }
 
     private void initializeOnGlThread(Surface encoder) {
-        display = CameraEglDisplay.acquire();
+        int contextVersion = glVersion;
+        EGLContext share = sharedContext;
+        if (remoteLive) {
+            sharedGroup = CameraEglDisplay.acquireSharedGroup();
+            display = sharedGroup.display;
+            share = sharedGroup.rootContext;
+            contextVersion = sharedGroup.glVersion;
+            glVersion = contextVersion;
+        } else {
+            display = CameraEglDisplay.acquire();
+        }
         int[] values = new int[2];
         EGLConfig[] configs = new EGLConfig[1];
-        require(EGL14.eglChooseConfig(display, new int[]{EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-                EGL14.EGL_RED_SIZE,8,EGL14.EGL_GREEN_SIZE,8,EGL14.EGL_BLUE_SIZE,8,
-                EGL14.EGL_SURFACE_TYPE,EGL14.EGL_WINDOW_BIT | EGL14.EGL_PBUFFER_BIT,
-                0x3142,1,EGL14.EGL_NONE},
+        require(EGL14.eglChooseConfig(display, new int[]{EGL14.EGL_RENDERABLE_TYPE,
+                EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_RED_SIZE,8,EGL14.EGL_GREEN_SIZE,8,
+                EGL14.EGL_BLUE_SIZE,8,EGL14.EGL_SURFACE_TYPE,
+                EGL14.EGL_WINDOW_BIT | EGL14.EGL_PBUFFER_BIT, 0x3142,1,EGL14.EGL_NONE},
                 0, configs, 0, 1, values, 0) && values[0] > 0, "recordable EGL config");
         config = configs[0];
-        context = EGL14.eglCreateContext(display, config, sharedContext,
-                new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION,glVersion,EGL14.EGL_NONE},0);
-        window = EGL14.eglCreateWindowSurface(display, configs[0], encoder,
+        context = EGL14.eglCreateContext(display, config, share,
+                new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION,contextVersion,EGL14.EGL_NONE},0);
+        window = EGL14.eglCreateWindowSurface(display, config, encoder,
                 new int[]{EGL14.EGL_NONE},0);
         require(context != EGL14.EGL_NO_CONTEXT && window != EGL14.EGL_NO_SURFACE, "encoder EGL surface");
         require(EGL14.eglMakeCurrent(display,window,window,context), "EGL current");
@@ -441,11 +454,11 @@ final class MotionGpuComposer implements AutoCloseable {
         await(task, "viewer output update");
     }
 
-    Surface[] updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
+    MotionRecordingOutput.LiveInputs updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
             boolean exteriorReady, int availableMask, int[] widths, int[] heights,
             String locale) throws Exception {
         validateLiveSelection(view, allowedMask, exteriorReady, availableMask, widths, heights, locale);
-        final FutureTask<Surface[]> task = new FutureTask<>(() -> {
+        final FutureTask<MotionRecordingOutput.LiveInputs> task = new FutureTask<>(() -> {
             if (!remoteLive || closed || window == EGL14.EGL_NO_SURFACE)
                 throw new IllegalStateException("remote live composer unavailable");
             require(EGL14.eglMakeCurrent(display, window, window, context), "live output update current");
@@ -458,10 +471,9 @@ final class MotionGpuComposer implements AutoCloseable {
                 // A pending exterior lease is preparation, not a failed camera.
                 unavailable[channel] = false;
             }
-            int requested = RemoteCameraView.interiorMask(liveView, allowedInteriorMask);
             for (int channel = 0; channel < 2; channel++) {
                 int bit = 1 << channel;
-                unavailable[channel + 4] = (requested & bit) != 0
+                unavailable[channel + 4] = (allowedInteriorMask & bit) != 0
                         && (availableInteriorMask & bit) == 0;
             }
             configureLiveInteriors();
@@ -478,12 +490,13 @@ final class MotionGpuComposer implements AutoCloseable {
         catch (Exception failure) { throw failure; }
     }
 
-    private Surface[] liveInteriorInputsOnGlThread() {
+    private MotionRecordingOutput.LiveInputs liveInteriorInputsOnGlThread() {
         // Binder needs the complete current pair, including inputs created during initialization.
         Surface[] surfaces = new Surface[2];
         for (int channel = 0; channel < surfaces.length; channel++)
-            if (liveInputPumps[channel] != null) surfaces[channel] = liveInputPumps[channel].surface;
-        return surfaces;
+            if (liveInputGenerations[channel] > 0 && liveInputPumps[channel] != null)
+                surfaces[channel] = liveInputPumps[channel].surface;
+        return new MotionRecordingOutput.LiveInputs(surfaces, liveInputGenerations);
     }
 
     void markLiveChannelUnavailable(int channel, String reference) {
@@ -524,15 +537,17 @@ final class MotionGpuComposer implements AutoCloseable {
     }
 
     private void configureLiveInteriors() {
-        int requested = RemoteCameraView.interiorMask(liveView, allowedInteriorMask);
+        // Hidden retained SurfaceTextures keep draining while snapshot copies stop.
         for (int channel = 0; channel < 2; channel++) {
             int bit = 1 << channel;
             CameraFramePump current = liveInputPumps[channel];
-            if ((requested & bit) == 0 || (availableInteriorMask & bit) == 0) {
+            if ((availableInteriorMask & bit) == 0) {
                 if (current != null) closeLiveInput(channel, current);
+                unavailable[channel + 4] = (allowedInteriorMask & bit) != 0;
                 continue;
             }
-            if (current != null && (liveInputWidths[channel] != interiorWidths[channel]
+            if (current != null && (liveInputGenerations[channel] == 0
+                    || liveInputWidths[channel] != interiorWidths[channel]
                     || liveInputHeights[channel] != interiorHeights[channel])) {
                 closeLiveInput(channel, current);
                 current = null;
@@ -552,7 +567,6 @@ final class MotionGpuComposer implements AutoCloseable {
                 });
                 liveInputPumps[channel] = pump;
                 liveInputWidths[channel] = sourceWidth;
-                liveInputHeights[channel] = sourceHeight;
                 firstFrameLogged[channel + 4] = false;
                 firstInputLogged[channel + 4] = false;
                 try {
@@ -561,16 +575,24 @@ final class MotionGpuComposer implements AutoCloseable {
                             liveView, allowedInteriorMask, channel + 4, width, height);
                     RemoteCameraLiveLayout.Rect fit = RemoteCameraLiveLayout.fit(
                             bounds, sourceWidth, sourceHeight);
-                    pump.setOutputSize(fit == null ? sourceWidth : fit.width(),
-                            fit == null ? sourceHeight : fit.height());
+                    pump.setOutputSize(bounds == null ? 0 : fit == null ? sourceWidth : fit.width(),
+                            bounds == null ? 0 : fit == null ? sourceHeight : fit.height());
+                    liveInputHeights[channel] = sourceHeight;
+                    liveInputGenerations[channel] = nextLiveInputGeneration();
                     unavailable[channel + 4] = false;
                     logDiagnostic("interior_input_ready", "channel=" + directionName(channel + 4)
                             + " source=" + sourceWidth + "x" + sourceHeight);
                 } catch (Throwable failure) {
                     unavailable[channel + 4] = true;
                     availableInteriorMask &= ~bit;
-                    liveInputPumps[channel] = null;
-                    try { pump.close(); } catch (Throwable cleanup) { failure.addSuppressed(cleanup); }
+                    try {
+                        pump.close();
+                        if (liveInputPumps[channel] == pump) liveInputPumps[channel] = null;
+                        liveInputWidths[channel] = liveInputHeights[channel] = 0;
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                        liveInputGenerations[channel] = 0;
+                    }
                     com.byd.extend.remote.CameraViewingDiagnostics.failure(
                             "live_camera_input_" + directionName(channel + 4), "shared", failure);
                     logDiagnostic("interior_input_unavailable", "channel=" + directionName(channel + 4)
@@ -581,10 +603,18 @@ final class MotionGpuComposer implements AutoCloseable {
                         liveView, allowedInteriorMask, channel + 4, width, height);
                 RemoteCameraLiveLayout.Rect fit = RemoteCameraLiveLayout.fit(
                         bounds, interiorWidths[channel], interiorHeights[channel]);
-                current.setOutputSize(fit == null ? interiorWidths[channel] : fit.width(),
-                        fit == null ? interiorHeights[channel] : fit.height());
+                current.setOutputSize(bounds == null ? 0
+                                : fit == null ? interiorWidths[channel] : fit.width(),
+                        bounds == null ? 0
+                                : fit == null ? interiorHeights[channel] : fit.height());
             }
         }
+    }
+
+    private long nextLiveInputGeneration() {
+        if (nextLiveInputGeneration == Long.MAX_VALUE)
+            throw new IllegalStateException("live input generation exhausted");
+        return ++nextLiveInputGeneration;
     }
 
     private void captureLiveInput(int channel, CameraFramePump pump) {
@@ -610,14 +640,18 @@ final class MotionGpuComposer implements AutoCloseable {
     }
 
     private void closeLiveInput(int channel, CameraFramePump pump) {
-        liveInputPumps[channel] = null;
-        liveInputWidths[channel] = liveInputHeights[channel] = 0;
-        seen[channel + 4] = false;
         try { pump.close(); }
         catch (Throwable failure) {
             com.byd.extend.remote.CameraViewingDiagnostics.failure(
                     "live_camera_cleanup_" + directionName(channel + 4), "shared", failure);
+            if (failure instanceof Error) throw (Error) failure;
+            if (failure instanceof RuntimeException) throw (RuntimeException) failure;
+            throw new IllegalStateException("live camera input cleanup failed", failure);
         }
+        if (liveInputPumps[channel] == pump) liveInputPumps[channel] = null;
+        liveInputWidths[channel] = liveInputHeights[channel] = 0;
+        liveInputGenerations[channel] = 0;
+        seen[channel + 4] = false;
     }
 
     private void markUnavailableOnGlThread(int channel, String reference) {
@@ -647,7 +681,15 @@ final class MotionGpuComposer implements AutoCloseable {
         if (channel >= 4) {
             int index = channel - 4;
             CameraFramePump pump = liveInputPumps[index];
-            if (pump != null) closeLiveInput(index, pump);
+            if (pump != null) {
+                try { closeLiveInput(index, pump); }
+                catch (Throwable cleanup) {
+                    if (primary != null && cleanup != primary) primary.addSuppressed(cleanup);
+                    else com.byd.extend.remote.CameraViewingDiagnostics.failure(
+                            "live_input_cleanup_" + directionName(channel) + "_" + reference,
+                            "shared", cleanup);
+                }
+            }
             availableInteriorMask &= ~(1 << index);
         }
         logDiagnostic("live_channel_unavailable", "channel=" + directionName(channel)
@@ -682,9 +724,9 @@ final class MotionGpuComposer implements AutoCloseable {
         RemoteCameraView.validateMask(allowedMask);
         RemoteCameraView.validateMask(availableMask);
         if (!RemoteCameraView.valid(view) || !RemoteCameraView.allowed(view, allowedMask)
+                || (availableMask & ~allowedMask) != 0
                 || widths == null || widths.length != 2 || heights == null || heights.length != 2
-                || locale == null || !locale.matches("[A-Za-z-]{1,16}")
-                || exteriorReady && !RemoteCameraView.needsExterior(view))
+                || locale == null || !locale.matches("[A-Za-z-]{1,16}"))
             throw new IllegalArgumentException("invalid remote live source selection");
         for (int channel = 0; channel < 2; channel++) {
             if ((availableMask & (1 << channel)) != 0
@@ -1078,8 +1120,12 @@ final class MotionGpuComposer implements AutoCloseable {
             for (int channel = 0; channel < liveInputPumps.length; channel++) {
                 CameraFramePump pump = liveInputPumps[channel];
                 if (pump == null) continue;
-                liveInputPumps[channel] = null;
-                try { pump.close(); }
+                try {
+                    pump.close();
+                    liveInputPumps[channel] = null;
+                    liveInputWidths[channel] = liveInputHeights[channel] = 0;
+                    liveInputGenerations[channel] = 0;
+                }
                 catch (Throwable failure) {
                     if (sourceCleanupFailure == null) sourceCleanupFailure = failure;
                     else sourceCleanupFailure.addSuppressed(failure);
@@ -1108,7 +1154,12 @@ final class MotionGpuComposer implements AutoCloseable {
             if (hasContext)
                 require(EGL14.eglDestroyContext(display, context), "EGL destroy context");
             context = EGL14.EGL_NO_CONTEXT;
-            CameraEglDisplay.release(display);
+            if (sharedGroup != null) {
+                CameraEglDisplay.releaseSharedGroup(sharedGroup);
+                sharedGroup = null;
+            } else {
+                CameraEglDisplay.release(display);
+            }
             display = EGL14.EGL_NO_DISPLAY;
         }
     }

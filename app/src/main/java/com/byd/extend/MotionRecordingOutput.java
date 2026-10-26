@@ -14,7 +14,7 @@ import java.util.function.BiConsumer;
 /** Encoder ownership for local shared-YUV recording and legacy helper consumers. */
 final class MotionRecordingOutput {
     private static final String DESCRIPTOR = "com.byd.extend.MotionRecordingOutput";
-    static final int VIEWING_PARCEL_VERSION = 1;
+    static final int VIEWING_PARCEL_VERSION = 2;
     private static final IdentityHashMap<Surface, MotionRecordingOutput> OUTPUTS = new IdentityHashMap<>();
     final int width, height;
     final int[] order;
@@ -35,6 +35,19 @@ final class MotionRecordingOutput {
     private int[] interiorHeights = new int[2];
     private String liveLocale = "en";
     private boolean includeExterior = true;
+
+    static final class LiveInputs {
+        final Surface[] surfaces;
+        final long[] generations;
+
+        LiveInputs(Surface[] surfaces, long[] generations) {
+            if (surfaces == null || surfaces.length != 2
+                    || generations == null || generations.length != 2)
+                throw new IllegalArgumentException("two live interior inputs required");
+            this.surfaces = surfaces.clone();
+            this.generations = generations.clone();
+        }
+    }
 
     MotionRecordingOutput(int width, int height, int[] order, String session,
             MotionFrameTimestamp clock, Consumer<String> errors) {
@@ -217,7 +230,7 @@ final class MotionRecordingOutput {
         }
     }
 
-    synchronized Surface[] updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
+    synchronized LiveInputs updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
             boolean exteriorReady, int availableMask, int[] widths, int[] heights,
             String locale) throws Exception {
         if (!remoteLive) throw new IllegalStateException("remote live composer unavailable");
@@ -227,7 +240,7 @@ final class MotionRecordingOutput {
         interiorWidths = widths.clone(); interiorHeights = heights.clone();
         liveLocale = locale;
         validateLiveSelection();
-        Surface[] inputs = composer.updateLiveViewingOutput(encoder, liveView,
+        LiveInputs inputs = composer.updateLiveViewingOutput(encoder, liveView,
                 allowedInteriorMask, includeExterior, availableInteriorMask,
                 interiorWidths, interiorHeights, liveLocale);
         if (encoder != null) {
@@ -259,13 +272,8 @@ final class MotionRecordingOutput {
                 || availableInteriorMask < 0 || availableInteriorMask > RemoteCameraView.BOTH
                 || interiorWidths == null || interiorWidths.length != 2
                 || interiorHeights == null || interiorHeights.length != 2
-                || (availableInteriorMask & ~RemoteCameraView.interiorMask(liveView, allowedInteriorMask)) != 0
-                || includeExterior && !RemoteCameraView.needsExterior(liveView))
+                || (availableInteriorMask & ~allowedInteriorMask) != 0)
             throw new IllegalArgumentException("invalid remote camera source configuration");
-        if (includeExterior && !RemoteCameraView.needsExterior(liveView))
-            throw new IllegalArgumentException("exterior source supplied to interior-only view");
-        if ((availableInteriorMask & ~RemoteCameraView.interiorMask(liveView, allowedInteriorMask)) != 0)
-            throw new IllegalArgumentException("unrequested interior source supplied");
         for (int index = 0; index < 2; index++) {
             int bit = 1 << index;
             if ((availableInteriorMask & bit) != 0
@@ -309,7 +317,7 @@ final class MotionRecordingOutput {
     synchronized void detach(int sourceIndex) {
         if (composer == null) return;
         composer.detachSource(sourceIndex);
-        if (--attached == 0) {
+        if (--attached == 0 && !remoteLive) {
             composer.close();
             composer = null;
         }
@@ -320,7 +328,7 @@ final class MotionRecordingOutput {
     }
 
     synchronized void closeUnused() {
-        if (attached == 0 && composer != null) {
+        if (!remoteLive && attached == 0 && composer != null) {
             composer.close(); composer = null;
         }
     }

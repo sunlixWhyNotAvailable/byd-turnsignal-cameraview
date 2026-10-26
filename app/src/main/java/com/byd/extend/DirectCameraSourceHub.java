@@ -109,6 +109,7 @@ final class DirectCameraSourceHub
     private EGLConfig config;
     private EGLContext sharedContext = EGL14.EGL_NO_CONTEXT;
     private int sharedGlVersion = 3;
+    private CameraEglDisplay.SharedGroup sharedGroup;
     private final android.content.Context renderingContext;
     private final CameraMeshCache meshCache;
     private volatile boolean closed;
@@ -361,12 +362,13 @@ final class DirectCameraSourceHub
                 } catch (Throwable error) {
                     workerError = error;
                 }
+                // closeWorkers waits for every finalizer and joins its thread before returning or throwing.
                 Arrays.fill(workers, null);
                 try {
                     releaseDisplay();
                 } catch (Throwable error) {
                     if (workerError == null) workerError = error;
-                    else workerError.addSuppressed(error);
+                    else if (error != workerError) workerError.addSuppressed(error);
                 }
                 synchronized (targets) {
                     targets.clear();
@@ -389,35 +391,18 @@ final class DirectCameraSourceHub
     }
 
     private void initializeDisplay() {
-        display = CameraEglDisplay.acquire();
-        EGLConfig[] configs = new EGLConfig[1];
-        int[] count = new int[1];
-        int[] attributes = {
-                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT | EGL14.EGL_PBUFFER_BIT,
-                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8,
-                EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
-                EGL14.EGL_NONE
-        };
-        require(EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0)
-                && count[0] > 0, "EGL config unavailable");
-        config = configs[0];
-        sharedContext = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
-                new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, sharedGlVersion, EGL14.EGL_NONE}, 0);
-        if (sharedContext == EGL14.EGL_NO_CONTEXT) {
-            EGL14.eglGetError();
-            sharedGlVersion = 2;
-            sharedContext = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
-                    new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, sharedGlVersion, EGL14.EGL_NONE}, 0);
-        }
-        require(sharedContext != EGL14.EGL_NO_CONTEXT, "shared camera context failed");
+        sharedGroup = CameraEglDisplay.acquireSharedGroup();
+        display = sharedGroup.display;
+        config = sharedGroup.config;
+        sharedContext = sharedGroup.rootContext;
+        sharedGlVersion = sharedGroup.glVersion;
     }
 
     private void releaseDisplay() {
-        if (display == EGL14.EGL_NO_DISPLAY) return;
-        if (sharedContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, sharedContext);
+        if (sharedGroup == null) return;
+        CameraEglDisplay.releaseSharedGroup(sharedGroup);
+        sharedGroup = null;
         sharedContext = EGL14.EGL_NO_CONTEXT;
-        CameraEglDisplay.release(display);
         display = EGL14.EGL_NO_DISPLAY;
         config = null;
     }

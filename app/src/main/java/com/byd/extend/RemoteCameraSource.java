@@ -28,7 +28,6 @@ public final class RemoteCameraSource implements AutoCloseable {
     private volatile boolean closing;
     private volatile Throwable closeFailure;
     private boolean preparationRequested;
-    private boolean releasePreparationAfterUpdate;
     private volatile boolean exteriorReady;
     private long outputGeneration;
     private int requestId;
@@ -43,23 +42,28 @@ public final class RemoteCameraSource implements AutoCloseable {
         Context app = context.getApplicationContext();
         this.context = app == null ? context : app;
         this.failure = failure == null ? ignored -> { } : failure;
-        interiors = new RemoteInteriorCameraSources(this::sourceChannelUnavailable);
+        interiors = new RemoteInteriorCameraSources(session, this::sourceChannelUnavailable);
         PowerManager power = (PowerManager) this.context.getSystemService(Context.POWER_SERVICE);
         if (power == null) throw new IllegalStateException("PowerManager unavailable");
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bydextend:camera-viewer");
         wakeLock.setReferenceCounted(false);
     }
 
-    /** Opens only the channels selected for this live view; interior-only views skip exterior preparation. */
+    /** Lazily opens selected interiors and retains previously opened permitted sources through view changes. */
     public boolean prepare(int view, int interiorMask) throws Exception {
         if (closing) throw new IllegalStateException("remote camera source cleanup is pending", closeFailure);
         validateSelection(view, interiorMask);
+        int previousView = preparedView;
+        int previousAllowedMask = allowedInteriorMask;
+        int previousAvailableMask = specs.availableMask;
+        boolean previousExteriorReady = exteriorReady;
         // Keep the viewing process alive for interior-only capture as well. The OEM clients
         // own their camera threads, but that does not make the shell process independently
         // immune to suspend while no external camera lease is held.
         if (!wakeLock.isHeld()) wakeLock.acquire();
         int requested = RemoteCameraView.interiorMask(view, interiorMask);
-        try { interiors.retain(requested); }
+        int retained = RemoteCameraView.retainedInteriors(specs.attemptedMask, requested, interiorMask);
+        try { interiors.retain(retained); }
         catch (Throwable cleanup) {
             CameraViewingDiagnostics.failure("interior_release_before_prepare", "shared", cleanup);
             if (cleanup instanceof Exception) throw (Exception) cleanup;
@@ -71,9 +75,7 @@ public final class RemoteCameraSource implements AutoCloseable {
         allowedInteriorMask = interiorMask;
         specs = nextSpecs;
 
-        exteriorReady = false;
         if (RemoteCameraView.needsExterior(view)) {
-            releasePreparationAfterUpdate = false;
             preparationRequested = true;
             try {
                 exteriorReady = RemoteCameraPreparation.prepare(context, owner, session);
@@ -83,13 +85,15 @@ public final class RemoteCameraSource implements AutoCloseable {
                 CameraViewingDiagnostics.failure("exterior_prepare", "shared", cause);
                 exteriorReady = false;
             }
-        } else if (attached) {
-            releasePreparationAfterUpdate = preparationRequested;
-        } else {
-            try { releasePreparation(); }
-            catch (Throwable releaseFailure) {
-                CameraViewingDiagnostics.failure("exterior_release_for_interior_view", "shared", releaseFailure);
-            }
+        }
+        if (previousView != preparedView || previousAllowedMask != allowedInteriorMask
+                || previousAvailableMask != specs.availableMask || previousExteriorReady != exteriorReady) {
+            CameraViewingDiagnostics.detail("source_selection", "shared", "session=" + session
+                    + " view=" + RemoteCameraView.name(previousView) + "->" + RemoteCameraView.name(preparedView)
+                    + " allowed=" + previousAllowedMask + "->" + allowedInteriorMask
+                    + " requested=" + requested + " attempted=" + specs.attemptedMask
+                    + " available=" + previousAvailableMask + "->" + specs.availableMask
+                    + " exteriorReady=" + previousExteriorReady + "->" + exteriorReady);
         }
         // Combined and interior-only output remain useful while an exterior lease is unavailable.
         return !RemoteCameraView.needsExterior(view) || view == RemoteCameraView.COMBINED || exteriorReady;
@@ -132,14 +136,9 @@ public final class RemoteCameraSource implements AutoCloseable {
             reply.readException();
             if (reply.readInt() != 1) throw new IllegalStateException("camera viewer attach refused");
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
+            long[] inputGenerations = reply.createLongArray();
             attached = true;
-            interiors.attachInputs(inputs, specs.availableMask);
-            if (!RemoteCameraView.needsExterior(view) && preparationRequested) {
-                try { releasePreparation(); }
-                catch (Throwable releaseFailure) {
-                    CameraViewingDiagnostics.failure("exterior_release_after_interior_attach", "shared", releaseFailure);
-                }
-            }
+            interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
         } catch (Throwable error) {
             if (error instanceof Exception) throw (Exception) error;
             if (error instanceof Error) throw (Error) error;
@@ -154,7 +153,6 @@ public final class RemoteCameraSource implements AutoCloseable {
         if (!attached || host == null) throw new IllegalStateException("viewer not attached");
         if (!matchesPrepared(view, interiorMask)) throw new IllegalStateException("viewer source not prepared");
         String language = validateLocale(locale);
-        interiors.suspend();
         Parcel data = Parcel.obtain(), reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
@@ -175,11 +173,8 @@ public final class RemoteCameraSource implements AutoCloseable {
             reply.readException();
             if (reply.readInt() != 1) throw new IllegalStateException("viewer output update refused");
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
-            interiors.attachInputs(inputs, specs.availableMask);
-            if (releasePreparationAfterUpdate && !RemoteCameraView.needsExterior(view)) {
-                releasePreparationAfterUpdate = false;
-                releasePreparation();
-            }
+            long[] inputGenerations = reply.createLongArray();
+            interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
         } finally { data.recycle(); reply.recycle(); }
     }
 
@@ -213,12 +208,15 @@ public final class RemoteCameraSource implements AutoCloseable {
     }
 
     private void composerChannelUnavailable(int channel, String reference) {
+        CameraViewingDiagnostics.detail("source_composer_channel_failure", "shared",
+                "source=" + session + " channel=" + channel + " ref=" + reference);
         interiors.failedByComposer(channel, reference);
     }
 
     private boolean matchesPrepared(int view, int mask) {
+        int requested = RemoteCameraView.interiorMask(view, mask);
         return preparedView == view && allowedInteriorMask == mask
-                && specs.requestedMask == RemoteCameraView.interiorMask(view, mask);
+                && (specs.attemptedMask & requested) == requested;
     }
 
     private static void validateSelection(int view, int mask) {
@@ -322,6 +320,8 @@ public final class RemoteCameraSource implements AutoCloseable {
     }
 
     public boolean isVideoDetached() { return host == null; }
+
+    public String sessionId() { return session; }
 
     /** Reports the most recent external preparation result without coupling it to interior readiness. */
     public boolean isExteriorReady() { return exteriorReady; }

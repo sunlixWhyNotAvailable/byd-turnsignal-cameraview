@@ -44,9 +44,9 @@ public final class CameraViewerServer implements AutoCloseable {
         boolean current(String session);
         void disconnected(String session, String reason);
         void failed(Throwable failure);
-        void live(String session, int direction, String request);
+        String live(String session, int direction, String request, long selectionRevision);
         int interiorCameras();
-        void archive(String session, boolean leave);
+        boolean archive(String session, boolean leave, long selectionRevision);
         JSONObject status();
         JSONObject setMode(String session, String mode, boolean enabled) throws Exception;
         JSONObject presentation();
@@ -325,27 +325,57 @@ public final class CameraViewerServer implements AutoCloseable {
                 return;
             case "/archive/open":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
+                long archiveRevision = selectionRevision(bodyObject(request.body));
+                if (!transferCurrent(request.session, socket)) {
+                    json(socket, reply, 401, access.wasReplaced(request.session) ? "replaced" : "unauthorized", null);
+                    return;
+                }
+                if (!stream.archive(request.session, false, archiveRevision)) {
+                    json(socket, reply, 409, "stale_live_selection", null);
+                    return;
+                }
                 closePlayback(request.session);
-                stream.archive(request.session, false);
                 serveJson(socket, false, reply, stream.status());
                 return;
             case "/archive/close":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
+                JSONObject archiveClose = bodyObject(request.body);
+                if (archiveClose.optBoolean("leave")) {
+                    if (!transferCurrent(request.session, socket)) {
+                        json(socket, reply, 401, access.wasReplaced(request.session) ? "replaced" : "unauthorized", null);
+                        return;
+                    }
+                    if (!stream.archive(request.session, true, selectionRevision(archiveClose))) {
+                        json(socket, reply, 409, "stale_live_selection", null);
+                        return;
+                    }
+                }
                 closePlayback(request.session);
-                if (bodyObject(request.body).optBoolean("leave")) stream.archive(request.session, true);
                 serveJson(socket, false, reply, stream.status());
                 return;
             case "/live":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
-                int direction = direction(bodyObject(request.body).optString("view", "composition"));
+                JSONObject liveInput = bodyObject(request.body);
+                int direction = direction(liveInput.optString("view", "composition"));
+                long selectionRevision = selectionRevision(liveInput);
+                if (!transferCurrent(request.session, socket)) {
+                    json(socket, reply, 401, access.wasReplaced(request.session) ? "replaced" : "unauthorized", null);
+                    return;
+                }
                 if (!RemoteCameraView.allowed(direction, stream.interiorCameras())) {
                     json(socket, reply, 403, "view_not_allowed", null);
                     return;
                 }
-                closePlayback(request.session);
                 String liveRequest = java.util.UUID.randomUUID().toString();
-                stream.live(request.session, direction, liveRequest);
-                serveJson(socket, false, reply, new JSONObject().put("status", "preparing").put("request", liveRequest));
+                String streamId = stream.live(request.session, direction, liveRequest, selectionRevision);
+                if (streamId == null) {
+                    json(socket, reply, 409, "stale_live_selection", null);
+                    return;
+                }
+                closePlayback(request.session);
+                serveJson(socket, false, reply, new JSONObject().put("status", "preparing")
+                        .put("request", liveRequest).put("selectionRevision", selectionRevision)
+                        .put("streamId", streamId));
                 return;
             case "/diagnostic":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
@@ -717,6 +747,16 @@ public final class CameraViewerServer implements AutoCloseable {
     private static int direction(String view) throws IOException {
         try { return RemoteCameraView.parse(view); }
         catch (IllegalArgumentException invalid) { throw new HttpFailure(400, "invalid_view", null, invalid); }
+    }
+
+    private static long selectionRevision(JSONObject input) throws IOException {
+        Object raw = input.opt("revision");
+        if (!(raw instanceof Number)) throw new HttpFailure(400, "invalid_selection_revision", null);
+        double value = ((Number) raw).doubleValue();
+        if (!Double.isFinite(value) || value < 1 || value > 9_007_199_254_740_991d
+                || value != Math.floor(value))
+            throw new HttpFailure(400, "invalid_selection_revision", null);
+        return (long) value;
     }
 
     private static String archiveId(String path, String prefix) {

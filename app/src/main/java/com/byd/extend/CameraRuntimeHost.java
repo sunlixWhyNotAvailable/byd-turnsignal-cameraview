@@ -359,7 +359,7 @@ final class CameraRuntimeHost {
                 output.register();
                 final MotionRecordingOutput requestedOutput = output;
                 final int requestedId = requestId;
-                Surface[] inputs = callViewerOwned(() -> {
+                MotionRecordingOutput.LiveInputs inputs = callViewerOwned(() -> {
                     try {
                         if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
                         if (viewerOwner != null) throw new IllegalStateException("camera viewer busy");
@@ -392,7 +392,8 @@ final class CameraRuntimeHost {
                 }, dispatched);
                 reply.writeNoException();
                 reply.writeInt(1);
-                reply.writeTypedArray(inputs, 0);
+                reply.writeTypedArray(inputs.surfaces, 0);
+                reply.writeLongArray(inputs.generations);
                 return operation;
             } finally {
                 if (output != null) output.unregister();
@@ -414,7 +415,7 @@ final class CameraRuntimeHost {
                 if (generation <= 0 || data.dataAvail() != 0
                         || encoder != null && !encoder.isValid())
                     throw new IllegalArgumentException("invalid viewer output update");
-                Surface[] inputs = call(() -> {
+                MotionRecordingOutput.LiveInputs inputs = call(() -> {
                     if (!pending.compareAndSet(true, false))
                         throw new IllegalStateException("viewer output update expired before dispatch");
                     if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
@@ -441,7 +442,8 @@ final class CameraRuntimeHost {
                 });
                 reply.writeNoException();
                 reply.writeInt(1);
-                reply.writeTypedArray(inputs, 0);
+                reply.writeTypedArray(inputs.surfaces, 0);
+                reply.writeLongArray(inputs.generations);
                 return operation;
             } finally {
                 if (pending.compareAndSet(true, false) && encoder != null) safeRelease(encoder);
@@ -538,9 +540,7 @@ final class CameraRuntimeHost {
         if (config == null || !RemoteCameraView.valid(config.view)
                 || !RemoteCameraView.allowed(config.view, config.allowedMask)
                 || config.availableMask < 0 || config.availableMask > RemoteCameraView.BOTH
-                || (config.availableMask & ~RemoteCameraView.interiorMask(
-                        config.view, config.allowedMask)) != 0
-                || config.exteriorReady && !RemoteCameraView.needsExterior(config.view)
+                || (config.availableMask & ~config.allowedMask) != 0
                 || config.widths == null || config.widths.length != 2
                 || config.heights == null || config.heights.length != 2
                 || config.locale == null || !config.locale.matches("[A-Za-z-]{1,16}"))
@@ -556,14 +556,16 @@ final class CameraRuntimeHost {
         }
     }
 
-    private Surface[] prepareInitialViewer(MotionRecordingOutput output,
+    private MotionRecordingOutput.LiveInputs prepareInitialViewer(MotionRecordingOutput output,
             ViewerConfig config, int requestId) throws Exception {
+        output.prepareStandalone(context);
         if (!config.exteriorReady) {
-            output.prepareStandalone(context);
             viewerComposerExternal = false;
             return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
                     false, config.availableMask, config.widths, config.heights, config.locale);
         }
+        output.updateLiveViewingOutput(null, config.view, config.allowedMask,
+                false, config.availableMask, config.widths, config.heights, config.locale);
         try {
             lifetime.start(this::initialize);
             attachViewerExterior(output, requestId);
@@ -576,7 +578,7 @@ final class CameraRuntimeHost {
         }
     }
 
-    private Surface[] updateViewerOutput(MotionRecordingOutput output, ViewerConfig config,
+    private MotionRecordingOutput.LiveInputs updateViewerOutput(MotionRecordingOutput output, ViewerConfig config,
             Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred) throws Exception {
         boolean effectiveExterior = false;
         Throwable externalFailure = null;
@@ -589,8 +591,6 @@ final class CameraRuntimeHost {
                         if (detachFailure != null) externalFailure = detachFailure;
                     }
                     if (externalFailure == null) {
-                        output.closeComposer();
-                        viewerComposerExternal = false;
                         try {
                             lifetime.start(this::initialize);
                             attachViewerExterior(output, viewerRequestId);
@@ -612,10 +612,7 @@ final class CameraRuntimeHost {
                         throw new AssertionError("unreachable");
                     }
                 }
-                if (viewerComposerExternal) {
-                    output.closeComposer();
-                    viewerComposerExternal = false;
-                }
+                viewerComposerExternal = false;
                 output.prepareStandalone(context);
             }
 
@@ -623,10 +620,9 @@ final class CameraRuntimeHost {
                 return fallbackStandalone(output, config, encoder, encoderTransferred, externalFailure);
             }
 
-            // The output retains its current encoder across composer recreation.
-            // With no new encoder, do not connect a second EGL window to that same queue.
+            // Keep the current encoder queue unless the caller supplied a replacement.
             if (encoder != null) encoderTransferred.set(true);
-            Surface[] result = output.updateLiveViewingOutput(encoder, config.view,
+            MotionRecordingOutput.LiveInputs result = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, effectiveExterior, config.availableMask,
                     config.widths, config.heights, config.locale);
             return requireViewerInputs(result);
@@ -638,7 +634,7 @@ final class CameraRuntimeHost {
         }
     }
 
-    private Surface[] fallbackStandalone(MotionRecordingOutput output, ViewerConfig config,
+    private MotionRecordingOutput.LiveInputs fallbackStandalone(MotionRecordingOutput output, ViewerConfig config,
             Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred,
             Throwable primary) throws Exception {
         Throwable failure = primary;
@@ -651,11 +647,9 @@ final class CameraRuntimeHost {
         }
         viewerComposerExternal = false;
         try {
-            try { output.closeComposer(); }
-            catch (Throwable cleanup) { failure.addSuppressed(cleanup); }
             output.prepareStandalone(context);
             if (encoder != null) encoderTransferred.set(true);
-            Surface[] inputs = output.updateLiveViewingOutput(encoder, config.view,
+            MotionRecordingOutput.LiveInputs inputs = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, false, config.availableMask,
                     config.widths, config.heights, config.locale);
             reportViewerOperationFailure("external_viewing_fallback", failure);
@@ -674,7 +668,6 @@ final class CameraRuntimeHost {
     }
 
     private void attachViewerExterior(MotionRecordingOutput output, int requestId) throws Exception {
-        output.closeComposer();
         viewerComposerExternal = false;
         Surface[] primary = output.inputs();
         Surface[] aliases = duplicateSurfaces(primary);
@@ -704,12 +697,18 @@ final class CameraRuntimeHost {
         }
     }
 
-    private static Surface[] requireViewerInputs(Surface[] inputs) {
-        if (inputs == null || inputs.length != 2)
+    private static MotionRecordingOutput.LiveInputs requireViewerInputs(
+            MotionRecordingOutput.LiveInputs inputs) {
+        if (inputs == null || inputs.surfaces.length != 2 || inputs.generations.length != 2)
             throw new IllegalStateException("remote composer returned an invalid interior Surface pair");
-        for (Surface input : inputs)
+        for (int channel = 0; channel < inputs.surfaces.length; channel++) {
+            Surface input = inputs.surfaces[channel];
+            long generation = inputs.generations[channel];
+            if (generation < 0 || (input == null) != (generation == 0))
+                throw new IllegalStateException("remote composer returned an invalid interior input identity");
             if (input != null && !input.isValid())
                 throw new IllegalStateException("remote composer returned an invalid interior Surface");
+        }
         return inputs;
     }
 

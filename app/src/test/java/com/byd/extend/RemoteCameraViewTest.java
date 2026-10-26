@@ -63,4 +63,29 @@ public final class RemoteCameraViewTest {
         assertEquals(RemoteCameraView.DRIVER,
                 RemoteCameraView.retainAllowed(RemoteCameraView.DRIVER, RemoteCameraView.BOTH));
     }
+
+    @Test public void retainedInteriorSourcesAccumulateSelectionsAndDropRevokedChannels() {
+        int retained = RemoteCameraView.retainedInteriors(RemoteCameraView.NONE,
+                RemoteCameraView.interiorMask(RemoteCameraView.CABIN, RemoteCameraView.BOTH),
+                RemoteCameraView.BOTH);
+        assertEquals(RemoteCameraView.ALLOW_CABIN, retained);
+
+        retained = RemoteCameraView.retainedInteriors(retained,
+                RemoteCameraView.interiorMask(RemoteCameraView.COMPOSITION, RemoteCameraView.BOTH),
+                RemoteCameraView.BOTH);
+        assertEquals(RemoteCameraView.ALLOW_CABIN, retained);
+
+        retained = RemoteCameraView.retainedInteriors(retained,
+                RemoteCameraView.interiorMask(RemoteCameraView.DRIVER, RemoteCameraView.BOTH),
+                RemoteCameraView.BOTH);
+        assertEquals(RemoteCameraView.BOTH, retained);
+
+        retained = RemoteCameraView.retainedInteriors(retained,
+                RemoteCameraView.interiorMask(RemoteCameraView.COMPOSITION, RemoteCameraView.ALLOW_DRIVER),
+                RemoteCameraView.ALLOW_DRIVER);
+        assertEquals(RemoteCameraView.ALLOW_DRIVER, retained);
+        assertThrows(IllegalArgumentException.class,
+                () -> RemoteCameraView.retainedInteriors(RemoteCameraView.NONE,
+                        RemoteCameraView.ALLOW_CABIN, RemoteCameraView.ALLOW_DRIVER));
+    }
 }

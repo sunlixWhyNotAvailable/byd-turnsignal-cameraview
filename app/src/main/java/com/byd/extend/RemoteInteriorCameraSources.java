@@ -28,16 +28,17 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
     private static final long CAMERA_CALL_TIMEOUT_MS = 8_000L;
     private final Slot[] slots = {new Slot(), new Slot()};
     private final BiConsumer<Integer, String> failureListener;
+    private final String sourceSession;
 
     static final class Specs {
-        final int requestedMask;
+        final int attemptedMask;
         final int availableMask;
         final int[] widths;
         final int[] heights;
         final String[] failureReferences;
 
-        Specs(int requestedMask, int availableMask, int[] widths, int[] heights, String[] references) {
-            this.requestedMask = requestedMask;
+        Specs(int attemptedMask, int availableMask, int[] widths, int[] heights, String[] references) {
+            this.attemptedMask = attemptedMask;
             this.availableMask = availableMask;
             this.widths = widths;
             this.heights = heights;
@@ -45,94 +46,103 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
         }
     }
 
-    RemoteInteriorCameraSources(BiConsumer<Integer, String> failureListener) {
+    RemoteInteriorCameraSources(String sourceSession, BiConsumer<Integer, String> failureListener) {
+        this.sourceSession = sourceSession;
         this.failureListener = failureListener;
     }
 
     Specs prepare(int requestedMask) {
         RemoteCameraView.validateMask(requestedMask);
-        int available = 0;
-        int[] widths = new int[2], heights = new int[2];
-        String[] references = new String[2];
-        if (requestedMask != RemoteCameraView.NONE) {
-            Context shell;
-            try { shell = ShellCameraAttribution.initialize(); }
-            catch (Throwable failure) {
-                for (int index = 0; index < slots.length; index++) {
-                    if ((requestedMask & (1 << index)) == 0) continue;
-                    references[index] = recordFailure(index, "identity", failure);
-                    synchronized (slots[index]) {
-                        slots[index].attempted = true;
-                        slots[index].failureReference = references[index];
-                    }
-                }
-                return new Specs(requestedMask, 0, widths, heights, references);
-            }
-            for (int index = 0; index < slots.length; index++) {
-                if ((requestedMask & (1 << index)) == 0) continue;
-                final int channel = index;
-                Slot slot = slots[index];
-                boolean shouldOpen;
-                synchronized (slot) {
-                    shouldOpen = !slot.attempted;
-                    if (shouldOpen) slot.attempted = true;
-                }
-                if (shouldOpen) {
-                    InteriorCameraClient client = null;
-                    try {
-                        int id = resolveId(index == 0 ? "ims" : "dms");
-                        client = index == 0 ? new ImsClient(id, failure -> fail(channel, failure))
-                                : new DmsClient(id, failure -> fail(channel, failure));
-                        synchronized (slot) { slot.client = client; }
-                        client.open(shell);
-                        synchronized (slot) {
-                            if (slot.client == client) {
-                                slot.width = client.width;
-                                slot.height = client.height;
-                            }
-                        }
-                    } catch (Throwable failure) {
-                        String reference = UUID.randomUUID().toString().replace("-", "");
-                        synchronized (slot) {
-                            if (slot.failureReference == null) slot.failureReference = reference;
-                        }
-                        if (client != null) {
-                            try {
-                                client.close();
-                                synchronized (slot) {
-                                    if (slot.client == client) slot.client = null;
-                                    if (slot.client == null) {
-                                        slot.surface = null;
-                                        slot.started = false;
-                                    }
-                                }
-                            } catch (Throwable cleanup) {
-                                if (cleanup != failure) failure.addSuppressed(cleanup);
-                                CameraViewingDiagnostics.failure(
-                                        "interior_open_cleanup_" + channelName(index) + "_" + reference,
-                                        "shared", cleanup);
-                            }
-                        }
-                        recordFailure(index, "open", reference, failure);
-                    }
-                }
-                synchronized (slot) {
-                    if (slot.client != null && slot.failureReference == null) {
-                        available |= 1 << index;
-                        widths[index] = slot.width;
-                        heights[index] = slot.height;
-                    } else references[index] = slot.failureReference;
+        int openMask = 0;
+        for (int index = 0; index < slots.length; index++) {
+            int bit = 1 << index;
+            if ((requestedMask & bit) == 0) continue;
+            synchronized (slots[index]) {
+                if (!slots[index].attempted) {
+                    slots[index].attempted = true;
+                    openMask |= bit;
                 }
             }
         }
-        return new Specs(requestedMask, available, widths, heights, references);
+        int available = 0;
+        int attempted = 0;
+        int[] widths = new int[2], heights = new int[2];
+        String[] references = new String[2];
+        if (openMask != RemoteCameraView.NONE) {
+            Context shell = null;
+            try {
+                shell = ShellCameraAttribution.initialize();
+                if (shell == null) throw new IllegalStateException("shell camera attribution returned null");
+            } catch (Throwable failure) {
+                for (int index = 0; index < slots.length; index++) {
+                    if ((openMask & (1 << index)) == 0) continue;
+                    references[index] = recordFailure(index, "identity", failure);
+                    synchronized (slots[index]) {
+                        slots[index].failureReference = references[index];
+                    }
+                }
+            }
+            for (int index = 0; shell != null && index < slots.length; index++) {
+                if ((openMask & (1 << index)) == 0) continue;
+                final int channel = index;
+                Slot slot = slots[index];
+                InteriorCameraClient client = null;
+                try {
+                    int id = resolveId(index == 0 ? "ims" : "dms");
+                    client = index == 0 ? new ImsClient(id, failure -> fail(channel, failure))
+                            : new DmsClient(id, failure -> fail(channel, failure));
+                    synchronized (slot) { slot.client = client; }
+                    client.open(shell);
+                    synchronized (slot) {
+                        if (slot.client == client) {
+                            slot.width = client.width;
+                            slot.height = client.height;
+                        }
+                    }
+                } catch (Throwable failure) {
+                    String reference = UUID.randomUUID().toString().replace("-", "");
+                    synchronized (slot) {
+                        if (slot.failureReference == null) slot.failureReference = reference;
+                    }
+                    if (client != null) {
+                        try {
+                            client.close();
+                            synchronized (slot) {
+                                if (slot.client == client) slot.client = null;
+                                if (slot.client == null) {
+                                    slot.surface = null;
+                                    slot.started = false;
+                                    slot.inputGeneration = 0;
+                                }
+                            }
+                        } catch (Throwable cleanup) {
+                            if (cleanup != failure) failure.addSuppressed(cleanup);
+                            CameraViewingDiagnostics.failure(
+                                    "interior_open_cleanup_" + channelName(index) + "_" + reference,
+                                    "shared", cleanup);
+                        }
+                    }
+                    recordFailure(index, "open", reference, failure);
+                }
+            }
+        }
+        for (int index = 0; index < slots.length; index++) synchronized (slots[index]) {
+            Slot slot = slots[index];
+            if (slot.attempted) attempted |= 1 << index;
+            if (slot.client != null && slot.failureReference == null) {
+                available |= 1 << index;
+                widths[index] = slot.width;
+                heights[index] = slot.height;
+            } else references[index] = slot.failureReference;
+        }
+        return new Specs(attempted, available, widths, heights, references);
     }
 
-    void retain(int requestedMask) throws Exception {
-        RemoteCameraView.validateMask(requestedMask);
+    void retain(int allowedMask) throws Exception {
+        RemoteCameraView.validateMask(allowedMask);
         Throwable first = null;
         for (int index = 0; index < slots.length; index++) {
-            if ((requestedMask & (1 << index)) != 0) continue;
+            if ((allowedMask & (1 << index)) != 0) continue;
             try { closeSlot(index); }
             catch (Throwable failure) { first = append(first, failure); continue; }
             Slot slot = slots[index];
@@ -144,29 +154,16 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
         rethrow(first, "interior camera release failed");
     }
 
-    void suspend() throws Exception {
-        Throwable first = null;
-        for (int index = 0; index < slots.length; index++) {
-            Slot slot = slots[index];
-            InteriorCameraClient client;
-            synchronized (slot) { client = slot.client != null && slot.started ? slot.client : null; }
-            if (client == null) continue;
-            try {
-                client.suspend();
-                synchronized (slot) { if (slot.client == client) slot.started = false; }
-            }
-            catch (Throwable failure) { first = append(first, failure); }
-        }
-        rethrow(first, "interior camera suspend failed");
-    }
-
-    void attachInputs(Surface[] surfaces, int startMask) {
+    void attachInputs(Surface[] surfaces, int startMask, long[] inputGenerations) {
         if (surfaces == null || surfaces.length != 2)
             throw new IllegalArgumentException("two live interior input surfaces required");
+        if (inputGenerations == null || inputGenerations.length != 2)
+            throw new IllegalArgumentException("two live interior input generations required");
         RemoteCameraView.validateMask(startMask);
         for (int index = 0; index < slots.length; index++) {
+            Surface surface = surfaces[index];
             if ((startMask & (1 << index)) == 0) {
-                if (surfaces[index] != null) try { surfaces[index].release(); }
+                if (surface != null) try { surface.release(); }
                 catch (Throwable failure) {
                     CameraViewingDiagnostics.failure("interior_unused_input_release_" + channelName(index),
                             "shared", failure);
@@ -175,22 +172,46 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
             }
             Slot slot = slots[index];
             InteriorCameraClient client;
-            synchronized (slot) { client = slot.failureReference == null ? slot.client : null; }
+            long generation = inputGenerations[index];
+            boolean alreadyAttached;
+            synchronized (slot) {
+                client = slot.failureReference == null ? slot.client : null;
+                alreadyAttached = client != null && slot.started && slot.inputGeneration == generation;
+            }
             if (client == null) {
-                if (surfaces[index] != null) surfaces[index].release();
+                if (surface != null) try { surface.release(); }
+                catch (Throwable failure) {
+                    CameraViewingDiagnostics.failure("interior_unowned_input_release_" + channelName(index),
+                            "shared", failure);
+                }
                 continue;
             }
-            Surface surface = surfaces[index];
-            if (surface == null || !surface.isValid()) {
-                fail(index, new IllegalStateException("interior GPU input Surface unavailable"));
+            if (surface == null || !surface.isValid() || generation <= 0) {
+                IllegalStateException failure = new IllegalStateException(
+                        "interior GPU input Surface unavailable for generation=" + generation);
+                if (surface != null) try { surface.release(); }
+                catch (Throwable cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
+                fail(index, failure);
+                continue;
+            }
+            if (alreadyAttached) {
+                try { surface.release(); }
+                catch (Throwable failure) {
+                    CameraViewingDiagnostics.failure("interior_duplicate_input_release_" + channelName(index),
+                            "shared", failure);
+                }
+                CameraViewingDiagnostics.detail("interior_surface_retained", "shared",
+                        "camera=" + channelName(index) + " generation=" + generation);
                 continue;
             }
             try {
                 CameraViewingDiagnostics.detail("interior_surface_received", "shared",
-                        "camera=" + channelName(index) + " valid=true");
+                        "camera=" + channelName(index) + " valid=true generation=" + generation);
                 client.start(surface);
                 synchronized (slot) {
-                    if (slot.client == client) { slot.started = true; slot.surface = surface; }
+                    if (slot.client == client) {
+                        slot.started = true; slot.surface = surface; slot.inputGeneration = generation;
+                    }
                 }
             } catch (Throwable failure) {
                 if (!client.ownsSurface(surface)) {
@@ -243,9 +264,9 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
         else if (surface != null) surface.release();
         synchronized (slot) {
             if (client != null && slot.client == client) {
-                slot.client = null; slot.surface = null; slot.started = false;
+                slot.client = null; slot.surface = null; slot.started = false; slot.inputGeneration = 0;
             } else if (client == null && slot.client == null && slot.surface == surface) {
-                slot.surface = null; slot.started = false;
+                slot.surface = null; slot.started = false; slot.inputGeneration = 0;
             }
         }
     }
@@ -267,9 +288,9 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
             else if (surface != null) surface.release();
             synchronized (slot) {
                 if (client != null && slot.client == client) {
-                    slot.client = null; slot.surface = null; slot.started = false;
+                    slot.client = null; slot.surface = null; slot.started = false; slot.inputGeneration = 0;
                 } else if (client == null && slot.client == null && slot.surface == surface) {
-                    slot.surface = null; slot.started = false;
+                    slot.surface = null; slot.started = false; slot.inputGeneration = 0;
                 }
             }
         } catch (Throwable cleanup) {
@@ -290,8 +311,9 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
 
     private void recordFailure(int index, String operation, String reference, Throwable failure) {
         String channel = channelName(index);
-        CameraViewingDiagnostics.failure("interior_" + operation + "_" + channel + "_" + reference,
-                "shared", failure);
+        CameraViewingDiagnostics.detail("interior_" + operation + "_" + channel + "_" + reference,
+                "shared", "source=" + sourceSession + " channel=" + channel + " ref=" + reference
+                        + "\n" + CameraViewingDiagnostics.describe(failure));
         Log.w(TAG, "camera=" + channel + " operation=" + operation + " ref=" + reference, failure);
     }
 
@@ -354,9 +376,9 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
             else if (surface != null) surface.release();
             synchronized (slot) {
                 if (client != null && slot.client == client) {
-                    slot.client = null; slot.surface = null; slot.started = false;
+                    slot.client = null; slot.surface = null; slot.started = false; slot.inputGeneration = 0;
                 } else if (client == null && slot.client == null && slot.surface == surface) {
-                    slot.surface = null; slot.started = false;
+                    slot.surface = null; slot.started = false; slot.inputGeneration = 0;
                 }
             }
         } catch (Throwable cleanup) {
@@ -385,6 +407,7 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
         volatile boolean attempted, started;
         volatile String failureReference;
         volatile Surface surface;
+        volatile long inputGeneration;
     }
 
     private abstract static class InteriorCameraClient {
@@ -410,7 +433,6 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
 
         final void open(Context shell) throws Exception { call(() -> { openOnThread(shell); return null; }); }
         final void start(Surface next) throws Exception { call(() -> { startOnThread(next); return null; }); }
-        final void suspend() throws Exception { call(() -> { suspendOnThread(); return null; }); }
         final void close() throws Exception {
             call(() -> { closeOnThread(); return null; });
             thread.quitSafely();
