@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="motion_recording_sensitivity">"Recording sensitivity"</string>
+    <string name="motion_sensitivity_low">"Low"</string>
+    <string name="motion_sensitivity_medium">"Medium"</string>
+    <string name="motion_sensitivity_high">"High"</string>
+    <string name="cameras_internal_viewer_hint">"Select interior cameras on the viewing page."</string>
     <string name="motion_title">"Cameras"</string>
     <string name="cameras_tablet">"Tablet display"</string>
     <string name="cameras_recording">"Video recording"</string>

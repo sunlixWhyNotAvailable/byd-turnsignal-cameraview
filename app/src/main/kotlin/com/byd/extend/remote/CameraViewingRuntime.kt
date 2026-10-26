@@ -249,10 +249,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         val channelsChanged = nextInterior != interiorCameras
         interiorCameras = nextInterior
         // Invalidate captured/encoded private channels before applying the new live layout.
-        val active = viewer?.takeIf { channelsChanged && it.mode == "live" }
+        val active = viewer?.takeIf { channelsChanged && it.mode == "live" && it.profile.method == "vdo" }
         if (active != null) {
-            active.direction = if (active.profile.method == "vdo") RemoteCameraView.defaultVdoView(interiorCameras)
-                else RemoteCameraView.retainAllowed(active.direction, interiorCameras)
+            active.direction = RemoteCameraView.defaultVdoView(interiorMask(active.profile))
             active.request = java.util.UUID.randomUUID().toString()
             active.firstLiveFrame = false
             closeVideo()
@@ -367,7 +366,8 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                         p.url = viewerUrl; p.phase = "ready"
                     }
                     override fun onViewerConnected(sessionId: String) = execute(p, run) {
-                        if (current(run, sessionId)) live(p, run, sessionId, RemoteCameraView.defaultVdoView(interiorCameras))
+                        if (current(run, sessionId)) live(p, run, sessionId,
+                            RemoteCameraView.defaultVdoView(interiorMask(p)))
                     }
                     override fun onViewerDisconnected(sessionId: String) = execute(p, run) {
                         disconnected(p, run, sessionId)
@@ -393,10 +393,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     throw RuntimeFailure("listener_failed", failure)
                 }
                 override fun live(session: String, direction: Int, request: String) = execute(p, run) {
-                    if (current(run, session) && RemoteCameraView.allowed(direction, interiorCameras))
+                    if (current(run, session) && RemoteCameraView.allowed(direction, interiorMask(p)))
                         live(p, run, session, direction, request)
                 }
-                override fun interiorCameras() = interiorCameras
+                override fun interiorCameras() = interiorMask(p)
                 override fun archive(session: String, leave: Boolean) = execute(p, run) {
                     if (current(run, session)) {
                         viewer!!.mode = if (leave) "pending" else "archive"
@@ -414,7 +414,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                         .put("battery", battery)
                         .put("mode", active?.mode ?: "pending")
                         .put("view", RemoteCameraView.name(active?.direction ?: RemoteCameraView.COMPOSITION))
-                        .put("interiorCameras", interiorCameras)
+                        .put("interiorCameras", interiorMask(p))
                         .put("request", request)
                         .put("playlist", if (playable) window!!.playlistPath else "")
                         .put("modes", readModes())
@@ -494,7 +494,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
 
     private fun live(p: Profile, run: Run, id: String, direction: Int, request: String = "") {
         val active = viewer?.takeIf { current(run, id) } ?: return
-        require(RemoteCameraView.allowed(direction, interiorCameras)) { "view_not_allowed" }
+        require(RemoteCameraView.allowed(direction, interiorMask(p))) { "view_not_allowed" }
         p.phase = "preparing"
         active.mode = "live"; active.direction = direction; active.request = request
         active.firstLiveFrame = false
@@ -508,6 +508,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private fun prepareVideo(p: Profile, run: Run) {
         val active = viewer?.takeIf { it.run === run && it.mode == "live" && lease.owns(it) } ?: return
         if (p.run !== run || !enabled || !run.viewer) return
+        val mask = interiorMask(p)
         run.preparing = false
         val charge = try {
             if (chargeObservation == null) observeCharge()
@@ -528,7 +529,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         if (charge.isBlocked) { closeVideo(); p.phase = "low_battery"; return }
         p.phase = "preparing"
         val camera = source ?: newSource().also { source = it }
-        val ready = try { camera.prepare(active.direction, interiorCameras) } catch (failure: Exception) {
+        val ready = try { camera.prepare(active.direction, mask) } catch (failure: Exception) {
             CameraViewingDiagnostics.failure("camera_prepare", p.method, failure)
             if (SystemClock.elapsedRealtime() >= run.deadline) throw RuntimeFailure("camera_unavailable", failure)
             false
@@ -536,9 +537,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         if (!ready) { retryPreparation(p, run); return }
         if (run.video && sourceRun === run && sourceAttached &&
             (run.publisher != null || run.encoder?.window?.request == active.request)) {
-            if (run.outputView != active.direction || run.outputInteriorMask != interiorCameras ||
+            if (run.outputView != active.direction || run.outputInteriorMask != mask ||
                 run.outputLocale != locale || run.outputExteriorReady != camera.isExteriorReady) {
-                camera.updateOutput(null, active.direction, interiorCameras, locale)
+                camera.updateOutput(null, active.direction, mask, locale)
                 rememberOutput(run, active, camera)
             }
             p.phase = if (run.publisher != null || run.encoder?.window?.isReady == true) "connected" else "preparing"
@@ -562,10 +563,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             } }) { encoder, failure ->
                 execute(p, run) { if (run.encoder === encoder) streamFailure(p, run, failure) }
             }.also { run.encoder = it }.start()
-            if (sourceAttached) camera.updateOutput(surface, active.direction, interiorCameras, locale)
+            if (sourceAttached) camera.updateOutput(surface, active.direction, mask, locale)
             else {
                 camera.attach(surface, CameraHlsEncoder.WIDTH, CameraHlsEncoder.HEIGHT,
-                    active.direction, interiorCameras, locale)
+                    active.direction, mask, locale)
                 sourceAttached = true
             }
             sourceRun = run
@@ -581,7 +582,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                         streamFailure(p, run, RuntimeFailure("media_start_timeout"))
                 } }, (run.deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
             }
-            sessionEvent("source_ready", active, "view=${RemoteCameraView.name(active.direction)} interiorMask=$interiorCameras")
+            sessionEvent("source_ready", active, "view=${RemoteCameraView.name(active.direction)} interiorMask=$mask")
             continueExteriorPreparation(p, run, active, camera)
         } catch (failure: Exception) {
             // A timed-out GL change may still be queued. Detach before releasing either encoder.
@@ -601,10 +602,13 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
 
     private fun rememberOutput(run: Run, active: Viewer, camera: RemoteCameraSource) {
         run.outputView = active.direction
-        run.outputInteriorMask = interiorCameras
+        run.outputInteriorMask = interiorMask(active.profile)
         run.outputLocale = locale
         run.outputExteriorReady = camera.isExteriorReady
     }
+
+    private fun interiorMask(profile: Profile) =
+        RemoteCameraView.effectiveInteriorMask(profile.method, interiorCameras)
 
     private fun continueExteriorPreparation(p: Profile, run: Run, active: Viewer, camera: RemoteCameraSource) {
         if (active.direction != RemoteCameraView.COMBINED || camera.isExteriorReady) return

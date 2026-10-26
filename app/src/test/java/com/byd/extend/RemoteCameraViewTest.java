@@ -37,6 +37,16 @@ public final class RemoteCameraViewTest {
                 () -> RemoteCameraView.validateMask(RemoteCameraView.BOTH + 1));
     }
 
+    @Test public void providerMaskKeepsTheSavedVdoChoiceAndAllowsBothTunnelCameras() {
+        for (int selected = RemoteCameraView.NONE; selected <= RemoteCameraView.BOTH; selected++) {
+            assertEquals(selected, RemoteCameraView.effectiveInteriorMask("vdo", selected));
+            assertEquals(RemoteCameraView.BOTH, RemoteCameraView.effectiveInteriorMask("tailscale", selected));
+            assertEquals(RemoteCameraView.BOTH, RemoteCameraView.effectiveInteriorMask("zrok", selected));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> RemoteCameraView.effectiveInteriorMask("unknown", RemoteCameraView.NONE));
+    }
+
     @Test public void permittedInteriorsAndExteriorRequirementsFollowSelectedView() {
         assertEquals(RemoteCameraView.ALLOW_CABIN,
                 RemoteCameraView.interiorMask(RemoteCameraView.CABIN, RemoteCameraView.BOTH));

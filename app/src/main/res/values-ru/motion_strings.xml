@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="motion_recording_sensitivity">"Чувствительность записи"</string>
+    <string name="motion_sensitivity_low">"Низкая"</string>
+    <string name="motion_sensitivity_medium">"Средняя"</string>
+    <string name="motion_sensitivity_high">"Высокая"</string>
+    <string name="cameras_internal_viewer_hint">"Выбор внутренних камер доступен на странице просмотра."</string>
     <string name="motion_title">"Камеры"</string>
     <string name="cameras_tablet">"Показ на планшете"</string>
     <string name="cameras_recording">"Запись видео"</string>

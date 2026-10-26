@@ -10,6 +10,19 @@ final class MotionEventPolicy {
     private boolean eligible;
     private long eligibleAtMs;
     private long warningUntilMs;
+    private int rThresholdMs = MotionConfig.rThresholdMsFor(
+            MotionConfig.DEFAULT_RECORDING_SENSITIVITY);
+    private long rCandidateSinceMs = -1L;
+    private long lastObservedAtMs = -1L;
+    private volatile long revision;
+
+    void configure(int recordingSensitivity) {
+        rThresholdMs = MotionConfig.rThresholdMsFor(recordingSensitivity);
+        resetCandidate();
+        revision++;
+    }
+
+    long revision() { return revision; }
 
     void setEligible(boolean next, long nowMs) {
         if (nowMs < 0) throw new IllegalArgumentException("negative elapsed time");
@@ -17,15 +30,35 @@ final class MotionEventPolicy {
         eligible = next;
         eligibleAtMs = next ? nowMs : 0L;
         warningUntilMs = 0L;
+        resetCandidate();
+        revision++;
     }
 
     Decision observe(int nativeResult, long nowMs) {
+        return observe(nativeResult, nowMs, revision);
+    }
+
+    Decision observe(int nativeResult, long nowMs, long observedRevision) {
         if (nowMs < 0) throw new IllegalArgumentException("negative elapsed time");
+        if (observedRevision != revision) return Decision.suppressed(nowMs, warningUntilMs);
+        if (lastObservedAtMs > nowMs) {
+            resetCandidate();
+            return Decision.suppressed(nowMs, warningUntilMs);
+        }
+        lastObservedAtMs = nowMs;
         expire(nowMs);
-        if (nativeResult == ERROR_RESULT) return Decision.error(nowMs);
+        if (nativeResult == ERROR_RESULT) {
+            resetCandidate();
+            return Decision.error(nowMs);
+        }
+        if (nativeResult >= 0) resetCandidate();
+        else if (eligible && rCandidateSinceMs < 0L) rCandidateSinceMs = nowMs;
+        else if (!eligible) resetCandidate();
         if (!eligible || nowMs - eligibleAtMs < MotionDetectorProtocol.WARMUP_MS)
             return Decision.suppressed(nowMs, warningUntilMs);
         if (nativeResult == 0) return Decision.none(nowMs, warningUntilMs);
+        if (nativeResult < 0 && nowMs - rCandidateSinceMs < rThresholdMs)
+            return Decision.suppressed(nowMs, warningUntilMs);
         int level = nativeResult < 0 ? LEVEL_ONE : LEVEL_TWO;
         warningUntilMs = nowMs + MotionDetectorProtocol.WARNING_MS;
         return Decision.detection(level, nowMs, warningUntilMs, nativeResult);
@@ -36,6 +69,8 @@ final class MotionEventPolicy {
         eligible = false;
         eligibleAtMs = 0L;
         warningUntilMs = 0L;
+        resetCandidate();
+        revision++;
     }
 
     /** The first visible interval begins after cover release, not while the window is hidden. */
@@ -56,6 +91,8 @@ final class MotionEventPolicy {
     private void expire(long nowMs) {
         if (warningUntilMs != 0L && nowMs >= warningUntilMs) warningUntilMs = 0L;
     }
+
+    private void resetCandidate() { rCandidateSinceMs = -1L; }
 
     static final class Decision {
         final int level;

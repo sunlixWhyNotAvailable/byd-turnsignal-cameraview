@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="motion_recording_sensitivity">"录像灵敏度"</string>
+    <string name="motion_sensitivity_low">"低"</string>
+    <string name="motion_sensitivity_medium">"中"</string>
+    <string name="motion_sensitivity_high">"高"</string>
+    <string name="cameras_internal_viewer_hint">"可在观看页面选择车内摄像头。"</string>
     <string name="motion_title">"摄像头"</string>
     <string name="cameras_tablet">"平板显示"</string>
     <string name="cameras_recording">"录像"</string>

@@ -17,6 +17,17 @@ import static org.junit.Assert.assertTrue;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 33)
 public final class CameraModeSettingsPreferencesTest {
+    @Test public void recordingSensitivityUsesSharedScreenPreferenceAndDefaultsToMiddle() {
+        Context app = RuntimeEnvironment.getApplication();
+        SharedPreferences screen = app.getSharedPreferences(MotionConfig.SCREEN_PREFS, Context.MODE_PRIVATE);
+        screen.edit().remove(MotionConfig.KEY_RECORDING_SENSITIVITY).commit();
+        assertEquals(MotionConfig.DEFAULT_RECORDING_SENSITIVITY,
+                MotionConfig.read(app).recordingSensitivity);
+
+        screen.edit().putInt(MotionConfig.KEY_RECORDING_SENSITIVITY, 0).commit();
+        assertEquals(0, MotionConfig.read(RuntimeEnvironment.getApplication()).recordingSensitivity);
+    }
+
     @Test public void modeCommitSurvivesFreshReadAndPreservesEveryOtherModeField() throws Exception {
         Context app = RuntimeEnvironment.getApplication();
         app.getSharedPreferences(MotionConfig.SCREEN_PREFS, Context.MODE_PRIVATE).edit()

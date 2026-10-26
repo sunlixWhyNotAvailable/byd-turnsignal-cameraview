@@ -123,6 +123,7 @@ internal fun FormScope.MotionIntegrationScreen(
     var enabled by rememberSaveable { mutableStateOf(config.warningEnabled) }
     var anyModeEnabled by remember(context) { mutableStateOf(config.anyEnabled()) }
     var lock by rememberSaveable { mutableIntStateOf(config.lockCondition) }
+    var recordingSensitivity by remember(context) { mutableIntStateOf(config.recordingSensitivity) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(store, lifecycle, context) {
         val main = Handler(Looper.getMainLooper())
@@ -131,9 +132,11 @@ internal fun FormScope.MotionIntegrationScreen(
             enabled = latest.warningEnabled
             anyModeEnabled = latest.anyEnabled()
             lock = MotionConfig.normalizeLockMode(latest.lockCondition)
+            recordingSensitivity = latest.recordingSensitivity
         }
         val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "enabled" || key == "lock" || key == CameraChargeSettings.KEY_REMOTE_VIEWING_ENABLED)
+            if (key == "enabled" || key == "lock" || key == CameraChargeSettings.KEY_REMOTE_VIEWING_ENABLED
+                || key == MotionConfig.KEY_RECORDING_SENSITIVITY)
                 main.post { reloadSettings() }
         }
         val observer = LifecycleEventObserver { _, event ->
@@ -224,17 +227,31 @@ internal fun FormScope.MotionIntegrationScreen(
         Spacer(Modifier.height(12.dp))
     }
     row("motion-shared-archive") {
-        FormSection(strings.motionText(R.string.motion_archive), colors, key = "motion-shared-archive") {
-            row("open") {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (tab != 2) Section(strings.motionText(R.string.motion_recording_sensitivity), colors,
+                Modifier.weight(1f).fillMaxHeight()) {
+                Segmented(listOf(R.string.motion_sensitivity_low, R.string.motion_sensitivity_medium,
+                    R.string.motion_sensitivity_high).map { strings.motionText(it) },
+                    recordingSensitivity, colors, Modifier.fillMaxWidth().semantics {
+                        contentDescription = strings.motionText(R.string.motion_recording_sensitivity)
+                    }) { next ->
+                    if (next != recordingSensitivity) {
+                        store.preferences.edit().putInt(MotionConfig.KEY_RECORDING_SENSITIVITY, next).apply()
+                        recordingSensitivity = next
+                        MotionRuntime.settingsChanged(context)
+                    }
+                }
+            }
+            Section(strings.motionText(R.string.motion_archive), colors, Modifier.weight(1f).fillMaxHeight()) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text(strings.motionText(R.string.motion_archive_hint), color = colors.muted, fontSize = 13.sp,
                         modifier = Modifier.weight(1f))
                     ActionButton(strings.motionText(R.string.motion_archive), Icons.Outlined.Videocam,
-                        colors, Modifier.weight(.7f)) { archiveState.archiveOpen = true }
+                        colors) { archiveState.archiveOpen = true }
                 }
             }
-            this
         }
         Spacer(Modifier.height(12.dp))
     }

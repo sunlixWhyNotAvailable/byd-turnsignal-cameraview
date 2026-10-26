@@ -16,6 +16,12 @@ public final class RemoteCameraView {
     public static void validateMask(int mask) {
         if (mask < NONE || mask > BOTH) throw new IllegalArgumentException("invalid_interior_cameras");
     }
+    public static int effectiveInteriorMask(String method, int selectedMask) {
+        validateMask(selectedMask);
+        if ("vdo".equals(method)) return selectedMask;
+        if ("tailscale".equals(method) || "zrok".equals(method)) return BOTH;
+        throw new IllegalArgumentException("invalid_viewer_method");
+    }
     public static int parse(String name) {
         for (int i = 0; i < NAMES.length; i++) if (NAMES[i].equals(name)) return i - 1;
         throw new IllegalArgumentException("invalid_view");

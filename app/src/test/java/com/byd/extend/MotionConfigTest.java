@@ -10,6 +10,7 @@ public class MotionConfigTest {
         assertFalse(defaults.anyEnabled());
         assertFalse(defaults.audioEnabled);
         assertFalse(defaults.fallbackEnabled);
+        assertEquals(MotionConfig.DEFAULT_RECORDING_SENSITIVITY, defaults.recordingSensitivity);
         assertEquals(1, defaults.lockCondition);
         assertEquals(1, new JSONObject(defaults.toJson()).getInt("lock"));
         assertEquals(1920,defaults.width());
@@ -21,6 +22,24 @@ public class MotionConfigTest {
         assertEquals(2,reopened.beforeSeconds);
         assertEquals(28,reopened.afterSeconds);
         assertArrayEquals(new int[]{3,2,1,0},reopened.cameraOrder);
+    }
+
+    @Test public void recordingSensitivityMapsAndRoundTripsWithLegacyDefault() throws Exception {
+        assertEquals("recording_sensitivity", MotionConfig.KEY_RECORDING_SENSITIVITY);
+        assertEquals(3, MotionConfig.nativeSensitivityFor(0));
+        assertEquals(2, MotionConfig.nativeSensitivityFor(1));
+        assertEquals(1, MotionConfig.nativeSensitivityFor(2));
+        assertEquals(6_000, MotionConfig.rThresholdMsFor(0));
+        assertEquals(3_000, MotionConfig.rThresholdMsFor(1));
+        assertEquals(0, MotionConfig.rThresholdMsFor(2));
+
+        MotionConfig legacy = MotionConfig.parse("{\"enabled\":true}");
+        assertEquals(1, legacy.recordingSensitivity);
+        MotionConfig low = MotionConfig.parse("{\"enabled\":true,\"recordingSensitivity\":0}");
+        MotionConfig reopened = MotionConfig.parse(low.toJson());
+        assertEquals(0, reopened.recordingSensitivity);
+        assertFalse(reopened.onlyMotionModesDifferFrom(legacy));
+        assertEquals(2, MotionConfig.parse("{\"recordingSensitivity\":99}").recordingSensitivity);
     }
 
     @Test public void activationModeMigrationPreservesOffModesAndSerializesLegacyValue() throws Exception {

@@ -10,8 +10,11 @@ import org.json.JSONObject;
 public final class MotionConfig {
     public static final String SCREEN_PREFS = "motion_screen";
     public static final String RECORDING_PREFS = "motion_recording";
+    public static final String KEY_RECORDING_SENSITIVITY = "recording_sensitivity";
+    public static final int DEFAULT_RECORDING_SENSITIVITY = 1;
     public final boolean warningEnabled, recordingEnabled, audioEnabled, remoteViewingEnabled;
     public final int chargeSocThresholdPercent, chargeVoltageThresholdTenths;
+    public final int recordingSensitivity;
     public final int lockCondition, beforeSeconds, afterSeconds, quality;
     public final boolean primarySd, fallbackEnabled, internalKeepFree, sdKeepFree, oemCleanup;
     public final int internalLimitGb, sdLimitGb, internalFreeGb, sdFreeGb, oemLimitGb;
@@ -22,6 +25,8 @@ public final class MotionConfig {
         recordingEnabled = json.optBoolean("enabled", false);
         audioEnabled = json.optBoolean("audio", false);
         remoteViewingEnabled = json.optBoolean("remoteViewingEnabled", false);
+        recordingSensitivity = bounded(json.optInt("recordingSensitivity",
+                DEFAULT_RECORDING_SENSITIVITY), 0, 2);
         chargeSocThresholdPercent = bounded(json.optInt("chargeSocThreshold",
                 CameraChargeSettings.DEFAULT_SOC_THRESHOLD_PERCENT),
                 CameraChargeSettings.MIN_SOC_THRESHOLD_PERCENT,
@@ -54,6 +59,8 @@ public final class MotionConfig {
         int lock = normalizeLockMode(screen.getInt("lock", 1));
         try {
             json.put("warning", screen.getBoolean("enabled", false));
+            json.put("recordingSensitivity", screen.getInt(KEY_RECORDING_SENSITIVITY,
+                    DEFAULT_RECORDING_SENSITIVITY));
             json.put("lock", lock);
             json.put("remoteViewingEnabled", CameraChargeSettings.isRemoteViewingEnabled(context));
             json.put("chargeSocThreshold", CameraChargeSettings.getSocThresholdPercent(context));
@@ -68,6 +75,16 @@ public final class MotionConfig {
     }
 
     public static int normalizeLockMode(int value) { return value == 0 ? 0 : 1; }
+    public static int nativeSensitivityFor(int recordingSensitivity) {
+        return 3 - bounded(recordingSensitivity, 0, 2);
+    }
+    public static int rThresholdMsFor(int recordingSensitivity) {
+        switch (bounded(recordingSensitivity, 0, 2)) {
+            case 0: return 6_000;
+            case 1: return 3_000;
+            default: return 0;
+        }
+    }
 
     public boolean motionEnabled() { return warningEnabled || recordingEnabled; }
     public boolean anyEnabled() { return motionEnabled() || remoteViewingEnabled; }
@@ -78,6 +95,7 @@ public final class MotionConfig {
                 && remoteViewingEnabled == other.remoteViewingEnabled
                 && chargeSocThresholdPercent == other.chargeSocThresholdPercent
                 && chargeVoltageThresholdTenths == other.chargeVoltageThresholdTenths
+                && recordingSensitivity == other.recordingSensitivity
                 && lockCondition == other.lockCondition
                 && beforeSeconds == other.beforeSeconds && afterSeconds == other.afterSeconds
                 && quality == other.quality && primarySd == other.primarySd
@@ -101,6 +119,7 @@ public final class MotionConfig {
                     .put("remoteViewingEnabled", remoteViewingEnabled)
                     .put("chargeSocThreshold", chargeSocThresholdPercent)
                     .put("chargeVoltageTenths", chargeVoltageThresholdTenths)
+                    .put("recordingSensitivity", recordingSensitivity)
                     .put("audio", audioEnabled).put("lock", lockCondition)
                     .put("before", beforeSeconds).put("after", afterSeconds).put("quality", quality)
                     .put("sd", primarySd).put("fallback", fallbackEnabled)

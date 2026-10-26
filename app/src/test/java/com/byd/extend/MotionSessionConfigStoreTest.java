@@ -12,6 +12,8 @@ public class MotionSessionConfigStoreTest {
             MotionSessionConfigStore store = new MotionSessionConfigStore(root, 10_123);
             MotionSessionConfigStore.Snapshot remoteOnly = store.write(
                     "{\"remoteViewingEnabled\":true,\"lock\":2,\"before\":7}");
+            assertEquals(MotionConfig.DEFAULT_RECORDING_SENSITIVITY,
+                    remoteOnly.config.recordingSensitivity);
             MotionSessionConfigStore.Snapshot enabled = store.write(
                     "{\"remoteViewingEnabled\":true,\"lock\":2,\"before\":7,\"enabled\":true}");
             assertEquals(remoteOnly.sessionId, enabled.sessionId);
@@ -22,8 +24,13 @@ public class MotionSessionConfigStoreTest {
             assertEquals(enabled.config.toJson(), reopened.config.toJson());
 
             MotionSessionConfigStore.Snapshot fullChange = afterRestart.write(
-                    "{\"remoteViewingEnabled\":true,\"lock\":2,\"before\":7,\"enabled\":true,\"quality\":2}");
+                    "{\"remoteViewingEnabled\":true,\"lock\":2,\"before\":7,\"enabled\":true,\"recordingSensitivity\":2}");
             assertNotEquals(enabled.sessionId, fullChange.sessionId);
+            assertEquals(2, fullChange.config.recordingSensitivity);
+            MotionSessionConfigStore.Snapshot reopenedSensitivity =
+                    new MotionSessionConfigStore(root, 10_123).read();
+            assertEquals(fullChange.sessionId, reopenedSensitivity.sessionId);
+            assertEquals(2, reopenedSensitivity.config.recordingSensitivity);
         } finally {
             Files.deleteIfExists(new File(root, "config.json.tmp").toPath());
             Files.deleteIfExists(new File(root, "config.json").toPath());

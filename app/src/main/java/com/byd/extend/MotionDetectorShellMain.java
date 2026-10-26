@@ -195,7 +195,7 @@ public final class MotionDetectorShellMain {
     private volatile boolean eligible;
     private boolean attached;
     private boolean nativeInitialized;
-    private volatile int sensitivity;
+    private volatile int nativeSensitivity;
     private AssetManager assets;
     private MotionNativeLibrary nativeApi;
     private volatile byte[] nativeInput;
@@ -348,7 +348,7 @@ public final class MotionDetectorShellMain {
     private static final class NativeSetupResult {
         final int modelValue;
         final int mirrorSetting;
-        final int sensitivity;
+        final int nativeSensitivity;
         final String stage;
         final long operationId;
         final long queuedNs;
@@ -362,7 +362,7 @@ public final class MotionDetectorShellMain {
                 long startedNs, long finishedNs, long setupNs, long initNs, Throwable failure) {
             this.modelValue = setup.modelValue;
             this.mirrorSetting = setup.mirrorSetting;
-            this.sensitivity = setup.sensitivity;
+            this.nativeSensitivity = setup.nativeSensitivity;
             this.stage = setup.stage;
             this.operationId = operationId;
             this.queuedNs = queuedNs;
@@ -902,6 +902,7 @@ public final class MotionDetectorShellMain {
         MotionSessionRuntime.Change change = sessionRuntime.updateModes(
                 next.config, SystemClock.elapsedRealtime());
         config = next.config;
+        policy.configure(config.recordingSensitivity);
         applyEligibilityChange(id, change);
         if (!sameSession(id)) return;
         if (previous.warningEnabled && !config.warningEnabled && warning && change != MotionSessionRuntime.Change.DISARMED)
@@ -1554,6 +1555,7 @@ public final class MotionDetectorShellMain {
         String id = snapshot.sessionId;
         synchronized (analysisLock) { sessionGeneration++; }
         config = snapshot.config;
+        policy.configure(config.recordingSensitivity);
         sessionRuntime.configure(id, config);
         shuttingDown = false;
         sessionId = id;
@@ -1833,6 +1835,12 @@ public final class MotionDetectorShellMain {
             return;
         }
         if (prepared || nativePreparationPending) return;
+        MotionConfig setupConfig = checkOwnsPreparation ? pendingCheck.recordingConfig : config;
+        if (setupConfig == null) {
+            fail(id, "native_setup", new IllegalStateException("Motion setup config is unavailable"));
+            return;
+        }
+        MotionNativeSetup setup = new MotionNativeSetup(systemContext, setupConfig);
         nativePreparationPending = true;
         long generation = sessionGeneration;
         OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
@@ -1843,7 +1851,6 @@ public final class MotionDetectorShellMain {
                 long setupStartNs = startedNs;
                 long setupNs = 0L;
                 long initNs = 0L;
-                MotionNativeSetup setup = new MotionNativeSetup(systemContext);
                 Throwable failure = null;
                 try {
                     logEvent("motion_native_environment", id, "operation_id", trace.id,
@@ -1866,7 +1873,11 @@ public final class MotionDetectorShellMain {
                     nativeInput = new byte[MotionDetectorProtocol.INPUT_BYTES];
                     logEvent("motion_native_init_begin", id, "operation_id", trace.id,
                             "model_value", setup.modelValue,
-                            "mirrors_open", setup.mirrorSetting == 0, "sensitivity", sensitivity);
+                            "mirrors_open", setup.mirrorSetting == 0,
+                            "recording_sensitivity", setup.recordingSensitivity,
+                            "native_sensitivity", setup.nativeSensitivity,
+                            "r_threshold_ms", setup.rThresholdMs,
+                            "sensitivity", setup.nativeSensitivity);
                     int init = nativeApi.init(assets, MotionDetectorProtocol.PREVIEW_WIDTH,
                             MotionDetectorProtocol.PREVIEW_HEIGHT, setup.mirrorSetting == 0,
                             setup.modelValue);
@@ -1874,7 +1885,11 @@ public final class MotionDetectorShellMain {
                     logEvent("motion_native_init", id, "operation_id", trace.id, "result", init,
                             "preview_width", MotionDetectorProtocol.PREVIEW_WIDTH,
                             "preview_height", MotionDetectorProtocol.PREVIEW_HEIGHT,
-                            "model_value", setup.modelValue, "sensitivity", sensitivity);
+                            "model_value", setup.modelValue,
+                            "recording_sensitivity", setup.recordingSensitivity,
+                            "native_sensitivity", setup.nativeSensitivity,
+                            "r_threshold_ms", setup.rThresholdMs,
+                            "sensitivity", setup.nativeSensitivity);
                     if (init != 0 && init != 1) throw new IOException("native init refused: " + init);
                     nativeInitialized = true;
                     setup.stage = "prepared_session";
@@ -1892,7 +1907,6 @@ public final class MotionDetectorShellMain {
         } catch (Throwable error) {
             nativePreparationPending = false;
             long now = SystemClock.elapsedRealtimeNanos();
-            MotionNativeSetup setup = new MotionNativeSetup(systemContext);
             setup.stage = "native_queue";
             onNativePreparationComplete(id, generation, new NativeSetupResult(setup, trace.id,
                     trace.queuedNs, now, now, 0L, 0L, error));
@@ -1929,7 +1943,7 @@ public final class MotionDetectorShellMain {
             fail(id, result.stage, new IllegalStateException(detail, result.failure));
             return;
         }
-        sensitivity = result.sensitivity;
+        nativeSensitivity = result.nativeSensitivity;
         prepared = true;
         state = "prepared";
         sendPrepared(id);
@@ -2148,6 +2162,7 @@ public final class MotionDetectorShellMain {
         int width = 0, height = 0;
         byte[] input = null;
         long frameTimeNs = 0L, packStartNs = 0L, packEndNs = 0L;
+        long policyRevision = policy.revision();
         Throwable primaryFailure = null;
         Throwable closeFailure = null;
         try {
@@ -2203,7 +2218,8 @@ public final class MotionDetectorShellMain {
             throw new IllegalStateException("OEM image close failed", closeFailure);
         }
         if (reserved) enqueueNativeDetection(id, generation, ownerReader, check,
-                frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input);
+                frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input,
+                policyRevision);
     }
 
     private boolean reserveAnalysis(ImageReader ownerReader, long generation) {
@@ -2225,7 +2241,7 @@ public final class MotionDetectorShellMain {
     private void enqueueNativeDetection(String id, long generation, ImageReader ownerReader,
             ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, byte[] input) {
+            MotionYuvPacker.Plane v, byte[] input, long policyRevision) {
         OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
                 "frame", id, SystemClock.elapsedRealtimeNanos());
         try {
@@ -2238,7 +2254,7 @@ public final class MotionDetectorShellMain {
                 Throwable failure = null;
                 try {
                     raw = nativeApi.detect(input, MotionDetectorProtocol.INPUT_WIDTH,
-                            MotionDetectorProtocol.INPUT_HEIGHT, sensitivity);
+                            MotionDetectorProtocol.INPUT_HEIGHT, nativeSensitivity);
                     detectNs = SystemClock.elapsedRealtimeNanos() - detectStartNs;
                     if (raw != MotionEventPolicy.ERROR_RESULT) nativeState = nativeApi.getState();
                 } catch (Throwable error) { failure = error; }
@@ -2246,7 +2262,8 @@ public final class MotionDetectorShellMain {
                 NativeFrameResult result = new NativeFrameResult(trace.id, trace.queuedNs,
                         startedNs, finishedNs, detectNs, raw, nativeState, failure);
                 if (!control.post(() -> onNativeFrameComplete(id, generation, ownerReader, check,
-                        frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, result)))
+                        frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, result,
+                        policyRevision)))
                     releaseAnalysis();
             });
         } catch (Throwable error) {
@@ -2265,7 +2282,7 @@ public final class MotionDetectorShellMain {
     private void onNativeFrameComplete(String id, long generation, ImageReader ownerReader,
             ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, NativeFrameResult result) {
+            MotionYuvPacker.Plane v, NativeFrameResult result, long policyRevision) {
         try {
             if (!operationIsCurrent(id, generation, sessionId, sessionGeneration)
                     || teardownPending || reader != ownerReader
@@ -2275,7 +2292,7 @@ public final class MotionDetectorShellMain {
                 return;
             }
             detectFrame(check, frameTimeNs, packStartNs, packEndNs, width, height,
-                    y, u, v, result);
+                    y, u, v, result, policyRevision);
         } catch (Throwable error) {
             if (sameSession(id) && !teardownPending) fail(id, "frame", error);
         } finally {
@@ -2286,7 +2303,7 @@ public final class MotionDetectorShellMain {
 
     private void detectFrame(ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, NativeFrameResult result) throws Exception {
+            MotionYuvPacker.Plane v, NativeFrameResult result, long policyRevision) throws Exception {
         long now = SystemClock.elapsedRealtime();
         int raw = result.raw;
         int nativeState = result.nativeState;
@@ -2308,13 +2325,13 @@ public final class MotionDetectorShellMain {
         }
         if (raw == MotionEventPolicy.ERROR_RESULT) {
             noteFirstInference(raw, "not_read_after_error", frameTimeNs);
-            policy.observe(raw, now);
+            policy.observe(raw, now, policyRevision);
             fail(sessionId, "native_detect", new IllegalStateException(
                     "native detect returned -2; getState was not called"));
             return;
         }
         noteFirstInference(raw, nativeState, frameTimeNs);
-        MotionEventPolicy.Decision decision = policy.observe(raw, now);
+        MotionEventPolicy.Decision decision = policy.observe(raw, now, policyRevision);
         state = policy.warningActive(now) ? "warning_active" : "observing";
         if (!state.equals(lastReportedDetectorState)) {
             lastReportedDetectorState = state;
@@ -4203,14 +4220,23 @@ public final class MotionDetectorShellMain {
 
     static final class MotionNativeSetup {
         final Context context;
+        final int recordingSensitivity;
+        final int nativeSensitivity;
+        final int rThresholdMs;
         ApplicationInfo info;
         AssetManager assets;
         int modelValue;
         int mirrorSetting;
-        int sensitivity;
         String stage = "oem_package";
 
-        MotionNativeSetup(Context context) { this.context = context; }
+        MotionNativeSetup(Context context, MotionConfig config) {
+            if (context == null || config == null)
+                throw new IllegalArgumentException("Motion setup requires context and config");
+            this.context = context;
+            recordingSensitivity = config.recordingSensitivity;
+            nativeSensitivity = MotionConfig.nativeSensitivityFor(recordingSensitivity);
+            rThresholdMs = MotionConfig.rThresholdMsFor(recordingSensitivity);
+        }
 
         void prepare() throws Exception {
             PackageInfo packageInfo = context.getPackageManager().getPackageInfo(
@@ -4230,10 +4256,6 @@ public final class MotionDetectorShellMain {
             stage = "oem_mirror_setting";
             mirrorSetting = parseSetting(runCommand("/system/bin/settings", "--user", "0",
                     "get", "global", "sentrymode_rearview_status"), 0, 1);
-            stage = "oem_sensitivity_setting";
-            int sensitivitySetting = parseSetting(runCommand("/system/bin/settings", "--user", "0",
-                    "get", "global", "sentrymode_sensitivity_level"), 2, 2);
-            sensitivity = 3 - sensitivitySetting;
 
             stage = "oem_assets";
             assets = AssetManager.class.getDeclaredConstructor().newInstance();
