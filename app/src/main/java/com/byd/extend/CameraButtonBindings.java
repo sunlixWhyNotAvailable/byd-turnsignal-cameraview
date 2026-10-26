@@ -2,7 +2,7 @@ package com.byd.extend;
 
 import android.content.SharedPreferences;
 
-/** Persisted global camera and AVAS button assignments. */
+/** Persisted global button assignments. */
 public final class CameraButtonBindings {
     public static final int UNASSIGNED = -1;
     public static final String MIRROR_SOURCE_KEY_CODE =
@@ -24,8 +24,13 @@ public final class CameraButtonBindings {
     public static final String ENGINE_KEY_CODE = "avas_engine_key_code";
     public static final String ENGINE_PRESS = "avas_engine_press";
     public static final String ENGINE_SOURCE = "avas_engine_source";
+    public static final String HAZARD_THANKS_KEY_CODE = "hazard_thanks_steering_key_code";
+    public static final String HAZARD_THANKS_PRESS = "hazard_thanks_steering_press";
+    public static final String HAZARD_THANKS_SOURCE = "hazard_thanks_steering_source";
 
-    public enum Action { ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone, AvasEngine }
+    public enum Action {
+        ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone, AvasEngine, HazardThanks
+    }
 
     public enum Press { Single, Hold, Double }
 
@@ -184,17 +189,21 @@ public final class CameraButtonBindings {
                 .putInt(ENGINE_KEY_CODE, UNASSIGNED)
                 .putString(ENGINE_PRESS, Press.Single.name())
                 .putString(ENGINE_SOURCE, Source.AndroidKey.name())
+                .putInt(HAZARD_THANKS_KEY_CODE, UNASSIGNED)
+                .putString(HAZARD_THANKS_PRESS, Press.Single.name())
+                .putString(HAZARD_THANKS_SOURCE, Source.AndroidKey.name())
                 .remove(steeringPressKey(Action.MirrorSource))
                 .remove(steeringPressKey(Action.MirrorVisibility))
                 .remove(steeringPressKey(Action.AvasMicrophone))
                 .remove(steeringPressKey(Action.AvasEngine))
+                .remove(steeringPressKey(Action.HazardThanks))
                 .apply();
     }
 
     public static Source[] sourcesFor(Action action) {
         if (action == null) return new Source[0];
         if (action == Action.AvasMicrophone || action == Action.MirrorSource
-                || action == Action.MirrorVisibility) {
+                || action == Action.MirrorVisibility || action == Action.HazardThanks) {
             return new Source[] { Source.AndroidKey, Source.Sos, Source.Help };
         }
         return new Source[] { Source.AndroidKey };
@@ -207,6 +216,7 @@ public final class CameraButtonBindings {
             if (action == Action.MirrorSource || action == Action.MirrorVisibility) {
                 return new Press[] { Press.Single, Press.Double };
             }
+            if (action == Action.HazardThanks) return new Press[] { Press.Single, Press.Double };
             return new Press[0];
         }
         if (action == Action.ReverseSource || action == Action.AvasMicrophone) {
@@ -251,6 +261,7 @@ public final class CameraButtonBindings {
     private static String keyCodeKey(Action action) {
         if (action == Action.AvasEngine) return ENGINE_KEY_CODE;
         if (action == Action.AvasMicrophone) return MICROPHONE_KEY_CODE;
+        if (action == Action.HazardThanks) return HAZARD_THANKS_KEY_CODE;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_KEY_CODE : MIRROR_VISIBILITY_KEY_CODE;
     }
@@ -258,6 +269,7 @@ public final class CameraButtonBindings {
     private static String pressKey(Action action) {
         if (action == Action.AvasEngine) return ENGINE_PRESS;
         if (action == Action.AvasMicrophone) return MICROPHONE_PRESS;
+        if (action == Action.HazardThanks) return HAZARD_THANKS_PRESS;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_PRESS : MIRROR_VISIBILITY_PRESS;
     }
@@ -265,6 +277,7 @@ public final class CameraButtonBindings {
     private static String sourceKey(Action action) {
         if (action == Action.AvasEngine) return ENGINE_SOURCE;
         if (action == Action.AvasMicrophone) return MICROPHONE_SOURCE;
+        if (action == Action.HazardThanks) return HAZARD_THANKS_SOURCE;
         return action == Action.MirrorSource
                 ? MIRROR_SOURCE_SOURCE : MIRROR_VISIBILITY_SOURCE;
     }

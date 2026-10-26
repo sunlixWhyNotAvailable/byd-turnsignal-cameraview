@@ -4782,6 +4782,9 @@ public final class CameraProbeActivity extends ComponentActivity
                 preferences.edit().putBoolean("guard_enabled", value).apply();
                 pushGuardConfigFromPreferences();
                 updateControls();
+            } else if (id == ToggleId.HazardThanks) {
+                preferences.edit().putBoolean(HazardThanksSettings.ENABLED, value).apply();
+                CameraHelperService.configureHazardThanks(this);
             } else if (id == ToggleId.Music) {
                 preferences.edit().putBoolean("music_visualizer_enabled", value).apply();
                 onMusicEnabledChanged(value);
@@ -5066,6 +5069,10 @@ public final class CameraProbeActivity extends ComponentActivity
             int quality = clamp(index, 0, 3);
             preferences.edit().putInt(CameraBufferQuality.PREF_QUALITY, quality).apply();
             onCameraBufferQualityChanged(quality);
+        } else if (id == SelectionId.HazardThanksFlashes) {
+            preferences.edit().putInt(HazardThanksSettings.FLASH_COUNT,
+                    clamp(index, 0, 2) + 1).apply();
+            CameraHelperService.configureHazardThanks(this);
         }
     }
 

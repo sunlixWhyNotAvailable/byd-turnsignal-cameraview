@@ -629,7 +629,8 @@ final class CompatibilityBundleExporter {
         return key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.startsWith("camera_") || key.startsWith("reverse_")
                 || key.startsWith("calibration_") || key.startsWith("dewarp_")
-                || key.startsWith("blindspot_") || key.startsWith("guard_");
+                || key.startsWith("blindspot_") || key.startsWith("guard_")
+                || key.startsWith("hazard_thanks_");
     }
 
     private static List<TextSpec> textSpecs() {

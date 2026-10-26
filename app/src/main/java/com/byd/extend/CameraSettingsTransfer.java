@@ -284,6 +284,16 @@ public final class CameraSettingsTransfer {
         for (String key : preferences.getAll().keySet()) {
             if (isLegacyAllowedKey(key)) editor.remove(key);
         }
+        editor.putBoolean(HazardThanksSettings.ENABLED, HazardThanksSettings.DEFAULT_ENABLED)
+                .putInt(HazardThanksSettings.FLASH_COUNT, HazardThanksSettings.DEFAULT_FLASH_COUNT)
+                .putInt(CameraButtonBindings.HAZARD_THANKS_KEY_CODE,
+                        CameraButtonBindings.UNASSIGNED)
+                .putString(CameraButtonBindings.HAZARD_THANKS_PRESS,
+                        CameraButtonBindings.Press.Single.name())
+                .putString(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android",
+                        CameraButtonBindings.Press.Single.name())
+                .putString(CameraButtonBindings.HAZARD_THANKS_SOURCE,
+                        CameraButtonBindings.Source.AndroidKey.name());
         if (preserveInteriorCameras) editor.putInt(interiorKey, interiorCameras);
         preserveMissingFrameAspects(editor, preferences, copy);
         preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
@@ -1611,6 +1621,8 @@ public final class CameraSettingsTransfer {
                 || key.equals(BlindSpotOverlayController.PREF_CORNER_RADIUS)
                 || key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)
                 || key.equals(CameraBufferQuality.PREF_QUALITY)
+                || key.equals(HazardThanksSettings.FLASH_COUNT)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_KEY_CODE)
                 || key.contains("_speed") || key.endsWith("_distance_cm")
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_DP)
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_ARGB)
@@ -1631,6 +1643,17 @@ public final class CameraSettingsTransfer {
             if (value instanceof Float && !Float.isFinite((Float) value)) throw new IllegalArgumentException("nonfinite legacy value");
             if (value instanceof Double && !Double.isFinite((Double) value)) throw new IllegalArgumentException("nonfinite legacy value");
             validateLegacyBounds(entry.getKey(), value);
+        }
+        if (values.containsKey(CameraButtonBindings.HAZARD_THANKS_SOURCE)
+                && values.containsKey(CameraButtonBindings.HAZARD_THANKS_PRESS)) {
+            CameraButtonBindings.Source source = CameraButtonBindings.Source.valueOf(
+                    (String) values.get(CameraButtonBindings.HAZARD_THANKS_SOURCE));
+            CameraButtonBindings.Press press = CameraButtonBindings.Press.valueOf(
+                    (String) values.get(CameraButtonBindings.HAZARD_THANKS_PRESS));
+            if (!CameraButtonBindings.supports(
+                    CameraButtonBindings.Action.HazardThanks, source, press)) {
+                throw new IllegalArgumentException("unsupported hazard-thanks binding");
+            }
         }
         requireBorderPairs(values);
         requireReverseZOrder(values);
@@ -1683,6 +1706,10 @@ public final class CameraSettingsTransfer {
             }
             if (key.equals("outward_deg")) requireRange(n, 0, 360, key);
             if (key.equals("center_deg")) requireRange(n, 0, 45, key);
+            if (key.equals(HazardThanksSettings.FLASH_COUNT)) requireRange(n, 1, 3, key);
+            if (key.equals(CameraButtonBindings.HAZARD_THANKS_KEY_CODE)) {
+                requireRange(n, CameraButtonBindings.UNASSIGNED, Integer.MAX_VALUE, key);
+            }
             if (key.endsWith("_border_width")) {
                 requireRange(n, CameraBorderSettings.MIN_DP, CameraBorderSettings.MAX_DP, key);
             }
@@ -1691,6 +1718,12 @@ public final class CameraSettingsTransfer {
                 throw new IllegalArgumentException("border color must be opaque ARGB");
             }
         }
+        if (key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android")) {
+            CameraButtonBindings.Press.valueOf((String) value);
+        } else if (key.equals(CameraButtonBindings.HAZARD_THANKS_SOURCE)) {
+            CameraButtonBindings.Source.valueOf((String) value);
+        }
     }
 
     private static void validateLegacyType(String key, Object value) {
@@ -1698,6 +1731,8 @@ public final class CameraSettingsTransfer {
             if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key);
         } else if (legacyIntegerKey(key)) {
             if (!(value instanceof Integer)) throw new IllegalArgumentException("integer required: " + key);
+        } else if (legacyStringKey(key)) {
+            if (!(value instanceof String)) throw new IllegalArgumentException("string required: " + key);
         } else if (legacyFloatKey(key)) {
             if (!(value instanceof Float)) throw new IllegalArgumentException("float required: " + key);
         } else {
@@ -1718,8 +1753,14 @@ public final class CameraSettingsTransfer {
                 || key.equals("correction_delay_ms") || key.equals("max_speed_kph");
     }
 
+    private static boolean legacyStringKey(String key) {
+        return key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android")
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_SOURCE);
+    }
+
     private static boolean legacyFloatKey(String key) {
-        return !legacyBooleanKey(key) && !legacyIntegerKey(key);
+        return !legacyBooleanKey(key) && !legacyIntegerKey(key) && !legacyStringKey(key);
     }
 
     private static void requireRange(double value, double minimum, double maximum, String key) {
@@ -1752,7 +1793,13 @@ public final class CameraSettingsTransfer {
                 || key.equals("music_engine_visualization_enabled")
                 || key.equals("parking_any_enabled")
                 || key.equals("weather_enabled") || key.equals("weather_interval_minutes")
-                || key.equals("auto_start_enabled");
+                || key.equals("auto_start_enabled")
+                || key.equals(HazardThanksSettings.ENABLED)
+                || key.equals(HazardThanksSettings.FLASH_COUNT)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_KEY_CODE)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android")
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_SOURCE);
     }
 
     private static boolean isCorrectedAspectMarker(String key) {

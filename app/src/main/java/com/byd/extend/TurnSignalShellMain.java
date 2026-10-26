@@ -314,6 +314,26 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_HAZARD_THANKS) {
+                    int enabled = data.readInt();
+                    int flashes = data.readInt();
+                    if ((enabled != 0 && enabled != 1) || flashes < 1 || flashes > 3
+                            || data.dataAvail() != 0)
+                        throw new IllegalArgumentException("invalid thank-you flash configuration");
+                    runtime.configureHazardThanks(enabled == 1, flashes);
+                    reply.writeNoException();
+                    return true;
+                }
+                if (code == TurnSignalShellProtocol.TX_START_HAZARD_THANKS) {
+                    String source = data.readString();
+                    long requestedAtMs = data.readLong();
+                    if (source == null || source.length() > 128 || requestedAtMs < 0
+                            || requestedAtMs > SystemClock.elapsedRealtime() || data.dataAvail() != 0)
+                        throw new IllegalArgumentException("invalid thank-you flash source");
+                    runtime.startHazardThanks(source, requestedAtMs);
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_SET_MOTION_TELEMETRY) {
                     boolean workerCall = Binder.getCallingUid() == 2000;
                     if (workerCall) {
@@ -617,6 +637,11 @@ public final class TurnSignalShellMain {
                 }
                 return false;
             } catch (Throwable error) {
+                if (code == TurnSignalShellProtocol.TX_CONFIGURE_HAZARD_THANKS
+                        || code == TurnSignalShellProtocol.TX_START_HAZARD_THANKS) {
+                    emit("hazard_thanks_transport_error", "code", code,
+                            "error", android.util.Log.getStackTraceString(error));
+                }
                 if (reply != null) reply.writeException(new IllegalStateException(summary(error)));
                 emit("shell_transaction_error", "code", code, "error", summary(error));
                 return true;

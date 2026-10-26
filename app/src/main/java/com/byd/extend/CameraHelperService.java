@@ -101,6 +101,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.AVAS_CONFIGURE";
     private static final String ACTION_CALLS_CONFIGURE =
             "com.byd.extend.action.CALLS_CONFIGURE";
+    private static final String ACTION_HAZARD_THANKS_CONFIGURE =
+            "com.byd.extend.action.HAZARD_THANKS_CONFIGURE";
     private static final String ACTION_AVAS_START_MANUAL =
             "com.byd.extend.action.AVAS_START_MANUAL";
     private static final String ACTION_AVAS_STOP_MANUAL =
@@ -731,6 +733,34 @@ public final class CameraHelperService extends Service {
                 .putExtra(EXTRA_AVAS_PROFILE_ID, profileId));
     }
 
+    public static void configureHazardThanks(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_HAZARD_THANKS_CONFIGURE));
+    }
+
+    static void requestHazardThanks(Context context, String source) {
+        long requestedAtMs = SystemClock.elapsedRealtime();
+        CameraHelperService service = activeInstance;
+        if (service == null) {
+            AvasRecoveryJournal.event(context, "hazard_thanks_rejected",
+                    "reason", "service_not_ready", "source_button", source);
+            return;
+        }
+        if (!service.postRuntime(() -> {
+            CameraHelperMain.HelperBinder current = service.helper;
+            if (current == null || !service.helperRuntimeStarted
+                    || GuardRecovery.isUserShutdownActive(service)) {
+                service.lifecycle("hazard_thanks_rejected", "reason", "runtime_not_ready",
+                        "source_button", source);
+                return;
+            }
+            current.startHazardThanks(source, requestedAtMs);
+        })) {
+            AvasRecoveryJournal.event(context, "hazard_thanks_rejected",
+                    "reason", "service_stopping", "source_button", source);
+        }
+    }
+
     static void stopAvasManual(Context context, String profileId) {
         if (!AvasConfig.PROFILE_IDS.contains(profileId)) return;
         context.startService(new Intent(context, CameraHelperService.class)
@@ -1032,7 +1062,8 @@ public final class CameraHelperService extends Service {
         }
         // Rights are provisioned independently; feature execution still observes runtime gates.
         if (ACTION_START.equals(action) || ACTION_ACTIVITY_OPEN.equals(action)
-                || ACTION_SETTINGS_RELOADED.equals(action) || ACTION_CALLS_CONFIGURE.equals(action)) {
+                || ACTION_SETTINGS_RELOADED.equals(action) || ACTION_CALLS_CONFIGURE.equals(action)
+                || ACTION_HAZARD_THANKS_CONFIGURE.equals(action)) {
             provisionAppPermissions("service_entry");
         }
         if (!userShutdown && (shouldRecover || activityVisible
@@ -1090,6 +1121,10 @@ public final class CameraHelperService extends Service {
         }
         ensureHelperStarted();
         if (ACTION_CALLS_CONFIGURE.equals(action)) {
+            helper.configureCalls(CallsRuntime.requiresRescueSubscription(this));
+        }
+        if (ACTION_HAZARD_THANKS_CONFIGURE.equals(action)) {
+            helper.configureHazardThanks();
             helper.configureCalls(CallsRuntime.requiresRescueSubscription(this));
         }
         weatherRuntime.start();
@@ -1542,6 +1577,7 @@ public final class CameraHelperService extends Service {
         helper.configureCalls(CallsRuntime.requiresRescueSubscription(this));
 
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        helper.configureHazardThanks();
         RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
         cameraRuntime.visibility(activityVisible);
         if (cameraPreviewActive) cameraRuntime.preview(true);
@@ -1583,6 +1619,7 @@ public final class CameraHelperService extends Service {
             RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);
             helper.configureAvas();
             helper.configureCalls(CallsRuntime.requiresRescueSubscription(this));
+            helper.configureHazardThanks();
         }
         cameraRuntime.settingsChanged("all");
         if (fullImport) {

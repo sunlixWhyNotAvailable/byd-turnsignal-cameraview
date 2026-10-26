@@ -465,7 +465,10 @@ private fun SignalsScreen(
                                 enabled = state.guard.operation.enabled && !state.guard.operation.pending,
                                 identity = NumberTarget.Guard(field))
                         }
-                    } }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    HazardThanksSettingsSection(state.hazardThanks, strings, colors, onAction)
+                    }
                     SignalsCategory.Music -> Column(Modifier.fillMaxSize()
                         .verticalScroll(LocalPrimaryScroll.current)) { Section(strings.text("Музика та підсвітка", "Music and lighting",
                         "音乐与氛围灯"), colors) {

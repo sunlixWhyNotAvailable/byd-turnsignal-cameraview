@@ -62,6 +62,36 @@ public final class CameraButtonGesturePolicyTest {
     }
 
     @Test
+    public void hazardThanksClassifiesSteeringSingleDoubleAndHold() {
+        CameraButtonGesturePolicy singlePolicy = policy();
+        List<CameraButtonGesturePolicy.Assignment> singleBinding = assignments(
+                assignment(CameraButtonBindings.Action.HazardThanks, 42,
+                        CameraButtonBindings.Press.Single, 1));
+        down(singlePolicy, 42, 100, singleBinding);
+        up(singlePolicy, 42, 100, 150, singleBinding);
+        assertEquals(actions(CameraButtonBindings.Action.HazardThanks),
+                singlePolicy.advance(451, singleBinding).actions);
+
+        CameraButtonGesturePolicy doublePolicy = policy();
+        List<CameraButtonGesturePolicy.Assignment> doubleBinding = assignments(
+                assignment(CameraButtonBindings.Action.HazardThanks, 42,
+                        CameraButtonBindings.Press.Double, 1));
+        down(doublePolicy, 42, 100, doubleBinding);
+        up(doublePolicy, 42, 100, 140, doubleBinding);
+        down(doublePolicy, 42, 200, doubleBinding);
+        assertEquals(actions(CameraButtonBindings.Action.HazardThanks),
+                up(doublePolicy, 42, 200, 240, doubleBinding).actions);
+
+        CameraButtonGesturePolicy holdPolicy = policy();
+        List<CameraButtonGesturePolicy.Assignment> holdBinding = assignments(
+                assignment(CameraButtonBindings.Action.HazardThanks, 42,
+                        CameraButtonBindings.Press.Hold, 1));
+        down(holdPolicy, 42, 100, holdBinding);
+        assertEquals(actions(CameraButtonBindings.Action.HazardThanks),
+                holdPolicy.advance(500, holdBinding).actions);
+    }
+
+    @Test
     public void timerAndNativeAliasesEmitOneHoldAndNextDownStartsFresh() {
         for (int[] pair : NATIVE_LONG_PAIRS) {
             CameraButtonGesturePolicy policy = policy();

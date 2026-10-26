@@ -56,6 +56,32 @@ public final class RescueButtonGesturePolicyTest {
     }
 
     @Test
+    public void hazardThanksClassifiesSosSingleAndHelpDoubleButNotRescueHold() {
+        RescueButtonGesturePolicy policy = new RescueButtonGesturePolicy();
+        List<RescueButtonGesturePolicy.Assignment> sosBindings = assignments(
+                assignment(CameraButtonBindings.Action.HazardThanks, SOS,
+                        CameraButtonBindings.Press.Single));
+        List<RescueButtonGesturePolicy.Assignment> helpBindings = assignments(
+                assignment(CameraButtonBindings.Action.HazardThanks, HELP,
+                        CameraButtonBindings.Press.Double));
+
+        RescueButtonGesturePolicy.Result sos = policy.onEvent(3, 100L, sosBindings);
+        assertEquals(CameraButtonBindings.Action.HazardThanks, sos.action);
+        assertEquals(SOS, sos.source);
+        assertEquals(CameraButtonBindings.Press.Single, sos.press);
+
+        assertNull(policy.onEvent(4, 200L, helpBindings).action);
+        RescueButtonGesturePolicy.Result help = policy.onEvent(4, 1_000L, helpBindings);
+        assertEquals(CameraButtonBindings.Action.HazardThanks, help.action);
+        assertEquals(HELP, help.source);
+        assertEquals(CameraButtonBindings.Press.Double, help.press);
+        assertFalse(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                SOS, CameraButtonBindings.Press.Hold));
+        assertFalse(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                HELP, CameraButtonBindings.Press.Hold));
+    }
+
+    @Test
     public void shortBeyondDoubleBoundaryFiresFirstSingleAndStartsANewWindow() {
         RescueButtonGesturePolicy policy = new RescueButtonGesturePolicy();
         List<RescueButtonGesturePolicy.Assignment> bindings = assignments(

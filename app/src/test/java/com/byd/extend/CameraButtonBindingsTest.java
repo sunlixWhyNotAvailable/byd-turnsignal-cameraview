@@ -12,7 +12,8 @@ public final class CameraButtonBindingsTest {
         for (CameraButtonBindings.Action action : new CameraButtonBindings.Action[] {
                 CameraButtonBindings.Action.MirrorSource,
                 CameraButtonBindings.Action.MirrorVisibility,
-                CameraButtonBindings.Action.AvasMicrophone }) {
+                CameraButtonBindings.Action.AvasMicrophone,
+                CameraButtonBindings.Action.HazardThanks }) {
             CameraRuntimePreferences preferences = new CameraRuntimePreferences();
             CameraButtonBindings.Press originalPress = action == CameraButtonBindings.Action.AvasMicrophone
                     ? CameraButtonBindings.Press.Single : CameraButtonBindings.Press.Hold;
@@ -20,12 +21,16 @@ public final class CameraButtonBindingsTest {
                     ? CameraButtonBindings.MIRROR_SOURCE_KEY_CODE
                     : action == CameraButtonBindings.Action.MirrorVisibility
                             ? CameraButtonBindings.MIRROR_VISIBILITY_KEY_CODE
-                            : CameraButtonBindings.MICROPHONE_KEY_CODE;
+                            : action == CameraButtonBindings.Action.AvasMicrophone
+                                    ? CameraButtonBindings.MICROPHONE_KEY_CODE
+                                    : CameraButtonBindings.HAZARD_THANKS_KEY_CODE;
             String press = action == CameraButtonBindings.Action.MirrorSource
                     ? CameraButtonBindings.MIRROR_SOURCE_PRESS
                     : action == CameraButtonBindings.Action.MirrorVisibility
                             ? CameraButtonBindings.MIRROR_VISIBILITY_PRESS
-                            : CameraButtonBindings.MICROPHONE_PRESS;
+                            : action == CameraButtonBindings.Action.AvasMicrophone
+                                    ? CameraButtonBindings.MICROPHONE_PRESS
+                                    : CameraButtonBindings.HAZARD_THANKS_PRESS;
             // Actual pre-upgrade preference input: no saved steering-press backup yet.
             preferences.edit().putInt(key, 88).putString(press, originalPress.name()).apply();
 
@@ -69,6 +74,15 @@ public final class CameraButtonBindingsTest {
         assertEquals(new CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
                 CameraButtonBindings.loadForSource(preferences, action,
                         CameraButtonBindings.Source.AndroidKey));
+
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.HazardThanks,
+                new CameraButtonBindings.Binding(305, CameraButtonBindings.Press.Hold));
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.HazardThanks,
+                new CameraButtonBindings.Binding(CameraButtonBindings.Source.Help,
+                        CameraButtonBindings.Press.Double));
+        CameraButtonBindings.reset(preferences);
+        assertEquals(new CameraButtonBindings.Binding(-1, CameraButtonBindings.Press.Single),
+                CameraButtonBindings.load(preferences, CameraButtonBindings.Action.HazardThanks));
     }
 
     @Test
@@ -118,5 +132,30 @@ public final class CameraButtonBindingsTest {
                 CameraButtonBindings.Source.Help, CameraButtonBindings.Press.Single));
         assertTrue(CameraButtonBindings.supports(CameraButtonBindings.Action.MirrorSource,
                 CameraButtonBindings.Source.AndroidKey, CameraButtonBindings.Press.Hold));
+        assertTrue(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                CameraButtonBindings.Source.AndroidKey, CameraButtonBindings.Press.Hold));
+        assertTrue(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                CameraButtonBindings.Source.Sos, CameraButtonBindings.Press.Double));
+        assertTrue(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                CameraButtonBindings.Source.Help, CameraButtonBindings.Press.Single));
+        assertFalse(CameraButtonBindings.supports(CameraButtonBindings.Action.HazardThanks,
+                CameraButtonBindings.Source.Sos, CameraButtonBindings.Press.Hold));
+    }
+
+    @Test
+    public void hazardThanksParticipatesInRescueBindingConflicts() {
+        CameraRuntimePreferences preferences = new CameraRuntimePreferences();
+        CameraButtonBindings.save(preferences, CameraButtonBindings.Action.MirrorSource,
+                new CameraButtonBindings.Binding(CameraButtonBindings.Source.Sos,
+                        CameraButtonBindings.Press.Double));
+
+        assertTrue(CameraButtonBindings.hasRescueConflict(preferences,
+                CameraButtonBindings.Action.HazardThanks,
+                new CameraButtonBindings.Binding(CameraButtonBindings.Source.Sos,
+                        CameraButtonBindings.Press.Double)));
+        assertFalse(CameraButtonBindings.hasRescueConflict(preferences,
+                CameraButtonBindings.Action.HazardThanks,
+                new CameraButtonBindings.Binding(CameraButtonBindings.Source.Sos,
+                        CameraButtonBindings.Press.Hold)));
     }
 }

@@ -1,0 +1,6 @@
+<resources>
+    <string name="hazard_thanks_title">Спасибо аварийкой</string>
+    <string name="hazard_thanks_learning">Выберите кнопку руля для запуска последовательности благодарности аварийкой.</string>
+    <string name="hazard_thanks_flashes">Количество миганий</string>
+    <string name="hazard_thanks_cancel">Любое физическое действие поворотником или кнопкой аварийки сразу отменяет автоматизацию.</string>
+</resources>

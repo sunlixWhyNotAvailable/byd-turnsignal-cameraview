@@ -435,6 +435,62 @@ final class TurnSignalController {
         });
     }
 
+    void configureHazardThanks() {
+        if (stopped || cameraRuntimeHost) return;
+        try {
+            worker.execute(() -> {
+                if (stopped) return;
+                IBinder value = healthyHelper();
+                if (value == null && HazardThanksSettings.enabled(settings)) {
+                    ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+                    value = healthyHelper();
+                }
+                if (value == null) return;
+                try {
+                    transactHazardThanksConfig(value);
+                } catch (Exception failure) {
+                    emit("hazard_thanks_config_failed", "error", Log.getStackTraceString(failure));
+                }
+            });
+        } catch (RejectedExecutionException failure) {
+            emit("hazard_thanks_config_failed", "error", Log.getStackTraceString(failure));
+        }
+    }
+
+    void startHazardThanks(String source, long requestedAtMs) {
+        IBinder owner = healthyHelper();
+        if (stopped || owner == null || !HazardThanksSettings.enabled(settings)) {
+            emit("hazard_thanks_rejected", "reason", stopped ? "controller_stopped"
+                    : !HazardThanksSettings.enabled(settings) ? "disabled" : "helper_not_ready",
+                    "source_button", source, "helper_error", primaryError);
+            return;
+        }
+        try {
+            worker.execute(() -> {
+                // A gesture belongs to the helper that received it; never replay after recovery.
+                if (stopped || healthyHelper() != owner || !HazardThanksSettings.enabled(settings)) {
+                    emit("hazard_thanks_rejected", "reason", "gesture_owner_changed",
+                            "source_button", source);
+                    return;
+                }
+                Parcel data = Parcel.obtain();
+                Parcel reply = Parcel.obtain();
+                try {
+                    data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+                    data.writeString(source == null ? "" : source);
+                    data.writeLong(requestedAtMs);
+                    requireTransact(owner, TurnSignalShellProtocol.TX_START_HAZARD_THANKS, data, reply);
+                } catch (Exception failure) {
+                    emit("hazard_thanks_start_failed", "source_button", source,
+                            "error", Log.getStackTraceString(failure));
+                } finally { data.recycle(); reply.recycle(); }
+            });
+        } catch (RejectedExecutionException failure) {
+            emit("hazard_thanks_start_failed", "source_button", source,
+                    "error", Log.getStackTraceString(failure));
+        }
+    }
+
     void startAvasManual(String profileId) {
         requireAvasProfile(profileId);
         desiredAvasAudition = "";
@@ -2048,6 +2104,7 @@ final class TurnSignalController {
             transactMotionTelemetry(value,
                     settings.getBoolean("motion_monitoring_enabled", false));
             transactConfig(value);
+            transactHazardThanksConfig(value);
             transactMusicConfig(value,
                     settings.getBoolean("music_visualizer_enabled", false),
                     settings.getBoolean("music_capture_focus_on_open", true),
@@ -2447,6 +2504,17 @@ final class TurnSignalController {
             data.recycle();
             reply.recycle();
         }
+    }
+
+    private void transactHazardThanksConfig(IBinder value) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(HazardThanksSettings.enabled(settings) ? 1 : 0);
+            data.writeInt(HazardThanksSettings.flashes(settings));
+            requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_HAZARD_THANKS, data, reply);
+        } finally { data.recycle(); reply.recycle(); }
     }
 
     private void transactMotionTelemetry(IBinder value, boolean enabled) throws Exception {

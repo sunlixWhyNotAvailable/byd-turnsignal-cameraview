@@ -172,6 +172,7 @@ internal class NumericPreviewSession {
 
 enum class ToggleId {
     Guard,
+    HazardThanks,
     Music,
     MusicCaptureFocusOnOpen,
     MusicEngineVisualization,
@@ -214,6 +215,7 @@ enum class SelectionId {
     Language,
     Theme,
     SignalsCategory,
+    HazardThanksFlashes,
     CameraSection,
     BlindGroup,
     BlindSide,
@@ -445,6 +447,14 @@ data class GuardUiState(
 )
 
 @Immutable
+data class HazardThanksUiState(
+    val enabled: Boolean = false,
+    val flashes: Int = 2,
+    val binding: CameraButtonBindings.Binding = CameraButtonBindings.Binding(
+        CameraButtonBindings.UNASSIGNED, CameraButtonBindings.Press.Single),
+)
+
+@Immutable
 data class MusicUiState(
     val enabled: Boolean = false,
     val captureFocusOnOpen: Boolean = true,
@@ -464,6 +474,7 @@ data class WeatherUiState(
 data class SignalsUiState(
     val category: SignalsCategory = SignalsCategory.TurnSignals,
     val guard: GuardUiState = GuardUiState(),
+    val hazardThanks: HazardThanksUiState = HazardThanksUiState(),
     val music: MusicUiState = MusicUiState(),
     val weather: WeatherUiState = WeatherUiState(),
     val calls: CallsUiState = CallsUiState(),

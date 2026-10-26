@@ -3,6 +3,7 @@ package com.byd.extend;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -55,20 +56,76 @@ public final class RemoteCameraViewSettingsTransferTest {
         }
     }
 
+    @Test public void legacyImportRestoresHazardThanksAndOldFilesGetSafeDefaults() {
+        String xml = "<map><boolean name=\"hazard_thanks_enabled\" value=\"true\" />"
+                + "<int name=\"hazard_thanks_flashes\" value=\"3\" />"
+                + "<int name=\"hazard_thanks_steering_key_code\" value=\"305\" />"
+                + "<string name=\"hazard_thanks_steering_press\">Double</string>"
+                + "<string name=\"hazard_thanks_steering_press_android\">Hold</string>"
+                + "<string name=\"hazard_thanks_steering_source\">Sos</string></map>";
+        CameraSettingsTransfer.applyLegacySettings(settings,
+                CameraSettingsTransfer.parseLegacySettings(xml));
+        assertTrue(HazardThanksSettings.enabled(settings));
+        assertEquals(3, HazardThanksSettings.flashes(settings));
+        assertEquals(new CameraButtonBindings.Binding(CameraButtonBindings.Source.Sos,
+                        CameraButtonBindings.Press.Double),
+                CameraButtonBindings.load(settings, CameraButtonBindings.Action.HazardThanks));
+        assertEquals(new CameraButtonBindings.Binding(305, CameraButtonBindings.Press.Hold),
+                CameraButtonBindings.loadForSource(settings,
+                        CameraButtonBindings.Action.HazardThanks,
+                        CameraButtonBindings.Source.AndroidKey));
+
+        Map<String, Object> olderValues = CameraSettingsTransfer.parseLegacySettings(
+                "<map><boolean name=\"guard_enabled\" value=\"true\" /></map>");
+        CameraSettingsTransfer.applyLegacySettings(settings, olderValues);
+        assertFalse(HazardThanksSettings.enabled(settings));
+        assertEquals(2, HazardThanksSettings.flashes(settings));
+        assertEquals(new CameraButtonBindings.Binding(CameraButtonBindings.UNASSIGNED,
+                        CameraButtonBindings.Press.Single),
+                CameraButtonBindings.load(settings, CameraButtonBindings.Action.HazardThanks));
+    }
+
+    @Test public void legacyImportValidatesHazardThanksSettingsAndBindings() {
+        assertThrows(IllegalArgumentException.class, () -> CameraSettingsTransfer.parseLegacySettings(
+                "<map><int name=\"hazard_thanks_flashes\" value=\"4\" /></map>"));
+        assertThrows(IllegalArgumentException.class, () -> CameraSettingsTransfer.parseLegacySettings(
+                "<map><string name=\"hazard_thanks_steering_source\">Sos</string>"
+                        + "<string name=\"hazard_thanks_steering_press\">Hold</string></map>"));
+    }
+
     @Test public void configurationExportIncludesTheDefaultMaskWhenUnset() throws Exception {
         JSONObject configuration = new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings));
         assertEquals(RemoteCameraView.NONE, configuration.getInt(RemoteCameraView.PREFERENCE_KEY));
     }
 
-    @Test public void configurationExportIncludesTheMaskButCameraPresetDoesNot() throws Exception {
+    @Test public void configurationExportIncludesHazardThanksButCameraPresetDoesNot() throws Exception {
         settings.edit().putInt(RemoteCameraView.PREFERENCE_KEY, RemoteCameraView.BOTH)
-                .putString("cameras_viewing_token", "private-token").commit();
+                .putString("cameras_viewing_token", "private-token")
+                .putBoolean(HazardThanksSettings.ENABLED, true)
+                .putInt(HazardThanksSettings.FLASH_COUNT, 3)
+                .putInt(CameraButtonBindings.HAZARD_THANKS_KEY_CODE, 305)
+                .putString(CameraButtonBindings.HAZARD_THANKS_PRESS,
+                        CameraButtonBindings.Press.Double.name())
+                .putString(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android",
+                        CameraButtonBindings.Press.Hold.name())
+                .putString(CameraButtonBindings.HAZARD_THANKS_SOURCE,
+                        CameraButtonBindings.Source.Sos.name()).commit();
 
         JSONObject configuration = new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings));
         assertEquals(RemoteCameraView.BOTH, configuration.getInt(RemoteCameraView.PREFERENCE_KEY));
+        assertTrue(configuration.getBoolean(HazardThanksSettings.ENABLED));
+        assertEquals(3, configuration.getInt(HazardThanksSettings.FLASH_COUNT));
+        assertEquals(305, configuration.getInt(CameraButtonBindings.HAZARD_THANKS_KEY_CODE));
+        assertEquals("Double", configuration.getString(CameraButtonBindings.HAZARD_THANKS_PRESS));
+        assertEquals("Hold", configuration.getString(
+                CameraButtonBindings.HAZARD_THANKS_PRESS + "_android"));
+        assertEquals("Sos", configuration.getString(CameraButtonBindings.HAZARD_THANKS_SOURCE));
         assertFalse(configuration.has("cameras_viewing_token"));
 
         JSONObject preset = new JSONObject(CameraSettingsTransfer.exportCameraPreset(settings));
         assertFalse(preset.getJSONObject("settings").has(RemoteCameraView.PREFERENCE_KEY));
+        assertFalse(preset.getJSONObject("settings").has(HazardThanksSettings.ENABLED));
+        assertFalse(preset.getJSONObject("settings").has(HazardThanksSettings.FLASH_COUNT));
+        assertFalse(preset.getJSONObject("settings").has(CameraButtonBindings.HAZARD_THANKS_SOURCE));
     }
 }

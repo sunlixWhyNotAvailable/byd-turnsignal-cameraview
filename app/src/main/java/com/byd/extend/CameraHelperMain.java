@@ -250,6 +250,14 @@ final class CameraHelperMain {
             turnController.configureCalls(needed);
         }
 
+        public void configureHazardThanks() {
+            turnController.configureHazardThanks();
+        }
+
+        public void startHazardThanks(String source, long requestedAtMs) {
+            turnController.startHazardThanks(source, requestedAtMs);
+        }
+
         public void startAvasManual(String profileId) {
             turnController.startAvasManual(profileId);
         }

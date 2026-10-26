@@ -673,6 +673,8 @@ class ProductionUiController @JvmOverloads constructor(
                     strings.resource(com.byd.extend.R.string.avas_mic_learning)
                 CameraButtonBindings.Action.AvasEngine ->
                     strings.resource(com.byd.extend.R.string.avas_engine_learning)
+                CameraButtonBindings.Action.HazardThanks ->
+                    strings.resource(com.byd.extend.R.string.hazard_thanks_learning)
                 CameraButtonBindings.Action.MirrorVisibility -> strings.text(
                     "Призначена кнопка та вибраний жест показуватимуть або приховуватимуть віджет дзеркала.",
                     "The assigned button and selected gesture will show or hide the mirror widget.",

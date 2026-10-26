@@ -1,0 +1,6 @@
+<resources>
+    <string name="hazard_thanks_title">Thank-you flash</string>
+    <string name="hazard_thanks_learning">Select the steering-wheel button used to trigger the thank-you flash sequence.</string>
+    <string name="hazard_thanks_flashes">Number of flashes</string>
+    <string name="hazard_thanks_cancel">Any physical use of the turn signals or hazard button immediately cancels the automation.</string>
+</resources>

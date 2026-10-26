@@ -70,6 +70,12 @@ private fun readSignals(preferences: SharedPreferences) = SignalsUiState(
         correctionDelayMs = preferences.getInt("correction_delay_ms", 100).toString(),
         maximumSpeed = preferences.getInt("max_speed_kph", 30).toString(),
     ),
+    hazardThanks = HazardThanksUiState(
+        enabled = HazardThanksSettings.enabled(preferences),
+        flashes = HazardThanksSettings.flashes(preferences),
+        binding = CameraButtonBindings.load(
+            preferences, CameraButtonBindings.Action.HazardThanks),
+    ),
     music = MusicUiState(
         enabled = preferences.getBoolean("music_visualizer_enabled", false),
         captureFocusOnOpen = preferences.getBoolean("music_capture_focus_on_open", true),

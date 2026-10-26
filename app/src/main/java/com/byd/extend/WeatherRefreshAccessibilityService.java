@@ -367,6 +367,12 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (result.actions.contains(CameraButtonBindings.Action.AvasEngine)) {
             CameraHelperService.toggleAvasEngine(this);
         }
+        if (result.actions.contains(CameraButtonBindings.Action.HazardThanks)) {
+            CameraButtonBindings.Binding binding = CameraButtonBindings.load(
+                    preferences, CameraButtonBindings.Action.HazardThanks);
+            CameraHelperService.requestHazardThanks(this,
+                    "steering key " + binding.keyCode + " " + binding.press.name());
+        }
         return result.consumed;
     }
 
@@ -383,7 +389,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     private List<CameraButtonGesturePolicy.Assignment> currentAssignments(
             SharedPreferences preferences) {
-        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(5);
+        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(6);
         addAssignment(result, preferences, CameraButtonBindings.Action.ReverseSource,
                 CameraProbeActivity.reverseOwnerEpochSnapshot());
         boolean mirrorEnabled = RearviewMirrorSettings.enabled(preferences);
@@ -398,6 +404,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         }
         if (engineConfig.enabled && (engineConfig.exteriorEnabled || engineConfig.interiorEnabled)) {
             addAssignment(result, preferences, CameraButtonBindings.Action.AvasEngine, 1L);
+        }
+        if (HazardThanksSettings.enabled(preferences)) {
+            addAssignment(result, preferences, CameraButtonBindings.Action.HazardThanks, 1L);
         }
         return result;
     }
@@ -433,6 +442,12 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
             if (AvasMicrophoneSettings.enabled(preferences) && microphone != null) microphone.toggle();
             return;
         }
+        if (action == CameraButtonBindings.Action.HazardThanks) {
+            if (HazardThanksSettings.enabled(preferences))
+                CameraHelperService.requestHazardThanks(this,
+                        source.name() + " " + press.name());
+            return;
+        }
         boolean mirrorEnabled = RearviewMirrorSettings.enabled(preferences);
         if (!mirrorEnabled) return;
         if (action == CameraButtonBindings.Action.MirrorSource) {
@@ -451,8 +466,13 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
                 || CameraButtonBindings.ENGINE_KEY_CODE.equals(key)
                 || CameraButtonBindings.ENGINE_PRESS.equals(key)
                 || CameraButtonBindings.ENGINE_SOURCE.equals(key)
+                || CameraButtonBindings.HAZARD_THANKS_KEY_CODE.equals(key)
+                || CameraButtonBindings.HAZARD_THANKS_PRESS.equals(key)
+                || CameraButtonBindings.HAZARD_THANKS_SOURCE.equals(key)
+                || (CameraButtonBindings.HAZARD_THANKS_PRESS + "_android").equals(key)
                 || AvasAudioLibrary.PREF_CONFIG.equals(key)
                 || AvasMicrophoneSettings.ENABLED.equals(key)
+                || HazardThanksSettings.ENABLED.equals(key)
                 || ReverseSteeringButtonPreferences.KEY_CODE.equals(key)
                 || CameraButtonBindings.MIRROR_SOURCE_KEY_CODE.equals(key)
                 || CameraButtonBindings.MIRROR_SOURCE_PRESS.equals(key)

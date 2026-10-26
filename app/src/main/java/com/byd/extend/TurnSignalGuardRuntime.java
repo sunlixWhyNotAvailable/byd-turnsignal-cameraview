@@ -6,6 +6,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Parcel;
+import android.os.Process;
 import android.os.SystemClock;
 
 import java.io.PrintWriter;
@@ -27,6 +28,11 @@ final class TurnSignalGuardRuntime {
     private static final int CAMERA_STATE_PERIOD_MS = 200;
     private final BlindShortTurnSignal cameraShortTurn = new BlindShortTurnSignal();
     private static final int TURN_SIGNAL_SET_FID = 871366669;
+    private static final int HAZARD_THANKS_LIGHT_DEVICE = 1004;
+    private static final int HAZARD_THANKS_SOUND_DEVICE = 1007;
+    private static final int HAZARD_THANKS_SOUND_FID = 339738670;
+    private static final int HAZARD_THANKS_MODE_FID = 950009900;
+    private static final int HAZARD_THANKS_STALK_FID = 321912876;
     private static final int LATCH_UNKNOWN = -1;
 
     private static final Signal GEAR = new Signal(5, 1011, 555745336);
@@ -51,9 +57,19 @@ final class TurnSignalGuardRuntime {
     private Method setLightFeature;
     private Class<?> eventValueType;
     private final TurnSignalTelemetryController telemetryController;
+    private final HazardThanksSequence hazardThanks = new HazardThanksSequence();
 
     private boolean started;
     private boolean requestedEnabled;
+    private boolean hazardThanksEnabled;
+    private int hazardThanksFlashes = 2;
+    private boolean hazardThanksOwnsRequest;
+    private int lastHazardThanksStalk = -1;
+    private int lastHazardThanksMode = -1;
+    private long runtimeStartedAtMs;
+    private long activeHazardThanksWindowStartAt;
+    private long lastHazardThanksWindowStartAt;
+    private long lastHazardThanksWindowEndAt;
     private boolean listenerHealthy;
     private boolean pollHealthy;
     private final TurnSignalGestureState gestures = new TurnSignalGestureState();
@@ -177,6 +193,16 @@ final class TurnSignalGuardRuntime {
                 initialAssumedLatchState), "configure");
     }
 
+    void configureHazardThanks(boolean enabled, int flashes) {
+        runOnHandler(() -> configureHazardThanksOnHandler(enabled, flashes),
+                "configure_hazard_thanks");
+    }
+
+    void startHazardThanks(String source, long requestedAtMs) {
+        runOnHandler(() -> startHazardThanksOnHandler(source, requestedAtMs),
+                "start_hazard_thanks");
+    }
+
     void vehiclePowerStateChanged(
             boolean interactive, long generation, long cleanupAttemptedGeneration) {
         runOnHandler(() -> vehiclePowerStateChangedOnHandler(
@@ -203,6 +229,7 @@ final class TurnSignalGuardRuntime {
     private void startOnHandler() {
         if (started) return;
         lifecycleGeneration++;
+        runtimeStartedAtMs = SystemClock.elapsedRealtime();
         selfCheck();
         started = true;
         lastControlInitAttemptAt = Long.MIN_VALUE;
@@ -236,6 +263,7 @@ final class TurnSignalGuardRuntime {
         Object oldTimerToken = timerToken;
         timerToken = new Object();
         handler.removeCallbacksAndMessages(oldTimerToken);
+        finishHazardThanks("runtime_stopped", "cancelled", "");
         if (!started) return;
         started = false;
         boolean resetLatch = requestedEnabled;
@@ -299,6 +327,10 @@ final class TurnSignalGuardRuntime {
             return;
         }
 
+        if (hazardThanks.active()) {
+            finishHazardThanks("manual_turn_state_" + manualActionName(payload),
+                    "cancelled", "");
+        }
         try {
             int status = writeTurnSignal(payload, "manual_" + manualActionName(payload));
             emit("manual_turn_state_requested", "action", manualActionName(payload),
@@ -365,6 +397,27 @@ final class TurnSignalGuardRuntime {
         }
         postTimer(() -> awaitManualTurnStateConfirmation(
                 payload, blinkBefore, deadline, generation), PERIOD_MS);
+    }
+
+    private void configureHazardThanksOnHandler(boolean enabled, int flashes) {
+        if (flashes < 1 || flashes > 3) {
+            emit("hazard_thanks_config_rejected", "reason", "invalid_flash_count",
+                    "requested_count", flashes);
+            if (!enabled) {
+                hazardThanksEnabled = false;
+                if (hazardThanks.active()) {
+                    finishHazardThanks("feature_disabled", "cancelled", "");
+                }
+            }
+            return;
+        }
+        hazardThanksEnabled = enabled;
+        hazardThanksFlashes = flashes;
+        emit("hazard_thanks_config", "enabled", enabled, "flashes", flashes,
+                "active", hazardThanks.active());
+        if (!enabled && hazardThanks.active()) {
+            finishHazardThanks("feature_disabled", "cancelled", "");
+        }
     }
 
     private void configureOnHandler(
@@ -484,9 +537,316 @@ final class TurnSignalGuardRuntime {
     private void pollAndSchedule() {
         if (!started) return;
         initializeControlIfNeeded();
+        if (hazardThanks.active()) pollHazardThanks();
         telemetryController.tick();
         evaluateTelemetryDeadlines();
         if (started) postTimer(pollRunnable, PERIOD_MS);
+    }
+
+    private void startHazardThanksOnHandler(String source, long requestedAtMs) {
+        long dispatchAt = SystemClock.elapsedRealtime();
+        if (requestedAtMs < runtimeStartedAtMs) {
+            emit("hazard_thanks_start_ignored", "reason", "gesture_predates_runtime_start",
+                    "source", source == null ? "unknown" : source,
+                    "requested_ms", requestedAtMs,
+                    "runtime_started_ms", runtimeStartedAtMs);
+            return;
+        }
+        if (requestedAtMs <= 0 || requestedAtMs > dispatchAt) {
+            emit("hazard_thanks_start_ignored", "reason", "invalid_input_timestamp",
+                    "source", source == null ? "unknown" : source,
+                    "requested_ms", requestedAtMs, "dispatched_ms", dispatchAt);
+            return;
+        }
+        if (!hazardThanksEnabled) {
+            emit("hazard_thanks_start_ignored", "reason", "feature_disabled",
+                    "source", source == null ? "unknown" : source);
+            return;
+        }
+        if (hazardThanks.active()) {
+            emit("hazard_thanks_start_ignored", "reason", "active_retrigger_ignored",
+                    "source", source == null ? "unknown" : source,
+                    "generation", hazardThanks.generation(),
+                    "completed", hazardThanks.completed(), "target", hazardThanks.target());
+            return;
+        }
+        if (HazardThanksSequence.inputOccurredDuring(requestedAtMs,
+                lastHazardThanksWindowStartAt, lastHazardThanksWindowEndAt)) {
+            emit("hazard_thanks_start_ignored", "reason", "stale_active_sequence_retrigger",
+                    "source", source == null ? "unknown" : source,
+                    "requested_ms", requestedAtMs,
+                    "previous_start_ms", lastHazardThanksWindowStartAt,
+                    "previous_end_ms", lastHazardThanksWindowEndAt);
+            return;
+        }
+        if (!started) {
+            emit("hazard_thanks_preflight_failed", "reason", "runtime_stopped",
+                    "source", source == null ? "unknown" : source);
+            return;
+        }
+
+        long preflightStarted = SystemClock.elapsedRealtime();
+        Integer stalk = readHazardThanksSignal(
+                HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_STALK_FID, "stalk", "preflight");
+        Integer mode = readHazardThanksSignal(
+                HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_MODE_FID, "mode", "preflight");
+        Integer sound = readHazardThanksSignal(HAZARD_THANKS_SOUND_DEVICE,
+                HAZARD_THANKS_SOUND_FID, "instrument_sound", "preflight");
+        long preflightCompletedAtMs = SystemClock.elapsedRealtime();
+        String rejection = stalk == null || mode == null || sound == null
+                ? "required_signal_unavailable"
+                : preflightCompletedAtMs - preflightStarted > MAX_POLL_GAP_MS
+                        ? "preflight_signal_age_exceeded" : null;
+        if (rejection == null) {
+            rejection = hazardThanks.start(
+                    mode, stalk, sound, hazardThanksFlashes, preflightCompletedAtMs);
+        }
+        if (rejection != null) {
+            emit("hazard_thanks_preflight_failed", "reason", rejection,
+                    "source", source == null ? "unknown" : source,
+                    "mode", mode == null ? "unavailable" : mode,
+                    "stalk", stalk == null ? "unavailable" : stalk,
+                    "sound", sound == null ? "unavailable" : sound,
+                    "elapsed_ms", preflightCompletedAtMs - preflightStarted,
+                    "requested_flashes", hazardThanksFlashes);
+            return;
+        }
+
+        activeHazardThanksWindowStartAt = requestedAtMs;
+        lastHazardThanksStalk = stalk;
+        lastHazardThanksMode = mode;
+        hazardThanksOwnsRequest = true;
+        emit("hazard_thanks_baseline", "source", source == null ? "unknown" : source,
+                "requested_ms", requestedAtMs,
+                "activation_cutoff_ms", preflightCompletedAtMs,
+                "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                "context_package", context.getPackageName(),
+                "device", HAZARD_THANKS_SOUND_DEVICE, "feature_id", HAZARD_THANKS_SOUND_FID,
+                "sound", sound, "stalk", stalk, "mode", mode,
+                "target_flashes", hazardThanks.target(),
+                "generation", hazardThanks.generation());
+        emit("hazard_thanks_started", "source", source == null ? "unknown" : source,
+                "activation_cutoff_ms", preflightCompletedAtMs,
+                "process_uid", Process.myUid(), "process_pid", Process.myPid(),
+                "context_package", context.getPackageName(),
+                "target_flashes", hazardThanks.target(),
+                "timeout_ms", HazardThanksSequence.NO_CYCLE_TIMEOUT_MS,
+                "generation", hazardThanks.generation());
+        try {
+            int status = writeTurnSignal(1, "hazard_thanks_start");
+            emit("hazard_thanks_write_result", "action", "start",
+                    "payload", 1, "status", status);
+            if (status != 0) {
+                finishHazardThanks("start_framework_status_" + status, "failed", "");
+            }
+        } catch (Throwable failure) {
+            finishHazardThanks("start_write_failed", "failed", diagnostic(failure));
+        }
+    }
+
+    private void pollHazardThanks() {
+        long generation = hazardThanks.generation();
+        long now = SystemClock.elapsedRealtime();
+        if (hazardThanks.timeoutDue(generation, now)) {
+            finishHazardThanks("no_complete_cycle_within_timeout", "cancelled", "");
+            return;
+        }
+        Integer stalk = readHazardThanksSignal(
+                HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_STALK_FID, "stalk", "active");
+        Integer mode = readHazardThanksSignal(
+                HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_MODE_FID, "mode", "active");
+        if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
+        if (stalk == null || mode == null) {
+            finishHazardThanks("required_signal_get_failed", "cancelled", "");
+            return;
+        }
+        if (stalk < 1 || stalk > 5 || mode < 1 || mode > 9) {
+            emit("hazard_thanks_input_invalid", "stalk", stalk, "mode", mode,
+                    "stalk_fid", HAZARD_THANKS_STALK_FID,
+                    "mode_fid", HAZARD_THANKS_MODE_FID);
+            finishHazardThanks("required_signal_invalid", "cancelled", "");
+            return;
+        }
+        observeHazardThanksManualSignals(stalk, mode, "active_get",
+                SystemClock.elapsedRealtime(), true, true);
+        if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
+
+        Integer sound = readHazardThanksSignal(HAZARD_THANKS_SOUND_DEVICE,
+                HAZARD_THANKS_SOUND_FID, "instrument_sound", "active");
+        long receivedAt = SystemClock.elapsedRealtime();
+        if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
+        if (hazardThanks.timeoutDue(generation, receivedAt)) {
+            finishHazardThanks("no_complete_cycle_within_timeout", "cancelled", "");
+            return;
+        }
+        if (sound == null) {
+            finishHazardThanks("sound_get_failed", "cancelled", "");
+            return;
+        }
+
+        Integer previousSound = hazardThanks.lastSound();
+        int previousCycles = hazardThanks.completed();
+        int observation = hazardThanks.observeSound(sound, receivedAt);
+        if (observation == HazardThanksSequence.SOUND_INVALID) {
+            emit("hazard_thanks_input_invalid", "signal", "instrument_sound",
+                    "device", HAZARD_THANKS_SOUND_DEVICE,
+                    "feature_id", HAZARD_THANKS_SOUND_FID, "value", sound);
+            finishHazardThanks("invalid_sound_value", "cancelled", "");
+            return;
+        }
+        if (!sound.equals(previousSound)) {
+            emit("hazard_thanks_sound_edge", "previous", previousSound,
+                    "value", sound, "completed", hazardThanks.completed(),
+                    "received_ms", receivedAt);
+        }
+        if (hazardThanks.completed() > previousCycles) {
+            emit("hazard_thanks_sound_cycle", "completed", hazardThanks.completed(),
+                    "target", hazardThanks.target(), "received_ms", receivedAt,
+                    "generation", generation);
+        }
+        if (observation == HazardThanksSequence.SOUND_TARGET_REACHED) {
+            finishHazardThanks("target_cycles_reached", "complete", "");
+        }
+    }
+
+    private Integer readHazardThanksSignal(
+            int device, int fid, String signal, String phase) {
+        String stage = "service_check";
+        Parcel data = null;
+        Parcel reply = null;
+        try {
+            if (autoservice == null || autoserviceDescriptor == null) {
+                emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                        "signal", signal, "device", device, "feature_id", fid,
+                        "stage", stage, "failure", "autoservice_not_initialized");
+                return null;
+            }
+            if (!autoservice.isBinderAlive()) {
+                emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                        "signal", signal, "device", device, "feature_id", fid,
+                        "stage", stage, "failure", "autoservice_binder_dead");
+                return null;
+            }
+            data = Parcel.obtain();
+            reply = Parcel.obtain();
+            stage = "interface_token";
+            data.writeInterfaceToken(autoserviceDescriptor);
+            data.writeInt(device);
+            data.writeInt(fid);
+            stage = "binder_transact_5";
+            boolean transacted = autoservice.transact(5, data, reply, 0);
+            int replyBytes = reply.dataAvail();
+            if (!transacted) {
+                emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                        "signal", signal, "device", device, "feature_id", fid,
+                        "transaction", 5, "stage", stage,
+                        "failure", "transact_returned_false", "reply_bytes", replyBytes);
+                return null;
+            }
+            if (replyBytes < 8) {
+                boolean statusPresent = replyBytes >= 4;
+                int status = statusPresent ? reply.readInt() : Integer.MIN_VALUE;
+                emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                        "signal", signal, "device", device, "feature_id", fid,
+                        "transaction", 5, "stage", "reply", "failure", "short_reply",
+                        "reply_bytes", replyBytes, "status_present", statusPresent,
+                        "oem_status", statusPresent ? status : "unavailable");
+                return null;
+            }
+            stage = "reply_parse";
+            int status = reply.readInt();
+            int value = reply.readInt();
+            if (status != 0) {
+                emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                        "signal", signal, "device", device, "feature_id", fid,
+                        "transaction", 5, "stage", stage, "failure", "oem_status",
+                        "oem_status", status, "raw_value", value);
+                return null;
+            }
+            emit("hazard_thanks_get_sample", "phase", phase, "signal", signal,
+                    "device", device, "feature_id", fid, "transaction", 5,
+                    "oem_status", status, "value", value,
+                    "received_ms", SystemClock.elapsedRealtime());
+            return value;
+        } catch (Throwable failure) {
+            emit("hazard_thanks_get_failed", "operation", "GET", "phase", phase,
+                    "signal", signal, "device", device, "feature_id", fid,
+                    "transaction", 5, "stage", stage,
+                    "exception_class", failure.getClass().getName(),
+                    "exception_message", failure.getMessage() == null ? "" : failure.getMessage(),
+                    "error", diagnostic(failure));
+            return null;
+        } finally {
+            if (data != null) data.recycle();
+            if (reply != null) reply.recycle();
+        }
+    }
+
+    private void finishHazardThanks(String reason, String result, String primaryError) {
+        if (!hazardThanks.active()) return;
+        long generation = hazardThanks.generation();
+        int completed = hazardThanks.completed();
+        int target = hazardThanks.target();
+        boolean owned = hazardThanksOwnsRequest;
+        long windowStart = activeHazardThanksWindowStartAt;
+        hazardThanks.cancel();
+        lastHazardThanksStalk = -1;
+        lastHazardThanksMode = -1;
+
+        int releaseStatus = Integer.MIN_VALUE;
+        String releaseError = "";
+        if (owned) {
+            try {
+                releaseStatus = writeTurnSignal(0, "hazard_thanks_release_" + reason);
+                emit("hazard_thanks_write_result", "action", "release",
+                        "payload", 0, "status", releaseStatus, "reason", reason);
+                if (releaseStatus != 0) {
+                    releaseError = "framework_status_" + releaseStatus;
+                    emit("hazard_thanks_release_failed", "reason", reason,
+                            "failure", releaseError, "feature_id", TURN_SIGNAL_SET_FID,
+                            "payload", 0, "status", releaseStatus);
+                }
+            } catch (Throwable failure) {
+                releaseError = diagnostic(failure);
+                emit("hazard_thanks_release_failed", "reason", reason,
+                        "failure", "write_exception", "feature_id", TURN_SIGNAL_SET_FID,
+                        "payload", 0, "exception_class", failure.getClass().getName(),
+                        "exception_message", failure.getMessage() == null ? "" : failure.getMessage(),
+                        "error", releaseError);
+            } finally {
+                hazardThanksOwnsRequest = false;
+            }
+        }
+        long windowEnd = SystemClock.elapsedRealtime();
+        if (windowStart > 0) {
+            lastHazardThanksWindowStartAt = windowStart;
+            lastHazardThanksWindowEndAt = windowEnd;
+        }
+        activeHazardThanksWindowStartAt = 0;
+        if ("complete".equals(result) && owned && releaseStatus == 0) {
+            emit("hazard_thanks_result", "result", result, "reason", reason,
+                    "completed", completed, "target", target, "generation", generation,
+                    "window_start_ms", windowStart, "window_end_ms", windowEnd,
+                    "release_status", owned ? releaseStatus : "not_owned",
+                    "release_error", releaseError);
+        } else if ("complete".equals(result)) {
+            emit("hazard_thanks_result", "result", "release_failed", "reason", reason,
+                    "target_reached", true, "completed", completed, "target", target,
+                    "generation", generation, "window_start_ms", windowStart,
+                    "window_end_ms", windowEnd,
+                    "release_status", owned ? releaseStatus : "not_owned",
+                    "release_error", releaseError.isEmpty() ? "request_not_owned" : releaseError);
+        } else {
+            emit("hazard_thanks_cancel", "reason", reason,
+                    "completed", completed, "target", target, "generation", generation,
+                    "primary_error", primaryError == null ? "" : primaryError);
+            emit("hazard_thanks_result", "result", result, "reason", reason,
+                    "completed", completed, "target", target, "generation", generation,
+                    "window_start_ms", windowStart, "window_end_ms", windowEnd,
+                    "release_status", owned ? releaseStatus : "not_owned",
+                    "release_error", releaseError,
+                    "primary_error", primaryError == null ? "" : primaryError);
+        }
     }
 
     private void applyTelemetrySnapshot(
@@ -510,6 +870,9 @@ final class TurnSignalGuardRuntime {
         boolean valid = stalk.okRange(1, 5) && blink.okRange(1, 9)
                 && angle != null && speedKph != null;
         boolean gapOk = telemetryController.dataFresh(now);
+
+        observeHazardThanksTelemetrySnapshot(
+                stalk.raw, blink.raw, source, liveMask, observedMs);
 
         if (!valid || !gapOk) {
             if (!gapOk) telemetryController.reportFreshnessFailure(now);
@@ -712,6 +1075,7 @@ final class TurnSignalGuardRuntime {
                 !sessionActive
                         && speedDeferred.direction() == 0
                         && pendingNeutralizeReason == null
+                        && !hazardThanksOwnsRequest
                         && !hazardCleanupPending
                         && !speedLimitCleanupPending)) {
             return;
@@ -756,6 +1120,7 @@ final class TurnSignalGuardRuntime {
                 !sessionActive
                         && speedDeferred.direction() == 0
                         && pendingNeutralizeReason == null
+                        && !hazardThanksOwnsRequest
                         && !hazardCleanupPending
                         && !speedLimitCleanupPending);
         startupCleanupMarkerPendingGeneration = 0;
@@ -801,7 +1166,8 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateGuardDisableReset() {
-        if (!guardDisableResetPending || requestedEnabled || !telemetryReady()
+        if (hazardThanksOwnsRequest || !guardDisableResetPending || requestedEnabled
+                || !telemetryReady()
                 || !safeGuardDisableResetBlink(latestBlink)) {
             return;
         }
@@ -824,7 +1190,8 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateSpeedLimitCleanup() {
-        if (!canRunSpeedLimitCleanup(speedLimitCleanupPending, requestedEnabled,
+        if (hazardThanksOwnsRequest || !canRunSpeedLimitCleanup(
+                speedLimitCleanupPending, requestedEnabled,
                 telemetryReady(), latestBlink, latestStalk)) {
             return;
         }
@@ -849,6 +1216,7 @@ final class TurnSignalGuardRuntime {
         boolean controlIdle = !sessionActive
                 && speedDeferred.direction() == 0
                 && pendingNeutralizeReason == null
+                && !hazardThanksOwnsRequest
                 && !hazardCleanupPending
                 && !guardDisableResetPending
                 && !speedLimitCleanupPending
@@ -939,6 +1307,49 @@ final class TurnSignalGuardRuntime {
                 "mode", gesture.longMode ? "long" : "short", "stalk", raw, "source", source,
                 "origin", "driver_stalk");
         if (gesture.longMode && requestedEnabled) startSession(direction, now);
+    }
+
+    private void observeHazardThanksManualSignals(
+            int stalk, int mode, String source, long observedMs,
+            boolean observeStalk, boolean observeMode) {
+        if (!hazardThanksOwnsRequest
+                || !hazardThanks.observationIsAfterActivation(observedMs)) return;
+        if (observeStalk && stalk != lastHazardThanksStalk) {
+            emit("hazard_thanks_stalk_edge", "previous", lastHazardThanksStalk,
+                    "value", stalk, "source", source, "observed_ms", observedMs);
+            lastHazardThanksStalk = stalk;
+        }
+        if (observeMode && mode != lastHazardThanksMode) {
+            emit("hazard_thanks_mode_edge", "previous", lastHazardThanksMode,
+                    "value", mode, "source", source, "observed_ms", observedMs);
+            lastHazardThanksMode = mode;
+        }
+        String stalkCancellation = observeStalk ? hazardThanks.observeStalk(stalk) : null;
+        String modeCancellation = observeMode ? hazardThanks.observeMode(mode) : null;
+        String reason = stalkCancellation != null ? stalkCancellation : modeCancellation;
+        if (reason != null) finishHazardThanks(reason, "cancelled", "");
+    }
+
+    private void observeHazardThanksTelemetrySnapshot(
+            int stalk, int mode, TurnSignalTelemetryController.Source source,
+            int liveMask, long observedMs) {
+        if (!hazardThanksOwnsRequest
+                || !hazardThanks.observationIsAfterActivation(observedMs)) return;
+        if (source != TurnSignalTelemetryController.Source.CALLBACK) return; // Active polls GET both signals.
+
+        // Callback snapshots merge old fields; only the callback's live FID is fresh.
+        boolean observeStalk = (liveMask & TurnSignalTelemetryController.LIVE_STALK) != 0;
+        boolean observeMode = (liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0;
+        if (!observeStalk && !observeMode) return;
+        if ((observeStalk && (stalk < 1 || stalk > 5))
+                || (observeMode && (mode < 1 || mode > 9))) {
+            finishHazardThanks("required_telemetry_invalid", "cancelled",
+                    "stalk=" + (observeStalk ? stalk : "not_observed")
+                            + ", mode=" + (observeMode ? mode : "not_observed"));
+            return;
+        }
+        observeHazardThanksManualSignals(stalk, mode, source.name(), observedMs,
+                observeStalk, observeMode);
     }
 
     private void logRejectedGesture(TurnSignalGestureState.Result gesture, String source) {
@@ -1099,7 +1510,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateCorrection(long now) {
-        if (!sessionActive) return;
+        if (!sessionActive || hazardThanksOwnsRequest) return;
         if (confirmationPending && now >= confirmationDeadline) {
             int payload = sessionDirection == BLINK_LEFT ? 2
                     : sessionDirection == BLINK_RIGHT ? 3 : LATCH_UNKNOWN;
@@ -1156,7 +1567,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateNeutralization() {
-        if (latestBlink != BLINK_OFF) return;
+        if (hazardThanksOwnsRequest || latestBlink != BLINK_OFF) return;
 
         if (pendingNeutralizeReason != null) {
             if (!speedAllowed(latestSpeedKph, maxSpeedKph) && latestStalk != 1) return;
@@ -1177,7 +1588,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateHazardCleanup() {
-        if (!hazardCleanupPending || latestBlink != BLINK_OFF) return;
+        if (hazardThanksOwnsRequest || !hazardCleanupPending || latestBlink != BLINK_OFF) return;
         if (latestStalk != 1) {
             cancelHazardCleanup("stalk_not_neutral_after_hazard");
             return;
@@ -1204,6 +1615,12 @@ final class TurnSignalGuardRuntime {
     }
 
     private boolean neutralizeControlLatch(String reason, boolean allowAboveSpeed) {
+        if (hazardThanksOwnsRequest) {
+            emit("control_latch_reset_deferred", "reason", reason,
+                    "owner", "hazard_thanks", "feature_id", TURN_SIGNAL_SET_FID,
+                    "payload", 0);
+            return false;
+        }
         boolean ready = allowAboveSpeed
                 ? requestedEnabled && telemetryReady() : guardActive();
         if (!ready || !telemetryController.dataFresh(SystemClock.elapsedRealtime())) {
@@ -1242,6 +1659,10 @@ final class TurnSignalGuardRuntime {
     }
 
     private int writeTurnSignal(int payload, String reason) throws Exception {
+        if (hazardThanksOwnsRequest && !reason.startsWith("hazard_thanks_")) {
+            throw new IllegalStateException("FID " + TURN_SIGNAL_SET_FID
+                    + " owned by thank-you sequence; rejected " + reason);
+        }
         if (writeInFlight) throw new IllegalStateException("turn-state write already in flight");
         if (lightDevice == null || setLightFeature == null || eventValueType == null) {
             throw new IllegalStateException("BYD light control unavailable");

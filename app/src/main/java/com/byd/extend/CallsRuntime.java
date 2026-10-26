@@ -156,7 +156,7 @@ public final class CallsRuntime {
         if (callOperation != null && callOperation.stage == CallStage.WAITING_FOR_TARGET
                 && isXCallTargetEvent(event.getEventType(), event.getPackageName()))
             tryFindCallTarget(callOperation);
-        if (hintDismissRequest != null
+        if (hintDismissRequest != null && hintDismissRequest.dismissAllowed
                 && isXCallTargetEvent(event.getEventType(), event.getPackageName()))
             tryDismissAssignedHint(hintDismissRequest);
     }
@@ -652,11 +652,12 @@ public final class CallsRuntime {
             syncGestureDeadline();
             return;
         }
-        if ((value == 3 || value == 4) && source != null
-                && hasSourceAssignment(assignments, source)) {
+        if ((value == 3 || value == 4) && hasSourceAssignment(assignments, source)) {
+            boolean hazardAssignment = hasActionAssignment(assignments, source,
+                    CameraButtonBindings.Action.HazardThanks);
             hintDismissRequest = new HintDismissRequest(++hintGeneration, source,
-                    rescueSession, sequence, now + HINT_EVENT_WINDOW_MS);
-            tryDismissAssignedHint(hintDismissRequest);
+                    rescueSession, sequence, now + HINT_EVENT_WINDOW_MS, !hazardAssignment);
+            if (!hazardAssignment) tryDismissAssignedHint(hintDismissRequest);
         } else if (value == 1 || value == 2) {
             cancelHintDismiss("hold_received");
         }
@@ -674,6 +675,12 @@ public final class CallsRuntime {
         RescueButtonGesturePolicy.Result result = gestures.advance(
                 SystemClock.elapsedRealtime(), currentRescueAssignments(preferences));
         handleGestureResult(result);
+        if (result != null && result.press != null && result.action == null
+                && hintDismissRequest != null
+                && !hintDismissRequest.dismissAllowed
+                && hintDismissRequest.source == result.source) {
+            cancelHintDismiss("unassigned_gesture");
+        }
         syncGestureDeadline();
     }
 
@@ -692,8 +699,24 @@ public final class CallsRuntime {
             if (profile != null) beginCallReplacement(profile, result.source);
             return;
         }
-        if (result.action != null && result.press != null)
+        if (result.action == null || result.press == null) return;
+        if (result.action == CameraButtonBindings.Action.HazardThanks) {
             service.dispatchRescueButtonAction(result.action, result.source, result.press);
+            allowHintDismissAfterGesture(result.source, true);
+        } else {
+            allowHintDismissAfterGesture(result.source, false);
+            service.dispatchRescueButtonAction(result.action, result.source, result.press);
+        }
+    }
+
+    private void allowHintDismissAfterGesture(CameraButtonBindings.Source source,
+            boolean retryAfterAcceptedDismiss) {
+        HintDismissRequest request = hintDismissRequest;
+        if (request == null || request.source != source || request.dismissAllowed) return;
+        request.dismissAllowed = true;
+        request.retryAfterAcceptedDismiss = retryAfterAcceptedDismiss;
+        request.expiresAt = SystemClock.elapsedRealtime() + HINT_EVENT_WINDOW_MS;
+        tryDismissAssignedHint(request);
     }
 
     private void beginCallReplacement(CallsSettings.Profile profile,
@@ -986,7 +1009,8 @@ public final class CallsRuntime {
     }
 
     private void tryDismissAssignedHint(HintDismissRequest request) {
-        if (request == null || request != hintDismissRequest || isBlocked()
+        if (request == null || request != hintDismissRequest || !request.dismissAllowed
+                || isBlocked()
                 || !rescueConnected || !request.session.equals(rescueSession)) return;
         if (deadlineReached(SystemClock.elapsedRealtime(), request.expiresAt)) {
             cancelHintDismiss("hint_window_expired");
@@ -1027,9 +1051,11 @@ public final class CallsRuntime {
             boolean clicked = target.node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
             logStage("assigned_hint_dismiss", "source=" + request.source.name()
                     + " target=" + simpleId(target.id) + " accepted=" + clicked);
-            if (clicked) cancelHintDismiss("hint_dismissed");
+            if (clicked && (!request.retryAfterAcceptedDismiss
+                    || ++request.acceptedDismissals >= 2)) cancelHintDismiss("hint_dismissed");
         } catch (RuntimeException failure) {
-            logStage("assigned_hint_dismiss_failed", failure.getClass().getSimpleName());
+            logStage("assigned_hint_dismiss_failed", Log.getStackTraceString(failure));
+            Log.e(TAG, "assigned_hint_dismiss_failed", failure);
         } finally {
             scan.recycleTargets();
         }
@@ -1268,7 +1294,8 @@ public final class CallsRuntime {
     private static List<CameraButtonBindings.Action> rescueActions() {
         return Arrays.asList(CameraButtonBindings.Action.AvasMicrophone,
                 CameraButtonBindings.Action.MirrorSource,
-                CameraButtonBindings.Action.MirrorVisibility);
+                CameraButtonBindings.Action.MirrorVisibility,
+                CameraButtonBindings.Action.HazardThanks);
     }
 
     private static boolean featureEnabled(SharedPreferences prefs,
@@ -1280,6 +1307,19 @@ public final class CallsRuntime {
                     && RearviewMirrorSettings.frontIntegrated(prefs);
         if (action == CameraButtonBindings.Action.MirrorVisibility)
             return RearviewMirrorSettings.enabled(prefs);
+        if (action == CameraButtonBindings.Action.HazardThanks)
+            return HazardThanksSettings.enabled(prefs);
+        return false;
+    }
+
+    private static boolean hasActionAssignment(
+            List<RescueButtonGesturePolicy.Assignment> assignments,
+            CameraButtonBindings.Source source, CameraButtonBindings.Action action) {
+        for (RescueButtonGesturePolicy.Assignment assignment : assignments) {
+            if (assignment != null && assignment.action == action && assignment.binding != null
+                    && assignment.binding.source == source && assignment.binding.isAssigned())
+                return true;
+        }
         return false;
     }
 
@@ -1316,7 +1356,12 @@ public final class CallsRuntime {
                 || key.equals(CameraButtonBindings.MIRROR_VISIBILITY_KEY_CODE)
                 || key.equals(CameraButtonBindings.MIRROR_VISIBILITY_PRESS)
                 || key.equals(CameraButtonBindings.MIRROR_VISIBILITY_SOURCE)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_KEY_CODE)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_SOURCE)
+                || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android")
                 || key.equals(AvasMicrophoneSettings.ENABLED)
+                || key.equals(HazardThanksSettings.ENABLED)
                 || key.equals(RearviewMirrorSettings.PREF_ENABLED)
                 || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
                 || key.equals(GuardRecovery.KEY_USER_SHUTDOWN)
@@ -1471,15 +1516,19 @@ public final class CallsRuntime {
         final CameraButtonBindings.Source source;
         final String session;
         final long sequence;
-        final long expiresAt;
+        long expiresAt;
+        boolean dismissAllowed;
+        boolean retryAfterAcceptedDismiss;
+        int acceptedDismissals;
 
         HintDismissRequest(long generation, CameraButtonBindings.Source source,
-                String session, long sequence, long expiresAt) {
+                String session, long sequence, long expiresAt, boolean dismissAllowed) {
             this.generation = generation;
             this.source = source;
             this.session = session;
             this.sequence = sequence;
             this.expiresAt = expiresAt;
+            this.dismissAllowed = dismissAllowed;
         }
     }
 
