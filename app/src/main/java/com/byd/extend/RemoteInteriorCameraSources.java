@@ -186,6 +186,8 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
                 continue;
             }
             try {
+                CameraViewingDiagnostics.detail("interior_surface_received", "shared",
+                        "camera=" + channelName(index) + " valid=true");
                 client.start(surface);
                 synchronized (slot) {
                     if (slot.client == client) { slot.started = true; slot.surface = surface; }
@@ -524,8 +526,11 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
             setPreviewSurface.invoke(camera, next);
             retainSurface(next);
             replaceSurface(next);
+            CameraViewingDiagnostics.detail("interior_surface_attached", "shared",
+                    "camera=cabin id=" + id + " api=Camera.setPreviewSurface");
             camera.startPreview();
             started = true;
+            CameraViewingDiagnostics.detail("interior_preview_started", "shared", "camera=cabin id=" + id);
         }
 
         @Override void suspendOnThread() {
@@ -589,9 +594,12 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
             attached = true;
             attachedSurface = next;
             retainSurface(next);
+            CameraViewingDiagnostics.detail("interior_surface_attached", "shared",
+                    "camera=driver id=" + id + " api=NormalCamera.addPreviewSurface");
             requireTrue(cameraType.getMethod("startPreview").invoke(camera), "NormalCamera.startPreview");
             replaceSurface(next);
             started = true;
+            CameraViewingDiagnostics.detail("interior_preview_started", "shared", "camera=driver id=" + id);
         }
 
         @Override void suspendOnThread() throws Exception {

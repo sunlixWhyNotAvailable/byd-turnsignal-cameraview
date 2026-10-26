@@ -98,7 +98,7 @@ final class MotionGpuComposer implements AutoCloseable {
     private boolean startupMissingReported;
     private boolean firstCompositionLogged;
     private final boolean[] firstInputLogged = new boolean[6];
-    private final long[] firstInputTimestampNs = new long[6];
+    private final boolean[] firstFrameLogged = new boolean[6];
     private long lastFrameMs;
     private final Runnable missingInputDeadline = this::reportMissingInputs;
     private final FloatBuffer vertices = floats(-1,-1, 1,-1, -1,1, 1,1);
@@ -247,10 +247,15 @@ final class MotionGpuComposer implements AutoCloseable {
         names[direction] = pump.frames[slot].texture;
         android.opengl.Matrix.setIdentityM(transforms[direction], 0);
         seen[direction] = true;
-        if (firstInputTimestampNs[direction] == 0) {
-            firstInputTimestampNs[direction] = pump.frames[slot].producerNs;
+        if (!firstFrameLogged[direction]) {
+            firstFrameLogged[direction] = true;
+            long timestampNs = pump.frames[slot].producerNs;
             logDiagnostic("first_input_frame", "direction=" + directionName(direction)
-                    + " source_timestamp_ns=" + firstInputTimestampNs[direction]);
+                    + " source_timestamp_ns=" + timestampNs);
+            if (remoteLive && direction >= 4)
+                com.byd.extend.remote.CameraViewingDiagnostics.detail("interior_first_frame", "shared",
+                        "session=" + sessionId + " camera=" + directionName(direction)
+                                + " source_timestamp_ns=" + timestampNs);
         }
         frame(direction);
     }
@@ -320,7 +325,7 @@ final class MotionGpuComposer implements AutoCloseable {
                     }
                     if (!includeExterior && RemoteCameraView.needsExterior(liveView))
                         for (int channel = 0; channel < 4; channel++) unavailable[channel] = true;
-                    configureLiveInteriors(null);
+                    configureLiveInteriors();
                     frame(0);
                 }
                 scheduleMissingInputDeadline();
@@ -338,8 +343,7 @@ final class MotionGpuComposer implements AutoCloseable {
     }
 
     private void initializeOnGlThread(Surface encoder) {
-        // The hub owns the shared display; only its final teardown may terminate it.
-        display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+        display = CameraEglDisplay.acquire();
         int[] values = new int[2];
         EGLConfig[] configs = new EGLConfig[1];
         require(EGL14.eglChooseConfig(display, new int[]{EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
@@ -463,13 +467,12 @@ final class MotionGpuComposer implements AutoCloseable {
                 unavailable[channel + 4] = (requested & bit) != 0
                         && (availableInteriorMask & bit) == 0;
             }
-            Surface[] created = new Surface[2];
-            configureLiveInteriors(created);
+            configureLiveInteriors();
             timestampSecond = Long.MIN_VALUE;
             renderedTimestamp = null;
             frame(0);
             scheduleMissingInputDeadline();
-            return created;
+            return liveInteriorInputsOnGlThread();
         });
         synchronized (lifecycleLock) {
             if (closed || !handler.post(task)) throw new IllegalStateException("viewer composer closed");
@@ -478,15 +481,12 @@ final class MotionGpuComposer implements AutoCloseable {
         catch (Exception failure) { throw failure; }
     }
 
-    Surface[] liveInteriorInputs() throws Exception {
-        FutureTask<Surface[]> task = new FutureTask<>(() -> {
-            Surface[] surfaces = new Surface[2];
-            for (int channel = 0; channel < surfaces.length; channel++)
-                if (liveInputPumps[channel] != null) surfaces[channel] = liveInputPumps[channel].surface;
-            return surfaces;
-        });
-        if (!handler.post(task)) throw new IllegalStateException("composer refused live inputs");
-        return awaitResult(task, "live input surfaces");
+    private Surface[] liveInteriorInputsOnGlThread() {
+        // Binder needs the complete current pair, including inputs created during initialization.
+        Surface[] surfaces = new Surface[2];
+        for (int channel = 0; channel < surfaces.length; channel++)
+            if (liveInputPumps[channel] != null) surfaces[channel] = liveInputPumps[channel].surface;
+        return surfaces;
     }
 
     void markLiveChannelUnavailable(int channel, String reference) {
@@ -526,7 +526,7 @@ final class MotionGpuComposer implements AutoCloseable {
         }
     }
 
-    private void configureLiveInteriors(Surface[] created) {
+    private void configureLiveInteriors() {
         int requested = RemoteCameraView.interiorMask(liveView, allowedInteriorMask);
         for (int channel = 0; channel < 2; channel++) {
             int bit = 1 << channel;
@@ -556,6 +556,8 @@ final class MotionGpuComposer implements AutoCloseable {
                 liveInputPumps[channel] = pump;
                 liveInputWidths[channel] = sourceWidth;
                 liveInputHeights[channel] = sourceHeight;
+                firstFrameLogged[channel + 4] = false;
+                firstInputLogged[channel + 4] = false;
                 try {
                     pump.start();
                     RemoteCameraLiveLayout.Rect bounds = RemoteCameraLiveLayout.channelBounds(
@@ -565,7 +567,6 @@ final class MotionGpuComposer implements AutoCloseable {
                     pump.setOutputSize(fit == null ? sourceWidth : fit.width(),
                             fit == null ? sourceHeight : fit.height());
                     unavailable[channel + 4] = false;
-                    if (created != null) created[channel] = pump.surface;
                     logDiagnostic("interior_input_ready", "channel=" + directionName(channel + 4)
                             + " source=" + sourceWidth + "x" + sourceHeight);
                 } catch (Throwable failure) {
@@ -1106,8 +1107,12 @@ final class MotionGpuComposer implements AutoCloseable {
                         EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT), "EGL cleanup unbind");
             if (hasWindow)
                 require(EGL14.eglDestroySurface(display, window), "EGL destroy encoder surface");
+            window = EGL14.EGL_NO_SURFACE;
             if (hasContext)
                 require(EGL14.eglDestroyContext(display, context), "EGL destroy context");
+            context = EGL14.EGL_NO_CONTEXT;
+            CameraEglDisplay.release(display);
+            display = EGL14.EGL_NO_DISPLAY;
         }
     }
 

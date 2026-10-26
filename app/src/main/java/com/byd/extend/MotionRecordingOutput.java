@@ -227,18 +227,14 @@ final class MotionRecordingOutput {
         interiorWidths = widths.clone(); interiorHeights = heights.clone();
         liveLocale = locale;
         validateLiveSelection();
-        Surface[] created = composer.updateLiveViewingOutput(encoder, liveView,
+        Surface[] inputs = composer.updateLiveViewingOutput(encoder, liveView,
                 allowedInteriorMask, includeExterior, availableInteriorMask,
                 interiorWidths, interiorHeights, liveLocale);
         if (encoder != null) {
             for (int i = viewingEncoders.size() - 2; i >= 0; i--)
                 viewingEncoders.remove(i).release();
         }
-        return created;
-    }
-
-    synchronized Surface[] liveInteriorInputs() throws Exception {
-        return composer == null ? new Surface[]{null, null} : composer.liveInteriorInputs();
+        return inputs;
     }
 
     synchronized void markLiveChannelUnavailable(int channel, String reference) {

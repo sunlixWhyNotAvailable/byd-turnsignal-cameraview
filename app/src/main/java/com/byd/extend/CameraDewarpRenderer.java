@@ -568,9 +568,7 @@ final class CameraDewarpRenderer {
     }
 
     private void initializeGl(CameraMeshCache.Prepared rawMesh) {
-        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
-        require(eglDisplay != EGL14.EGL_NO_DISPLAY, "EGL display unavailable");
-        require(EGL14.eglInitialize(eglDisplay, null, 0, null, 0), "EGL init failed");
+        eglDisplay = CameraEglDisplay.acquire();
         int[] attributes = {
                 EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
                 EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
@@ -1050,7 +1048,7 @@ final class CameraDewarpRenderer {
             if (eglContext != EGL14.EGL_NO_CONTEXT) {
                 EGL14.eglDestroyContext(eglDisplay, eglContext);
             }
-            EGL14.eglTerminate(eglDisplay);
+            CameraEglDisplay.release(eglDisplay);
         }
         rawMirrorSurface = EGL14.EGL_NO_SURFACE;
         correctedMirrorSurface = EGL14.EGL_NO_SURFACE;

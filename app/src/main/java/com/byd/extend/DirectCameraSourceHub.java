@@ -389,9 +389,7 @@ final class DirectCameraSourceHub
     }
 
     private void initializeDisplay() {
-        display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
-        require(display != EGL14.EGL_NO_DISPLAY, "EGL display unavailable");
-        require(EGL14.eglInitialize(display, null, 0, null, 0), "EGL init failed");
+        display = CameraEglDisplay.acquire();
         EGLConfig[] configs = new EGLConfig[1];
         int[] count = new int[1];
         int[] attributes = {
@@ -419,7 +417,7 @@ final class DirectCameraSourceHub
         if (display == EGL14.EGL_NO_DISPLAY) return;
         if (sharedContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, sharedContext);
         sharedContext = EGL14.EGL_NO_CONTEXT;
-        EGL14.eglTerminate(display);
+        CameraEglDisplay.release(display);
         display = EGL14.EGL_NO_DISPLAY;
         config = null;
     }

@@ -17,9 +17,8 @@ final class MotionSharedSource {
 
     MotionSharedSource(Consumer<Throwable> errors) throws Exception {
         try {
-            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
-            int[] versions = new int[2], count = new int[1];
-            require(EGL14.eglInitialize(display, versions, 0, versions, 1), "Motion EGL initialize");
+            display = CameraEglDisplay.acquire();
+            int[] count = new int[1];
             EGLConfig[] configs = new EGLConfig[1];
             require(EGL14.eglChooseConfig(display, new int[]{
                     EGL14.EGL_RENDERABLE_TYPE, 0x40,
@@ -97,7 +96,7 @@ final class MotionSharedSource {
             root = EGL14.EGL_NO_CONTEXT;
         }
         if (display != EGL14.EGL_NO_DISPLAY) {
-            EGL14.eglTerminate(display);
+            CameraEglDisplay.release(display);
             display = EGL14.EGL_NO_DISPLAY;
         }
     }
