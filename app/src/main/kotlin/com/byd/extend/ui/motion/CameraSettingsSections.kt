@@ -97,6 +97,7 @@ internal fun CameraChargeSettingsSection(
     state: CameraChargePolicy.State,
     socThreshold: Int,
     voltageThreshold: Float,
+    enabled: Boolean,
     onSocThreshold: (Int) -> Unit,
     onVoltageThreshold: (Float) -> Unit,
 ) {
@@ -104,7 +105,7 @@ internal fun CameraChargeSettingsSection(
         NumericSetting(
             "SOC", socThreshold.toString(), "%", colors,
             onCommit = { raw -> raw.toIntOrNull()?.let { onSocThreshold(it.coerceIn(10, 90)) } },
-            range = 10f..90f, adjustable = true, identity = "camera-charge-soc",
+            range = 10f..90f, adjustable = true, enabled = enabled, identity = "camera-charge-soc",
         )
         NumericSetting(
             strings.motionText(R.string.cameras_low_voltage),
@@ -112,7 +113,7 @@ internal fun CameraChargeSettingsSection(
             strings.motionText(R.string.cameras_volts), colors,
             onCommit = { raw -> raw.toFloatOrNull()?.let { onVoltageThreshold((it * 10f).roundToInt() / 10f) } },
             range = 12f..13f, adjustable = true, adjustmentStep = 0.1f, decimalPlaces = 1,
-            identity = "camera-charge-voltage",
+            identity = "camera-charge-voltage", enabled = enabled,
         )
         Text(strings.motionText(R.string.cameras_battery_shared), color = colors.muted, fontSize = 13.sp)
         if (state.isBlocked()) {
@@ -244,15 +245,15 @@ internal fun FormScope.CameraViewingScreen(
     }
     val phase = state.phase
     val blocked = chargeState.isBlocked()
-    val fieldsLocked = state.authorized || state.revocationPending || state.busy
-    val accessSettingsLocked = state.revocationPending || state.busy
+    val fieldsLocked = !state.config.enabled || state.authorized || state.revocationPending || state.busy
+    val accessSettingsLocked = !state.config.enabled || state.revocationPending || state.busy
     LaunchedEffect(state.revocationPending, phase, state.error) {
         if (!state.revocationPending || phase == "revoke_pending" || state.error != null) {
             revokeSubmitted = false
         }
     }
     val revokeInProgress = state.revocationPending && phase == "revoking"
-    val canRevoke = !revokeSubmitted && !revokeInProgress && (!state.busy || state.authorized)
+    val canRevoke = state.config.enabled && !revokeSubmitted && !revokeInProgress && (!state.busy || state.authorized)
     val passwordRequired = transport == "vdo" || transport == "zrok" ||
         (transport == "tailscale" && state.config.tailscalePublic)
     val authInputsLoaded = (!passwordRequired || passwordLoaded) && (transport != "zrok" || tokenLoaded)
@@ -262,9 +263,9 @@ internal fun FormScope.CameraViewingScreen(
         editsForAuthorization.authorizationError(state.config.tailscalePublic) else null
     val canAuthorize = state.config.enabled && !state.busy && !state.revocationPending &&
         authInputsLoaded && validationError == null
-    val canCancel = state.busy && !state.revocationPending
+    val canCancel = state.config.enabled && state.busy && !state.revocationPending
     val pendingAccess = state.accessChangesPending || state.authorized && passwordDirty
-    val shareable = !pendingAccess && !streamIdDirty && !passwordDirty && !tokenDirty && !state.viewerUrl.isNullOrBlank()
+    val shareable = state.config.enabled && !pendingAccess && !streamIdDirty && !passwordDirty && !tokenDirty && !state.viewerUrl.isNullOrBlank()
     val phaseStatus = when {
         state.revocationPending -> strings.motionText(R.string.cameras_revoke_pending)
         pendingAccess -> strings.motionText(R.string.cameras_access_changes_pending)
@@ -298,7 +299,8 @@ internal fun FormScope.CameraViewingScreen(
             Text(strings.motionText(R.string.cameras_internal), color = colors.text, fontSize = 16.sp)
             Segmented(listOf(R.string.cameras_internal_none, R.string.cameras_internal_cabin,
                 R.string.cameras_internal_driver, R.string.cameras_internal_both)
-                .map { strings.motionText(it) }, state.config.interiorCameras, colors, Modifier.fillMaxWidth()) {
+                .map { strings.motionText(it) }, state.config.interiorCameras, colors, Modifier.fillMaxWidth(),
+                enabled = { state.config.enabled }) {
                 controller.setInteriorCameras(it)
             }
         }
@@ -307,7 +309,7 @@ internal fun FormScope.CameraViewingScreen(
                 listOf("VDO.Ninja", "Tailscale", "Zrok"), providerIndex, { selected ->
                     clearFocusForAction()
                     submit(nextTransport = listOf("vdo", "tailscale", "zrok")[selected])
-                }, colors)
+                }, colors, enabled = state.config.enabled)
         }
         this
     }
@@ -513,7 +515,7 @@ internal fun FormScope.CameraViewingScreen(
         this
     }
 
-    if (showQr) state.viewerUrl?.let { url -> CameraViewerQrDialog(url, colors, strings) { showQr = false } }
+    if (state.config.enabled && showQr) state.viewerUrl?.let { url -> CameraViewerQrDialog(url, colors, strings) { showQr = false } }
     return this
 }
 

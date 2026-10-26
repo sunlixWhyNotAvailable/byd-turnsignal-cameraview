@@ -336,7 +336,7 @@ internal fun FormScope.MotionRecordingScreen(
                             listOf(1280, 1920, 2560)[options.quality], listOf(2, 4, 8)[options.quality]),
                             color = colors.muted, fontSize = 13.sp)
                         ActionButton(strings.motionText(R.string.motion_composition_edit), Icons.Outlined.DirectionsCar,
-                            colors, Modifier.fillMaxWidth()) { composition = true }
+                            colors, Modifier.fillMaxWidth(), enabled = options.enabled) { composition = true }
                     }
                 }
             }
@@ -351,12 +351,12 @@ internal fun FormScope.MotionRecordingScreen(
                 Segmented(listOf(strings.motionText(R.string.motion_storage_internal), strings.motionText(R.string.motion_storage_sd)),
                     if (options.sd) 1 else 0, colors, Modifier.fillMaxWidth(),
                     enabled = { index -> val volume = if (index == 0) stats?.primary else stats?.secondary
-                        volume?.mounted == true && !volume.readOnly }) { save(options.copy(sd = it == 1)) }
+                        options.enabled && volume?.mounted == true && !volume.readOnly }) { save(options.copy(sd = it == 1)) }
             }
             row("fallback") {
                 val backup = strings.motionText(if (options.sd) R.string.motion_storage_internal else R.string.motion_storage_sd)
                 SwitchLine(strings.motionText(R.string.motion_fallback, backup), strings.motionText(R.string.motion_fallback_hint),
-                    options.fallback, { save(options.copy(fallback = it)) }, colors)
+                    options.fallback, { save(options.copy(fallback = it)) }, colors, enabled = options.enabled)
             }
             row("storage-hint") { Text(strings.motionText(R.string.motion_storage_hint), color = colors.muted, fontSize = 13.sp) }
             row("volumes") {
@@ -372,13 +372,14 @@ internal fun FormScope.MotionRecordingScreen(
                 SwitchLine(strings.motionText(R.string.motion_oem_cleanup), strings.motionText(R.string.motion_oem_cleanup_hint),
                     options.oemCleanup, { enabled ->
                         if (enabled) confirmOemCleanup = true else save(options.copy(oemCleanup = false))
-                    }, colors)
+                    }, colors, enabled = options.enabled)
             }
             row("oem-quota") {
                 val oemMaxGb = stats?.volumes.orEmpty().filter { it.mounted && it.capacityBytes > 0 }
                     .maxOfOrNull { (it.capacityBytes / MOTION_GB).toInt().coerceAtLeast(1) }
                 RecordingLimit(strings.motionText(R.string.motion_oem_quota), options.oemQuota, oemMaxGb,
-                    strings.motionText(R.string.motion_gb), colors, strings, enabled = true, identity = "motion-oem-limit",
+                    strings.motionText(R.string.motion_gb), colors, strings,
+                    enabled = options.enabled && options.oemCleanup, identity = "motion-oem-limit",
                     onChange = { save(options.copy(oemQuota = it)) })
                 Text(strings.motionText(R.string.motion_oem_cleanup_unavailable), color = colors.muted, fontSize = 12.sp)
             }
@@ -394,11 +395,11 @@ internal fun FormScope.MotionRecordingScreen(
         }
     }
 
-    if (showContent && composition) MotionCompositionDialog(options.cameraOrder, colors, strings,
+    if (showContent && options.enabled && composition) MotionCompositionDialog(options.cameraOrder, colors, strings,
         onClose = { composition = false }, onSave = {
             save(options.copy(cameraOrder = it)); composition = false
         })
-    if (showContent && confirmOemCleanup) Dialog(onDismissRequest = { confirmOemCleanup = false }) {
+    if (showContent && options.enabled && confirmOemCleanup) Dialog(onDismissRequest = { confirmOemCleanup = false }) {
         Column(Modifier.fillMaxWidth(.9f).clip(RoundedCornerShape(10.dp)).background(colors.surface)
             .border(1.dp, colors.borderStrong, RoundedCornerShape(10.dp)).padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -478,19 +479,21 @@ private fun MotionStorageCards(
             StoragePairRow({ MotionStorageLegend(internal, colors, strings) },
                 { MotionStorageLegend(sd, colors, strings) })
             StoragePairRow({ RecordingLimit(strings.motionText(R.string.motion_quota), options.internalLimit, internalMax,
-                strings.motionText(R.string.motion_gb), colors, strings, enabled = true, identity = "motion-tablet-limit",
+                strings.motionText(R.string.motion_gb), colors, strings, enabled = options.enabled, identity = "motion-tablet-limit",
                 onChange = onInternalLimit) },
                 { RecordingLimit(strings.motionText(R.string.motion_quota), options.sdLimit, sdMax,
-                    strings.motionText(R.string.motion_gb), colors, strings, enabled = true, identity = "motion-sd-limit",
+                    strings.motionText(R.string.motion_gb), colors, strings, enabled = options.enabled, identity = "motion-sd-limit",
                     onChange = onSdLimit) })
             StoragePairRow({ SwitchLine(strings.motionText(R.string.motion_keep_free), strings.motionText(R.string.motion_keep_free_hint),
-                options.internalKeepFree, onInternalKeep, colors) }, { SwitchLine(strings.motionText(R.string.motion_keep_free),
-                strings.motionText(R.string.motion_keep_free_hint), options.sdKeepFree, onSdKeep, colors) })
+                options.internalKeepFree, onInternalKeep, colors, enabled = options.enabled) }, { SwitchLine(strings.motionText(R.string.motion_keep_free),
+                strings.motionText(R.string.motion_keep_free_hint), options.sdKeepFree, onSdKeep, colors, enabled = options.enabled) })
             StoragePairRow({ RecordingLimit(strings.motionText(R.string.motion_free_amount), options.internalFreeGb, internalMax,
-                strings.motionText(R.string.motion_gb), colors, strings, enabled = true, identity = "motion-tablet-keep-free",
+                strings.motionText(R.string.motion_gb), colors, strings,
+                enabled = options.enabled && options.internalKeepFree, identity = "motion-tablet-keep-free",
                 onChange = onInternalFree) },
                 { RecordingLimit(strings.motionText(R.string.motion_free_amount), options.sdFreeGb, sdMax,
-                    strings.motionText(R.string.motion_gb), colors, strings, enabled = true, identity = "motion-sd-keep-free",
+                    strings.motionText(R.string.motion_gb), colors, strings,
+                    enabled = options.enabled && options.sdKeepFree, identity = "motion-sd-keep-free",
                     onChange = onSdFree) })
         }
     }

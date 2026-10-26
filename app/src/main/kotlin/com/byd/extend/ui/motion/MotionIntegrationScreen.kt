@@ -121,6 +121,7 @@ internal fun FormScope.MotionIntegrationScreen(
     val focus = LocalFocusManager.current
     var library by remember { mutableStateOf(store.read()) }
     var enabled by rememberSaveable { mutableStateOf(config.warningEnabled) }
+    var anyModeEnabled by remember(context) { mutableStateOf(config.anyEnabled()) }
     var lock by rememberSaveable { mutableIntStateOf(config.lockCondition) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(store, lifecycle, context) {
@@ -128,18 +129,23 @@ internal fun FormScope.MotionIntegrationScreen(
         val reloadSettings = {
             val latest = MotionConfig.read(context)
             enabled = latest.warningEnabled
+            anyModeEnabled = latest.anyEnabled()
             lock = MotionConfig.normalizeLockMode(latest.lockCondition)
         }
         val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "enabled" || key == "lock") main.post { reloadSettings() }
+            if (key == "enabled" || key == "lock" || key == CameraChargeSettings.KEY_REMOTE_VIEWING_ENABLED)
+                main.post { reloadSettings() }
         }
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) reloadSettings()
         }
-        store.preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+        val modePreferences = listOf(store.preferences,
+            context.getSharedPreferences(MotionConfig.RECORDING_PREFS, Context.MODE_PRIVATE),
+            context.getSharedPreferences(CameraChargeSettings.PREFS, Context.MODE_PRIVATE))
+        modePreferences.forEach { it.registerOnSharedPreferenceChangeListener(preferenceListener) }
         lifecycle.addObserver(observer)
         onDispose {
-            store.preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+            modePreferences.forEach { it.unregisterOnSharedPreferenceChangeListener(preferenceListener) }
             lifecycle.removeObserver(observer)
         }
     }
@@ -166,6 +172,7 @@ internal fun FormScope.MotionIntegrationScreen(
     }
     val battery: @Composable () -> Unit = {
         CameraChargeSettingsSection(colors, strings, chargeState, socThreshold, voltageThreshold,
+            enabled = anyModeEnabled,
             onSocThreshold = {
                 socThreshold = it
                 CameraChargeSettings.setSocThresholdPercent(context, it)
@@ -256,9 +263,9 @@ internal fun FormScope.MotionIntegrationScreen(
                         Modifier.fillMaxWidth().aspectRatio(16f / 9f))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ActionButton(strings.motionText(R.string.motion_edit), Icons.Outlined.Edit, colors,
-                            Modifier.weight(1f)) { draft = library.active().let { it.copy(name = templateName(it, strings)) } }
+                            Modifier.weight(1f), enabled = enabled) { draft = library.active().let { it.copy(name = templateName(it, strings)) } }
                         ActionButton(strings.motionText(R.string.motion_show), Icons.Outlined.PlayArrow, colors,
-                            Modifier.weight(1f)) { MotionFullscreenActivity.show(context) }
+                            Modifier.weight(1f), enabled = enabled) { MotionFullscreenActivity.show(context) }
                     }
                 }
                 Section(strings.motionText(R.string.settings), colors, Modifier.weight(.8f)) {
@@ -278,11 +285,11 @@ internal fun FormScope.MotionIntegrationScreen(
                         MotionRuntime.settingsChanged(context)
                     }, colors, enabled = enabled)
                     ActionButton(strings.motionText(R.string.motion_bases), Icons.Outlined.Palette, colors,
-                        Modifier.fillMaxWidth()) { dialog = 1 }
+                        Modifier.fillMaxWidth(), enabled = enabled) { dialog = 1 }
                     ActionButton(strings.motionText(R.string.motion_saved), Icons.Outlined.Visibility, colors,
-                        Modifier.fillMaxWidth()) { dialog = 2 }
+                        Modifier.fillMaxWidth(), enabled = enabled) { dialog = 2 }
                     ActionButton(strings.motionText(if (importing) R.string.motion_importing else R.string.motion_import),
-                        palette = colors, modifier = Modifier.fillMaxWidth(), enabled = !importing) {
+                        palette = colors, modifier = Modifier.fillMaxWidth(), enabled = enabled && !importing) {
                         try { picker.launch(arrayOf("image/png", "image/jpeg", "image/webp")) }
                         catch (_: android.content.ActivityNotFoundException) {
                             Toast.makeText(context, strings.motionText(R.string.motion_import_error), Toast.LENGTH_LONG).show()
@@ -312,13 +319,13 @@ internal fun FormScope.MotionIntegrationScreen(
         archiveState.archiveOpen = false
     })
     if (checkupOpen) MotionCheckupDialog(colors, strings) { checkupOpen = false }
-    if (dialog == 1 || dialog == 2) MotionLibraryDialog(dialog == 1, library, store, colors, strings,
+    if (enabled && (dialog == 1 || dialog == 2)) MotionLibraryDialog(dialog == 1, library, store, colors, strings,
         onClose = { dialog = 0 }, onUse = { if (persist(library.copy(activeId = it.id))) dialog = 0 },
         onEdit = { dialog = 0; draft = it.copy(name = templateName(it, strings)) }, onDelete = {
             val remaining = library.delete(it.id)
             if (persist(remaining)) store.discardUnused(it.background, remaining)
         })
-    draft?.let { initial ->
+    if (enabled) draft?.let { initial ->
         MotionEditor(initial, store, colors, strings, onChange = { draft = it }, onClose = {
             store.discardUnused(initial.background, library); draft = null
         },
