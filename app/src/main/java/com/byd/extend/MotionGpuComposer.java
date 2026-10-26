@@ -86,7 +86,7 @@ final class MotionGpuComposer implements AutoCloseable {
     private int iconPosition, iconUv, iconSampler;
     private String renderedTimestamp;
     private long timestampSecond = Long.MIN_VALUE;
-    private int timestampWidth, timestampHeight, timestampInset;
+    private int timestampWidth, timestampHeight, timestampReferenceWidth;
     private boolean queued;
     private volatile boolean closed;
     private boolean initializationRequested;
@@ -809,9 +809,12 @@ final class MotionGpuComposer implements AutoCloseable {
         int size = Math.max(1, Math.round(drawWidth * .05f));
         int inset = Math.max(0, Math.round(drawWidth * .0083f));
         drawOverlay(iconTextures[direction], left + inset, top + inset, size, size);
-        drawOverlay(timestampTexture[0], left + timestampInset,
-                top + drawHeight - timestampInset - timestampHeight,
-                timestampWidth, timestampHeight);
+        // Reuse the timestamp texture at each tile's scale, including the six-camera layout.
+        float timestampScale = (float) drawWidth / timestampReferenceWidth;
+        int textWidth = Math.max(1, Math.round(timestampWidth * timestampScale));
+        int textHeight = Math.max(1, Math.round(timestampHeight * timestampScale));
+        drawOverlay(timestampTexture[0], left + inset,
+                top + drawHeight - inset - textHeight, textWidth, textHeight);
     }
 
     private void drawUnavailable(int channel, RemoteCameraLiveLayout.Rect bounds) {
@@ -934,7 +937,7 @@ final class MotionGpuComposer implements AutoCloseable {
         float widest = text.measureText("00.00.0000 00:00:00+05:30");
         timestampWidth = (int) Math.ceil(widest + padding * 2);
         timestampHeight = (int) Math.ceil(metrics.descent - metrics.ascent + padding * 2);
-        timestampInset = Math.max(0, Math.round(cameraWidth * .0083f));
+        timestampReferenceWidth = cameraWidth;
 
         Bitmap bitmap = Bitmap.createBitmap(timestampWidth, timestampHeight, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);

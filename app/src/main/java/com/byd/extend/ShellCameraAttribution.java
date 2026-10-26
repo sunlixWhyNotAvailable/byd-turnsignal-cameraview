@@ -29,11 +29,10 @@ final class ShellCameraAttribution {
         Context system = (Context) type.getMethod("getSystemContext").invoke(thread);
         Class<?> contextType = Class.forName("android.app.ContextImpl");
         Field packageInfo = field(contextType, "mPackageInfo");
-        // systemMain installs an android Application before our shell binding is created.
+        // systemMain's synthetic ApplicationInfo has no assigned UID; identify its LoadedApk instead.
         boolean systemBootstrap = application != null && previousInitial == application
                 && previousBound == null && field(type, "mSystemThread").getBoolean(thread)
                 && "android".equals(application.getPackageName())
-                && application.getApplicationInfo().uid == Process.SYSTEM_UID
                 && contextType.isInstance(application.getBaseContext())
                 && packageInfo.get(application.getBaseContext()) == packageInfo.get(system);
         if (application != null && !systemBootstrap) {
