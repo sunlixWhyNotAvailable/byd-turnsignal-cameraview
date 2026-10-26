@@ -27,6 +27,62 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 34)
 public class Media3HlsPlaybackTest {
+    @Test public void closingWithOneFrameInTheFinalFragmentRetainsEveryFrame() throws Exception {
+        Path dir = Files.createTempDirectory("media3-hls-short-");
+        try {
+            byte[] fixture;
+            try (InputStream input = getClass().getResourceAsStream("/com/byd/extend/remote/fragmented_test.mp4")) {
+                assertNotNull(input);
+                fixture = input.readAllBytes();
+            }
+            Path input = dir.resolve("input.mp4");
+            Files.write(input, fixture);
+            JSONArray packets = new JSONObject(command(dir, "ffprobe", "-v", "error", "-select_streams", "v",
+                    "-show_entries", "packet=pts_time,pos,size,flags", "-of", "json", input.toString()))
+                    .getJSONArray("packets");
+            for (int frameCount : new int[]{1, 31}) {
+                FragmentedVideoWindow window = new FragmentedVideoWindow();
+                FragmentedMp4Muxer muxer = new FragmentedMp4Muxer.Builder(window).setFragmentDurationMs(2000).build();
+                int track = muxer.addTrack(new Format.Builder().setSampleMimeType("video/avc")
+                        .setWidth(96).setHeight(64).setInitializationData(configuration(fixture)).build());
+                long lastPts = -1, previousPts = -1;
+                for (int i = 0; i < frameCount; i++) {
+                    JSONObject packet = packets.getJSONObject(i % packets.length());
+                    ByteBuffer encoded = ByteBuffer.wrap(fixture, packet.getInt("pos"), packet.getInt("size")).slice();
+                    ByteArrayOutputStream annexB = new ByteArrayOutputStream();
+                    while (encoded.hasRemaining()) {
+                        byte[] nal = new byte[encoded.getInt()];
+                        encoded.get(nal);
+                        annexB.write(new byte[]{0, 0, 0, 1}); annexB.write(nal);
+                    }
+                    byte[] sample = annexB.toByteArray();
+                    previousPts = lastPts;
+                    lastPts = (i / packets.length()) * 2_000_000L
+                            + Math.round(packet.getDouble("pts_time") * 1_000_000);
+                    muxer.writeSampleData(track, ByteBuffer.wrap(sample), new BufferInfo(lastPts, sample.length,
+                            packet.getString("flags").contains("K") ? C.BUFFER_FLAG_KEY_FRAME : 0));
+                }
+                CameraHlsEncoder.Companion.finishMuxer(muxer, track, lastPts, previousPts);
+                assertTrue(window.isReady());
+                ByteArrayOutputStream rebuilt = new ByteArrayOutputStream();
+                rebuilt.write(window.initialization());
+                for (int id = 0; window.segment(id) != null; id++) rebuilt.write(window.segment(id));
+                Path output = dir.resolve("single.mp4");
+                Files.write(output, rebuilt.toByteArray());
+                command(dir, "ffmpeg", "-v", "error", "-xerror", "-i", output.toString(), "-f", "null", "-");
+                JSONObject stream = new JSONObject(command(dir, "ffprobe", "-v", "error", "-count_frames",
+                        "-show_entries", "stream=nb_read_frames,duration", "-of", "json", output.toString()))
+                        .getJSONArray("streams").getJSONObject(0);
+                assertEquals(frameCount, stream.getInt("nb_read_frames"));
+                assertTrue(stream.getDouble("duration") > 0);
+            }
+        } finally {
+            try (java.util.stream.Stream<Path> files = Files.walk(dir)) {
+                for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toArray(Path[]::new)) Files.delete(file);
+            }
+        }
+    }
+
     @Test public void media3FragmentsDecodeIndependentlyAndJoinAtTheirActualTimestamps() throws Exception {
         Path dir = Files.createTempDirectory("media3-hls-");
         try {

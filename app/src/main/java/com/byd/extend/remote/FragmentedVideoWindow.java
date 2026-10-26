@@ -23,6 +23,7 @@ public final class FragmentedVideoWindow extends OutputStream {
     private final ArrayDeque<Segment> segments = new ArrayDeque<>();
     private long sequence;
     private boolean closed;
+    private IOException writeFailure;
     private final Runnable onReady;
     private final String id = UUID.randomUUID().toString();
     private final String request;
@@ -55,27 +56,33 @@ public final class FragmentedVideoWindow extends OutputStream {
         if (offset < 0 || length < 0 || offset > bytes.length - length)
             throw new IndexOutOfBoundsException();
         if (closed) throw new IOException("Video window closed");
-        while (length > 0) {
-            if (headerBytes < 8) {
-                int count = Math.min(length, 8 - headerBytes);
-                System.arraycopy(bytes, offset, header, headerBytes, count);
-                headerBytes += count; offset += count; length -= count;
-                if (headerBytes < 8) continue;
-                long size = 0;
-                for (int i = 0; i < 4; i++) size = (size << 8) | (header[i] & 255);
-                if (size < 8 || size > MAX_BOX) throw new IOException("Unsupported MP4 box size");
-                boxType = new String(header, 4, 4, StandardCharsets.US_ASCII);
-                remaining = (int) size - 8;
-                box = new ByteArrayOutputStream((int) size);
-                box.write(header);
+        if (writeFailure != null) throw new IOException("Video fragment write failed", writeFailure);
+        try {
+            while (length > 0) {
+                if (headerBytes < 8) {
+                    int count = Math.min(length, 8 - headerBytes);
+                    System.arraycopy(bytes, offset, header, headerBytes, count);
+                    headerBytes += count; offset += count; length -= count;
+                    if (headerBytes < 8) continue;
+                    long size = 0;
+                    for (int i = 0; i < 4; i++) size = (size << 8) | (header[i] & 255);
+                    if (size < 8 || size > MAX_BOX) throw new IOException("Unsupported MP4 box size");
+                    boxType = new String(header, 4, 4, StandardCharsets.US_ASCII);
+                    remaining = (int) size - 8;
+                    box = new ByteArrayOutputStream((int) size);
+                    box.write(header);
+                }
+                int count = Math.min(length, remaining);
+                box.write(bytes, offset, count);
+                offset += count; length -= count; remaining -= count;
+                if (remaining == 0) {
+                    completeBox(boxType, box.toByteArray());
+                    headerBytes = 0; box = null;
+                }
             }
-            int count = Math.min(length, remaining);
-            box.write(bytes, offset, count);
-            offset += count; length -= count; remaining -= count;
-            if (remaining == 0) {
-                completeBox(boxType, box.toByteArray());
-                headerBytes = 0; box = null;
-            }
+        } catch (IOException failure) {
+            writeFailure = failure;
+            throw failure;
         }
     }
 
@@ -135,7 +142,10 @@ public final class FragmentedVideoWindow extends OutputStream {
 
     @Override public synchronized void close() throws IOException {
         closed = true;
-        if (headerBytes != 0 || fragment != null) throw new IOException("Truncated video fragment");
+        // Media3 closes its stream in finally; retain the write failure it would otherwise mask.
+        if (writeFailure != null) throw new IOException("Video fragment write failed", writeFailure);
+        if (headerBytes != 0 || fragment != null) throw new IOException("Truncated video fragment: headerBytes="
+                + headerBytes + " box=" + boxType + " remaining=" + remaining + " pendingMoof=" + (fragment != null));
     }
 
     public synchronized void clear() {

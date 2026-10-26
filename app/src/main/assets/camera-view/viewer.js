@@ -22,7 +22,7 @@
     en: {
       title: 'Remote cameras', subtitle: 'Secure camera viewer', loginTitle: 'Camera access', loginHint: 'Sign in to view cameras and recordings.', password: 'Password', signIn: 'Continue',
       live: 'Live', archive: 'Recordings', end: 'End session', composition: 'Composition', front: 'Front', rear: 'Rear', left: 'Left', right: 'Right',
-      combined: 'Combined', interior: 'Interior', cabin: 'Cabin', driver: 'Driver',
+      combined: 'Combined', exterior: 'Exterior', interior: 'Interior', cabin: 'Cabin', driver: 'Driver',
       startLive: 'Start live viewing', resumeLive: 'Open live stream', waiting: 'Waiting for the first displayed frame…', preparing: 'Preparing cameras…', viewing: 'Viewing live', connected: 'Connected · waiting for video', ready: 'Signed in · viewing is off',
       lowBattery: 'Viewing is paused by the battery protection limit.', ended: 'This session has ended.', replacedTitle: 'Session ended', replaced: 'Another device connected.', errorTitle: 'Connection unavailable', error: 'The camera connection could not be completed.', retry: 'Try again', signInAgain: 'Sign in again',
       invalidPassword: 'Incorrect password.', busy: 'The session is in use. Try again shortly.', retryLater: 'Please wait before trying again.', unauthorized: 'This session is no longer authorized.',
@@ -44,7 +44,7 @@
     uk: {
       title: 'Віддалені камери', subtitle: 'Захищений перегляд камер', loginTitle: 'Доступ до камер', loginHint: 'Увійдіть, щоб переглядати камери й записи.', password: 'Пароль', signIn: 'Продовжити',
       live: 'Наживо', archive: 'Архів записів', end: 'Завершити сеанс', composition: 'Композиція', front: 'Перед', rear: 'Зад', left: 'Ліво', right: 'Право',
-      combined: 'Усі камери', interior: 'Внутрішні', cabin: 'Салон', driver: 'Водій',
+      combined: 'Усі камери', exterior: 'Зовнішні', interior: 'Внутрішні', cabin: 'Салон', driver: 'Водій',
       startLive: 'Почати перегляд', resumeLive: 'Відкрити відео', waiting: 'Очікуємо перше відображене зображення…', preparing: 'Готуємо камери…', viewing: 'Перегляд наживо', connected: 'Підключено · очікуємо відео', ready: 'Вхід виконано · перегляд вимкнено',
       lowBattery: 'Перегляд призупинено через обмеження захисту акумулятора.', ended: 'Цей сеанс завершено.', replacedTitle: 'Сеанс завершено', replaced: 'Під’єднався інший пристрій.', errorTitle: 'З’єднання недоступне', error: 'Не вдалося встановити з’єднання з камерами.', retry: 'Спробувати знову', signInAgain: 'Увійти знову',
       invalidPassword: 'Неправильний пароль.', busy: 'Сеанс зайнятий. Спробуйте трохи пізніше.', retryLater: 'Зачекайте перед наступною спробою.', unauthorized: 'Цей сеанс більше не авторизований.',
@@ -66,7 +66,7 @@
     ru: {
       title: 'Удалённые камеры', subtitle: 'Защищённый просмотр камер', loginTitle: 'Доступ к камерам', loginHint: 'Войдите, чтобы смотреть камеры и записи.', password: 'Пароль', signIn: 'Продолжить',
       live: 'Эфир', archive: 'Архив записей', end: 'Завершить сеанс', composition: 'Композиция', front: 'Перед', rear: 'Зад', left: 'Слева', right: 'Справа',
-      combined: 'Все камеры', interior: 'Внутренние', cabin: 'Салон', driver: 'Водитель',
+      combined: 'Все камеры', exterior: 'Внешние', interior: 'Внутренние', cabin: 'Салон', driver: 'Водитель',
       startLive: 'Начать просмотр', resumeLive: 'Открыть видео', waiting: 'Ожидаем первый отображённый кадр…', preparing: 'Подготовка камер…', viewing: 'Просмотр в эфире', connected: 'Подключено · ожидание видео', ready: 'Вход выполнен · просмотр выключен',
       lowBattery: 'Просмотр приостановлен из-за ограничения защиты аккумулятора.', ended: 'Этот сеанс завершён.', replacedTitle: 'Сеанс завершён', replaced: 'Подключилось другое устройство.', errorTitle: 'Подключение недоступно', error: 'Не удалось подключиться к камерам.', retry: 'Повторить', signInAgain: 'Войти снова',
       invalidPassword: 'Неверный пароль.', busy: 'Сеанс занят. Повторите попытку позже.', retryLater: 'Подождите перед следующей попыткой.', unauthorized: 'Этот сеанс больше не авторизован.',
@@ -88,7 +88,7 @@
     zh: {
       title: '远程摄像头', subtitle: '安全摄像头查看器', loginTitle: '摄像头访问', loginHint: '登录以查看摄像头和录像。', password: '密码', signIn: '继续',
       live: '实时', archive: '录像', end: '结束会话', composition: '全景', front: '前方', rear: '后方', left: '左侧', right: '右侧',
-      combined: '组合画面', interior: '车内', cabin: '座舱', driver: '驾驶员',
+      combined: '组合画面', exterior: '车外', interior: '车内', cabin: '座舱', driver: '驾驶员',
       startLive: '开始实时查看', resumeLive: '打开实时视频', waiting: '正在等待首帧显示…', preparing: '正在准备摄像头…', viewing: '正在实时查看', connected: '已连接 · 等待视频', ready: '已登录 · 查看未启动',
       lowBattery: '电池保护限制已暂停查看。', ended: '此会话已结束。', replacedTitle: '会话已结束', replaced: '另一台设备已连接。', errorTitle: '连接不可用', error: '无法完成摄像头连接。', retry: '重试', signInAgain: '重新登录',
       invalidPassword: '密码错误。', busy: '会话正在使用，请稍后重试。', retryLater: '请稍候再试。', unauthorized: '此会话已不再授权。',
@@ -280,9 +280,10 @@
     app.innerHTML = `${pageHeader()}<div class="login-wrap"><section class="login-card" aria-labelledby="login-title"><h1 id="login-title">${escapeHtml(text.loginTitle)}</h1><p>${escapeHtml(text.loginHint)}</p><form id="login-form">${bootstrap.passwordRequired ? `<label>${escapeHtml(text.password)}<input id="password" type="password" maxlength="1024" autocomplete="off" required></label>` : ''}<p class="error-note" id="login-error" role="alert">${escapeHtml(message)}</p><button class="primary" type="submit">${escapeHtml(text.signIn)}</button></form></section></div>`;
   }
 
-  function cameraButton(view, selected) {
+  function cameraButton(view, selected, archive = false) {
     const glyph = ['combined', 'composition'].includes(view) ? 'grid' : view === 'interior' ? 'camera' : '';
-    return `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${view === 'composition' ? ` data-composition="true"` : ''}>${glyph ? icon(glyph) : ''}${escapeHtml(text[view])}</button>`;
+    const label = view === 'composition' && !archive ? text.exterior : text[view];
+    return `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${view === 'composition' ? ` data-composition="true"` : ''}>${glyph ? icon(glyph) : ''}${escapeHtml(label)}</button>`;
   }
 
   function cameraTabs(selected, archive = false, order = null) {
@@ -293,7 +294,7 @@
     }
     const views = !Array.isArray(order) || order.length !== 4
       ? ['composition'] : ['composition', ...order.map((direction) => cameras[direction + 1])];
-    return `<div class="camera-tabs" role="group" aria-label="${escapeHtml(text.selectView)}">${views.map((view) => cameraButton(view, selected)).join('')}</div>`;
+    return `<div class="camera-tabs" role="group" aria-label="${escapeHtml(text.selectView)}">${views.map((view) => cameraButton(view, selected, true)).join('')}</div>`;
   }
 
   function refreshLiveCameraTabs() {

@@ -55,7 +55,7 @@ final class MotionGpuComposer implements AutoCloseable {
     private final int[] unavailableTextures = new int[6];
     private final int[] unavailableTextureWidths = new int[6];
     private final int[] unavailableTextureHeights = new int[6];
-    private final String[] unavailableTextureLocales = new String[6];
+    private final String[] unavailableTextureLabels = new String[6];
     private final int[] iconTextures = new int[4];
     private final int[] timestampTexture = new int[1];
     private final MotionCompositionLayout.Rect[] cameraRects = new MotionCompositionLayout.Rect[4];
@@ -323,8 +323,6 @@ final class MotionGpuComposer implements AutoCloseable {
                                 && (availableInteriorMask & bit) == 0)
                             unavailable[channel + 4] = true;
                     }
-                    if (!includeExterior && RemoteCameraView.needsExterior(liveView))
-                        for (int channel = 0; channel < 4; channel++) unavailable[channel] = true;
                     configureLiveInteriors();
                     frame(0);
                 }
@@ -457,9 +455,8 @@ final class MotionGpuComposer implements AutoCloseable {
             interiorWidths = widths.clone(); interiorHeights = heights.clone(); liveLocale = locale;
             startupMissingReported = false;
             for (int channel = 0; channel < 4; channel++) {
-                boolean expected = channelExpected(channel);
-                if (!expected) unavailable[channel] = false;
-                else unavailable[channel] = !includeExterior;
+                // A pending exterior lease is preparation, not a failed camera.
+                unavailable[channel] = false;
             }
             int requested = RemoteCameraView.interiorMask(liveView, allowedInteriorMask);
             for (int channel = 0; channel < 2; channel++) {
@@ -718,12 +715,10 @@ final class MotionGpuComposer implements AutoCloseable {
         if(closed) return;
         try {
             require(EGL14.eglMakeCurrent(display,window,window,context),"EGL render current");
-            if (remoteLive) {
-                if (!remoteFrameCanStart()) return;
-            } else if (selectedDirection < 0) {
+            if (!remoteLive && selectedDirection < 0) {
                 // Motion recording keeps its strict four-exterior startup contract.
                 for (int direction = 0; direction < 4; direction++) if (!seen[direction]) return;
-            } else if (selectedDirection >= 0 && selectedDirection < 4
+            } else if (!remoteLive && selectedDirection >= 0 && selectedDirection < 4
                     && !seen[selectedDirection]) return;
             long presentationTimeNs=SystemClock.elapsedRealtimeNanos();
             updateTimestampTexture(presentationTimeNs/1_000_000L);
@@ -756,13 +751,6 @@ final class MotionGpuComposer implements AutoCloseable {
         }
     }
 
-    private boolean remoteFrameCanStart() {
-        if (startupMissingReported) return true;
-        for (int channel = 0; channel < seen.length; channel++)
-            if (channelExpected(channel) && (seen[channel] || unavailable[channel])) return true;
-        return false;
-    }
-
     private void drawMotionRecordingChannels() {
         for (int cell = 0; cell < (selectedDirection < 0 ? 4 : 1); cell++) {
             int direction = selectedDirection < 0 ? order[cell] : selectedDirection;
@@ -774,7 +762,6 @@ final class MotionGpuComposer implements AutoCloseable {
     }
 
     private void drawRemoteLiveChannels() {
-        int requested = RemoteCameraView.interiorMask(liveView, allowedInteriorMask);
         for (int channel = 0; channel < seen.length; channel++) {
             RemoteCameraLiveLayout.Rect bounds = RemoteCameraLiveLayout.channelBounds(
                     liveView, allowedInteriorMask, channel, width, height);
@@ -786,8 +773,8 @@ final class MotionGpuComposer implements AutoCloseable {
                         bounds, sourceWidth, sourceHeight);
                 if (fitted != null) drawCamera(channel, fitted.left, fitted.top,
                         fitted.width(), fitted.height(), channel < 4);
-            } else if (unavailable[channel] || startupMissingReported) {
-                drawUnavailable(channel, bounds);
+            } else {
+                drawPlaceholder(channel, bounds, unavailable[channel] || startupMissingReported);
             }
         }
     }
@@ -806,10 +793,11 @@ final class MotionGpuComposer implements AutoCloseable {
         GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 0, coordinates);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         GLES20.glDisableVertexAttribArray(position); GLES20.glDisableVertexAttribArray(uv);
-        if (!exterior) return;
-        int size = Math.max(1, Math.round(drawWidth * .05f));
         int inset = Math.max(0, Math.round(drawWidth * .0083f));
-        drawOverlay(iconTextures[direction], left + inset, top + inset, size, size);
+        if (exterior) {
+            int size = Math.max(1, Math.round(drawWidth * .05f));
+            drawOverlay(iconTextures[direction], left + inset, top + inset, size, size);
+        }
         // Reuse the timestamp texture at each tile's scale, including the six-camera layout.
         float timestampScale = (float) drawWidth / timestampReferenceWidth;
         int textWidth = Math.max(1, Math.round(timestampWidth * timestampScale));
@@ -818,17 +806,18 @@ final class MotionGpuComposer implements AutoCloseable {
                 top + drawHeight - inset - textHeight, textWidth, textHeight);
     }
 
-    private void drawUnavailable(int channel, RemoteCameraLiveLayout.Rect bounds) {
-        int texture = unavailableTexture(channel, bounds.width(), bounds.height());
+    private void drawPlaceholder(int channel, RemoteCameraLiveLayout.Rect bounds, boolean failed) {
+        String label = failed ? unavailableLabel(channel) : preparingLabel();
+        int texture = unavailableTexture(channel, bounds.width(), bounds.height(), label);
         // The opaque tile covers only its viewport; glClear would erase every camera.
         drawOverlay(texture, bounds.left, bounds.top, bounds.width(), bounds.height());
     }
 
-    private int unavailableTexture(int channel, int textureWidth, int textureHeight) {
+    private int unavailableTexture(int channel, int textureWidth, int textureHeight, String label) {
         if (unavailableTextures[channel] != 0
                 && unavailableTextureWidths[channel] == textureWidth
                 && unavailableTextureHeights[channel] == textureHeight
-                && java.util.Objects.equals(unavailableTextureLocales[channel], liveLocale))
+                && java.util.Objects.equals(unavailableTextureLabels[channel], label))
             return unavailableTextures[channel];
         Bitmap bitmap = Bitmap.createBitmap(textureWidth, textureHeight, Bitmap.Config.ARGB_8888);
         try {
@@ -838,7 +827,7 @@ final class MotionGpuComposer implements AutoCloseable {
             text.setColor(Color.WHITE);
             text.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
             text.setTextSize(Math.max(1f, Math.min(textureWidth * .045f, textureHeight * .12f)));
-            String[] lines = unavailableLabel(channel).split("\\n");
+            String[] lines = label.split("\\n");
             Paint.FontMetrics metrics = text.getFontMetrics();
             float lineHeight = metrics.descent - metrics.ascent;
             float firstBaseline = (textureHeight - lines.length * lineHeight) / 2f - metrics.ascent;
@@ -861,9 +850,17 @@ final class MotionGpuComposer implements AutoCloseable {
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
             unavailableTextureWidths[channel] = textureWidth;
             unavailableTextureHeights[channel] = textureHeight;
-            unavailableTextureLocales[channel] = liveLocale;
+            unavailableTextureLabels[channel] = label;
             return unavailableTextures[channel];
         } finally { bitmap.recycle(); }
+    }
+
+    private String preparingLabel() {
+        String language = liveLocale == null ? "en" : liveLocale.toLowerCase(java.util.Locale.ROOT);
+        if (language.startsWith("uk")) return "Готуємо камеру…";
+        if (language.startsWith("ru")) return "Подготовка камеры…";
+        if (language.startsWith("zh")) return "正在准备摄像头…";
+        return "Preparing camera…";
     }
 
     private String unavailableLabel(int channel) {

@@ -11,6 +11,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.muxer.BufferInfo
 import androidx.media3.muxer.FragmentedMp4Muxer
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A viewer owns this encoder. No files, audio, software fallback or network writes on its drain thread. */
@@ -28,6 +29,8 @@ internal class CameraHlsEncoder(
     private var muxer: FragmentedMp4Muxer? = null
     private var track = -1
     private var firstPts = -1L
+    private var lastPts = -1L
+    private var previousPts = -1L
     private var frames = 0L
     private var bytes = 0L
     private var lastStatisticsNs = 0L
@@ -93,6 +96,8 @@ internal class CameraHlsEncoder(
                                 val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                                 active.writeSampleData(track, output.slice(),
                                     BufferInfo(pts, info.size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
+                                previousPts = lastPts
+                                lastPts = pts
                                 frames++; bytes += info.size
                                 val now = android.os.SystemClock.elapsedRealtimeNanos()
                                 if (frames == 1L || now - lastStatisticsNs >= 10_000_000_000L) {
@@ -107,7 +112,7 @@ internal class CameraHlsEncoder(
         } catch (error: Throwable) { if (!stopped.get()) failed(this, error) }
         finally {
             runCatching {
-                muxer?.close()
+                muxer?.let { finishMuxer(it, track, lastPts, previousPts) }
             }.onFailure { CameraViewingDiagnostics.failure("hls_muxer_close", "shared", it) }
             muxer = null
         }
@@ -133,6 +138,24 @@ internal class CameraHlsEncoder(
         const val WIDTH = 1280
         const val HEIGHT = 720
         const val FPS = 15
+        fun finishMuxer(muxer: FragmentedMp4Muxer, track: Int, lastPts: Long, previousPts: Long) {
+            var failure: Throwable? = null
+            try {
+                if (lastPts >= 0) {
+                    // A one-frame final fragment has no duration unless Media3 receives an EOS timestamp.
+                    val duration = if (previousPts >= 0 && lastPts > previousPts) lastPts - previousPts
+                        else 1_000_000L / FPS
+                    muxer.writeSampleData(track, ByteBuffer.allocate(0),
+                        BufferInfo(lastPts + duration, 0, C.BUFFER_FLAG_END_OF_STREAM))
+                }
+            } catch (error: Throwable) { failure = error }
+            try { muxer.close() } catch (cleanup: Throwable) {
+                if (failure == null) failure = cleanup
+                else if (failure !== cleanup) failure.addSuppressed(cleanup)
+            }
+            failure?.let { throw it }
+        }
+
         private fun hardware(info: MediaCodecInfo): Boolean =
             if (Build.VERSION.SDK_INT >= 29) info.isHardwareAccelerated && !info.isSoftwareOnly
             else listOf("OMX.qcom.", "OMX.hisi.", "OMX.Exynos.", "OMX.MTK.")

@@ -16,6 +16,17 @@ import static org.junit.Assert.*;
 public class FragmentedVideoWindowTest {
     private static final String FIXTURE = "/com/byd/extend/remote/fragmented_test.mp4";
 
+    @Test public void rejectedBoxCauseSurvivesStreamClose() throws Exception {
+        FragmentedVideoWindow window = new FragmentedVideoWindow();
+        byte[] invalid = {0, 0, 0, 7, 'm', 'd', 'a', 't'};
+        IOException write = assertThrows(IOException.class, () -> window.write(invalid));
+        assertEquals("Unsupported MP4 box size", write.getMessage());
+        IOException close = assertThrows(IOException.class, window::close);
+        assertSame(write, close.getCause());
+        assertFalse(window.isReady());
+        assertNull(window.segment(0));
+    }
+
     @Test public void newViewCannotServePreviousGenerationResourcesOrInheritReadiness() throws Exception {
         byte[] bytes;
         try (InputStream input = getClass().getResourceAsStream(FIXTURE)) {
