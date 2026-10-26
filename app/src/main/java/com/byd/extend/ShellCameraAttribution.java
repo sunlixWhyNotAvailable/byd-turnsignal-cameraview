@@ -8,7 +8,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
-/** Initializes the unbound viewing app_process with its own existing shell UID/package. */
+/** Initializes the viewing app_process with its own existing shell UID/package. */
 final class ShellCameraAttribution {
     private static final String PACKAGE = "com.android.shell";
 
@@ -22,20 +22,30 @@ final class ShellCameraAttribution {
         Object thread = type.getMethod("currentActivityThread").invoke(null);
         if (thread == null) throw new IllegalStateException("viewing ActivityThread is not initialized");
         Application application = (Application) type.getMethod("currentApplication").invoke(null);
-        if (application != null) {
+        Field initial = field(type, "mInitialApplication");
+        Field bound = field(type, "mBoundApplication");
+        Object previousInitial = initial.get(thread);
+        Object previousBound = bound.get(thread);
+        Context system = (Context) type.getMethod("getSystemContext").invoke(thread);
+        Class<?> contextType = Class.forName("android.app.ContextImpl");
+        Field packageInfo = field(contextType, "mPackageInfo");
+        // systemMain installs an android Application before our shell binding is created.
+        boolean systemBootstrap = application != null && previousInitial == application
+                && previousBound == null && field(type, "mSystemThread").getBoolean(thread)
+                && "android".equals(application.getPackageName())
+                && application.getApplicationInfo().uid == Process.SYSTEM_UID
+                && contextType.isInstance(application.getBaseContext())
+                && packageInfo.get(application.getBaseContext()) == packageInfo.get(system);
+        if (application != null && !systemBootstrap) {
             verify(type, application);
             return application;
         }
-        Field initial = field(type, "mInitialApplication");
-        Field bound = field(type, "mBoundApplication");
-        if (initial.get(thread) != null || bound.get(thread) != null)
+        if (previousBound != null || previousInitial != null && !systemBootstrap)
             throw new SecurityException("refusing to replace an existing Android application binding");
-        Context system = (Context) type.getMethod("getSystemContext").invoke(thread);
         Context packageContext = system.createPackageContext(PACKAGE, 0);
         if (packageContext.getApplicationInfo().uid != Process.myUid())
             throw new SecurityException("shell package does not belong to this process UID");
-        Class<?> contextType = Class.forName("android.app.ContextImpl");
-        Object loaded = field(contextType, "mPackageInfo").get(packageContext);
+        Object loaded = packageInfo.get(packageContext);
         Method create = contextType.getDeclaredMethod("createAppContext", type, Class.forName("android.app.LoadedApk"));
         create.setAccessible(true);
         Context shell = (Context) create.invoke(null, thread, loaded);
@@ -55,7 +65,9 @@ final class ShellCameraAttribution {
             initial.set(thread, ownApplication);
             verify(type, ownApplication);
         } catch (Exception failure) {
-            try { initial.set(thread, null); bound.set(thread, null); }
+            try { initial.set(thread, previousInitial); }
+            catch (Exception restore) { failure.addSuppressed(restore); }
+            try { bound.set(thread, previousBound); }
             catch (Exception restore) { failure.addSuppressed(restore); }
             throw failure;
         }
@@ -63,11 +75,15 @@ final class ShellCameraAttribution {
     }
 
     private static void verify(Class<?> type, Application application) throws Exception {
-        if (application.getApplicationInfo().uid != Process.myUid()
-                || !PACKAGE.equals(application.getPackageName())
-                || !PACKAGE.equals(type.getMethod("currentPackageName").invoke(null))
-                || !PACKAGE.equals(type.getMethod("currentOpPackageName").invoke(null)))
-            throw new SecurityException("existing camera application attribution is not shell");
+        int uid = application.getApplicationInfo().uid;
+        String packageName = application.getPackageName();
+        Object currentPackage = type.getMethod("currentPackageName").invoke(null);
+        Object opPackage = type.getMethod("currentOpPackageName").invoke(null);
+        if (uid != Process.myUid() || !PACKAGE.equals(packageName)
+                || !PACKAGE.equals(currentPackage) || !PACKAGE.equals(opPackage))
+            throw new SecurityException("existing camera application attribution is not shell: uid="
+                    + uid + " processUid=" + Process.myUid() + " package=" + packageName
+                    + " currentPackage=" + currentPackage + " opPackage=" + opPackage);
     }
 
     private static Field field(Class<?> type, String name) throws Exception {

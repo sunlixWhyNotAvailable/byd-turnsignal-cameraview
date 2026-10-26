@@ -35,7 +35,7 @@ android {
         targetSdk = 29
         versionCode = 121
         versionName = "1.8.1"
-        externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
+        externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
         buildConfigField(
             "String",
             "UPDATE_RELEASE_API_URL",

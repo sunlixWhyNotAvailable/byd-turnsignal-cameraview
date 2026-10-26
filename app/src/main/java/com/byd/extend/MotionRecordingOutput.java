@@ -102,7 +102,13 @@ final class MotionRecordingOutput {
         surfaces = new Surface[]{encoder, encoder, encoder, encoder};
     }
 
-    Surface[] inputs() { return surfaces.clone(); }
+    synchronized Surface[] inputs() {
+        if (remoteLive && !viewingEncoders.isEmpty()) {
+            Surface encoder = viewingEncoders.get(viewingEncoders.size() - 1);
+            return new Surface[]{encoder, encoder, encoder, encoder};
+        }
+        return surfaces.clone();
+    }
 
     void writeToParcel(Parcel data) {
         data.writeInt(width); data.writeInt(height); data.writeIntArray(order);
@@ -248,7 +254,7 @@ final class MotionRecordingOutput {
             closing.close();
             composer = null;
         }
-        releaseViewingEncoders();
+        // Encoder lifetime spans composer recreation; release on replacement or releaseInputs.
     }
 
     private void validateLiveSelection() {
@@ -293,6 +299,7 @@ final class MotionRecordingOutput {
 
     synchronized void releaseInputs() {
         if (composer != null) throw new IllegalStateException("cannot release encoder inputs while composer is active");
+        releaseViewingEncoders();
         unregister();
         if (surfaces == null) return;
         IdentityHashMap<Surface, Boolean> released = new IdentityHashMap<>();
@@ -309,7 +316,6 @@ final class MotionRecordingOutput {
         if (--attached == 0) {
             composer.close();
             composer = null;
-            releaseViewingEncoders();
         }
     }
 
@@ -319,7 +325,7 @@ final class MotionRecordingOutput {
 
     synchronized void closeUnused() {
         if (attached == 0 && composer != null) {
-            composer.close(); composer = null; releaseViewingEncoders();
+            composer.close(); composer = null;
         }
     }
 

@@ -55,7 +55,6 @@ final class CameraRuntimeHost {
     private long viewerGeneration;
     private IBinder.DeathRecipient viewerDeath;
     private MotionRecordingOutput viewerOutput;
-    private Surface viewerEncoderReference;
     private int viewerRequestId;
     private boolean viewerExteriorAttached;
     private boolean viewerComposerExternal;
@@ -371,7 +370,6 @@ final class CameraRuntimeHost {
                         viewerRequestId = requestedId;
                         viewerExteriorAttached = false;
                         viewerComposerExternal = false;
-                        viewerEncoderReference = null;
                         viewerDeath = () -> handler.post(() -> {
                             if (viewerOwner == owner) {
                                 try { clearViewer(); }
@@ -429,7 +427,7 @@ final class CameraRuntimeHost {
                     }
                     viewerGeneration = generation;
                     try {
-                        return updateViewerOutput(viewerOutput, config, encoder, encoderTransferred, false);
+                        return updateViewerOutput(viewerOutput, config, encoder, encoderTransferred);
                     } catch (Throwable error) {
                         if (encoder != null && !encoderTransferred.get()) {
                             safeRelease(encoder);
@@ -579,14 +577,9 @@ final class CameraRuntimeHost {
     }
 
     private Surface[] updateViewerOutput(MotionRecordingOutput output, ViewerConfig config,
-            Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred,
-            boolean recreateComposer) throws Exception {
-        boolean composerRecreated = false;
+            Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred) throws Exception {
         boolean effectiveExterior = false;
         Throwable externalFailure = null;
-        Surface effectiveEncoder = encoder;
-        boolean effectiveEncoderOwned = false;
-        boolean effectiveEncoderTransferred = false;
 
         try {
             if (config.exteriorReady) {
@@ -598,7 +591,6 @@ final class CameraRuntimeHost {
                     if (externalFailure == null) {
                         output.closeComposer();
                         viewerComposerExternal = false;
-                        composerRecreated = true;
                         try {
                             lifetime.start(this::initialize);
                             attachViewerExterior(output, viewerRequestId);
@@ -623,7 +615,6 @@ final class CameraRuntimeHost {
                 if (viewerComposerExternal) {
                     output.closeComposer();
                     viewerComposerExternal = false;
-                    composerRecreated = true;
                 }
                 output.prepareStandalone(context);
             }
@@ -632,27 +623,14 @@ final class CameraRuntimeHost {
                 return fallbackStandalone(output, config, encoder, encoderTransferred, externalFailure);
             }
 
-            if (encoder == null && (composerRecreated || recreateComposer)
-                    && viewerEncoderReference != null) {
-                effectiveEncoder = duplicateSurface(viewerEncoderReference);
-                effectiveEncoderOwned = true;
-            }
-            Surface nextReference = encoder == null ? null : duplicateSurface(encoder);
-            if (encoder != null) {
-                Surface previous = viewerEncoderReference;
-                viewerEncoderReference = nextReference;
-                nextReference = null;
-                if (previous != null) safeRelease(previous);
-            }
+            // The output retains its current encoder across composer recreation.
+            // With no new encoder, do not connect a second EGL window to that same queue.
             if (encoder != null) encoderTransferred.set(true);
-            effectiveEncoderTransferred = true;
-            Surface[] result = output.updateLiveViewingOutput(effectiveEncoder, config.view,
+            Surface[] result = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, effectiveExterior, config.availableMask,
                     config.widths, config.heights, config.locale);
             return requireViewerInputs(result);
         } finally {
-            if (effectiveEncoderOwned && !effectiveEncoderTransferred && effectiveEncoder != null)
-                safeRelease(effectiveEncoder);
             if (encoder != null && !encoderTransferred.get()) {
                 safeRelease(encoder);
                 encoderTransferred.set(true);
@@ -672,26 +650,12 @@ final class CameraRuntimeHost {
             throw new AssertionError("unreachable");
         }
         viewerComposerExternal = false;
-        Surface effectiveEncoder = encoder;
-        boolean effectiveEncoderOwned = false;
-        boolean effectiveEncoderTransferred = false;
         try {
             try { output.closeComposer(); }
             catch (Throwable cleanup) { failure.addSuppressed(cleanup); }
             output.prepareStandalone(context);
-            if (encoder == null && viewerEncoderReference != null) {
-                effectiveEncoder = duplicateSurface(viewerEncoderReference);
-                effectiveEncoderOwned = true;
-            }
-            if (encoder != null) {
-                Surface nextReference = duplicateSurface(encoder);
-                Surface previous = viewerEncoderReference;
-                viewerEncoderReference = nextReference;
-                if (previous != null) safeRelease(previous);
-                encoderTransferred.set(true);
-            }
-            effectiveEncoderTransferred = true;
-            Surface[] inputs = output.updateLiveViewingOutput(effectiveEncoder, config.view,
+            if (encoder != null) encoderTransferred.set(true);
+            Surface[] inputs = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, false, config.availableMask,
                     config.widths, config.heights, config.locale);
             reportViewerOperationFailure("external_viewing_fallback", failure);
@@ -702,8 +666,6 @@ final class CameraRuntimeHost {
             rethrowViewerFailure(failure);
             throw new AssertionError("unreachable");
         } finally {
-            if (effectiveEncoderOwned && !effectiveEncoderTransferred && effectiveEncoder != null)
-                safeRelease(effectiveEncoder);
             if (encoder != null && !encoderTransferred.get()) {
                 safeRelease(encoder);
                 encoderTransferred.set(true);
@@ -853,18 +815,8 @@ final class CameraRuntimeHost {
                 throw new AssertionError("unreachable");
             }
         }
-        Surface encoder = viewerEncoderReference;
-        if (encoder != null) {
-            try { encoder.release(); }
-            catch (Throwable failure) {
-                reportViewerOperationFailure("encoder_release", failure);
-                rethrowViewerFailure(failure);
-                throw new AssertionError("unreachable");
-            }
-        }
         if (viewerOwner != null && viewerDeath != null) viewerOwner.unlinkToDeath(viewerDeath, 0);
         viewerOutput = null;
-        viewerEncoderReference = null;
         viewerRequestId = 0;
         viewerExteriorAttached = false;
         viewerComposerExternal = false;

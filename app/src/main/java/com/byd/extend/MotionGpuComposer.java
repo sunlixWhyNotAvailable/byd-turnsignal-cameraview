@@ -816,9 +816,7 @@ final class MotionGpuComposer implements AutoCloseable {
 
     private void drawUnavailable(int channel, RemoteCameraLiveLayout.Rect bounds) {
         int texture = unavailableTexture(channel, bounds.width(), bounds.height());
-        GLES20.glViewport(bounds.left, height - bounds.bottom, bounds.width(), bounds.height());
-        GLES20.glClearColor(.035f, .04f, .045f, 1f);
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+        // The opaque tile covers only its viewport; glClear would erase every camera.
         drawOverlay(texture, bounds.left, bounds.top, bounds.width(), bounds.height());
     }
 

@@ -203,11 +203,17 @@ public class CameraMeshCacheTest {
             for (int width = 1; width <= 33; width++) {
                 cache.request(raw, width, 100).get(30, TimeUnit.SECONDS);
             }
-            if (Files.getFileStore(directory.toPath()).supportsFileAttributeView("posix")) {
+            Set<PosixFilePermission> permissions = null;
+            try {
+                permissions = Files.getPosixFilePermissions(directory.toPath());
+            } catch (UnsupportedOperationException unsupported) {
+                // This filesystem cannot expose POSIX permissions.
+            }
+            if (permissions != null) {
                 assertEquals(EnumSet.of(PosixFilePermission.OWNER_READ,
                                 PosixFilePermission.OWNER_WRITE,
                                 PosixFilePermission.OWNER_EXECUTE),
-                        Files.getPosixFilePermissions(directory.toPath()));
+                        permissions);
             }
             assertTrue(cache.request(raw, 1, 100)
                     .get(30, TimeUnit.SECONDS).diskCacheHit());

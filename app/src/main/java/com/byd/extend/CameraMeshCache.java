@@ -388,8 +388,10 @@ final class CameraMeshCache implements AutoCloseable {
             if (!Files.isDirectory(directory.toPath())) {
                 throw new IOException("mesh cache path is not a directory: " + directory);
             }
-            if (Files.getFileStore(directory.toPath()).supportsFileAttributeView("posix")) {
+            try {
                 Files.setPosixFilePermissions(directory.toPath(), ownerOnly);
+            } catch (UnsupportedOperationException unsupported) {
+                // Non-POSIX filesystems cannot apply owner-only POSIX modes.
             }
             return true;
         } catch (IOException | RuntimeException error) {

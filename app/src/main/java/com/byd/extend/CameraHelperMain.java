@@ -159,6 +159,7 @@ final class CameraHelperMain {
             this.callbackHandler = callbackHandler;
             this.renderingContext = context;
             this.logSink = logSink;
+            CameraInputQueue.initialize(context);
             counters = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE);
             settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
             if (!(context instanceof CameraRuntimeContext)) migrateLegacyCounters(context);
@@ -5118,14 +5119,23 @@ final class CameraHelperMain {
 
             @Override
             public boolean add(Surface value, int index) throws Exception {
-                return invokeBoolean(type, target, "addPreviewSurface",
-                        new Class<?>[]{Surface.class, int.class}, value, index);
+                long inputToken = CameraInputQueue.begin(index);
+                boolean added = false;
+                try {
+                    added = invokeBoolean(type, target, "addPreviewSurface",
+                            new Class<?>[]{Surface.class, int.class}, value, index);
+                    return added;
+                } finally {
+                    CameraInputQueue.end(value, inputToken, added);
+                }
             }
 
             @Override
             public boolean remove(Surface value, int index) throws Exception {
-                return invokeBoolean(type, target, "rmPreviewSurface",
+                boolean removed = invokeBoolean(type, target, "rmPreviewSurface",
                         new Class<?>[]{Surface.class, int.class}, value, index);
+                if (removed) CameraInputQueue.detach(value);
+                return removed;
             }
 
             @Override
@@ -5141,6 +5151,7 @@ final class CameraHelperMain {
             @Override
             public void close() throws Exception {
                 type.getMethod("close").invoke(target);
+                CameraInputQueue.close();
             }
         }
 
