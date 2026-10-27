@@ -9,9 +9,10 @@ final class StockAvmShellProtocol {
     static final String HELPER_CLASS = "com.byd.extend.StockAvmShellMain";
     static final String DESCRIPTOR = "com.byd.extend.IStockAvmShell";
     static final String CALLBACK_DESCRIPTOR = "com.byd.extend.IStockAvmShellCallback";
+    static final String CANCELLATION_DESCRIPTOR = "com.byd.extend.IStockAvmCancellation";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_avm.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_avm.log";
-    static final int VERSION = 8;
+    static final int VERSION = 9;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -20,10 +21,17 @@ final class StockAvmShellProtocol {
     static final int TX_SHUTDOWN = IBinder.FIRST_CALL_TRANSACTION + 4;
     static final int TX_CONFIGURE_LOGGING = IBinder.FIRST_CALL_TRANSACTION + 5;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
+    static final int TX_IS_CANCELLED = IBinder.FIRST_CALL_TRANSACTION;
 
     private StockAvmShellProtocol() {}
 
     static boolean isCallerAllowed(int actualUid, int appUid) {
         return actualUid == appUid || actualUid == 2000;
+    }
+
+    static String diagnostic(Throwable error) {
+        java.io.StringWriter text = new java.io.StringWriter();
+        error.printStackTrace(new java.io.PrintWriter(text));
+        return text.toString();
     }
 }

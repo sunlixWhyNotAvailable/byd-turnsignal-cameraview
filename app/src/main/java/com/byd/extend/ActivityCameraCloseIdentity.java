@@ -31,6 +31,13 @@ final class ActivityCameraCloseIdentity {
                 && reason != null && reason.equals(eventReason);
     }
 
+    boolean matchesUnopenedTerminal(int eventRequestId, String eventReason,
+            long eventCameraShellEpoch) {
+        return matchesOperation(eventRequestId, eventReason)
+                && matchesEpoch(cameraShellEpoch, eventCameraShellEpoch)
+                && avmShellEpoch == 0;
+    }
+
     boolean matchesCloseFailure(int eventRequestId, String eventReason,
             long eventCameraShellEpoch, long eventAvmShellEpoch, boolean stockAvmShell) {
         if (requestId <= 0 || eventRequestId != requestId

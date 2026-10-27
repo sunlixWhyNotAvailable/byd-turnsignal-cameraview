@@ -170,7 +170,7 @@ final class StockAvmPreview {
             stageSink.accept(currentStage, config.detail());
             return config;
         } catch (Throwable error) {
-            throw new StageException(currentStage, root(error));
+            throw new StageException(currentStage, error);
         }
     }
 
@@ -421,7 +421,7 @@ final class StockAvmPreview {
             // Shell cleanup owns partial opens too; acknowledge output only after detach succeeds.
             panoApi = openedApi;
             surface = requestedSurface;
-            throw new StageException(currentStage, root(error));
+            throw new StageException(currentStage, error);
         }
     }
 
@@ -454,7 +454,10 @@ final class StockAvmPreview {
         viewpoint = -1;
         Throwable failure = terminate(activeApi);
         if (byd != null) {
-            try { byd.close(); } catch (Throwable error) { failure = error; }
+            try { byd.close(); } catch (Throwable error) {
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
         }
         if (failure == null && activeSurface != null) activeSurface.release();
         // AvmController retains this exact Surface in a static cache across SDK sessions.
@@ -926,7 +929,9 @@ final class StockAvmPreview {
             try {
                 invoke(api, method, new Class<?>[0]);
             } catch (Throwable error) {
-                if (first == null) first = root(error);
+                StageException failure = new StageException(method, error);
+                if (first == null) first = failure;
+                else first.addSuppressed(failure);
             }
         }
         return first;

@@ -72,6 +72,9 @@ public final class StockAvmShellMain {
                 "usage: StockAvmShellMain <appUid> <versionCode>");
         int appUid = Integer.parseInt(args[0]);
         int versionCode = Integer.parseInt(args[1]);
+        System.out.println(new JSONObject().put("kind", "stock_avm_process_start")
+                .put("pid", Process.myPid()).put("wall_ms", System.currentTimeMillis())
+                .put("build", versionCode).put("protocol", StockAvmShellProtocol.VERSION));
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
         CameraShellMain.prepareMainLooperForShell();
@@ -110,6 +113,8 @@ public final class StockAvmShellMain {
         private CameraGpuOutput.Binding outputLease;
         private volatile boolean processTerminationQueued;
         private boolean processTerminationRequested;
+        private Runnable openingCancellation;
+        private int openingRequestId;
 
         ShellBinder(Context context, Handler handler, int appUid, int versionCode) {
             this(context, handler, appUid, versionCode, StockAvmShellMain::terminateProcess);
@@ -122,7 +127,9 @@ public final class StockAvmShellMain {
             this.versionCode = versionCode;
             this.processTerminator = processTerminator;
             preview = new StockAvmPreview(context, (stage, detail) -> {
-                emit("stock_avm_stage", "stage", stage, "detail", detail);
+                emit("stock_avm_stage", "stage", stage, "detail", detail,
+                        "request_id", openingRequestId);
+                if (openingCancellation != null) openingCancellation.run();
                 if ("apply_vehicle_config".equals(stage)) {
                     emit("camera_config_applied", "detail", detail);
                 }
@@ -175,12 +182,14 @@ public final class StockAvmShellMain {
                             throw new IllegalArgumentException("invalid AVM open attempt");
                         }
                         StockAvmPreview.Config config = StockAvmPreview.Config.readFromParcel(data);
+                        IBinder cancellation = data.readStrongBinder();
+                        if (cancellation == null) throw new IllegalArgumentException("AVM cancellation required");
                         if (!StockAvmPreview.isAllowedViewpoint(viewpoint)) {
                             throw new IllegalArgumentException("viewpoint not whitelisted");
                         }
                         FutureTask<Surface> task = new FutureTask<>(() -> openPreview(
                                 surface, viewpoint, config, horizontal, stockDewarp,
-                                requestId, attempt));
+                                requestId, attempt, () -> checkCancellation(cancellation)));
                         if (!handler.post(task)) throw new IllegalStateException("AVM main handler rejected open");
                         surfaceTransferred = true;
                         Surface input = task.get(15, TimeUnit.SECONDS);
@@ -210,18 +219,24 @@ public final class StockAvmShellMain {
                 }
                 return false;
             } catch (Throwable error) {
+                // Binder cannot preserve the remote Throwable chain; persist it before replying.
+                emit("camera_shell_transaction_error", "code", code,
+                        "error", StockAvmShellProtocol.diagnostic(error));
                 if (reply != null) reply.writeException(new IllegalStateException(summary(error)));
-                emit("camera_shell_transaction_error", "code", code, "error", summary(error));
                 return true;
             }
         }
 
         private Surface openPreview(Surface surface, int viewpoint, StockAvmPreview.Config config,
-                boolean horizontal, boolean stockDewarp, int requestId, int attempt) {
+                boolean horizontal, boolean stockDewarp, int requestId, int attempt,
+                Runnable cancellation) {
             String view = StockAvmPreview.viewName(viewpoint);
+            boolean ownsPreview = false;
             try {
+                cancellation.run();
                 if (preview.isOpen()) closePreview("output_replaced", 0);
                 if (processTerminationQueued) throw new IllegalStateException("AVM shutdown pending");
+                ownsPreview = true;
                 outputLease = CameraGpuOutput.bind(surface,
                         () -> handler.post(() -> closePreview("output_retired", requestId)));
                 emit("camera_config_received", "detail", config.detail(), "viewpoint", viewpoint,
@@ -229,12 +244,20 @@ public final class StockAvmShellMain {
                 OpenResult<Surface> opened = openOwned(new OpenLifecycle<Surface>() {
                     @Override
                     public boolean open() throws Exception {
-                        return preview.open(
-                                surface, viewpoint, config, horizontal, stockDewarp);
+                        openingRequestId = requestId;
+                        openingCancellation = cancellation;
+                        try {
+                            cancellation.run();
+                            return preview.open(surface, viewpoint, config, horizontal, stockDewarp);
+                        } finally {
+                            // Cleanup stages must run even when initialization was canceled.
+                            openingCancellation = null;
+                        }
                     }
 
                     @Override
                     public Surface handoff() {
+                        cancellation.run();
                         Surface input = preview.getInputSurface();
                         if (!input.isValid()) {
                             throw new IllegalStateException("AVM input Surface is invalid");
@@ -261,7 +284,7 @@ public final class StockAvmShellMain {
                         "input_surface_valid", true);
                 return opened.value;
             } catch (Throwable error) {
-                if (!processTerminationQueued) {
+                if (ownsPreview && !processTerminationQueued) {
                     try {
                         preview.close();
                         releaseOutputLease();
@@ -277,8 +300,30 @@ public final class StockAvmShellMain {
                 emit("camera_error", "renderer", "stock_avm_shell", "stage", stage, "view", view,
                         "viewpoint", viewpoint, "request_id", requestId, "attempt", attempt,
                         "shell_uid", Process.myUid(),
-                        "error", summary(error));
+                        "error", StockAvmShellProtocol.diagnostic(error));
                 throw new IllegalStateException(summary(error), error);
+            } finally {
+                openingRequestId = 0;
+            }
+        }
+
+        private void checkCancellation(IBinder cancellation) {
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(StockAvmShellProtocol.CANCELLATION_DESCRIPTOR);
+                if (!cancellation.transact(StockAvmShellProtocol.TX_IS_CANCELLED, data, reply, 0)) {
+                    throw new IllegalStateException("AVM cancellation transaction rejected");
+                }
+                reply.readException();
+                if (reply.readInt() != 0) {
+                    throw new java.util.concurrent.CancellationException("AVM open canceled by owner");
+                }
+            } catch (RemoteException failure) {
+                throw new IllegalStateException("AVM cancellation owner unavailable", failure);
+            } finally {
+                reply.recycle();
+                data.recycle();
             }
         }
 
@@ -303,7 +348,7 @@ public final class StockAvmShellMain {
                 preview.close();
                 releaseOutputLease();
             } catch (Throwable failure) {
-                error = summary(failure);
+                error = StockAvmShellProtocol.diagnostic(failure);
                 // A failed detach cannot acknowledge consumer release. Binder death will do it.
                 queueProcessTermination();
             }
@@ -402,20 +447,27 @@ public final class StockAvmShellMain {
             this.file = file; this.channel = channel; this.lock = lock;
         }
 
-        static OwnerLock acquire() {
+        static OwnerLock acquire() throws java.io.IOException {
+            RandomAccessFile file = new RandomAccessFile(StockAvmShellProtocol.LOCK_PATH, "rw");
             try {
-                RandomAccessFile file = new RandomAccessFile(StockAvmShellProtocol.LOCK_PATH, "rw");
                 FileChannel channel = file.getChannel();
                 FileLock lock = channel.tryLock();
-                if (lock == null) { channel.close(); file.close(); return null; }
+                if (lock == null) {
+                    System.err.println("stock_avm_owner_lock_already_held: " + StockAvmShellProtocol.LOCK_PATH);
+                    file.close();
+                    return null;
+                }
                 return new OwnerLock(file, channel, lock);
-            } catch (Throwable error) { return null; }
+            } catch (java.io.IOException | RuntimeException | Error error) {
+                try { file.close(); } catch (Throwable cleanup) { error.addSuppressed(cleanup); }
+                throw error;
+            }
         }
 
         void close() {
-            try { lock.release(); } catch (Throwable ignored) { }
-            try { channel.close(); } catch (Throwable ignored) { }
-            try { file.close(); } catch (Throwable ignored) { }
+            try { lock.release(); } catch (Throwable failure) { failure.printStackTrace(System.err); }
+            try { channel.close(); } catch (Throwable failure) { failure.printStackTrace(System.err); }
+            try { file.close(); } catch (Throwable failure) { failure.printStackTrace(System.err); }
         }
     }
 }

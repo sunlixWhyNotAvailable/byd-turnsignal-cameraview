@@ -10149,11 +10149,24 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean matchesActivityCameraClose(JSONObject event) {
-        return event != null && activityCameraCloseIdentity.matchesTerminal(
+        return event != null && (matchesUnopenedStockClose(event)
+                || activityCameraCloseIdentity.matchesTerminal(
                 event.optInt("request_id", 0), event.optString("reason"),
                 event.optLong("camera_shell_epoch", 0),
                 event.optLong("avm_shell_epoch", 0),
-                "stock_avm_shell".equals(event.optString("renderer")));
+                "stock_avm_shell".equals(event.optString("renderer"))));
+    }
+
+    private boolean matchesUnopenedStockClose(JSONObject event) {
+        return "camera_closed".equals(event.optString("kind"))
+                && "helper".equals(event.optString("source"))
+                && "stock_avm_shell".equals(event.optString("renderer"))
+                && event.optBoolean("closed_without_open", false)
+                && event.optString("error").isEmpty()
+                && event.optLong("avm_shell_epoch", 0) == 0
+                && activityCameraCloseIdentity.matchesUnopenedTerminal(
+                        event.optInt("request_id", 0), event.optString("reason"),
+                        event.optLong("camera_shell_epoch", 0));
     }
 
     private boolean matchesActivityCameraCloseFailure(JSONObject event) {
@@ -11888,10 +11901,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     }
                     if (CameraTransition.reasonEquals(
                             reason, CameraHelperMain.ACTIVITY_RESUME_COLD_RESET)) {
-                        boolean requestMatches = activityCameraCloseIdentity.matchesTerminal(
-                                requestId, reason,
-                                json.optLong("camera_shell_epoch", 0),
-                                json.optLong("avm_shell_epoch", 0), true);
+                        boolean requestMatches = matchesActivityCameraClose(json);
                         boolean shellEvent = "stock_avm_shell".equals(renderer)
                                 && "camera_closed".equals(kind);
                         if (!activityColdResetInFlight || !cameraTransition.matches(reason)
@@ -11944,17 +11954,18 @@ public final class CameraProbeActivity extends ComponentActivity
                     }
                     if (CameraTransition.owns(reason)) {
                         if ("stock_avm_shell".equals(renderer)) {
+                            boolean unopenedClose = matchesUnopenedStockClose(json);
                             boolean identityMatches = cameraTransition.matches(reason)
                                     && matchesActivityCameraClose(json)
                                     && isMatchingActivityCameraShellEpochStrict(
                                     activityCameraCloseIdentity.cameraShellEpoch(),
                                     json.optLong("camera_shell_epoch", 0))
-                                    && isMatchingActivityAvmShellEpoch(
+                                    && (unopenedClose || isMatchingActivityAvmShellEpoch(
                                     activityCameraCloseIdentity.avmShellEpoch(),
-                                    json.optLong("avm_shell_epoch", 0));
+                                    json.optLong("avm_shell_epoch", 0)));
                             if (!identityMatches) {
                                 recordIgnoredActivityCameraEvent(kind, json);
-                            } else if (isMatchingPendingActivityTransitionShellClose(
+                            } else if (unopenedClose || isMatchingPendingActivityTransitionShellClose(
                                     cameraTransition.pendingToken(), reason, renderer, kind, error,
                                     activityCameraCloseIdentity.requestId(), requestId,
                                     activityCameraCloseIdentity.cameraShellEpoch(),

@@ -4,6 +4,26 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ActivityCameraCloseIdentityTest {
+    @Test public void unopenedCloseRequiresExactOperationAndKnownCameraOwner() {
+        ActivityCameraCloseIdentity identity = new ActivityCameraCloseIdentity();
+        String reason = "activity_transition:1:camera_tab_changed";
+        identity.capture(1, reason, 4);
+        assertTrue(identity.matchesUnopenedTerminal(1, reason, 4));
+        assertFalse(identity.matchesTerminal(1, reason, 4, 0, true));
+        assertFalse(identity.matchesUnopenedTerminal(2, reason, 4));
+        assertFalse(identity.matchesUnopenedTerminal(1, "replacement", 4));
+        assertFalse(identity.matchesUnopenedTerminal(1, reason, 5));
+        assertFalse(identity.matchesUnopenedTerminal(1, reason, 0));
+        assertTrue(identity.bindStockCloseOwner(1, reason, 4, 6));
+        assertFalse(identity.matchesUnopenedTerminal(1, reason, 4));
+        assertTrue(identity.matchesTerminal(1, reason, 4, 6, true));
+        identity.capture(2, reason, 4);
+        assertFalse(identity.matchesUnopenedTerminal(1, reason, 4));
+        assertTrue(identity.matchesUnopenedTerminal(2, reason, 4));
+        identity.clear();
+        assertFalse(identity.matchesUnopenedTerminal(2, reason, 4));
+    }
+
     @Test public void terminalUsesCapturedNormalCloseIdentityAfterSurfaceLoss() {
         ActivityCameraCloseIdentity identity = new ActivityCameraCloseIdentity();
         String reason = "reverse_surface_destroyed";

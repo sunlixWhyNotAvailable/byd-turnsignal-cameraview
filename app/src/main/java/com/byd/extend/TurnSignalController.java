@@ -117,6 +117,7 @@ final class TurnSignalController {
     private volatile int stockAvmRetryAttempt;
     private volatile boolean stockAvmRetryActive;
     private volatile boolean stockAvmResetInProgress;
+    private String lastAvmPingFailure = "";
     private StockAvmOpenState activeStockAvmOpen;
     private boolean cameraRecoveryPending;
     private final PendingOverlay[] pendingOverlays =
@@ -774,7 +775,7 @@ final class TurnSignalController {
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", "config_main_handler_unavailable",
                     "viewpoint", viewpoint, "request_id", requestId,
-                    "error", summary(error));
+                    "error", StockAvmShellProtocol.diagnostic(error));
         }
     }
 
@@ -803,7 +804,7 @@ final class TurnSignalController {
             emit("camera_error", "renderer", "stock_avm_shell",
                     "stage", stage, "view", StockAvmPreview.viewName(viewpoint),
                     "viewpoint", viewpoint, "request_id", requestId,
-                    "error", summary(error));
+                    "error", StockAvmShellProtocol.diagnostic(error));
             clearStockAvmOpen(openState);
             surface.release();
             return;
@@ -819,6 +820,7 @@ final class TurnSignalController {
             boolean transactionComplete = false;
             boolean remoteOpenAttempted = false;
             boolean resetRetried = false;
+            Throwable primaryFailure = null;
             try {
                 if (isStockAvmCanceled(openState)) return;
                 beginStockAvmAttempt(requestId, 1);
@@ -830,11 +832,11 @@ final class TurnSignalController {
                         openState.shell = value;
                         openState.avmEpoch = epoch;
                         openState.cameraEpoch = cameraHelperEpoch;
-                        if (isStockAvmCanceled(openState)) return;
+                        if (stopped || !openState.beginRemoteOpen()) return;
                         remoteOpenAttempted = true;
                         Surface inputSurface = transactAvmOpen(
                                 value, surface, viewpoint, horizontal, stockDewarp,
-                                requestId, attempt + 1, config);
+                                requestId, attempt + 1, config, stockAvmCancellation(openState));
                         transactionComplete = true;
                         if (!publishStockAvmInput(
                                 openState, inputSurface, inputSurfaceSink)) return;
@@ -851,6 +853,10 @@ final class TurnSignalController {
                                 "avm_shell_epoch", epoch);
                         break;
                     } catch (Throwable error) {
+                        if (primaryFailure == null) primaryFailure = error;
+                        emit("stock_avm_open_attempt_failed", "request_id", requestId,
+                                "attempt", attempt + 1, "cancelled", isStockAvmCanceled(openState),
+                                "error", StockAvmShellProtocol.diagnostic(error));
                         if (isStockAvmCanceled(openState)
                                 || !shouldRetryStockAvm(transactionComplete, resetRetried, stopped)) {
                             throw error;
@@ -859,7 +865,7 @@ final class TurnSignalController {
                         resetRetried = true;
                         setStockAvmAttempt(requestId, 2);
                         emit("stock_avm_reset_retry", "request_id", requestId,
-                                "viewpoint", viewpoint, "error", summary(error));
+                                "viewpoint", viewpoint, "error", StockAvmShellProtocol.diagnostic(error));
                         stockAvmResetInProgress = true;
                         try {
                             if (isStockAvmCanceled(openState)) return;
@@ -874,6 +880,13 @@ final class TurnSignalController {
                     throw new IllegalStateException("stock_avm_open_retry_exhausted");
                 }
             } catch (Throwable error) {
+                if (primaryFailure != null && primaryFailure != error) {
+                    primaryFailure.addSuppressed(error);
+                    error = primaryFailure;
+                }
+                emit("stock_avm_open_failure", "request_id", requestId,
+                        "cancelled", isStockAvmCanceled(openState),
+                        "error", StockAvmShellProtocol.diagnostic(error));
                 boolean shellFailureNotified = false;
                 if (isStockAvmCanceled(openState)) return;
                 if (!transactionComplete && value != null && !avmPing(value)) {
@@ -888,7 +901,7 @@ final class TurnSignalController {
                         "stage", "avm_shell_launch_or_open",
                         "view", StockAvmPreview.viewName(viewpoint),
                         "viewpoint", viewpoint, "request_id", requestId,
-                        "error", summary(error));
+                        "error", StockAvmShellProtocol.diagnostic(error));
             } finally {
                 endStockAvmAttempt(requestId);
                 surface.release();
@@ -905,6 +918,9 @@ final class TurnSignalController {
             });
         } catch (RejectedExecutionException error) {
             surface.release();
+            emit("camera_error", "renderer", "stock_avm_shell",
+                    "stage", "open_worker_unavailable", "request_id", requestId,
+                    "error", StockAvmShellProtocol.diagnostic(error));
             clearStockAvmOpen(openState);
         }
     }
@@ -918,7 +934,11 @@ final class TurnSignalController {
         }
         try {
             worker.execute(() -> closeStockAvmNow(reason, requestId));
-        } catch (RejectedExecutionException ignored) {
+        } catch (RejectedExecutionException error) {
+            emit("camera_error", "renderer", "stock_avm_shell", "stage", "close",
+                    "request_id", requestId, "reason", reason,
+                    "camera_shell_epoch", cameraHelperEpoch, "avm_shell_epoch", avmShellEpoch,
+                    "error", StockAvmShellProtocol.diagnostic(error));
         }
     }
 
@@ -3028,9 +3048,16 @@ final class TurnSignalController {
                 3_000);
         IBinder value = resolution.binder;
         if (value == null) {
-            throw new IllegalStateException("stock_avm_shell_binder_timeout");
+            emitAvmStartupJournal();
+            LocalAdbClient.Result launch = resolution.launch;
+            throw new IllegalStateException(launch != null && !launch.ok
+                    ? "stock_avm_shell_launch_failed: " + launch.error + ";exit=" + launch.exitCode
+                            + ";output=" + launch.output
+                    : "stock_avm_shell_binder_not_registered_after_3000ms;last_ping="
+                            + lastAvmPingFailure);
         }
-        if (!avmPing(value)) throw new IllegalStateException("stock_avm_shell_binder_timeout");
+        if (!avmPing(value)) throw new IllegalStateException("stock_avm_shell_ping_failed: "
+                + lastAvmPingFailure);
         if (avmShell != value) {
             long epoch = installAvmShell(value);
             try {
@@ -3049,27 +3076,59 @@ final class TurnSignalController {
             Method getService = manager.getMethod("getService", String.class);
             return (IBinder) getService.invoke(null, StockAvmShellProtocol.SERVICE_NAME);
         } catch (Throwable error) {
-            emit("stock_avm_shell_resolve_error", "error", summary(error));
+            emit("stock_avm_shell_resolve_error", "error", StockAvmShellProtocol.diagnostic(error));
             return null;
         }
     }
 
     private boolean avmPing(IBinder value) {
-        if (value == null || !value.isBinderAlive()) return false;
+        if (value == null) return avmPingFailed("binder_not_registered");
+        if (!value.isBinderAlive()) return avmPingFailed("binder_not_alive");
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(StockAvmShellProtocol.DESCRIPTOR);
-            if (!value.transact(StockAvmShellProtocol.TX_PING, data, reply, 0)) return false;
+            if (!value.transact(StockAvmShellProtocol.TX_PING, data, reply, 0)) {
+                return avmPingFailed("ping_transaction_rejected");
+            }
             reply.readException();
-            return reply.readInt() == StockAvmShellProtocol.VERSION
-                    && reply.readInt() == BuildConfig.VERSION_CODE
-                    && reply.readInt() > 0;
+            int protocol = reply.readInt(), build = reply.readInt(), pid = reply.readInt();
+            if (protocol != StockAvmShellProtocol.VERSION || build != BuildConfig.VERSION_CODE || pid <= 0) {
+                return avmPingFailed("identity_mismatch: protocol=" + protocol + ";build=" + build
+                        + ";pid=" + pid + ";expected_protocol=" + StockAvmShellProtocol.VERSION
+                        + ";expected_build=" + BuildConfig.VERSION_CODE);
+            }
+            lastAvmPingFailure = "";
+            return true;
         } catch (Throwable error) {
-            return false;
+            return avmPingFailed(StockAvmShellProtocol.diagnostic(error));
         } finally {
             data.recycle();
             reply.recycle();
+        }
+    }
+
+    private boolean avmPingFailed(String failure) {
+        if (!failure.equals(lastAvmPingFailure)) {
+            emit("stock_avm_ping_failed", "error", failure);
+            lastAvmPingFailure = failure;
+        }
+        return false;
+    }
+
+    private void emitAvmStartupJournal() {
+        try (java.io.RandomAccessFile log = new java.io.RandomAccessFile(
+                StockAvmShellProtocol.LOG_PATH, "r")) {
+            long length = log.length();
+            long offset = Math.max(0, length - 32_768);
+            byte[] bytes = new byte[(int) (length - offset)];
+            log.seek(offset);
+            log.readFully(bytes);
+            emit("stock_avm_startup_diagnostic", "request_id", stockAvmRetryRequestId,
+                    "attempt", stockAvmRetryAttempt, "full_log", StockAvmShellProtocol.LOG_PATH,
+                    "tail_offset", offset, "output", new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception failure) {
+            emit("stock_avm_startup_log_read_failed", "error", StockAvmShellProtocol.diagnostic(failure));
         }
     }
 
@@ -3113,7 +3172,8 @@ final class TurnSignalController {
         clearAvmShell(null);
         LocalAdbClient.Result result = launchCameraProcess(true);
         if (!result.ok) throw new IllegalStateException(
-                "stock_avm_shell_reset_failed: " + result.error);
+                "stock_avm_shell_reset_failed: " + result.error + ";exit=" + result.exitCode
+                        + ";output=" + result.output);
         ensureAvmShell();
     }
 
@@ -3123,6 +3183,7 @@ final class TurnSignalController {
         String command = avm ? avmLaunchCommand(apk, owner, BuildConfig.VERSION_CODE)
                 : cameraLaunchCommand(apk, owner, BuildConfig.VERSION_CODE);
         if (!cameraRuntimeHost) return LocalAdbClient.executeAuthorized(context, command, this::emit);
+        if (avm) return launchAvmProcess(command);
         // Already shell UID: launch only our two fixed, package-derived camera entry points.
         // No app RSA key, app callback, user-supplied command, or 5555 connection is involved.
         try {
@@ -3137,6 +3198,61 @@ final class TurnSignalController {
         } catch (Exception error) {
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
             return LocalAdbClient.Result.failed(summary(error), "", -1, "shell");
+        }
+    }
+
+    private LocalAdbClient.Result launchAvmProcess(String command) {
+        java.io.File output = null;
+        java.lang.Process process = null;
+        boolean retainOutput = false;
+        try {
+            output = java.io.File.createTempFile("bydextend-avm-launch-", ".log",
+                    new java.io.File("/data/local/tmp"));
+            process = new ProcessBuilder("/system/bin/sh", "-c", command)
+                    .redirectErrorStream(true).redirectOutput(output).start();
+            boolean finished = process.waitFor(8, java.util.concurrent.TimeUnit.SECONDS);
+            int exit = finished ? process.exitValue() : -1;
+            String error = !finished ? "camera_launch_timeout" : exit != 0 ? "camera_launch_failed" : "";
+            String captured = "";
+            try {
+                if (!finished) process.destroy();
+                captured = new String(java.nio.file.Files.readAllBytes(output.toPath()),
+                        java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception diagnosticFailure) {
+                retainOutput = true;
+                emit("stock_avm_launch_output_failed", "request_id", stockAvmRetryRequestId,
+                        "attempt", stockAvmRetryAttempt, "launch_error", error, "exit", exit,
+                        "full_log", output.getPath(),
+                        "error", StockAvmShellProtocol.diagnostic(diagnosticFailure));
+            }
+            emit("stock_avm_launch_result", "request_id", stockAvmRetryRequestId,
+                    "attempt", stockAvmRetryAttempt, "exit", exit, "finished", finished,
+                    "output", captured, "error", error);
+            return error.isEmpty() ? LocalAdbClient.Result.ok(captured, exit, "shell", false)
+                    : LocalAdbClient.Result.failed(error, captured, exit, "shell");
+        } catch (Exception failure) {
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            retainOutput = true;
+            try {
+                if (process != null && process.isAlive()) process.destroy();
+            } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
+            String captured = "";
+            if (output != null) {
+                try {
+                    captured = new String(java.nio.file.Files.readAllBytes(output.toPath()),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                } catch (Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
+            }
+            String detail = StockAvmShellProtocol.diagnostic(failure);
+            emit("stock_avm_launch_failed", "request_id", stockAvmRetryRequestId,
+                    "attempt", stockAvmRetryAttempt, "error", detail, "output", captured,
+                    "full_log", output == null ? "" : output.getPath());
+            return LocalAdbClient.Result.failed(detail, captured, -1, "shell");
+        } finally {
+            if (output != null && !retainOutput && !output.delete()) {
+                emit("stock_avm_launch_log_cleanup_failed", "path", output.getPath(),
+                        "error", "temporary launch diagnostic could not be deleted");
+            }
         }
     }
 
@@ -3189,7 +3305,7 @@ final class TurnSignalController {
             boolean stockDewarp,
             int requestId,
             int attempt,
-            StockAvmPreview.Config config) throws Exception {
+            StockAvmPreview.Config config, IBinder cancellation) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
@@ -3201,6 +3317,7 @@ final class TurnSignalController {
             data.writeInt(requestId);
             data.writeInt(attempt);
             config.writeToParcel(data);
+            data.writeStrongBinder(cancellation);
             requireTransact(value, StockAvmShellProtocol.TX_OPEN, data, reply);
             Surface inputSurface = Surface.CREATOR.createFromParcel(reply);
             if (inputSurface == null || !inputSurface.isValid()) {
@@ -3733,6 +3850,13 @@ final class TurnSignalController {
     private void closeStockAvmNow(String reason, StockAvmOpenState state) {
         String closeReason = reason == null ? "unknown" : reason;
         int requestId = state.requestId;
+        if (state.requestScoped && !state.remoteOpenAttempted()) {
+            emit("camera_closed", "renderer", "stock_avm_shell", "view", "unknown",
+                    "reason", closeReason, "request_id", requestId,
+                    "camera_shell_epoch", state.cameraEpoch, "avm_shell_epoch", 0,
+                    "closed_without_open", true, "error", "");
+            return;
+        }
         IBinder value = state.shell;
         if (state.requestScoped && requestId > 0 && value != null
                 && state.cameraEpoch > 0 && state.avmEpoch > 0) {
@@ -3747,7 +3871,7 @@ final class TurnSignalController {
                     "request_id", requestId,
                     "camera_shell_epoch", state.cameraEpoch,
                     "avm_shell_epoch", state.avmEpoch,
-                    "error", "camera_helper_unavailable");
+                    "error", "camera_helper_unavailable: " + lastAvmPingFailure);
             return;
         }
         Parcel data = Parcel.obtain();
@@ -3762,7 +3886,7 @@ final class TurnSignalController {
                     "stage", "close", "reason", closeReason, "request_id", requestId,
                     "camera_shell_epoch", state.cameraEpoch,
                     "avm_shell_epoch", state.avmEpoch,
-                    "error", summary(error));
+                    "error", StockAvmShellProtocol.diagnostic(error));
         } finally {
             data.recycle();
             reply.recycle();
@@ -4070,7 +4194,7 @@ final class TurnSignalController {
                 + "rm -f " + StockAvmShellProtocol.LOCK_PATH + "; "
                 + "CLASSPATH=" + apk + " setsid app_process /system/bin --nice-name=" + process + " "
                 + StockAvmShellProtocol.HELPER_CLASS + " " + appUid + " " + versionCode
-                + " </dev/null >" + StockAvmShellProtocol.LOG_PATH + " 2>&1 & "
+                + " </dev/null >>" + StockAvmShellProtocol.LOG_PATH + " 2>&1 & "
                 + "for i in 1 2 3; do service list 2>/dev/null | grep -q "
                 + StockAvmShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
     }
@@ -4202,9 +4326,7 @@ final class TurnSignalController {
             activeStockAvmOpen = next;
         }
         if (previous != null) {
-            synchronized (previous) {
-                previous.cancelled.set(true);
-            }
+            previous.cancel();
             queueStockAvmCleanup(previous, "stock_avm_open_replaced");
         }
         return next;
@@ -4227,9 +4349,23 @@ final class TurnSignalController {
         synchronized (this) {
             if (activeStockAvmOpen != expected) return;
         }
-        synchronized (expected) {
-            expected.cancelled.set(true);
-        }
+        expected.cancel();
+    }
+
+    private IBinder stockAvmCancellation(StockAvmOpenState state) {
+        return new Binder() {
+            @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
+                if (code != StockAvmShellProtocol.TX_IS_CANCELLED) return false;
+                if (!StockAvmShellProtocol.isCallerAllowed(
+                        Binder.getCallingUid(), context.getApplicationInfo().uid)) {
+                    throw new SecurityException("AVM cancellation caller uid denied");
+                }
+                data.enforceInterface(StockAvmShellProtocol.CANCELLATION_DESCRIPTOR);
+                reply.writeNoException();
+                reply.writeInt(isStockAvmCanceled(state) ? 1 : 0);
+                return true;
+            }
+        };
     }
 
     private boolean isStockAvmCanceled(StockAvmOpenState state) {
@@ -4272,7 +4408,8 @@ final class TurnSignalController {
 
     private void clearStockAvmOpen(StockAvmOpenState state) {
         synchronized (this) {
-            if (activeStockAvmOpen == state && !state.published.get()) {
+            // Retain a failed unopened request until its owner closes or replaces it.
+            if (activeStockAvmOpen == state && state.cancelled.get() && !state.published.get()) {
                 activeStockAvmOpen = null;
             }
         }
@@ -4280,6 +4417,20 @@ final class TurnSignalController {
 
     private void queueStockAvmCleanup(StockAvmOpenState state, String reason) {
         if (state == null || !state.cleanupQueued.compareAndSet(false, true)) return;
+        state.cancel();
+        if (!state.remoteOpenAttempted()) {
+            // Leave the current direct-consumer teardown before acknowledging its OEM companion.
+            if (!handler.post(() -> {
+                closeStockAvmNow(reason, state);
+                clearStockAvmOpen(state);
+            })) {
+                emit("camera_error", "renderer", "stock_avm_shell", "stage", "close",
+                        "request_id", state.requestId, "reason", reason,
+                        "camera_shell_epoch", state.cameraEpoch, "avm_shell_epoch", state.avmEpoch,
+                        "error", "AVM local close handler rejected task");
+            }
+            return;
+        }
         try {
             worker.execute(() -> {
                 try {
@@ -4290,7 +4441,11 @@ final class TurnSignalController {
                     }
                 }
             });
-        } catch (RejectedExecutionException ignored) {
+        } catch (RejectedExecutionException error) {
+            emit("camera_error", "renderer", "stock_avm_shell", "stage", "close",
+                    "request_id", state.requestId, "reason", reason,
+                    "camera_shell_epoch", state.cameraEpoch, "avm_shell_epoch", state.avmEpoch,
+                    "error", StockAvmShellProtocol.diagnostic(error));
             synchronized (this) {
                 if (activeStockAvmOpen == state) activeStockAvmOpen = null;
             }
@@ -4486,7 +4641,7 @@ final class TurnSignalController {
         return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
     }
 
-    private static final class StockAvmOpenState {
+    static final class StockAvmOpenState {
         final int requestId;
         final boolean requestScoped;
         volatile IBinder shell;
@@ -4495,6 +4650,17 @@ final class TurnSignalController {
         final AtomicBoolean cancelled = new AtomicBoolean();
         final AtomicBoolean cleanupQueued = new AtomicBoolean();
         final AtomicBoolean published = new AtomicBoolean();
+        private boolean remoteOpenAttempted;
+
+        synchronized boolean beginRemoteOpen() {
+            if (cancelled.get()) return false;
+            remoteOpenAttempted = true;
+            return true;
+        }
+
+        synchronized void cancel() { cancelled.set(true); }
+
+        synchronized boolean remoteOpenAttempted() { return remoteOpenAttempted; }
 
         StockAvmOpenState(int requestId) {
             this(requestId, false);

@@ -80,6 +80,7 @@ final class BydStockAvm implements AutoCloseable {
                 new Class<?>[]{Context.class}, context);
         copyAssetDirectory(loader, context,
                 mode3d ? "pano_3d_resources/" + config.carType : "pano_resources", pano);
+        stage.accept("byd_resources_ready", "ok");
         int width = ((Number) invokeStatic(loader,
                 "com.byd.avc.util.devicestates.DeviceStates$ScreenStatus", "getOriginalScreenWidth")).intValue();
         int height = ((Number) invokeStatic(loader,
@@ -101,6 +102,7 @@ final class BydStockAvm implements AutoCloseable {
         invokeStatic(loader, "com.byd.avc.util.CarBodyColorController", "getCarBodyColor");
         String color = (String) invokeStatic(loader,
                 "com.byd.avc.util.CarBodyColorController", "getCurrentColor");
+        stage.accept("byd_before_initialize", "ok");
         api = type.getConstructor().newInstance();
         Object uiType = invokeStatic(loader, "com.byd.avc.util.devicestates.DevControler", "getUiType");
         String uiName = ((Enum<?>) uiType).name();
@@ -117,6 +119,7 @@ final class BydStockAvm implements AutoCloseable {
             initialize.invoke(api, model, config.panoWidth, config.panoHeight, width, height,
                     parameters, context);
         }
+        stage.accept("byd_sdk_initialized", "ok");
         invoke(api, "setCameraType", new Class<?>[]{int.class, int.class}, cameraType, 0);
         invoke(api, "setAutomaticCalibrationStr", new Class<?>[]{String.class}, config.intrinsic);
         invoke(api, "setCarResources", new Class<?>[]{String.class, String.class, String.class, String.class},
@@ -139,6 +142,7 @@ final class BydStockAvm implements AutoCloseable {
         if (!Boolean.TRUE.equals(invoke(api, "initDisplay", new Class<?>[]{Context.class, Surface.class},
                 null, display))) throw new IllegalStateException("BYD initDisplay rejected surface");
         awaitRenderer();
+        stage.accept("byd_display_ready", "ok");
         setViewpoint(viewpoint, horizontal);
         long deadline = System.nanoTime() + 3_000_000_000L;
         do {
