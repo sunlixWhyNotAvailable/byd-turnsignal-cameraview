@@ -36,7 +36,7 @@ internal fun HazardThanksSettingsSection(
             AppSwitch(state.enabled, onToggle, colors, clearSemantics = true, label = title)
         }
     }) {
-        MirrorBindingRow(strings.resource(R.string.calls_binding_source),
+        MirrorBindingRow(null,
             CameraButtonBindings.Action.HazardThanks, state.binding, state.enabled,
             strings, colors, onAction)
         Column {

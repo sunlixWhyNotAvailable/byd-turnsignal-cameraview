@@ -198,7 +198,7 @@ private fun FormScope.MirrorParameters(
 
 @Composable
 internal fun MirrorBindingRow(
-    title: String, action: CameraButtonBindings.Action, binding: CameraButtonBindings.Binding,
+    title: String?, action: CameraButtonBindings.Action, binding: CameraButtonBindings.Binding,
     enabled: Boolean, strings: UiStrings, colors: UiPalette, onAction: (BydExtendUiAction) -> Unit,
     showPress: Boolean = true,
     footer: @Composable ColumnScope.() -> Unit = {},
@@ -216,7 +216,7 @@ internal fun MirrorBindingRow(
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp)).background(colors.panelAlt)
         .border(1.dp, colors.borderStrong, RoundedCornerShape(7.dp)).padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        if (title != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, color = if (enabled) colors.text else colors.muted.copy(alpha = .62f),
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, modifier = Modifier.weight(1f))
