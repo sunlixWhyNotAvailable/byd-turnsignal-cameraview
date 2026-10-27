@@ -76,6 +76,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
     private String configureCompletionToken;
     private String configureCompletionJson;
     private boolean awaitingConfigureCompletion;
+    private boolean configureFailed;
     private boolean legacyIndexImported;
     private boolean legacyIndexAttempted;
 
@@ -294,7 +295,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         final String token;
         synchronized (lock) {
             if (closed) throw new IllegalStateException("motion client is closed");
-            if (nextConfigJson.equals(configJson) && awaitingConfigureCompletion) {
+            if (nextConfigJson.equals(configJson) && awaitingConfigureCompletion && !configureFailed) {
                 listener = nextListener;
                 return;
             }
@@ -309,6 +310,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             configureCompletionToken = token;
             configureCompletionJson = nextConfigJson;
             awaitingConfigureCompletion = true;
+            configureFailed = false;
         }
         try { commands.execute(() -> configureOnWorker(generation, nextConfigJson, token)); }
         catch (java.util.concurrent.RejectedExecutionException ignored) {
@@ -386,19 +388,17 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (id == null || id.isEmpty()) {
                 synchronized (lock) { sessionId = null; }
                 boolean enabled = MotionConfig.parse(requestedConfig).anyEnabled();
-                if (!enabled && !configuredAcknowledged)
-                    throw new IllegalStateException("worker did not confirm disabled configuration");
                 if (retainViewing) throw new IllegalStateException("retained Motion result has no active session");
                 if (enabled && configuredAcknowledged) {
                     configuredAcknowledged = false;
                     throw new IllegalStateException("worker reported an applied config without a session");
                 }
                 workerReplyValidated = true;
-                reportRequestStatus(generation, enabled ? "configured_pending" : "configured_disabled",
-                        enabled ? "latest Motion settings are persisted and will start after the previous session drains"
+                reportRequestStatus(generation, !configuredAcknowledged ? "configured_pending" : "configured_disabled",
+                        !configuredAcknowledged ? "latest Motion settings are persisted; waiting for resource cleanup"
                                 : "monitoring disabled in shell; media-only worker remains available",
                         SystemClock.elapsedRealtime());
-                if (!enabled) reportRequestConfigured(generation, requestToken, false);
+                if (!enabled && configuredAcknowledged) reportRequestConfigured(generation, requestToken, false);
                 return;
             }
             if (!MotionDetectorProtocol.validSession(id))
@@ -407,7 +407,6 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             synchronized (lock) { sessionId = id; }
             if (configuredAcknowledged && workerReplyValidated)
                 reportRequestConfigured(generation, requestToken, retainViewing);
-            else clearConfigureRequest(generation, requestToken);
         } catch (Throwable error) {
             if (requestCallback != null && !isCurrentCallback(requestCallback))
                 requestCallback.deactivate();
@@ -418,8 +417,17 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         }
     }
 
+    static boolean validConfiguredSession(String id, String json, int retained) {
+        if (id == null || json == null || json.length() > 8192 || retained < 0 || retained > 1)
+            return false;
+        try {
+            boolean enabled = MotionConfig.parse(json).anyEnabled();
+            return enabled ? MotionDetectorProtocol.validSession(id) : id.isEmpty() && retained == 0;
+        } catch (Exception invalid) { return false; }
+    }
+
     private void attachConfiguredSession(int generation, String requestToken, String id,
-            String requestedConfig, int workerPid) {
+            String requestedConfig, int workerPid, boolean retainViewing) {
         if (!isPendingConfigure(generation, requestToken, requestedConfig)) return;
         boolean confirmedWorker = false;
         try {
@@ -433,12 +441,12 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
                 if (callback == null || callback.generation != generation
                         || !callback.matchesWorker(workerPid))
                     throw new SecurityException("configured Motion callback worker changed");
-                sessionId = id;
+                sessionId = id.isEmpty() ? null : id;
             }
             confirmedWorker = true;
-            reportRequestConfigured(generation, requestToken, false);
+            reportRequestConfigured(generation, requestToken, retainViewing);
         } catch (Throwable error) {
-            if (confirmedWorker) reportRequestConfigured(generation, requestToken, false);
+            if (confirmedWorker) reportRequestConfigured(generation, requestToken, retainViewing);
             else clearConfigureRequest(generation, requestToken);
             reportRequestError(generation, id, "configure_attach", summary(error));
         }
@@ -459,7 +467,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
     }
 
     private void queueConfiguredSession(String requestToken, String id, String requestedConfig,
-            int workerPid) {
+            int workerPid, boolean retainViewing) {
         final int generation;
         synchronized (lock) {
             if (closed || !awaitingConfigureCompletion
@@ -469,7 +477,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         }
         try {
             commands.execute(() -> attachConfiguredSession(generation, requestToken, id,
-                    requestedConfig, workerPid));
+                    requestedConfig, workerPid, retainViewing));
         } catch (java.util.concurrent.RejectedExecutionException ignored) {
             // close() may win before the confirmed-session attachment can be queued.
         }
@@ -816,10 +824,6 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
     }
 
     private void reportRequestError(int generation, String id, String stage, String detail) {
-        if (id != null && !id.isEmpty() && isCurrent(id)) {
-            reportError(id, stage, detail);
-            return;
-        }
         Listener target = listener;
         if (!isCurrentRequest(generation) || target == null) return;
         long now = SystemClock.elapsedRealtime();
@@ -918,9 +922,20 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         }
 
         private void workerDied() {
+            boolean notify;
+            synchronized (lock) {
+                notify = !closed && callback == this && requestGeneration == generation;
+                if (notify) {
+                    awaitingConfigureCompletion = false;
+                    configureCompletionToken = null;
+                    configureCompletionJson = null;
+                }
+            }
             active = false;
             boundWorker = null;
             boundWorkerPid = 0;
+            if (notify) reportRequestError(generation, sessionId, "worker_died",
+                    "Motion worker Binder died; latest configuration is no longer acknowledged");
         }
 
         @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
@@ -932,21 +947,32 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (Binder.getCallingUid() != 2000) throw new SecurityException("motion callback sender denied");
             if (!isCurrentCallback(this)) throw new SecurityException("unregistered Motion callback capability");
             data.enforceInterface(MotionDetectorProtocol.CALLBACK_DESCRIPTOR);
-            if (code == MotionDetectorProtocol.CB_CONFIGURED) {
+            if (code == MotionDetectorProtocol.CB_CONFIGURED || code == MotionDetectorProtocol.CB_CONFIGURE_ERROR) {
                 int protocol = data.readInt();
                 int build = data.readInt();
                 int workerPid = data.readInt();
                 String requestToken = data.readString();
                 String id = data.readString();
                 String requestedConfig = data.readString();
+                int retained = data.readInt();
+                String stage = code == MotionDetectorProtocol.CB_CONFIGURE_ERROR ? data.readString() : null;
+                String detail = code == MotionDetectorProtocol.CB_CONFIGURE_ERROR ? data.readString() : null;
                 if (protocol != MotionDetectorProtocol.VERSION || build != BuildConfig.VERSION_CODE
                         || !matchesWorker(workerPid)
                         || !MotionDetectorProtocol.validSession(requestToken)
-                        || !MotionDetectorProtocol.validSession(id)
+                        || !validConfiguredSession(id, requestedConfig, retained)
                         || requestedConfig == null || requestedConfig.length() > 8192
                         || data.dataAvail() != 0)
                     throw new SecurityException("invalid configured-session callback");
-                queueConfiguredSession(requestToken, id, requestedConfig, workerPid);
+                if (code == MotionDetectorProtocol.CB_CONFIGURE_ERROR) {
+                    if (isPendingConfigure(generation, requestToken, requestedConfig)) {
+                        synchronized (lock) {
+                            if (matchesPendingConfigureLocked(generation, requestToken, requestedConfig))
+                                configureFailed = true;
+                        }
+                        reportRequestError(generation, id, stage, detail);
+                    }
+                } else queueConfiguredSession(requestToken, id, requestedConfig, workerPid, retained == 1);
                 return true;
             }
             String id = data.readString();
@@ -987,7 +1013,11 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
                     break;
                 }
                 case MotionDetectorProtocol.CB_ERROR:
-                    reportError(id, data.readString(), data.readString());
+                    synchronized (lock) {
+                        if (awaitingConfigureCompletion && generation == configureCompletionGeneration)
+                            configureFailed = true;
+                    }
+                    reportRequestError(generation, id, data.readString(), data.readString());
                     data.readLong();
                     break;
                 case MotionDetectorProtocol.CB_SCREEN:

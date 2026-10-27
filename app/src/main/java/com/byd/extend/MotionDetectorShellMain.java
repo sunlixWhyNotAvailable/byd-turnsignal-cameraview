@@ -124,6 +124,18 @@ public final class MotionDetectorShellMain {
     private MotionSessionConfigStore.Snapshot pendingConfig;
     private IBinder pendingConfigureCallback;
     private String pendingConfigureToken;
+    private ModeCompletion modeCompletion;
+
+    private static final class ModeCompletion {
+        final IBinder callback;
+        final String token, json, session;
+        ModeCompletion(IBinder callback, String token, String json, String session) {
+            this.callback = callback;
+            this.token = token;
+            this.json = json;
+            this.session = session;
+        }
+    }
     private MotionShellMediaContext mediaContext;
     private MotionMediaLibrary mediaLibrary;
     private MotionMediaIndexBridge mediaBridge;
@@ -176,7 +188,7 @@ public final class MotionDetectorShellMain {
     private boolean warningScreenFinishIssued;
     private boolean warningAwaitingClosed;
     private boolean warningBlackFallback;
-    private boolean warningPowerOnClose;
+    private boolean warningDirectClose;
     private boolean warningCloseSent;
     private boolean warningWakeTokenOwned;
     private String deliberatelyDetachedProducerReason = "";
@@ -501,7 +513,7 @@ public final class MotionDetectorShellMain {
             if ("user_takeover".equals(screenState) || "user_dismissed_no_sleep".equals(screenState)) {
                 if (eligible) sessionRuntime.blockWarningRetry();
                 warningWindowFailure = screenState + (detail.isEmpty() ? "" : ": " + detail);
-                if (warning && !warningPowerOnClose && !warningAwaitingClosed)
+                if (warning && !warningDirectClose && !warningAwaitingClosed)
                     enterWarningBlackFallback(active, warningWindowFailure, false);
                 endOwnedWake(active);
                 return;
@@ -856,16 +868,24 @@ public final class MotionDetectorShellMain {
                 MotionShellMediaContext.OWNER_PACKAGE, 0);
         if (installedUid != appUid) throw new SecurityException("installed app UID changed");
         MotionSessionConfigStore.Snapshot next = configStore.write(configJson);
+        modeCompletion = null; // A newer desired snapshot supersedes the previous acknowledgement.
         if (next == null) {
             pendingConfig = null;
             pendingConfigureCallback = null;
             pendingConfigureToken = null;
             pendingAppCallback = null;
-            clearRemoteViewLeases();
-            stopChargeTelemetry();
-            if (sessionId != null) stopOnControl(sessionId, "settings_disabled");
             config = null;
             eligible = false;
+            if (sessionId != null)
+                modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, null);
+            clearRemoteViewLeases();
+            stopChargeTelemetry();
+            if (sessionId != null) {
+                if (teardownPending) continuePendingTeardown();
+                else stopOnControl(sessionId, "settings_disabled");
+                if (sessionId != null)
+                    return new ConfigureResult(null, MotionDetectorProtocol.CONFIG_PENDING);
+            }
             return new ConfigureResult(null, MotionDetectorProtocol.CONFIG_APPLIED);
         }
         if (next.sessionId.equals(sessionId) && !shuttingDown && !sessionRuntime.suspended()) {
@@ -881,11 +901,29 @@ public final class MotionDetectorShellMain {
             if (!workerBinding && !cameraHostPending && (workerBound || activeWithoutHost))
                 attachPendingUiOnControl(next.sessionId);
             if (config != null && next.config.onlyMotionModesDifferFrom(config)) {
+                modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, next.sessionId);
                 applyModeOnlyConfig(next);
+                if (teardownPending || !sameSession(next.sessionId) || shuttingDown || sessionRuntime.suspended())
+                    throw new IllegalStateException("Motion session stopped during mode update: " + lastError);
+                if (disabledResourcesPending()) {
+                    return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_PENDING);
+                }
+                modeCompletion = null;
                 return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_MODE_ONLY);
             }
-            if (config != null && next.config.toJson().equals(config.toJson()))
+            if (config != null && next.config.toJson().equals(config.toJson())) {
+                if (disabledResourcesPending()) {
+                    modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, next.sessionId);
+                    if (!config.warningEnabled && warning) closeWarningForStop(sessionId);
+                    if (!config.recordingEnabled) {
+                        stopRecording("recording_disabled");
+                        if (!eligible) detachAndCloseReader(false);
+                    }
+                    completeModeChange();
+                    return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_PENDING);
+                }
                 return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_RETAINED);
+            }
             return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_APPLIED);
         }
         boolean applied = startConfiguredSession(next, configureCallback, requestToken);
@@ -905,16 +943,43 @@ public final class MotionDetectorShellMain {
         policy.configure(config.recordingSensitivity);
         applyEligibilityChange(id, change);
         if (!sameSession(id)) return;
-        if (previous.warningEnabled && !config.warningEnabled && warning && change != MotionSessionRuntime.Change.DISARMED)
-            finishWarning(id, false);
-        if (previous.recordingEnabled && !config.recordingEnabled && eligible
-                && recorder != null && change != MotionSessionRuntime.Change.DISARMED)
+        if (!config.warningEnabled && warning) closeWarningForStop(id);
+        if (!config.recordingEnabled) {
             stopRecording("recording_disabled");
+            if (!eligible) detachAndCloseReader(false);
+        }
         if (!previous.recordingEnabled && config.recordingEnabled && eligible) startRecording(id);
         if (!previous.motionEnabled() && config.motionEnabled() && !prepared
                 && !cameraChargeState.isBlocked() && !chargeStartupPending
                 && !control.post(() -> prepareSession(id)))
             throw new IllegalStateException("Motion control thread refused detector preparation");
+        updateCameraDemand();
+    }
+
+    private boolean disabledResourcesPending() {
+        return config == null ? sessionId != null || teardownPending
+                : !config.warningEnabled && warning
+                || !config.recordingEnabled && (recorder != null || composer != null
+                        || recordingAttached || recordingDetachPending)
+                || !config.motionEnabled() && (attached || readerAttachPending || readerDetachPending);
+    }
+
+    private void completeModeChange() {
+        ModeCompletion completion = modeCompletion;
+        if (completion == null) return;
+        if (completion.session != null && !sameSession(completion.session)) {
+            modeCompletion = null;
+            sendConfigResult(completion.callback, completion.token, completion.session,
+                    completion.json, false, "configure_session_stopped",
+                    "Session ended before the mode update completed: " + teardownReason + "; " + lastError);
+            return;
+        }
+        if (teardownPending || disabledResourcesPending()) return;
+        modeCompletion = null;
+        logEvent("motion_config_completed", completion.session, "disabled", config == null,
+                "retained_viewing", completion.session != null);
+        sendConfigured(completion.callback, completion.token, completion.session,
+                completion.json, completion.session != null);
     }
 
     private boolean startChargeTelemetry(MotionConfig next, String id, long generation) {
@@ -1582,7 +1647,7 @@ public final class MotionDetectorShellMain {
         warningScreenFinishIssued = false;
         warningAwaitingClosed = false;
         warningBlackFallback = false;
-        warningPowerOnClose = false;
+        warningDirectClose = false;
         warningCloseSent = false;
         warningWakeTokenOwned = false;
         warningWindowFailure = "";
@@ -2340,7 +2405,8 @@ public final class MotionDetectorShellMain {
         if (decision.level != MotionEventPolicy.LEVEL_NONE) {
             sendDetection(sessionId, decision.level, decision.elapsedMs, raw,
                     nativeState, frameNumber, frameTimeNs, decision.warningUntilMs);
-            if (recorder != null) recorder.onDetection(decision.level, decision.elapsedMs);
+            if (recorder != null && config != null && config.recordingEnabled && !teardownPending)
+                recorder.onDetection(decision.level, decision.elapsedMs);
             if (warningVisible && !warningClosing) scheduleWarningDeadline();
             if (config != null && config.warningEnabled && !warning)
                 requestWarningWake(sessionId);
@@ -2649,7 +2715,7 @@ public final class MotionDetectorShellMain {
         warningScreenFinishIssued = false;
         warningAwaitingClosed = false;
         warningBlackFallback = false;
-        warningPowerOnClose = false;
+        warningDirectClose = false;
         warningCloseSent = false;
         warningWakeTokenOwned = false;
         int generation = ++warningWindowGeneration;
@@ -2746,7 +2812,7 @@ public final class MotionDetectorShellMain {
         if (!warning) return 1;
         control.removeCallbacks(warningWindowTimeout);
         control.removeCallbacks(warningTimeout);
-        if (warningPowerOnClose) {
+        if (warningDirectClose) {
             closeWarningForPowerOn(id);
             return 1;
         }
@@ -2777,7 +2843,7 @@ public final class MotionDetectorShellMain {
     }
 
     private void requestWarningSleepPreparation(String id) {
-        if (!warning || warningPowerOnClose || warningBlackFallback || warningSleepAttempted) return;
+        if (!warning || warningDirectClose || warningBlackFallback || warningSleepAttempted) return;
         warningClosing = true;
         warningPreparingSleep = true;
         warningRestoreAllowed = true;
@@ -2789,7 +2855,7 @@ public final class MotionDetectorShellMain {
     }
 
     private void onWarningPrepared(String id) {
-        if (!warning || !warningPreparingSleep || warningPowerOnClose || warningBlackFallback) return;
+        if (!warning || !warningPreparingSleep || warningDirectClose || warningBlackFallback) return;
         control.removeCallbacks(warningCloseTimeout);
         warningPreparingSleep = false;
         boolean canSleep = warningRestoreAllowed && warningWindowDrawn && eligible
@@ -2808,7 +2874,7 @@ public final class MotionDetectorShellMain {
 
     private void enterWarningBlackFallback(String id, String reason, boolean stopScreen) {
         if (!sameSession(id) || !warning) return;
-        if (warningPowerOnClose) {
+        if (warningDirectClose) {
             sendWarningWindowClose(id);
             return;
         }
@@ -2835,7 +2901,7 @@ public final class MotionDetectorShellMain {
 
     private void closeWarningAfterBlackRestore(String id, int generation) {
         if (!sameSession(id) || generation != warningWindowGeneration || !warning
-                || !warningSleepAttempted || warningPowerOnClose) return;
+                || !warningSleepAttempted || warningDirectClose) return;
         warningClosing = true;
         warningAwaitingClosed = true;
         warningPreparingSleep = false;
@@ -2844,8 +2910,12 @@ public final class MotionDetectorShellMain {
     }
 
     private void closeWarningForPowerOn(String id) {
+        closeWarningForStop(id);
+    }
+
+    private void closeWarningForStop(String id) {
         if (!sameSession(id) || !warning) return;
-        warningPowerOnClose = true;
+        warningDirectClose = true;
         warningClosing = true;
         warningPreparingSleep = false;
         warningAwaitingClosed = true;
@@ -2891,7 +2961,7 @@ public final class MotionDetectorShellMain {
         warningPreparingSleep = false;
         warningAwaitingClosed = false;
         warningBlackFallback = false;
-        warningPowerOnClose = false;
+        warningDirectClose = false;
         warningCloseSent = false;
         warningSleepAttempted = false;
         warningScreenFinishIssued = false;
@@ -2900,7 +2970,7 @@ public final class MotionDetectorShellMain {
         sendStatus(id, cancelled ? "warning_user_dismissed" : closed ? "warning_window_closed" : "warning_window_unavailable",
                 "Activity closed=" + closed + "; cancelled=" + cancelled);
         if (teardownPending) continuePendingTeardown();
-        else holdCpu(false);
+        else { completeModeChange(); holdCpu(false); }
     }
 
     private void finishWarningAfterPolicy() {
@@ -2931,7 +3001,7 @@ public final class MotionDetectorShellMain {
         }
         if (warningAwaitingClosed) {
             sendError(sessionId, "warning_window_close", "CLOSED not received within 2 seconds; warning remains active");
-            if (!warningPowerOnClose && warningWindowCommands != null)
+            if (!warningDirectClose && warningWindowCommands != null)
                 warningWindowCommands.send(MotionDetectorProtocol.WINDOW_BLACK_FALLBACK, Bundle.EMPTY);
             if (teardownPending) sendStatus(sessionId, "teardown_wait_warning_close", "retaining Activity command channel until actual CLOSED acknowledgement");
         }
@@ -2951,7 +3021,7 @@ public final class MotionDetectorShellMain {
                 if (commands == null) throw new IllegalStateException("window close channel missing");
                 warningWindowCommands = commands;
                 sendStatus(id, "warning_window_ready", "matching runtime window supplied close/deadline channel");
-                if (warningPowerOnClose || warningCloseSent) sendWarningWindowClose(id);
+                if (warningDirectClose || warningCloseSent) sendWarningWindowClose(id);
                 else if (warningBlackFallback) commands.send(MotionDetectorProtocol.WINDOW_BLACK_FALLBACK, Bundle.EMPTY);
                 else if (warningPreparingSleep) commands.send(MotionDetectorProtocol.WINDOW_PREPARE_SLEEP, Bundle.EMPTY);
             } else if (code == MotionDetectorProtocol.WINDOW_DRAWN && !warningClosing) {
@@ -2974,7 +3044,7 @@ public final class MotionDetectorShellMain {
                 control.postDelayed(warningCloseTimeout, MotionDetectorProtocol.WINDOW_CLOSE_TIMEOUT_MS);
             } else if (code == MotionDetectorProtocol.WINDOW_CLOSED) {
                 boolean cancelled = data == null || data.getBoolean(MotionDetectorProtocol.WINDOW_CANCELLED, true);
-                finalizeWarningWindow(id, true, cancelled || !warningPowerOnClose && !warningSleepAttempted);
+                finalizeWarningWindow(id, true, cancelled || !warningDirectClose && !warningSleepAttempted);
             }
         } catch (Throwable error) {
             if (!currentWindow) {
@@ -3409,6 +3479,7 @@ public final class MotionDetectorShellMain {
                 else detachAndCloseReader(false);
             }
             updateCameraDemand();
+            completeModeChange();
             if (!teardownPending) holdCpu(false);
             return;
         }
@@ -3461,6 +3532,10 @@ public final class MotionDetectorShellMain {
     }
 
     private boolean stopRecording(String reason, boolean surfacesDrained) {
+        if (recorder != null) {
+            recordingStopRequested = true;
+            recorder.requestStop(reason);
+        }
         control.removeCallbacks(recordingTailFinished);
         recordingGeneration++;
         String id = sessionId;
@@ -3539,10 +3614,6 @@ public final class MotionDetectorShellMain {
             try {
                 // A self-ended encoder must keep its Surface until camera and GL owners release it.
                 oldRecorder.releaseInputSurface();
-                if (!recordingStopRequested) {
-                    recordingStopRequested = true;
-                    oldRecorder.stop(reason);
-                }
                 if (oldRecorder.isBuffering()) {
                     if (sameSession(id)) sendStatus(id, "recording_teardown_pending",
                             "encoder drain is still active; shared media provider retained");
@@ -3561,6 +3632,7 @@ public final class MotionDetectorShellMain {
             }
         }
         if (!eligible && !warning) holdCpu(false);
+        completeModeChange();
         return !recordingAttached && composer == null && recorder == null;
     }
 
@@ -3626,6 +3698,13 @@ public final class MotionDetectorShellMain {
         teardownCallback = callback;
         teardownFinalState = finalState;
         state = "stopping";
+        eligible = false;
+        policy.stop(SystemClock.elapsedRealtime());
+        screen.setEligible(id, false);
+        if (recorder != null) {
+            recordingStopRequested = true;
+            recorder.requestStop(reason);
+        }
         continuePendingTeardown();
     }
 
@@ -3637,17 +3716,14 @@ public final class MotionDetectorShellMain {
             return;
         }
         if (warning) {
-            if (sessionRuntime.power() == 1) closeWarningForPowerOn(id);
+            if (config == null || !config.warningEnabled) closeWarningForStop(id);
+            else if (sessionRuntime.power() == 1) closeWarningForPowerOn(id);
             else enterWarningBlackFallback(id, "Motion teardown is waiting for the active warning window", true);
-            if (warning) {
-                state = "teardown_wait_warning_close";
-                sendStatus(id, state, "warning Activity remains available for manual or PowerON close until CLOSED is confirmed");
-                return;
-            }
         }
+        if (!teardownPending || !sameSession(id)) return;
         control.removeCallbacks(armCheck);
         control.removeCallbacks(firstInferenceTimeout);
-        control.removeCallbacks(warningWindowTimeout);
+        if (!warning) control.removeCallbacks(warningWindowTimeout);
         control.removeCallbacks(warningTimeout);
         control.removeCallbacks(recordingTailFinished);
         eligible = false;
@@ -3712,6 +3788,11 @@ public final class MotionDetectorShellMain {
             state = "teardown_pending";
             return;
         }
+        if (warning) {
+            state = "teardown_wait_warning_close";
+            sendStatus(id, state, "camera resources released; waiting for actual warning CLOSED acknowledgement");
+            return;
+        }
         control.removeCallbacks(warningCloseTimeout);
         warningWindowGeneration++;
         warningWindowCommands = null;
@@ -3727,7 +3808,7 @@ public final class MotionDetectorShellMain {
         warningScreenFinishIssued = false;
         warningAwaitingClosed = false;
         warningBlackFallback = false;
-        warningPowerOnClose = false;
+        warningDirectClose = false;
         warningCloseSent = false;
         warningWakeTokenOwned = false;
         prepared = false;
@@ -3752,6 +3833,7 @@ public final class MotionDetectorShellMain {
         cameraHostPending = false;
         cameraHostReadyDuringBinding = false;
         sessionId = null;
+        completeModeChange();
         state = finishedState;
         ManualCheck teardownCheck = manualCheck;
         if (teardownCheck != null && teardownCheck.id.equals(id)
@@ -3855,6 +3937,7 @@ public final class MotionDetectorShellMain {
                             state = "prepared";
                             sendStatus(id, state, "shared Surface detach was confirmed");
                         }
+                        completeModeChange();
                     });
             return false;
         }
@@ -4083,8 +4166,19 @@ public final class MotionDetectorShellMain {
 
     private void sendConfigured(IBinder target, String requestToken,
             MotionSessionConfigStore.Snapshot snapshot) {
+        if (snapshot == null) return;
+        sendConfigured(target, requestToken, snapshot.sessionId, snapshot.config.toJson(), false);
+    }
+
+    private void sendConfigured(IBinder target, String requestToken, String id,
+            String json, boolean retainViewing) {
+        sendConfigResult(target, requestToken, id, json, retainViewing, null, null);
+    }
+
+    private void sendConfigResult(IBinder target, String requestToken, String id,
+            String json, boolean retainViewing, String stage, String detail) {
         if (target == null || !target.isBinderAlive()
-                || !MotionDetectorProtocol.validSession(requestToken) || snapshot == null) return;
+                || !MotionDetectorProtocol.validSession(requestToken)) return;
         Parcel data = Parcel.obtain();
         try {
             data.writeInterfaceToken(MotionDetectorProtocol.CALLBACK_DESCRIPTOR);
@@ -4092,10 +4186,16 @@ public final class MotionDetectorShellMain {
             data.writeInt(BuildConfig.VERSION_CODE);
             data.writeInt(Process.myPid());
             data.writeString(requestToken);
-            data.writeString(snapshot.sessionId);
-            data.writeString(snapshot.config.toJson());
-            target.transact(MotionDetectorProtocol.CB_CONFIGURED, data, null, IBinder.FLAG_ONEWAY);
-        } catch (RemoteException ignored) { }
+            data.writeString(id == null ? "" : id);
+            data.writeString(json);
+            data.writeInt(retainViewing ? 1 : 0);
+            if (stage != null) { data.writeString(stage); data.writeString(detail); }
+            target.transact(stage == null ? MotionDetectorProtocol.CB_CONFIGURED
+                    : MotionDetectorProtocol.CB_CONFIGURE_ERROR, data, null, IBinder.FLAG_ONEWAY);
+        } catch (RemoteException failure) {
+            logEvent("motion_config_callback_failed", id, "stage", stage == null ? "configured" : stage,
+                    "error", summary(failure));
+        }
         finally { data.recycle(); }
     }
 
@@ -4140,6 +4240,9 @@ public final class MotionDetectorShellMain {
     }
 
     private void sendError(String id, String stage, String detail) {
+        ModeCompletion completion = modeCompletion;
+        if (completion != null) sendConfigResult(completion.callback, completion.token,
+                completion.session, completion.json, completion.session != null, stage, detail);
         sendError(appCallback, id, stage, detail);
     }
 

@@ -1570,7 +1570,7 @@ public final class CameraHelperService extends Service {
         CameraHelperMain.DiscoveryResult discoveryResult = helper.discoverCameraWithResult();
         if (motionRuntime == null)
             motionRuntime = new MotionRuntime(this, cameraRuntime, this::acceptHelperLine);
-        else motionRuntime.refresh();
+        else motionRuntime.requestPublish();
         com.byd.extend.remote.CameraViewingController.get(this).runtimeStarted();
         helper.startGuardRuntime();
         helper.configureAvas();

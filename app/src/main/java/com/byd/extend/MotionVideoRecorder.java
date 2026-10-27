@@ -340,14 +340,20 @@ public final class MotionVideoRecorder implements AutoCloseable {
         finishState.requestResume();
     }
 
+    /** Stops accepting events immediately; Surface release and codec drain complete asynchronously. */
+    public synchronized void requestStop(String reason) {
+        if (!buffering) return;
+        if (!videoFailed && !stopRequested) stopReason = reason == null ? "stopped" : reason;
+        stopRequested = true;
+        audioRunning = false;
+    }
+
     /** Stops gracefully, finalizing and publishing any complete muxed segments. */
     public void stop(String reason) {
         Thread worker;
         synchronized (this) {
             if (!buffering) return;
-            if (!videoFailed) stopReason = reason == null ? "stopped" : reason;
-            stopRequested = true;
-            audioRunning = false;
+            requestStop(reason);
             AudioRecord recorder = audioRecord;
             if (recorder != null) {
                 try { recorder.stop(); } catch (RuntimeException ignored) { }

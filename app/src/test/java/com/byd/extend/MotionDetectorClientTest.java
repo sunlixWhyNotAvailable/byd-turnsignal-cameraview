@@ -6,6 +6,24 @@ import static org.junit.Assert.assertFalse;
 import org.junit.Test;
 
 public class MotionDetectorClientTest {
+    @Test public void disabledCompletionRequiresEmptySessionAndCannotRetainViewing() throws Exception {
+        String disabled = MotionConfig.parse("{}").toJson();
+        assertTrue(MotionDetectorClient.validConfiguredSession("", disabled, 0));
+        assertFalse(MotionDetectorClient.validConfiguredSession("", disabled, 1));
+        assertFalse(MotionDetectorClient.validConfiguredSession("session", disabled, 0));
+        assertFalse(MotionDetectorClient.validConfiguredSession(null, disabled, 0));
+        assertFalse(MotionDetectorClient.validConfiguredSession("", "{", 0));
+        assertFalse(MotionDetectorClient.validConfiguredSession("", disabled, 2));
+    }
+
+    @Test public void enabledCompletionStillRequiresAnAuthenticatedSession() throws Exception {
+        String enabled = MotionConfig.parse("{\"warning\":true}").toJson();
+        String session = java.util.UUID.randomUUID().toString().replace("-", "");
+        assertFalse(MotionDetectorClient.validConfiguredSession("", enabled, 0));
+        assertFalse(MotionDetectorClient.validConfiguredSession("invalid/session", enabled, 0));
+        assertTrue(MotionDetectorClient.validConfiguredSession(session, enabled, 0));
+        assertTrue(MotionDetectorClient.validConfiguredSession(session, enabled, 1));
+    }
     @Test public void replacementRejectsProcessGroupPids() {
         assertThrows(IllegalArgumentException.class,
                 () -> MotionDetectorClient.stopObsoleteWorkerCommand(0));

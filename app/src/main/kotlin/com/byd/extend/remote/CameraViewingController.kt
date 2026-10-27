@@ -30,6 +30,7 @@ data class CameraViewingState(val config: CameraViewingConfig, val phase: String
 
 /** UI/draft facade; providers and camera lifetimes belong to the independent shell process. */
 class CameraViewingController private constructor(private val context: Context) {
+    private var configDeliveryGeneration = 0L
     private val preferences = context.getSharedPreferences("camera_viewing", Context.MODE_PRIVATE)
     private val displaySettings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val displayObserver = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -144,12 +145,7 @@ class CameraViewingController private constructor(private val context: Context) 
         if (enabled != null) MotionRuntime.setRemoteViewingEnabled(context, enabled)
         refresh()
         main.post(onSaved)
-        if (enabled == true) {
-            accept(ensureClient().request("configure", presentationPayload().put("enabled", true)))
-            client?.let { prepareBackend(it) }
-        }
-        else if (enabled == false && preferences.getBoolean("helper_provisioned", false))
-            accept(ensureClient(false).request("configure", presentationPayload().put("enabled", false)))
+        if (enabled != null) deliverEnabled(++configDeliveryGeneration)
         if (authorize) {
             helperRecoveryAvailable = true
             val payload = profilePayload(method)
@@ -179,6 +175,22 @@ class CameraViewingController private constructor(private val context: Context) 
     private fun profilePayload(method: String) = JSONObject().put("name", draftName(method))
         .put("password", secret(method, "password")).put("token", secret(method, "token"))
         .put("public", method == "tailscale" && publicMode())
+
+    private fun deliverEnabled(generation: Long, attempt: Int = 0) {
+        if (generation != configDeliveryGeneration) return
+        val desired = CameraChargeSettings.isRemoteViewingEnabled(context)
+        if (!desired && !preferences.getBoolean("helper_provisioned", false)) return
+        try {
+            val connected = ensureClient(desired)
+            accept(connected.request("configure", presentationPayload().put("enabled", desired)))
+            if (desired) prepareBackend(connected)
+        } catch (failure: Exception) {
+            if (attempt < 2) main.postDelayed({ execute("config_retry") {
+                deliverEnabled(generation, attempt + 1)
+            } }, if (attempt == 0) 1_000L else 3_000L)
+            throw failure
+        }
+    }
 
     private fun ensureClient(restoreEnabled: Boolean = CameraChargeSettings.isRemoteViewingEnabled(context)): CameraViewingShellClient {
         client?.let {
@@ -287,7 +299,7 @@ class CameraViewingController private constructor(private val context: Context) 
         runtimeActive = true
         helperRecoveryAvailable = true
         initialAttachRecoveryPending = CameraChargeSettings.isRemoteViewingEnabled(context)
-        if (initialAttachRecoveryPending) prepareBackend(ensureClient())
+        deliverEnabled(++configDeliveryGeneration)
     }
     fun runtimeStopped() = execute("runtime_stopped") {
         runtimeActive = false; initialAttachRecoveryPending = false
@@ -295,6 +307,7 @@ class CameraViewingController private constructor(private val context: Context) 
     }
     fun explicitShutdown() = explicitShutdown(Runnable {})
     fun explicitShutdown(onComplete: Runnable) = execute("shutdown") {
+        configDeliveryGeneration++
         runtimeActive = false
         initialAttachRecoveryPending = false
         try { (client ?: if (preferences.getBoolean("helper_provisioned", false)) ensureClient(false) else null)
@@ -302,8 +315,10 @@ class CameraViewingController private constructor(private val context: Context) 
         finally { client?.close(); client = null; main.post(onComplete) }
     }
     fun workerReconfigured() = execute("worker_reconfigured") {
+        if (!runtimeActive) return@execute
         val connected = client
-        if (connected != null) prepareBackend(connected, true)
+        if (!CameraChargeSettings.isRemoteViewingEnabled(context)) deliverEnabled(++configDeliveryGeneration)
+        else if (connected != null) prepareBackend(connected, true)
         else if (initialAttachRecoveryPending && runtimeActive && CameraChargeSettings.isRemoteViewingEnabled(context)) {
             // Existing camera/Motion readiness events give a failed initial attach one recovery attempt.
             initialAttachRecoveryPending = false

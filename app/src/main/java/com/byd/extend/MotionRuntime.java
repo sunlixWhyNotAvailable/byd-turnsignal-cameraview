@@ -11,7 +11,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -22,8 +23,13 @@ public final class MotionRuntime implements AutoCloseable {
     private static final String TAG = "BydMotion";
     private static final Object APPLY_STATUS_LOCK = new Object();
     private static final Object ACTIVE_LOCK = new Object();
-    private static final ExecutorService BACKGROUND_PUBLISHER = Executors.newSingleThreadExecutor(r ->
+    private static final ScheduledExecutorService BACKGROUND_PUBLISHER = Executors.newSingleThreadScheduledExecutor(r ->
             new Thread(r, "motion-config-publisher"));
+    private static final MotionConfigRetry CONFIG_RETRY = new MotionConfigRetry();
+    private static ScheduledFuture<?> pendingRetry;
+    private static long retryGeneration;
+    private static MotionDetectorClient backgroundClient;
+    private static String backgroundInFlight;
     private static String applyConfig;
     private static String applyState;
     private static String applyError;
@@ -62,6 +68,14 @@ public final class MotionRuntime implements AutoCloseable {
         recordingPrefs.registerOnSharedPreferenceChangeListener(changed);
         chargePrefs.registerOnSharedPreferenceChangeListener(changed);
         synchronized (ACTIVE_LOCK) { active = this; }
+        synchronized (APPLY_STATUS_LOCK) { cancelRetry(); CONFIG_RETRY.recovered(); }
+        BACKGROUND_PUBLISHER.execute(() -> {
+            if (backgroundClient != null) {
+                backgroundClient.close();
+                backgroundClient = null;
+                backgroundInFlight = null;
+            }
+        });
         refresh();
     }
 
@@ -123,7 +137,8 @@ public final class MotionRuntime implements AutoCloseable {
         scheduleRefresh(false);
     }
 
-    private void requestPublish() {
+    void requestPublish() {
+        synchronized (APPLY_STATUS_LOCK) { cancelRetry(); CONFIG_RETRY.recovered(); }
         scheduleRefresh(true);
     }
 
@@ -171,7 +186,7 @@ public final class MotionRuntime implements AutoCloseable {
     }
 
     private void refreshOnObserver(boolean explicitPublish) {
-        if (closed) return;
+        if (closed || GuardRecovery.isUserShutdownActive(context)) return;
         MotionConfig next = MotionConfig.read(context);
         String nextJson = next.toJson();
         boolean modified = !nextJson.equals(submittedConfig);
@@ -220,14 +235,19 @@ public final class MotionRuntime implements AutoCloseable {
                 }
 
                 @Override public void onError(String stage, String detail, long elapsedMs) {
-                    clearInFlight(requestedConfig);
                     String reference = diagnosticReference(detail);
-                    markApplyErrorIfCurrent(context, requestedConfig, "runtime_apply_failed", reference);
+                    boolean deliveryFailure = requestedConfig.equals(inFlightConfig)
+                            || "worker_died".equals(stage);
+                    if (deliveryFailure) {
+                        clearInFlight(requestedConfig);
+                        markApplyErrorIfCurrent(context, requestedConfig, "runtime_apply_failed", reference);
+                    }
                     Log.e(TAG, "motion_config_apply_failed stage=" + stage
                             + (reference == null ? "" : " diagnostic_ref=" + reference)
                             + " detail=" + detail);
                     event("motion_error", "stage", stage, "error", detail,
-                            "automatic_retry", false, "elapsed_ms", elapsedMs);
+                            "automatic_retry", deliveryFailure && retryDelivery(context, requestedConfig),
+                            "elapsed_ms", elapsedMs);
                 }
 
                 @Override public void onScreenState(String state, String detail, long elapsedMs) {
@@ -245,6 +265,29 @@ public final class MotionRuntime implements AutoCloseable {
             Log.e(TAG, "motion_config_submit_failed config=" + requestedConfig, failure);
             event("motion_config_submit_failed", "config", requestedConfig,
                     "error", failure.toString());
+            retryDelivery(context, requestedConfig);
+        }
+    }
+
+    private static boolean retryDelivery(Context context, String desired) {
+        if (!isCurrentDesired(context, desired) || GuardRecovery.isUserShutdownActive(context)) return false;
+        synchronized (APPLY_STATUS_LOCK) {
+            if (!desired.equals(applyConfig) || pendingRetry != null) return false;
+            long delay = CONFIG_RETRY.afterFailure(desired);
+            if (delay < 0) return false;
+            long generation = retryGeneration;
+            pendingRetry = BACKGROUND_PUBLISHER.schedule(() -> {
+                synchronized (APPLY_STATUS_LOCK) {
+                    if (generation != retryGeneration || !desired.equals(applyConfig)
+                            || "applied".equals(applyState)) return;
+                    pendingRetry = null;
+                }
+                if (GuardRecovery.isUserShutdownActive(context)) return;
+                MotionRuntime runtime = active;
+                if (runtime != null) runtime.scheduleRefresh(true);
+                else publishWithoutObserver(context);
+            }, delay, TimeUnit.MILLISECONDS);
+            return true;
         }
     }
 
@@ -259,6 +302,7 @@ public final class MotionRuntime implements AutoCloseable {
     }
 
     private static void publishWithoutObserver(Context context) {
+        if (GuardRecovery.isUserShutdownActive(context)) return;
         MotionRuntime existing = active;
         if (existing != null) {
             existing.requestPublish();
@@ -274,12 +318,15 @@ public final class MotionRuntime implements AutoCloseable {
             }
             // A worker may outlive this app process. Send an explicit disabled snapshot without
             // starting an Activity or retaining an observer in the app.
-            MotionDetectorClient oneShot = new MotionDetectorClient(context);
+            if (requestedConfig.equals(backgroundInFlight)) return;
+            if (backgroundClient == null) backgroundClient = new MotionDetectorClient(context);
+            MotionDetectorClient oneShot = backgroundClient;
+            backgroundInFlight = requestedConfig;
             try {
                 oneShot.configure(requestedConfig, new MotionDetectorClient.Listener() {
                     @Override public void onConfigured(boolean retainViewing) {
                         markAppliedIfCurrent(context, requestedConfig);
-                        oneShot.close();
+                        finishBackgroundPublish(oneShot, requestedConfig);
                     }
 
                     @Override public void onError(String stage, String detail, long elapsedMs) {
@@ -288,21 +335,37 @@ public final class MotionRuntime implements AutoCloseable {
                         Log.e(TAG, "motion_one_shot_apply_failed stage=" + stage
                                 + (reference == null ? "" : " diagnostic_ref=" + reference)
                                 + " detail=" + detail);
-                        oneShot.close();
+                        BACKGROUND_PUBLISHER.execute(() -> {
+                            if (backgroundClient == oneShot && requestedConfig.equals(backgroundInFlight))
+                                backgroundInFlight = null;
+                        });
+                        retryDelivery(context, requestedConfig);
                     }
                 });
             } catch (Throwable failure) {
-                oneShot.close();
+                finishBackgroundPublish(oneShot, requestedConfig);
                 throw failure;
             }
         } catch (Throwable failure) {
             markApplyErrorIfCurrent(context, requestedConfig, "runtime_apply_failed", null);
             Log.e(TAG, "motion_background_publish_failed config=" + requestedConfig, failure);
+            retryDelivery(context, requestedConfig);
         }
+    }
+
+    private static void finishBackgroundPublish(MotionDetectorClient client, String desired) {
+        BACKGROUND_PUBLISHER.execute(() -> {
+            if (backgroundClient != client
+                    || backgroundInFlight != null && !desired.equals(backgroundInFlight)) return;
+            backgroundInFlight = null;
+            backgroundClient = null;
+            client.close();
+        });
     }
 
     private static boolean markPendingForSchedule(String desired) {
         synchronized (APPLY_STATUS_LOCK) {
+            selectRetryConfig(desired);
             if (!desired.equals(applyConfig)) {
                 applyConfig = desired;
                 applyState = "pending";
@@ -319,6 +382,7 @@ public final class MotionRuntime implements AutoCloseable {
 
     private static void markPending(String desired) {
         synchronized (APPLY_STATUS_LOCK) {
+            selectRetryConfig(desired);
             if (!desired.equals(applyConfig) || !"pending".equals(applyState)) {
                 applyConfig = desired;
                 applyState = "pending";
@@ -333,6 +397,8 @@ public final class MotionRuntime implements AutoCloseable {
         synchronized (APPLY_STATUS_LOCK) {
             if (!desired.equals(applyConfig)) return;
             applyState = "applied";
+            cancelRetry();
+            CONFIG_RETRY.recovered();
             applyError = null;
             applyErrorRef = null;
         }
@@ -352,6 +418,16 @@ public final class MotionRuntime implements AutoCloseable {
     private static boolean isCurrentDesired(Context context, String desired) {
         try { return desired.equals(MotionConfig.read(applicationContext(context)).toJson()); }
         catch (Throwable failure) { return false; }
+    }
+
+    private static void selectRetryConfig(String desired) {
+        if (CONFIG_RETRY.select(desired)) cancelRetry();
+    }
+
+    private static void cancelRetry() {
+        retryGeneration++;
+        if (pendingRetry != null) pendingRetry.cancel(false);
+        pendingRetry = null;
     }
 
     private static void clearInFlight(String desired) {
@@ -410,6 +486,9 @@ public final class MotionRuntime implements AutoCloseable {
     }
 
     @Override public void close() {
+        if (GuardRecovery.isUserShutdownActive(context)) {
+            synchronized (APPLY_STATUS_LOCK) { cancelRetry(); }
+        }
         screenPrefs.unregisterOnSharedPreferenceChangeListener(changed);
         recordingPrefs.unregisterOnSharedPreferenceChangeListener(changed);
         chargePrefs.unregisterOnSharedPreferenceChangeListener(changed);

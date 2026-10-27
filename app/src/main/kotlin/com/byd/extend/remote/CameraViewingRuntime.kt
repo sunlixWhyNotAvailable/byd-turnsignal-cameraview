@@ -465,7 +465,8 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
 
     private fun current(run: Run, id: String): Boolean {
         val active = viewer ?: return false
-        return active.run === run && active.session == id && lease.owns(active)
+        return enabled && active.run === run && active.profile.run === run &&
+            active.profile.generation == run.generation && active.session == id && lease.owns(active)
     }
 
     @Synchronized private fun readModes(): JSONObject = try {
@@ -839,17 +840,29 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         p.generation++
         if (run != null) {
             val active = viewer
-            if (active?.run === run || sourceRun === run) {
-                closeVideo()
-                if (active?.run === run) { lease.release(active); viewer = null }
+            var failure: Throwable? = null
+            fun cleanup(action: () -> Unit) {
+                try { action() } catch (error: Throwable) {
+                    if (failure == null) failure = error
+                    else if (failure !== error) failure!!.addSuppressed(error)
+                }
             }
-            run.publisher?.stopAccess()
-            run.server?.close(); run.server = null
-            run.provider?.close(); run.provider = null
+            // Revoke access before any camera operation can block or fail.
+            if (active?.run === run) {
+                cleanup { active.selection.closeStream() }
+                lease.release(active); viewer = null
+            }
+            cleanup { run.publisher?.stopAccess() }
+            cleanup { run.server?.close(); run.server = null }
+            cleanup { run.provider?.close(); run.provider = null }
+            if (active?.run === run || sourceRun === run) cleanup { closeVideo() }
             // Retain ownership on failed detach; admitting another camera owner would hide a leak.
-            closeEncoder(run)
-            p.run = null
-            run.publisher?.close()
+            if (sourceRun !== run) {
+                cleanup { closeEncoder(run) }
+                cleanup { run.publisher?.close() }
+            }
+            if (failure == null) p.run = null
+            failure?.let { throw it }
         }
         p.phase = "idle"; p.url = null; p.login = null; p.authorizationRequest = 0
     }
