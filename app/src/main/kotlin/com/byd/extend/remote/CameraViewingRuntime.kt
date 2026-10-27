@@ -424,6 +424,8 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                             .put("streamId", streamId)
                             .put("playlist", if (playable) window!!.playlistPath else "")
                             .put("selectionSegment", selectionSegment)
+                            .put("selectionProgramTimeMs", if (selectionSegment >= 0 && active != null)
+                                window!!.selectionProgramTimeMs(active.selection.revision()) else -1L)
                             .put("selectionFailed", active != null && active.selection.revision() == run.failedSelectionRevision)
                             .put("modes", modes)
                     }

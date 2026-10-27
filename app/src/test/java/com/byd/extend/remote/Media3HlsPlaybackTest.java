@@ -66,7 +66,17 @@ public class Media3HlsPlaybackTest {
             CameraHlsEncoder.Companion.finishMuxer(muxer, track, lastPts, previousPts);
             assertEquals(2, window.selectionSegment(7));
             assertEquals(-1, window.selectionSegment(6));
+            assertEquals(-1, window.selectionProgramTimeMs(6));
             String playlist = window.playlist(window.selectionSegment(7));
+            long selectionTimeMs = window.selectionProgramTimeMs(7);
+            assertTrue(playlist.contains("#EXT-X-PROGRAM-DATE-TIME:"
+                    + java.time.Instant.ofEpochMilli(selectionTimeMs) + "\n"));
+            // The stable reader and a newly joined reader share the same encoded time boundary.
+            String fullPlaylist = window.playlist();
+            String firstDate = fullPlaylist.split("#EXT-X-PROGRAM-DATE-TIME:")[1].split("\n")[0];
+            assertEquals(2000, selectionTimeMs - java.time.Instant.parse(firstDate).toEpochMilli());
+            assertTrue(fullPlaylist.contains("#EXT-X-PROGRAM-DATE-TIME:"
+                    + java.time.Instant.ofEpochMilli(selectionTimeMs) + "\n"));
             assertTrue(playlist.contains("#EXT-X-TARGETDURATION:1\n"));
             assertTrue(playlist.contains("#EXT-X-MEDIA-SEQUENCE:2\n"));
             assertFalse(playlist.contains("segment/1.m4s"));
@@ -85,8 +95,10 @@ public class Media3HlsPlaybackTest {
             assertEquals(20, result.getInt("nb_read_frames"));
             window.keepSelection(8); // Archive never makes the previous layout's fragments valid again.
             assertEquals(2, window.selectionSegment(8));
+            assertEquals(selectionTimeMs, window.selectionProgramTimeMs(8));
             window.clear();
             assertEquals(-1, window.selectionSegment(8));
+            assertEquals(-1, window.selectionProgramTimeMs(8));
         } finally {
             try (java.util.stream.Stream<Path> files = Files.walk(dir)) {
                 for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toArray(Path[]::new)) Files.delete(file);

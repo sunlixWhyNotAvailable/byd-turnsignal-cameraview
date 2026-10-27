@@ -28,6 +28,9 @@ public final class FragmentedVideoWindow extends OutputStream {
     private IOException writeFailure;
     private final Runnable onReady;
     private final String streamId;
+    // Stable mapping from the encoded timeline to both native HLS and hls.js presentation time.
+    // WebKit rounds getStartDate to seconds; an integral origin keeps the mapping aligned.
+    private final long programOriginMs = System.currentTimeMillis() / 1000 * 1000;
     public FragmentedVideoWindow() { this(UUID.randomUUID().toString(), () -> {}); }
     public FragmentedVideoWindow(Runnable onReady) { this(UUID.randomUUID().toString(), onReady); }
     public FragmentedVideoWindow(String streamId, Runnable onReady) {
@@ -62,13 +65,21 @@ public final class FragmentedVideoWindow extends OutputStream {
         return -1;
     }
 
+    public synchronized long selectionProgramTimeMs(long revision) {
+        long id = selectionSegment(revision);
+        for (Segment segment : segments) if (segment.id == id) return segment.programTimeMs;
+        return -1;
+    }
+
     private static final class Segment {
         final long id;
         final double duration;
         final byte[] bytes;
         final long firstSampleUs;
-        Segment(long id, double duration, byte[] bytes, long firstSampleUs) {
+        final long programTimeMs;
+        Segment(long id, double duration, byte[] bytes, long firstSampleUs, long programTimeMs) {
             this.id = id; this.duration = duration; this.bytes = bytes; this.firstSampleUs = firstSampleUs;
+            this.programTimeMs = programTimeMs;
         }
     }
 
@@ -135,7 +146,8 @@ public final class FragmentedVideoWindow extends OutputStream {
                 if (!sampleTimesUs.isEmpty() && sampleTimesUs.size() < normalized.samples)
                     throw new IOException("Missing encoded timestamps for video fragment");
                 for (int i = 0; i < normalized.samples && !sampleTimesUs.isEmpty(); i++) sampleTimesUs.removeFirst();
-                segments.add(new Segment(sequence++, normalized.seconds, output.toByteArray(), firstSampleUs));
+                segments.add(new Segment(sequence++, normalized.seconds, output.toByteArray(), firstSampleUs,
+                        programOriginMs + Math.round(normalized.startSeconds * 1000)));
                 while (segments.size() > MAX_SEGMENTS) segments.removeFirst();
                 fragment = null;
                 if (sequence == 1) onReady.run();
@@ -164,7 +176,8 @@ public final class FragmentedVideoWindow extends OutputStream {
                 .append((int) Math.ceil(max)).append("\n#EXT-X-MEDIA-SEQUENCE:")
                 .append(Math.max(fromSequence, segments.getFirst().id)).append("\n#EXT-X-MAP:URI=\"init.mp4\"\n");
         for (Segment segment : segments) if (segment.id >= fromSequence) out.append(String.format(Locale.ROOT,
-                "#EXTINF:%.6f,\nsegment/%d.m4s\n", segment.duration, segment.id));
+                "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%.6f,\nsegment/%d.m4s\n",
+                java.time.Instant.ofEpochMilli(segment.programTimeMs), segment.duration, segment.id));
         return out.toString();
     }
 

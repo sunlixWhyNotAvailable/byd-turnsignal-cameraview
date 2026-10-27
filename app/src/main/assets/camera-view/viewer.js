@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 8;
+  const WEB_REVISION = 9;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -131,6 +131,7 @@
   const state = {
     authenticated: false, replaced: false, mode: 'live', status: 'ready', view: 'composition', wantsLive: false,
     interiorCameras: 0, selectionPending: false, selectionFailed: false, selectionSegment: null,
+    selectionProgramTimeMs: null,
     liveFailed: false, firstLiveFrame: false, archiveView: 'composition', recordings: [], archiveLoaded: false,
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
     playerError: false, playerFrameReported: false, missingCharge: 0, poll: null, mainKey: '', seeking: false,
@@ -772,6 +773,7 @@
     state.selectionPending = true;
     state.selectionFailed = false;
     state.selectionSegment = null;
+    state.selectionProgramTimeMs = null;
     if (newLive) {
       state.firstLiveFrame = false;
       state.localFirstFrame = false;
@@ -1083,6 +1085,10 @@
 
   function disposeLivePlayer(player) {
     if (!player) return;
+    player.frameToken = (player.frameToken || 0) + 1;
+    if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
+      player.video.cancelVideoFrameCallback(player.frameCallback);
+    if (player.frameListener) player.video.removeEventListener('timeupdate', player.frameListener);
     player.hls?.destroy();
     player.video.onerror = null;
     player.video.pause();
@@ -1129,20 +1135,59 @@
     }
   }
 
+  function watchLiveSelection(player) {
+    const revision = player.revision;
+    const targetMs = state.selectionProgramTimeMs;
+    if (!Number.isFinite(targetMs)) return;
+    const token = player.frameToken = (player.frameToken || 0) + 1;
+    if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
+      player.video.cancelVideoFrameCallback(player.frameCallback);
+    if (player.frameListener) player.video.removeEventListener('timeupdate', player.frameListener);
+    const video = player.video;
+    const valid = () => livePlayer === player && player.frameToken === token &&
+      revision === state.liveSelectionRevision && state.mode === 'live' && state.wantsLive &&
+      state.authenticated && !state.replaced;
+    const displayed = (mediaTime) => {
+      if (!valid()) return true;
+      // Program dates map the actual presented frame to the selected encoded fragment.
+      // A playing event or an advancing composite alone does not prove the new layout was shown.
+      const date = player.hls?.playingDate;
+      const start = !player.hls && typeof video.getStartDate === 'function' ? video.getStartDate() : null;
+      const frameMs = date instanceof Date ? date.getTime() + (mediaTime - video.currentTime) * 1000
+        : start instanceof Date ? start.getTime() + mediaTime * 1000 : NaN;
+      if (!Number.isFinite(frameMs) || frameMs < targetMs || video.paused || video.readyState < 2) return false;
+      selectionDisplayed(player, revision);
+      return true;
+    };
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      const frame = (_, metadata) => {
+        if (!displayed(metadata.mediaTime)) player.frameCallback = video.requestVideoFrameCallback(frame);
+      };
+      player.frameCallback = video.requestVideoFrameCallback(frame);
+    } else {
+      const progress = () => {
+        if (displayed(video.currentTime)) video.removeEventListener('timeupdate', progress);
+      };
+      player.frameListener = progress;
+      video.addEventListener('timeupdate', progress);
+    }
+  }
+
   async function startLiveMedia() {
     const stage = document.querySelector('#live-panel .live-stage');
-    if (!stage || state.liveFailed || state.selectionFailed || !state.livePlaylist || !Number.isSafeInteger(state.selectionSegment)) return;
+    if (!stage || state.liveFailed || state.selectionFailed || !state.livePlaylist ||
+      !Number.isSafeInteger(state.selectionSegment) || !Number.isFinite(state.selectionProgramTimeMs)) return;
     const revision = state.liveSelectionRevision;
     const stream = state.liveStreamId;
     const view = state.view;
-    if (livePlayer?.stream === stream && livePlayer.view === view) {
+    if (livePlayer?.stream === stream) {
       if (livePlayer.revision !== revision) {
         livePlayer.revision = revision;
+        livePlayer.view = view;
         followLiveEdge(livePlayer);
         const player = livePlayer;
         if (player.video.paused) player.video.play().catch((error) => player.fail(error));
-        presentedFrame(player.video, () => livePlayer === player && player.revision === revision,
-          () => selectionDisplayed(player, revision));
+        watchLiveSelection(player);
       }
       return;
     }
@@ -1179,13 +1224,12 @@
       livePlayer = player; pendingLivePlayer = null;
       video.classList.remove('staging-video');
       video.id = 'live-video';
-      presentedFrame(video, current, () => selectionDisplayed(player, player.revision));
+      watchLiveSelection(player);
     }, { once: true });
-    // Only this reader starts at the new layout's first complete keyframe fragment.
-    // The cameras, GPU output, encoder and HLS stream identity remain unchanged.
-    const playlist = '/media/' + stream + '/live-' + state.selectionSegment + '.m3u8';
+    // Keep the same reader and full-resolution server layout through every camera selection.
+    const playlist = state.livePlaylist;
     try {
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      if (video.canPlayType('application/vnd.apple.mpegurl') && typeof video.getStartDate === 'function') {
         video.src = playlist;
         await video.play();
         return;
@@ -1213,6 +1257,7 @@
     state.selectionPending = false;
     state.selectionFailed = false;
     state.selectionSegment = null;
+    state.selectionProgramTimeMs = null;
   }
 
   function handleUnauthorized(failure) {
@@ -1303,6 +1348,8 @@
         state.livePlaylist = playlist;
         state.selectionSegment = Number.isSafeInteger(data.selectionSegment) && data.selectionSegment >= 0
           ? data.selectionSegment : null;
+        state.selectionProgramTimeMs = Number.isSafeInteger(data.selectionProgramTimeMs) && data.selectionProgramTimeMs >= 0
+          ? data.selectionProgramTimeMs : null;
         if (!livePlayer || livePlayer.stream !== streamId || livePlayer.view !== state.view)
           state.selectionPending = true;
         state.selectionFailed = data.selectionFailed === true;

@@ -46,6 +46,10 @@ final class MotionGpuComposer implements AutoCloseable {
     private final CameraFramePump[] pumps = new CameraFramePump[6];
     private final int[] slots = {-1, -1, -1, -1, -1, -1};
     private final boolean[] seen = new boolean[6];
+    private final RemoteCameraFrameProgress[] progress = new RemoteCameraFrameProgress[6];
+    private final boolean[] stale = new boolean[6];
+    private final boolean[] drawn = new boolean[6];
+    private long lastProgressLogNs;
     private final boolean[] unavailable = new boolean[6];
     private final float[][] transforms = new float[6][16];
     private final int[] names = new int[6];
@@ -157,6 +161,8 @@ final class MotionGpuComposer implements AutoCloseable {
         this.errors = errors == null ? ignored -> { } : errors;
         this.channelFailure = channelFailure == null ? (channel, reference) -> { } : channelFailure;
         this.sessionId = sessionId;
+        for (int channel = 0; channel < progress.length; channel++)
+            progress[channel] = new RemoteCameraFrameProgress();
         this.shellWorker = true;
         this.sharedContext = sharedContext;
         this.glVersion = glVersion;
@@ -174,6 +180,7 @@ final class MotionGpuComposer implements AutoCloseable {
         if (direction < 0 || direction >= 4) return false;
         synchronized (lifecycleLock) {
             if (closed) return false;
+            if (remoteLive) progress[direction].offered(System.nanoTime());
             incoming[direction][slot] = pump;
             boolean posted = handler.post(() -> {
                 try { receive(direction, pump, slot); }
@@ -196,6 +203,7 @@ final class MotionGpuComposer implements AutoCloseable {
         int direction = channel + 4;
         synchronized (lifecycleLock) {
             if (closed) return false;
+            progress[direction].offered(System.nanoTime());
             incoming[direction][slot] = pump;
             boolean posted = handler.post(() -> {
                 try { receive(direction, pump, slot); }
@@ -250,6 +258,8 @@ final class MotionGpuComposer implements AutoCloseable {
         names[direction] = pump.frames[slot].texture;
         android.opengl.Matrix.setIdentityM(transforms[direction], 0);
         seen[direction] = true;
+        if (remoteLive) progress[direction].received(pump, pump.frames[slot].acquiredNs,
+                pump.frames[slot].producerNs, System.nanoTime());
         if (!firstFrameLogged[direction]) {
             firstFrameLogged[direction] = true;
             long timestampNs = pump.frames[slot].producerNs;
@@ -765,10 +775,15 @@ final class MotionGpuComposer implements AutoCloseable {
             long presentationTimeNs=SystemClock.elapsedRealtimeNanos();
             updateTimestampTexture(presentationTimeNs/1_000_000L);
             GLES20.glClearColor(0,0,0,1); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-            if (remoteLive) drawRemoteLiveChannels();
+            if (remoteLive) drawRemoteLiveChannels(System.nanoTime());
             else drawMotionRecordingChannels();
             EGLExt.eglPresentationTimeANDROID(display,window,presentationTimeNs);
             require(EGL14.eglSwapBuffers(display,window),"encoder swap");
+            if (remoteLive) {
+                for (int channel = 0; channel < drawn.length; channel++)
+                    if (drawn[channel]) progress[channel].composed();
+                reportFrameProgress(System.nanoTime());
+            }
             lastFrameMs=presentationTimeNs/1_000_000;
             if (remoteLive && !queued) {
                 queued = true;
@@ -803,22 +818,45 @@ final class MotionGpuComposer implements AutoCloseable {
         }
     }
 
-    private void drawRemoteLiveChannels() {
+    private void drawRemoteLiveChannels(long nowNs) {
         for (int channel = 0; channel < seen.length; channel++) {
+            drawn[channel] = false;
+            boolean wasStale = stale[channel];
+            stale[channel] = seen[channel] && !progress[channel].fresh(nowNs,
+                    TimeUnit.MILLISECONDS.toNanos(STARTUP_INPUT_TIMEOUT_MS));
+            if (wasStale != stale[channel] && seen[channel])
+                logDiagnostic(stale[channel] ? "input_stalled" : "input_resumed",
+                        "channel=" + directionName(channel) + " " + progress[channel].snapshot(nowNs));
             RemoteCameraLiveLayout.Rect bounds = RemoteCameraLiveLayout.channelBounds(
                     liveView, allowedInteriorMask, channel, width, height);
             if (bounds == null) continue;
-            if (seen[channel]) {
+            if (seen[channel] && !stale[channel]) {
                 int sourceWidth = channel < 4 ? 1920 : interiorWidths[channel - 4];
                 int sourceHeight = channel < 4 ? 1300 : interiorHeights[channel - 4];
                 RemoteCameraLiveLayout.Rect fitted = RemoteCameraLiveLayout.fit(
                         bounds, sourceWidth, sourceHeight);
-                if (fitted != null) drawCamera(channel, fitted.left, fitted.top,
-                        fitted.width(), fitted.height(), channel < 4);
+                if (fitted != null) {
+                    drawCamera(channel, fitted.left, fitted.top,
+                            fitted.width(), fitted.height(), channel < 4);
+                    drawn[channel] = true;
+                }
             } else {
-                drawPlaceholder(channel, bounds, unavailable[channel] || startupMissingReported);
+                drawPlaceholder(channel, bounds, stale[channel] || unavailable[channel] || startupMissingReported);
             }
         }
+    }
+
+    private void reportFrameProgress(long nowNs) {
+        if (lastProgressLogNs != 0 && nowNs - lastProgressLogNs < TimeUnit.SECONDS.toNanos(10)) return;
+        lastProgressLogNs = nowNs;
+        StringBuilder detail = new StringBuilder("view=").append(liveView);
+        for (int channel = 0; channel < seen.length; channel++) {
+            if (!seen[channel] && !channelExpected(channel)) continue;
+            detail.append(" [channel=").append(directionName(channel))
+                    .append(" seen=").append(seen[channel]).append(" stale=").append(stale[channel])
+                    .append(" ").append(progress[channel].snapshot(nowNs)).append(']');
+        }
+        logDiagnostic("frame_progress", detail.toString());
     }
 
     private void drawCamera(int direction, int left, int top, int drawWidth, int drawHeight,
@@ -1040,7 +1078,17 @@ final class MotionGpuComposer implements AutoCloseable {
                 + (details == null || details.isEmpty() ? "" : " " + details);
         Log.i(TAG, message);
         if (shellWorker) {
-            System.out.println("MOTION " + message);
+            if (remoteLive) {
+                // Structured ordinary helper log through its existing stdout sink; no extra file/fsync.
+                try {
+                    DiagnosticLogPolicy.print(new org.json.JSONObject()
+                            .put("kind", "remote_camera_" + event).put("source", "camera_composer")
+                            .put("session", sessionId).put("pid", Process.myPid())
+                            .put("elapsed_ms", SystemClock.elapsedRealtime()).put("details", details).toString());
+                } catch (org.json.JSONException failure) {
+                    Log.w(TAG, "Could not encode camera diagnostic: " + message, failure);
+                }
+            } else System.out.println("MOTION " + message);
             System.out.flush();
         }
     }
