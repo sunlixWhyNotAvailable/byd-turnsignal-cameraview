@@ -355,6 +355,9 @@ final class TurnSignalController {
             }
             return handled == 1;
         } catch (Throwable error) {
+            emit("music_media_key_binder_error", "operation", "dispatch_music_media_key",
+                    "raw_key", rawKeyCode, "action", action,
+                    "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
             clearHelper(value);
             healthy = false;
             primaryError = "music_key_binder_error: " + summary(error);

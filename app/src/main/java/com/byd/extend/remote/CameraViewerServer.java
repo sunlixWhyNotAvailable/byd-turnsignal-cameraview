@@ -8,7 +8,6 @@ import android.system.Os;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -37,6 +36,8 @@ import org.json.JSONObject;
 public final class CameraViewerServer implements AutoCloseable {
     private static final int MAX_HEADERS = 16_384;
     private static final int MAX_BODY = 4_096;
+    private static final long REQUEST_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
+    private static final int READ_IDLE_TIMEOUT_MS = 5_000;
     private static final int VIDEO_CHUNK = 64 * 1024;
 
     public interface Stream {
@@ -72,7 +73,6 @@ public final class CameraViewerServer implements AutoCloseable {
     private final Map<Socket, String> socketSessions = new HashMap<>();
     private volatile boolean closed;
     private volatile String[] sessionRevision = {null, "unknown"};
-    private long lastAuthenticationNs = System.nanoTime() - 1_000_000_000L;
 
     public CameraViewerServer(String password, String privateProxyProof, Stream stream) throws IOException {
         this.access = new ViewerAccess(password, privateProxyProof);
@@ -148,7 +148,6 @@ public final class CameraViewerServer implements AutoCloseable {
         String operation = "request";
         try (socket) {
             try {
-                socket.setSoTimeout(5_000);
                 Request request = readRequest(socket);
                 reply.head = request.method.equals("HEAD");
                 operation = operationName(request.path);
@@ -190,46 +189,75 @@ public final class CameraViewerServer implements AutoCloseable {
         }
     }
 
-    private Request readRequest(Socket socket) throws IOException {
-        BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
-        ByteArrayOutputStream headers = new ByteArrayOutputStream();
-        int matched = 0;
-        while (matched < 4 && headers.size() < MAX_HEADERS) {
-            int value = input.read();
-            if (value < 0) throw new EOFException("HTTP headers ended before terminator");
-            headers.write(value);
-            matched = value == (matched % 2 == 0 ? '\r' : '\n') ? matched + 1 : 0;
-        }
-        if (matched != 4) throw new HttpFailure(431, "headers_too_large", null);
+    static Request readRequest(Socket socket) throws IOException {
+        long started = System.nanoTime();
+        String stage = "headers";
+        try {
+            BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
+            ByteArrayOutputStream headers = new ByteArrayOutputStream();
+            int matched = 0;
+            while (matched < 4 && headers.size() < MAX_HEADERS) {
+                setReadTimeout(socket, started);
+                int value = input.read();
+                if (value < 0) throw new EOFException("HTTP headers ended before terminator");
+                headers.write(value);
+                matched = value == (matched % 2 == 0 ? '\r' : '\n') ? matched + 1 : 0;
+            }
+            if (matched != 4) throw new HttpFailure(431, "headers_too_large", null);
 
-        String[] lines = headers.toString(StandardCharsets.US_ASCII.name()).split("\r\n");
-        String[] first = lines[0].split(" ");
-        if (first.length != 3) throw new IOException("Malformed HTTP request line");
-        String method = first[0];
-        if (!(method.equals("GET") || method.equals("HEAD") || method.equals("POST")))
-            throw new HttpFailure(405, "method_not_allowed", "Allow: GET, HEAD, POST");
-        String path = first[1];
-        if (!path.startsWith("/") || path.contains("?") || path.contains("%")
-                || path.contains("..") || path.indexOf('\\') >= 0 || path.indexOf('#') >= 0)
-            throw new IOException("Invalid viewer path");
+            String[] lines = headers.toString(StandardCharsets.US_ASCII.name()).split("\r\n");
+            String[] first = lines[0].split(" ");
+            if (first.length != 3) throw new IOException("Malformed HTTP request line");
+            String method = first[0];
+            if (!(method.equals("GET") || method.equals("HEAD") || method.equals("POST")))
+                throw new HttpFailure(405, "method_not_allowed", "Allow: GET, HEAD, POST");
+            String path = first[1];
+            if (!path.startsWith("/") || path.contains("?") || path.contains("%")
+                    || path.contains("..") || path.indexOf('\\') >= 0 || path.indexOf('#') >= 0)
+                throw new IOException("Invalid viewer path");
 
-        Map<String, String> fields = new HashMap<>();
-        for (int i = 1; i < lines.length; i++) {
-            int colon = lines[i].indexOf(':');
-            if (colon <= 0) throw new IOException("Malformed HTTP field");
-            String key = lines[i].substring(0, colon).toLowerCase(Locale.ROOT);
-            if (fields.put(key, lines[i].substring(colon + 1).trim()) != null)
-                throw new IOException("Duplicate HTTP field");
+            Map<String, String> fields = new HashMap<>();
+            for (int i = 1; i < lines.length; i++) {
+                int colon = lines[i].indexOf(':');
+                if (colon <= 0) throw new IOException("Malformed HTTP field");
+                String key = lines[i].substring(0, colon).toLowerCase(Locale.ROOT);
+                if (fields.put(key, lines[i].substring(colon + 1).trim()) != null)
+                    throw new IOException("Duplicate HTTP field");
+            }
+            if (fields.containsKey("transfer-encoding")) throw new IOException("Chunked requests unsupported");
+            int length;
+            try { length = Integer.parseInt(fields.getOrDefault("content-length", "0")); }
+            catch (NumberFormatException malformed) { throw new IOException("Invalid request length", malformed); }
+            if (length < 0) throw new IOException("Invalid request length");
+            if (length > MAX_BODY) throw new HttpFailure(413, "request_too_large", null);
+            stage = "body";
+            byte[] body = new byte[length];
+            int received = 0;
+            while (received < length) {
+                setReadTimeout(socket, started);
+                int count = input.read(body, received, length - received);
+                if (count < 0) throw new EOFException("HTTP body ended before Content-Length");
+                received += count;
+            }
+            if (System.nanoTime() - started >= REQUEST_TIMEOUT_NS)
+                throw new SocketTimeoutException("HTTP request deadline exceeded");
+            // The intake deadline must not leak into admission or media transfer.
+            socket.setSoTimeout(READ_IDLE_TIMEOUT_MS);
+            return new Request(method, path, fields, body, cookie(fields.get("cookie")));
+        } catch (SocketTimeoutException timeout) {
+            throw new HttpFailure(408, "request_timeout", null,
+                    new IOException("HTTP request read timed out: stage=" + stage
+                            + " elapsed_ms=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
+                            timeout));
         }
-        if (fields.containsKey("transfer-encoding")) throw new IOException("Chunked requests unsupported");
-        int length;
-        try { length = Integer.parseInt(fields.getOrDefault("content-length", "0")); }
-        catch (NumberFormatException malformed) { throw new IOException("Invalid request length", malformed); }
-        if (length < 0) throw new IOException("Invalid request length");
-        if (length > MAX_BODY) throw new HttpFailure(413, "request_too_large", null);
-        byte[] body = new byte[length];
-        new DataInputStream(input).readFully(body);
-        return new Request(method, path, fields, body, cookie(fields.get("cookie")));
+    }
+
+    private static void setReadTimeout(Socket socket, long started) throws IOException {
+        long remaining = REQUEST_TIMEOUT_NS - (System.nanoTime() - started);
+        if (remaining <= 0) throw new SocketTimeoutException("HTTP request deadline exceeded");
+        int timeout = (int) Math.min(READ_IDLE_TIMEOUT_MS,
+                Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining)));
+        if (socket.getSoTimeout() != timeout) socket.setSoTimeout(timeout);
     }
 
     private void route(Socket socket, Request request, Reply reply) throws Exception {
@@ -470,13 +498,9 @@ public final class CameraViewerServer implements AutoCloseable {
     }
 
     private void admit(Socket socket, Request request, Reply reply) throws IOException {
-        long attempt = System.nanoTime();
-        synchronized (this) {
-            if (attempt - lastAuthenticationNs < 1_000_000_000L) {
-                json(socket, reply, 429, "retry", null);
-                return;
-            }
-            lastAuthenticationNs = attempt;
+        if (!access.beginAuthentication(request.session, now())) {
+            json(socket, reply, 429, "retry", null);
+            return;
         }
 
         JSONObject credentials = bodyObject(request.body);
@@ -909,6 +933,7 @@ public final class CameraViewerServer implements AutoCloseable {
             case 403: return "Forbidden";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
+            case 408: return "Request Timeout";
             case 413: return "Payload Too Large";
             case 416: return "Range Not Satisfiable";
             case 429: return "Too Many Requests";
@@ -949,7 +974,7 @@ public final class CameraViewerServer implements AutoCloseable {
         }
     }
 
-    private static final class Request {
+    static final class Request {
         final String method;
         final String path;
         final Map<String, String> fields;
@@ -967,7 +992,7 @@ public final class CameraViewerServer implements AutoCloseable {
 
     private static final class Reply { boolean started; boolean head; }
 
-    private static final class HttpFailure extends IOException {
+    static final class HttpFailure extends IOException {
         final int status;
         final String bodyStatus;
         final String extraHeaders;

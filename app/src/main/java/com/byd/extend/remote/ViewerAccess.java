@@ -16,6 +16,7 @@ public final class ViewerAccess {
     private String session;
     private String pendingSession;
     private long lastSeen;
+    private Long lastAuthentication;
     private boolean revoked;
     private final java.util.LinkedHashSet<String> replaced = new java.util.LinkedHashSet<>();
 
@@ -32,6 +33,14 @@ public final class ViewerAccess {
         if (privateProxyProof != null) return equal(privateProxyProof, proxyProof);
         return password != null && password.length() <= 1024
                 && MessageDigest.isEqual(passwordHash, hash(password));
+    }
+
+    /** A current viewer can retry admission without renewing its lease or bypassing credentials. */
+    synchronized boolean beginAuthentication(String candidate, long now) {
+        if (!revoked && equal(session, candidate) && now - lastSeen < IDLE_MS) return true;
+        if (lastAuthentication != null && now - lastAuthentication < 1_000L) return false;
+        lastAuthentication = now;
+        return true;
     }
 
     /** Prepare an authenticated candidate without revoking the current viewer. */

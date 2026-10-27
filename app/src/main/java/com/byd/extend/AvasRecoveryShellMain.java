@@ -64,8 +64,14 @@ public final class AvasRecoveryShellMain {
         Looper.prepareMainLooper();
         Context context = TurnSignalShellMain.shellContext(
                 TurnSignalShellMain.systemContext());
-        if (!installedIdentityMatches(context, appUid, apkIdentity)) {
-            throw new SecurityException("Application identity mismatch");
+        try {
+            if (!installedIdentityMatches(context, appUid, apkIdentity)) {
+                throw new SecurityException("Application identity mismatch");
+            }
+        } catch (Exception failure) {
+            journal("installation_identity_check_failed", "phase", "startup",
+                    "operation", "getPackageInfoAsUser", "error", diagnostic(failure));
+            throw failure;
         }
         ContinuousLogcatRecorder logcat = new ContinuousLogcatRecorder(
                 "pid=" + Process.myPid() + " apk_identity=" + apkIdentity,
@@ -130,7 +136,8 @@ public final class AvasRecoveryShellMain {
                 }
                 cycleReady = true;
             } catch (Throwable failure) {
-                journal("recovery_request_failed", "error", summary(failure));
+                journal("recovery_request_failed", "operation", "recovery_identity_gate",
+                        "error", diagnostic(failure));
             }
             if (cycleReady) {
                 // Run the independent radio check before any app recovery request.
@@ -540,22 +547,22 @@ public final class AvasRecoveryShellMain {
     }
 
     private static boolean installedIdentityMatches(
-            Context context, int expectedUid, String expectedIdentity) {
-        try {
-            PackageManager packages = context.getPackageManager();
-            Method getPackageInfoAsUser = PackageManager.class.getMethod(
-                    "getPackageInfoAsUser", String.class, int.class, int.class);
-            PackageInfo installed = (PackageInfo) getPackageInfoAsUser.invoke(
-                    packages, BuildConfig.APPLICATION_ID, 0,
-                    AvasRecoveryPolicy.userIdForUid(expectedUid));
-            return AvasRecoveryPolicy.installedIdentityMatches(
-                    expectedUid, expectedIdentity,
-                    installed.applicationInfo == null ? null : installed.applicationInfo.uid,
-                    installed.applicationInfo == null ? null : installed.applicationInfo.sourceDir,
-                    installed.lastUpdateTime);
-        } catch (Throwable unavailable) {
-            return false;
+            Context context, int expectedUid, String expectedIdentity) throws Exception {
+        PackageManager packages = context.getPackageManager();
+        Method getPackageInfoAsUser = PackageManager.class.getMethod(
+                "getPackageInfoAsUser", String.class, int.class, int.class);
+        PackageInfo installed = (PackageInfo) getPackageInfoAsUser.invoke(
+                packages, BuildConfig.APPLICATION_ID, 0,
+                AvasRecoveryPolicy.userIdForUid(expectedUid));
+        // An unreadable identity is not evidence that the owner package was replaced.
+        if (installed == null || installed.applicationInfo == null
+                || installed.applicationInfo.sourceDir == null
+                || installed.applicationInfo.sourceDir.isEmpty()) {
+            throw new IllegalStateException("getPackageInfoAsUser returned incomplete application identity");
         }
+        return AvasRecoveryPolicy.installedIdentityMatches(
+                expectedUid, expectedIdentity, installed.applicationInfo.uid,
+                installed.applicationInfo.sourceDir, installed.lastUpdateTime);
     }
 
     private static synchronized void journal(String kind, Object... fields) {

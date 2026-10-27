@@ -998,6 +998,11 @@ public final class CallsRuntime {
             Object result = currentCalls.invoke(proxy, device);
             return result instanceof List && ((List<?>) result).isEmpty();
         } catch (ReflectiveOperationException | RuntimeException failure) {
+            CallOperation operation = callOperation;
+            logStage("hfp_current_calls_failed", "operation=getCurrentCalls\n"
+                    + com.byd.extend.remote.CameraViewingDiagnostics.describe(failure,
+                            operation == null ? null : operation.number,
+                            currentCard == null ? null : currentCard.name));
             return false;
         }
     }

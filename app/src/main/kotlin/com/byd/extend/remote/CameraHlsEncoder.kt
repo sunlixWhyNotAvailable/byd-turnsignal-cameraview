@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A viewer owns this encoder. No files, audio, software fallback or network writes on its drain thread. */
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 internal class CameraHlsEncoder(
     streamId: String,
     private val diagnostics: (String, Long, Long) -> Unit,

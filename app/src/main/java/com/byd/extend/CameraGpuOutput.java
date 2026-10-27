@@ -49,7 +49,7 @@ final class CameraGpuOutput extends Binder {
     private int outputSlot;
     private long presentationRevision;
     private long presentationGeometry;
-    private final DeathRecipient death = this::disconnected;
+    private final DeathRecipient death = () -> connectionLost("death_recipient", "binder_died", null);
 
     CameraGpuOutput(int width, int height, CameraDewarpConfig config, long token,
             Consumer<CameraDewarpRenderer.Event> events) {
@@ -129,8 +129,9 @@ final class CameraGpuOutput extends Binder {
         try {
             data.writeInterfaceToken(DESCRIPTOR);
             writePresentation(data);
-            if (!control.transact(PRESENTATION, data, null, FLAG_ONEWAY)) disconnected();
-        } catch (RemoteException error) { disconnected(); }
+            if (!control.transact(PRESENTATION, data, null, FLAG_ONEWAY))
+                connectionLost("presentation", "transact_rejected", null);
+        } catch (RemoteException error) { connectionLost("presentation", "remote_exception", error); }
         finally { data.recycle(); }
     }
 
@@ -171,8 +172,9 @@ final class CameraGpuOutput extends Binder {
         try {
             data.writeInterfaceToken(DESCRIPTOR);
             writeMapping(data, request);
-            if (!control.transact(UPDATE, data, null, FLAG_ONEWAY)) disconnected();
-        } catch (RemoteException error) { disconnected(); }
+            if (!control.transact(UPDATE, data, null, FLAG_ONEWAY))
+                connectionLost("update", "transact_rejected", null);
+        } catch (RemoteException error) { connectionLost("update", "remote_exception", error); }
         finally { data.recycle(); }
     }
 
@@ -187,8 +189,9 @@ final class CameraGpuOutput extends Binder {
             data.writeInterfaceToken(DESCRIPTOR);
             data.writeLong(geometryRevision);
             data.writeFloatArray(geometry);
-            if (!control.transact(GEOMETRY, data, null, FLAG_ONEWAY)) disconnected();
-        } catch (RemoteException error) { disconnected(); }
+            if (!control.transact(GEOMETRY, data, null, FLAG_ONEWAY))
+                connectionLost("geometry", "transact_rejected", null);
+        } catch (RemoteException error) { connectionLost("geometry", "remote_exception", error); }
         finally { data.recycle(); }
     }
 
@@ -208,9 +211,21 @@ final class CameraGpuOutput extends Binder {
         Parcel data = Parcel.obtain();
         try {
             data.writeInterfaceToken(DESCRIPTOR);
-            if (!control.transact(RELEASE, data, null, FLAG_ONEWAY)) disconnected();
-        } catch (RemoteException error) { disconnected(); }
+            if (!control.transact(RELEASE, data, null, FLAG_ONEWAY))
+                connectionLost("release", "transact_rejected", null);
+        } catch (RemoteException error) { connectionLost("release", "remote_exception", error); }
         finally { data.recycle(); }
+    }
+
+    private synchronized void connectionLost(String operation, String reason, Throwable failure) {
+        try {
+            com.byd.extend.remote.CameraViewingDiagnostics.detail("gpu_output_failed", "shared",
+                    "operation=" + operation + " reason=" + reason + " width=" + width
+                            + " height=" + height + " mapping=" + request.token + "\n"
+                            + com.byd.extend.remote.CameraViewingDiagnostics.describe(failure));
+        } finally {
+            disconnected();
+        }
     }
 
     private synchronized void disconnected() {

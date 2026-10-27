@@ -1074,7 +1074,7 @@ final class BlindSpotOverlayController {
                 try {
                     helper.setOverlayTargetActive(pane.surface, false);
                 } catch (Throwable error) {
-                    cameraUnavailable("overlay_target_pause_" + pane.profile.wireName);
+                    cameraUnavailable("overlay_target_pause_" + pane.profile.wireName, pane, error);
                     return;
                 }
             }
@@ -1124,7 +1124,7 @@ final class BlindSpotOverlayController {
             helper.armOverlayFirstFrame(arm);
             handler.postDelayed(() -> firstFrameTimedOut(arm), FIRST_FRAME_TIMEOUT_MS);
         } catch (Throwable error) {
-            cameraUnavailable("overlay_target_resume_" + pane.profile.wireName);
+            cameraUnavailable("overlay_target_resume_" + pane.profile.wireName, pane, error);
         }
     }
 
@@ -1294,7 +1294,7 @@ final class BlindSpotOverlayController {
                 try {
                     if (pane.surface != null) helper.setOverlayTargetActive(pane.surface, false);
                 } catch (Throwable error) {
-                    cameraUnavailable("overlay_target_pause_" + pane.profile.wireName);
+                    cameraUnavailable("overlay_target_pause_" + pane.profile.wireName, pane, error);
                     return;
                 }
                 pane.targetActive = false;
@@ -1309,7 +1309,7 @@ final class BlindSpotOverlayController {
             try {
                 helper.setOverlayTargetActive(pane.surface, true);
             } catch (Exception error) {
-                cameraUnavailable("overlay_target_resume_" + pane.profile.wireName);
+                cameraUnavailable("overlay_target_resume_" + pane.profile.wireName, pane, error);
                 return;
             }
             helper.armOverlayFirstFrame(arm);
@@ -1415,6 +1415,14 @@ final class BlindSpotOverlayController {
     static int preparationDecision(int expected, int resolved, int failed) {
         if (failed > 0 || expected <= 0) return PREPARATION_RETRY;
         return resolved < expected ? PREPARATION_WAIT : PREPARATION_OPEN;
+    }
+
+    private void cameraUnavailable(String reason, PaneState pane, Throwable error) {
+        emit("camera_overlay_target_failed", "operation", reason,
+                "profile", pane.profile.wireName, "request_id", pane.requestId,
+                "generation", pane.generation, "display_id", pane.displayId,
+                "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
+        cameraUnavailable(reason);
     }
 
     private void cameraUnavailable(String reason) {
@@ -1587,7 +1595,7 @@ final class BlindSpotOverlayController {
                     emit("overlay_target_state", "camera_id", pane.profile.id,
                             "camera_profile", pane.profile.wireName, "active", true);
                 } catch (Throwable error) {
-                    cameraUnavailable("overlay_target_resume_" + pane.profile.wireName);
+                    cameraUnavailable("overlay_target_resume_" + pane.profile.wireName, pane, error);
                     return;
                 }
             }
@@ -1676,7 +1684,7 @@ final class BlindSpotOverlayController {
                 emit("overlay_target_state", "camera_id", pane.profile.id,
                         "camera_profile", pane.profile.wireName, "active", false);
             } catch (Throwable error) {
-                cameraUnavailable("overlay_target_pause_" + pane.profile.wireName);
+                cameraUnavailable("overlay_target_pause_" + pane.profile.wireName, pane, error);
                 return;
             }
         }

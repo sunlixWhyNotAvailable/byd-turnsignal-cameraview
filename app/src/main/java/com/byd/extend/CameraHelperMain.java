@@ -5531,7 +5531,11 @@ final class CameraHelperMain {
                 }
                 line = json.toString();
             } catch (Throwable error) {
-                line = "{\"kind\":\"helper_json_error\"}";
+                String detail = com.byd.extend.remote.CameraViewingDiagnostics.describe(error);
+                Log.e(TAG, "helper_json_error kind=" + kind + "\n" + detail);
+                // Only strings reach this fallback; never serialize the failing fields again.
+                line = "{\"kind\":\"helper_json_error\",\"source\":\"helper\",\"failed_kind\":"
+                        + JSONObject.quote(kind) + ",\"error\":" + JSONObject.quote(detail) + "}";
             }
             forwardLine(line);
         }

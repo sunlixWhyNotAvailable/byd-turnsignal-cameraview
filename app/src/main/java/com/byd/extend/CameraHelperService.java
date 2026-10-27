@@ -383,6 +383,9 @@ public final class CameraHelperService extends Service {
             return activeHelper.dispatchMusicMediaKey(foregroundPackage, rawKeyCode,
                     action, repeatCount, downTime, eventTime);
         } catch (RuntimeException unavailable) {
+            service.lifecycle("music_media_key_failed", "operation", "dispatch_music_media_key",
+                    "raw_key", rawKeyCode, "action", action,
+                    "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(unavailable));
             return false;
         }
     }

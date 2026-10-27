@@ -5,6 +5,49 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ViewerAccessTest {
+    @Test public void currentViewerRetriesDespiteAnonymousTrafficWithoutRenewingItsLease() {
+        ViewerAccess access = new ViewerAccess("viewer password", null);
+        assertTrue(access.beginAuthentication(null, 1_000L));
+        assertTrue(access.authenticate("viewer password", null));
+        String session = access.reserveAdmission(null);
+        assertTrue(access.commitAdmission(session, 1_000L));
+
+        assertTrue(access.beginAuthentication(null, 2_000L));
+        assertFalse(access.beginAuthentication("wrong cookie", 2_001L));
+        assertTrue(access.beginAuthentication(session, 2_001L));
+        assertFalse(access.authenticate("wrong password", null));
+        assertTrue(access.beginAuthentication(session, 2_002L));
+        assertTrue(access.authenticate("viewer password", null));
+        // The exemption neither consumes the anonymous slot nor refreshes lastSeen.
+        assertTrue(access.beginAuthentication(null, 3_000L));
+        assertTrue(access.beginAuthentication(session, 30_999L));
+        assertTrue(access.beginAuthentication(null, 31_000L));
+        assertFalse(access.beginAuthentication(session, 31_001L));
+        assertTrue(access.expire(31_001L));
+        assertFalse(access.accepts(session, 31_002L));
+    }
+
+    @Test public void replacedAndRevokedCookiesCannotBypassThrottleOrPrivateProof() {
+        ViewerAccess access = new ViewerAccess("", "proxy-proof");
+        assertTrue(access.beginAuthentication(null, 1_000L));
+        assertTrue(access.authenticate("", "proxy-proof"));
+        String first = access.reserveAdmission(null);
+        assertTrue(access.commitAdmission(first, 1_000L));
+        assertTrue(access.beginAuthentication(null, 2_000L));
+        assertTrue(access.authenticate("", "proxy-proof"));
+        String second = access.reserveAdmission(null);
+        assertTrue(access.commitAdmission(second, 2_000L));
+
+        assertFalse(access.beginAuthentication(first, 2_001L));
+        assertTrue(access.beginAuthentication(second, 2_001L));
+        assertFalse(access.authenticate("", "wrong proof"));
+        assertFalse(access.authenticate("", null));
+        assertTrue(access.authenticate("", "proxy-proof"));
+        access.revoke();
+        assertFalse(access.beginAuthentication(second, 2_002L));
+        assertFalse(access.authenticate("", "proxy-proof"));
+    }
+
     @Test public void publicAccessRequiresPasswordAndPrivateAccessRequiresProxyProof() {
         assertThrows(IllegalArgumentException.class, () -> new ViewerAccess("", null));
         ViewerAccess privateAccess = new ViewerAccess("optional password", "random-proxy-proof");
