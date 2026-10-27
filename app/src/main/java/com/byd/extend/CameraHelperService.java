@@ -470,8 +470,11 @@ public final class CameraHelperService extends Service {
         adbWasReady = snapshot.authenticated5555();
         if (newlyReady) {
             provisionAppPermissions("adb_recovery_ready");
-            postRuntime(() -> handleStartCommand(ServiceRuntimeCommand.capture(
-                    new Intent().setAction(ACTION_ADB_READY), 0, ACTION_START)));
+            postRuntime(() -> {
+                handleStartCommand(ServiceRuntimeCommand.capture(
+                        new Intent().setAction(ACTION_ADB_READY), 0, ACTION_START));
+                if (helper != null) helper.adbTransportRestored();
+            });
         }
     }
 

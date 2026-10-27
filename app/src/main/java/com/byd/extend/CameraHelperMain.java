@@ -175,6 +175,10 @@ final class CameraHelperMain {
             turnController.foregroundAdbFinished(authorized);
         }
 
+        void adbTransportRestored() {
+            turnController.adbTransportRestored();
+        }
+
         synchronized void reportRetainedCameraState() {
             emit("camera_vehicle_power_gate", "off", persistentSession.vehiclePowerOff);
             turnController.reportCameraShellState();

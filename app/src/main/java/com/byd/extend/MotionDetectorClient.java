@@ -319,15 +319,13 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
                     throw new IllegalStateException("cannot identify existing Motion worker");
                 retireObsoleteWorker(requestGeneration, candidate, identity);
             }
-            LocalAdbClient.Result launched = LocalAdbClient.executeAuthorized(context,
-                    launchCommand(context), (kind, fields) -> { });
-            if (launched.authorizationRequired || launched.superseded)
-                throw new IllegalStateException("authenticated Motion worker launch failed: " + launched.error);
-            candidate = awaitWorker(6_000L);
+            candidate = launchWorker(replaceObsolete ? "media" : "check");
             worker = candidate;
             return candidate;
         } catch (RuntimeException error) { throw error; }
-        catch (Throwable error) { throw new IllegalStateException("Motion worker unavailable", error); }
+        catch (Throwable error) {
+            throw new IllegalStateException("Motion worker unavailable: " + summary(error), error);
+        }
     }
 
     /** Persist settings in the shell worker, then attach this process as an optional UI observer. */
@@ -376,12 +374,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (!matchesCurrentApk(identity)) {
                 retireObsoleteWorker(generation, candidate, identity);
                 if (!isCurrentRequest(generation)) return;
-                LocalAdbClient.Result launched = LocalAdbClient.executeAuthorized(context,
-                        launchCommand(context),
-                        (kind, fields) -> { });
-                if (launched.authorizationRequired || launched.superseded)
-                    throw new IllegalStateException("authenticated shell launch failed: " + launched.error);
-                candidate = awaitWorker(6_000L);
+                candidate = launchWorker("configure:" + requestToken);
                 identity = readIdentity(candidate);
             }
             if (!isCurrentRequest(generation)) return;
@@ -775,6 +768,48 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         IBinder target = worker;
         if (!healthy(target)) throw new IllegalStateException("motion shell worker disconnected");
         return target;
+    }
+
+    private IBinder launchWorker(String operation) throws IOException {
+        String reference = "motion-launch-" + UUID.randomUUID();
+        java.util.function.BiConsumer<String, Object[]> diagnostics = (event, fields) -> {
+            Object[] safe = AdbRecoveryDiagnostics.transportFields(event, fields);
+            Object[] correlated = java.util.Arrays.copyOf(safe, safe.length + 4);
+            correlated[safe.length] = "request";
+            correlated[safe.length + 1] = reference;
+            correlated[safe.length + 2] = "launch_operation";
+            correlated[safe.length + 3] = operation;
+            AvasRecoveryJournal.event(context, "motion_worker_launch_transport", correlated);
+        };
+        try {
+            LocalAdbClient.Result launched = LocalAdbClient.executeAuthorized(
+                    context, launchCommand(context), diagnostics);
+            IOException launchFailure = launched.ok ? null : new IOException(
+                    "ADB launch: " + AdbRecoveryDiagnostics.safeText(launched.error)
+                            + "; exit_code=" + launched.exitCode
+                            + "; transport_unavailable=" + launched.transportUnavailable
+                            + "; command_read_timeout=" + launched.commandReadTimeout
+                            + "; output=" + AdbRecoveryDiagnostics.safeText(launched.output));
+            if (launchFailure != null && !launched.commandReadTimeout) throw launchFailure;
+            try {
+                IBinder ready = awaitWorker(6_000L);
+                AvasRecoveryJournal.event(context, "motion_worker_launch_ready",
+                        "request", reference, "operation", operation,
+                        "command_read_timeout", launched.commandReadTimeout);
+                return ready;
+            } catch (Exception readinessFailure) {
+                if (launchFailure == null) throw readinessFailure;
+                launchFailure.addSuppressed(readinessFailure);
+                throw launchFailure;
+            }
+        } catch (Exception failure) {
+            AdbRecoveryDiagnostics.failure(
+                    (event, fields) -> AvasRecoveryJournal.event(context, event, fields),
+                    "motion_worker_launch_failed", operation, failure,
+                    "request", reference, "diagnostic_ref", reference);
+            throw new IOException("Motion worker launch failed (diagnostic ref " + reference + "): "
+                    + AdbRecoveryDiagnostics.safeText(summary(failure)), failure);
+        }
     }
 
     private IBinder awaitWorker(long timeoutMs) throws Exception {

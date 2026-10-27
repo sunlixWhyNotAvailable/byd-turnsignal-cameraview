@@ -6,6 +6,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -72,6 +73,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     private volatile long discoveryGeneration;
     private AdbAuthorizationSession.RecoveryOperation operation;
     private volatile AdbRecoverySnapshot.Stage lastPrerequisite;
+    private String lastWifiDiagnostic = "";
     private final Runnable authorizationListener = () -> {
         if (closed) return;
         if (LocalAdbClient.AUTHORIZATION.pending()) {
@@ -218,6 +220,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             publish();
         }
 
+        logWifiState("recovery_check");
         AdbRecoveryPolicy.Proof proof = freshClassicProof();
         if (deferForPrerequisite()) return;
         boolean preserveReady = wasReady;
@@ -282,6 +285,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         boolean wifi = wifiConnected();
         coordinator.wifi(wifi, SystemClock.elapsedRealtime());
         publish();
+        logWifiState("wireless_prerequisite");
         if (!wifi) {
             cancelConsentRetry();
             closeDiscovery();
@@ -365,6 +369,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         AdbRecoverySnapshot ready = coordinator.snapshot();
         log.log("adb_recovery_ready", "cycle", ready.cycleId(),
                 "outcome", ready.readyOutcome());
+        logWifiState("ready");
     }
 
     private AdbRecoveryPolicy.Proof proveAfterUsbEnableTransition() {
@@ -559,7 +564,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             int readback = Settings.Global.getInt(context.getContentResolver(), key, -1);
             log.log(readback == value ? "adb_setting_verified" : "adb_setting_failed",
                     "operation", step, "key", key, "before", current,
-                    "requested", value, "readback", readback,
+                    "requested", value, "readback", readback, "write_performed", wrote,
                     "reason", readback == value ? "matched" : "readback_mismatch");
             return new SettingResult(readback == value, current, readback, wrote);
         } catch (Exception error) {
@@ -618,6 +623,56 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         }
         if (changed) log.log("adb_recovery_new_boot", "boot_count", currentBoot);
         return changed;
+    }
+
+    // Observe on existing recovery work only; these reads never decide whether TLS may start.
+    private void logWifiState(String phase) {
+        int radioState = -1;
+        int networkCount = -1;
+        java.util.List<String> transports = new java.util.ArrayList<>();
+        RuntimeException radioFailure = null, networkFailure = null;
+        try {
+            WifiManager wifi = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+            if (wifi != null) radioState = wifi.getWifiState();
+        } catch (RuntimeException failure) { radioFailure = failure; }
+        try {
+            if (connectivity != null) {
+                Network[] networks = connectivity.getAllNetworks();
+                networkCount = networks.length;
+                for (Network network : networks) {
+                    NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                    if (capabilities == null) { transports.add("unavailable"); continue; }
+                    // These transports exist on every supported Android version (API26+).
+                    String[] names = {"CELLULAR", "WIFI", "BLUETOOTH", "ETHERNET",
+                            "VPN", "WIFI_AWARE", "LOWPAN"};
+                    java.util.List<String> types = new java.util.ArrayList<>();
+                    for (int type = 0; type < names.length; type++)
+                        if (capabilities.hasTransport(type)) types.add(names[type]);
+                    transports.add(types.toString());
+                }
+            }
+        } catch (RuntimeException failure) { networkFailure = failure; }
+        java.util.Collections.sort(transports);
+        AdbRecoverySnapshot snapshot = coordinator.snapshot();
+        String signature = radioState + "|" + networkCount + "|" + transports + "|"
+                + snapshot.authenticated5555() + "|"
+                + AdbRecoveryDiagnostics.safeText(
+                        com.byd.extend.remote.CameraViewingDiagnostics.describe(radioFailure)) + "|"
+                + AdbRecoveryDiagnostics.safeText(
+                        com.byd.extend.remote.CameraViewingDiagnostics.describe(networkFailure));
+        if (signature.equals(lastWifiDiagnostic)) return;
+        lastWifiDiagnostic = signature;
+        log.log("adb_recovery_wifi_state", "phase", phase, "stage", snapshot.stage(),
+                "cycle", snapshot.cycleId(), "radio_state", radioState,
+                "network_count", networkCount, "transports", transports.toString(),
+                "network_query_complete", connectivity != null && networkFailure == null,
+                "radio_query_ok", radioState != -1 && radioFailure == null,
+                "authenticated_5555", snapshot.authenticated5555());
+        if (radioFailure != null)
+            failure("adb_wifi_state_failed", "WifiManager.getWifiState", radioFailure);
+        if (networkFailure != null)
+            failure("adb_wifi_state_failed", "diagnostic_getAllNetworks/getNetworkCapabilities",
+                    networkFailure);
     }
 
     private boolean wifiConnected() {

@@ -128,6 +128,7 @@ final class TurnSignalController {
     private volatile long pendingReverseHelperEpoch;
     private volatile boolean pendingReverseClusterExpected;
     private long lastLaunchFailureAt;
+    private boolean launchFailureWasTransport;
     private volatile String automaticAuthorizationBlockedFor = "";
     private volatile boolean automaticAuthorizationBlockReported;
     private volatile String primaryError = "helper_not_started";
@@ -1780,6 +1781,21 @@ final class TurnSignalController {
         };
     }
 
+    void adbTransportRestored() {
+        if (cameraRuntimeHost || stopped) return;
+        worker.execute(() -> {
+            if (stopped || GuardRecovery.isUserShutdownActive(context)
+                    || requestedForegroundMode() != null) return;
+            if (launchFailureWasTransport && lastLaunchFailureAt != 0) {
+                emit("helper_launch_backoff_cleared", "reason", "adb_transport_restored",
+                        "failure_age_ms", SystemClock.elapsedRealtime() - lastLaunchFailureAt);
+                lastLaunchFailureAt = 0;
+                launchFailureWasTransport = false;
+            }
+            ensureRunning(LocalAdbClient.PromptMode.NEVER, false);
+        });
+    }
+
     void foregroundAdbFinished(boolean authorized) {
         if (cameraRuntimeHost || stopped) return;
         worker.execute(() -> {
@@ -1931,7 +1947,7 @@ final class TurnSignalController {
                             "helper_pid", current.pid);
                     attach(current);
                 } else {
-                    launchFailed(error);
+                    launchFailed(error, authorization.transportUnavailable);
                 }
                 return;
             }
@@ -1957,7 +1973,8 @@ final class TurnSignalController {
             }
             if (!shouldAwaitHelperReadiness(launch)) {
                 launchFailed("helper_launch_failed: " + launch.error
-                        + (launch.output.isEmpty() ? "" : ": " + launch.output));
+                        + (launch.output.isEmpty() ? "" : ": " + launch.output),
+                        launch.transportUnavailable);
                 return;
             }
             if (launch.commandReadTimeout) {
@@ -2003,10 +2020,15 @@ final class TurnSignalController {
     }
 
     private void launchFailed(String error) {
+        launchFailed(error, false);
+    }
+
+    private void launchFailed(String error, boolean transportUnavailable) {
         healthy = false;
         clearHelper(null);
         primaryError = error;
         lastLaunchFailureAt = SystemClock.elapsedRealtime();
+        launchFailureWasTransport = transportUnavailable;
         failPendingAvas(error);
         emit("helper_launch", "ok", false, "error", error);
         emit("telemetry_ready", "ok", false, "listener_ok", false,
