@@ -11,7 +11,7 @@ import java.util.UUID;
 /** Bounded HLS window with independently addressable, timed fMP4 fragments. */
 public final class FragmentedVideoWindow extends OutputStream {
     private static final int MAX_BOX = 8 * 1024 * 1024;
-    private static final int MAX_SEGMENTS = 4;
+    private static final int MAX_SEGMENTS = 8;
     private final byte[] header = new byte[8];
     private int headerBytes, remaining;
     private String boxType;
@@ -21,6 +21,8 @@ public final class FragmentedVideoWindow extends OutputStream {
     private final HlsFragment hls = new HlsFragment();
     private byte[] initialization;
     private final ArrayDeque<Segment> segments = new ArrayDeque<>();
+    private final ArrayDeque<Long> sampleTimesUs = new ArrayDeque<>();
+    private long selectionRevision, selectionAfterUs = Long.MAX_VALUE;
     private long sequence;
     private boolean closed;
     private IOException writeFailure;
@@ -40,12 +42,33 @@ public final class FragmentedVideoWindow extends OutputStream {
     }
     public synchronized boolean isReady() { return initialization != null && !segments.isEmpty(); }
 
+    /** Encoder input timestamps, before muxing; never infer layout from HTTP acceptance. */
+    public synchronized void sample(long presentationTimeUs) { sampleTimesUs.add(presentationTimeUs); }
+
+    public synchronized void select(long revision, long afterUs) {
+        if (revision < selectionRevision) return;
+        selectionRevision = revision;
+        selectionAfterUs = afterUs;
+    }
+
+    public synchronized void keepSelection(long revision) {
+        if (revision >= selectionRevision) selectionRevision = revision;
+    }
+
+    public synchronized long selectionSegment(long revision) {
+        if (revision != selectionRevision) return -1;
+        for (Segment segment : segments)
+            if (segment.firstSampleUs >= selectionAfterUs) return segment.id;
+        return -1;
+    }
+
     private static final class Segment {
         final long id;
         final double duration;
         final byte[] bytes;
-        Segment(long id, double duration, byte[] bytes) {
-            this.id = id; this.duration = duration; this.bytes = bytes;
+        final long firstSampleUs;
+        Segment(long id, double duration, byte[] bytes, long firstSampleUs) {
+            this.id = id; this.duration = duration; this.bytes = bytes; this.firstSampleUs = firstSampleUs;
         }
     }
 
@@ -108,7 +131,11 @@ public final class FragmentedVideoWindow extends OutputStream {
                 HlsFragment.Result normalized = hls.normalize(fragment, bytes.length - 8);
                 ByteArrayOutputStream output = new ByteArrayOutputStream(normalized.moof.length + bytes.length);
                 output.write(normalized.moof); output.write(bytes);
-                segments.add(new Segment(sequence++, normalized.seconds, output.toByteArray()));
+                long firstSampleUs = sampleTimesUs.isEmpty() ? -1 : sampleTimesUs.getFirst();
+                if (!sampleTimesUs.isEmpty() && sampleTimesUs.size() < normalized.samples)
+                    throw new IOException("Missing encoded timestamps for video fragment");
+                for (int i = 0; i < normalized.samples && !sampleTimesUs.isEmpty(); i++) sampleTimesUs.removeFirst();
+                segments.add(new Segment(sequence++, normalized.seconds, output.toByteArray(), firstSampleUs));
                 while (segments.size() > MAX_SEGMENTS) segments.removeFirst();
                 fragment = null;
                 if (sequence == 1) onReady.run();
@@ -127,14 +154,16 @@ public final class FragmentedVideoWindow extends OutputStream {
         return null;
     }
 
-    public synchronized String playlist() {
-        if (initialization == null || segments.isEmpty()) return null;
-        double max = 2;
+    public synchronized String playlist() { return playlist(0); }
+
+    public synchronized String playlist(long fromSequence) {
+        if (initialization == null || segments.isEmpty() || segments.getLast().id < fromSequence) return null;
+        double max = 1;
         for (Segment segment : segments) max = Math.max(max, segment.duration);
         StringBuilder out = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:")
                 .append((int) Math.ceil(max)).append("\n#EXT-X-MEDIA-SEQUENCE:")
-                .append(segments.getFirst().id).append("\n#EXT-X-MAP:URI=\"init.mp4\"\n");
-        for (Segment segment : segments) out.append(String.format(Locale.ROOT,
+                .append(Math.max(fromSequence, segments.getFirst().id)).append("\n#EXT-X-MAP:URI=\"init.mp4\"\n");
+        for (Segment segment : segments) if (segment.id >= fromSequence) out.append(String.format(Locale.ROOT,
                 "#EXTINF:%.6f,\nsegment/%d.m4s\n", segment.duration, segment.id));
         return out.toString();
     }
@@ -148,7 +177,7 @@ public final class FragmentedVideoWindow extends OutputStream {
     }
 
     public synchronized void clear() {
-        segments.clear(); initialization = null; init.reset(); fragment = null;
+        segments.clear(); sampleTimesUs.clear(); initialization = null; init.reset(); fragment = null;
         box = null; headerBytes = remaining = 0; closed = true;
     }
 }

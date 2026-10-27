@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 7;
+  const WEB_REVISION = 8;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -23,7 +23,7 @@
       title: 'Remote cameras', subtitle: 'Secure camera viewer', loginTitle: 'Camera access', loginHint: 'Sign in to view cameras and recordings.', password: 'Password', signIn: 'Continue',
       live: 'Live', archive: 'Recordings', end: 'End session', composition: 'Composition', front: 'Front', rear: 'Rear', left: 'Left', right: 'Right',
       combined: 'Combined', exterior: 'Exterior', interior: 'Interior', cabin: 'Cabin', driver: 'Driver',
-      startLive: 'Start live viewing', resumeLive: 'Open live stream', waiting: 'Waiting for the first displayed frame…', preparing: 'Preparing cameras…', viewing: 'Viewing live', connected: 'Connected · waiting for video', ready: 'Signed in · viewing is off',
+      loadingView: 'Loading view:', startLive: 'Start live viewing', resumeLive: 'Open live stream', waiting: 'Waiting for the first displayed frame…', preparing: 'Preparing cameras…', viewing: 'Viewing live', connected: 'Connected · waiting for video', ready: 'Signed in · viewing is off',
       lowBattery: 'Viewing is paused by the battery protection limit.', ended: 'This session has ended.', replacedTitle: 'Session ended', replaced: 'Another device connected.', errorTitle: 'Connection unavailable', error: 'The camera connection could not be completed.', retry: 'Try again', signInAgain: 'Sign in again',
       invalidPassword: 'Incorrect password.', busy: 'The session is in use. Try again shortly.', retryLater: 'Please wait before trying again.', unauthorized: 'This session is no longer authorized.',
       chargeUnavailable: 'Battery protection data unavailable:', soc: 'SOC', voltage: '12 V', chargeSuffix: 'Protection is unavailable for the missing readings.',
@@ -45,7 +45,7 @@
       title: 'Віддалені камери', subtitle: 'Захищений перегляд камер', loginTitle: 'Доступ до камер', loginHint: 'Увійдіть, щоб переглядати камери й записи.', password: 'Пароль', signIn: 'Продовжити',
       live: 'Наживо', archive: 'Архів записів', end: 'Завершити сеанс', composition: 'Композиція', front: 'Перед', rear: 'Зад', left: 'Ліво', right: 'Право',
       combined: 'Усі камери', exterior: 'Зовнішні', interior: 'Внутрішні', cabin: 'Салон', driver: 'Водій',
-      startLive: 'Почати перегляд', resumeLive: 'Відкрити відео', waiting: 'Очікуємо перше відображене зображення…', preparing: 'Готуємо камери…', viewing: 'Перегляд наживо', connected: 'Підключено · очікуємо відео', ready: 'Вхід виконано · перегляд вимкнено',
+      loadingView: 'Завантажується:', startLive: 'Почати перегляд', resumeLive: 'Відкрити відео', waiting: 'Очікуємо перше відображене зображення…', preparing: 'Готуємо камери…', viewing: 'Перегляд наживо', connected: 'Підключено · очікуємо відео', ready: 'Вхід виконано · перегляд вимкнено',
       lowBattery: 'Перегляд призупинено через обмеження захисту акумулятора.', ended: 'Цей сеанс завершено.', replacedTitle: 'Сеанс завершено', replaced: 'Під’єднався інший пристрій.', errorTitle: 'З’єднання недоступне', error: 'Не вдалося встановити з’єднання з камерами.', retry: 'Спробувати знову', signInAgain: 'Увійти знову',
       invalidPassword: 'Неправильний пароль.', busy: 'Сеанс зайнятий. Спробуйте трохи пізніше.', retryLater: 'Зачекайте перед наступною спробою.', unauthorized: 'Цей сеанс більше не авторизований.',
       chargeUnavailable: 'Дані захисту акумулятора недоступні:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Захист за відсутніми показниками недоступний.',
@@ -67,7 +67,7 @@
       title: 'Удалённые камеры', subtitle: 'Защищённый просмотр камер', loginTitle: 'Доступ к камерам', loginHint: 'Войдите, чтобы смотреть камеры и записи.', password: 'Пароль', signIn: 'Продолжить',
       live: 'Эфир', archive: 'Архив записей', end: 'Завершить сеанс', composition: 'Композиция', front: 'Перед', rear: 'Зад', left: 'Слева', right: 'Справа',
       combined: 'Все камеры', exterior: 'Внешние', interior: 'Внутренние', cabin: 'Салон', driver: 'Водитель',
-      startLive: 'Начать просмотр', resumeLive: 'Открыть видео', waiting: 'Ожидаем первый отображённый кадр…', preparing: 'Подготовка камер…', viewing: 'Просмотр в эфире', connected: 'Подключено · ожидание видео', ready: 'Вход выполнен · просмотр выключен',
+      loadingView: 'Загружается:', startLive: 'Начать просмотр', resumeLive: 'Открыть видео', waiting: 'Ожидаем первый отображённый кадр…', preparing: 'Подготовка камер…', viewing: 'Просмотр в эфире', connected: 'Подключено · ожидание видео', ready: 'Вход выполнен · просмотр выключен',
       lowBattery: 'Просмотр приостановлен из-за ограничения защиты аккумулятора.', ended: 'Этот сеанс завершён.', replacedTitle: 'Сеанс завершён', replaced: 'Подключилось другое устройство.', errorTitle: 'Подключение недоступно', error: 'Не удалось подключиться к камерам.', retry: 'Повторить', signInAgain: 'Войти снова',
       invalidPassword: 'Неверный пароль.', busy: 'Сеанс занят. Повторите попытку позже.', retryLater: 'Подождите перед следующей попыткой.', unauthorized: 'Этот сеанс больше не авторизован.',
       chargeUnavailable: 'Данные защиты аккумулятора недоступны:', soc: 'SOC', voltage: '12 В', chargeSuffix: 'Защита по отсутствующим показателям недоступна.',
@@ -89,7 +89,7 @@
       title: '远程摄像头', subtitle: '安全摄像头查看器', loginTitle: '摄像头访问', loginHint: '登录以查看摄像头和录像。', password: '密码', signIn: '继续',
       live: '实时', archive: '录像', end: '结束会话', composition: '全景', front: '前方', rear: '后方', left: '左侧', right: '右侧',
       combined: '组合画面', exterior: '车外', interior: '车内', cabin: '座舱', driver: '驾驶员',
-      startLive: '开始实时查看', resumeLive: '打开实时视频', waiting: '正在等待首帧显示…', preparing: '正在准备摄像头…', viewing: '正在实时查看', connected: '已连接 · 等待视频', ready: '已登录 · 查看未启动',
+      loadingView: '正在加载：', startLive: '开始实时查看', resumeLive: '打开实时视频', waiting: '正在等待首帧显示…', preparing: '正在准备摄像头…', viewing: '正在实时查看', connected: '已连接 · 等待视频', ready: '已登录 · 查看未启动',
       lowBattery: '电池保护限制已暂停查看。', ended: '此会话已结束。', replacedTitle: '会话已结束', replaced: '另一台设备已连接。', errorTitle: '连接不可用', error: '无法完成摄像头连接。', retry: '重试', signInAgain: '重新登录',
       invalidPassword: '密码错误。', busy: '会话正在使用，请稍后重试。', retryLater: '请稍候再试。', unauthorized: '此会话已不再授权。',
       chargeUnavailable: '电池保护数据不可用：', soc: 'SOC', voltage: '12 V', chargeSuffix: '缺少读数时无法启用保护。',
@@ -130,10 +130,10 @@
   };
   const state = {
     authenticated: false, replaced: false, mode: 'live', status: 'ready', view: 'composition', wantsLive: false,
-    interiorCameras: 0,
+    interiorCameras: 0, selectionPending: false, selectionFailed: false, selectionSegment: null,
     liveFailed: false, firstLiveFrame: false, archiveView: 'composition', recordings: [], archiveLoaded: false,
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
-    playerError: false, playerFrameReported: false, missingCharge: 0, hls: null, poll: null, mainKey: '', seeking: false,
+    playerError: false, playerFrameReported: false, missingCharge: 0, poll: null, mainKey: '', seeking: false,
     localFirstFrame: false, liveRequest: null, liveStreamId: null, liveSelectionRevision: 0, livePlaylist: null,
     battery: null, batteryExpiresAt: 0,
     modes: { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null },
@@ -143,11 +143,14 @@
   let hlsScriptPromise;
   let actionGeneration = 0;
   let mediaGeneration = 0;
+  let livePlayer = null;
+  let pendingLivePlayer = null;
   let controlQueue = Promise.resolve();
   let modeQueue = Promise.resolve();
   let modeWriteGeneration = 0;
   let statusRequestGeneration = 0;
-  let liveFrameToken = 0;
+  let statusPollInFlight = false;
+  let lastStatusPoll = 0;
   let archiveFrameToken = 0;
   let archiveResizeObserver = null;
   let contractBlocked = false;
@@ -283,7 +286,7 @@
   function cameraButton(view, selected, archive = false) {
     const glyph = ['combined', 'composition'].includes(view) ? 'grid' : view === 'interior' ? 'camera' : '';
     const label = view === 'composition' && !archive ? text.exterior : text[view];
-    return `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${view === 'composition' ? ` data-composition="true"` : ''}>${glyph ? icon(glyph) : ''}${escapeHtml(label)}</button>`;
+    return `<button type="button" data-action="camera" data-view="${view}" aria-pressed="${selected === view}"${!archive && state.selectionPending ? ' disabled' : ''}${view === 'composition' ? ` data-composition="true"` : ''}>${glyph ? icon(glyph) : ''}${escapeHtml(label)}</button>`;
   }
 
   function cameraTabs(selected, archive = false, order = null) {
@@ -298,8 +301,25 @@
   }
 
   function refreshLiveCameraTabs() {
-    const tabs = document.querySelector('#main-panel > .camera-controls');
-    if (tabs) tabs.outerHTML = cameraTabs(state.view);
+    const tabs = document.querySelector('#live-panel > .camera-controls');
+    if (tabs) {
+      const rendered = Array.from(tabs.querySelectorAll('button[data-view]'), (button) => button.dataset.view);
+      const wanted = liveCameras();
+      if (rendered.length !== wanted.length || wanted.some((view) => !rendered.includes(view)))
+        tabs.outerHTML = cameraTabs(state.view);
+      else tabs.querySelectorAll('button[data-view]').forEach((button) => {
+        button.disabled = state.selectionPending;
+        button.setAttribute('aria-pressed', String(button.dataset.view === state.view));
+      });
+    }
+    const caption = document.getElementById('live-caption');
+    if (caption) {
+      caption.classList.toggle('selection-pending', state.selectionPending || state.selectionFailed);
+      const label = state.selectionPending || state.selectionFailed
+        ? `${state.selectionFailed ? text.error : text.loadingView} ${state.view === 'composition' ? text.exterior : text[state.view]}`
+        : state.localFirstFrame ? text.viewing : text.waiting;
+      if (caption.textContent !== label) caption.textContent = label;
+    }
   }
 
   function chargeNote() {
@@ -489,7 +509,7 @@
     if (contractBlocked) { renderLogin(); return; }
     app.classList.remove('is-expanded');
     app.classList.remove('has-player');
-    app.innerHTML = `${pageHeader()}<div class="statusrow"><div class="connection" id="connection" data-state="ready" role="status"><span class="dot"></span><span id="connection-label"></span></div><button class="quiet" type="button" data-action="end">${icon('stop')}${escapeHtml(text.end)}</button></div>${batteryPanel()}<div class="viewer-workspace"><section class="viewer-main"><nav class="nav" aria-label="${escapeHtml(text.title)}"><button type="button" data-action="tab" data-mode="live" aria-pressed="true">${icon('video')}${escapeHtml(text.live)}</button><button type="button" data-action="tab" data-mode="archive" aria-pressed="false">${icon('archive')}${escapeHtml(text.archive)}</button></nav><main class="content" id="main-panel"></main></section>${modePanel()}</div>`;
+    app.innerHTML = `${pageHeader()}<div class="statusrow"><div class="connection" id="connection" data-state="ready" role="status"><span class="dot"></span><span id="connection-label"></span></div><button class="quiet" type="button" data-action="end">${icon('stop')}${escapeHtml(text.end)}</button></div>${batteryPanel()}<div class="viewer-workspace"><section class="viewer-main"><nav class="nav" aria-label="${escapeHtml(text.title)}"><button type="button" data-action="tab" data-mode="live" aria-pressed="true">${icon('video')}${escapeHtml(text.live)}</button><button type="button" data-action="tab" data-mode="archive" aria-pressed="false">${icon('archive')}${escapeHtml(text.archive)}</button></nav><main class="content" id="main-panel"><div id="live-panel"></div><div id="archive-panel" hidden></div></main></section>${modePanel()}</div>`;
     const disclosure = document.getElementById('mode-disclosure');
     syncModeDisclosure();
     disclosure.addEventListener('toggle', (event) => {
@@ -542,7 +562,7 @@
 
   function liveMain() {
     if (state.wantsLive && (state.status === 'connected' || state.livePlaylist) && !state.liveFailed && !state.replaced) {
-      return `${cameraTabs(state.view)}<section class="viewer" aria-label="${escapeHtml(text.live)}"><video id="live-video" class="live-video" muted playsinline preload="none" aria-label="${escapeHtml(text.live)}"></video><div class="viewer-foot"><span class="muted" id="live-caption">${escapeHtml(text.waiting)}</span><div class="viewer-actions"><button class="icon-button" type="button" data-action="fullscreen" aria-label="${escapeHtml(text.expand)}" title="${escapeHtml(text.expand)}">${icon('maximize')}</button></div></div></section>`;
+      return `${cameraTabs(state.view)}<section class="viewer" aria-label="${escapeHtml(text.live)}"><div class="live-stage"></div><div class="viewer-foot"><span class="muted" id="live-caption" role="status">${escapeHtml(text.waiting)}</span><div class="viewer-actions"><button class="icon-button" type="button" data-action="fullscreen" aria-label="${escapeHtml(text.expand)}" title="${escapeHtml(text.expand)}">${icon('maximize')}</button></div></div></section>`;
     }
     return `${cameraTabs(state.view)}${liveGate()}`;
   }
@@ -632,26 +652,31 @@
 
   function renderMain(force = false) {
     if (contractBlocked) { renderLogin(); return; }
-    const main = document.getElementById('main-panel');
-    if (!main) return;
+    const live = document.getElementById('live-panel');
+    const archive = document.getElementById('archive-panel');
+    if (!live || !archive) return;
+    if (state.replaced || ['low_battery', 'error', 'ended'].includes(state.status)) stopLiveMedia();
+    live.hidden = state.mode === 'archive';
+    archive.hidden = state.mode !== 'archive';
+    const main = state.mode === 'archive' ? archive : live;
     const key = mainKey();
-    if (key === 'live' && main.querySelector('#live-video')) {
+    app.classList.toggle('has-player', state.mode === 'archive' && Boolean(state.selectedRecord));
+    if (key === 'live' && main.querySelector('.live-stage')) {
       state.mainKey = key;
-      if (force) refreshLiveCameraTabs();
+      refreshLiveCameraTabs();
       updateStatusBar();
       startLiveMedia();
       return;
     }
     if (!force && key === state.mainKey) return;
     state.mainKey = key;
-    stopLiveMedia();
     disconnectArchiveResizeObserver();
-    app.classList.toggle('has-player', state.mode === 'archive' && Boolean(state.selectedRecord));
     if (state.replaced || state.status === 'ended') main.innerHTML = liveGate();
     else if (state.mode === 'archive') main.innerHTML = archiveHtml();
     else if (key === 'live') main.innerHTML = liveMain();
     else main.innerHTML = `${cameraTabs(state.view)}${liveGate()}`;
     updateStatusBar();
+    refreshLiveCameraTabs();
     if (key === 'live') startLiveMedia();
     if (state.mode === 'archive' && state.selectedRecord) attachArchivePlayer();
   }
@@ -706,15 +731,11 @@
         await pollStatus();
         return;
       }
-      stopLiveMedia();
       state.mode = 'archive';
       rememberMode('archive');
       state.status = result.status || 'ready';
       state.wantsLive = false;
-      state.localFirstFrame = false;
-      state.liveRequest = null;
-      state.liveStreamId = null;
-      state.livePlaylist = null;
+      state.selectionPending = false;
       state.mainKey = '';
       renderMain(true);
       if (!state.archiveLoaded) await loadArchive();
@@ -740,7 +761,7 @@
     const previousStatus = state.status;
     const previousLiveFailed = state.liveFailed;
     const previousSelectionRevision = state.liveSelectionRevision;
-    const newLive = state.mode !== 'live' || !state.wantsLive;
+    const newLive = !state.liveStreamId;
     const action = ++actionGeneration;
     state.mode = 'live';
     rememberMode('live');
@@ -748,6 +769,9 @@
     state.wantsLive = true;
     state.liveFailed = false;
     state.status = 'preparing';
+    state.selectionPending = true;
+    state.selectionFailed = false;
+    state.selectionSegment = null;
     if (newLive) {
       state.firstLiveFrame = false;
       state.localFirstFrame = false;
@@ -758,6 +782,7 @@
       stopLiveMedia();
     }
     const selectionRevision = ++state.liveSelectionRevision;
+    state.selectionPending = true;
     renderMain(true);
     try {
       const result = await post('/live', { view: state.view, revision: selectionRevision });
@@ -769,6 +794,7 @@
       const streamChanged = state.liveStreamId !== result.streamId;
       if (streamChanged) {
         stopLiveMedia();
+        state.selectionPending = true;
         state.livePlaylist = null;
         state.liveStreamId = result.streamId;
         state.firstLiveFrame = false;
@@ -781,6 +807,7 @@
       renderMain(true);
       if (state.status === 'connected') startLiveMedia();
       updateStatusBar();
+      await pollStatus();
     } catch (failure) {
       if (action !== actionGeneration || selectionRevision !== state.liveSelectionRevision) return;
       if (failure.statusCode === 401) handleUnauthorized(failure);
@@ -789,6 +816,7 @@
         state.view = previousView;
         state.status = previousStatus;
         state.liveFailed = previousLiveFailed;
+        state.selectionPending = false;
         if (failure.statusCode) state.liveSelectionRevision = previousSelectionRevision;
         refreshLiveCameraTabs();
         updateStatusBar();
@@ -806,8 +834,8 @@
   }
 
   async function selectLiveView(view) {
-    if (!liveCameras().includes(view)) return;
-    if (view === state.view) return;
+    if (state.selectionPending || !liveCameras().includes(view)) return;
+    if (view === state.view && !state.selectionFailed) return;
     if (state.wantsLive) await startLive(view);
     else { state.view = view; renderMain(true); }
   }
@@ -857,11 +885,6 @@
     state.selectedRecord = null;
     state.playerFrameReported = false;
     state.playerError = false;
-    if (leave) {
-      state.liveRequest = null;
-      state.liveStreamId = null;
-      state.livePlaylist = null;
-    }
     return true;
   }
 
@@ -945,23 +968,18 @@
     const nextMode = data.mode;
     if (!['live', 'archive'].includes(nextMode)) return false;
     if (nextMode !== state.mode) {
-      stopLiveMedia();
       clearArchivePlayerLocally();
       state.mode = nextMode;
       rememberMode(nextMode);
       state.mainKey = '';
-      state.localFirstFrame = false;
       if (nextMode === 'archive') {
         state.wantsLive = false;
-        state.liveRequest = null;
-        state.liveStreamId = null;
-        state.livePlaylist = null;
+        state.selectionPending = false;
       } else {
         state.wantsLive = true;
         state.liveFailed = false;
-        state.liveRequest = null;
-        state.liveStreamId = null;
-        state.livePlaylist = null;
+        state.selectionPending = true;
+        state.selectionSegment = null;
       }
     }
     if (nextMode === 'live' && liveCameras().includes(data.view)) state.view = data.view;
@@ -1009,9 +1027,11 @@
     }
   }
 
-  function fullscreenTarget() { return document.querySelector('.archive-player') || document.querySelector('.viewer'); }
+  function fullscreenTarget() {
+    return document.querySelector(state.mode === 'archive' ? '#archive-panel .archive-player' : '#live-panel .viewer');
+  }
   function updateFullscreenButton() {
-    const button = document.querySelector('[data-action="fullscreen"]');
+    const button = document.querySelector(`#${state.mode === 'archive' ? 'archive' : 'live'}-panel [data-action="fullscreen"]`);
     if (!button) return;
     const expanded = Boolean(document.fullscreenElement || app.classList.contains('is-expanded'));
     const label = expanded ? text.minimize : text.expand;
@@ -1051,40 +1071,99 @@
     return hlsScriptPromise.catch((failure) => { hlsScriptPromise = null; throw failure; });
   }
 
-  function reportFirstFrame(video, mode) {
-    const token = mode === 'live' ? ++liveFrameToken : ++archiveFrameToken;
-    const onFrame = () => {
-      if (token !== (mode === 'live' ? liveFrameToken : archiveFrameToken) || !state.authenticated || state.replaced) return;
-      if (mode === 'live') {
-        if (!state.wantsLive) return;
-        state.firstLiveFrame = true;
-        state.localFirstFrame = true;
-        updateStatusBar();
-        const caption = document.getElementById('live-caption');
-        if (caption) caption.textContent = text.viewing;
-      } else if (state.playerFrameReported || !state.selectedRecord) return;
-      if (mode === 'archive') state.playerFrameReported = true;
-      post('/diagnostic', { event: 'first_frame', mode }).catch((failure) => console.warn('Could not report first displayed frame', failure));
-    };
-    if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(onFrame);
+  function reportArchiveFrame(video) {
+    const token = ++archiveFrameToken;
+    presentedFrame(video, () => token === archiveFrameToken && state.authenticated && !state.replaced, () => {
+      if (state.playerFrameReported || !state.selectedRecord) return;
+      state.playerFrameReported = true;
+      post('/diagnostic', { event: 'first_frame', mode: 'archive' })
+        .catch((failure) => console.warn('Could not report first displayed frame', failure));
+    });
+  }
+
+  function disposeLivePlayer(player) {
+    if (!player) return;
+    player.hls?.destroy();
+    player.video.onerror = null;
+    player.video.pause();
+    player.video.removeAttribute('src');
+    player.video.load();
+    player.video.remove();
+  }
+
+  function presentedFrame(video, valid, onFrame) {
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(() => { if (valid()) onFrame(); });
+    } else {
+      const progress = () => {
+        if (!valid()) { video.removeEventListener('timeupdate', progress); return; }
+        if (!video.paused && video.readyState >= 2) {
+          video.removeEventListener('timeupdate', progress);
+          onFrame();
+        }
+      };
+      video.addEventListener('timeupdate', progress);
+    }
+  }
+
+  function selectionDisplayed(player, revision) {
+    if (revision !== state.liveSelectionRevision || state.mode !== 'live' || !state.wantsLive) return;
+    state.selectionPending = false;
+    state.localFirstFrame = true;
+    if (!state.firstLiveFrame) {
+      state.firstLiveFrame = true;
+      post('/diagnostic', { event: 'first_frame', mode: 'live' }).catch(console.warn);
+    }
+    refreshLiveCameraTabs();
+    updateStatusBar();
+    post('/diagnostic', { event: 'view_frame', revision, streamId: player.stream }).catch(console.warn);
+  }
+
+  function followLiveEdge(player) {
+    const video = player.video;
+    const edge = player.hls?.liveSyncPosition;
+    if (Number.isFinite(edge) && edge > video.currentTime + 0.25) video.currentTime = edge;
+    else if (!player.hls && video.seekable.length) {
+      const end = video.seekable.end(video.seekable.length - 1);
+      if (end > video.currentTime + 1) video.currentTime = Math.max(video.seekable.start(0), end - 0.25);
+    }
   }
 
   async function startLiveMedia() {
-    const video = document.getElementById('live-video');
-    if (!video || video.dataset.started === 'true' || state.liveFailed || !state.livePlaylist) return;
-    const playlist = state.livePlaylist;
+    const stage = document.querySelector('#live-panel .live-stage');
+    if (!stage || state.liveFailed || state.selectionFailed || !state.livePlaylist || !Number.isSafeInteger(state.selectionSegment)) return;
+    const revision = state.liveSelectionRevision;
+    const stream = state.liveStreamId;
+    const view = state.view;
+    if (livePlayer?.stream === stream && livePlayer.view === view) {
+      if (livePlayer.revision !== revision) {
+        livePlayer.revision = revision;
+        followLiveEdge(livePlayer);
+        const player = livePlayer;
+        if (player.video.paused) player.video.play().catch((error) => player.fail(error));
+        presentedFrame(player.video, () => livePlayer === player && player.revision === revision,
+          () => selectionDisplayed(player, revision));
+      }
+      return;
+    }
+    if (pendingLivePlayer?.revision === revision && pendingLivePlayer.stream === stream) return;
     const generation = ++mediaGeneration;
-    const current = () => generation === mediaGeneration && video.isConnected &&
-      state.authenticated && !state.replaced && state.mode === 'live' && state.wantsLive;
-    video.dataset.started = 'true';
-    reportFirstFrame(video, 'live');
+    disposeLivePlayer(pendingLivePlayer);
+    const video = document.createElement('video');
+    video.className = 'live-video staging-video';
+    video.muted = true; video.playsInline = true; video.preload = 'auto';
+    video.setAttribute('aria-label', text.live);
+    const player = { video, hls: null, view, stream, revision };
+    pendingLivePlayer = player;
+    stage.appendChild(video);
+    const current = () => generation === mediaGeneration && video.isConnected && state.authenticated &&
+      !state.replaced && (pendingLivePlayer === player || livePlayer === player);
     const fail = (cause, category = 'play') => {
       if (!current()) return;
-      console.warn('Live playback failed', category, cause?.name || cause?.type || 'media');
+      console.warn('Live playback failed', category, cause);
       ++actionGeneration;
       clearInterval(state.poll); state.poll = null;
       state.liveFailed = true; state.wantsLive = false; state.status = 'error';
-      // The cause and teardown travel together; a separate request races session invalidation.
       post('/stop', { origin: 'playback_error', category, mediaCode: video.error?.code,
         exception: cause?.error?.name || cause?.name, hlsType: cause?.type, hlsDetails: cause?.details,
         fragment: cause?.frag?.sn, httpStatus: cause?.response?.code, clientRevision: WEB_REVISION }).catch(() => {});
@@ -1092,7 +1171,19 @@
       stopLiveMedia();
       renderMain(true);
     };
+    player.fail = fail;
     video.onerror = () => fail(video.error, video.error?.code === 3 ? 'decode' : 'load');
+    video.addEventListener('playing', () => {
+      if (!current()) return;
+      disposeLivePlayer(livePlayer);
+      livePlayer = player; pendingLivePlayer = null;
+      video.classList.remove('staging-video');
+      video.id = 'live-video';
+      presentedFrame(video, current, () => selectionDisplayed(player, player.revision));
+    }, { once: true });
+    // Only this reader starts at the new layout's first complete keyframe fragment.
+    // The cameras, GPU output, encoder and HLS stream identity remain unchanged.
+    const playlist = '/media/' + stream + '/live-' + state.selectionSegment + '.m3u8';
     try {
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = playlist;
@@ -1102,9 +1193,10 @@
       const Hls = await loadHlsLibrary();
       if (!current()) return;
       if (!Hls || !Hls.isSupported()) { fail(null, 'hls'); return; }
-      const hls = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 8,
+      const hls = new Hls({ liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3,
+        maxLiveSyncPlaybackRate: 1.5, maxBufferLength: 3,
         xhrSetup: (xhr) => xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION)) });
-      state.hls = hls;
+      player.hls = hls;
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (current()) video.play().catch((error) => fail(error));
       });
@@ -1116,19 +1208,11 @@
 
   function stopLiveMedia() {
     mediaGeneration++;
-    liveFrameToken++;
-    if (state.hls) {
-      state.hls.destroy();
-      state.hls = null;
-    }
-    const video = document.getElementById('live-video');
-    if (video) {
-      video.pause();
-      video.onerror = null;
-      video.removeAttribute('src');
-      delete video.dataset.started;
-      video.load();
-    }
+    disposeLivePlayer(pendingLivePlayer); pendingLivePlayer = null;
+    disposeLivePlayer(livePlayer); livePlayer = null;
+    state.selectionPending = false;
+    state.selectionFailed = false;
+    state.selectionSegment = null;
   }
 
   function handleUnauthorized(failure) {
@@ -1153,8 +1237,10 @@
 
   async function pollStatus() {
     updateBattery();
-    if (!state.authenticated || state.replaced) return;
+    if (!state.authenticated || state.replaced || statusPollInFlight) return;
+    statusPollInFlight = true;
     const requestedAt = Date.now();
+    lastStatusPoll = requestedAt;
     const action = actionGeneration;
     const modeWrite = modeWriteGeneration;
     const request = ++statusRequestGeneration;
@@ -1204,6 +1290,7 @@
           ? data.streamId : null;
         if (streamId !== state.liveStreamId) {
           stopLiveMedia();
+          state.selectionPending = true;
           state.liveStreamId = streamId;
           state.livePlaylist = null;
           state.firstLiveFrame = false;
@@ -1214,7 +1301,18 @@
           ? data.playlist : null;
         if (playlist !== state.livePlaylist) state.mainKey = '';
         state.livePlaylist = playlist;
+        state.selectionSegment = Number.isSafeInteger(data.selectionSegment) && data.selectionSegment >= 0
+          ? data.selectionSegment : null;
+        if (!livePlayer || livePlayer.stream !== streamId || livePlayer.view !== state.view)
+          state.selectionPending = true;
+        state.selectionFailed = data.selectionFailed === true;
+        if (state.selectionFailed) state.selectionPending = false;
         if (data.status === 'connected' && !state.livePlaylist) data.status = 'preparing';
+      }
+      if (state.mode === 'archive' && currentSelectionSnapshot && data.streamId !== state.liveStreamId) {
+        stopLiveMedia();
+        state.liveStreamId = null;
+        state.livePlaylist = null;
       }
       state.status = data.status;
       if (state.status === 'ready' && state.wantsLive) state.status = previous === 'connected' ? 'connected' : 'preparing';
@@ -1230,7 +1328,7 @@
       applyBatterySnapshot(null);
       if (failure.statusCode === 401) handleUnauthorized(failure);
       else console.warn('Camera viewer status poll failed', failure);
-    }
+    } finally { statusPollInFlight = false; }
   }
 
   async function endSession() {
@@ -1328,7 +1426,9 @@
       if (preferredMode() === 'archive') await openArchive();
       else await startLive();
       if (state.authenticated && !state.replaced) await pollStatus();
-      if (state.authenticated && !state.replaced) state.poll = setInterval(pollStatus, 2000);
+      if (state.authenticated && !state.replaced) state.poll = setInterval(() => {
+        if (state.selectionPending || Date.now() - lastStatusPoll >= 2000) pollStatus();
+      }, 500);
     } catch (failure) {
       console.warn('Camera viewer sign-in failed', failure);
       const message = loginError(failure);
@@ -1460,7 +1560,7 @@
     if (event.target.id !== 'archive-video') return;
     applyArchiveCrop();
     updateArchiveControls();
-    reportFirstFrame(event.target, 'archive');
+    reportArchiveFrame(event.target);
   }, true);
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) app.classList.remove('is-expanded');

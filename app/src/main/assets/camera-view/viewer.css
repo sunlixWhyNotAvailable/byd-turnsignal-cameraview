@@ -94,6 +94,10 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 .live-cameras button { flex:1; min-width:70px; }
 .viewer { overflow:hidden; border:1px solid var(--line); border-radius:12px; background:#05080b; box-shadow:var(--shadow); }
 .live-video { display:block; width:100%; aspect-ratio:16/9; max-height:74vh; object-fit:contain; background:#05080b; }
+.live-stage { position:relative; aspect-ratio:16/9; max-height:74vh; background:#05080b; }
+.live-stage .staging-video { position:absolute; inset:0; opacity:0; }
+.viewer-foot .selection-pending { color:var(--yellow); }
+#live-panel[hidden], #archive-panel[hidden] { display:none; }
 .viewer-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 12px; background:var(--panel); }
 .viewer-actions { display:flex; align-items:center; gap:8px; }
 .muted { color:var(--muted); }
@@ -184,6 +188,8 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 #app.is-expanded .content { height:100vh; }
 #app.is-expanded .viewer { display:flex; flex-direction:column; width:100vw; height:100vh; max-height:none; border:0; border-radius:0; }
 #app.is-expanded .live-video { flex:1; min-height:0; max-height:none; aspect-ratio:auto; }
+#app.is-expanded .live-stage,.viewer:fullscreen .live-stage { flex:1; min-height:0; max-height:none; aspect-ratio:auto; }
+#app.is-expanded .live-stage .live-video,.viewer:fullscreen .live-stage .live-video { height:100%; }
 #app.is-expanded .archive-layout,#app.is-expanded .archive-list { height:100%; min-height:0; }
 #app.is-expanded .summary-cards { display:none; }
 #app.is-expanded .archive-player { display:flex; height:100%; flex-direction:column; }

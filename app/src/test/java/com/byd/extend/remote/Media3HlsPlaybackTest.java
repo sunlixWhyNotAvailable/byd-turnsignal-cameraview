@@ -27,6 +27,73 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 34)
 public class Media3HlsPlaybackTest {
+    @Test public void selectionPlaylistStartsAtACompleteNewLayoutFragment() throws Exception {
+        Path dir = Files.createTempDirectory("media3-hls-selection-");
+        try {
+            byte[] fixture;
+            try (InputStream input = getClass().getResourceAsStream("/com/byd/extend/remote/fragmented_test.mp4")) {
+                assertNotNull(input); fixture = input.readAllBytes();
+            }
+            Path input = dir.resolve("input.mp4"); Files.write(input, fixture);
+            JSONArray packets = new JSONObject(command(dir, "ffprobe", "-v", "error", "-select_streams", "v",
+                    "-show_entries", "packet=pts_time,pos,size,flags", "-of", "json", input.toString()))
+                    .getJSONArray("packets");
+            FragmentedVideoWindow window = new FragmentedVideoWindow();
+            FragmentedMp4Muxer muxer = new FragmentedMp4Muxer.Builder(window)
+                    .setFragmentDurationMs(CameraHlsEncoder.FRAGMENT_DURATION_MS).build();
+            int track = muxer.addTrack(new Format.Builder().setSampleMimeType("video/avc")
+                    .setWidth(96).setHeight(64).setInitializationData(configuration(fixture)).build());
+            long clockOriginUs = 123_000_000L, lastPts = -1, previousPts = -1;
+            // Layout changes inside the second GOP, not at a convenient fragment boundary.
+            window.select(7, clockOriginUs + 1_450_000L);
+            for (int i = 0; i < packets.length() * 2; i++) {
+                JSONObject packet = packets.getJSONObject(i % packets.length());
+                ByteBuffer encoded = ByteBuffer.wrap(fixture, packet.getInt("pos"), packet.getInt("size")).slice();
+                ByteArrayOutputStream annexB = new ByteArrayOutputStream();
+                while (encoded.hasRemaining()) {
+                    byte[] nal = new byte[encoded.getInt()]; encoded.get(nal);
+                    annexB.write(new byte[]{0, 0, 0, 1}); annexB.write(nal);
+                }
+                byte[] sample = annexB.toByteArray();
+                previousPts = lastPts;
+                lastPts = (i / packets.length()) * 2_000_000L
+                        + Math.round(packet.getDouble("pts_time") * 1_000_000);
+                window.sample(clockOriginUs + lastPts);
+                muxer.writeSampleData(track, ByteBuffer.wrap(sample), new BufferInfo(lastPts, sample.length,
+                        packet.getString("flags").contains("K") ? C.BUFFER_FLAG_KEY_FRAME : 0));
+                if (lastPts < 3_000_000L) assertEquals(-1, window.selectionSegment(7));
+            }
+            CameraHlsEncoder.Companion.finishMuxer(muxer, track, lastPts, previousPts);
+            assertEquals(2, window.selectionSegment(7));
+            assertEquals(-1, window.selectionSegment(6));
+            String playlist = window.playlist(window.selectionSegment(7));
+            assertTrue(playlist.contains("#EXT-X-TARGETDURATION:1\n"));
+            assertTrue(playlist.contains("#EXT-X-MEDIA-SEQUENCE:2\n"));
+            assertFalse(playlist.contains("segment/1.m4s"));
+            assertNotNull(window.segment(0)); // Existing readers retain their buffer during cutover.
+            Path segments = Files.createDirectories(dir.resolve("segment"));
+            Files.write(dir.resolve("init.mp4"), window.initialization());
+            for (int id = 2; window.segment(id) != null; id++)
+                Files.write(segments.resolve(id + ".m4s"), window.segment(id));
+            Files.write(dir.resolve("selected.m3u8"), (playlist + "#EXT-X-ENDLIST\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            command(dir, "ffmpeg", "-v", "error", "-xerror", "-allowed_extensions", "ALL",
+                    "-i", dir.resolve("selected.m3u8").toString(), "-f", "null", "-");
+            JSONObject result = new JSONObject(command(dir, "ffprobe", "-v", "error", "-count_frames",
+                    "-allowed_extensions", "ALL", "-show_entries", "stream=nb_read_frames", "-of", "json",
+                    dir.resolve("selected.m3u8").toString())).getJSONArray("streams").getJSONObject(0);
+            assertEquals(20, result.getInt("nb_read_frames"));
+            window.keepSelection(8); // Archive never makes the previous layout's fragments valid again.
+            assertEquals(2, window.selectionSegment(8));
+            window.clear();
+            assertEquals(-1, window.selectionSegment(8));
+        } finally {
+            try (java.util.stream.Stream<Path> files = Files.walk(dir)) {
+                for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toArray(Path[]::new)) Files.delete(file);
+            }
+        }
+    }
+
     @Test public void closingWithOneFrameInTheFinalFragmentRetainsEveryFrame() throws Exception {
         Path dir = Files.createTempDirectory("media3-hls-short-");
         try {

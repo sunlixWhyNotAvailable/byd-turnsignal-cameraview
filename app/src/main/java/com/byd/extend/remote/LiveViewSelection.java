@@ -2,7 +2,7 @@ package com.byd.extend.remote;
 
 import java.util.UUID;
 
-/** Per-viewer ordering and stable identity for one live output interval. */
+/** Per-viewer ordering and stable media identity until the session or output ends. */
 public final class LiveViewSelection {
     private long revision;
     private String streamId;
@@ -16,7 +16,6 @@ public final class LiveViewSelection {
     public synchronized boolean archive(long nextRevision) {
         if (nextRevision <= revision) return false;
         revision = nextRevision;
-        streamId = null;
         return true;
     }
 

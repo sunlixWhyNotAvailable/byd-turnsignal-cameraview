@@ -42,7 +42,10 @@ final class HlsFragment {
     static final class Result {
         final byte[] moof;
         final double seconds;
-        Result(byte[] moof, double seconds) { this.moof = moof; this.seconds = seconds; }
+        final int samples;
+        Result(byte[] moof, double seconds, int samples) {
+            this.moof = moof; this.seconds = seconds; this.samples = samples;
+        }
     }
 
     Result normalize(byte[] moof, int payloadBytes) throws IOException {
@@ -115,7 +118,7 @@ final class HlsFragment {
             else result.write(moof, child.start, child.size);
         }
         nextDecodeTime = Math.addExact(decodeTime, duration);
-        return new Result(box("moof", result.toByteArray()), (double) duration / timescale);
+        return new Result(box("moof", result.toByteArray()), (double) duration / timescale, (int) count);
     }
 
     private static final class Box {

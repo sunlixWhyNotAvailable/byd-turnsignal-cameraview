@@ -51,7 +51,7 @@ internal class CameraHlsEncoder(
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
                 if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             }
@@ -81,7 +81,7 @@ internal class CameraHlsEncoder(
                             }
                         }
                         check(csd.isNotEmpty()) { "Missing H.264 configuration" }
-                        muxer = FragmentedMp4Muxer.Builder(window).setFragmentDurationMs(2_000).build()
+                        muxer = FragmentedMp4Muxer.Builder(window).setFragmentDurationMs(FRAGMENT_DURATION_MS).build()
                         track = muxer!!.addTrack(Format.Builder().setSampleMimeType(MimeTypes.VIDEO_H264)
                             .setWidth(WIDTH).setHeight(HEIGHT).setInitializationData(csd).build())
                     }
@@ -94,6 +94,7 @@ internal class CameraHlsEncoder(
                                 if (firstPts < 0) firstPts = info.presentationTimeUs
                                 val pts = info.presentationTimeUs - firstPts
                                 val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                                window.sample(info.presentationTimeUs)
                                 active.writeSampleData(track, output.slice(),
                                     BufferInfo(pts, info.size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
                                 previousPts = lastPts
@@ -118,6 +119,18 @@ internal class CameraHlsEncoder(
         }
     }
 
+    fun select(revision: Long, changed: Boolean) {
+        // The synchronous GL update has completed: every later presentation timestamp uses this layout.
+        if (changed) window.select(revision, android.os.SystemClock.elapsedRealtimeNanos() / 1_000)
+        else window.keepSelection(revision)
+        if (changed) try {
+            codec?.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+        } catch (failure: Exception) {
+            // Periodic keyframes still delimit the selection; keep the codec's exact rejection.
+            CameraViewingDiagnostics.failure("hls_selection_keyframe", "shared", failure)
+        }
+    }
+
     /** Caller detaches its camera Surface before closing the codec. */
     override fun close() {
         stopped.set(true)
@@ -138,6 +151,8 @@ internal class CameraHlsEncoder(
         const val WIDTH = 1280
         const val HEIGHT = 720
         const val FPS = 15
+        // Media3 checks buffered duration before adding the next keyframe; leave room for that frame.
+        const val FRAGMENT_DURATION_MS = 500L
         fun finishMuxer(muxer: FragmentedMp4Muxer, track: Int, lastPts: Long, previousPts: Long) {
             var failure: Throwable? = null
             try {

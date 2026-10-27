@@ -5,7 +5,7 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class LiveViewSelectionTest {
-    @Test public void selectionsKeepOneStreamAndRejectLateCommandsUntilArchiveStartsANewOne() {
+    @Test public void selectionsAndArchiveKeepOneStreamAndRejectLateCommands() {
         LiveViewSelection selection = new LiveViewSelection();
 
         String first = selection.select(1);
@@ -21,8 +21,20 @@ public class LiveViewSelectionTest {
         assertNull(selection.select(5));
         String resumed = selection.select(7);
         assertNotNull(resumed);
-        assertNotEquals(first, resumed);
+        assertEquals(first, resumed);
         assertEquals(resumed, selection.ensureStreamId());
+    }
+
+    @Test public void archiveFirstDoesNotCreateAStreamAndFinalCloseReleasesIt() {
+        LiveViewSelection selection = new LiveViewSelection();
+        assertTrue(selection.archive(1));
+        assertNull(selection.streamId());
+        String stream = selection.select(2);
+        assertTrue(selection.archive(3));
+        assertEquals(stream, selection.streamId());
+        selection.closeStream();
+        assertNull(selection.streamId());
+        assertNotEquals(stream, selection.select(4));
     }
 
     @Test public void closingAnEncoderGivesAutomaticResumeANewMediaIdentity() {

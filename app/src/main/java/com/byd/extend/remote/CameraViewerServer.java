@@ -51,6 +51,7 @@ public final class CameraViewerServer implements AutoCloseable {
         JSONObject setMode(String session, String mode, boolean enabled) throws Exception;
         JSONObject presentation();
         void firstFrame(String session, String mode);
+        void viewFrame(String session, long revision, String streamId);
         FragmentedVideoWindow video();
         CameraViewerArchive recordings() throws Exception;
         byte[] resource(String name) throws IOException;
@@ -382,6 +383,16 @@ public final class CameraViewerServer implements AutoCloseable {
                 JSONObject diagnostic = bodyObject(request.body);
                 String event = diagnostic.optString("event", "");
                 String mode = diagnostic.optString("mode", "");
+                if ("view_frame".equals(event)) {
+                    long revision = diagnostic.optLong("revision", -1);
+                    String displayedStreamId = diagnostic.optString("streamId", "");
+                    if (revision < 1 || revision > 9_007_199_254_740_991L
+                            || !displayedStreamId.matches("[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}")) {
+                        json(socket, reply, 400, "invalid_event", null); return;
+                    }
+                    stream.viewFrame(request.session, revision, displayedStreamId);
+                    json(socket, reply, 200, "ok", null); return;
+                }
                 if (!"first_frame".equals(event) || !("live".equals(mode) || "archive".equals(mode))) {
                     json(socket, reply, 400, "invalid_event", null);
                     return;
@@ -411,8 +422,11 @@ public final class CameraViewerServer implements AutoCloseable {
         FragmentedVideoWindow window = stream.video();
         String mediaPath = window == null ? null : window.resourcePath(request.path);
         if (mediaPath != null) {
-            if (mediaPath.equals("/live.m3u8") && isRead(request.method)) {
-                String playlist = window.playlist();
+            if ((mediaPath.equals("/live.m3u8") || mediaPath.matches("/live-[0-9]{1,18}\\.m3u8"))
+                    && isRead(request.method)) {
+                long from = mediaPath.equals("/live.m3u8") ? 0
+                        : Long.parseLong(mediaPath.substring(6, mediaPath.length() - 5));
+                String playlist = window.playlist(from);
                 if (playlist == null) json(socket, reply, 503, "preparing", null);
                 else serveText(socket, request.method.equals("HEAD"), reply,
                         "application/vnd.apple.mpegurl", playlist);
