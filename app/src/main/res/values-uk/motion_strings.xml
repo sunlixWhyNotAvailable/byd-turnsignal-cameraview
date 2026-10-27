@@ -9,7 +9,7 @@
     <string name="cameras_tablet">"Показ на планшеті"</string>
     <string name="cameras_recording">"Запис відео"</string>
     <string name="cameras_viewing">"Віддалений перегляд"</string>
-    <string name="cameras_battery_notice">"Ці функції камер можуть залишати камери активними, коли авто вимкнене, і витрачати заряд акумулятора. Споживання залежить від авто та використання; воно не обов’язково таке саме, як у режимі Sentry."</string>
+    <string name="cameras_battery_notice">"Ці функції камер можуть залишати камери активними, коли авто вимкнене, і витрачати заряд акумулятора.\nСпоживання залежить від авто та використання; воно не обов’язково таке саме, як у режимі Sentry."</string>
     <string name="cameras_battery_title">"Призупиняти функції камер за низького заряду"</string>
     <string name="cameras_low_voltage">"12В АКБ"</string>
     <string name="cameras_volts">"В"</string>
@@ -174,4 +174,6 @@
     <string name="cameras_error_endpoint">"Zrok не повернув придатної HTTPS-адреси перегляду. Подробиці — у діагностичних логах."</string>
     <string name="cameras_error_listener">"Слухач перегляду несподівано зупинився. Підключіться повторно; подробиці — у діагностичних логах."</string>
     <string name="cameras_error_timeout">"Сервіс не завершив підключення за відведений час. Повторіть або перевірте мережу."</string>
+    <string name="cameras_viewing_battery_notice">"Ця функція не тримає камери постійно ввімкненими й не витрачає заряд на їхню роботу без переглядача.\nСпоживання починається при підключенні переглядача й припиняється після його відключення."</string>
+    <string name="motion_tablet_warnings">"Попередження на планшеті"</string>
 </resources>

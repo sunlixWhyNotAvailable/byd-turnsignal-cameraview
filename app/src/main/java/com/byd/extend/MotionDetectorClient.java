@@ -1,5 +1,7 @@
 package com.byd.extend;
 
+import com.byd.extend.remote.CameraViewingDiagnostics;
+
 import android.content.Context;
 import android.os.Binder;
 import android.os.Handler;
@@ -24,6 +26,10 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         default void onConfigured() {}
         /** True when the worker kept the current shared camera/viewing resources intact. */
         default void onConfigured(boolean retainViewing) { onConfigured(); }
+        default void onConfigured(boolean retainViewing, String storageError) {
+            if (storageError == null) onConfigured(retainViewing);
+            else onError("storage_configure", storageError, SystemClock.elapsedRealtime());
+        }
         default void onStatus(String state, String detail, long elapsedMs) {}
         default void onDetection(int level, long elapsedMs, int rawResult, int nativeState,
                 long frameNumber, long frameTimestampNs, long warningUntilMs) {}
@@ -71,6 +77,8 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
     private volatile Listener listener;
     private volatile IBinder worker;
     private volatile boolean closed;
+    private String storageConfigError;
+    private static final Object STORAGE_APPLY_LOCK = new Object();
     private int requestGeneration;
     private int configureCompletionGeneration;
     private String configureCompletionToken;
@@ -244,6 +252,42 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         }
     }
 
+    private static void configureStorage(IBinder target, String config) throws Exception {
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
+            data.writeString(config);
+            if (!target.transact(MotionDetectorProtocol.TX_CONFIGURE_STORAGE, data, reply, 0))
+                throw new IllegalStateException("Motion storage configuration unavailable");
+            reply.readException();
+            if (reply.dataAvail() != 0) throw new IllegalStateException("Unexpected storage reply");
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
+    /** Called on the service runtime thread; never starts a worker just to stop it. */
+    static void suspendOemRetention(Context context) throws Exception {
+        synchronized (STORAGE_APPLY_LOCK) { suspendStorageWorker(context); }
+    }
+
+    private static void suspendStorageWorker(Context context) throws Exception {
+        IBinder candidate = resolveWorker();
+        if (candidate == null || !candidate.isBinderAlive()) return;
+        WorkerIdentity identity = readIdentity(candidate);
+        if (identity == null) throw new IllegalStateException("Cannot identify Motion worker during shutdown");
+        if (identity.version < 18) return; // Older workers do not own independent retention.
+        if (identity.version != MotionDetectorProtocol.VERSION
+                || !currentApkIdentity(context).equals(identity.apk))
+            throw new IllegalStateException("Unexpected Motion worker identity during shutdown");
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
+            if (!candidate.transact(MotionDetectorProtocol.TX_SUSPEND_STORAGE, data, reply, 0))
+                throw new IllegalStateException("Motion storage shutdown unavailable");
+            reply.readException();
+            if (reply.dataAvail() != 0) throw new IllegalStateException("Unexpected storage shutdown reply");
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     /** Opens the worker for fixed media operations; never configures monitoring. */
     private IBinder ensureMediaWorker() { return ensureWorker(true); }
 
@@ -311,6 +355,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             configureCompletionJson = nextConfigJson;
             awaitingConfigureCompletion = true;
             configureFailed = false;
+            storageConfigError = null;
         }
         try { commands.execute(() -> configureOnWorker(generation, nextConfigJson, token)); }
         catch (java.util.concurrent.RejectedExecutionException ignored) {
@@ -349,6 +394,20 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
                 requestCallback.bind(candidate, identity.pid);
                 worker = candidate;
             }
+            try {
+                synchronized (STORAGE_APPLY_LOCK) {
+                    if (!isCurrentRequest(generation) || GuardRecovery.isUserShutdownActive(context)) return;
+                    configureStorage(candidate, requestedConfig);
+                }
+            } catch (Exception failure) {
+                CameraViewingDiagnostics.failure("oem_retention", "configure request=" + requestToken, failure);
+                synchronized (lock) {
+                    if (generation == requestGeneration) storageConfigError = summary(failure)
+                            + " (request " + requestToken + ")";
+                }
+            }
+            // Storage failure must not prevent a camera OFF command or its acknowledgement.
+            if (!isCurrentRequest(generation) || GuardRecovery.isUserShutdownActive(context)) return;
             Parcel data = Parcel.obtain(), reply = Parcel.obtain();
             try {
                 data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
@@ -485,6 +544,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
 
     private void reportRequestConfigured(int generation, String requestToken, boolean retainViewing) {
         final Listener target;
+        final String storageError;
         synchronized (lock) {
             if (closed || !awaitingConfigureCompletion || generation != requestGeneration
                     || generation != configureCompletionGeneration
@@ -493,9 +553,10 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             configureCompletionToken = null;
             configureCompletionJson = null;
             target = listener;
+            storageError = storageConfigError;
         }
         if (target != null) main.post(() -> {
-            if (isCurrentRequest(generation)) target.onConfigured(retainViewing);
+            if (isCurrentRequest(generation)) target.onConfigured(retainViewing, storageError);
         });
     }
 

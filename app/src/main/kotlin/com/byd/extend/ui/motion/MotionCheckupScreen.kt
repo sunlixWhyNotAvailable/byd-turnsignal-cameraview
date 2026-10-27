@@ -40,8 +40,9 @@ internal fun MotionCheckupSection(colors: UiPalette, strings: UiStrings,
             ActionButton(strings.resource(R.string.motion_check_run), colors,
                 icon = Icons.Outlined.CheckCircle, onClick = onRun)
         }
-        if (parkedBatteryNotice) Text(strings.resource(R.string.cameras_battery_notice),
-            color = colors.yellow, fontSize = 13.sp)
+        Text(strings.resource(if (parkedBatteryNotice) R.string.cameras_battery_notice
+            else R.string.cameras_viewing_battery_notice),
+            color = colors.yellow, fontSize = 13.sp, minLines = 2)
     }
 }
 

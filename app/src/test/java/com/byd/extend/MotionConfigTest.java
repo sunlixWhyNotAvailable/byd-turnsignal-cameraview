@@ -5,6 +5,23 @@ import org.json.JSONObject;
 import static org.junit.Assert.*;
 
 public class MotionConfigTest {
+    @Test public void absentOemLimitUsesExactCapacityAndPreservesSavedLimits() throws Exception {
+        MotionConfig defaults = MotionConfig.parse("{\"oemCleanup\":true}");
+        assertFalse(defaults.anyEnabled());
+        assertEquals(0, defaults.oemLimitGb);
+        assertFalse(new JSONObject(defaults.toJson()).has("oemQuota"));
+        long capacity = 63_734_567_891L;
+        assertEquals(capacity, MotionOemRetentionState.from(defaults).limitBytes(capacity));
+
+        MotionConfig saved = MotionConfig.parse("{\"oemCleanup\":false,\"oemQuota\":10}");
+        MotionConfig reopened = MotionConfig.parse(saved.toJson());
+        assertEquals(10, reopened.oemLimitGb);
+        assertEquals(10 * MotionStoragePolicy.GB, MotionOemRetentionState.from(reopened).limitBytes(capacity));
+        assertFalse(MotionOemRetentionState.from(reopened).active());
+        assertFalse(reopened.cameraConfig().oemCleanup);
+        assertEquals(0, reopened.cameraConfig().oemLimitGb);
+        assertEquals(10, reopened.oemLimitGb);
+    }
     @Test public void defaultsAreOptInAndKeepIndependentBeforeAfter() throws Exception {
         MotionConfig defaults=MotionConfig.parse("{}");
         assertFalse(defaults.anyEnabled());

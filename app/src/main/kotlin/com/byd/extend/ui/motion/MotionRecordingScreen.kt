@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -92,6 +93,8 @@ import com.byd.extend.ui.Segmented
 import com.byd.extend.ui.Section
 import com.byd.extend.ui.SwitchLine
 import com.byd.extend.ui.FormScope
+import com.byd.extend.ui.AppSwitch
+import com.byd.extend.ui.avasSwitchRow as switchRow
 import com.byd.extend.ui.FormSection
 import com.byd.extend.ui.UiPalette
 import com.byd.extend.ui.UiStrings
@@ -125,7 +128,7 @@ private data class RecordingOptions(
     val internalFreeGb: Int,
     val sdFreeGb: Int,
     val oemCleanup: Boolean,
-    val oemQuota: Int,
+    val oemQuota: Int?,
     val cameraOrder: List<Int>,
 ) {
     fun write(preferences: android.content.SharedPreferences) = preferences.edit()
@@ -134,7 +137,8 @@ private data class RecordingOptions(
         .putBoolean("fallback", fallback).putInt("internalLimit", internalLimit).putInt("sdLimit", sdLimit)
         .putBoolean("internalKeepFree", internalKeepFree).putBoolean("sdKeepFree", sdKeepFree)
         .putInt("internalFreeGb", internalFreeGb).putInt("sdFreeGb", sdFreeGb)
-        .putBoolean("oemCleanup", oemCleanup).putInt("oemQuota", oemQuota)
+        .putBoolean("oemCleanup", oemCleanup)
+        .apply { if (oemQuota == null) remove("oemQuota") else putInt("oemQuota", oemQuota) }
         .putString("order", cameraOrder.joinToString(",")).apply()
 
     companion object {
@@ -142,7 +146,7 @@ private data class RecordingOptions(
             config.recordingEnabled, config.beforeSeconds, config.afterSeconds, config.audioEnabled,
             config.quality, config.primarySd, config.fallbackEnabled, config.internalLimitGb,
             config.sdLimitGb, config.internalKeepFree, config.sdKeepFree, config.internalFreeGb,
-            config.sdFreeGb, config.oemCleanup, config.oemLimitGb, config.cameraOrder.toList())
+            config.sdFreeGb, config.oemCleanup, config.oemLimitGb.takeIf { it > 0 }, config.cameraOrder.toList())
     }
 }
 
@@ -281,7 +285,6 @@ internal fun FormScope.MotionRecordingScreen(
                 val oemDenied = current.oemCleanup && (!read || !write)
                 if (recordingDenied || oemDenied) {
                     if (recordingDenied) setRecordingMode(false)
-                    if (oemDenied) save(RecordingOptions.from(MotionConfig.read(context)).copy(oemCleanup = false))
                     val message = if (recordingDenied) R.string.motion_record_permission_denied
                         else R.string.motion_oem_permission_denied
                     Toast.makeText(context, strings.motionText(message), Toast.LENGTH_LONG).show()
@@ -296,10 +299,11 @@ internal fun FormScope.MotionRecordingScreen(
         }
     }
     if (showContent) {
-        FormSection(strings.motionText(R.string.motion_video_title), colors, key = "motion-recording") {
-            row("enable") {
-                SwitchLine(strings.motionText(R.string.motion_video_enable), strings.motionText(R.string.motion_video_preview),
-                    options.enabled, ::setRecordingEnabled, colors)
+        FormSection(strings.motionText(R.string.motion_video_title), colors, key = "motion-recording",
+            headerModifier = Modifier.switchRow(options.enabled, ::setRecordingEnabled, colors),
+            trailing = { AppSwitch(options.enabled, ::setRecordingEnabled, colors, compact = true, clearSemantics = true) }) {
+            row("hint") {
+                Text(strings.motionText(R.string.motion_video_preview), color = colors.muted, fontSize = 13.sp)
             }
             row("options") {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -372,15 +376,15 @@ internal fun FormScope.MotionRecordingScreen(
                 SwitchLine(strings.motionText(R.string.motion_oem_cleanup), strings.motionText(R.string.motion_oem_cleanup_hint),
                     options.oemCleanup, { enabled ->
                         if (enabled) confirmOemCleanup = true else save(options.copy(oemCleanup = false))
-                    }, colors, enabled = options.enabled)
+                    }, colors)
             }
             row("oem-quota") {
-                val oemMaxGb = stats?.volumes.orEmpty().filter { it.mounted && it.capacityBytes > 0 }
-                    .maxOfOrNull { (it.capacityBytes / MOTION_GB).toInt().coerceAtLeast(1) }
-                RecordingLimit(strings.motionText(R.string.motion_oem_quota), options.oemQuota, oemMaxGb,
-                    strings.motionText(R.string.motion_gb), colors, strings,
-                    enabled = options.enabled && options.oemCleanup, identity = "motion-oem-limit",
-                    onChange = { save(options.copy(oemQuota = it)) })
+                val primary = if (options.sd) stats?.secondary else stats?.primary
+                val maximum = primary?.takeIf { it.mounted && !it.readOnly && it.capacityBytes > 0 }
+                    ?.capacityBytes?.div(MOTION_GB)?.toInt()?.coerceAtLeast(1)
+                OemRecordingLimit(options.oemQuota, maximum, options.sd, colors, strings) {
+                    save(options.copy(oemQuota = it))
+                }
                 Text(strings.motionText(R.string.motion_oem_cleanup_unavailable), color = colors.muted, fontSize = 12.sp)
             }
             this
@@ -399,7 +403,7 @@ internal fun FormScope.MotionRecordingScreen(
         onClose = { composition = false }, onSave = {
             save(options.copy(cameraOrder = it)); composition = false
         })
-    if (showContent && options.enabled && confirmOemCleanup) Dialog(onDismissRequest = { confirmOemCleanup = false }) {
+    if (showContent && confirmOemCleanup) Dialog(onDismissRequest = { confirmOemCleanup = false }) {
         Column(Modifier.fillMaxWidth(.9f).clip(RoundedCornerShape(10.dp)).background(colors.surface)
             .border(1.dp, colors.borderStrong, RoundedCornerShape(10.dp)).padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -423,6 +427,33 @@ internal fun FormScope.MotionRecordingScreen(
         }
     }
     return this
+}
+
+@Composable
+private fun OemRecordingLimit(saved: Int?, maximum: Int?, sd: Boolean,
+    colors: UiPalette, strings: UiStrings, onApply: (Int) -> Unit) {
+    val applied = saved ?: maximum
+    var draft by rememberSaveable(sd, applied) { mutableStateOf((applied ?: 1).toString()) }
+    var input by rememberSaveable(sd, applied) { mutableStateOf(draft) }
+    val candidate = input.toIntOrNull()?.takeIf { maximum != null && it in 1..maximum }
+    val focus = LocalFocusManager.current
+    Text(strings.motionText(R.string.motion_oem_quota), color = colors.text,
+        fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    NumericSetting(strings.motionText(R.string.motion_oem_quota), draft,
+        strings.motionText(R.string.motion_gb), colors, { draft = it; input = it },
+        range = 1f..(maximum ?: 1).toFloat(), enabled = maximum != null,
+        adjustable = true, slider = true, showLabel = false, compactSuffix = true, inputWidth = 58.dp,
+        identity = "motion-oem-limit-$sd-$applied", onDraftChange = { input = it },
+        afterInput = {
+            ActionButton(strings.motionText(R.string.motion_limit_apply), colors = colors,
+                enabled = candidate != null && candidate != applied) {
+                val accepted = candidate
+                focus.clearFocus()
+                if (accepted != null) onApply(accepted)
+            }
+        })
+    if (maximum == null) Text(strings.motionText(R.string.motion_storage_unknown_limit),
+        color = colors.muted, fontSize = 12.sp)
 }
 
 @Composable

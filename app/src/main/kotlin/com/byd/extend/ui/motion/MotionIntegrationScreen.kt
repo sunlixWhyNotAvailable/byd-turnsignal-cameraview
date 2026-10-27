@@ -97,6 +97,8 @@ import com.byd.extend.ui.Section
 import com.byd.extend.ui.Segmented
 import com.byd.extend.ui.SwitchLine
 import com.byd.extend.ui.FormScope
+import com.byd.extend.ui.AppSwitch
+import com.byd.extend.ui.avasSwitchRow as switchRow
 import com.byd.extend.ui.FormSection
 import com.byd.extend.ui.icons.Palette
 import com.byd.extend.ui.icons.Visibility
@@ -226,7 +228,17 @@ internal fun FormScope.MotionIntegrationScreen(
         MotionCheckupSection(colors, strings, parkedBatteryNotice = tab != 2) { checkupOpen = true }
         Spacer(Modifier.height(12.dp))
     }
-    row("motion-shared-archive") {
+    row("camera-tabs") {
+        val tabOrder = listOf(2, 0, 1)
+        Segmented(listOf(R.string.cameras_viewing, R.string.cameras_tablet, R.string.cameras_recording)
+            .map { strings.motionText(it) }, tabOrder.indexOf(tab), colors, Modifier.fillMaxWidth()) {
+            focus.clearFocus()
+            tab = tabOrder[it]
+            uiSession.selectMotionCameraTab(tab)
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+    if (tab != 2) row("motion-shared-archive") {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min),
             horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (tab != 2) Section(strings.motionText(R.string.motion_recording_sensitivity), colors,
@@ -255,38 +267,13 @@ internal fun FormScope.MotionIntegrationScreen(
         }
         Spacer(Modifier.height(12.dp))
     }
-    row("camera-tabs") {
-        val tabOrder = listOf(2, 0, 1)
-        Segmented(listOf(R.string.cameras_viewing, R.string.cameras_tablet, R.string.cameras_recording)
-            .map { strings.motionText(it) }, tabOrder.indexOf(tab), colors, Modifier.fillMaxWidth()) {
-            focus.clearFocus()
-            tab = tabOrder[it]
-            uiSession.selectMotionCameraTab(tab)
-        }
-        Spacer(Modifier.height(12.dp))
-    }
     if (tab == 0) {
         row("motion-notice") {
             Text(strings.motionText(R.string.motion_notice), color = colors.muted, fontSize = 13.sp)
             Spacer(Modifier.height(12.dp))
         }
         row("motion-tablet-settings") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Section(strings.motionText(R.string.preview), colors, Modifier.weight(1f)) {
-                    Text(strings.motionText(R.string.motion_active), color = colors.text, fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold)
-                    Text(templateName(library.active(), strings), color = colors.muted, fontSize = 14.sp)
-                    MotionTemplateCanvas(library.active(), store, strings,
-                        Modifier.fillMaxWidth().aspectRatio(16f / 9f))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ActionButton(strings.motionText(R.string.motion_edit), Icons.Outlined.Edit, colors,
-                            Modifier.weight(1f), enabled = enabled) { draft = library.active().let { it.copy(name = templateName(it, strings)) } }
-                        ActionButton(strings.motionText(R.string.motion_show), Icons.Outlined.PlayArrow, colors,
-                            Modifier.weight(1f), enabled = enabled) { MotionFullscreenActivity.show(context) }
-                    }
-                }
-                Section(strings.motionText(R.string.settings), colors, Modifier.weight(.8f)) {
-                    SwitchLine(strings.motionText(R.string.motion_enable), strings.motionText(R.string.motion_timing), enabled, {
+            val toggle: (Boolean) -> Unit = {
                         try {
                             MotionRuntime.setModeEnabled(context, CameraModeSettings.MODE_TABLET, it)
                             enabled = MotionConfig.read(context).warningEnabled
@@ -295,12 +282,30 @@ internal fun FormScope.MotionIntegrationScreen(
                             enabled = MotionConfig.read(context).warningEnabled
                             Toast.makeText(context, strings.motionText(R.string.motion_save_error), Toast.LENGTH_LONG).show()
                         }
-                    }, colors)
+            }
+            Section(strings.motionText(R.string.motion_tablet_warnings), colors,
+                headerModifier = Modifier.switchRow(enabled, toggle, colors),
+                trailing = { AppSwitch(enabled, toggle, colors, compact = true, clearSemantics = true) }) {
+                Text(strings.motionText(R.string.motion_timing), color = colors.muted, fontSize = 13.sp)
                     ChoiceField(strings.motionText(R.string.motion_lock), listOf(R.string.motion_locked, R.string.motion_any)
                         .map { strings.motionText(it) }, if (activationMode == 1) 0 else 1, { selected ->
                         lock = if (selected == 0) 1 else 0; store.preferences.edit().putInt("lock", lock).apply()
                         MotionRuntime.settingsChanged(context)
                     }, colors, enabled = enabled)
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        row("motion-tablet-preview") {
+            Section(strings.motionText(R.string.preview), colors) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(Modifier.weight(.45f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(strings.motionText(R.string.motion_active), color = colors.text, fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold)
+                        Text(templateName(library.active(), strings), color = colors.muted, fontSize = 14.sp)
+                        ActionButton(strings.motionText(R.string.motion_edit), Icons.Outlined.Edit, colors,
+                            Modifier.fillMaxWidth(), enabled = enabled) { draft = library.active().let { it.copy(name = templateName(it, strings)) } }
+                        ActionButton(strings.motionText(R.string.motion_show), Icons.Outlined.PlayArrow, colors,
+                            Modifier.fillMaxWidth(), enabled = enabled) { MotionFullscreenActivity.show(context) }
                     ActionButton(strings.motionText(R.string.motion_bases), Icons.Outlined.Palette, colors,
                         Modifier.fillMaxWidth(), enabled = enabled) { dialog = 1 }
                     ActionButton(strings.motionText(R.string.motion_saved), Icons.Outlined.Visibility, colors,
@@ -314,6 +319,9 @@ internal fun FormScope.MotionIntegrationScreen(
                     }
                     Text(strings.motionText(R.string.motion_import_hint), color = colors.muted, fontSize = 13.sp)
                     Text(strings.motionText(R.string.motion_reference_notice), color = colors.muted, fontSize = 12.sp)
+                    }
+                    MotionTemplateCanvas(library.active(), store, strings,
+                        Modifier.weight(1f).aspectRatio(16f / 9f))
                 }
             }
         }

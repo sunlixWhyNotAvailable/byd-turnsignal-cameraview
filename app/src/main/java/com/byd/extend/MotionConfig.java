@@ -48,7 +48,8 @@ public final class MotionConfig {
         internalFreeGb = Math.max(1, json.optInt("internalFreeGb", 1));
         sdFreeGb = Math.max(1, json.optInt("sdFreeGb", 1));
         oemCleanup = json.optBoolean("oemCleanup", false);
-        oemLimitGb = Math.max(1, json.optInt("oemQuota", 10));
+        // Zero is an absent user limit: use the selected volume's full byte capacity.
+        oemLimitGb = json.has("oemQuota") ? Math.max(1, json.optInt("oemQuota", 1)) : 0;
         cameraOrder = order(json.optString("order", "0,1,2,3"));
     }
 
@@ -126,9 +127,18 @@ public final class MotionConfig {
                     .put("internalLimit", internalLimitGb).put("sdLimit", sdLimitGb)
                     .put("internalKeepFree", internalKeepFree).put("sdKeepFree", sdKeepFree)
                     .put("internalFreeGb", internalFreeGb).put("sdFreeGb", sdFreeGb)
-                    .put("oemCleanup", oemCleanup).put("oemQuota", oemLimitGb)
+                    .put("oemCleanup", oemCleanup).put("oemQuota", oemLimitGb == 0 ? null : oemLimitGb)
                     .put("order", cameraOrder[0] + "," + cameraOrder[1] + "," + cameraOrder[2] + "," + cameraOrder[3])
                     .toString();
+        } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    MotionConfig cameraConfig() {
+        try {
+            JSONObject json = new JSONObject(toJson());
+            json.remove("oemCleanup");
+            json.remove("oemQuota");
+            return new MotionConfig(json);
         } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
     }
 

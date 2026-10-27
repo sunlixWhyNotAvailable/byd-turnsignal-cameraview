@@ -114,4 +114,5 @@
     <string name="motion_archive_next_year">"Следующий год"</string>
     <string name="motion_archive_prev_month">"Предыдущий месяц"</string>
     <string name="motion_archive_next_month">"Следующий месяц"</string>
+    <string name="motion_limit_apply">"Ок"</string>
 </resources>

@@ -54,7 +54,7 @@ final class MotionSessionConfigStore {
             String id = envelope.optString("session_id", "");
             if (!MotionDetectorProtocol.validSession(id))
                 throw new IOException("Motion config session ID invalid");
-            MotionConfig config = MotionConfig.parse(envelope.getString("config"));
+            MotionConfig config = MotionConfig.parse(envelope.getString("config")).cameraConfig();
             if (!config.anyEnabled()) return null;
             return new Snapshot(id, config);
         } catch (JSONException invalid) {
@@ -64,7 +64,7 @@ final class MotionSessionConfigStore {
 
     synchronized Snapshot write(String configJson) throws IOException {
         final MotionConfig config;
-        try { config = MotionConfig.parse(configJson); }
+        try { config = MotionConfig.parse(configJson).cameraConfig(); }
         catch (JSONException invalid) { throw new IOException("invalid Motion config", invalid); }
         if (!config.anyEnabled()) {
             delete();

@@ -52,6 +52,8 @@ import com.byd.extend.remote.CameraViewingEdits
 import com.byd.extend.ui.ActionButton
 import com.byd.extend.ui.ChoiceField
 import com.byd.extend.ui.FormScope
+import com.byd.extend.ui.AppSwitch
+import com.byd.extend.ui.avasSwitchRow as switchRow
 import com.byd.extend.ui.FormSection
 import com.byd.extend.ui.ImeDismissalEffect
 import com.byd.extend.ui.NumericSetting
@@ -289,11 +291,12 @@ internal fun FormScope.CameraViewingScreen(
         else -> StatusTone.Neutral
     }
 
-    FormSection(strings.motionText(R.string.cameras_viewing), colors, key = "cameras-viewing") {
-        row("enabled") {
-            SwitchLine(strings.motionText(R.string.cameras_allow_viewing),
-                strings.motionText(R.string.cameras_on_demand), state.config.enabled,
-                { enabled -> clearFocusForAction(); submit(enabled = enabled) }, colors)
+    val toggleViewing: (Boolean) -> Unit = { enabled -> clearFocusForAction(); submit(enabled = enabled) }
+    FormSection(strings.motionText(R.string.cameras_viewing), colors, key = "cameras-viewing",
+        headerModifier = Modifier.switchRow(state.config.enabled, toggleViewing, colors),
+        trailing = { AppSwitch(state.config.enabled, toggleViewing, colors, compact = true, clearSemantics = true) }) {
+        row("hint") {
+            Text(strings.motionText(R.string.cameras_on_demand), color = colors.muted, fontSize = 13.sp)
         }
         row("method") {
             ChoiceField(strings.motionText(R.string.cameras_connection_method),

@@ -209,11 +209,15 @@ public final class MotionRuntime implements AutoCloseable {
                     event("motion_worker_prepared", "uid", 2000);
                 }
 
-                @Override public void onConfigured(boolean retainViewing) {
-                    clearInFlight(requestedConfig);
-                    markAppliedIfCurrent(context, requestedConfig);
+                @Override public void onConfigured(boolean retainViewing, String storageError) {
                     if (!retainViewing)
                         com.byd.extend.remote.CameraViewingController.get(context).workerReconfigured();
+                    if (storageError != null) {
+                        onError("storage_configure", storageError, SystemClock.elapsedRealtime());
+                        return;
+                    }
+                    clearInFlight(requestedConfig);
+                    markAppliedIfCurrent(context, requestedConfig);
                 }
 
                 @Override public void onStatus(String state, String detail, long elapsedMs) {

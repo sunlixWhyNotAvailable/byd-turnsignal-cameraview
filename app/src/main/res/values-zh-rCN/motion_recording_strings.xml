@@ -114,4 +114,5 @@
     <string name="motion_archive_next_year">"下一年"</string>
     <string name="motion_archive_prev_month">"上个月"</string>
     <string name="motion_archive_next_month">"下个月"</string>
+    <string name="motion_limit_apply">"确定"</string>
 </resources>

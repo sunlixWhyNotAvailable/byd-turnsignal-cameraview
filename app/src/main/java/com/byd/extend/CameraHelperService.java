@@ -1,5 +1,7 @@
 package com.byd.extend;
 
+import com.byd.extend.remote.CameraViewingDiagnostics;
+
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -981,6 +983,11 @@ public final class CameraHelperService extends Service {
             LocalAdbClient.AUTHORIZATION.cancelForeground();
             WeatherRefreshAccessibilityService.stopMicrophone();
             GuardRecovery.setUserShutdownActive(this, true);
+            try { MotionDetectorClient.suspendOemRetention(this); }
+            catch (Exception failure) {
+                CameraViewingDiagnostics.failure("oem_retention", "explicit_shutdown", failure);
+                android.util.Log.e("MotionStorage", "oem_retention_shutdown_failed", failure);
+            }
             if (adbRecovery != null) adbRecovery.close();
             if (adbReminder != null) adbReminder.close();
             setAvasWakeLock(false, "explicit_shutdown");

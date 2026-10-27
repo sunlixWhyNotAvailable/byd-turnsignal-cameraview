@@ -9,7 +9,7 @@
     <string name="cameras_tablet">"Tablet display"</string>
     <string name="cameras_recording">"Video recording"</string>
     <string name="cameras_viewing">"Remote viewing"</string>
-    <string name="cameras_battery_notice">"These camera features may keep cameras active while the vehicle is off and use battery power. Consumption varies by vehicle and use; it is not necessarily the same as Sentry mode."</string>
+    <string name="cameras_battery_notice">"These camera features may keep cameras active while the vehicle is off and use battery power.\nConsumption varies by vehicle and use; it is not necessarily the same as Sentry mode."</string>
     <string name="cameras_battery_title">"Pause camera features at low battery"</string>
     <string name="cameras_low_voltage">"12V battery"</string>
     <string name="cameras_volts">"V"</string>
@@ -174,4 +174,6 @@
     <string name="cameras_error_endpoint">"Zrok returned no usable HTTPS viewing address. Details are in diagnostic logs."</string>
     <string name="cameras_error_listener">"The viewing listener stopped unexpectedly. Reconnect; details are in diagnostic logs."</string>
     <string name="cameras_error_timeout">"The provider did not finish connecting within the time limit. Retry or check the network."</string>
+    <string name="cameras_viewing_battery_notice">"This feature does not keep cameras running or consume power for them when no viewer is connected.\nViewing consumes power only while connected and stops after disconnection."</string>
+    <string name="motion_tablet_warnings">"Tablet warnings"</string>
 </resources>

@@ -174,4 +174,6 @@
     <string name="cameras_error_endpoint">"Zrok 未返回可用的 HTTPS 查看地址。详情见诊断日志。"</string>
     <string name="cameras_error_listener">"查看监听器意外停止。请重新连接；详情见诊断日志。"</string>
     <string name="cameras_error_timeout">"服务未能在时限内完成连接。请重试或检查网络。"</string>
+    <string name="cameras_viewing_battery_notice">"此功能不会让摄像头持续运行；无人连接观看时，不会为摄像头运行耗电。\n仅在观看者连接期间耗电，断开后停止。"</string>
+    <string name="motion_tablet_warnings">"平板警示"</string>
 </resources>

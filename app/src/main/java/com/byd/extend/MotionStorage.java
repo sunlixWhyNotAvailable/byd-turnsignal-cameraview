@@ -48,8 +48,7 @@ public final class MotionStorage {
     private final String pendingOwnerPackage;
     private final StorageManager manager;
     private final Map<String, String> reportedVolumeMappings = new java.util.concurrent.ConcurrentHashMap<>();
-    private final Map<String, Long> pendingOemCleanup = new LinkedHashMap<>();
-    private Thread cleanupThread;
+    private volatile MotionOemRetentionState oemRetention;
     private volatile boolean closed;
 
     public static final class Volume {
@@ -131,49 +130,9 @@ public final class MotionStorage {
     }
 
     void close() {
-        synchronized (pendingOemCleanup) {
-            closed = true;
-            pendingOemCleanup.clear();
-            if (cleanupThread != null) cleanupThread.interrupt();
-        }
+        closed = true;
         mediaProvider.close();
         oemRecorderProvider.close();
-    }
-
-    private void requestOemCleanup(String volumeId, long limitBytes) {
-        synchronized (pendingOemCleanup) {
-            if (closed) return;
-            pendingOemCleanup.put(volumeId, limitBytes);
-            if (cleanupThread != null) return;
-            cleanupThread = new Thread(() -> {
-                while (true) {
-                    String nextVolume;
-                    long nextLimit;
-                    synchronized (pendingOemCleanup) {
-                        if (closed || pendingOemCleanup.isEmpty()) {
-                            cleanupThread = null;
-                            return;
-                        }
-                        nextVolume = pendingOemCleanup.keySet().iterator().next();
-                        nextLimit = pendingOemCleanup.remove(nextVolume);
-                    }
-                    long started = android.os.SystemClock.elapsedRealtime();
-                    try {
-                        CleanupResult result = cleanOemNormalToLimit(nextVolume, nextLimit);
-                        Log.i(TAG, "oem_cleanup_finished volume=" + nextVolume
-                                + " elapsed_ms=" + (android.os.SystemClock.elapsedRealtime() - started)
-                                + " available=" + result.available + " complete=" + result.complete
-                                + " bytes_before=" + result.bytesBefore
-                                + " bytes_after=" + result.remainingBytes
-                                + " deleted_bytes=" + result.deletedBytes + " reason=" + result.reason
-                                + " skipped={" + result.skips + "}");
-                    } catch (RuntimeException failure) {
-                        Log.w(TAG, "oem_cleanup_failed volume=" + nextVolume, failure);
-                    }
-                }
-            }, "motion-oem-cleanup");
-            cleanupThread.start();
-        }
     }
 
     public List<Volume> volumes() {
@@ -564,7 +523,8 @@ public final class MotionStorage {
      * CDRScanner.java lines 369-393 validate normal filenames and omit the exact active path before
      * adding scan results. Its insertVideoData() path stores the resulting file_path/name rows.
      */
-    CleanupResult cleanOemNormalToLimit(String volumeId, long maximumArchiveBytes) {
+    CleanupResult cleanOemNormalToLimit(String volumeId, long maximumArchiveBytes,
+            java.util.function.BooleanSupplier cancelled, java.util.function.Predicate<File> deleteFile) {
         Volume volume = findVolume(volumeId);
         if (volume == null || !volume.mounted || volume.readOnly || volume.publicRoot == null)
             return CleanupResult.unavailable("volume_not_writable");
@@ -585,7 +545,7 @@ public final class MotionStorage {
                 return CleanupResult.unavailable("cdr_normal_schema_unrecognized", currentBytes, skips);
             while (cursor.moveToNext()) {
                 String path = cursor.getString(pathColumn);
-                if (closed || Thread.currentThread().isInterrupted())
+                if (closed || cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
                     return CleanupResult.unavailable("cleanup_cancelled", currentBytes, skips);
                 String indexedName = cursor.getString(nameColumn);
                 CdrNormalRow row = cdrNormalRow(volume, path);
@@ -602,7 +562,7 @@ public final class MotionStorage {
         rows.sort(Comparator.comparingLong(row -> row.timestampMs));
         long deleted = 0;
         for (CdrNormalRow row : rows) {
-            if (closed || Thread.currentThread().isInterrupted())
+            if (closed || cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
                 return CleanupResult.failure(initialBytes, deleted, currentBytes, "cleanup_cancelled", skips);
             if (currentBytes <= maximumArchiveBytes) break;
             File file = row.file;
@@ -617,7 +577,11 @@ public final class MotionStorage {
                 continue;
             }
             long bytes = file.length();
-            if (!file.delete()) {
+            if (closed || cancelled.getAsBoolean())
+                return CleanupResult.failure(initialBytes, deleted, currentBytes, "cleanup_cancelled", skips);
+            if (!oemCleanupPermissionsGranted())
+                return CleanupResult.failure(initialBytes, deleted, currentBytes, "oem_storage_permission_denied", skips);
+            if (!deleteFile.test(file)) {
                 skips.fileDeleteFailures++;
                 continue;
             }
@@ -673,6 +637,7 @@ public final class MotionStorage {
         static CleanupResult success(long before, long deleted, long remaining, CleanupSkips skips) {
             return new CleanupResult(true, true, before, deleted, remaining, null, skips);
         }
+        String skippedRecords() { return skips.toString(); }
     }
 
     private static final class CleanupSkips {
@@ -747,6 +712,7 @@ public final class MotionStorage {
             }
             return foundRow ? CdrRowState.UNKNOWN : CdrRowState.ABSENT;
         } catch (RuntimeException unavailable) {
+            Log.w(TAG, "cdr_normal_row_verification_failed path=" + path, unavailable);
             return CdrRowState.UNKNOWN;
         }
     }
@@ -761,9 +727,13 @@ public final class MotionStorage {
             }
             return false;
         } catch (IOException | RuntimeException invalid) {
+            Log.w(TAG, "cdr_normal_video_validation_failed path=" + file, invalid);
             return false;
         } finally {
-            try { extractor.release(); } catch (RuntimeException ignored) { }
+            try { extractor.release(); }
+            catch (RuntimeException cleanupFailure) {
+                Log.w(TAG, "cdr_normal_extractor_release_failed path=" + file, cleanupFailure);
+            }
         }
     }
 
@@ -855,9 +825,6 @@ public final class MotionStorage {
                     throw new IOException("motion_free_space_unavailable");
                 if (queryOwnedBytes(volume) < 0)
                     throw new IOException("motion_archive_accounting_unavailable");
-                // OEM validation can take minutes; it must not hold up a live event's output.
-                if (oemCleanupEnabled(config))
-                    requestOemCleanup(volume.id, config.oemLimitGb * MotionStoragePolicy.GB);
                 long baseOwnBytes = -1;
                 long ownAllowance = Long.MAX_VALUE;
                 if (library != null) {
@@ -876,7 +843,23 @@ public final class MotionStorage {
         throw failure == null ? new IOException("No writable Motion volume") : failure;
     }
 
-    boolean oemCleanupEnabled(MotionConfig config) { return config != null && config.oemCleanup; }
+    void setOemRetention(MotionOemRetentionState state) { oemRetention = state; }
+
+    Long oemLimitBytes(MotionConfig config, Volume volume) {
+        if (volume == null || config == null) return null;
+        MotionOemRetentionState current = oemRetention;
+        if (current == null) current = MotionOemRetentionState.from(config);
+        if (!current.active()) return null;
+        // A fallback volume is not implicitly authorized for deletion or OEM quota reservation.
+        Volume selected = null;
+        for (Volume candidate : volumes()) {
+            if (current.primarySd ? candidate.removable && candidate.mounted : candidate.primary) {
+                selected = candidate;
+                break;
+            }
+        }
+        return selected != null && selected.id.equals(volume.id) ? current.limitBytes(volume.totalBytes) : null;
+    }
 
     void publish(Output output) throws IOException {
         if (output.pendingMediaStore) {

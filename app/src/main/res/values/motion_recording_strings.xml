@@ -114,4 +114,5 @@
     <string name="motion_archive_next_year">"Next year"</string>
     <string name="motion_archive_prev_month">"Previous month"</string>
     <string name="motion_archive_next_month">"Next month"</string>
+    <string name="motion_limit_apply">"OK"</string>
 </resources>

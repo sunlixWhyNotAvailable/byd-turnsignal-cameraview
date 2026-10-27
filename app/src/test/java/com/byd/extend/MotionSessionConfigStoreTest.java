@@ -6,6 +6,52 @@ import java.nio.file.Files;
 import static org.junit.Assert.*;
 
 public class MotionSessionConfigStoreTest {
+    @Test public void oemQuotaDoesNotRotateCamerasAndSurvivesCameraOffAndShutdown() throws Exception {
+        File root = Files.createTempDirectory("motion-independent-retention").toFile();
+        File retentionFile = new File(root, "oem-retention.json");
+        try {
+            MotionSessionConfigStore store = new MotionSessionConfigStore(root, 10_123);
+            MotionSessionConfigStore.Snapshot first = store.write("{\"enabled\":true}");
+            MotionConfig changed = MotionConfig.parse("{\"enabled\":true,\"oemCleanup\":true,\"oemQuota\":12}");
+            MotionOemRetentionState.from(changed).write(retentionFile, 10_123);
+            MotionSessionConfigStore.Snapshot applied = store.write(changed.toJson());
+            assertEquals(first.sessionId, applied.sessionId);
+            assertEquals(first.config.toJson(), applied.config.toJson());
+
+            assertNull(store.write("{\"oemCleanup\":true,\"oemQuota\":12}"));
+            assertNull(new MotionSessionConfigStore(root, 10_123).read());
+            MotionOemRetentionState restored = MotionOemRetentionState.read(retentionFile, 10_123);
+            assertTrue(restored.active());
+            assertEquals(12, restored.limitGb);
+            new MotionOemRetentionState(restored.enabled, restored.primarySd, restored.limitGb, true)
+                    .write(retentionFile, 10_123);
+            MotionOemRetentionState stopped = MotionOemRetentionState.read(retentionFile, 10_123);
+            assertFalse(stopped.active());
+            assertTrue(stopped.enabled);
+            assertEquals(12, stopped.limitGb);
+            assertFalse(new File(root, "oem-retention.json.tmp").exists());
+
+            try {
+                MotionOemRetentionState.read(retentionFile, 10_124);
+                fail("different app owner must not restore a destructive policy");
+            } catch (java.io.IOException expected) {
+                assertTrue(expected.getMessage().contains("ownership"));
+            }
+            Files.write(retentionFile.toPath(), "{broken".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            try {
+                MotionOemRetentionState.read(retentionFile, 10_123);
+                fail("invalid retention state must not enable cleanup");
+            } catch (java.io.IOException expected) {
+                assertNotNull(expected.getCause());
+            }
+        } finally {
+            Files.deleteIfExists(new File(root, "config.json.tmp").toPath());
+            Files.deleteIfExists(new File(root, "config.json").toPath());
+            Files.deleteIfExists(new File(root, "oem-retention.json.tmp").toPath());
+            Files.deleteIfExists(retentionFile.toPath());
+            Files.deleteIfExists(root.toPath());
+        }
+    }
     @Test public void modeOnlyChangesKeepSessionAcrossReopenButOtherChangesRotateIt() throws Exception {
         File root = Files.createTempDirectory("motion-mode-store").toFile();
         try {

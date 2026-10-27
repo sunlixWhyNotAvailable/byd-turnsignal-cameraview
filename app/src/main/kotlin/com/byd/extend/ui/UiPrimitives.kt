@@ -391,6 +391,7 @@ internal fun Section(
     bodyPadding: Dp = 14.dp,
     header: (@Composable () -> Unit)? = null,
     titleTrailing: (@Composable () -> Unit)? = null,
+    headerModifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val compact = LocalCompactControls.current
@@ -398,7 +399,7 @@ internal fun Section(
     Column(modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).border(1.dp, colors.border, RoundedCornerShape(8.dp))
         .background(colors.panel)) {
         if (header != null) header() else Row(
-            Modifier.fillMaxWidth().background(colors.panelAlt)
+            Modifier.fillMaxWidth().background(colors.panelAlt).then(headerModifier)
                 .padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -768,6 +769,7 @@ internal fun NumericSetting(
     labelWidth: Dp? = null,
     inputWidth: Dp? = null,
     adjustmentStep: Float = 1f,
+    onDraftChange: ((String) -> Unit)? = null,
 ) {
     val compact = LocalCompactControls.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -801,6 +803,7 @@ internal fun NumericSetting(
         val result = NumericDraftPolicy.resolve(raw, value, range)
         invalid = !result.valid
         draft = result.draft
+        onDraftChange?.invoke(draft)
         sliderValue = result.slider.coerceIn(range)
         suppressBlurCommit = true
         if (result.valid) {
@@ -910,6 +913,7 @@ internal fun NumericSetting(
                         // happen when the persisted value is unchanged.
                         val acceptedText = accepted ?: value
                         draft = acceptedText
+                        onDraftChange?.invoke(draft)
                         sliderValue = (acceptedText.toFloatOrNull() ?: range.start).coerceIn(range)
                     }
                 }
@@ -928,6 +932,7 @@ internal fun NumericSetting(
             if (text.length <= 7 && text.matches(Regex("-?[0-9]*[.]?[0-9]*")) &&
                 (range.start < 0 || !text.startsWith("-"))) {
                 draft = text
+                onDraftChange?.invoke(text)
                 invalid = false
                 suppressBlurCommit = false
             }

@@ -848,19 +848,20 @@ public final class MotionMediaLibrary {
             long free = volume.freeBytes;
             long other = -1;
             long ownAllowance = canRecordHere(volume, actual, selectedId) ? -1 : 0;
-            long oemAllowance = storage.oemCleanupEnabled(actual) ? -1 : 0;
+            Long oemLimit = storage.oemLimitBytes(actual, volume);
+            long oemAllowance = oemLimit != null ? -1 : 0;
             long unallocated = -1;
             if (total >= 0 && free >= 0 && own >= 0 && oem >= 0) {
                 MotionStoragePolicy.Parts parts = MotionStoragePolicy.calculate(total, free, own,
                         limitBytes(volume, actual), canRecordHere(volume, actual, selectedId),
                         keepFreeBytes(volume, actual), oem,
-                        storage.oemCleanupEnabled(actual) ? actual.oemLimitGb * MotionStoragePolicy.GB : null);
+                        oemLimit);
                 other = parts.other;
                 ownAllowance = parts.allowance;
                 oemAllowance = parts.oemAllowance;
                 unallocated = parts.unallocated;
             } else if (total >= 0 && free >= 0 && own >= 0 && oem < 0
-                    && !storage.oemCleanupEnabled(actual)) {
+                    && oemLimit == null) {
                 MotionStoragePolicy.Parts parts = MotionStoragePolicy.calculate(total, free, own,
                         limitBytes(volume, actual), canRecordHere(volume, actual, selectedId),
                         keepFreeBytes(volume, actual), 0, null);
@@ -1026,12 +1027,13 @@ public final class MotionMediaLibrary {
             if (baseOwnBytes >= 0 && activeBytes > 0)
                 own = Math.max(own, Math.min(Math.max(0, currentVolume.totalBytes), baseOwnBytes + activeBytes));
             long oem = storage.queryRecorderBytes(currentVolume);
-            if (oem < 0 && storage.oemCleanupEnabled(actual))
+            Long oemLimit = storage.oemLimitBytes(actual, currentVolume);
+            if (oem < 0 && oemLimit != null)
                 return new StorageDecision(false, own, -1, "oem_recorder_accounting_unavailable");
             MotionStoragePolicy.Parts parts = MotionStoragePolicy.calculate(currentVolume.totalBytes,
                     currentVolume.freeBytes, own, limitBytes(currentVolume, actual), true,
                     keepFreeBytes(currentVolume, actual), Math.max(0, oem),
-                    storage.oemCleanupEnabled(actual) ? actual.oemLimitGb * MotionStoragePolicy.GB : null);
+                    oemLimit);
             if (parts.allowance >= needed)
                 return new StorageDecision(true, own, parts.allowance, null);
 
@@ -1077,15 +1079,16 @@ public final class MotionMediaLibrary {
         if (baseOwnBytes >= 0 && activeBytes > 0)
             own = Math.max(own, Math.min(volume.totalBytes, baseOwnBytes + activeBytes));
         long oem = storage.queryRecorderBytes(volume);
+        Long oemLimit = storage.oemLimitBytes(actual, volume);
         if (oem < 0) {
-            if (storage.oemCleanupEnabled(actual)) return -1;
+            if (oemLimit != null) return -1;
             oem = 0;
         }
         String selectedId = selectedVolumeId(actual.primarySd);
         MotionStoragePolicy.Parts parts = MotionStoragePolicy.calculate(volume.totalBytes, volume.freeBytes,
                 own, limitBytes(volume, actual), canRecordHere(volume, actual, selectedId),
                 keepFreeBytes(volume, actual), Math.max(0, oem),
-                storage.oemCleanupEnabled(actual) ? actual.oemLimitGb * MotionStoragePolicy.GB : null);
+                oemLimit);
         return parts.allowance;
     }
 

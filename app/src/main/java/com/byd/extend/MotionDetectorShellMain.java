@@ -138,6 +138,7 @@ public final class MotionDetectorShellMain {
     }
     private MotionShellMediaContext mediaContext;
     private MotionMediaLibrary mediaLibrary;
+    private MotionOemRetention oemRetention;
     private MotionMediaIndexBridge mediaBridge;
     private MotionVideoRecorder recorder;
     private MotionRecordingOutput composer;
@@ -575,6 +576,21 @@ public final class MotionDetectorShellMain {
             try {
                 data.enforceInterface(MotionDetectorProtocol.DESCRIPTOR);
                 switch (code) {
+                    case MotionDetectorProtocol.TX_CONFIGURE_STORAGE: {
+                        String json = data.readString();
+                        if (json == null || json.length() > 8192 || data.dataAvail() != 0)
+                            throw new IllegalArgumentException("invalid storage payload");
+                        MotionConfig desired = MotionConfig.parse(json);
+                        callControl(() -> { ensureOemRetention(); oemRetention.configure(desired); return true; });
+                        reply.writeNoException();
+                        return true;
+                    }
+                    case MotionDetectorProtocol.TX_SUSPEND_STORAGE: {
+                        if (data.dataAvail() != 0) throw new IllegalArgumentException("unexpected suspend payload");
+                        callControl(() -> { ensureOemRetention(); oemRetention.suspend(); return true; });
+                        reply.writeNoException();
+                        return true;
+                    }
                     case MotionDetectorProtocol.TX_CHECK_START: {
                         String id = data.readString();
                         IBinder owner = data.readStrongBinder();
@@ -861,12 +877,21 @@ public final class MotionDetectorShellMain {
 
     private ConfigureResult configureOnControl(String configJson, IBinder configureCallback,
             String requestToken) throws Exception {
+        MotionConfig cameraSettings = MotionConfig.parse(configJson).cameraConfig();
         ManualCheck check = manualCheck;
-        if (check != null) completeCheck(check, MotionCheckupClient.NOT_CHECKED,
-                "cancelled", "Motion settings changed during check-up", true);
         int installedUid = systemContext.getPackageManager().getPackageUid(
                 MotionShellMediaContext.OWNER_PACKAGE, 0);
         if (installedUid != appUid) throw new SecurityException("installed app UID changed");
+        if (check != null) {
+            MotionSessionConfigStore.Snapshot previous = configStore.read();
+            boolean unchanged = previous == null ? !cameraSettings.anyEnabled()
+                    : previous.config.toJson().equals(cameraSettings.toJson());
+            // Storage-only changes must not tear down the check-up's temporary camera session.
+            if (unchanged) return new ConfigureResult(previous, previous == null
+                    ? MotionDetectorProtocol.CONFIG_APPLIED : MotionDetectorProtocol.CONFIG_RETAINED);
+            completeCheck(check, MotionCheckupClient.NOT_CHECKED,
+                    "cancelled", "Motion settings changed during check-up", true);
+        }
         MotionSessionConfigStore.Snapshot next = configStore.write(configJson);
         modeCompletion = null; // A newer desired snapshot supersedes the previous acknowledgement.
         if (next == null) {
@@ -1581,6 +1606,11 @@ public final class MotionDetectorShellMain {
     }
 
     private void resumePersistedConfig() {
+        try { ensureOemRetention(); }
+        catch (Throwable failure) {
+            CameraViewingDiagnostics.failure("oem_retention", "restore", failure);
+            failure.printStackTrace(System.err);
+        }
         try {
             MotionSessionConfigStore.Snapshot saved = configStore.read();
             if (saved != null && sessionId == null) startConfiguredSession(saved);
@@ -4089,6 +4119,11 @@ public final class MotionDetectorShellMain {
             if (cause instanceof Error) throw (Error) cause;
             throw new IllegalStateException("Motion control operation failed", cause);
         }
+    }
+
+    private void ensureOemRetention() throws Exception {
+        ensureMediaBridge();
+        if (oemRetention == null) oemRetention = new MotionOemRetention(mediaContext, mediaLibrary, control);
     }
 
     private synchronized void ensureMediaBridge() throws Exception {
