@@ -1469,12 +1469,11 @@ final class ReverseCameraController {
         if (!CameraDisplayTarget.isValid(target)) {
             throw new IllegalArgumentException("invalid reverse display target");
         }
-        ReverseCameraLayout defaults = ReverseCameraLayout.defaults();
         int paneId = compositionPaneId(element);
         if (target == CameraDisplayTarget.CLUSTER) {
             SharedPreferences.Editor clusterEditor = settings.edit();
             putRect(clusterEditor, clusterGeometryPrefix(paneId),
-                    defaults.rectFor(paneId, CameraDisplayTarget.CLUSTER));
+                    resetCompositionRect(paneId, target));
             if (paneId >= ReverseCameraLayout.REAR_CAMERA_INDEX
                     && paneId <= ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX) {
                 ReverseCameraLayout current = loadRawLayout(settings);
@@ -1491,14 +1490,14 @@ final class ReverseCameraController {
         }
         SharedPreferences.Editor editor = settings.edit();
         if (paneId == ReverseCameraLayout.BACKGROUND_PANE_ID) {
-            putRect(editor, PREF_PREFIX + "background_", defaults.background);
+            putRect(editor, PREF_PREFIX + "background_", resetCompositionRect(paneId, target));
         } else if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
-            putRect(editor, PREF_PREFIX + "widget_", defaults.widget);
+            putRect(editor, PREF_PREFIX + "widget_", resetCompositionRect(paneId, target));
         } else {
             int cameraIndex = paneId;
             ReverseCameraLayout current = loadLayout(settings);
             ReverseCameraLayout next = ReverseCameraLayout.withPane(
-                    current, cameraIndex, defaults.pane(cameraIndex).destination,
+                    current, cameraIndex, resetCompositionRect(paneId, target),
                     current.pane(cameraIndex).sourceCrop);
             next = ReverseCameraLayout.resetLayer(next, cameraIndex, target);
             ReverseCameraLayout.Pane selected = next.pane(cameraIndex);
@@ -1508,6 +1507,16 @@ final class ReverseCameraController {
             }
         }
         editor.apply();
+    }
+
+    private static ReverseCameraLayout.Rect resetCompositionRect(int paneId, int target) {
+        if (paneId == ReverseCameraLayout.BACKGROUND_PANE_ID) {
+            return CameraFactoryDefaults.reverseBackground(target);
+        }
+        if (paneId == ReverseCameraLayout.WIDGET_PANE_ID) {
+            return CameraFactoryDefaults.reverseWidget(target);
+        }
+        return CameraFactoryDefaults.reverseDestination(paneId, target);
     }
 
     private static int[] compositionPaneIds() {

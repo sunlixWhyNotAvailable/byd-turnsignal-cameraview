@@ -4036,27 +4036,19 @@ public final class CameraProbeActivity extends ComponentActivity
                     calibration = preset;
                     break;
                 case ResetPlacement:
-                    placement = RearviewMirrorSettings.defaultPlacement(target);
+                    placement = CameraCalibrationPreset.resetMirrorPlacement(target);
                     break;
                 case ResetOriginal:
-                    calibration = mirrorCalibrationWithCrop(calibration, false,
-                            RearviewMirrorSettings.defaultCalibration(front).raw);
+                    calibration = CameraCalibrationPreset.resetMirrorStage(calibration, front,
+                            CameraCalibrationPreset.Stage.ORIGINAL);
                     break;
                 case ResetCorrection:
-                    RearviewMirrorSettings.Calibration defaultCalibration =
-                            RearviewMirrorSettings.defaultCalibration(front);
-                    calibration = new RearviewMirrorSettings.Calibration(calibration.raw,
-                            defaultCalibration.corrected, defaultCalibration.enabled,
-                            defaultCalibration.fovDegrees, defaultCalibration.projection,
-                            calibration.mirrored, calibration.rotationDegrees,
-                            calibration.rotationMode);
+                    calibration = CameraCalibrationPreset.resetMirrorStage(calibration, front,
+                            CameraCalibrationPreset.Stage.CORRECTION);
                     break;
                 case ResetOutput:
-                    RearviewMirrorSettings.Calibration outputDefaults = RearviewMirrorSettings.defaultCalibration(front);
-                    calibration = new RearviewMirrorSettings.Calibration(calibration.raw,
-                            calibration.corrected, calibration.enabled, calibration.fovDegrees,
-                            calibration.projection, outputDefaults.mirrored, outputDefaults.rotationDegrees,
-                            outputDefaults.rotationMode, calibration.strengthPercent, calibration.preciseFovDegrees);
+                    calibration = CameraCalibrationPreset.resetMirrorStage(calibration, front,
+                            CameraCalibrationPreset.Stage.OUTPUT);
                     break;
             }
             CameraBorderSettings.Border requestedBorder =
@@ -6409,8 +6401,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private void resetProductionProfile(CameraProfileId id, CommandId command) {
         boolean reset = false;
         try {
-            reset = resetProductionProfileSettings(preferences, id, command,
-                    productionDisplayGeometry(DisplayTarget.Tablet));
+            reset = resetProductionProfileSettings(preferences, id, command);
         } catch (RuntimeException error) {
             record("camera_preset_error", "operation", command.name(), "error", error.toString());
         }
@@ -6449,20 +6440,11 @@ public final class CameraProbeActivity extends ComponentActivity
 
     static boolean resetProductionProfileSettings(
             SharedPreferences preferences, CameraProfileId id, CommandId command) {
-        return resetProductionProfileSettings(preferences, id, command, null);
-    }
-
-    static boolean resetProductionProfileSettings(
-            SharedPreferences preferences, CameraProfileId id, CommandId command,
-            CameraDisplayGeometry tablet) {
         if (command == CommandId.ResetProfilePlacement) {
             if (id instanceof CameraProfileId.Blind) {
-                if (tablet == null) return false;
                 CameraProfile profile = blindProfile((CameraProfileId.Blind) id);
                 CameraCalibrationPreset.resetCameraPlacement(preferences, profile,
-                        BlindSpotOverlayController.readTarget(preferences, profile),
-                        tablet.getWidth(), tablet.getHeight(), tablet.getMarginLeft(),
-                        tablet.getMarginTop(), tablet.getMarginBottom());
+                        BlindSpotOverlayController.readTarget(preferences, profile));
             } else if (id instanceof CameraProfileId.Parking) {
                 ParkingCameraProfile profile = parkingProfile((CameraProfileId.Parking) id);
                 float[] x = {0f, .5f, 1f, 1f, .5f, 0f, 0f, 1f};

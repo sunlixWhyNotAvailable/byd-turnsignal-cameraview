@@ -48,7 +48,7 @@ final class CameraCalibrationPreset {
         if (stage == null) throw new IllegalArgumentException("reset stage required");
         DirectCameraCrop raw = DirectCameraCrop.load(preferences, profile);
         DirectCameraCrop corrected = DirectCameraCrop.loadCorrected(preferences, profile, raw);
-        DirectCameraCrop defaults = DirectCameraCrop.defaultFor(profile);
+        DirectCameraCrop defaults = CameraFactoryDefaults.blindRaw(profile);
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
             case ORIGINAL: {
@@ -60,14 +60,17 @@ final class CameraCalibrationPreset {
                         profile);
                 break;
             }
-            case CORRECTION:
+            case CORRECTION: {
                 BlindSpotOverlayController.pinFrameAspect(editor, preferences, profile);
+                DirectCameraCrop factoryCorrected = CameraFactoryDefaults.blindCorrected(profile);
                 DirectCameraCrop.writeCorrected(editor, profile,
-                        DirectCameraCrop.defaultCorrectedFor(profile, raw));
-                editor.remove(DirectCameraCrop.correctedAspectKey(profile));
+                        factoryCorrected);
+                editor.putInt(DirectCameraCrop.correctedAspectKey(profile),
+                        factoryCorrected.aspectMode);
                 CameraDewarpConfig.writeForProfile(
-                        editor, profile, CameraDewarpConfig.defaultForProfile(profile));
+                        editor, profile, CameraFactoryDefaults.blindDewarp(profile));
                 break;
+            }
             case OUTPUT:
                 DirectCameraCrop.writeOutputTransform(editor, profile,
                         raw.withOutputTransformPreservingGeometry(
@@ -82,12 +85,40 @@ final class CameraCalibrationPreset {
 
     /** Resets only the active Blind placement slot; calibration and the other display stay intact. */
     static void resetCameraPlacement(SharedPreferences preferences, CameraProfile profile,
-            int target, int tabletWidth, int tabletHeight,
-            int tabletMarginX, int tabletTopMargin, int tabletBottomMargin) {
+            int target) {
         BlindSpotOverlayController.writePlacement(preferences, profile, target,
-                BlindSpotOverlayController.defaultPlacement(profile, target,
-                        tabletWidth, tabletHeight, tabletMarginX,
-                        tabletTopMargin, tabletBottomMargin));
+                CameraFactoryDefaults.blindPlacement(profile, target));
+    }
+
+    static CameraPlacement resetMirrorPlacement(int target) {
+        return CameraFactoryDefaults.mirrorPlacement(target);
+    }
+
+    static RearviewMirrorSettings.Calibration resetMirrorStage(
+            RearviewMirrorSettings.Calibration current, boolean front, Stage stage) {
+        if (current == null) throw new IllegalArgumentException("mirror calibration required");
+        if (stage == null) throw new IllegalArgumentException("reset stage required");
+        RearviewMirrorSettings.Calibration defaults =
+                CameraFactoryDefaults.mirrorCalibration(front);
+        switch (stage) {
+            case ORIGINAL:
+                return new RearviewMirrorSettings.Calibration(defaults.raw, current.corrected,
+                        current.enabled, current.fovDegrees, current.projection, current.mirrored,
+                        current.rotationDegrees, current.rotationMode, current.strengthPercent,
+                        current.preciseFovDegrees);
+            case CORRECTION:
+                return new RearviewMirrorSettings.Calibration(current.raw, defaults.corrected,
+                        defaults.enabled, defaults.fovDegrees, defaults.projection,
+                        current.mirrored, current.rotationDegrees, current.rotationMode,
+                        defaults.strengthPercent, defaults.preciseFovDegrees);
+            case OUTPUT:
+                return new RearviewMirrorSettings.Calibration(current.raw, current.corrected,
+                        current.enabled, current.fovDegrees, current.projection,
+                        defaults.mirrored, defaults.rotationDegrees, defaults.rotationMode,
+                        current.strengthPercent, current.preciseFovDegrees);
+            default:
+                throw new AssertionError(stage);
+        }
     }
 
     static boolean hasParking(SharedPreferences preferences, ParkingCameraProfile profile) {
@@ -324,26 +355,28 @@ final class CameraCalibrationPreset {
 
     private static void resetReverseRearStage(
             SharedPreferences preferences, int cameraIndex, Stage stage) {
-        ReverseCameraLayout.Pane defaults = ReverseCameraLayout.defaults().pane(cameraIndex);
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
             case ORIGINAL:
                 ReverseCameraController.writeSourceCrop(
-                        editor, cameraIndex, defaults.sourceCrop, false);
+                        editor, cameraIndex,
+                        CameraFactoryDefaults.reverseRaw(cameraIndex, false), false);
                 break;
             case CORRECTION:
                 ReverseCameraController.writeSourceCrop(editor, cameraIndex,
-                        ReverseCameraController.defaultCorrectedSourceCrop(cameraIndex), true);
+                        CameraFactoryDefaults.reverseCorrected(cameraIndex, false), true);
                 CameraDewarpConfig.writeForReverse(
-                        editor, cameraIndex, CameraDewarpConfig.defaultForReverse(cameraIndex));
+                        editor, cameraIndex,
+                        CameraFactoryDefaults.reverseDewarp(cameraIndex, false));
                 break;
             case OUTPUT:
                 editor.putInt(ReverseCameraController.paneSettingKey(
-                                cameraIndex, "rotation_degrees"), defaults.rotationDegrees)
+                                cameraIndex, "rotation_degrees"),
+                                CameraFactoryDefaults.reverseRotationDegrees(cameraIndex, false))
                         .putInt(ReverseCameraController.displayModeKey(cameraIndex),
-                                defaults.displayMode)
+                                CameraFactoryDefaults.reverseDisplayMode(cameraIndex, false))
                         .putBoolean(ReverseCameraController.mirrorKey(cameraIndex),
-                                defaults.mirrorHorizontally);
+                                CameraFactoryDefaults.reverseMirrored(cameraIndex, false));
                 break;
             default:
                 throw new AssertionError(stage);
@@ -353,42 +386,36 @@ final class CameraCalibrationPreset {
 
     private static void resetReverseFrontStage(
             SharedPreferences preferences, int cameraIndex, Stage stage) {
-        DirectCameraCrop defaults = defaultReverseFrontCrop(cameraIndex);
         SharedPreferences.Editor editor = preferences.edit();
         switch (stage) {
             case ORIGINAL:
                 ReverseCameraController.writeFrontSourceCrop(
-                        editor, cameraIndex, rect(defaults), false);
+                        editor, cameraIndex,
+                        CameraFactoryDefaults.reverseRaw(cameraIndex, true), false);
                 break;
             case CORRECTION:
-                DirectCameraCrop corrected = CameraDefaults.reverseFrontCorrected(cameraIndex);
                 ReverseCameraController.writeFrontSourceCrop(
-                        editor, cameraIndex, rect(corrected), true);
+                        editor, cameraIndex,
+                        CameraFactoryDefaults.reverseCorrected(cameraIndex, true), true);
                 CameraDewarpConfig.writeForReverseFront(
                         editor, cameraIndex,
-                        CameraDewarpConfig.defaultForReverseFront(cameraIndex));
+                        CameraFactoryDefaults.reverseDewarp(cameraIndex, true));
                 break;
             case OUTPUT:
                 editor.putInt(ReverseCameraController.frontPaneSettingKey(
-                                cameraIndex, "rotation_degrees"), defaults.rotationDegrees)
+                                cameraIndex, "rotation_degrees"),
+                                CameraFactoryDefaults.reverseRotationDegrees(cameraIndex, true))
                         .putInt(ReverseCameraController.frontPaneSettingKey(
                                 cameraIndex, "display_mode"),
-                                defaults.rotationMode)
+                                CameraFactoryDefaults.reverseDisplayMode(cameraIndex, true))
                         .putBoolean(ReverseCameraController.frontPaneSettingKey(
-                                cameraIndex, "mirror"), defaults.mirrorHorizontally);
+                                cameraIndex, "mirror"),
+                                CameraFactoryDefaults.reverseMirrored(cameraIndex, true));
                 break;
             default:
                 throw new AssertionError(stage);
         }
         editor.apply();
-    }
-
-    private static DirectCameraCrop defaultReverseFrontCrop(int cameraIndex) {
-        return CameraDefaults.reverseFrontRaw(cameraIndex);
-    }
-
-    private static ReverseCameraLayout.Rect rect(DirectCameraCrop crop) {
-        return ReverseCameraLayout.sourceCrop(crop.left, crop.top, crop.width, crop.height);
     }
 
     static int reverseMirrorTarget(int cameraIndex) {
