@@ -237,7 +237,10 @@ public final class MotionDetectorShellMain {
     private boolean analysisBusy;
     private final FramePerformance framePerformance = new FramePerformance();
     private final FrameCadence frameCadence = new FrameCadence();
+    private final DetectionLogState detectionLogState = new DetectionLogState();
     private final int[] loggedFrameLayout = new int[8];
+    private long motionDiagnosticRevision = -1L;
+    private String motionDiagnosticSourceEpoch = "";
     private String lastReportedDetectorState = "";
     private final Map<IBinder, ChargeObserver> viewingChargeObservers = new IdentityHashMap<>();
     private volatile IBinder viewingHelper;
@@ -411,17 +414,22 @@ public final class MotionDetectorShellMain {
         final long startedNs;
         final long finishedNs;
         final long detectNs;
+        final boolean timingCollected;
+        final long diagnosticRevision;
         final int raw;
         final int nativeState;
         final Throwable failure;
 
         NativeFrameResult(long operationId, long queuedNs, long startedNs,
-                long finishedNs, long detectNs, int raw, int nativeState, Throwable failure) {
+                long finishedNs, long detectNs, boolean timingCollected, long diagnosticRevision,
+                int raw, int nativeState, Throwable failure) {
             this.operationId = operationId;
             this.queuedNs = queuedNs;
             this.startedNs = startedNs;
             this.finishedNs = finishedNs;
             this.detectNs = detectNs;
+            this.timingCollected = timingCollected;
+            this.diagnosticRevision = diagnosticRevision;
             this.raw = raw;
             this.nativeState = nativeState;
             this.failure = failure;
@@ -1908,6 +1916,9 @@ public final class MotionDetectorShellMain {
         lastError = "";
         lastReportedDetectorState = "";
         frameNumber = 0L;
+        motionDiagnosticSourceEpoch = "";
+        motionDiagnosticRevision = -1L;
+        refreshMotionDiagnosticRevision();
         firstInferenceReceived = false;
         cameraRecovering = false;
         lastCameraPreparation = "";
@@ -2493,6 +2504,8 @@ public final class MotionDetectorShellMain {
         int width = 0, height = 0;
         byte[] input = null;
         long frameTimeNs = 0L, packStartNs = 0L, packEndNs = 0L;
+        long diagnosticRevision = -1L;
+        boolean collectFrameTimings = false;
         FrameSensitivity frameSensitivity = null;
         Throwable primaryFailure = null;
         Throwable closeFailure = null;
@@ -2524,9 +2537,14 @@ public final class MotionDetectorShellMain {
                 v = plane(planes[2]);
                 input = nativeInput;
                 if (input == null) throw new IllegalStateException("native input is not prepared");
-                packStartNs = SystemClock.elapsedRealtimeNanos();
+                diagnosticRevision = DiagnosticLogPolicy.revision();
+                collectFrameTimings = DiagnosticLogPolicy.extended();
+                if (collectFrameTimings) packStartNs = SystemClock.elapsedRealtimeNanos();
                 MotionYuvPacker.pack(y, u, v, width, height, input);
-                packEndNs = SystemClock.elapsedRealtimeNanos();
+                if (collectFrameTimings && diagnosticRevision == DiagnosticLogPolicy.revision()
+                        && DiagnosticLogPolicy.extended())
+                    packEndNs = SystemClock.elapsedRealtimeNanos();
+                else collectFrameTimings = false;
                 frameTimeNs = frame.getTimestamp();
             }
             source.snapshot(frame);
@@ -2550,7 +2568,7 @@ public final class MotionDetectorShellMain {
         }
         if (reserved) enqueueNativeDetection(id, generation, ownerReader, check,
                 frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input,
-                frameSensitivity);
+                frameSensitivity, collectFrameTimings, diagnosticRevision);
     }
 
     private FrameSensitivity reserveAnalysis(ImageReader ownerReader, long generation) {
@@ -2605,13 +2623,19 @@ public final class MotionDetectorShellMain {
     private void enqueueNativeDetection(String id, long generation, ImageReader ownerReader,
             ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, byte[] input, FrameSensitivity frameSensitivity) {
-        OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
-                "frame", id, SystemClock.elapsedRealtimeNanos());
+            MotionYuvPacker.Plane v, byte[] input, FrameSensitivity frameSensitivity,
+            boolean collectFrameTimings, long diagnosticRevision) {
+        boolean collectTimings = collectFrameTimings
+                && diagnosticRevision == DiagnosticLogPolicy.revision()
+                && DiagnosticLogPolicy.extended();
+        OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(), "frame", id,
+                collectTimings ? SystemClock.elapsedRealtimeNanos() : 0L);
         try {
             nativeOperations.execute(() -> {
-                long startedNs = SystemClock.elapsedRealtimeNanos();
-                long detectStartNs = startedNs;
+                boolean measureTimings = collectTimings
+                        && diagnosticRevision == DiagnosticLogPolicy.revision()
+                        && DiagnosticLogPolicy.extended();
+                long startedNs = measureTimings ? SystemClock.elapsedRealtimeNanos() : 0L;
                 long detectNs = 0L;
                 int raw = MotionEventPolicy.ERROR_RESULT;
                 int nativeState = MotionEventPolicy.ERROR_RESULT;
@@ -2619,12 +2643,19 @@ public final class MotionDetectorShellMain {
                 try {
                     raw = nativeApi.detect(input, MotionDetectorProtocol.INPUT_WIDTH,
                             MotionDetectorProtocol.INPUT_HEIGHT, frameSensitivity.nativeSensitivity);
-                    detectNs = SystemClock.elapsedRealtimeNanos() - detectStartNs;
+                    if (measureTimings && diagnosticRevision == DiagnosticLogPolicy.revision()
+                            && DiagnosticLogPolicy.extended())
+                        detectNs = SystemClock.elapsedRealtimeNanos() - startedNs;
                     if (raw != MotionEventPolicy.ERROR_RESULT) nativeState = nativeApi.getState();
                 } catch (Throwable error) { failure = error; }
-                long finishedNs = SystemClock.elapsedRealtimeNanos();
+                boolean timingsStillCurrent = measureTimings
+                        && diagnosticRevision == DiagnosticLogPolicy.revision()
+                        && DiagnosticLogPolicy.extended();
+                long finishedNs = timingsStillCurrent
+                        ? SystemClock.elapsedRealtimeNanos() : 0L;
                 NativeFrameResult result = new NativeFrameResult(trace.id, trace.queuedNs,
-                        startedNs, finishedNs, detectNs, raw, nativeState, failure);
+                        startedNs, finishedNs, detectNs, timingsStillCurrent, diagnosticRevision,
+                        raw, nativeState, failure);
                 if (!control.post(() -> onNativeFrameComplete(id, generation, ownerReader, check,
                         frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, result,
                         frameSensitivity.policyRevision)))
@@ -2634,7 +2665,7 @@ public final class MotionDetectorShellMain {
             control.post(() -> {
                 try {
                     if (operationIsCurrent(id, generation, sessionId, sessionGeneration))
-                        fail(id, "native_detect", error);
+                        fail(id, "native_detect", error, trace.id);
                 } finally {
                     releaseAnalysis();
                     if (teardownPending) continuePendingTeardown();
@@ -2652,13 +2683,14 @@ public final class MotionDetectorShellMain {
                     || teardownPending || reader != ownerReader
                     || !(eligible || check != null && checkLive(check) && !check.finishing)) return;
             if (result.failure != null) {
-                fail(id, "native_detect", result.failure);
+                fail(id, "native_detect", result.failure, result.operationId);
                 return;
             }
             detectFrame(check, frameTimeNs, packStartNs, packEndNs, width, height,
                     y, u, v, result, policyRevision);
         } catch (Throwable error) {
-            if (sameSession(id) && !teardownPending) fail(id, "frame", error);
+            if (sameSession(id) && !teardownPending)
+                fail(id, "frame", error, result.operationId);
         } finally {
             releaseAnalysis();
             if (teardownPending) continuePendingTeardown();
@@ -2672,14 +2704,20 @@ public final class MotionDetectorShellMain {
         int raw = result.raw;
         int nativeState = result.nativeState;
         frameNumber++;
-        framePerformance.record(packStartNs, packEndNs, result.queuedNs,
-                result.startedNs, result.finishedNs, result.detectNs, result.operationId);
-        noteFrameLayout(width, height, y, u, v);
-        if (framePerformance.due()) flushFramePerformance();
+        refreshMotionDiagnosticRevision();
+        if (DiagnosticLogPolicy.extended()) {
+            if (result.timingCollected
+                    && result.diagnosticRevision == DiagnosticLogPolicy.revision())
+                framePerformance.record(packStartNs, packEndNs, result.queuedNs,
+                        result.startedNs, result.finishedNs, result.detectNs, result.operationId);
+            noteFrameLayout(width, height, y, u, v);
+            if (framePerformance.due()) flushFramePerformance();
+        } else if (framePerformance.frames != 0) framePerformance.reset();
         if (check != null && check.ownsReader) {
             boolean done = check.frames.observe(frameTimeNs, raw);
-            logEvent("motion_checkup_frame", sessionId, "check_id", check.id,
-                    "timestamp_ns", frameTimeNs, "raw_result", raw, "native_state", nativeState);
+            if (DiagnosticLogPolicy.extended())
+                logEvent("motion_checkup_frame", sessionId, "check_id", check.id,
+                        "timestamp_ns", frameTimeNs, "raw_result", raw, "native_state", nativeState);
             if (done && !check.finishing) {
                 check.finishing = true;
                 // Release the Image before detaching or closing its ImageReader.
@@ -2691,11 +2729,18 @@ public final class MotionDetectorShellMain {
             noteFirstInference(raw, "not_read_after_error", frameTimeNs);
             policy.observe(raw, now, policyRevision);
             fail(sessionId, "native_detect", new IllegalStateException(
-                    "native detect returned -2; getState was not called"));
+                    "native detect returned -2; getState was not called"), result.operationId);
             return;
         }
         noteFirstInference(raw, nativeState, frameTimeNs);
         MotionEventPolicy.Decision decision = policy.observe(raw, now, policyRevision);
+        String detectionTransition = detectionLogState.observe(
+                decision.level, DiagnosticLogPolicy.extended());
+        if (detectionTransition != null)
+            logEvent("motion_detection", sessionId, "level", decision.level,
+                    "transition", detectionTransition, "elapsed_ms", decision.elapsedMs,
+                    "raw_result", raw, "native_state", nativeState, "frame", frameNumber,
+                    "frame_timestamp_ns", frameTimeNs, "warning_until_ms", decision.warningUntilMs);
         state = policy.warningActive(now) ? "warning_active" : "observing";
         if (!state.equals(lastReportedDetectorState)) {
             lastReportedDetectorState = state;
@@ -2733,7 +2778,7 @@ public final class MotionDetectorShellMain {
     }
 
     private void flushFramePerformance() {
-        if (framePerformance.frames == 0) return;
+        if (!DiagnosticLogPolicy.extended() || framePerformance.frames == 0) return;
         logEvent("motion_frame_performance", sessionId,
                 "window_ms", framePerformance.windowNs() / 1_000_000.0,
                 "frames", framePerformance.frames,
@@ -2761,6 +2806,24 @@ public final class MotionDetectorShellMain {
         }
 
         void reset() { nextStartNs = 0L; }
+    }
+
+    /** Diagnostic-only detection activity state; callbacks and recording use the live decision. */
+    static final class DetectionLogState {
+        private int lastLevel = -1;
+
+        String observe(int level, boolean extended) {
+            int previous = lastLevel;
+            lastLevel = level;
+            if (level == MotionEventPolicy.LEVEL_NONE)
+                return previous > MotionEventPolicy.LEVEL_NONE ? "end" : null;
+            if (extended && previous == level) return "active";
+            if (previous == level) return null;
+            if (previous < 0) return "state";
+            return previous == MotionEventPolicy.LEVEL_NONE ? "begin" : "level_change";
+        }
+
+        void reset() { lastLevel = -1; }
     }
 
     /** Control-thread aggregates of completed pack/native calls, not process CPU time. */
@@ -3433,9 +3496,16 @@ public final class MotionDetectorShellMain {
         if (!sameSession(id) || line == null) return;
         try {
             org.json.JSONObject event = new org.json.JSONObject(line);
-            if (expectedSourceEpoch.equals(event.optString("source_epoch", ""))
-                    && event.has("extended_logs"))
-                DiagnosticLogPolicy.configure(event.getBoolean("extended_logs"));
+            String sourceEpoch = event.optString("source_epoch", "");
+            if (!sourceEpoch.isEmpty() && expectedSourceEpoch.equals(sourceEpoch)) {
+                if (!sourceEpoch.equals(motionDiagnosticSourceEpoch)) {
+                    motionDiagnosticSourceEpoch = sourceEpoch;
+                    resetMotionDiagnosticAccumulators();
+                }
+                if (event.has("extended_logs"))
+                    DiagnosticLogPolicy.configure(event.getBoolean("extended_logs"));
+                refreshMotionDiagnosticRevision();
+            }
             String kind = event.optString("kind", "");
             if ("motion_host_shutdown".equals(kind)) {
                 shutdownFromHost(id, event.optString("reason", "host_shutdown"),
@@ -4376,15 +4446,23 @@ public final class MotionDetectorShellMain {
     }
 
     private void fail(String id, String stage, Throwable error) {
+        fail(id, stage, error, 0L);
+    }
+
+    private void fail(String id, String stage, Throwable error, long operationId) {
         if (!sameSession(id)) return;
+        String cause = summary(error);
+        String detail = stage + ": " + cause;
+        if (operationId != 0L) detail += " [operation_id=" + operationId + "]";
         ManualCheck check = manualCheck;
         if (check != null && (check.ownsSession || check.ownsReader || check.ownsNative)) {
-            completeCheck(check, MotionCheckupClient.ERROR, "check_failed", stage + ": " + summary(error), true);
+            logMotionError(id, stage, cause, error, operationId);
+            completeCheck(check, MotionCheckupClient.ERROR, "check_failed", detail, true);
             return;
         }
-        lastError = stage + ": " + summary(error);
+        lastError = detail;
         IBinder callback = appCallback == null ? pendingAppCallback : appCallback;
-        sendError(callback, id, stage, summary(error));
+        sendError(callback, id, stage, cause, operationId, error);
         beginTeardown(id, "runtime_error", true, false, false, appCallback, "error");
     }
 
@@ -4622,9 +4700,6 @@ public final class MotionDetectorShellMain {
 
     private void sendDetection(String id, int level, long elapsedMs, int raw, int nativeState,
             long frame, long frameTimeNs, long warningUntil) {
-        logEvent("motion_detection", id, "level", level, "elapsed_ms", elapsedMs,
-                "raw_result", raw, "native_state", nativeState, "frame", frame,
-                "frame_timestamp_ns", frameTimeNs, "warning_until_ms", warningUntil);
         IBinder target = appCallback;
         if (target == null) return;
         Parcel data = Parcel.obtain();
@@ -4656,7 +4731,17 @@ public final class MotionDetectorShellMain {
     }
 
     private void sendError(IBinder target, String id, String stage, String detail) {
-        logEvent("motion_error", id, "stage", stage, "detail", detail);
+        sendError(target, id, stage, detail, 0L, null);
+    }
+
+    private void sendError(IBinder target, String id, String stage, String detail,
+            long operationId) {
+        sendError(target, id, stage, detail, operationId, null);
+    }
+
+    private void sendError(IBinder target, String id, String stage, String detail,
+            long operationId, Throwable failure) {
+        logMotionError(id, stage, detail, failure, operationId);
         if (target == null) return;
         Parcel data = Parcel.obtain();
         try {
@@ -4669,6 +4754,21 @@ public final class MotionDetectorShellMain {
         } catch (RemoteException ignored) {
             if (target == appCallback) detachUiOnControl(id, target);
         } finally { data.recycle(); }
+    }
+
+    private void logMotionError(String id, String stage, String detail, Throwable failure,
+            long operationId) {
+        String diagnostic = failure == null ? null : CameraViewingDiagnostics.describe(failure);
+        if (operationId == 0L) {
+            if (diagnostic == null)
+                logEvent("motion_error", id, "stage", stage, "detail", detail);
+            else logEvent("motion_error", id, "stage", stage, "detail", detail,
+                    "failure", diagnostic);
+        } else if (diagnostic == null) {
+            logEvent("motion_error", id, "stage", stage, "detail", detail,
+                    "operation_id", operationId);
+        } else logEvent("motion_error", id, "stage", stage, "detail", detail,
+                "failure", diagnostic, "operation_id", operationId);
     }
 
     private void sendScreen(String id, String screenState, String detail) {
@@ -4689,6 +4789,7 @@ public final class MotionDetectorShellMain {
     }
 
     private void logEvent(String kind, String id, Object... fields) {
+        if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         try {
             org.json.JSONObject event = new org.json.JSONObject().put("kind", kind)
                     .put("session_id", id == null ? "" : id)
@@ -4697,11 +4798,24 @@ public final class MotionDetectorShellMain {
                     .put("wall_ms", System.currentTimeMillis());
             for (int i = 0; i + 1 < fields.length; i += 2)
                 event.put(String.valueOf(fields[i]), fields[i + 1]);
-            System.out.println(event.toString());
+            DiagnosticLogPolicy.print(event.toString());
             System.out.flush();
         } catch (Throwable error) {
             System.err.println("motion_log_failure kind=" + kind + " error=" + summary(error));
         }
+    }
+
+    private void refreshMotionDiagnosticRevision() {
+        long revision = DiagnosticLogPolicy.revision();
+        if (motionDiagnosticRevision == revision) return;
+        resetMotionDiagnosticAccumulators();
+        motionDiagnosticRevision = revision;
+    }
+
+    private void resetMotionDiagnosticAccumulators() {
+        framePerformance.reset();
+        java.util.Arrays.fill(loggedFrameLayout, 0);
+        detectionLogState.reset();
     }
 
     private static boolean readFlag(Parcel data) {

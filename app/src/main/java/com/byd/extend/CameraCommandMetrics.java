@@ -71,6 +71,7 @@ final class CameraCommandMetrics {
     }
 
     static final class Report {
+        final boolean detailed;
         final Operation operation;
         final int workerIndex;
         final String reason;
@@ -79,11 +80,14 @@ final class CameraCommandMetrics {
         final long queueTotalNs, queueMaxNs, executionTotalNs, executionMaxNs;
         final long totalNs, totalMaxNs, lastTotalNs, worstTotalNs;
         final Context lastContext, worstContext, lastFailureContext;
+        final Context firstFailureContext;
         final Phase failedPhase;
         final Throwable firstFailure, lastFailure;
         final PhaseStats[] phases;
 
-        Report(Window window, Operation operation, int workerIndex, String reason) {
+        Report(Window window, Operation operation, int workerIndex, String reason,
+                boolean detailed) {
+            this.detailed = detailed;
             this.operation = operation;
             this.workerIndex = workerIndex;
             this.reason = reason;
@@ -106,6 +110,7 @@ final class CameraCommandMetrics {
             lastContext = window.lastContext;
             worstContext = window.worstContext;
             lastFailureContext = window.lastFailureContext;
+            firstFailureContext = window.firstFailureContext;
             failedPhase = window.failedPhase;
             firstFailure = window.firstFailure;
             lastFailure = window.lastFailure;
@@ -119,10 +124,31 @@ final class CameraCommandMetrics {
                 }
             }
         }
+
+        Report(Command command, Outcome outcome, Throwable failure) {
+            detailed = false;
+            operation = command.operation;
+            workerIndex = command.workerIndex;
+            reason = "command_failure";
+            commands = 1;
+            successes = 0;
+            failures = outcome == Outcome.SUCCESS && failure == null ? 0 : 1;
+            queuedCancels = outcome == Outcome.QUEUED_CANCEL ? 1 : 0;
+            postRejects = outcome == Outcome.POST_REJECT ? 1 : 0;
+            inlineCommands = queueSamples = executionSamples = 0;
+            queueTotalNs = queueMaxNs = executionTotalNs = executionMaxNs = 0L;
+            totalNs = totalMaxNs = lastTotalNs = worstTotalNs = 0L;
+            lastContext = worstContext = lastFailureContext = command.context;
+            firstFailureContext = command.context;
+            failedPhase = command.failedPhase;
+            firstFailure = lastFailure = failure;
+            phases = new PhaseStats[Phase.values().length];
+        }
     }
 
     private final Window[][] windows = new Window[Operation.values().length][WORKER_SLOTS];
     private final Consumer<Report> reporter;
+    private long policyRevision = DiagnosticLogPolicy.revision();
 
     CameraCommandMetrics(Consumer<Report> reporter) {
         this.reporter = reporter;
@@ -135,8 +161,10 @@ final class CameraCommandMetrics {
     Command begin(Operation operation, int workerIndex, Context context, long enqueuedNs) {
         if (operation == null || workerIndex < -1 || workerIndex > 4)
             throw new IllegalArgumentException("invalid camera command key");
+        refreshPolicy();
         return new Command(this, operation, workerIndex,
-                context == null ? Context.EMPTY : context, enqueuedNs);
+                context == null ? Context.EMPTY : context, enqueuedNs,
+                DiagnosticLogPolicy.extended(), DiagnosticLogPolicy.revision());
     }
 
     void flushWorker(int workerIndex, String reason, long nowNs) {
@@ -150,6 +178,8 @@ final class CameraCommandMetrics {
     }
 
     private void flush(int workerIndex, String reason, long nowNs, boolean resetThrottle) {
+        refreshPolicy();
+        boolean detailed = DiagnosticLogPolicy.extended();
         List<Report> reports = new ArrayList<>();
         synchronized (this) {
             int first = workerIndex < 0 ? 0 : workerIndex + 1;
@@ -157,9 +187,11 @@ final class CameraCommandMetrics {
             for (int operation = 0; operation < windows.length; operation++) {
                 for (int worker = first; worker < last; worker++) {
                     Window window = windows[operation][worker];
-                    if (window.commands > 0) {
+                    if (window.commands > 0 && (detailed || window.firstFailure != null)) {
                         reports.add(new Report(window, Operation.values()[operation],
-                                worker - 1, reason));
+                                worker - 1, reason, detailed));
+                        window.reset(resetThrottle ? Long.MIN_VALUE : nowNs);
+                    } else if (window.commands > 0) {
                         window.reset(resetThrottle ? Long.MIN_VALUE : nowNs);
                     } else if (resetThrottle) {
                         window.reset(Long.MIN_VALUE);
@@ -173,6 +205,11 @@ final class CameraCommandMetrics {
     private void record(Command command, Outcome outcome, long endedNs,
             long queueNs, boolean queueSample, long executionNs,
             boolean executionSample, Throwable error) {
+        refreshPolicy();
+        if (!command.collectMetrics()) {
+            if (outcome != Outcome.SUCCESS || error != null) recordFailure(command, outcome, error);
+            return;
+        }
         Report report = null;
         synchronized (this) {
             Window window = windows[command.operation.ordinal()][command.workerIndex + 1];
@@ -181,11 +218,38 @@ final class CameraCommandMetrics {
             if (window.lastReportNs == Long.MIN_VALUE
                     || endedNs - window.lastReportNs >= REPORT_INTERVAL_NS) {
                 report = new Report(window, command.operation, command.workerIndex,
-                        window.lastReportNs == Long.MIN_VALUE ? "first" : "interval");
+                        window.lastReportNs == Long.MIN_VALUE ? "first" : "interval", true);
                 window.reset(endedNs);
             }
         }
         if (report != null) publish(report);
+    }
+
+    private void recordFailure(Command command, Outcome outcome, Throwable failure) {
+        if (outcome == Outcome.SUCCESS && failure == null) return;
+        refreshPolicy();
+        publish(new Report(command, outcome, failure));
+    }
+
+    private void refreshPolicy() {
+        long revision = DiagnosticLogPolicy.revision();
+        List<Report> pending = null;
+        synchronized (this) {
+            if (revision == policyRevision) return;
+            pending = new ArrayList<>();
+            for (int operation = 0; operation < windows.length; operation++) {
+                for (int worker = 0; worker < WORKER_SLOTS; worker++) {
+                    Window window = windows[operation][worker];
+                    if (window.commands > 0 && window.firstFailure != null) {
+                        pending.add(new Report(window, Operation.values()[operation],
+                                worker - 1, "policy_changed", false));
+                    }
+                    window.reset(Long.MIN_VALUE);
+                }
+            }
+            policyRevision = revision;
+        }
+        publish(pending);
     }
 
     private void publish(List<Report> reports) {
@@ -201,23 +265,37 @@ final class CameraCommandMetrics {
         final Operation operation;
         final int workerIndex;
         private final long enqueuedNs;
-        private final int[] phaseCounts = new int[Phase.values().length];
-        private final int[] phaseFailures = new int[Phase.values().length];
-        private final long[] phaseTotalsNs = new long[Phase.values().length];
-        private final long[] phaseMaxNs = new long[Phase.values().length];
+        private final int[] phaseCounts;
+        private final int[] phaseFailures;
+        private final long[] phaseTotalsNs;
+        private final long[] phaseMaxNs;
         private Context context;
         private long startedNs = -1L, queueNs, executionNs;
         private boolean queueSample, executionSample, inline, terminal;
         private Phase failedPhase;
         private Throwable phaseFailure;
+        private final boolean metricsEnabled;
+        private final long policyRevision;
 
         Command(CameraCommandMetrics owner, Operation operation, int workerIndex,
-                Context context, long enqueuedNs) {
+                Context context, long enqueuedNs, boolean metricsEnabled,
+                long policyRevision) {
             this.owner = owner;
             this.operation = operation;
             this.workerIndex = workerIndex;
             this.context = context;
             this.enqueuedNs = enqueuedNs;
+            this.metricsEnabled = metricsEnabled;
+            this.policyRevision = policyRevision;
+            phaseCounts = metricsEnabled ? new int[Phase.values().length] : null;
+            phaseFailures = metricsEnabled ? new int[Phase.values().length] : null;
+            phaseTotalsNs = metricsEnabled ? new long[Phase.values().length] : null;
+            phaseMaxNs = metricsEnabled ? new long[Phase.values().length] : null;
+        }
+
+        boolean collectMetrics() {
+            return metricsEnabled && DiagnosticLogPolicy.extended()
+                    && policyRevision == DiagnosticLogPolicy.revision();
         }
 
         void context(Context value) {
@@ -225,7 +303,7 @@ final class CameraCommandMetrics {
         }
 
         void started(long nowNs, boolean inline) {
-            if (terminal || startedNs >= 0L) return;
+            if (!collectMetrics() || terminal || startedNs >= 0L) return;
             startedNs = nowNs;
             queueNs = inline ? 0L : duration(nowNs - enqueuedNs);
             queueSample = true;
@@ -233,6 +311,20 @@ final class CameraCommandMetrics {
         }
 
         void phase(Phase phase, long startedNs, long endedNs, Throwable failure) {
+            if (!metricsEnabled) {
+                if (failure != null) {
+                    failedPhase = phase;
+                    phaseFailure = failure;
+                }
+                return;
+            }
+            if (!collectMetrics()) {
+                if (failure != null) {
+                    failedPhase = phase;
+                    phaseFailure = failure;
+                }
+                return;
+            }
             int i = phase.ordinal();
             long elapsed = duration(endedNs - startedNs);
             phaseCounts[i]++;
@@ -248,6 +340,11 @@ final class CameraCommandMetrics {
         void complete(Outcome outcome, long endedNs, Throwable failure) {
             if (terminal) return;
             terminal = true;
+            if (!collectMetrics()) {
+                if (failure == null && phaseFailure != null) failure = phaseFailure;
+                owner.recordFailure(this, outcome, failure);
+                return;
+            }
             boolean ran = startedNs >= 0L;
             if (!ran && outcome == Outcome.QUEUED_CANCEL) {
                 queueNs = duration(endedNs - enqueuedNs);
@@ -273,6 +370,7 @@ final class CameraCommandMetrics {
         long totalNs, totalMaxNs, lastTotalNs, worstTotalNs;
         Context lastContext = Context.EMPTY, worstContext = Context.EMPTY;
         Context lastFailureContext = Context.EMPTY;
+        Context firstFailureContext = Context.EMPTY;
         Phase failedPhase;
         Throwable firstFailure, lastFailure;
         final int[] phaseCounts = new int[Phase.values().length];
@@ -315,7 +413,10 @@ final class CameraCommandMetrics {
                 phaseMaxNs[i] = Math.max(phaseMaxNs[i], command.phaseMaxNs[i]);
             }
             if (error != null) {
-                if (firstFailure == null) firstFailure = error;
+                if (firstFailure == null) {
+                    firstFailure = error;
+                    firstFailureContext = command.context;
+                }
                 lastFailure = error;
                 lastFailureContext = command.context;
                 failedPhase = command.failedPhase;
@@ -328,7 +429,7 @@ final class CameraCommandMetrics {
             queueSamples = executionSamples = 0;
             queueTotalNs = queueMaxNs = executionTotalNs = executionMaxNs = 0L;
             totalNs = totalMaxNs = lastTotalNs = worstTotalNs = 0L;
-            lastContext = worstContext = lastFailureContext = Context.EMPTY;
+            lastContext = worstContext = lastFailureContext = firstFailureContext = Context.EMPTY;
             failedPhase = null;
             firstFailure = lastFailure = null;
             for (int i = 0; i < phaseCounts.length; i++) {

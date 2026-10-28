@@ -115,6 +115,7 @@ final class CameraDewarpRenderer {
     private final float[] textureMatrix = new float[16];
     private boolean inputMatrixReported;
     private long metricsStartedNs;
+    private long metricsPolicyRevision = -1L;
     private long lastCallbackNs;
     private long callbackCount;
     private boolean frameQueued;
@@ -613,13 +614,17 @@ final class CameraDewarpRenderer {
         rawIndexCount = rawIndices.capacity();
         createCameraInput();
         applyLatestMapping();
-        metricsStartedNs = SystemClock.elapsedRealtimeNanos();
-        metricsWindowMapping = appliedRequest;
-        metricsWindowContext = statsContext;
-        metricsActive = true;
+        metricsPolicyRevision = DiagnosticLogPolicy.revision();
+        metricsActive = statsSink != null && DiagnosticLogPolicy.extended();
+        if (metricsActive) {
+            metricsStartedNs = SystemClock.elapsedRealtimeNanos();
+            metricsWindowMapping = appliedRequest;
+            metricsWindowContext = statsContext;
+        }
         ACTIVE_RENDERERS.incrementAndGet();
         activeRendererCounted = true;
-        handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
+        if (metricsActive)
+            handler.postDelayed(metricsTick, TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
     }
 
     private void createCameraInput() {
@@ -627,10 +632,9 @@ final class CameraDewarpRenderer {
         input.setDefaultBufferSize(width, height);
         input.setOnFrameAvailableListener(texture -> {
             if (texture != cameraTexture) return;
-            long callbackNs = SystemClock.elapsedRealtimeNanos();
-            recordCallback(callbackNs);
+            if (refreshMetricsPolicy()) recordCallback(SystemClock.elapsedRealtimeNanos());
             if (frameQueued) {
-                coalescedCallbacks++;
+                if (collectingMetrics()) coalescedCallbacks++;
             } else {
                 frameQueued = true;
                 handler.post(pendingFrame);
@@ -715,23 +719,29 @@ final class CameraDewarpRenderer {
 
     private void renderFrame() {
         if (cameraTexture == null || eglSurface == EGL14.EGL_NO_SURFACE) return;
+        boolean collectMetrics = refreshMetricsPolicy();
+        long framePolicyRevision = metricsPolicyRevision;
         int concurrent = RENDERS_IN_FLIGHT.incrementAndGet();
         MAX_RENDERS_IN_FLIGHT.accumulateAndGet(concurrent, Math::max);
-        long renderStartedNs = SystemClock.elapsedRealtimeNanos();
+        long renderStartedNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         boolean swapped = false;
         MappingRequest renderedRequest = appliedRequest;
         try {
-            long updateStartedNs = SystemClock.elapsedRealtimeNanos();
+            long updateStartedNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
             cameraTexture.updateTexImage();
             // Keep draining while detach is pending, without drawing into removed UI hosts.
             if (released.get()) return;
             if (vertices == null || indices == null) return;
-            long updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
-            updateSamples++;
-            updateTotalNs += updateNs;
-            updateMaxNs = Math.max(updateMaxNs, updateNs);
+            long updateNs = 0L;
+            if (collectMetrics) {
+                updateNs = SystemClock.elapsedRealtimeNanos() - updateStartedNs;
+                updateSamples++;
+                updateTotalNs += updateNs;
+                updateMaxNs = Math.max(updateMaxNs, updateNs);
+            }
             cameraTexture.getTransformMatrix(textureMatrix);
-            if (!inputMatrixReported) {
+            if (!inputMatrixReported
+                    && DiagnosticLogPolicy.shouldPersist("camera_texture_matrix")) {
                 inputMatrixReported = true;
                 Log.i(MATRIX_LOG_TAG, "{\"kind\":\"camera_texture_matrix\","
                         + "\"source\":\"camera_dewarp_renderer\","
@@ -744,29 +754,35 @@ final class CameraDewarpRenderer {
             long inputTimestamp = cameraTexture.getTimestamp();
             boolean preserveTimestamp = preserveInputFrameTimestamp;
             if (preserveTimestamp && inputTimestamp <= 0L) return;
-            recordFrameAge(preserveTimestamp ? System.nanoTime()
-                    : SystemClock.elapsedRealtimeNanos(), inputTimestamp);
+            if (collectMetrics && collectingMetrics()) {
+                recordFrameAge(preserveTimestamp ? System.nanoTime()
+                        : SystemClock.elapsedRealtimeNanos(), inputTimestamp);
+            }
             drawAndSwap(eglSurface, vertices, indices, indexCount, primaryTiming,
-                    preserveTimestamp ? inputTimestamp : 0L);
+                    preserveTimestamp ? inputTimestamp : 0L, collectMetrics);
             swapped = true;
             emitAppliedMeshAfterSwap(renderedRequest);
-            renderMirror(true, mirrorTiming);
-            renderMirror(false, mirrorTiming);
+            renderMirror(true, mirrorTiming, collectMetrics);
+            renderMirror(false, mirrorTiming, collectMetrics);
             require(EGL14.eglMakeCurrent(
                     eglDisplay, eglSurface, eglSurface, eglContext),
                     "EGL primary restore failed");
         } finally {
-            long completedNs = SystemClock.elapsedRealtimeNanos();
+            long completedNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
             RENDERS_IN_FLIGHT.decrementAndGet();
-            if (swapped) recordCompletedRender(completedNs - renderStartedNs, primaryTiming);
+            if (swapped && collectMetrics && collectingMetrics()
+                    && framePolicyRevision == DiagnosticLogPolicy.revision()) {
+                recordCompletedRender(completedNs - renderStartedNs, primaryTiming);
+            }
         }
     }
 
     private void drawAndSwap(
             EGLSurface surface, FloatBuffer drawVertices,
             ShortBuffer drawIndices, int drawIndexCount, SwapTiming timing,
-            long presentationTimestamp) {
-        long startedNs = SystemClock.elapsedRealtimeNanos();
+            long presentationTimestamp, boolean collectMetrics) {
+        collectMetrics = collectMetrics && collectingMetrics();
+        long startedNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         require(EGL14.eglMakeCurrent(
                 eglDisplay, surface, surface, eglContext), "EGL makeCurrent failed");
         GLES20.glViewport(0, 0, width, height);
@@ -792,26 +808,29 @@ final class CameraDewarpRenderer {
             require(EGLExt.eglPresentationTimeANDROID(
                     eglDisplay, surface, presentationTimestamp), "EGL frame timestamp failed");
         }
-        long swapStartedNs = SystemClock.elapsedRealtimeNanos();
+        long swapStartedNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         require(EGL14.eglSwapBuffers(eglDisplay, surface), "EGL swap failed");
-        timing.preSwapNs = swapStartedNs - startedNs;
-        timing.swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+        timing.preSwapNs = collectMetrics ? swapStartedNs - startedNs : 0L;
+        timing.swapWaitNs = collectMetrics
+                ? SystemClock.elapsedRealtimeNanos() - swapStartedNs : 0L;
     }
 
-    private void renderMirror(boolean raw, SwapTiming timing) {
+    private void renderMirror(boolean raw, SwapTiming timing, boolean collectMetrics) {
         EGLSurface surface = raw ? rawMirrorSurface : correctedMirrorSurface;
         if (surface == EGL14.EGL_NO_SURFACE) return;
         try {
             drawAndSwap(surface,
                     raw ? rawVertices : vertices,
                     raw ? rawIndices : indices,
-                    raw ? rawIndexCount : indexCount, timing, 0L);
-            if (raw) rawMirrorSwapCount++;
-            else correctedMirrorSwapCount++;
-            mirrorPreSwapTotalNs += timing.preSwapNs;
-            mirrorPreSwapMaxNs = Math.max(mirrorPreSwapMaxNs, timing.preSwapNs);
-            mirrorSwapWaitTotalNs += timing.swapWaitNs;
-            mirrorSwapWaitMaxNs = Math.max(mirrorSwapWaitMaxNs, timing.swapWaitNs);
+                    raw ? rawIndexCount : indexCount, timing, 0L, collectMetrics);
+            if (collectMetrics && collectingMetrics()) {
+                if (raw) rawMirrorSwapCount++;
+                else correctedMirrorSwapCount++;
+                mirrorPreSwapTotalNs += timing.preSwapNs;
+                mirrorPreSwapMaxNs = Math.max(mirrorPreSwapMaxNs, timing.preSwapNs);
+                mirrorSwapWaitTotalNs += timing.swapWaitNs;
+                mirrorSwapWaitMaxNs = Math.max(mirrorSwapWaitMaxNs, timing.swapWaitNs);
+            }
         } catch (Throwable error) {
             EGL14.eglDestroySurface(eglDisplay, surface);
             if (raw) rawMirrorSurface = EGL14.EGL_NO_SURFACE;
@@ -945,17 +964,53 @@ final class CameraDewarpRenderer {
                 maxPrimarySwapNs, timing.preSwapNs + timing.swapWaitNs);
     }
 
+    private boolean collectingMetrics() {
+        return metricsActive && statsSink != null && DiagnosticLogPolicy.extended()
+                && metricsPolicyRevision == DiagnosticLogPolicy.revision();
+    }
+
+    private boolean refreshMetricsPolicy() {
+        long revision = DiagnosticLogPolicy.revision();
+        if (revision != metricsPolicyRevision) {
+            metricsPolicyRevision = revision;
+            handler.removeCallbacks(metricsTick);
+            resetDiagnosticMetrics();
+            metricsActive = statsSink != null && DiagnosticLogPolicy.extended();
+            if (metricsActive) {
+                metricsStartedNs = SystemClock.elapsedRealtimeNanos();
+                metricsWindowMapping = appliedRequest;
+                metricsWindowContext = statsContext;
+                handler.postDelayed(metricsTick,
+                        TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
+            }
+        }
+        return collectingMetrics();
+    }
+
+    private void resetDiagnosticMetrics() {
+        metricsStartedNs = 0L;
+        lastCallbackNs = callbackCount = coalescedCallbacks = 0L;
+        completedSwapCount = totalRenderNs = maxRenderNs = 0L;
+        updateTotalNs = updateMaxNs = updateSamples = 0L;
+        preSwapTotalNs = preSwapMaxNs = swapWaitTotalNs = swapWaitMaxNs = 0L;
+        maxPrimarySwapNs = rawMirrorSwapCount = correctedMirrorSwapCount = 0L;
+        mirrorPreSwapTotalNs = mirrorPreSwapMaxNs = 0L;
+        mirrorSwapWaitTotalNs = mirrorSwapWaitMaxNs = 0L;
+        maxCallbackGapNs = 0L;
+        lastFrameAgeNs = maxFrameAgeNs = -1L;
+    }
+
     private void emitStatsTick() {
-        if (!metricsActive) return;
+        if (!refreshMetricsPolicy()) return;
         emitStats(SystemClock.elapsedRealtimeNanos());
-        if (metricsActive) {
+        if (refreshMetricsPolicy()) {
             handler.postDelayed(metricsTick,
                     TimeUnit.NANOSECONDS.toMillis(METRICS_INTERVAL_NS));
         }
     }
 
     private void emitStats(long nowNs) {
-        if (statsSink == null || metricsStartedNs == 0) return;
+        if (!collectingMetrics() || metricsStartedNs == 0) return;
         long intervalNs = nowNs - metricsStartedNs;
         MappingRequest completedWindowMapping = metricsWindowMapping;
         StatsContext completedWindowContext = metricsWindowContext;
@@ -965,7 +1020,7 @@ final class CameraDewarpRenderer {
                 completedWindowContext.generation, statsContext.generation,
                 completedWindowContext.viewWidth, statsContext.viewWidth,
                 completedWindowContext.viewHeight, statsContext.viewHeight);
-        Stats stats = !DiagnosticLogPolicy.extended() ? null : new Stats(intervalNs, callbackCount, updateSamples, completedSwapCount,
+        Stats stats = new Stats(intervalNs, callbackCount, updateSamples, completedSwapCount,
                 totalRenderNs, maxRenderNs, updateTotalNs, updateMaxNs,
                 preSwapTotalNs, preSwapMaxNs, swapWaitTotalNs, swapWaitMaxNs,
                 maxPrimarySwapNs,
@@ -978,7 +1033,7 @@ final class CameraDewarpRenderer {
                 inputGeneration, completedWindowContext.generation,
                 width, height, completedWindowContext.viewWidth,
                 completedWindowContext.viewHeight, completedWindowMapping);
-        if (stats != null) stats.coalescedCallbacks = coalescedCallbacks;
+        stats.coalescedCallbacks = coalescedCallbacks;
         coalescedCallbacks = 0;
         metricsStartedNs = nowNs;
         metricsWindowMapping = appliedRequest;
@@ -1004,7 +1059,7 @@ final class CameraDewarpRenderer {
         maxCallbackGapNs = 0;
         maxFrameAgeNs = -1;
         try {
-            if (stableWindow && stats != null) statsSink.accept(stats);
+            if (stableWindow && collectingMetrics()) statsSink.accept(stats);
         } catch (Throwable error) {
             Log.w(TAG, "Dewarp stats sink failed", error);
         }

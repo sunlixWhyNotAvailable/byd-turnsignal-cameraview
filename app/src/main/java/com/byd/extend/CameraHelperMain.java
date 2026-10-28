@@ -90,6 +90,7 @@ final class CameraHelperMain {
         private final TurnSignalController turnController;
         private final CameraRuntimeClient cameraRuntime;
         private final Consumer<String> logSink;
+        private final DiagnosticLogPolicy logcatPolicy = new DiagnosticLogPolicy();
         private final SharedPreferences counters;
         private final SharedPreferences settings;
         private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
@@ -2394,16 +2395,18 @@ final class CameraHelperMain {
 
                     @Override
                     public void onStats(int index, DirectCameraSourceHub.Stats stats) {
+                        if (!DiagnosticLogPolicy.extended()) return;
+                        long policyRevision = DiagnosticLogPolicy.revision();
                         long observedAt = SystemClock.elapsedRealtime();
                         long processCpuMs = Process.getElapsedCpuTime();
                         Runnable report = () -> {
+                            if (!DiagnosticLogPolicy.extended()
+                                    || policyRevision != DiagnosticLogPolicy.revision()) return;
                             stats.sourceRetired |= sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer;
                             if (stats.acquisitionMetrics == null
                                     && (sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer)) return;
-                            boolean extended = DiagnosticLogPolicy.extended();
-                            if (!extended && !stats.fpsWindow && !stats.sourceClosed) return;
                             double measuredNewBufferFps = ratePerSecond(stats.callbacks
                                     - stats.producerTimestampRepeated
                                     - stats.producerTimestampInvalid, stats.intervalNs);
@@ -2433,8 +2436,7 @@ final class CameraHelperMain {
                                         stats, openedHubGeneration);
                                 emit("camera_fps_window_stats", fields);
                             }
-                            if (extended || (stats.outputStage && stats.fpsWindow)) {
-                                Object[] fields = withAcquisitionMetrics(new Object[]{
+                            Object[] fields = withAcquisitionMetrics(new Object[]{
                                     "stage", stats.outputStage ? "output" : "acquisition",
                                     "producer_epoch", openedProducerEpoch,
                                     "fps_window", stats.fpsWindow,
@@ -2497,9 +2499,8 @@ final class CameraHelperMain {
                                     "target_height_max", stats.targetHeightMax,
                                     "target_dimensions", stats.targetDimensions},
                                         stats, openedHubGeneration);
-                                emit(stats.outputStage ? "camera_source_output_stats"
-                                        : "camera_source_hub_stats", fields);
-                            }
+                            emit(stats.outputStage ? "camera_source_output_stats"
+                                    : "camera_source_hub_stats", fields);
                         };
                         if (!callbackHandler.post(report) && stats.sourceClosed) {
                             Log.w(TAG, "camera acquisition close stats handler rejected: producer_epoch="
@@ -2509,9 +2510,57 @@ final class CameraHelperMain {
                     }
 
                     @Override
+                    public void onOutputSizeChanged(
+                            int index, int sizeRequestId, int sizeProducerEpoch,
+                            int width, int height) {
+                        callbackHandler.post(() -> {
+                            if (sourceHubGeneration != openedHubGeneration
+                                    || !persistentPanoProducer) return;
+                            emit("camera_output_size_changed",
+                                    "source_hub_generation", openedHubGeneration,
+                                    "producer_epoch", sizeProducerEpoch,
+                                    "request_id", sizeRequestId,
+                                    "preview_index", index,
+                                    "output_width", width,
+                                    "output_height", height);
+                        });
+                    }
+
+                    @Override
                     public void onCommandStats(CameraCommandMetrics.Report report) {
+                        if (!report.detailed || !DiagnosticLogPolicy.extended()) {
+                            if (report.firstFailure == null && report.lastFailure == null
+                                    && report.failures == 0) return;
+                            Runnable failure = () -> emitCommandFailure(
+                                    report, openedHubGeneration);
+                            if (!callbackHandler.post(failure)) {
+                                String rejected = "camera command failure handler rejected: operation="
+                                        + report.operation.key + ", worker=" + report.workerIndex
+                                        + ", source_hub_generation=" + openedHubGeneration;
+                                if (report.firstFailure != null) {
+                                    Log.w(TAG, rejected + ", first failure", report.firstFailure);
+                                }
+                                if (report.lastFailure != null
+                                        && report.lastFailure != report.firstFailure) {
+                                    Log.w(TAG, rejected + ", last failure", report.lastFailure);
+                                }
+                                if (report.firstFailure == null && report.lastFailure == null) {
+                                    Log.w(TAG, rejected);
+                                }
+                            }
+                            return;
+                        }
+                        long policyRevision = DiagnosticLogPolicy.revision();
                         long observedAt = SystemClock.elapsedRealtime();
                         Runnable emitReport = () -> {
+                            if (!DiagnosticLogPolicy.extended()
+                                    || policyRevision != DiagnosticLogPolicy.revision()) {
+                                if (report.firstFailure != null || report.lastFailure != null
+                                        || report.failures > 0) {
+                                    emitCommandFailure(report, openedHubGeneration);
+                                }
+                                return;
+                            }
                             CameraCommandMetrics.Context last = report.lastContext;
                             CameraCommandMetrics.Context worst = report.worstContext;
                             CameraCommandMetrics.Context failed = report.lastFailureContext;
@@ -2549,6 +2598,7 @@ final class CameraHelperMain {
                             fields.add("worst_command_ms"); fields.add(milliseconds(report.worstTotalNs));
                             appendCommandContext(fields, "last", last);
                             appendCommandContext(fields, "worst", worst);
+                            appendCommandContext(fields, "first_failure", report.firstFailureContext);
                             appendCommandContext(fields, "last_failure", failed);
                             fields.add("failed_phase"); fields.add(report.failedPhase == null
                                     ? "" : report.failedPhase.key);
@@ -2590,6 +2640,32 @@ final class CameraHelperMain {
                                 Log.w(TAG, rejected);
                             }
                         }
+                    }
+
+                    private void emitCommandFailure(
+                            CameraCommandMetrics.Report report, int sourceHubGeneration) {
+                        ArrayList<Object> fields = new ArrayList<>();
+                        fields.add("operation"); fields.add(report.operation.key);
+                        fields.add("worker"); fields.add(report.workerIndex < 0 ? "coordinator"
+                                : DirectCameraSourceHub.workerThreadName(report.workerIndex));
+                        fields.add("worker_index"); fields.add(report.workerIndex);
+                        fields.add("source_hub_generation"); fields.add(sourceHubGeneration);
+                        fields.add("report_reason"); fields.add(report.reason);
+                        fields.add("failure_count"); fields.add(report.failures);
+                        fields.add("queued_cancel"); fields.add(report.queuedCancels);
+                        fields.add("post_reject"); fields.add(report.postRejects);
+                        fields.add("failed_phase"); fields.add(report.failedPhase == null
+                                ? "" : report.failedPhase.key);
+                        appendCommandContext(fields, "first_failure", report.firstFailureContext);
+                        appendCommandContext(fields, "last_failure", report.lastFailureContext);
+                        if (report.firstFailure != null) {
+                            appendCommandFailure(fields, "first_failure", report.firstFailure);
+                        }
+                        if (report.lastFailure != null
+                                && report.lastFailure != report.firstFailure) {
+                            appendCommandFailure(fields, "last_failure", report.lastFailure);
+                        }
+                        emit("camera_source_command_failed", fields.toArray());
                     }
 
                     @Override
@@ -6147,7 +6223,24 @@ final class CameraHelperMain {
         }
 
         private void forwardLine(String line) {
-            Log.i(TAG, line);
+            if (line == null) {
+                Log.i(TAG, line);
+            } else {
+                String kind = DiagnosticLogPolicy.kind(line);
+                if (DiagnosticLogPolicy.shouldPersist(kind)) {
+                    String summary;
+                    boolean suppress;
+                    synchronized (logcatPolicy) {
+                        long now = kind.contains("error") || kind.contains("failed")
+                                || kind.contains("failure") || kind.contains("unavailable")
+                                ? SystemClock.elapsedRealtime() : 0L;
+                        summary = logcatPolicy.before(line, kind, now);
+                        suppress = logcatPolicy.suppressed();
+                    }
+                    if (summary != null) Log.i(TAG, summary);
+                    if (!suppress) Log.i(TAG, line);
+                }
+            }
             logSink.accept(line);
             IBinder current;
             synchronized (this) {

@@ -1,11 +1,13 @@
 package com.byd.extend.remote;
 
 import android.util.Log;
+import com.byd.extend.DiagnosticLogPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /** Preserve the failure chain without putting access credentials into exported logs. */
@@ -58,6 +60,11 @@ public final class CameraViewingDiagnostics {
 
     public static void detail(String stage, String provider, String detail, String... secrets) {
         write(stage, provider, safeText(detail, secrets));
+    }
+
+    public static void verbose(String stage, String provider, Supplier<String> detail, String... secrets) {
+        if (!DiagnosticLogPolicy.extended()) return;
+        write(stage, provider, safeText(detail.get(), secrets));
     }
 
     private static void write(String stage, String provider, String text) {

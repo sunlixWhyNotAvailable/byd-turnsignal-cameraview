@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 13;
+  const WEB_REVISION = 14;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -140,7 +140,7 @@
     archiveLoading: false, archiveError: false, selectedDay: null, month: null, selectedRecord: null,
     playerError: false, playerFrameReported: false, missingCharge: 0, poll: null, mainKey: '', seeking: false,
     localFirstFrame: false, liveRequest: null, liveStreamId: null, liveSelectionRevision: 0, livePlaylist: null,
-    battery: null, batteryExpiresAt: 0,
+    battery: null, batteryExpiresAt: 0, extendedDiagnostics: false, diagnosticsRevision: null,
     modes: { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null },
     settings: { available: null, mirrorCabin: null, recordingSensitivity: null,
       mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null },
@@ -1526,18 +1526,29 @@
       const Hls = await loadHlsLibrary();
       if (!current()) return;
       if (!Hls || !Hls.isSupported()) { fail(null, 'hls'); return; }
-      const transport = { requests: 0, completed: 0, aborted: 0, failed: 0, receivedBytes: 0,
-        completedBytes: 0, loadMs: 0, firstByteMs: 0, firstBytes: 0, lastStatus: 0,
-        bufferedRecoveries: 0, missingFragments: 0 };
+      let transport = null, transportRevision = null;
       let lastTransportReport = -Infinity;
       let transportReportInFlight = false;
+      const activeTransport = () => {
+        if (!state.extendedDiagnostics) return null;
+        if (!transport || transportRevision !== state.diagnosticsRevision) {
+          transportRevision = state.diagnosticsRevision;
+          transport = { requests: 0, completed: 0, aborted: 0, failed: 0, receivedBytes: 0,
+            completedBytes: 0, loadMs: 0, firstByteMs: 0, firstBytes: 0, lastStatus: 0,
+            bufferedRecoveries: 0, missingFragments: 0 };
+          lastTransportReport = -Infinity;
+        }
+        return transport;
+      };
       const reportTransport = (reason) => {
-        if (provider !== 'tailscale' || !current() || transportReportInFlight ||
+        if (!state.extendedDiagnostics || provider !== 'tailscale' || !current() || transportReportInFlight) return;
+        const sample = activeTransport();
+        if (!sample ||
             performance.now() - lastTransportReport < 10000) return;
         lastTransportReport = performance.now();
         transportReportInFlight = true;
         post('/diagnostic', { event: 'playback_transport', reason, streamId: stream,
-          revision: player.revision, ...transport, atMs: Math.round(lastTransportReport),
+          revision: player.revision, ...sample, atMs: Math.round(lastTransportReport),
           currentMs: Math.round(video.currentTime * 1000), ready: video.readyState,
           playbackRatePermille: Math.round(video.playbackRate * 1000),
           seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
@@ -1551,40 +1562,45 @@
         maxLiveSyncPlaybackRate: 1.5, maxBufferLength: 3,
         xhrSetup: (xhr, url) => {
           xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION));
-          if (provider !== 'tailscale' || !new URL(url, location.href).pathname.match(/\/segment\/\d+\.m4s$/)) return;
-          transport.requests++;
+          if (!state.extendedDiagnostics || provider !== 'tailscale' || !new URL(url, location.href).pathname.match(/\/segment\/\d+\.m4s$/)) return;
+          const sample = activeTransport();
+          sample.requests++;
           const started = performance.now();
           let bytes = 0, completed = false, aborted = false, first = false;
-          xhr.addEventListener('progress', (event) => { bytes = event.loaded; });
+          xhr.addEventListener('progress', (event) => { if (activeTransport() === sample) bytes = event.loaded; });
           xhr.addEventListener('readystatechange', () => {
+            if (activeTransport() !== sample) return;
             if (xhr.readyState === 2 && !first) {
-              first = true; transport.firstBytes++;
-              transport.firstByteMs += Math.round(performance.now() - started);
+              first = true; sample.firstBytes++;
+              sample.firstByteMs += Math.round(performance.now() - started);
             }
           });
           xhr.addEventListener('load', () => { completed = xhr.status >= 200 && xhr.status < 300; });
           xhr.addEventListener('abort', () => { aborted = true; });
           xhr.addEventListener('loadend', () => {
+            if (activeTransport() !== sample) return;
             if (completed) bytes = Math.max(bytes, xhr.response?.byteLength || 0);
-            transport.receivedBytes += bytes;
-            transport.loadMs += Math.round(performance.now() - started);
-            transport.lastStatus = xhr.status;
-            if (completed) { transport.completed++; transport.completedBytes += bytes; }
-            else if (aborted) transport.aborted++;
-            else transport.failed++;
+            sample.receivedBytes += bytes;
+            sample.loadMs += Math.round(performance.now() - started);
+            sample.lastStatus = xhr.status;
+            if (completed) { sample.completed++; sample.completedBytes += bytes; }
+            else if (aborted) sample.aborted++;
+            else sample.failed++;
             reportTransport(video.readyState < 3 || video.seeking ? 'stall' : 'progress');
           });
         } });
       player.hls = hls;
       if (provider === 'tailscale') {
         BydLiveRecovery.install(hls, Hls, (kind, detail) => {
+          const sample = activeTransport();
+          if (!sample) return;
           if (kind === 'missing') {
-            transport.missingFragments++;
-            transport.lastMissingSequence = detail.sequence;
+            sample.missingFragments++;
+            sample.lastMissingSequence = detail.sequence;
           } else {
-            transport.bufferedRecoveries++;
-            transport.recoveryFromMs = detail.fromMs;
-            transport.recoveryTargetMs = detail.targetMs;
+            sample.bufferedRecoveries++;
+            sample.recoveryFromMs = detail.fromMs;
+            sample.recoveryTargetMs = detail.targetMs;
           }
           reportTransport('recovery');
         });
@@ -1650,6 +1666,8 @@
       const previous = state.status;
       const data = await api('/status');
       if (action !== actionGeneration || !state.authenticated || modeWrite !== modeWriteGeneration || request !== statusRequestGeneration) return;
+      state.extendedDiagnostics = data.extendedDiagnostics === true;
+      state.diagnosticsRevision = data.diagnosticsRevision;
       if (data.status === 'replaced') {
         handleUnauthorized({ body: { status: 'replaced' } });
         return;

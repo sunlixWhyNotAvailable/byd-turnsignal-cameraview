@@ -8,6 +8,8 @@ import android.os.Parcel;
 
 import org.json.JSONObject;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -350,8 +352,9 @@ final class AvasExteriorRoute {
             if (found == null) throw new NoSuchMethodException(method);
             found.setAccessible(true);
             Object result = found.invoke(target, arguments);
-            event(diagnostics, "avas_route_call", "class", target.getClass().getName(), "method", method,
-                    "args", Arrays.toString(arguments), "result", String.valueOf(result));
+            if (DiagnosticLogPolicy.extended())
+                event(diagnostics, "avas_route_call", "class", target.getClass().getName(), "method", method,
+                        "args", Arrays.toString(arguments), "result", String.valueOf(result));
             return found.getReturnType() == void.class ? Boolean.TRUE : result;
         } catch (Exception failure) {
             unavailable(diagnostics, target.getClass().getName() + "." + method, failure);
@@ -380,9 +383,18 @@ final class AvasExteriorRoute {
 
     private void unavailable(AvasAudioDiagnostics.Context diagnostics, String operation,
             Exception failure) {
-        Throwable cause = failure instanceof InvocationTargetException ? failure.getCause() : failure;
+        Throwable cause = failure instanceof InvocationTargetException && failure.getCause() != null
+                ? failure.getCause() : failure;
         event(diagnostics, "avas_route_call_unavailable", "operation", operation,
-                "error", String.valueOf(cause));
+                "error", String.valueOf(cause), "exception_class", cause.getClass().getName(),
+                "exception_message", String.valueOf(cause.getMessage()),
+                "stack_trace", stackTrace(failure));
+    }
+
+    private static String stackTrace(Throwable failure) {
+        StringWriter trace = new StringWriter();
+        failure.printStackTrace(new PrintWriter(trace));
+        return trace.toString();
     }
 
     private void event(String kind, Object... fields) {

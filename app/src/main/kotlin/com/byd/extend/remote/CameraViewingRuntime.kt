@@ -779,7 +779,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             run.retiringEncoder = run.encoder
             val surface = run.publisher?.startVideo() ?: CameraHlsEncoder(streamId, { event, frames, bytes ->
                 execute(p, run) { viewer?.takeIf { it.run === run }?.let {
-                    sessionEvent(event, it, "frames=$frames bytes=$bytes")
+                    if (event == "encoder_statistics") {
+                        CameraViewingDiagnostics.verbose(event, p.method,
+                            { "${sessionContext(it)} frames=$frames bytes=$bytes" })
+                    } else sessionEvent(event, it, "frames=$frames bytes=$bytes")
                 } }
             }, { encoder -> execute(p, run) {
                 if (sourceRun === run && run.encoder === encoder && run.video && viewer?.mode == "live" &&

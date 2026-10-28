@@ -6,6 +6,7 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
 import android.view.Surface
+import com.byd.extend.DiagnosticLogPolicy
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
@@ -35,6 +36,7 @@ internal class CameraHlsEncoder(
     private var frames = 0L
     private var bytes = 0L
     private var lastStatisticsNs = 0L
+    private var statisticsRevision = -1L
 
     fun start(): Surface {
         check(codec == null)
@@ -92,7 +94,8 @@ internal class CameraHlsEncoder(
                                 val output = encoder.getOutputBuffer(index) ?: error("Missing H.264 output")
                                 output.position(info.offset); output.limit(info.offset + info.size)
                                 val active = muxer ?: error("H.264 payload before format")
-                                if (firstPts < 0) firstPts = info.presentationTimeUs
+                                val firstFrame = firstPts < 0
+                                if (firstFrame) firstPts = info.presentationTimeUs
                                 val pts = info.presentationTimeUs - firstPts
                                 val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                                 window.sample(info.presentationTimeUs)
@@ -100,11 +103,20 @@ internal class CameraHlsEncoder(
                                     BufferInfo(pts, info.size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
                                 previousPts = lastPts
                                 lastPts = pts
-                                frames++; bytes += info.size
-                                val now = android.os.SystemClock.elapsedRealtimeNanos()
-                                if (frames == 1L || now - lastStatisticsNs >= 10_000_000_000L) {
-                                    lastStatisticsNs = now
-                                    diagnostics(if (frames == 1L) "first_encoded_frame" else "encoder_statistics", frames, bytes)
+                                if (firstFrame) diagnostics("first_encoded_frame", 1, info.size.toLong())
+                                if (DiagnosticLogPolicy.extended()) {
+                                    val revision = DiagnosticLogPolicy.revision()
+                                    if (revision != statisticsRevision) {
+                                        statisticsRevision = revision
+                                        frames = 0; bytes = 0; lastStatisticsNs = 0
+                                    }
+                                    frames++; bytes += info.size
+                                    val now = android.os.SystemClock.elapsedRealtimeNanos()
+                                    if (frames == 1L) lastStatisticsNs = now
+                                    else if (now - lastStatisticsNs >= 10_000_000_000L) {
+                                        lastStatisticsNs = now
+                                        diagnostics("encoder_statistics", frames, bytes)
+                                    }
                                 }
                             }
                         } finally { encoder.releaseOutputBuffer(index, false) }

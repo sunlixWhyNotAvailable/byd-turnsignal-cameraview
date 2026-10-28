@@ -2,6 +2,7 @@ package com.byd.extend.remote;
 
 import com.byd.extend.CameraModeClient;
 import com.byd.extend.CameraModeSettings;
+import com.byd.extend.DiagnosticLogPolicy;
 import com.byd.extend.RemoteCameraView;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
@@ -310,7 +311,9 @@ public final class CameraViewerServer implements AutoCloseable {
             case "/status":
                 if (!isRead(request.method)) { methodNotAllowed(socket, reply); return; }
                 serveJson(socket, request.method.equals("HEAD"), reply,
-                        stream.status().put("webRevision", ViewerStopReason.WEB_REVISION));
+                        stream.status().put("webRevision", ViewerStopReason.WEB_REVISION)
+                                .put("extendedDiagnostics", DiagnosticLogPolicy.extended())
+                                .put("diagnosticsRevision", DiagnosticLogPolicy.revision()));
                 return;
             case "/modes": {
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
@@ -479,17 +482,19 @@ public final class CameraViewerServer implements AutoCloseable {
                 String event = diagnostic.optString("event", "");
                 String mode = diagnostic.optString("mode", "");
                 if ("playback_transport".equals(event)) {
-                    String detail = ViewerStopReason.transport(diagnostic);
                     FragmentedVideoWindow window = stream.video();
-                    if (detail == null || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))
+                    if (!ViewerStopReason.validTransportReason(diagnostic) || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))
                             || !"tailscale".equals(stream.presentation().optString("provider"))) {
                         json(socket, reply, 400, "invalid_event", null); return;
+                    }
+                    if (!DiagnosticLogPolicy.extended()) {
+                        json(socket, reply, 200, "ok", null); return;
                     }
                     long time = now(), previous = lastTransportDiagnostic.get();
                     if ((previous == Long.MIN_VALUE || time - previous >= 5_000)
                             && lastTransportDiagnostic.compareAndSet(previous, time))
-                        CameraViewingDiagnostics.detail("browser_transport", "tailscale",
-                                "stream=" + window.getStreamId() + " " + detail);
+                        CameraViewingDiagnostics.verbose("browser_transport", "tailscale",
+                                () -> "stream=" + window.getStreamId() + " " + ViewerStopReason.transport(diagnostic));
                     json(socket, reply, 200, "ok", null); return;
                 }
                 if ("view_frame".equals(event)) {

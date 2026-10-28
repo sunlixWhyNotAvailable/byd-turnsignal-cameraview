@@ -674,14 +674,25 @@ final class RemoteInteriorCameraSources implements AutoCloseable {
                 if ("equals".equals(method.getName())) return proxy == arguments[0];
                 return "RemoteInteriorDmsEvents";
             }
-            CameraViewingDiagnostics.detail("interior_camera_event", "shared",
-                    "camera=driver id=" + id + " callback=" + method.getName()
-                            + " arguments=" + Arrays.toString(arguments));
-            if ("onEvent".equals(method.getName()) && arguments != null && arguments.length > 1
-                    && arguments[1] instanceof Number && ((Number) arguments[1]).intValue() == 1008)
+            boolean nativeFailure = isNativeFailureEvent(method.getName(), arguments);
+            if (nativeFailure || !"onEvent".equals(method.getName())) {
+                CameraViewingDiagnostics.detail("interior_camera_event", "shared",
+                        "camera=driver id=" + id + " callback=" + method.getName()
+                                + " arguments=" + Arrays.toString(arguments));
+            } else {
+                CameraViewingDiagnostics.verbose("interior_camera_event", "shared",
+                        () -> "camera=driver id=" + id + " callback=" + method.getName()
+                                + " arguments=" + Arrays.toString(arguments));
+            }
+            if (nativeFailure)
                 failed.accept(new IllegalStateException("NormalCamera DMS native event type=1008 id=" + id));
             return null;
         }
+    }
+
+    static boolean isNativeFailureEvent(String callback, Object[] arguments) {
+        return "onEvent".equals(callback) && arguments != null && arguments.length > 1
+                && arguments[1] instanceof Number && ((Number) arguments[1]).intValue() == 1008;
     }
 
     private static void requireTrue(Object result, String operation) {

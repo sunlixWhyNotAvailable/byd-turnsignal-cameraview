@@ -3,6 +3,8 @@ package com.byd.extend;
 import static org.junit.Assert.*;
 
 import org.junit.Test;
+import org.junit.Before;
+import org.junit.After;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +15,17 @@ import java.util.concurrent.TimeoutException;
  * they do not simulate Handler execution, EGL calls, or dependency outcomes.
  */
 public final class CameraCommandMetricsTest {
+    private boolean extendedBefore;
+
+    @Before public void enableExtendedMetrics() {
+        extendedBefore = DiagnosticLogPolicy.extended();
+        DiagnosticLogPolicy.configure(true);
+    }
+
+    @After public void restoreExtendedMetrics() {
+        DiagnosticLogPolicy.configure(extendedBefore);
+    }
+
     @Test public void recordsQueueExecutionOutcomesAndBoundedFlushes() {
         List<CameraCommandMetrics.Report> reports = new ArrayList<>();
         CameraCommandMetrics metrics = new CameraCommandMetrics(reports::add);
@@ -108,6 +121,8 @@ public final class CameraCommandMetricsTest {
         CameraCommandMetrics.Report report = reports.get(0);
         assertEquals(1, report.failures);
         assertSame(failure, report.firstFailure);
+        assertSame(context, report.firstFailureContext);
+        assertSame(context, report.lastFailureContext);
         assertSame(nativeCause, report.lastFailure.getCause());
         assertEquals(CameraCommandMetrics.Phase.EGL_CREATE_WINDOW_SURFACE, report.failedPhase);
         CameraCommandMetrics.PhaseStats phase = report.phases[
@@ -128,6 +143,7 @@ public final class CameraCommandMetricsTest {
         CameraCommandMetrics.Report residual = reports.get(1);
         assertNull(residual.failedPhase);
         assertSame(laterFailure, residual.lastFailure);
+        assertEquals(18, residual.firstFailureContext.requestId);
         assertEquals(18, residual.lastFailureContext.requestId);
     }
 
@@ -158,6 +174,70 @@ public final class CameraCommandMetricsTest {
         assertEquals(3, reports.get(2).lastContext.sourceIndex);
         metrics.flushAll("hub_close", 240);
         assertEquals(3, reports.size());
+    }
+
+    @Test public void disabledMetricsSkipSuccessesButKeepFailureOperationContextAndCause() {
+        DiagnosticLogPolicy.configure(false);
+        List<CameraCommandMetrics.Report> reports = new ArrayList<>();
+        CameraCommandMetrics metrics = new CameraCommandMetrics(reports::add);
+        CameraCommandMetrics.Context context = new CameraCommandMetrics.Context(
+                3, 29, 41, 720, false);
+        CameraCommandMetrics.Command success = metrics.begin(
+                CameraCommandMetrics.Operation.WORKER_ATTACH, 3, context, 100);
+        success.started(110, false);
+        success.phase(CameraCommandMetrics.Phase.EGL_CREATE_WINDOW_SURFACE,
+                115, 125, null);
+        success.complete(CameraCommandMetrics.Outcome.SUCCESS, 130, null);
+        assertTrue(reports.isEmpty());
+
+        IllegalStateException nativeCause = new IllegalStateException("egl=0x3003");
+        RuntimeException failure = new RuntimeException("output attach failed", nativeCause);
+        CameraCommandMetrics.Command failed = metrics.begin(
+                CameraCommandMetrics.Operation.WORKER_ATTACH, 3, context, 200);
+        failed.phase(CameraCommandMetrics.Phase.EGL_CREATE_WINDOW_SURFACE,
+                215, 225, failure);
+        failed.complete(CameraCommandMetrics.Outcome.FAILURE, 230, failure);
+
+        assertEquals(1, reports.size());
+        CameraCommandMetrics.Report report = reports.get(0);
+        assertFalse(report.detailed);
+        assertEquals(CameraCommandMetrics.Operation.WORKER_ATTACH, report.operation);
+        assertEquals(1, report.failures);
+        assertSame(context, report.firstFailureContext);
+        assertSame(context, report.lastFailureContext);
+        assertSame(failure, report.firstFailure);
+        assertSame(failure, report.lastFailure);
+        assertSame(nativeCause, report.lastFailure.getCause());
+        assertEquals(CameraCommandMetrics.Phase.EGL_CREATE_WINDOW_SURFACE, report.failedPhase);
+    }
+
+    @Test public void policyRevisionClearsOldSuccessSamplesBeforeMetricsResume() {
+        List<CameraCommandMetrics.Report> reports = new ArrayList<>();
+        CameraCommandMetrics metrics = new CameraCommandMetrics(reports::add);
+        CameraCommandMetrics.Context context = new CameraCommandMetrics.Context(
+                1, 7, 12, 501, false);
+        record(metrics, new Input(CameraCommandMetrics.Operation.WORKER_ATTACH, 1,
+                context, 100, 110, false, CameraCommandMetrics.Outcome.SUCCESS, 120, null));
+        assertEquals(1, reports.size());
+        assertEquals(1, reports.get(0).commands);
+
+        record(metrics, new Input(CameraCommandMetrics.Operation.WORKER_ATTACH, 1,
+                context, 200, 210, false, CameraCommandMetrics.Outcome.SUCCESS, 220, null));
+        assertEquals(1, reports.size());
+
+        DiagnosticLogPolicy.configure(false);
+        CameraCommandMetrics.Command disabled = metrics.begin(
+                CameraCommandMetrics.Operation.WORKER_ATTACH, 1, context, 300);
+        disabled.complete(CameraCommandMetrics.Outcome.SUCCESS, 330, null);
+        DiagnosticLogPolicy.configure(true);
+        record(metrics, new Input(CameraCommandMetrics.Operation.WORKER_ATTACH, 1,
+                context, 400, 410, false, CameraCommandMetrics.Outcome.SUCCESS, 420, null));
+
+        assertEquals(2, reports.size());
+        assertEquals("first", reports.get(1).reason);
+        assertEquals(1, reports.get(1).commands);
+        assertEquals(10L, reports.get(1).queueTotalNs);
+        assertEquals(10L, reports.get(1).executionTotalNs);
     }
 
     private static void record(CameraCommandMetrics metrics, Input input) {

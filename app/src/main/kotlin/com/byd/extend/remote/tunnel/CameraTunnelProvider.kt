@@ -1,6 +1,7 @@
 package com.byd.extend.remote.tunnel
 
 import android.content.Context
+import com.byd.extend.DiagnosticLogPolicy
 import com.byd.extend.remote.CameraViewingDiagnostics
 import com.byd.extend.remote.security.KeystoreSecretStore
 import com.byd.extend.remote.security.TunnelSecretStore
@@ -20,6 +21,13 @@ data class CameraTunnelResult(
     val diagnostic: String? = null,
     val networkFailure: Boolean = false,
 )
+
+internal fun isNativeDiagnosticFailure(result: CameraTunnelResult) = result.state == "error"
+    || result.errorCode != null || result.errorDetail != null || result.networkFailure
+
+internal fun shouldLogNativeDiagnosticBody(operation: String, result: CameraTunnelResult,
+    extended: Boolean) = isNativeDiagnosticFailure(result)
+    || operation != "status" && operation != "serve" || extended
 
 /** Serialized app-facing facade for the userspace Tailscale and embedded Zrok providers. */
 class CameraTunnelProvider(
@@ -44,6 +52,8 @@ class CameraTunnelProvider(
     private val lifecycleLock = Any()
     private var closeRequested = false
     private var eventListener: ((CameraTunnelResult) -> Unit)? = null
+    private var lastStatusState: String? = null
+    private var lastServeState: String? = null
 
     fun observeFailures(callback: (CameraTunnelResult) -> Unit) {
         eventListener = callback
@@ -215,13 +225,29 @@ class CameraTunnelProvider(
     }
 
     private fun logNativeResult(operation: String, result: CameraTunnelResult, vararg secrets: String?) {
-        val knownSecrets = (secrets.filterNotNull() + listOfNotNull(result.loginUrl)).toTypedArray()
-        result.diagnostic?.let { detail ->
-            CameraViewingDiagnostics.detail("native_${operation}_response generation=$instanceId", kind,
-                detail, *knownSecrets)
+        val hasFailure = isNativeDiagnosticFailure(result)
+        val periodic = operation == "status" || operation == "serve"
+        val logBody = result.diagnostic != null
+            && shouldLogNativeDiagnosticBody(operation, result, DiagnosticLogPolicy.extended())
+        val knownSecrets = if (hasFailure || logBody)
+            (secrets.filterNotNull() + listOfNotNull(result.loginUrl)).toTypedArray()
+        else emptyArray()
+        if (logBody) {
+            val stage = "native_${operation}_response generation=$instanceId"
+            val detail = checkNotNull(result.diagnostic)
+            if (hasFailure) CameraViewingDiagnostics.detail(stage, kind, detail, *knownSecrets)
+            else CameraViewingDiagnostics.verbose(stage, kind, { detail }, *knownSecrets)
         }
-        if (result.state != "error") {
-            if (operation != "status") CameraViewingDiagnostics.detail("native_$operation generation=$instanceId",
+        if (periodic) {
+            val previous = if (operation == "status") lastStatusState else lastServeState
+            if (previous != result.state) {
+                if (operation == "status") lastStatusState = result.state else lastServeState = result.state
+                CameraViewingDiagnostics.detail("native_${operation}_state generation=$instanceId", kind,
+                    "state=${result.state}")
+            }
+        }
+        if (!hasFailure) {
+            if (!periodic) CameraViewingDiagnostics.detail("native_$operation generation=$instanceId",
                 kind, "state=${result.state}")
             return
         }

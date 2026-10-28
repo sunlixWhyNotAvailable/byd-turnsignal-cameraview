@@ -1,12 +1,29 @@
 package com.byd.extend.remote;
 
 import org.junit.Test;
+import com.byd.extend.DiagnosticLogPolicy;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.Assert.*;
 
 public class CameraViewingDiagnosticsTest {
+    @Test public void verboseDetailDoesNotFormatWhenExtendedLoggingIsOff() {
+        boolean previous = DiagnosticLogPolicy.extended();
+        AtomicBoolean formatted = new AtomicBoolean();
+        try {
+            DiagnosticLogPolicy.configure(false);
+            CameraViewingDiagnostics.verbose("test_progress", "vdo", () -> {
+                formatted.set(true);
+                return "frames=1";
+            });
+            assertFalse(formatted.get());
+        } finally {
+            DiagnosticLogPolicy.configure(previous);
+        }
+    }
+
     @Test public void keepsCauseAndCleanupStacksWithoutCredentials() {
         IOException cause = new IOException("HTTP 403: token=opaque-secret https://login.example/a?key=private");
         IllegalStateException failure = new IllegalStateException("authorize: password=\"1\"", cause);

@@ -157,6 +157,28 @@ public final class CameraOutputCalculationTest {
                 18 * second, 1, 2, window.startedNs, window.untilNs));
     }
 
+    @Test public void diagnosticCollectionRequiresExtendedModeAndSizeEventsRequireChange() {
+        assertFalse(DirectCameraSourceHub.statsCollectionActive(
+                false, 5_000, 1_000, 10_000));
+        assertTrue(DirectCameraSourceHub.statsCollectionActive(
+                true, 5_000, 0, 0));
+
+        assertTrue(DirectCameraSourceHub.outputSizeChanged(-1, -1, 1920, 1300));
+        assertFalse(DirectCameraSourceHub.outputSizeChanged(1920, 1300, 1920, 1300));
+        assertTrue(DirectCameraSourceHub.outputSizeChanged(1920, 1300, 1280, 720));
+        assertFalse(DirectCameraSourceHub.outputSizeChanged(1920, 1300, 0, 720));
+    }
+
+    @Test public void disabledFpsWindowStillAcknowledgesFirstFrameOnce() {
+        DirectCameraSourceHub.FpsMeasurementWindow window =
+                new DirectCameraSourceHub.FpsMeasurementWindow(0, 0, 0L, 5L);
+
+        assertTrue(window.acknowledgeFirstFrame());
+        assertFalse(window.acknowledgeFirstFrame());
+        assertFalse(window.start(10L, 100L));
+        assertEquals(0L, window.startedNs);
+    }
+
     @Test public void fpsCountsRejectRepeatedAndInvalidProducerTimestampsAcrossReports() {
         DirectCameraSourceHub.StatsWindow stats = new DirectCameraSourceHub.StatsWindow();
         assertNull(sourceFrame(stats, 1_000, 10));

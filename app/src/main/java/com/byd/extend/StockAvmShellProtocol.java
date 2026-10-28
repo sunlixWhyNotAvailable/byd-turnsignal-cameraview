@@ -13,7 +13,7 @@ final class StockAvmShellProtocol {
     static final String CANCELLATION_DESCRIPTOR = "com.byd.extend.IStockAvmCancellation";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_avm.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_avm.log";
-    static final int VERSION = 10;
+    static final int VERSION = 11;
     static final int OPEN_RESULT_OK = 0;
     static final int OPEN_RESULT_BYD_CONFIG_EACCES = 1;
 

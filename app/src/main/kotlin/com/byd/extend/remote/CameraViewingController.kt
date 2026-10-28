@@ -7,6 +7,7 @@ import com.byd.extend.CameraChargeSettings
 import com.byd.extend.AppLanguage
 import com.byd.extend.CameraModeSettings
 import com.byd.extend.CameraViewingShellClient
+import com.byd.extend.DiagnosticLogPolicy
 import com.byd.extend.MotionRuntime
 import com.byd.extend.RemoteCameraView
 import com.byd.extend.R
@@ -67,6 +68,9 @@ class CameraViewingController private constructor(private val context: Context) 
     private fun presentationPayload() = JSONObject().put("locale", AppLanguage.read(displaySettings))
         .put("theme", if (displaySettings.getBoolean("ui_dark_theme", true)) "dark" else "light")
         .put("interiorCameras", interiorCameras()).put("mirrorCabin", cabinMirrored())
+        .put("extendedLogs", extendedLogsEnabled())
+
+    private fun extendedLogsEnabled() = displaySettings.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false)
 
     private fun interiorCameras() = displaySettings.getInt(RemoteCameraView.PREFERENCE_KEY, 0)
         .also(RemoteCameraView::validateMask)
@@ -178,7 +182,8 @@ class CameraViewingController private constructor(private val context: Context) 
                 refresh()
             }
             accept(ensureClient().request(if (wasLocked) "reconnect" else "authorize",
-                JSONObject().put("transport", method).put("profile", payload)))
+                JSONObject().put("transport", method).put("profile", payload)
+                    .put("extendedLogs", extendedLogsEnabled())))
             // A successful request acknowledges applying this draft, not provider readiness.
             check(preferences.edit().putBoolean("draft_${method}_access_changed", false).commit())
             refresh()
@@ -269,7 +274,8 @@ class CameraViewingController private constructor(private val context: Context) 
         backend.execute {
             val failure = runCatching {
                 connected.prepareCameraBackend()
-                connected.request("reconfigured", JSONObject().put("restartVideo", reset))
+                connected.request("reconfigured", JSONObject().put("restartVideo", reset)
+                    .put("extendedLogs", extendedLogsEnabled()))
             }.exceptionOrNull()
             execute("backend_result") {
                 if (backendSetup === connected) backendSetup = null
@@ -346,6 +352,12 @@ class CameraViewingController private constructor(private val context: Context) 
     }
     fun authorizationOpened(request: Long) = execute("authorization_opened") {
         client?.let { accept(it.request("authorization_opened", JSONObject().put("transport", selected()).put("request", request))) }
+    }
+    fun diagnosticSettingsChanged() = execute("diagnostic_settings") {
+        val current = client
+        val target = current ?: CameraViewingShellClient(context)
+        try { target.configureDiagnosticsIfConnected(extendedLogsEnabled()) }
+        finally { if (target !== current) target.close() }
     }
     fun revoke() = execute("revoke") { accept(ensureClient().request("revoke", JSONObject().put("transport", selected()))) }
     fun cancel() = execute("cancel") { accept(ensureClient().request("cancel", JSONObject().put("transport", selected()))) }

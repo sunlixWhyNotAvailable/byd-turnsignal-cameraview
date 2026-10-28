@@ -3866,6 +3866,7 @@ final class TurnSignalController {
 
     private void reverseTiming(String stage, String state, int requestId, int displayTarget,
             long queuedMs, long startedMs, boolean success) {
+        if (!DiagnosticLogPolicy.extended()) return;
         emit("reverse_camera_timing", "stage", stage, "state", state,
                 "request_id", requestId, "display_target", displayTarget,
                 "queued_ms", queuedMs, "started_ms", startedMs,

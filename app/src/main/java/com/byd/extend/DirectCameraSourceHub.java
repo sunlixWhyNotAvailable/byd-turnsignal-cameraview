@@ -44,6 +44,10 @@ final class DirectCameraSourceHub
         default void onFirstFrame(int index, long windowId, long elapsedNs) {
         }
 
+        default void onOutputSizeChanged(
+                int index, int requestId, int producerEpoch, int width, int height) {
+        }
+
         /** Optional diagnostic callback; older listeners do not need to implement it. */
         default void onTargetStall(Surface surface, int index, long swapWaitNs) {
         }
@@ -156,24 +160,44 @@ final class DirectCameraSourceHub
     }
 
     synchronized long collectStatsForWindow(int requestedFps) {
+        long revision = DiagnosticLogPolicy.revision();
+        if (!DiagnosticLogPolicy.extended()) {
+            fpsWindow = new FpsMeasurementWindow(0, requestedFps, 0L, revision);
+            return 0L;
+        }
         long nowNs = SystemClock.elapsedRealtimeNanos();
         long nextWindowId = fpsWindow.id + 1L;
         if (nextWindowId <= 0L) nextWindowId = 1L;
-        fpsWindow = new FpsMeasurementWindow(nextWindowId, requestedFps, nowNs);
+        fpsWindow = new FpsMeasurementWindow(nextWindowId, requestedFps, nowNs, revision);
         return nextWindowId;
     }
 
+    private FpsMeasurementWindow refreshFpsMeasurementPolicy() {
+        long revision = DiagnosticLogPolicy.revision();
+        FpsMeasurementWindow current = fpsWindow;
+        if (current.policyRevision == revision) return current;
+        synchronized (this) {
+            current = fpsWindow;
+            if (current.policyRevision == revision) return current;
+            if (!DiagnosticLogPolicy.extended()) {
+                fpsWindow = new FpsMeasurementWindow(0, current.requestedFps, 0L, revision);
+            } else {
+                long nextWindowId = current.id + 1L;
+                if (nextWindowId <= 0L) nextWindowId = 1L;
+                fpsWindow = new FpsMeasurementWindow(nextWindowId, current.requestedFps,
+                        SystemClock.elapsedRealtimeNanos(), revision);
+            }
+            return fpsWindow;
+        }
+    }
+
     boolean statsCollectionActive() {
-        FpsMeasurementWindow window = fpsWindow;
-        return statsCollectionActive(DiagnosticLogPolicy.extended(),
-                SystemClock.elapsedRealtimeNanos(),
-                window.startedNs, window.untilNs);
+        return DiagnosticLogPolicy.extended();
     }
 
     static boolean statsCollectionActive(
             boolean extended, long nowNs, long windowStartedNs, long windowUntilNs) {
-        return extended || windowStartedNs > 0L && nowNs >= windowStartedNs
-                && nowNs < windowUntilNs;
+        return extended;
     }
 
     @Override
@@ -449,6 +473,10 @@ final class DirectCameraSourceHub
                 && nowNs < windowUntilNs;
     }
 
+    static boolean outputSizeChanged(int oldWidth, int oldHeight, int width, int height) {
+        return width > 0 && height > 0 && (oldWidth != width || oldHeight != height);
+    }
+
     static boolean isFusedTarget(CameraGpuOutput.Binding mapping) {
         return mapping != null && !mapping.lifecycleOnly;
     }
@@ -535,6 +563,8 @@ final class DirectCameraSourceHub
         long acquisitionWindowFirstFrameNs;
         long lastAcquiredProducerTimestamp;
         boolean acquisitionWindowFinished;
+        long acquisitionPolicyRevision = DiagnosticLogPolicy.revision();
+        long outputPolicyRevision = DiagnosticLogPolicy.revision();
         long droppedAtReport;
         long outputAgeMaxNs;
         SerializedCall<Void> closeCall;
@@ -725,7 +755,7 @@ final class DirectCameraSourceHub
                 IllegalStateException error = new IllegalStateException(
                         "camera source worker stopped before cleanup");
                 command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
-                        SystemClock.elapsedRealtimeNanos(), error);
+                        command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
                 throw error;
             }
             closeCall = call;
@@ -809,6 +839,32 @@ final class DirectCameraSourceHub
             outputAgeMaxNs = 0;
         }
 
+        private boolean refreshAcquisitionStatsPolicy() {
+            refreshFpsMeasurementPolicy();
+            long revision = DiagnosticLogPolicy.revision();
+            if (acquisitionPolicyRevision != revision) {
+                acquisitionStats.restart();
+                acquisitionWindowGeneration = Long.MIN_VALUE;
+                acquisitionWindowFirstFrameNs = 0L;
+                acquisitionWindowFinished = false;
+                acquisitionPolicyRevision = revision;
+            }
+            return DiagnosticLogPolicy.extended();
+        }
+
+        private boolean refreshOutputStatsPolicy() {
+            refreshFpsMeasurementPolicy();
+            long revision = DiagnosticLogPolicy.revision();
+            if (outputPolicyRevision != revision) {
+                resetOutputStats();
+                statsWindowGeneration = Long.MIN_VALUE;
+                statsWindowFirstFrameNs = 0L;
+                statsWindowFinished = false;
+                outputPolicyRevision = revision;
+            }
+            return DiagnosticLogPolicy.extended();
+        }
+
         private void updateTargetSize(Target target) {
             if (target.recording != null) {
                 MotionCompositionLayout.Rect cell = MotionCompositionLayout.cameraRectForCell(
@@ -832,22 +888,42 @@ final class DirectCameraSourceHub
 
         // Only the acquisition thread touches this window; downstream swap stalls cannot lower it.
         private void recordAcquisition(CameraFramePump.Acquisition sample) {
-            long started = sample.startedNs;
+            boolean policyExtended = refreshAcquisitionStatsPolicy();
+            boolean collectStats = policyExtended && sample.metricsEnabled
+                    && sample.policyRevision == DiagnosticLogPolicy.revision();
             long timestamp = sample.producerTimestampNs;
             FpsMeasurementWindow measurement = fpsWindow;
             long generation = measurement.id;
             boolean newBuffer = timestamp > lastAcquiredProducerTimestamp && timestamp > 0;
-            if (measurement.start(started, newBuffer ? timestamp : 0)) {
+            boolean firstFrameCandidate = newBuffer && !measurement.firstFrameAcknowledged()
+                    && (measurement.id == 0L || policyExtended);
+            long started = sample.startedNs;
+            if (started <= 0L && firstFrameCandidate)
+                started = SystemClock.elapsedRealtimeNanos();
+            boolean firstFrame = firstFrameCandidate && started >= measurement.requestedNs
+                    && measurement.acknowledgeFirstFrame();
+            boolean fpsWindowStarted = collectStats
+                    && measurement.policyRevision == DiagnosticLogPolicy.revision()
+                    && measurement.start(started, newBuffer ? timestamp : 0);
+            if (firstFrame || fpsWindowStarted) {
+                long firstFrameElapsedNs = started;
                 postCoordinator(() -> {
-                    listener.onFirstFrame(index, generation, started);
-                    coordinatorHandler.postDelayed(() -> {
-                        if (closed || fpsWindow != measurement) return;
-                        flushCommandMetrics("initial_fps_window_complete");
-                        for (SourceWorker worker : workers) {
-                            if (worker != null) worker.finishFpsWindow(measurement);
-                        }
-                    }, TimeUnit.NANOSECONDS.toMillis(FPS_STATS_WINDOW_NS));
+                    if (firstFrame) listener.onFirstFrame(
+                            index, generation, firstFrameElapsedNs);
+                    if (fpsWindowStarted) {
+                        coordinatorHandler.postDelayed(() -> {
+                            if (closed || fpsWindow != measurement) return;
+                            flushCommandMetrics("initial_fps_window_complete");
+                            for (SourceWorker worker : workers) {
+                                if (worker != null) worker.finishFpsWindow(measurement);
+                            }
+                        }, TimeUnit.NANOSECONDS.toMillis(FPS_STATS_WINDOW_NS));
+                    }
                 });
+            }
+            if (!collectStats) {
+                if (newBuffer) lastAcquiredProducerTimestamp = timestamp;
+                return;
             }
             if (acquisitionWindowGeneration != generation
                     || acquisitionWindowFirstFrameNs != measurement.startedNs) {
@@ -858,7 +934,8 @@ final class DirectCameraSourceHub
                 acquisitionWindowFinished = false;
             }
             if (newBuffer) lastAcquiredProducerTimestamp = timestamp;
-            boolean window = isFpsStatsWindowActive(started, generation, fpsWindow.id,
+            boolean window = measurement.policyRevision == DiagnosticLogPolicy.revision()
+                    && isFpsStatsWindowActive(started, generation, fpsWindow.id,
                     measurement.startedNs, measurement.untilNs);
             if (!acquisitionWindowFinished && measurement.untilNs > 0
                     && started >= measurement.untilNs) {
@@ -867,16 +944,13 @@ final class DirectCameraSourceHub
                         null, null, 0, 1920, index == 0 ? 990 : 1300, "camera-acquire-" + index);
                 publishStats(tail, true, generation);
             }
-            if (!DiagnosticLogPolicy.extended() && !window) {
-                acquisitionStats.restart();
-                return;
-            }
             Stats report = acquisitionStats.recordAcquisition(sample, 1920,
                     index == 0 ? 990 : 1300, "camera-acquire-" + index);
             publishStats(report, window, generation);
         }
 
         private void finishAcquisitionStatsOnClose() {
+            if (!refreshAcquisitionStatsPolicy()) return;
             FpsMeasurementWindow measurement = fpsWindow;
             long finishedNs = SystemClock.elapsedRealtimeNanos();
             Stats tail = acquisitionStats.finish(finishedNs, 0, 0,
@@ -890,16 +964,22 @@ final class DirectCameraSourceHub
         }
 
         private void finishFpsWindow(FpsMeasurementWindow measurement) {
+            if (!DiagnosticLogPolicy.extended()
+                    || measurement.policyRevision != DiagnosticLogPolicy.revision()) return;
             // Flush on the owning threads even if the OEM stopped delivering frames.
             pump.finishDiagnostics(() -> {
-                if (released || fpsWindow != measurement || acquisitionWindowFinished) return;
+                if (released || !DiagnosticLogPolicy.extended()
+                        || measurement.policyRevision != DiagnosticLogPolicy.revision()
+                        || fpsWindow != measurement || acquisitionWindowFinished) return;
                 acquisitionWindowFinished = true;
                 publishStats(acquisitionStats.finish(measurement.untilNs, 0, 0,
                         null, null, 0, 1920, index == 0 ? 990 : 1300,
                         "camera-acquire-" + index), true, measurement.id);
             });
             handler.post(() -> {
-                if (released || fpsWindow != measurement || statsWindowFinished) return;
+                if (released || !DiagnosticLogPolicy.extended()
+                        || measurement.policyRevision != DiagnosticLogPolicy.revision()
+                        || fpsWindow != measurement || statsWindowFinished) return;
                 statsWindowFinished = true;
                 publishOutputStats(stats.finish(measurement.untilNs, targets.size(), 0,
                         targetWidths, targetHeights, 0, 1920, index == 0 ? 990 : 1300,
@@ -909,11 +989,14 @@ final class DirectCameraSourceHub
 
         private void signalFrame() {
             if (released || closed) return;
-            long nowNs = SystemClock.elapsedRealtimeNanos();
+            boolean collectStats = DiagnosticLogPolicy.extended();
+            long nowNs = collectStats ? SystemClock.elapsedRealtimeNanos() : 0L;
             boolean post;
             synchronized (frameState) {
-                pendingFrameSignals++;
-                if (firstPendingSignalNs < 0L) firstPendingSignalNs = nowNs;
+                if (collectStats) {
+                    pendingFrameSignals++;
+                    if (firstPendingSignalNs < 0L) firstPendingSignalNs = nowNs;
+                }
                 post = !renderQueued;
                 renderQueued = true;
             }
@@ -921,13 +1004,15 @@ final class DirectCameraSourceHub
         }
 
         private void render() {
-            long callbackStartedNs = SystemClock.elapsedRealtimeNanos();
+            long framePolicyRevision = DiagnosticLogPolicy.revision();
+            boolean collectStats = DiagnosticLogPolicy.extended();
+            long callbackStartedNs = collectStats ? SystemClock.elapsedRealtimeNanos() : 0L;
             int frameSignals;
             long queueDelayNs;
             synchronized (frameState) {
-                frameSignals = pendingFrameSignals;
+                frameSignals = collectStats ? pendingFrameSignals : 0;
                 pendingFrameSignals = 0;
-                queueDelayNs = firstPendingSignalNs < 0L
+                queueDelayNs = !collectStats || firstPendingSignalNs < 0L
                         ? 0L : Math.max(0L, callbackStartedNs - firstPendingSignalNs);
                 firstPendingSignalNs = -1L;
                 renderQueued = false;
@@ -937,7 +1022,9 @@ final class DirectCameraSourceHub
             if (slot < 0) return;
             boolean transferred = false;
             try {
-                renderSnapshot(slot, callbackStartedNs, frameSignals, queueDelayNs);
+                renderSnapshot(slot, callbackStartedNs, frameSignals, queueDelayNs,
+                        collectStats && framePolicyRevision == DiagnosticLogPolicy.revision(),
+                        framePolicyRevision);
                 if (!sourceFailureReported.get()) for (Target target : targets) {
                     if (target.recording == null || !target.active || target.retiring) continue;
                     makeCurrent(idleSurface);
@@ -954,11 +1041,14 @@ final class DirectCameraSourceHub
             }
         }
 
-        private void renderSnapshot(int slot, long callbackStartedNs, int frameSignals, long queueDelayNs) {
+        private void renderSnapshot(int slot, long callbackStartedNs, int frameSignals,
+                long queueDelayNs, boolean collectStats, long framePolicyRevision) {
+            collectStats &= refreshOutputStatsPolicy()
+                    && framePolicyRevision == DiagnosticLogPolicy.revision();
             FpsMeasurementWindow measurement = fpsWindow;
             long windowGeneration = measurement.id;
-            if (windowGeneration != statsWindowGeneration
-                    || statsWindowFirstFrameNs != measurement.startedNs) {
+            if (collectStats && (windowGeneration != statsWindowGeneration
+                    || statsWindowFirstFrameNs != measurement.startedNs)) {
                 resetOutputStats();
                 statsWindowGeneration = windowGeneration;
                 statsWindowFirstFrameNs = measurement.startedNs;
@@ -992,25 +1082,27 @@ final class DirectCameraSourceHub
                 if (target.recording != null) continue;
                 if (!shouldRenderTarget(index, target.index, target.active)) continue;
                 try {
-                    DrawTiming timing = draw(target, acquiredFrameTimestampNanos);
+                    DrawTiming timing = draw(target, acquiredFrameTimestampNanos, collectStats);
                     if (timing == null) continue;
-                    targetCount++;
-                    preSwapTotalNs += timing.preSwapNs;
-                    preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
-                    swapWaitTotalNs += timing.swapWaitNs;
-                    swapWaitMaxNs = Math.max(swapWaitMaxNs, timing.swapWaitNs);
-                    drawMaxNs = Math.max(drawMaxNs, timing.preSwapNs + timing.swapWaitNs);
-                    targetPixelsCurrent += (long) timing.width * timing.height;
-                    targetWidthMax = Math.max(targetWidthMax, timing.width);
-                    targetHeightMax = Math.max(targetHeightMax, timing.height);
-                    if (targetDimensionCount < targetWidths.length) {
-                        targetWidths[targetDimensionCount] = timing.width;
-                        targetHeights[targetDimensionCount] = timing.height;
-                        targetDimensionCount++;
+                    if (collectStats) {
+                        targetCount++;
+                        preSwapTotalNs += timing.preSwapNs;
+                        preSwapMaxNs = Math.max(preSwapMaxNs, timing.preSwapNs);
+                        swapWaitTotalNs += timing.swapWaitNs;
+                        swapWaitMaxNs = Math.max(swapWaitMaxNs, timing.swapWaitNs);
+                        drawMaxNs = Math.max(drawMaxNs, timing.preSwapNs + timing.swapWaitNs);
+                        targetPixelsCurrent += (long) timing.width * timing.height;
+                        targetWidthMax = Math.max(targetWidthMax, timing.width);
+                        targetHeightMax = Math.max(targetHeightMax, timing.height);
+                        if (targetDimensionCount < targetWidths.length) {
+                            targetWidths[targetDimensionCount] = timing.width;
+                            targetHeights[targetDimensionCount] = timing.height;
+                            targetDimensionCount++;
+                        }
+                        swapCount++;
+                        outputAgeMaxNs = Math.max(outputAgeMaxNs,
+                                Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos));
                     }
-                    swapCount++;
-                    outputAgeMaxNs = Math.max(outputAgeMaxNs,
-                            Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos));
                 } catch (Throwable error) {
                     try { destroyTarget(target); }
                     catch (Throwable cleanup) { error.addSuppressed(cleanup); }
@@ -1033,10 +1125,11 @@ final class DirectCameraSourceHub
                 reportSourceFailure(error);
                 return;
             }
-            boolean fpsWindowActive = isFpsStatsWindowActive(
-                    callbackStartedNs, windowGeneration, fpsWindow.id,
+            boolean fpsWindowActive = collectStats
+                    && measurement.policyRevision == DiagnosticLogPolicy.revision()
+                    && isFpsStatsWindowActive(callbackStartedNs, windowGeneration, fpsWindow.id,
                     measurement.startedNs, measurement.untilNs);
-            if (!statsWindowFinished && measurement.untilNs > 0
+            if (collectStats && !statsWindowFinished && measurement.untilNs > 0
                     && callbackStartedNs >= measurement.untilNs) {
                 statsWindowFinished = true;
                 // Flush only already collected frames; the current frame is outside the window.
@@ -1045,7 +1138,8 @@ final class DirectCameraSourceHub
                         1920, index == 0 ? 990 : 1300, workerThreadName(index));
                 publishOutputStats(tail, true, windowGeneration);
             }
-            if (targetCount == 0 || (!DiagnosticLogPolicy.extended() && !fpsWindowActive)) {
+            if (!collectStats) return;
+            if (targetCount == 0) {
                 resetOutputStats();
                 return;
             }
@@ -1088,7 +1182,8 @@ final class DirectCameraSourceHub
         }
 
         private void publishStats(Stats report, boolean fpsWindowActive, long windowGeneration) {
-            if (report != null) {
+            if (report != null && DiagnosticLogPolicy.extended()
+                    && fpsWindow.policyRevision == DiagnosticLogPolicy.revision()) {
                 FpsMeasurementWindow measurement = fpsWindow;
                 report.fpsWindow = fpsWindowActive;
                 report.fpsWindowId = fpsWindowActive ? windowGeneration : 0L;
@@ -1124,8 +1219,9 @@ final class DirectCameraSourceHub
             postCoordinator(() -> listener.onSourceFailure(index, error));
         }
 
-        private DrawTiming draw(Target target, long acquiredFrameTimestampNanos) throws Exception {
-            long startedNs = SystemClock.elapsedRealtimeNanos();
+        private DrawTiming draw(Target target, long acquiredFrameTimestampNanos,
+                boolean collectStats) throws Exception {
+            long startedNs = collectStats ? SystemClock.elapsedRealtimeNanos() : 0L;
             CameraGpuOutput.FrameConfiguration frame = target.mapping == null
                     ? null : target.mapping.frameConfiguration();
             CameraDewarpRenderer.MappingRequest rendered = target.mapping == null
@@ -1216,6 +1312,14 @@ final class DirectCameraSourceHub
                 target.acknowledgedToken = rendered.token;
             }
             if (target.mapping != null) target.mapping.frame(acquiredFrameTimestampNanos, frame);
+            if (outputSizeChanged(target.reportedWidth, target.reportedHeight,
+                    target.width, target.height)) {
+                target.reportedWidth = target.width;
+                target.reportedHeight = target.height;
+                int width = target.width, height = target.height;
+                postCoordinator(() -> listener.onOutputSizeChanged(
+                        target.index, target.requestId, target.producerEpoch, width, height));
+            }
             if (swapWaitNs >= TimeUnit.MILLISECONDS.toNanos(100)
                     && swapStartedNs - target.lastStallReportNs >= STALL_REPORT_INTERVAL_NS) {
                 target.lastStallReportNs = swapStartedNs;
@@ -1227,8 +1331,8 @@ final class DirectCameraSourceHub
                 }
             }
             DrawTiming timing = target.timing;
-            timing.preSwapNs = swapStartedNs - startedNs;
-            timing.swapWaitNs = swapWaitNs;
+            timing.preSwapNs = collectStats ? swapStartedNs - startedNs : 0L;
+            timing.swapWaitNs = collectStats ? swapWaitNs : 0L;
             timing.width = target.width;
             timing.height = target.height;
             return timing;
@@ -1310,14 +1414,14 @@ final class DirectCameraSourceHub
                 IllegalStateException error = new IllegalStateException(
                         "camera source worker stopped");
                 command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
-                        SystemClock.elapsedRealtimeNanos(), error);
+                        command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
                 throw error;
             }
             if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
                 TimeoutException error = new TimeoutException(
                         "camera source worker operation queue timed out");
                 command.complete(CameraCommandMetrics.Outcome.QUEUED_CANCEL,
-                        SystemClock.elapsedRealtimeNanos(), error);
+                        command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
                 throw error;
             }
             return call.result();
@@ -1336,14 +1440,14 @@ final class DirectCameraSourceHub
             IllegalStateException error = new IllegalStateException(
                     "camera source coordinator stopped");
             command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
-                    SystemClock.elapsedRealtimeNanos(), error);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
             throw error;
         }
         if (!call.await(CALL_TIMEOUT_MS) && call.cancelIfQueued()) {
             TimeoutException error = new TimeoutException(
                     "camera source operation queue timed out");
             command.complete(CameraCommandMetrics.Outcome.QUEUED_CANCEL,
-                    SystemClock.elapsedRealtimeNanos(), error);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
             throw error;
         }
         return call.result();
@@ -1360,7 +1464,7 @@ final class DirectCameraSourceHub
             IllegalStateException error = new IllegalStateException(
                     "camera source coordinator stopped before cleanup");
             command.complete(CameraCommandMetrics.Outcome.POST_REJECT,
-                    SystemClock.elapsedRealtimeNanos(), error);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
             throw error;
         }
         return awaitFinalizer(call);
@@ -1368,19 +1472,19 @@ final class DirectCameraSourceHub
 
     private static <T> T runMeasured(CameraCommandMetrics.Command command,
             Callable<T> operation, boolean inline) throws Exception {
-        command.started(SystemClock.elapsedRealtimeNanos(), inline);
+        if (command.collectMetrics()) command.started(SystemClock.elapsedRealtimeNanos(), inline);
         try {
             T value = operation.call();
             command.complete(CameraCommandMetrics.Outcome.SUCCESS,
-                    SystemClock.elapsedRealtimeNanos(), null);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, null);
             return value;
         } catch (Exception error) {
             command.complete(CameraCommandMetrics.Outcome.FAILURE,
-                    SystemClock.elapsedRealtimeNanos(), error);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
             throw error;
         } catch (Error error) {
             command.complete(CameraCommandMetrics.Outcome.FAILURE,
-                    SystemClock.elapsedRealtimeNanos(), error);
+                    command.collectMetrics() ? SystemClock.elapsedRealtimeNanos() : 0L, error);
             throw error;
         }
     }
@@ -1388,7 +1492,7 @@ final class DirectCameraSourceHub
     private CameraCommandMetrics.Command command(CameraCommandMetrics.Operation operation,
             int workerIndex, CameraCommandMetrics.Context context) {
         return commandMetrics.begin(operation, workerIndex, context,
-                SystemClock.elapsedRealtimeNanos());
+                DiagnosticLogPolicy.extended() ? SystemClock.elapsedRealtimeNanos() : 0L);
     }
 
     private static CameraCommandMetrics.Context context(int sourceIndex, int requestId,
@@ -1399,6 +1503,17 @@ final class DirectCameraSourceHub
 
     private <T> T measure(CameraCommandMetrics.Command command,
             CameraCommandMetrics.Phase phase, Callable<T> operation) throws Exception {
+        if (!command.collectMetrics()) {
+            try {
+                return operation.call();
+            } catch (Exception error) {
+                command.phase(phase, 0L, 0L, error);
+                throw error;
+            } catch (Error error) {
+                command.phase(phase, 0L, 0L, error);
+                throw error;
+            }
+        }
         long startedNs = SystemClock.elapsedRealtimeNanos();
         try {
             T value = operation.call();
@@ -1426,7 +1541,9 @@ final class DirectCameraSourceHub
 
     private void flushWorkerCommandMetrics(int index, String reason) {
         try {
-            commandMetrics.flushWorker(index, reason, SystemClock.elapsedRealtimeNanos());
+            long nowNs = DiagnosticLogPolicy.extended()
+                    ? SystemClock.elapsedRealtimeNanos() : 0L;
+            commandMetrics.flushWorker(index, reason, nowNs);
         } catch (Throwable error) {
             try { Log.w(LOG_TAG, "camera worker command stats flush failed: index=" + index, error); }
             catch (Throwable ignored) { }
@@ -1435,7 +1552,9 @@ final class DirectCameraSourceHub
 
     private void flushCommandMetrics(String reason) {
         try {
-            commandMetrics.flushAll(reason, SystemClock.elapsedRealtimeNanos());
+            long nowNs = DiagnosticLogPolicy.extended()
+                    ? SystemClock.elapsedRealtimeNanos() : 0L;
+            commandMetrics.flushAll(reason, nowNs);
         } catch (Throwable error) {
             try { Log.w(LOG_TAG, "camera command stats flush failed: reason=" + reason, error); }
             catch (Throwable ignored) { }
@@ -1662,14 +1781,21 @@ final class DirectCameraSourceHub
     }
 
     static final class FpsMeasurementWindow {
-        final long id, requestedNs;
+        final long id, requestedNs, policyRevision;
         final int requestedFps;
         volatile long startedNs, untilNs;
+        private volatile boolean firstFrameAcknowledged;
 
         FpsMeasurementWindow(long id, int requestedFps, long requestedNs) {
+            this(id, requestedFps, requestedNs, DiagnosticLogPolicy.revision());
+        }
+
+        FpsMeasurementWindow(long id, int requestedFps, long requestedNs,
+                long policyRevision) {
             this.id = id;
             this.requestedFps = requestedFps;
             this.requestedNs = requestedNs;
+            this.policyRevision = policyRevision;
         }
 
         boolean start(long elapsedNs, long producerTimestampNs) {
@@ -1681,6 +1807,16 @@ final class DirectCameraSourceHub
                 startedNs = elapsedNs;
                 return true;
             }
+        }
+
+        boolean firstFrameAcknowledged() {
+            return firstFrameAcknowledged;
+        }
+
+        synchronized boolean acknowledgeFirstFrame() {
+            if (firstFrameAcknowledged) return false;
+            firstFrameAcknowledged = true;
+            return true;
         }
     }
 
@@ -2026,6 +2162,8 @@ final class DirectCameraSourceHub
         long lastStallReportNs;
         int width;
         int height;
+        int reportedWidth = -1;
+        int reportedHeight = -1;
         boolean active = true;
         boolean timestampFrames;
         boolean retiring;

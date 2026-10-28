@@ -90,8 +90,8 @@ final class AppPermissionProvisioner {
             event(events, "adb_connection_time_policy", "reason", reason,
                     "readback", Settings.Global.getLong(app.getContentResolver(), key, -1L));
         } catch (RuntimeException failure) {
-            event(events, "adb_connection_time_policy_failed", "reason", reason,
-                    "error", failure.getClass().getSimpleName());
+            AdbRecoveryDiagnostics.failure(events, "adb_connection_time_policy_failed",
+                    "settings_global_adb_allowed_connection_time", failure, "reason", reason);
         }
     }
 
@@ -129,8 +129,8 @@ final class AppPermissionProvisioner {
                     "bound", WeatherRefreshAccessibilityService.isConnected());
         } catch (RuntimeException failure) {
             // A failed read must never turn into overwriting another app's service list.
-            event(events, "app_permission_readback_failed", "permission", "accessibility",
-                    "reason", reason, "error", failure.getClass().getSimpleName());
+            AdbRecoveryDiagnostics.failure(events, "app_permission_readback_failed",
+                    "accessibility_readback", failure, "permission", "accessibility", "reason", reason);
         }
     }
 
@@ -145,8 +145,8 @@ final class AppPermissionProvisioner {
                     "ok", ok);
             return ok;
         } catch (RuntimeException failure) {
-            event(events, "app_permission_command_failed", "permission", permission,
-                    "reason", reason, "error", failure.getClass().getSimpleName());
+            AdbRecoveryDiagnostics.failure(events, "app_permission_command_failed",
+                    "permission_provision", failure, "permission", permission, "reason", reason);
             return false;
         }
     }

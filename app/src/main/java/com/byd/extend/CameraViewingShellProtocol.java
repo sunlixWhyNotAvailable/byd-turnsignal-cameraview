@@ -16,7 +16,7 @@ public final class CameraViewingShellProtocol {
     public static final String LOCK_PATH = "/data/local/tmp/bydextend_viewing.lock";
     public static final String LOG_PATH = "/data/local/tmp/bydextend_viewing.log";
     public static final String STATE_ROOT = "/data/local/tmp/bydextend_viewing";
-    public static final int VERSION = 5;
+    public static final int VERSION = 6;
     public static final int MAX_REQUEST_BYTES = 64 * 1024;
     public static final int MAX_REPLY_BYTES = 256 * 1024;
 
@@ -33,7 +33,8 @@ public final class CameraViewingShellProtocol {
         return "provision".equals(operation) || "configure".equals(operation)
                 || "authorize".equals(operation) || "authorization_opened".equals(operation)
                 || "reconnect".equals(operation) || "revoke".equals(operation) || "cancel".equals(operation)
-                || "shutdown".equals(operation) || "reconfigured".equals(operation);
+                || "shutdown".equals(operation) || "reconfigured".equals(operation)
+                || "diagnostics".equals(operation);
     }
 
     static String currentApkIdentity(Context context) throws Exception {

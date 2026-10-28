@@ -27,6 +27,8 @@ final class AsyncServiceLog {
     private File file;
     private BufferedWriter writer;
     private ScheduledFuture<?> scheduledFlush;
+    private final DiagnosticLogPolicy ioPolicy = new DiagnosticLogPolicy();
+    private String pendingIoFailure;
 
     private static final class Entry {
         final String line;
@@ -205,11 +207,16 @@ final class AsyncServiceLog {
     }
     private boolean write(String line) {
         try {
-            ensureWriter(); writer.write(line); writer.newLine();
+            ensureWriter();
+            if (pendingIoFailure != null) {
+                writer.write(pendingIoFailure); writer.newLine();
+                pendingIoFailure = null;
+            }
+            writer.write(line); writer.newLine();
             if (scheduledFlush == null || scheduledFlush.isDone())
                 scheduledFlush = worker.schedule(this::flushOnWorker, flushDelayMs, TimeUnit.MILLISECONDS);
             return true;
-        } catch (Throwable ignored) { closeWriter(); return false; }
+        } catch (Throwable failure) { closeWriter(failure); reportIoFailure("write", failure); return false; }
     }
     private static void complete(Runnable completion) {
         try { if (completion != null) completion.run(); } catch (Throwable ignored) { }
@@ -227,15 +234,41 @@ final class AsyncServiceLog {
     private void flushOnWorker() {
         scheduledFlush = null;
         if (writer == null) return;
-        try { writer.flush(); } catch (Throwable ignored) { closeWriter(); }
+        try { writer.flush(); }
+        catch (Throwable failure) { closeWriter(failure); reportIoFailure("flush", failure); }
     }
     private void cancelScheduledFlush() {
         if (scheduledFlush != null) scheduledFlush.cancel(false);
         scheduledFlush = null;
     }
     private void closeWriter() {
+        closeWriter(null);
+    }
+    private void closeWriter(Throwable primary) {
         if (writer == null) return;
-        try { writer.close(); } catch (Throwable ignored) { }
+        try { writer.close(); }
+        catch (Throwable failure) {
+            if (primary != null && primary != failure) primary.addSuppressed(failure);
+            else reportIoFailure("close", failure);
+        }
         writer = null;
+    }
+    private void reportIoFailure(String operation, Throwable failure) {
+        try {
+            String line = new JSONObject().put("kind", "log_writer_failed")
+                    .put("operation", operation).put("file", file == null ? "unresolved" : file.getName())
+                    .put("error", AdbRecoveryDiagnostics.safeText(
+                            com.byd.extend.remote.CameraViewingDiagnostics.describe(failure))).toString();
+            String repeats = ioPolicy.before(line, "log_writer_failed", elapsedMs());
+            if (repeats != null) System.err.println(repeats);
+            if (!ioPolicy.suppressed()) {
+                System.err.println(line);
+                // A recovered writer exports the precise failure too; never enqueue into the broken sink.
+                pendingIoFailure = line;
+            }
+        } catch (Throwable diagnosticFailure) {
+            failure.printStackTrace(System.err);
+            diagnosticFailure.printStackTrace(System.err);
+        }
     }
 }

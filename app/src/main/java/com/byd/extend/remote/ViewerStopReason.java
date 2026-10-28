@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 13;
+    public static final int WEB_REVISION = 14;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 
@@ -28,10 +28,14 @@ public final class ViewerStopReason {
         return value != null && value.matches("[1-9][0-9]{0,5}|1000000") ? value : "unknown";
     }
 
+    public static boolean validTransportReason(JSONObject value) {
+        return value.optString("reason").matches("start|progress|stall|playing|recovery");
+    }
+
     /** Cumulative browser transport measurements; no caller-supplied messages or URLs. */
     public static String transport(JSONObject value) {
         String reason = value.optString("reason");
-        if (!reason.matches("start|progress|stall|playing|recovery")) return null;
+        if (!validTransportReason(value)) return null;
         StringBuilder result = new StringBuilder("reason=").append(reason);
         for (String key : new String[] {"revision", "atMs", "requests", "completed", "aborted", "failed",
                 "receivedBytes", "completedBytes", "loadMs", "firstByteMs", "firstBytes", "currentMs", "bufferEndMs",

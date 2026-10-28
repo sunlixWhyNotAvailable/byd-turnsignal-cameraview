@@ -33,15 +33,17 @@ final class CameraFramePump {
     static final class Acquisition {
         long startedNs, producerTimestampNs, queueNs, preparationNs, updateNs;
         long copyNs, fenceNs, releaseNs, inputCycleNs;
+        long policyRevision;
         int signals;
-        boolean allocated, copied, invalidTimestamp, repeatedTimestamp;
+        boolean metricsEnabled, allocated, copied, invalidTimestamp, repeatedTimestamp;
         boolean noPreparedBuffer, gpuBusy, mailboxBusy;
 
         void reset() {
             startedNs = producerTimestampNs = queueNs = preparationNs = updateNs = 0;
             copyNs = fenceNs = releaseNs = inputCycleNs = 0;
+            policyRevision = 0L;
             signals = 0;
-            allocated = copied = invalidTimestamp = repeatedTimestamp = false;
+            metricsEnabled = allocated = copied = invalidTimestamp = repeatedTimestamp = false;
             noPreparedBuffer = gpuBusy = mailboxBusy = false;
         }
     }
@@ -191,8 +193,9 @@ final class CameraFramePump {
         surface = new Surface(input);
         input.setOnFrameAvailableListener(ignored -> {
             if (closed || failed) return;
-            long callbackNs = SystemClock.elapsedRealtimeNanos();
-            signals++;
+            boolean collectMetrics = DiagnosticLogPolicy.extended();
+            long callbackNs = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
+            if (collectMetrics) signals++;
             if (!queued) {
                 queued = true;
                 firstCallbackNs = callbackNs;
@@ -251,23 +254,36 @@ final class CameraFramePump {
     }
 
     private void capture() {
-        long started = SystemClock.elapsedRealtimeNanos();
+        long metricsRevision = DiagnosticLogPolicy.revision();
+        boolean collectMetrics = DiagnosticLogPolicy.extended();
+        if (collectMetrics && metricsRevision != DiagnosticLogPolicy.revision())
+            collectMetrics = false;
+        long started = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         Acquisition sample = acquisition;
-        sample.reset();
-        sample.startedNs = started;
+        if (collectMetrics) {
+            sample.reset();
+            sample.startedNs = started;
+        } else {
+            sample.startedNs = 0L;
+            sample.producerTimestampNs = 0L;
+        }
+        sample.policyRevision = metricsRevision;
+        sample.metricsEnabled = collectMetrics;
         queued = false;
-        int count = signals;
+        int count = collectMetrics ? signals : 0;
         signals = 0;
         long callbackNs = firstCallbackNs;
         firstCallbackNs = 0;
         if (closed || failed) return;
 
-        sample.queueNs = callbackNs == 0 ? 0 : Math.max(0, started - callbackNs);
-        sample.signals = count;
+        if (collectMetrics) {
+            sample.queueNs = callbackNs == 0 ? 0 : Math.max(0, started - callbackNs);
+            sample.signals = count;
+        }
 
         Throwable failure = null;
         int preparedSlot = -1;
-        long prepareStart = SystemClock.elapsedRealtimeNanos();
+        long prepareStart = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         try {
             try {
                 long size = outputSize;
@@ -282,7 +298,8 @@ final class CameraFramePump {
                             preparedSlot = -1;
                             continue;
                         }
-                        sample.allocated = allocate(frames[candidate], width, height);
+                        boolean allocated = allocate(frames[candidate], width, height);
+                        if (collectMetrics) sample.allocated = allocated;
                         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
                         nextPreparationSlot = (candidate + 1) % CameraFrameMailbox.SLOT_COUNT;
                         break;
@@ -300,10 +317,11 @@ final class CameraFramePump {
                 preparedSlot = -1;
             }
         } finally {
-            sample.preparationNs = SystemClock.elapsedRealtimeNanos() - prepareStart;
+            if (collectMetrics)
+                sample.preparationNs = SystemClock.elapsedRealtimeNanos() - prepareStart;
         }
 
-        long updateStart = SystemClock.elapsedRealtimeNanos();
+        long updateStart = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         boolean updated = false;
         boolean publish = false;
         boolean published = false;
@@ -317,7 +335,7 @@ final class CameraFramePump {
             } catch (Throwable error) {
                 failure = appendFailure(failure, "update camera SurfaceTexture", error);
             }
-            sample.updateNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+            if (collectMetrics) sample.updateNs = SystemClock.elapsedRealtimeNanos() - updateStart;
 
             if (updated && failure == null) {
                 long acquired = System.nanoTime();
@@ -329,9 +347,9 @@ final class CameraFramePump {
                     failure = appendFailure(failure, "read camera SurfaceTexture timestamp", error);
                 }
                 if (failure == null && timestamp <= 0) {
-                    sample.invalidTimestamp = true;
+                    if (collectMetrics) sample.invalidTimestamp = true;
                 } else if (failure == null && timestamp == lastFrameTimestamp) {
-                    sample.repeatedTimestamp = true;
+                    if (collectMetrics) sample.repeatedTimestamp = true;
                 } else if (failure == null) {
                     lastFrameTimestamp = timestamp;
                     try {
@@ -365,12 +383,15 @@ final class CameraFramePump {
                                         break;
                                     }
                                 }
-                                if (!compatible) sample.noPreparedBuffer = true;
-                                else if (captureFenceNotReady) sample.gpuBusy = true;
-                                else sample.mailboxBusy = true;
+                                if (collectMetrics) {
+                                    if (!compatible) sample.noPreparedBuffer = true;
+                                    else if (captureFenceNotReady) sample.gpuBusy = true;
+                                    else sample.mailboxBusy = true;
+                                }
                             } else if (failure == null) {
                                 Frame frame = frames[slot];
-                                long copyStart = SystemClock.elapsedRealtimeNanos();
+                                long copyStart = collectMetrics
+                                        ? SystemClock.elapsedRealtimeNanos() : 0L;
                                 try {
                                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frame.framebuffer);
                                     GLES20.glViewport(0, 0, width, height);
@@ -389,19 +410,22 @@ final class CameraFramePump {
                                         throw new IllegalStateException("camera snapshot draw failed: GL error 0x"
                                                 + Integer.toHexString(drawError));
                                     }
-                                    sample.copyNs = SystemClock.elapsedRealtimeNanos() - copyStart;
+                                    if (collectMetrics) sample.copyNs =
+                                            SystemClock.elapsedRealtimeNanos() - copyStart;
                                     frame.acquiredNs = acquired;
                                     frame.producerNs = timestamp;
                                 } catch (Throwable error) {
                                     failure = appendFailure(failure, "copy camera SurfaceTexture frame", error);
                                 }
                                 if (failure == null) {
-                                    long fenceStart = SystemClock.elapsedRealtimeNanos();
+                                    long fenceStart = collectMetrics
+                                            ? SystemClock.elapsedRealtimeNanos() : 0L;
                                     try {
                                         frame.fence = finishUse();
-                                        sample.fenceNs = SystemClock.elapsedRealtimeNanos() - fenceStart;
+                                        if (collectMetrics) sample.fenceNs =
+                                                SystemClock.elapsedRealtimeNanos() - fenceStart;
                                         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
-                                        sample.copied = true;
+                                        if (collectMetrics) sample.copied = true;
                                         publish = true;
                                     } catch (Throwable error) {
                                         failure = appendFailure(failure,
@@ -414,15 +438,17 @@ final class CameraFramePump {
                 }
             }
         } finally {
-            long releaseStart = SystemClock.elapsedRealtimeNanos();
+            long releaseStart = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
             try {
                 // An update may acquire input before throwing; GLConsumer supplies its release fence.
                 input.releaseTexImage();
             } catch (Throwable error) {
                 failure = appendFailure(failure, "release camera SurfaceTexture image", error);
             } finally {
-                sample.releaseNs = SystemClock.elapsedRealtimeNanos() - releaseStart;
-                sample.inputCycleNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+                if (collectMetrics) {
+                    sample.releaseNs = SystemClock.elapsedRealtimeNanos() - releaseStart;
+                    sample.inputCycleNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+                }
             }
         }
 
@@ -439,7 +465,7 @@ final class CameraFramePump {
                         failure = appendFailure(failure, "publish camera snapshot", error);
                     }
                 } else {
-                    sample.noPreparedBuffer = true;
+                    if (collectMetrics) sample.noPreparedBuffer = true;
                 }
             }
         }
@@ -462,7 +488,9 @@ final class CameraFramePump {
         } catch (Throwable error) {
             diagnosticFailure = appendFailure(diagnosticFailure, "report camera source format", error);
         }
-        if (reportMatrix && !matrixReported && surface != null) {
+        if (collectMetrics && DiagnosticLogPolicy.extended()
+                && metricsRevision == DiagnosticLogPolicy.revision()
+                && reportMatrix && !matrixReported && surface != null) {
             try {
                 Log.i("BydCameraProbe", "{\"kind\":\"camera_texture_matrix\","
                         + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","

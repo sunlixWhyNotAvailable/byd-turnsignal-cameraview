@@ -198,7 +198,20 @@ public final class CameraViewingShellMain {
                                 || data.dataAvail() != 0)
                             throw new IllegalArgumentException("invalid camera viewing request");
                         JSONObject payload = new JSONObject(payloadJson);
-                        JSONObject result = runtime.request(operation, payload);
+                        JSONObject result;
+                        if ("diagnostics".equals(operation)) {
+                            if (payload.length() != 1 || !(payload.opt("extended") instanceof Boolean))
+                                throw new IllegalArgumentException("invalid diagnostics setting");
+                            DiagnosticLogPolicy.configure(payload.getBoolean("extended"));
+                            result = new JSONObject().put("extended", DiagnosticLogPolicy.extended());
+                        } else {
+                            if (payload.has("extendedLogs")) {
+                                if (!(payload.opt("extendedLogs") instanceof Boolean))
+                                    throw new IllegalArgumentException("invalid extended logs setting");
+                                DiagnosticLogPolicy.configure(payload.getBoolean("extendedLogs"));
+                            }
+                            result = runtime.request(operation, payload);
+                        }
                         if (result == null || result.toString().length()
                                 > CameraViewingShellProtocol.MAX_REPLY_BYTES)
                             throw new IllegalStateException("invalid camera viewing reply");

@@ -298,6 +298,7 @@ final class WindowlessOverlayHost {
             SurfaceControlViewHost.SurfacePackage packageValue,
             SurfaceControlViewHost hostValue, Throwable error, Object... extraFields) {
         if (eventSink == null) return;
+        if (!DiagnosticLogPolicy.extended() && error == null) return;
         long durationMs = startNanos <= 0L ? 0L
                 : Math.max(0L, (SystemClock.elapsedRealtimeNanos() - startNanos) / 1_000_000L);
         Object[] fields = new Object[]{
@@ -321,7 +322,7 @@ final class WindowlessOverlayHost {
         };
         if (extraFields.length == 0) {
             try {
-                eventSink.accept("windowless_host_lifecycle", fields);
+                eventSink.accept(error == null ? "windowless_host_lifecycle" : "windowless_host_failed", fields);
             } catch (Throwable ignored) {}
             return;
         }
@@ -329,7 +330,7 @@ final class WindowlessOverlayHost {
         System.arraycopy(fields, 0, expanded, 0, fields.length);
         System.arraycopy(extraFields, 0, expanded, fields.length, extraFields.length);
         try {
-            eventSink.accept("windowless_host_lifecycle", expanded);
+            eventSink.accept(error == null ? "windowless_host_lifecycle" : "windowless_host_failed", expanded);
         } catch (Throwable ignored) {}
     }
 
@@ -345,8 +346,7 @@ final class WindowlessOverlayHost {
     }
 
     private static String summary(Throwable error) {
-        String message = error.getMessage();
-        return error.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+        return com.byd.extend.remote.CameraViewingDiagnostics.describe(error);
     }
 
     private static String setTrustedOverlay(WindowManager.LayoutParams layout) throws Exception {

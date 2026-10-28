@@ -29,6 +29,7 @@ public final class CameraViewingShellClient implements AutoCloseable {
     private final int ownerUid;
     private final String apkIdentity;
     private final Object lock = new Object();
+    private final Object observerLock = new Object();
     private IBinder helper;
     private IBinder.DeathRecipient helperDeath;
     private ShellCallback callback;
@@ -96,6 +97,7 @@ public final class CameraViewingShellClient implements AutoCloseable {
                     throw launchFailure;
                 }
             }
+            request("diagnostics", new JSONObject().put("extended", extendedLogsEnabled()));
             CameraViewingDiagnostics.detail("helper_ready", "shared", "pid=" + helperPid
                     + " protocol=" + identity.protocol + " build=" + identity.build);
         }
@@ -146,6 +148,33 @@ public final class CameraViewingShellClient implements AutoCloseable {
         }
     }
 
+    /** Apply a logging toggle only when its helper already exists; this never launches it. */
+    public boolean configureDiagnosticsIfConnected(boolean enabled) throws Exception {
+        synchronized (observerLock) {
+            ShellCallback previousCallback;
+            Listener listenerToRestore;
+            boolean replaced;
+            synchronized (lock) {
+                if (closed) return false;
+                IBinder candidate = resolve();
+                CameraViewingShellProtocol.Identity identity =
+                        CameraViewingShellProtocol.readIdentity(candidate);
+                if (identity == null || !identity.matches(identity.pid, apkIdentity)) return false;
+                IBinder previousHelper = helper;
+                int previousPid = helperPid;
+                previousCallback = callback;
+                adopt(candidate, identity.pid);
+                replaced = previousHelper != helper || previousPid != helperPid;
+                listenerToRestore = replaced ? listener : null;
+            }
+            if (replaced && previousCallback != null)
+                detach(previousCallback.owner, previousCallback);
+            if (listenerToRestore != null) setListener(listenerToRestore);
+        }
+        request("diagnostics", new JSONObject().put("extended", enabled));
+        return true;
+    }
+
     public JSONObject snapshot() throws Exception {
         IBinder target = requireHelper();
         Parcel data = Parcel.obtain(), reply = Parcel.obtain();
@@ -168,32 +197,34 @@ public final class CameraViewingShellClient implements AutoCloseable {
     }
 
     public void setListener(Listener next) throws Exception {
-        IBinder target;
-        ShellCallback previousCallback;
-        ShellCallback nextCallback;
-        synchronized (lock) {
-            target = requireHelper();
-            previousCallback = callback;
-            if (previousCallback != null) previousCallback.deactivate();
-            listener = next;
-            nextCallback = next == null ? null : new ShellCallback(target, helperGeneration, next);
-            callback = nextCallback;
-        }
-        if (previousCallback != null) detach(previousCallback.owner, previousCallback);
-        if (nextCallback == null) return;
-        try {
-            observe(target, nextCallback);
-        } catch (Throwable failure) {
+        synchronized (observerLock) {
+            IBinder target;
+            ShellCallback previousCallback;
+            ShellCallback nextCallback;
             synchronized (lock) {
-                if (callback == nextCallback) {
-                    callback = null;
-                    listener = null;
-                    nextCallback.deactivate();
-                }
+                target = requireHelper();
+                previousCallback = callback;
+                if (previousCallback != null) previousCallback.deactivate();
+                listener = next;
+                nextCallback = next == null ? null : new ShellCallback(target, helperGeneration, next);
+                callback = nextCallback;
             }
-            if (failure instanceof Exception) throw (Exception) failure;
-            if (failure instanceof Error) throw (Error) failure;
-            throw new IllegalStateException("camera viewing observer registration failed", failure);
+            if (previousCallback != null) detach(previousCallback.owner, previousCallback);
+            if (nextCallback == null) return;
+            try {
+                observe(target, nextCallback);
+            } catch (Throwable failure) {
+                synchronized (lock) {
+                    if (callback == nextCallback) {
+                        callback = null;
+                        listener = null;
+                        nextCallback.deactivate();
+                    }
+                }
+                if (failure instanceof Exception) throw (Exception) failure;
+                if (failure instanceof Error) throw (Error) failure;
+                throw new IllegalStateException("camera viewing observer registration failed", failure);
+            }
         }
     }
 
@@ -415,5 +446,10 @@ public final class CameraViewingShellClient implements AutoCloseable {
 
     private static String shellQuote(String value) {
         return "'" + String.valueOf(value).replace("'", "'\\''") + "'";
+    }
+
+    private boolean extendedLogsEnabled() {
+        return context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false);
     }
 }

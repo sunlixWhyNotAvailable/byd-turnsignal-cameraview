@@ -1066,6 +1066,8 @@ public final class CameraHelperService extends Service {
                     .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
             if (helper != null) helper.configureLogging();
             if (cameraRuntime != null) cameraRuntime.settingsChanged("logging");
+            com.byd.extend.remote.CameraViewingController.get(this).diagnosticSettingsChanged();
+            lifecycle("diagnostic_logging_changed", "extended", DiagnosticLogPolicy.extended());
             reconcileAvasRecovery(false, "diagnostic_settings_changed");
             return;
         }
