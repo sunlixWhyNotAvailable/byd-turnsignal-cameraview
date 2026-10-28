@@ -23,7 +23,6 @@
     <string name="cameras_internal_cabin">"Cabin"</string>
     <string name="cameras_internal_driver">"Driver"</string>
     <string name="cameras_internal_both">"Both"</string>
-    <string name="cameras_on_demand">"Start cameras when a viewer connects, only if they are not already active."</string>
     <string name="cameras_connection_method">"Connection method"</string>
     <string name="cameras_vdo_hint">"A private viewing link and password; no separate phone VPN client."</string>
     <string name="cameras_stream_id">"Stream ID"</string>

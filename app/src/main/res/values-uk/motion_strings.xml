@@ -23,7 +23,6 @@
     <string name="cameras_internal_cabin">"Салону"</string>
     <string name="cameras_internal_driver">"Водія"</string>
     <string name="cameras_internal_both">"Обидві"</string>
-    <string name="cameras_on_demand">"Вмикати камери при підключенні переглядача, лише якщо вони ще не активні."</string>
     <string name="cameras_connection_method">"Спосіб підключення"</string>
     <string name="cameras_vdo_hint">"Приватне посилання для перегляду та пароль; без окремого VPN-клієнта на телефоні."</string>
     <string name="cameras_stream_id">"Ідентифікатор потоку"</string>

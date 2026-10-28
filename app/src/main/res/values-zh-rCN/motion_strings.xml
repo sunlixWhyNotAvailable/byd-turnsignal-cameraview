@@ -23,7 +23,6 @@
     <string name="cameras_internal_cabin">"车厢"</string>
     <string name="cameras_internal_driver">"驾驶员"</string>
     <string name="cameras_internal_both">"两者"</string>
-    <string name="cameras_on_demand">"查看者连接时，仅在摄像头尚未运行的情况下启动。"</string>
     <string name="cameras_connection_method">"连接方式"</string>
     <string name="cameras_vdo_hint">"私密查看链接和密码；手机无需额外VPN客户端。"</string>
     <string name="cameras_stream_id">"视频流标识"</string>

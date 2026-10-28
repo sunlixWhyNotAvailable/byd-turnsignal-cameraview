@@ -17,6 +17,36 @@ import static org.junit.Assert.*;
 
 /** Real loopback input into the production parser; no substitute Stream or camera/helper results. */
 public class CameraViewerRequestTest {
+    @Test public void delayedArchiveReadsAndClosesCannotReplaceTheSelectedRecording() {
+        CameraViewerServer.ArchiveSelection selection = new CameraViewerServer.ArchiveSelection();
+        assertFalse(selection.select(1, "a"));
+        assertTrue(selection.mode(1, true));
+        assertTrue(selection.select(1, "a"));
+        assertTrue(selection.matches(1, "a"));
+        assertTrue(selection.select(3, "b"));
+        assertFalse(selection.matches(1, "a"));
+        assertFalse(selection.select(2, null));
+        assertFalse(selection.select(1, "a"));
+        assertTrue(selection.matches(3, "b"));
+        assertFalse(selection.mode(1, true));
+        assertTrue(selection.matches(3, "b"));
+        assertTrue(selection.select(4, null));
+        assertFalse(selection.matches(3, "b"));
+        assertFalse(selection.select(3, "b"));
+        assertTrue(selection.select(5, "b"));
+        assertFalse(selection.matches(3, "b"));
+        assertTrue(selection.matches(5, "b"));
+        selection.clear();
+        assertFalse(selection.matches(5, "b"));
+        assertFalse(selection.select(6, "a"));
+        assertTrue(selection.mode(3, true));
+        assertFalse(selection.mode(2, false));
+        assertFalse(selection.select(5, "b"));
+        assertTrue(selection.select(6, "a"));
+        assertFalse(selection.select(Long.MAX_VALUE, null));
+        assertTrue(selection.matches(6, "a"));
+    }
+
     @Test public void completeRequestPreservesBodyAndLeavesOnlyTheIdleSocketTimeout() throws Exception {
         byte[] body = "{\"password\":\"test value\"}".getBytes(StandardCharsets.UTF_8);
         String headers = "POST /session HTTP/1.1\r\nHost: viewer.local\r\n"

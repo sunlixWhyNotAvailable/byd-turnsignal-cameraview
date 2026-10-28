@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 12;
+  const WEB_REVISION = 13;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -146,7 +146,8 @@
       mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null },
     lastKnownModes: { tabletEnabled: null, recordingEnabled: null },
     lastKnownSettings: { mirrorCabin: null, recordingSensitivity: null },
-    modePending: null, modeError: null, settingPending: null, settingError: null, settingErrorRef: null, modesOpen: false
+    modePending: null, modeError: null, settingPending: new Set(), mirrorWait: null,
+    archiveRevision: 0, archiveSelectionActive: false, settingError: null, settingErrorRef: null, modesOpen: false
   };
   const cameraLabels = Object.fromEntries(cameras.map((key) => [key, text[key]]));
   let hlsScriptPromise;
@@ -273,7 +274,7 @@
       modeQueue = pending.catch(() => {});
       return pending;
     }
-    if (!['/live', '/archive/open', '/archive/close', '/stop', '/session'].includes(path)) return send();
+    if (!['/live', '/archive/open', '/archive/select', '/archive/close', '/stop', '/session'].includes(path)) return send();
     const pending = controlQueue.then(send, send);
     controlQueue = pending.catch(() => {});
     return pending;
@@ -405,7 +406,8 @@
       mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null };
     state.modePending = null;
     state.modeError = null;
-    state.settingPending = null;
+    state.settingPending.clear();
+    clearMirrorWait();
     state.settingError = null;
     state.settingErrorRef = null;
     state.lastKnownModes = { tabletEnabled: null, recordingEnabled: null };
@@ -449,6 +451,9 @@
       mirrorCabin,
       recordingSensitivity,
       mirrorApplyState: ['applied', 'pending', 'error'].includes(settings.mirrorApplyState) ? settings.mirrorApplyState : null,
+      mirrorRevision: settings.mirrorRevision,
+      mirrorStreamId: settings.mirrorStreamId,
+      mirrorProgramTimeMs: settings.mirrorProgramTimeMs,
       sensitivityApplyState: ['applied', 'pending', 'error'].includes(settings.sensitivityApplyState) ? settings.sensitivityApplyState : null,
       error: typeof settings.error === 'string' ? settings.error : null,
       errorRef: typeof settings.errorRef === 'string' ? settings.errorRef : null
@@ -467,7 +472,7 @@
   }
 
   function settingValueLabel(setting) {
-    if (state.settingPending === setting) return text.modeSaving;
+    if (state.settingPending.has(setting) || (setting === 'mirrorCabin' && state.mirrorWait)) return text.modeSaving;
     const value = state.settings[setting]
       ?? (state.settings.available === false ? state.lastKnownSettings[setting] : null);
     const known = setting === 'mirrorCabin' ? typeof value === 'boolean'
@@ -481,7 +486,7 @@
   }
 
   function modeFeedback() {
-    if (state.modePending || state.settingPending) return text.modeSaving;
+    if (state.modePending || state.settingPending.size || state.mirrorWait) return text.modeSaving;
     const settingApplyFailed = state.settings.mirrorApplyState === 'error'
       || state.settings.sensitivityApplyState === 'error';
     const settingCode = state.settingError || (settingApplyFailed
@@ -526,7 +531,7 @@
       mirror.checked = known && value;
       mirror.indeterminate = !known;
       mirror.disabled = !state.authenticated || state.replaced || ['ended', 'replaced'].includes(state.status)
-        || state.settings.available !== true || !known || Boolean(state.settingPending);
+        || state.settings.available !== true || !known || state.settingPending.has('mirrorCabin') || Boolean(state.mirrorWait);
       const label = panel.querySelector('#mode-state-mirror-cabin');
       if (label && label.textContent !== settingValueLabel('mirrorCabin'))
         label.textContent = settingValueLabel('mirrorCabin');
@@ -537,7 +542,7 @@
       button.setAttribute('aria-pressed', String(sensitivityKnown
         && Number(button.dataset.value) === state.settings.recordingSensitivity));
       button.disabled = !state.authenticated || state.replaced || ['ended', 'replaced'].includes(state.status)
-        || state.settings.available !== true || !sensitivityKnown || Boolean(state.settingPending);
+        || state.settings.available !== true || !sensitivityKnown || state.settingPending.has('recordingSensitivity');
     }
     const sensitivityLabel = panel.querySelector('#mode-state-sensitivity');
     if (sensitivityLabel && sensitivityLabel.textContent !== settingValueLabel('recordingSensitivity'))
@@ -604,23 +609,30 @@
     const valid = setting === 'mirrorCabin' ? typeof value === 'boolean'
       : setting === 'recordingSensitivity' && Number.isInteger(value) && value >= 0 && value <= 2;
     if (!valid) return;
-    if (!state.authenticated || state.replaced || state.settingPending || state.settings.available !== true
+    if (!state.authenticated || state.replaced || state.settingPending.has(setting)
+      || (setting === 'mirrorCabin' && state.mirrorWait) || state.settings.available !== true
       || (setting === 'mirrorCabin' ? typeof state.settings.mirrorCabin !== 'boolean'
         : !Number.isInteger(state.settings.recordingSensitivity))) {
       updateModePanel();
       return;
     }
-    state.settingPending = setting;
+    state.settingPending.add(setting);
     state.settingError = null;
     state.settingErrorRef = null;
-    const generation = ++settingWriteGeneration;
+    const generation = settingWriteGeneration;
     ++statusRequestGeneration;
     updateModePanel();
     let refresh = false;
     try {
       const result = await post('/settings', { setting, value });
       if (generation !== settingWriteGeneration || !state.authenticated) return;
-      if (result.settings && typeof result.settings === 'object') applySettingsSnapshot(result.settings);
+      if (result.settings && typeof result.settings === 'object') {
+        applySettingsSnapshot(result.settings);
+        if (setting === 'mirrorCabin' && cabinVisible() && result.settings.mirrorApplyState !== 'error') {
+          state.mirrorWait = { value, stream: state.liveStreamId, revision: result.settings.mirrorRevision };
+          watchMirrorFrame();
+        }
+      }
       else {
         state.settingError = 'settings_state_unavailable';
         refresh = true;
@@ -639,8 +651,7 @@
       }
     } finally {
       if (generation === settingWriteGeneration) {
-        state.settingPending = null;
-        ++settingWriteGeneration;
+        state.settingPending.delete(setting);
         ++statusRequestGeneration;
         updateModePanel();
       }
@@ -814,6 +825,8 @@
     const archive = document.getElementById('archive-panel');
     if (!live || !archive) return;
     if (state.replaced || ['low_battery', 'error', 'ended'].includes(state.status)) stopLiveMedia();
+    if (state.mode === 'archive') suspendLiveMedia();
+    if (!cabinVisible()) clearMirrorWait();
     live.hidden = state.mode === 'archive';
     archive.hidden = state.mode !== 'archive';
     const main = state.mode === 'archive' ? archive : live;
@@ -1004,6 +1017,17 @@
     if (!state.recordings.some((record) => record.id === id)) return;
     if (!await closeArchivePlayer() || action !== actionGeneration) return;
     if (state.replaced) return;
+    const revision = ++state.archiveRevision;
+    state.archiveSelectionActive = true;
+    try {
+      await post('/archive/select', { id, revision });
+      if (action !== actionGeneration || state.mode !== 'archive') return;
+    } catch (failure) {
+      if (action !== actionGeneration) return;
+      if (failure.statusCode === 401) handleUnauthorized(failure);
+      else { console.warn('Could not select archive recording', failure); state.archiveError = true; renderMain(true); }
+      return;
+    }
     state.selectedRecord = id;
     state.archiveView = 'composition';
     state.playerError = false;
@@ -1015,11 +1039,12 @@
   async function closeArchivePlayer({ leave = false } = {}) {
     const action = actionGeneration;
     const video = document.getElementById('archive-video');
-    if (!state.selectedRecord && !video && !leave) return true;
-    if (video) video.pause();
+    if (!state.archiveSelectionActive && !state.selectedRecord && !video && !leave) return true;
+    clearArchivePlayerLocally();
     try {
       const selectionRevision = leave ? ++state.liveSelectionRevision : null;
-      await post('/archive/close', leave ? { leave: true, revision: selectionRevision } : {});
+      await post('/archive/close', { playbackRevision: ++state.archiveRevision,
+        ...(leave ? { leave: true, revision: selectionRevision } : {}) });
       if (action !== actionGeneration) return false;
     }
     catch (failure) {
@@ -1035,15 +1060,6 @@
       }
       return false;
     }
-    archiveFrameToken++;
-    disconnectArchiveResizeObserver();
-    if (video) {
-      video.removeAttribute('src');
-      video.load();
-    }
-    state.selectedRecord = null;
-    state.playerFrameReported = false;
-    state.playerError = false;
     return true;
   }
 
@@ -1110,6 +1126,7 @@
   }
 
   function clearArchivePlayerLocally() {
+    state.archiveSelectionActive = false;
     archiveFrameToken++;
     disconnectArchiveResizeObserver();
     const video = document.getElementById('archive-video');
@@ -1149,7 +1166,7 @@
     const video = document.getElementById('archive-video');
     const record = state.recordings.find((item) => item.id === state.selectedRecord);
     if (!video || !record) return;
-    video.src = `/archive/video/${record.id}`;
+    video.src = `/archive/video/${state.archiveRevision}/${record.id}`;
     video.playbackRate = Number(document.getElementById('playback-speed')?.value) || 1;
     applyArchiveCrop();
     const viewport = document.querySelector('.archive-viewer');
@@ -1242,6 +1259,7 @@
 
   function disposeLivePlayer(player) {
     if (!player) return;
+    if (state.mirrorWait?.player === player) clearMirrorWait();
     clearSelectionCutover(player);
     player.frameToken = (player.frameToken || 0) + 1;
     if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
@@ -1253,6 +1271,81 @@
     player.video.removeAttribute('src');
     player.video.load();
     player.video.remove();
+  }
+
+  function cabinVisible() {
+    return state.mode === 'live' && state.wantsLive && (state.interiorCameras & 1)
+      && ['cabin', 'interior', 'combined'].includes(state.view);
+  }
+
+  function clearMirrorWait() {
+    const wait = state.mirrorWait;
+    if (!wait) return;
+    if (wait.callback != null) wait.player?.video.cancelVideoFrameCallback?.(wait.callback);
+    if (wait.listener) wait.player?.video.removeEventListener('timeupdate', wait.listener);
+    state.mirrorWait = null;
+    updateModePanel();
+  }
+
+  function presentedProgramTime(player, mediaTime) {
+    const video = player.video;
+    const date = player.hls?.playingDate;
+    const start = !player.hls && typeof video.getStartDate === 'function' ? video.getStartDate() : null;
+    return date instanceof Date ? date.getTime() + (mediaTime - video.currentTime) * 1000
+      : start instanceof Date ? start.getTime() + mediaTime * 1000 : NaN;
+  }
+
+  function watchMirrorFrame() {
+    const wait = state.mirrorWait;
+    if (!wait) return;
+    if (!cabinVisible() || wait.stream !== state.liveStreamId || state.settings.mirrorApplyState === 'error'
+      || state.settings.mirrorCabin !== wait.value) { clearMirrorWait(); return; }
+    const player = livePlayer;
+    const target = state.settings.mirrorProgramTimeMs;
+    if (!player || player.stream !== wait.stream || wait.player || state.settings.mirrorApplyState !== 'applied'
+      || state.settings.mirrorStreamId !== wait.stream || state.settings.mirrorRevision < wait.revision
+      || !Number.isSafeInteger(target) || target < 0) return;
+    wait.player = player;
+    const video = player.video;
+    const displayed = (mediaTime) => {
+      if (state.mirrorWait !== wait) return true;
+      if (!cabinVisible() || livePlayer !== player || player.suspended) { clearMirrorWait(); return true; }
+      if (!video.paused && video.readyState >= 2 && presentedProgramTime(player, mediaTime) >= target) {
+        clearMirrorWait();
+        return true;
+      }
+      return false;
+    };
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      const frame = (_, metadata) => {
+        if (!displayed(metadata.mediaTime)) wait.callback = video.requestVideoFrameCallback(frame);
+      };
+      wait.callback = video.requestVideoFrameCallback(frame);
+    } else {
+      wait.listener = () => displayed(video.currentTime);
+      video.addEventListener('timeupdate', wait.listener);
+    }
+  }
+
+  function suspendLiveMedia() {
+    disposeLivePlayer(pendingLivePlayer); pendingLivePlayer = null;
+    const player = livePlayer;
+    if (!player || player.suspended) return;
+    player.suspended = true;
+    clearSelectionCutover(player);
+    player.video.pause();
+    if (player.hls) player.hls.stopLoad();
+    else { player.video.removeAttribute('src'); player.video.load(); }
+  }
+
+  function resumeLiveMedia(player) {
+    if (!player.suspended) return;
+    player.suspended = false;
+    if (player.hls) {
+      // Rejoin the current playlist instead of resuming an expired pre-archive position.
+      player.hls.loadSource(state.livePlaylist);
+    } else player.video.src = state.livePlaylist;
+    player.video.play().catch((error) => player.fail(error));
   }
 
   function presentedFrame(video, valid, onFrame) {
@@ -1348,10 +1441,7 @@
       if (!valid()) return true;
       // Program dates map the actual presented frame to the selected encoded fragment.
       // A playing event or an advancing composite alone does not prove the new layout was shown.
-      const date = player.hls?.playingDate;
-      const start = !player.hls && typeof video.getStartDate === 'function' ? video.getStartDate() : null;
-      const frameMs = date instanceof Date ? date.getTime() + (mediaTime - video.currentTime) * 1000
-        : start instanceof Date ? start.getTime() + mediaTime * 1000 : NaN;
+      const frameMs = presentedProgramTime(player, mediaTime);
       if (!Number.isFinite(frameMs) || frameMs < targetMs || video.paused || video.readyState < 2) return false;
       selectionDisplayed(player, revision);
       return true;
@@ -1372,12 +1462,13 @@
 
   async function startLiveMedia() {
     const stage = document.querySelector('#live-panel .live-stage');
-    if (!stage || state.liveFailed || state.selectionFailed || !state.livePlaylist ||
+    if (!stage || state.mode !== 'live' || !state.wantsLive || state.liveFailed || state.selectionFailed || !state.livePlaylist ||
       !Number.isSafeInteger(state.selectionSegment) || !Number.isFinite(state.selectionProgramTimeMs)) return;
     const revision = state.liveSelectionRevision;
     const stream = state.liveStreamId;
     const view = state.view;
     if (livePlayer?.stream === stream) {
+      resumeLiveMedia(livePlayer);
       if (livePlayer.revision !== revision) {
         livePlayer.revision = revision;
         livePlayer.view = view;
@@ -1399,7 +1490,8 @@
     pendingLivePlayer = player;
     stage.appendChild(video);
     const current = () => generation === mediaGeneration && video.isConnected && state.authenticated &&
-      !state.replaced && (pendingLivePlayer === player || livePlayer === player);
+      !state.replaced && !player.suspended && state.mode === 'live'
+      && (pendingLivePlayer === player || livePlayer === player);
     const fail = (cause, category = 'play') => {
       if (!current()) return;
       console.warn('Live playback failed', category, cause);
@@ -1515,6 +1607,7 @@
   }
 
   function stopLiveMedia() {
+    clearMirrorWait();
     mediaGeneration++;
     disposeLivePlayer(pendingLivePlayer); pendingLivePlayer = null;
     disposeLivePlayer(livePlayer); livePlayer = null;
@@ -1576,7 +1669,8 @@
         if (state.mode === 'live') refreshLiveCameraTabs();
       }
       if (!state.modePending) applyModeSnapshot(data.modes);
-      if (!state.settingPending) applySettingsSnapshot(data.settings);
+      if (!state.settingPending.size) applySettingsSnapshot(data.settings);
+      watchMirrorFrame();
       updateModePanel();
       if (!['ready', 'preparing', 'connected', 'low_battery', 'error', 'ended'].includes(data.status)) {
         applyBatterySnapshot(null);
@@ -1797,7 +1891,7 @@
     if (action === 'record') { await openRecording(button.dataset.id); return; }
     if (action === 'date') {
       ++actionGeneration;
-      if (state.selectedRecord && !await closeArchivePlayer()) return;
+      if (!await closeArchivePlayer()) return;
       state.selectedDay = button.dataset.day;
       state.month = state.selectedDay.slice(0, 7);
       state.mainKey = '';
@@ -1806,7 +1900,7 @@
     }
     if (action === 'month') {
       ++actionGeneration;
-      if (state.selectedRecord && !await closeArchivePlayer()) return;
+      if (!await closeArchivePlayer()) return;
       state.month = addMonth(state.month, Number(button.dataset.delta));
       state.selectedDay = `${state.month}-01`;
       state.mainKey = '';
@@ -1869,7 +1963,8 @@
   app.addEventListener('play', (event) => { if (event.target.id === 'archive-video') updateArchiveControls(); }, true);
   app.addEventListener('pause', (event) => { if (event.target.id === 'archive-video') updateArchiveControls(); }, true);
   app.addEventListener('error', (event) => {
-    if (event.target.id === 'archive-video') {
+    if (event.target.id === 'archive-video' && state.selectedRecord
+      && event.target.getAttribute('src') === `/archive/video/${state.archiveRevision}/${state.selectedRecord}`) {
       console.warn('Archive video playback failed', event.target.error || event);
       state.playerError = true;
       const note = document.getElementById('archive-error');

@@ -46,6 +46,7 @@ public class Media3HlsPlaybackTest {
             long clockOriginUs = 123_000_000L, lastPts = -1, previousPts = -1;
             // Layout changes inside the second GOP, not at a convenient fragment boundary.
             window.select(7, clockOriginUs + 1_450_000L);
+            window.mirrorChanged(1, clockOriginUs + 2_450_000L);
             for (int i = 0; i < packets.length() * 2; i++) {
                 JSONObject packet = packets.getJSONObject(i % packets.length());
                 ByteBuffer encoded = ByteBuffer.wrap(fixture, packet.getInt("pos"), packet.getInt("size")).slice();
@@ -62,6 +63,7 @@ public class Media3HlsPlaybackTest {
                 muxer.writeSampleData(track, ByteBuffer.wrap(sample), new BufferInfo(lastPts, sample.length,
                         packet.getString("flags").contains("K") ? C.BUFFER_FLAG_KEY_FRAME : 0));
                 if (lastPts < 3_000_000L) assertEquals(-1, window.selectionSegment(7));
+                assertEquals(-1, window.mirrorProgramTimeMs(1));
             }
             CameraHlsEncoder.Companion.finishMuxer(muxer, track, lastPts, previousPts);
             assertEquals(2, window.selectionSegment(7));
@@ -69,6 +71,10 @@ public class Media3HlsPlaybackTest {
             assertEquals(-1, window.selectionProgramTimeMs(6));
             String playlist = window.playlist(window.selectionSegment(7));
             long selectionTimeMs = window.selectionProgramTimeMs(7);
+            assertEquals(selectionTimeMs + 1000, window.mirrorProgramTimeMs(1));
+            assertEquals(-1, window.mirrorProgramTimeMs(2));
+            assertEquals("segment=9 retainedFirst=0 retainedLast=3",
+                    window.missingSegmentDiagnostic(window.getPlaylistPath().replace("live.m3u8", "segment/9.m4s")));
             assertTrue(playlist.contains("#EXT-X-PROGRAM-DATE-TIME:"
                     + java.time.Instant.ofEpochMilli(selectionTimeMs) + "\n"));
             // The stable reader and a newly joined reader share the same encoded time boundary.
@@ -96,9 +102,11 @@ public class Media3HlsPlaybackTest {
             window.keepSelection(8); // Archive never makes the previous layout's fragments valid again.
             assertEquals(2, window.selectionSegment(8));
             assertEquals(selectionTimeMs, window.selectionProgramTimeMs(8));
+            assertEquals(selectionTimeMs + 1000, window.mirrorProgramTimeMs(1));
             window.clear();
             assertEquals(-1, window.selectionSegment(8));
             assertEquals(-1, window.selectionProgramTimeMs(8));
+            assertEquals(-1, window.mirrorProgramTimeMs(1));
         } finally {
             try (java.util.stream.Stream<Path> files = Files.walk(dir)) {
                 for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toArray(Path[]::new)) Files.delete(file);

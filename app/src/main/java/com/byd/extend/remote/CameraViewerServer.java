@@ -70,6 +70,8 @@ public final class CameraViewerServer implements AutoCloseable {
     private final Thread listener;
     private final Object playbackLock = new Object();
     private final Map<String, SessionPlayback> playbacks = new HashMap<>();
+    private final Map<String, ArchiveSelection> archiveSelections = new HashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong transferIds = new java.util.concurrent.atomic.AtomicLong();
     private final Object sessionSocketLock = new Object();
     private final Map<String, Set<Socket>> sessionSockets = new HashMap<>();
     private final Map<Socket, String> socketSessions = new HashMap<>();
@@ -402,23 +404,49 @@ public final class CameraViewerServer implements AutoCloseable {
                     json(socket, reply, 409, "stale_live_selection", null);
                     return;
                 }
-                closePlayback(request.session);
+                archiveMode(request.session, archiveRevision, true);
                 serveJson(socket, false, reply, stream.status());
                 return;
+            case "/archive/select": {
+                if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
+                JSONObject selection = bodyObject(request.body);
+                String id = selection.optString("id");
+                if (archiveId("/" + id, "/") == null) throw new HttpFailure(400, "invalid_archive_id", null);
+                long revision = selectionRevision(selection);
+                if (!transferCurrent(request.session, socket)) throw new HttpFailure(401, "replaced", null);
+                CameraViewerArchive archive = stream.recordings();
+                synchronized (playbackLock) {
+                    if (closed || !access.isCurrent(request.session)) throw new HttpFailure(401, "replaced", null);
+                    ArchiveSelection current = archiveSelections.computeIfAbsent(request.session, ignored -> new ArchiveSelection());
+                    if (!current.select(revision, id)) throw new HttpFailure(409, "stale_archive_selection", null);
+                    closePlayback(playbacks.remove(request.session), "record_selected");
+                    CameraViewerArchive.Playback selected;
+                    try { selected = archive.openVideo(id); }
+                    catch (java.io.FileNotFoundException missing) {
+                        throw new HttpFailure(404, "not_found", null, missing);
+                    }
+                    playbacks.put(request.session, new SessionPlayback(id, revision, selected));
+                }
+                serveJson(socket, false, reply, new JSONObject().put("revision", revision));
+                return;
+            }
             case "/archive/close":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
                 JSONObject archiveClose = bodyObject(request.body);
-                if (archiveClose.optBoolean("leave")) {
-                    if (!transferCurrent(request.session, socket)) {
-                        json(socket, reply, 401, access.wasReplaced(request.session) ? "replaced" : "unauthorized", null);
-                        return;
-                    }
-                    if (!stream.archive(request.session, true, selectionRevision(archiveClose))) {
-                        json(socket, reply, 409, "stale_live_selection", null);
-                        return;
-                    }
+                long playbackRevision = selectionRevision(archiveClose, "playbackRevision");
+                boolean leaveArchive = archiveClose.optBoolean("leave");
+                long leaveRevision = leaveArchive ? selectionRevision(archiveClose) : 0;
+                synchronized (playbackLock) {
+                    if (closed || !access.isCurrent(request.session)) throw new HttpFailure(401, "replaced", null);
+                    ArchiveSelection selected = archiveSelections.computeIfAbsent(request.session, ignored -> new ArchiveSelection());
+                    if (!selected.accepts(playbackRevision, null))
+                        throw new HttpFailure(409, "stale_archive_selection", null);
+                    if (leaveArchive && !stream.archive(request.session, true, leaveRevision))
+                        throw new HttpFailure(409, "stale_live_selection", null);
+                    selected.select(playbackRevision, null);
+                    if (leaveArchive) selected.mode(leaveRevision, false);
+                    closePlayback(playbacks.remove(request.session), "archive_closed");
                 }
-                closePlayback(request.session);
                 serveJson(socket, false, reply, stream.status());
                 return;
             case "/live":
@@ -440,7 +468,7 @@ public final class CameraViewerServer implements AutoCloseable {
                     json(socket, reply, 409, "stale_live_selection", null);
                     return;
                 }
-                closePlayback(request.session);
+                archiveMode(request.session, selectionRevision, false);
                 serveJson(socket, false, reply, new JSONObject().put("status", "preparing")
                         .put("request", liveRequest).put("selectionRevision", selectionRevision)
                         .put("streamId", streamId));
@@ -494,9 +522,14 @@ public final class CameraViewerServer implements AutoCloseable {
         }
         if (request.path.startsWith("/archive/video/")) {
             if (!isRead(request.method)) { methodNotAllowed(socket, reply); return; }
-            String id = archiveId(request.path, "/archive/video/");
+            int split = request.path.indexOf('/', "/archive/video/".length());
+            if (split < 0) throw new HttpFailure(409, "stale_archive_selection", null);
+            long revision;
+            try { revision = Long.parseLong(request.path.substring("/archive/video/".length(), split)); }
+            catch (NumberFormatException invalid) { throw new HttpFailure(400, "invalid_archive_revision", null); }
+            String id = archiveId(request.path.substring(split), "/");
             if (id == null) { json(socket, reply, 404, "not_found", null); return; }
-            serveVideo(socket, request, id, reply);
+            serveVideo(socket, request, id, revision, reply);
             return;
         }
 
@@ -546,7 +579,7 @@ public final class CameraViewerServer implements AutoCloseable {
                 "accessMode=" + (mode.equals("serve") ? "serve" : mode.equals("funnel") ? "funnel" : "public")
                         + " run=" + presentation.optLong("run") + " "
                         + ViewerStopReason.mediaRequest(request.path, window == null ? null : window.getPlaylistPath(),
-                        clientRevision));
+                        clientRevision) + (window == null ? "" : " " + window.missingSegmentDiagnostic(request.path)));
         json(socket, reply, 404, "not_found", null);
     }
 
@@ -629,6 +662,7 @@ public final class CameraViewerServer implements AutoCloseable {
     private void stop(String session, Socket responseSocket, String reason) {
         closePlayback(session);
         if (access.release(session)) {
+            synchronized (playbackLock) { archiveSelections.remove(session); }
             closeSessionSockets(session, responseSocket);
             stream.disconnected(session, reason);
         }
@@ -664,31 +698,37 @@ public final class CameraViewerServer implements AutoCloseable {
         }
     }
 
-    private void serveVideo(Socket socket, Request request, String id, Reply reply) throws Exception {
+    private void serveVideo(Socket socket, Request request, String id, long revision, Reply reply) throws Exception {
         SessionPlayback playback;
-        try { playback = playbackFor(request.session, id, socket); }
+        try { playback = playbackFor(request.session, id, revision, socket); }
         catch (java.io.FileNotFoundException missing) { json(socket, reply, 404, "not_found", null); return; }
         catch (HttpFailure expired) { json(socket, reply, expired.status, expired.bodyStatus, null); return; }
-        CameraViewerArchive.RangeFile rangeFile;
-        try { rangeFile = playback.playback.openDescriptor(); }
-        catch (java.io.FileNotFoundException missing) { json(socket, reply, 404, "not_found", null); return; }
-        try (CameraViewerArchive.RangeFile closeable = rangeFile) {
+        long transfer = transferIds.incrementAndGet(), sent = 0, promised = 0;
+        String context = "transfer=" + transfer + " record=" + id + " revision=" + revision;
+        String outcome = "opening";
+        CameraViewingDiagnostics.detail("archive_transfer_begin", "shared", context);
+        try (CameraViewerArchive.RangeFile closeable = playback.playback.openDescriptor()) {
             if (!transferCurrent(request.session, socket) || !registerTransfer(request.session, playback, socket)) {
-                json(socket, reply, 401, "replaced", null);
+                outcome = "superseded";
+                json(socket, reply, 409, "stale_archive_selection", null);
                 return;
             }
             HttpByteRange range;
             try { range = HttpByteRange.parse(request.fields.get("range"), closeable.contentLength); }
             catch (IllegalArgumentException invalid) {
+                outcome = "invalid_range";
                 writeHeaders(socket, reply, 416, "video/mp4", 0,
                         "Accept-Ranges: bytes\r\nContent-Range: bytes */" + closeable.contentLength + "\r\n", null);
                 return;
             }
             int status = range.partial ? 206 : 200;
+            promised = request.method.equals("HEAD") ? 0 : range.length();
+            CameraViewingDiagnostics.detail("archive_transfer_range", "shared",
+                    context + " start=" + range.start + " bytes=" + promised);
             String extra = "Accept-Ranges: bytes\r\n" + (range.partial
                     ? "Content-Range: " + range.contentRange() + "\r\n" : "");
             writeHeaders(socket, reply, status, "video/mp4", range.length(), extra, null);
-            if (request.method.equals("HEAD")) return;
+            if (request.method.equals("HEAD")) { outcome = "complete"; return; }
 
             byte[] buffer = new byte[VIDEO_CHUNK];
             long offset = range.start;
@@ -708,38 +748,74 @@ public final class CameraViewerServer implements AutoCloseable {
                 }
                 if (read <= 0) throw new EOFException("Motion recording ended before the requested range");
                 socket.getOutputStream().write(buffer, 0, read);
+                sent += read;
                 offset += read;
                 remaining -= read;
             }
             socket.getOutputStream().flush();
+            outcome = "complete";
+        } catch (Exception failure) {
+            if (!isPlaybackCurrent(request.session, playback)) {
+                outcome = "cancelled";
+                CameraViewingDiagnostics.detail("archive_transfer_cancelled", "shared",
+                        context + " reason=" + playback.closeReason + " cause=" + CameraViewingDiagnostics.describe(failure));
+                if (!reply.started && !socket.isClosed()) try {
+                    json(socket, reply, 409, "stale_archive_selection", null);
+                } catch (IOException responseFailure) {
+                    failure.addSuppressed(responseFailure);
+                    CameraViewingDiagnostics.failure("archive_cancel_response_" + transfer, "shared", failure);
+                }
+                return;
+            }
+            outcome = "failed";
+            CameraViewingDiagnostics.failure("archive_transfer_failed_" + transfer, "shared", failure);
+            if (failure instanceof java.io.FileNotFoundException && !reply.started) {
+                json(socket, reply, 404, "not_found", null);
+                return;
+            }
+            throw failure;
         } finally {
             unregisterTransfer(request.session, playback, socket);
+            CameraViewingDiagnostics.detail("archive_transfer_end", "shared",
+                    context + " outcome=" + outcome + " promised=" + promised + " sent=" + sent
+                            + " closeReason=" + playback.closeReason);
         }
     }
 
-    private SessionPlayback playbackFor(String session, String id, Socket requestSocket) throws Exception {
+    private SessionPlayback playbackFor(String session, String id, long revision, Socket requestSocket) throws Exception {
         if (!transferCurrent(session, requestSocket))
             throw new HttpFailure(401, "replaced", null);
-        CameraViewerArchive archive = stream.recordings();
         synchronized (playbackLock) {
             if (closed || !access.isCurrent(session))
                 throw new java.io.FileNotFoundException("Viewer session is no longer current");
             SessionPlayback current = playbacks.get(session);
-            if (current != null && current.id.equals(id)) return current;
-            if (current != null) {
-                playbacks.remove(session);
-                closePlayback(current);
-            }
-            CameraViewerArchive.Playback selected = archive.openVideo(id);
-            SessionPlayback opened = new SessionPlayback(id, selected);
-            playbacks.put(session, opened);
-            return opened;
+            ArchiveSelection selected = archiveSelections.get(session);
+            if (current != null && current.revision == revision && selected != null && selected.matches(revision, id)) return current;
+            throw new HttpFailure(409, "stale_archive_selection", null);
+        }
+    }
+
+    private boolean isPlaybackCurrent(String session, SessionPlayback playback) {
+        synchronized (playbackLock) {
+            return !closed && access.isCurrent(session) && playbacks.get(session) == playback;
         }
     }
 
     private void closePlayback(String session) {
         synchronized (playbackLock) {
-            closePlayback(playbacks.remove(session));
+            ArchiveSelection selected = archiveSelections.get(session);
+            if (selected != null) selected.clear();
+            closePlayback(playbacks.remove(session), "mode_or_session_closed");
+            if (!access.isCurrent(session)) archiveSelections.remove(session);
+        }
+    }
+
+    private void archiveMode(String session, long revision, boolean open) throws IOException {
+        synchronized (playbackLock) {
+            if (closed || !access.isCurrent(session)) throw new HttpFailure(401, "replaced", null);
+            ArchiveSelection selected = archiveSelections.computeIfAbsent(session, ignored -> new ArchiveSelection());
+            if (!selected.mode(revision, open)) throw new HttpFailure(409, "stale_live_selection", null);
+            closePlayback(playbacks.remove(session), open ? "archive_entered" : "live_selected");
         }
     }
 
@@ -786,7 +862,14 @@ public final class CameraViewerServer implements AutoCloseable {
     }
 
     private static void closePlayback(SessionPlayback playback) {
+        closePlayback(playback, "server_shutdown");
+    }
+
+    private static void closePlayback(SessionPlayback playback, String reason) {
         if (playback == null) return;
+        playback.closeReason = reason;
+        CameraViewingDiagnostics.detail("archive_playback_closed", "shared",
+                "record=" + playback.id + " revision=" + playback.revision + " reason=" + reason);
         for (Socket socket : new ArrayList<>(playback.transfers)) {
             try { socket.close(); }
             catch (IOException failure) {
@@ -841,7 +924,11 @@ public final class CameraViewerServer implements AutoCloseable {
     }
 
     private static long selectionRevision(JSONObject input) throws IOException {
-        Object raw = input.opt("revision");
+        return selectionRevision(input, "revision");
+    }
+
+    private static long selectionRevision(JSONObject input, String field) throws IOException {
+        Object raw = input.opt(field);
         if (!(raw instanceof Number)) throw new HttpFailure(400, "invalid_selection_revision", null);
         double value = ((Number) raw).doubleValue();
         if (!Double.isFinite(value) || value < 1 || value > 9_007_199_254_740_991d
@@ -1020,6 +1107,7 @@ public final class CameraViewerServer implements AutoCloseable {
         synchronized (playbackLock) {
             active = new ArrayList<>(playbacks.values());
             playbacks.clear();
+            archiveSelections.clear();
         }
         for (SessionPlayback playback : active) closePlayback(playback);
         requests.shutdownNow();
@@ -1068,12 +1156,43 @@ public final class CameraViewerServer implements AutoCloseable {
 
     private static final class SessionPlayback {
         final String id;
+        final long revision;
+        volatile String closeReason = "none";
         final CameraViewerArchive.Playback playback;
         final Set<Socket> transfers = ConcurrentHashMap.newKeySet();
 
-        SessionPlayback(String id, CameraViewerArchive.Playback playback) {
+        SessionPlayback(String id, long revision, CameraViewerArchive.Playback playback) {
             this.id = id;
+            this.revision = revision;
             this.playback = playback;
         }
+    }
+
+    /** Ordered explicit selection; delayed media GETs never change it. Guarded by playbackLock. */
+    static final class ArchiveSelection {
+        private long revision;
+        private long modeRevision;
+        private String id;
+        private boolean open;
+        boolean mode(long next, boolean open) {
+            if (next <= modeRevision) return false;
+            modeRevision = next;
+            this.open = open;
+            id = null;
+            return true;
+        }
+        boolean accepts(long next, String id) {
+            return (id == null || open) && next > revision && next <= 9_007_199_254_740_991L;
+        }
+        boolean select(long next, String id) {
+            if (!accepts(next, id)) return false;
+            revision = next;
+            this.id = id;
+            return true;
+        }
+        boolean matches(long revision, String id) {
+            return this.id != null && this.revision == revision && this.id.equals(id);
+        }
+        void clear() { id = null; open = false; }
     }
 }

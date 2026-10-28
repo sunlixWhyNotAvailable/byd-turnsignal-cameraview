@@ -295,9 +295,6 @@ internal fun FormScope.CameraViewingScreen(
     FormSection(strings.motionText(R.string.cameras_viewing), colors, key = "cameras-viewing",
         headerModifier = Modifier.switchRow(state.config.enabled, toggleViewing, colors),
         trailing = { AppSwitch(state.config.enabled, toggleViewing, colors, compact = true, clearSemantics = true) }) {
-        row("hint") {
-            Text(strings.motionText(R.string.cameras_on_demand), color = colors.muted, fontSize = 13.sp)
-        }
         row("method") {
             ChoiceField(strings.motionText(R.string.cameras_connection_method),
                 listOf("VDO.Ninja", "Tailscale", "Zrok"), providerIndex, { selected ->

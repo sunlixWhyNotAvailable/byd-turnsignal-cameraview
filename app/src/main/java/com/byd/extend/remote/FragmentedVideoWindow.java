@@ -23,6 +23,7 @@ public final class FragmentedVideoWindow extends OutputStream {
     private final ArrayDeque<Segment> segments = new ArrayDeque<>();
     private final ArrayDeque<Long> sampleTimesUs = new ArrayDeque<>();
     private long selectionRevision, selectionAfterUs = Long.MAX_VALUE;
+    private long mirrorRevision, mirrorAfterUs = Long.MAX_VALUE;
     private long sequence;
     private boolean closed;
     private IOException writeFailure;
@@ -69,6 +70,26 @@ public final class FragmentedVideoWindow extends OutputStream {
         long id = selectionSegment(revision);
         for (Segment segment : segments) if (segment.id == id) return segment.programTimeMs;
         return -1;
+    }
+
+    public synchronized void mirrorChanged(long revision, long afterUs) {
+        mirrorRevision = revision;
+        mirrorAfterUs = afterUs;
+    }
+
+    public synchronized long mirrorProgramTimeMs(long revision) {
+        if (revision != mirrorRevision) return -1;
+        for (Segment segment : segments)
+            if (segment.firstSampleUs >= mirrorAfterUs) return segment.programTimeMs;
+        return -1;
+    }
+
+    public synchronized String missingSegmentDiagnostic(String path) {
+        String resource = resourcePath(path);
+        String requested = resource != null && resource.matches("/segment/[0-9]{1,19}\\.m4s")
+                ? resource.substring(9, resource.length() - 4) : "unknown";
+        return "segment=" + requested + " retainedFirst=" + (segments.isEmpty() ? -1 : segments.getFirst().id)
+                + " retainedLast=" + (segments.isEmpty() ? -1 : segments.getLast().id);
     }
 
     private static final class Segment {

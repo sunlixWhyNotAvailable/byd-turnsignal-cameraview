@@ -124,7 +124,16 @@ internal class CameraHlsEncoder(
         // The synchronous GL update has completed: every later presentation timestamp uses this layout.
         if (changed) window.select(revision, android.os.SystemClock.elapsedRealtimeNanos() / 1_000)
         else window.keepSelection(revision)
-        if (changed) try {
+        if (changed) requestKeyframe()
+    }
+
+    fun mirrorChanged(revision: Long) {
+        window.mirrorChanged(revision, android.os.SystemClock.elapsedRealtimeNanos() / 1_000)
+        requestKeyframe()
+    }
+
+    private fun requestKeyframe() {
+        try {
             codec?.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         } catch (failure: Exception) {
             // Periodic keyframes still delimit the selection; keep the codec's exact rejection.

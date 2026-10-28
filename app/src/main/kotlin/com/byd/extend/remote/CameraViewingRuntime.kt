@@ -63,6 +63,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     @Volatile private var theme = "dark"
     @Volatile private var interiorCameras = RemoteCameraView.NONE
     @Volatile private var mirrorCabin = false
+    private var mirrorRevision = 0L
     @Volatile private var mirrorApplyState = "pending"
     @Volatile private var mirrorApplyErrorRef: String? = null
     private var enabled = false
@@ -540,6 +541,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         val result = JSONObject().put("available", snapshot.optBoolean("available"))
             .put("mirrorCabin", desiredMirror)
             .put("mirrorApplyState", reportedMirrorState)
+            .put("mirrorRevision", mirrorRevision)
+            .put("mirrorStreamId", sourceRun?.encoder?.window?.streamId)
+            .put("mirrorProgramTimeMs", sourceRun?.encoder?.window?.mirrorProgramTimeMs(mirrorRevision) ?: -1L)
             .put("sensitivityApplyState", snapshot.optString("applyState", "error"))
         val sensitivity = snapshot.opt("recordingSensitivity")
         if (sensitivity is Int && sensitivity in 0..2) result.put("recordingSensitivity", sensitivity)
@@ -577,6 +581,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         try {
             camera.setCabinMirrored(mirrorCabin)
             if (camera.isCabinMirrored() == mirrorCabin) {
+                sourceRun?.encoder?.mirrorChanged(++mirrorRevision)
                 mirrorApplyState = "applied"
                 mirrorApplyErrorRef = null
             } else {
