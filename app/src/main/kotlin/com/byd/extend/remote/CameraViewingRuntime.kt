@@ -748,7 +748,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         if (retainedOutput) {
             val changed = run.outputView != direction || run.outputInteriorMask != mask ||
                 run.outputLocale != outputLocale || run.outputExteriorReady != camera.isExteriorReady
-            if (changed) {
+            val exteriorWasAttached = camera.isExteriorAttached
+            val recoverExterior = camera.isExteriorReady && camera.needsExteriorRecovery(direction)
+            if (changed || recoverExterior) {
                 camera.updateOutput(null, direction, mask, outputLocale, mirrorCabin)
                 rememberOutput(run, direction, mask, outputLocale, camera)
                 if (camera.isCabinMirrored() == mirrorCabin) {
@@ -758,10 +760,12 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     mirrorApplyState = "pending"
                 }
                 CameraViewingDiagnostics.detail("retained_output_updated", p.method,
-                    "$diagnostic source=${camera.sessionId()} outputStream=$streamId exteriorReady=${camera.isExteriorReady}")
+                    "$diagnostic source=${camera.sessionId()} outputStream=$streamId exteriorReady=${camera.isExteriorReady}" +
+                        " exteriorAttached=${camera.isExteriorAttached} error_ref=${camera.exteriorErrorReference()}")
             }
-            if (changed || run.outputRevision != selectionRevision) {
-                run.encoder?.select(selectionRevision, changed)
+            val imageChanged = changed || exteriorWasAttached != camera.isExteriorAttached
+            if (imageChanged || run.outputRevision != selectionRevision) {
+                run.encoder?.select(selectionRevision, imageChanged)
                 run.outputRevision = selectionRevision
                 run.failedSelectionRevision = -1L
             }
@@ -865,9 +869,11 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         RemoteCameraView.effectiveInteriorMask(profile.method, interiorCameras)
 
     private fun continueExteriorPreparation(p: Profile, run: Run, active: Viewer, camera: RemoteCameraSource) {
-        if (active.direction != RemoteCameraView.COMBINED || camera.isExteriorReady) return
+        if (!camera.needsExteriorRecovery(active.direction)) return
         if (SystemClock.elapsedRealtime() >= run.deadline) {
-            sessionEvent("exterior_preparation_still_unavailable", active, "interior_stream_retained=true")
+            sessionEvent("exterior_preparation_still_unavailable", active,
+                "prepared=${camera.isExteriorReady} attached=${camera.isExteriorAttached}" +
+                    " error_ref=${camera.exteriorErrorReference()} interior_stream_retained=true")
         } else if (!run.preparing) {
             run.preparing = true
             owner.schedule({ execute(p, run) { prepare(p, run) } }, 500, TimeUnit.MILLISECONDS)

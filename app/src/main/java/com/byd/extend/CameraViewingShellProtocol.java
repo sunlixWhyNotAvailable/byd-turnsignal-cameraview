@@ -16,7 +16,7 @@ public final class CameraViewingShellProtocol {
     public static final String LOCK_PATH = "/data/local/tmp/bydextend_viewing.lock";
     public static final String LOG_PATH = "/data/local/tmp/bydextend_viewing.log";
     public static final String STATE_ROOT = "/data/local/tmp/bydextend_viewing";
-    public static final int VERSION = 6;
+    public static final int VERSION = 7;
     public static final int MAX_REQUEST_BYTES = 64 * 1024;
     public static final int MAX_REPLY_BYTES = 256 * 1024;
 

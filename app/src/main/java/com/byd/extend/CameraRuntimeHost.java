@@ -59,6 +59,7 @@ final class CameraRuntimeHost {
     private int viewerRequestId;
     private boolean viewerExteriorAttached;
     private boolean viewerComposerExternal;
+    private String viewerExteriorErrorReference;
     private volatile IBinder viewingHelper;
     private IBinder.DeathRecipient viewingHelperDeath;
     private volatile int viewingHelperPid;
@@ -368,7 +369,7 @@ final class CameraRuntimeHost {
                 output.register();
                 final MotionRecordingOutput requestedOutput = output;
                 final int requestedId = requestId;
-                MotionRecordingOutput.LiveInputs inputs = callViewerOwned(() -> {
+                ViewerReply result = callViewerOwned(() -> {
                     try {
                         if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
                         if (viewerOwner != null) throw new IllegalStateException("camera viewer busy");
@@ -379,6 +380,7 @@ final class CameraRuntimeHost {
                         viewerRequestId = requestedId;
                         viewerExteriorAttached = false;
                         viewerComposerExternal = false;
+                        viewerExteriorErrorReference = null;
                         viewerDeath = () -> handler.post(() -> {
                             if (viewerOwner == owner) {
                                 try { clearViewer(); }
@@ -386,8 +388,7 @@ final class CameraRuntimeHost {
                             }
                         });
                         owner.linkToDeath(viewerDeath, 0);
-                        return requireViewerInputs(
-                                prepareInitialViewer(requestedOutput, config, requestedId));
+                        return viewerReply(prepareInitialViewer(requestedOutput, config, requestedId));
                     } catch (Throwable error) {
                         try {
                             if (viewerOutput == requestedOutput) clearViewer();
@@ -401,8 +402,7 @@ final class CameraRuntimeHost {
                 }, dispatched);
                 reply.writeNoException();
                 reply.writeInt(1);
-                reply.writeTypedArray(inputs.surfaces, 0);
-                reply.writeLongArray(inputs.generations);
+                result.writeToParcel(reply);
                 return operation;
             } finally {
                 if (output != null) output.unregister();
@@ -424,7 +424,7 @@ final class CameraRuntimeHost {
                 if (generation <= 0 || data.dataAvail() != 0
                         || encoder != null && !encoder.isValid())
                     throw new IllegalArgumentException("invalid viewer output update");
-                MotionRecordingOutput.LiveInputs inputs = call(() -> {
+                ViewerReply result = call(() -> {
                     if (!pending.compareAndSet(true, false))
                         throw new IllegalStateException("viewer output update expired before dispatch");
                     if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
@@ -437,7 +437,7 @@ final class CameraRuntimeHost {
                     }
                     viewerGeneration = generation;
                     try {
-                        return updateViewerOutput(viewerOutput, config, encoder, encoderTransferred);
+                        return viewerReply(updateViewerOutput(viewerOutput, config, encoder, encoderTransferred));
                     } catch (Throwable error) {
                         if (encoder != null && !encoderTransferred.get()) {
                             safeRelease(encoder);
@@ -451,8 +451,7 @@ final class CameraRuntimeHost {
                 });
                 reply.writeNoException();
                 reply.writeInt(1);
-                reply.writeTypedArray(inputs.surfaces, 0);
-                reply.writeLongArray(inputs.generations);
+                result.writeToParcel(reply);
                 return operation;
             } finally {
                 if (pending.compareAndSet(true, false) && encoder != null) safeRelease(encoder);
@@ -589,6 +588,29 @@ final class CameraRuntimeHost {
         }
     }
 
+    private static final class ViewerReply {
+        final MotionRecordingOutput.LiveInputs inputs;
+        final RemoteExteriorAttachment exterior;
+
+        ViewerReply(MotionRecordingOutput.LiveInputs inputs, RemoteExteriorAttachment exterior) {
+            this.inputs = inputs;
+            this.exterior = exterior;
+        }
+
+        void writeToParcel(Parcel reply) {
+            exterior.writeToParcel(reply);
+            reply.writeTypedArray(inputs.surfaces, 0);
+            reply.writeLongArray(inputs.generations);
+        }
+    }
+
+    private ViewerReply viewerReply(MotionRecordingOutput.LiveInputs inputs) {
+        // Snapshot on the owner thread, together with the input generations being acknowledged.
+        return new ViewerReply(requireViewerInputs(inputs),
+                new RemoteExteriorAttachment(viewerExteriorAttached && viewerComposerExternal,
+                        viewerExteriorErrorReference));
+    }
+
     private MotionRecordingOutput.LiveInputs prepareInitialViewer(MotionRecordingOutput output,
             ViewerConfig config, int requestId) throws Exception {
         output.prepareStandalone(context);
@@ -605,6 +627,7 @@ final class CameraRuntimeHost {
             lifetime.start(this::initialize);
             attachViewerExterior(output, requestId);
             viewerComposerExternal = true;
+            viewerExteriorErrorReference = null;
             return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
                     true, config.availableMask, config.widths, config.heights, config.locale,
                     config.mirrorCabin);
@@ -639,6 +662,7 @@ final class CameraRuntimeHost {
                     effectiveExterior = true;
                 }
                 effectiveExterior = externalFailure == null && viewerComposerExternal;
+                if (effectiveExterior) viewerExteriorErrorReference = null;
             } else {
                 if (viewerExteriorAttached) {
                     Throwable detachFailure = detachViewerExterior();
@@ -674,6 +698,9 @@ final class CameraRuntimeHost {
             Surface encoder, java.util.concurrent.atomic.AtomicBoolean encoderTransferred,
             Throwable primary) throws Exception {
         Throwable failure = primary;
+        // Keep one recovery-episode reference so ordinary logs can deduplicate identical failures.
+        if (viewerExteriorErrorReference == null)
+            viewerExteriorErrorReference = java.util.UUID.randomUUID().toString().replace("-", "");
         Throwable detachFailure = detachViewerExterior();
         if (detachFailure != null) {
             if (detachFailure != failure) failure.addSuppressed(detachFailure);
@@ -856,6 +883,7 @@ final class CameraRuntimeHost {
         viewerExteriorAttached = false;
         viewerComposerExternal = false;
         viewerOwner = null;
+        viewerExteriorErrorReference = null;
         viewerDeath = null;
         viewerSession = null;
         viewerGeneration = 0;
@@ -867,6 +895,7 @@ final class CameraRuntimeHost {
 
     private void reportViewerOperationFailure(String operation, Throwable failure) {
         event("camera_viewing_" + operation + "_error", "operation", operation,
+                "session", viewerSession, "exterior_error_ref", viewerExteriorErrorReference,
                 "error", failure.toString(), "stack_trace", viewerStackTrace(failure));
     }
 

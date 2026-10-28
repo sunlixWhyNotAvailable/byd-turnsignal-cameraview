@@ -29,6 +29,7 @@ public final class RemoteCameraSource implements AutoCloseable {
     private volatile Throwable closeFailure;
     private boolean preparationRequested;
     private volatile boolean exteriorReady;
+    private volatile RemoteExteriorAttachment exteriorAttachment = new RemoteExteriorAttachment(false, null);
     private long outputGeneration;
     private boolean mirrorCabin;
     private int requestId;
@@ -114,6 +115,7 @@ public final class RemoteCameraSource implements AutoCloseable {
         host = candidate;
         death = () -> {
             attached = false;
+            exteriorAttachment = new RemoteExteriorAttachment(false, null);
             failure.accept(new IllegalStateException("camera helper died; viewer session=" + session));
         };
         candidate.linkToDeath(death, 0);
@@ -136,11 +138,13 @@ public final class RemoteCameraSource implements AutoCloseable {
                 throw new IllegalStateException("camera viewer attach transaction unavailable");
             reply.readException();
             if (reply.readInt() != 1) throw new IllegalStateException("camera viewer attach refused");
+            RemoteExteriorAttachment exterior = RemoteExteriorAttachment.readFromParcel(reply);
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
             long[] inputGenerations = reply.createLongArray();
             this.mirrorCabin = mirrorCabin;
             attached = true;
             interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
+            acknowledgeExterior(exterior);
         } catch (Throwable error) {
             if (error instanceof Exception) throw (Exception) error;
             if (error instanceof Error) throw (Error) error;
@@ -174,10 +178,12 @@ public final class RemoteCameraSource implements AutoCloseable {
                 throw new IllegalStateException("viewer output update unavailable");
             reply.readException();
             if (reply.readInt() != 1) throw new IllegalStateException("viewer output update refused");
+            RemoteExteriorAttachment exterior = RemoteExteriorAttachment.readFromParcel(reply);
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
             long[] inputGenerations = reply.createLongArray();
             this.mirrorCabin = mirrorCabin;
             interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
+            acknowledgeExterior(exterior);
         } finally { data.recycle(); reply.recycle(); }
     }
 
@@ -286,6 +292,7 @@ public final class RemoteCameraSource implements AutoCloseable {
         Throwable first = null;
         closing = true;
         attached = false;
+        exteriorAttachment = new RemoteExteriorAttachment(false, null);
         try { interiors.close(); }
         catch (Throwable error) {
             first = error;
@@ -357,4 +364,21 @@ public final class RemoteCameraSource implements AutoCloseable {
 
     /** Reports the most recent external preparation result without coupling it to interior readiness. */
     public boolean isExteriorReady() { return exteriorReady; }
+
+    public boolean isExteriorAttached() { return exteriorAttachment.attached; }
+
+    public boolean needsExteriorRecovery(int view) { return exteriorAttachment.needsRecovery(view); }
+
+    public String exteriorErrorReference() { return exteriorAttachment.errorReference; }
+
+    private void acknowledgeExterior(RemoteExteriorAttachment state) {
+        RemoteExteriorAttachment previous = exteriorAttachment;
+        exteriorAttachment = state;
+        if (previous.attached != state.attached
+                || !java.util.Objects.equals(previous.errorReference, state.errorReference)) {
+            CameraViewingDiagnostics.detail("exterior_attachment", "shared", "session=" + session
+                    + " prepared=" + exteriorReady + " attached=" + state.attached
+                    + " error_ref=" + state.errorReference);
+        }
+    }
 }

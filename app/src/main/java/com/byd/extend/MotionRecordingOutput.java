@@ -14,7 +14,7 @@ import java.util.function.BiConsumer;
 /** Encoder ownership for local shared-YUV recording and legacy helper consumers. */
 final class MotionRecordingOutput {
     private static final String DESCRIPTOR = "com.byd.extend.MotionRecordingOutput";
-    static final int VIEWING_PARCEL_VERSION = 3;
+    static final int VIEWING_PARCEL_VERSION = 4;
     private static final IdentityHashMap<Surface, MotionRecordingOutput> OUTPUTS = new IdentityHashMap<>();
     final int width, height;
     final int[] order;
