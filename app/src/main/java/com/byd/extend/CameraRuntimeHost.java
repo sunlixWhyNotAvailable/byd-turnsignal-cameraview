@@ -25,7 +25,8 @@ final class CameraRuntimeHost {
             MOTION_OWN_WAKE = 18, MOTION_END_WAKE = 19, MOTION_BIND_WORKER = 20,
             MOTION_UNBIND_WORKER = 21;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
-            VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26;
+            VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26,
+            VIEW_UPDATE_CABIN_MIRROR = 27;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
@@ -107,7 +108,8 @@ final class CameraRuntimeHost {
     int transact(Parcel data, Parcel reply) throws Exception {
         int operation = data.readInt();
         if (operation == VIEW_ATTACH || operation == VIEW_DETACH || operation == VIEW_REGISTER_HELPER
-                || operation == VIEW_UPDATE_OUTPUT || operation == VIEW_MARK_CHANNEL_UNAVAILABLE)
+                || operation == VIEW_UPDATE_OUTPUT || operation == VIEW_MARK_CHANNEL_UNAVAILABLE
+                || operation == VIEW_UPDATE_CABIN_MIRROR)
             return transactViewing(operation, data, reply);
         if (operation >= MOTION_ATTACH && operation <= MOTION_UNBIND_WORKER)
             return transactMotion(operation, data, reply);
@@ -477,6 +479,26 @@ final class CameraRuntimeHost {
             return operation;
         }
 
+        if (operation == VIEW_UPDATE_CABIN_MIRROR) {
+            int marker = data.readInt();
+            long generation = data.readLong();
+            int mirror = data.readInt();
+            if (marker != MotionRecordingOutput.VIEWING_PARCEL_VERSION || generation <= 0
+                    || mirror != 0 && mirror != 1 || data.dataAvail() != 0)
+                throw new IllegalArgumentException("invalid viewer cabin mirror update");
+            callViewerOwned(() -> {
+                if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
+                        || generation <= viewerGeneration || viewerOutput == null)
+                    throw new SecurityException("stale viewer mirror owner/session/generation");
+                viewerOutput.updateCabinMirrored(mirror == 1);
+                viewerGeneration = generation;
+                return null;
+            }, new java.util.concurrent.atomic.AtomicBoolean(false));
+            reply.writeNoException();
+            reply.writeInt(1);
+            return operation;
+        }
+
         if (operation == VIEW_DETACH) {
             if (data.dataAvail() != 0) throw new IllegalArgumentException("unexpected viewer detach payload");
             call(() -> {
@@ -495,12 +517,12 @@ final class CameraRuntimeHost {
 
     private static final class ViewerConfig {
         final int view, allowedMask, availableMask;
-        final boolean exteriorReady;
+        final boolean exteriorReady, mirrorCabin;
         final int[] widths, heights;
         final String locale;
 
         ViewerConfig(int view, int allowedMask, boolean exteriorReady, int availableMask,
-                int[] widths, int[] heights, String locale) {
+                int[] widths, int[] heights, String locale, boolean mirrorCabin) {
             this.view = view;
             this.allowedMask = allowedMask;
             this.exteriorReady = exteriorReady;
@@ -508,6 +530,7 @@ final class CameraRuntimeHost {
             this.widths = widths;
             this.heights = heights;
             this.locale = locale;
+            this.mirrorCabin = mirrorCabin;
         }
     }
 
@@ -533,12 +556,15 @@ final class CameraRuntimeHost {
         int[] widths = data.createIntArray();
         int[] heights = data.createIntArray();
         String locale = data.readString();
+        int mirror = data.readInt();
         if (marker != MotionRecordingOutput.VIEWING_PARCEL_VERSION)
             throw new IllegalArgumentException("stale remote viewing payload");
         if (exterior != 0 && exterior != 1)
             throw new IllegalArgumentException("invalid exterior readiness flag");
+        if (mirror != 0 && mirror != 1)
+            throw new IllegalArgumentException("invalid cabin mirror flag");
         ViewerConfig config = new ViewerConfig(view, allowedMask, exterior == 1,
-                availableMask, widths, heights, locale);
+                availableMask, widths, heights, locale, mirror == 1);
         validateViewerConfig(config);
         return config;
     }
@@ -569,16 +595,19 @@ final class CameraRuntimeHost {
         if (!config.exteriorReady) {
             viewerComposerExternal = false;
             return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
-                    false, config.availableMask, config.widths, config.heights, config.locale);
+                    false, config.availableMask, config.widths, config.heights, config.locale,
+                    config.mirrorCabin);
         }
         output.updateLiveViewingOutput(null, config.view, config.allowedMask,
-                false, config.availableMask, config.widths, config.heights, config.locale);
+                false, config.availableMask, config.widths, config.heights, config.locale,
+                config.mirrorCabin);
         try {
             lifetime.start(this::initialize);
             attachViewerExterior(output, requestId);
             viewerComposerExternal = true;
             return output.updateLiveViewingOutput(null, config.view, config.allowedMask,
-                    true, config.availableMask, config.widths, config.heights, config.locale);
+                    true, config.availableMask, config.widths, config.heights, config.locale,
+                    config.mirrorCabin);
         } catch (Throwable externalFailure) {
             return fallbackStandalone(output, config, null,
                     new java.util.concurrent.atomic.AtomicBoolean(), externalFailure);
@@ -631,7 +660,7 @@ final class CameraRuntimeHost {
             if (encoder != null) encoderTransferred.set(true);
             MotionRecordingOutput.LiveInputs result = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, effectiveExterior, config.availableMask,
-                    config.widths, config.heights, config.locale);
+                    config.widths, config.heights, config.locale, config.mirrorCabin);
             return requireViewerInputs(result);
         } finally {
             if (encoder != null && !encoderTransferred.get()) {
@@ -658,7 +687,7 @@ final class CameraRuntimeHost {
             if (encoder != null) encoderTransferred.set(true);
             MotionRecordingOutput.LiveInputs inputs = output.updateLiveViewingOutput(encoder, config.view,
                     config.allowedMask, false, config.availableMask,
-                    config.widths, config.heights, config.locale);
+                    config.widths, config.heights, config.locale, config.mirrorCabin);
             reportViewerOperationFailure("external_viewing_fallback", failure);
             return requireViewerInputs(inputs);
         } catch (Throwable fallbackFailure) {

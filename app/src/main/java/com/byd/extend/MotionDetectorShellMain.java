@@ -124,7 +124,9 @@ public final class MotionDetectorShellMain {
     private MotionSessionConfigStore.Snapshot pendingConfig;
     private IBinder pendingConfigureCallback;
     private String pendingConfigureToken;
+    private boolean pendingConfigAfterCheck;
     private ModeCompletion modeCompletion;
+    private MotionConfig pendingSensitivityConfig;
 
     private static final class ModeCompletion {
         final IBinder callback;
@@ -134,6 +136,15 @@ public final class MotionDetectorShellMain {
             this.token = token;
             this.json = json;
             this.session = session;
+        }
+    }
+
+    private static final class FrameSensitivity {
+        final int nativeSensitivity;
+        final long policyRevision;
+        FrameSensitivity(int nativeSensitivity, long policyRevision) {
+            this.nativeSensitivity = nativeSensitivity;
+            this.policyRevision = policyRevision;
         }
     }
     private MotionShellMediaContext mediaContext;
@@ -918,21 +929,60 @@ public final class MotionDetectorShellMain {
             String requestToken) throws Exception {
         MotionConfig cameraSettings = MotionConfig.parse(configJson).cameraConfig();
         ManualCheck check = manualCheck;
+        boolean deferSensitivityUntilCheckEnds = false;
         int installedUid = systemContext.getPackageManager().getPackageUid(
                 MotionShellMediaContext.OWNER_PACKAGE, 0);
         if (installedUid != appUid) throw new SecurityException("installed app UID changed");
         if (check != null) {
             MotionSessionConfigStore.Snapshot previous = configStore.read();
-            boolean unchanged = previous == null ? !cameraSettings.anyEnabled()
-                    : previous.config.toJson().equals(cameraSettings.toJson());
-            // Storage-only changes must not tear down the check-up's temporary camera session.
-            if (unchanged) return new ConfigureResult(previous, previous == null
-                    ? MotionDetectorProtocol.CONFIG_APPLIED : MotionDetectorProtocol.CONFIG_RETAINED);
-            completeCheck(check, MotionCheckupClient.NOT_CHECKED,
-                    "cancelled", "Motion settings changed during check-up", true);
+            MotionConfig baseline = previous == null
+                    ? check.recordingConfig.cameraConfig() : previous.config;
+            boolean unchanged = previous == null
+                    ? !cameraSettings.anyEnabled() && baseline.toJson().equals(cameraSettings.toJson())
+                    : baseline.toJson().equals(cameraSettings.toJson());
+            boolean sensitivityOnly = cameraSettings.onlyRecordingSensitivityDiffersFrom(baseline);
+            // Storage-only changes are retained; sensitivity waits for the check-up boundary.
+            if (unchanged) {
+                if (pendingConfigAfterCheck) {
+                    pendingConfigureCallback = configureCallback;
+                    pendingConfigureToken = requestToken;
+                    if (pendingConfig == null)
+                        modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, null);
+                    return new ConfigureResult(previous, MotionDetectorProtocol.CONFIG_PENDING);
+                }
+                return new ConfigureResult(previous, previous == null
+                        ? MotionDetectorProtocol.CONFIG_APPLIED : MotionDetectorProtocol.CONFIG_RETAINED);
+            }
+            if (sensitivityOnly) deferSensitivityUntilCheckEnds = true;
+            else {
+                if (pendingConfigAfterCheck) {
+                    pendingConfigAfterCheck = false;
+                    pendingConfig = null;
+                    pendingConfigureCallback = null;
+                    pendingConfigureToken = null;
+                    if (modeCompletion != null && modeCompletion.session == null) modeCompletion = null;
+                }
+                completeCheck(check, MotionCheckupClient.NOT_CHECKED,
+                        "cancelled", "Motion settings changed during check-up", true);
+            }
         }
         MotionSessionConfigStore.Snapshot next = configStore.write(configJson);
         modeCompletion = null; // A newer desired snapshot supersedes the previous acknowledgement.
+        pendingSensitivityConfig = null;
+        if (deferSensitivityUntilCheckEnds) {
+            pendingConfigAfterCheck = true;
+            if (next != null) {
+                pendingConfig = next;
+                pendingConfigureCallback = configureCallback;
+                pendingConfigureToken = requestToken;
+            } else {
+                pendingConfig = null;
+                pendingConfigureCallback = null;
+                pendingConfigureToken = null;
+                modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, null);
+            }
+            return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_PENDING);
+        }
         if (next == null) {
             pendingConfig = null;
             pendingConfigureCallback = null;
@@ -964,16 +1014,22 @@ public final class MotionDetectorShellMain {
                     && "charge_blocked".equals(state);
             if (!workerBinding && !cameraHostPending && (workerBound || activeWithoutHost))
                 attachPendingUiOnControl(next.sessionId);
-            if (config != null && next.config.onlyMotionModesDifferFrom(config)) {
+            if (config != null && next.config.onlyInPlaceMotionChangesDifferFrom(config)) {
+                boolean modesChanged = config.warningEnabled != next.config.warningEnabled
+                        || config.recordingEnabled != next.config.recordingEnabled;
                 modeCompletion = new ModeCompletion(configureCallback, requestToken, configJson, next.sessionId);
-                applyModeOnlyConfig(next);
+                if (!applyInPlaceMotionConfig(next)) {
+                    pendingSensitivityConfig = next.config;
+                    return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_PENDING);
+                }
                 if (teardownPending || !sameSession(next.sessionId) || shuttingDown || sessionRuntime.suspended())
-                    throw new IllegalStateException("Motion session stopped during mode update: " + lastError);
+                    throw new IllegalStateException("Motion session stopped during in-place update: " + lastError);
                 if (disabledResourcesPending()) {
                     return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_PENDING);
                 }
                 modeCompletion = null;
-                return new ConfigureResult(next, MotionDetectorProtocol.CONFIG_MODE_ONLY);
+                return new ConfigureResult(next, modesChanged
+                        ? MotionDetectorProtocol.CONFIG_MODE_ONLY : MotionDetectorProtocol.CONFIG_RETAINED);
             }
             if (config != null && next.config.toJson().equals(config.toJson())) {
                 if (disabledResourcesPending()) {
@@ -995,18 +1051,30 @@ public final class MotionDetectorShellMain {
                 applied ? MotionDetectorProtocol.CONFIG_APPLIED : MotionDetectorProtocol.CONFIG_PENDING);
     }
 
-    private void applyModeOnlyConfig(MotionSessionConfigStore.Snapshot next) throws Exception {
+    private boolean applyInPlaceMotionConfig(MotionSessionConfigStore.Snapshot next) throws Exception {
         String id = sessionId;
         MotionConfig previous = config;
         if (!sameSession(id) || teardownPending || shuttingDown || sessionRuntime.suspended()
-                || previous == null || !next.config.onlyMotionModesDifferFrom(previous))
-            throw new IllegalStateException("Motion session cannot accept an in-place mode update");
-        MotionSessionRuntime.Change change = sessionRuntime.updateModes(
+                || previous == null || !next.config.onlyInPlaceMotionChangesDifferFrom(previous))
+            throw new IllegalStateException("Motion session cannot accept an in-place update");
+        boolean modesChanged = previous.warningEnabled != next.config.warningEnabled
+                || previous.recordingEnabled != next.config.recordingEnabled;
+        boolean sensitivityOnly = next.config.onlyRecordingSensitivityDiffersFrom(previous);
+        if (sensitivityOnly) {
+            if (!applyRecordingSensitivityIfIdle(previous, next.config)) return false;
+            MotionSessionRuntime.Change sensitivityChange = sessionRuntime.updateInPlaceConfig(
+                    next.config, SystemClock.elapsedRealtime());
+            config = next.config;
+            if (sensitivityChange != MotionSessionRuntime.Change.NONE)
+                applyEligibilityChange(id, sensitivityChange);
+            return true;
+        }
+        applyRecordingSensitivity(previous, next.config, modesChanged);
+        MotionSessionRuntime.Change change = sessionRuntime.updateInPlaceConfig(
                 next.config, SystemClock.elapsedRealtime());
         config = next.config;
-        policy.configure(config.recordingSensitivity);
         applyEligibilityChange(id, change);
-        if (!sameSession(id)) return;
+        if (!sameSession(id)) return true;
         if (!config.warningEnabled && warning) closeWarningForStop(id);
         if (!config.recordingEnabled) {
             stopRecording("recording_disabled");
@@ -1018,6 +1086,39 @@ public final class MotionDetectorShellMain {
                 && !control.post(() -> prepareSession(id)))
             throw new IllegalStateException("Motion control thread refused detector preparation");
         updateCameraDemand();
+        return true;
+    }
+
+    private void applyRecordingSensitivity(MotionConfig previous, MotionConfig next,
+            boolean resetCandidate) {
+        int nextNativeSensitivity = MotionConfig.nativeSensitivityFor(next.recordingSensitivity);
+        synchronized (analysisLock) {
+            nativeSensitivity = nextNativeSensitivity;
+            if (resetCandidate) policy.configure(next.recordingSensitivity);
+            else policy.setSensitivity(next.recordingSensitivity);
+        }
+        logRecordingSensitivityChange(previous, next, nextNativeSensitivity);
+    }
+
+    private boolean applyRecordingSensitivityIfIdle(MotionConfig previous, MotionConfig next) {
+        int nextNativeSensitivity = MotionConfig.nativeSensitivityFor(next.recordingSensitivity);
+        synchronized (analysisLock) {
+            if (analysisBusy) return false;
+            nativeSensitivity = nextNativeSensitivity;
+            policy.setSensitivity(next.recordingSensitivity);
+        }
+        logRecordingSensitivityChange(previous, next, nextNativeSensitivity);
+        return true;
+    }
+
+    private void logRecordingSensitivityChange(MotionConfig previous, MotionConfig next,
+            int nextNativeSensitivity) {
+        if (previous != null && previous.recordingSensitivity != next.recordingSensitivity)
+            logEvent("motion_recording_sensitivity_changed", sessionId,
+                    "recording_sensitivity_old", previous.recordingSensitivity,
+                    "recording_sensitivity_new", next.recordingSensitivity,
+                    "native_sensitivity_old", MotionConfig.nativeSensitivityFor(previous.recordingSensitivity),
+                    "native_sensitivity_new", nextNativeSensitivity);
     }
 
     private boolean disabledResourcesPending() {
@@ -1030,12 +1131,13 @@ public final class MotionDetectorShellMain {
 
     private void completeModeChange() {
         ModeCompletion completion = modeCompletion;
-        if (completion == null) return;
+        if (completion == null || pendingConfigAfterCheck && manualCheck != null) return;
         if (completion.session != null && !sameSession(completion.session)) {
             modeCompletion = null;
             sendConfigResult(completion.callback, completion.token, completion.session,
                     completion.json, false, "configure_session_stopped",
-                    "Session ended before the mode update completed: " + teardownReason + "; " + lastError);
+                    "Session ended before the in-place configuration completed: "
+                            + teardownReason + "; " + lastError);
             return;
         }
         if (teardownPending || disabledResourcesPending()) return;
@@ -1649,6 +1751,46 @@ public final class MotionDetectorShellMain {
         if (!teardownPending) holdCpu(false);
         checkResult(check, check.completionStatus, check.completionReason,
                 check.completionDetail == null ? "" : check.completionDetail, true);
+        completeCheckSensitivityUpdate();
+        applyPendingSensitivity(false);
+    }
+
+    private void completeCheckSensitivityUpdate() {
+        if (!pendingConfigAfterCheck) return;
+        pendingConfigAfterCheck = false;
+        MotionSessionConfigStore.Snapshot next = pendingConfig;
+        IBinder callback = pendingConfigureCallback;
+        String token = pendingConfigureToken;
+        pendingConfig = null;
+        pendingConfigureCallback = null;
+        pendingConfigureToken = null;
+        if (next == null) {
+            completeModeChange();
+            return;
+        }
+        try {
+            if (sessionId == null) {
+                if (startConfiguredSession(next, callback, token)) sendConfigured(callback, token, next);
+                return;
+            }
+            ConfigureResult result = configureOnControl(next.config.toJson(), callback, token);
+            if (result.applyKind == MotionDetectorProtocol.CONFIG_PENDING) return;
+            if (result.snapshot == null) {
+                sendConfigured(callback, token, null, next.config.toJson(), false);
+                return;
+            }
+            boolean retained = result.applyKind == MotionDetectorProtocol.CONFIG_MODE_ONLY
+                    || result.applyKind == MotionDetectorProtocol.CONFIG_RETAINED;
+            sendConfigured(callback, token, result.snapshot.sessionId,
+                    result.snapshot.config.toJson(), retained);
+        } catch (Throwable failure) {
+            String detail = "configure_after_check: " + summary(failure);
+            lastError = detail;
+            System.err.println("motion_config_after_check_failed " + detail);
+            failure.printStackTrace(System.err);
+            sendConfigResult(callback, token, next.sessionId, next.config.toJson(), false,
+                    "configure_after_check", detail);
+        }
     }
 
     private void startCheckRecording(ManualCheck check) {
@@ -1726,7 +1868,7 @@ public final class MotionDetectorShellMain {
         String id = snapshot.sessionId;
         synchronized (analysisLock) { sessionGeneration++; }
         config = snapshot.config;
-        policy.configure(config.recordingSensitivity);
+        applyRecordingSensitivity(null, config, true);
         sessionRuntime.configure(id, config);
         shuttingDown = false;
         sessionId = id;
@@ -2119,7 +2261,9 @@ public final class MotionDetectorShellMain {
             fail(id, result.stage, new IllegalStateException(detail, result.failure));
             return;
         }
-        nativeSensitivity = result.nativeSensitivity;
+        synchronized (analysisLock) {
+            nativeSensitivity = MotionConfig.nativeSensitivityFor(config.recordingSensitivity);
+        }
         prepared = true;
         state = "prepared";
         sendPrepared(id);
@@ -2349,7 +2493,7 @@ public final class MotionDetectorShellMain {
         int width = 0, height = 0;
         byte[] input = null;
         long frameTimeNs = 0L, packStartNs = 0L, packEndNs = 0L;
-        long policyRevision = policy.revision();
+        FrameSensitivity frameSensitivity = null;
         Throwable primaryFailure = null;
         Throwable closeFailure = null;
         try {
@@ -2368,7 +2512,7 @@ public final class MotionDetectorShellMain {
             check = manualCheck;
             boolean wantsAnalysis = eligible || check != null && checkLive(check) && !check.finishing;
             if (wantsAnalysis && frameCadence.take(SystemClock.elapsedRealtimeNanos())
-                    && reserveAnalysis(ownerReader, generation)) {
+                    && (frameSensitivity = reserveAnalysis(ownerReader, generation)) != null) {
                 reserved = true;
                 Image.Plane[] planes = frame.getPlanes();
                 if (planes == null || planes.length != 3)
@@ -2406,19 +2550,52 @@ public final class MotionDetectorShellMain {
         }
         if (reserved) enqueueNativeDetection(id, generation, ownerReader, check,
                 frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, input,
-                policyRevision);
+                frameSensitivity);
     }
 
-    private boolean reserveAnalysis(ImageReader ownerReader, long generation) {
+    private FrameSensitivity reserveAnalysis(ImageReader ownerReader, long generation) {
         synchronized (analysisLock) {
-            if (generation != sessionGeneration || reader != ownerReader || analysisBusy) return false;
+            if (generation != sessionGeneration || reader != ownerReader || analysisBusy) return null;
             analysisBusy = true;
-            return true;
+            return new FrameSensitivity(nativeSensitivity, policy.revision());
         }
     }
 
     private void releaseAnalysis() {
-        synchronized (analysisLock) { analysisBusy = false; }
+        if (Looper.myLooper() != control.getLooper()) {
+            if (control.post(this::releaseAnalysis)) return;
+            synchronized (analysisLock) { analysisBusy = false; }
+            return;
+        }
+        try { applyPendingSensitivity(true); }
+        finally { synchronized (analysisLock) { analysisBusy = false; } }
+    }
+
+    private void applyPendingSensitivity(boolean afterFrame) {
+        if (manualCheck != null || !afterFrame && analysisInFlight()) return;
+        MotionConfig next = pendingSensitivityConfig;
+        if (next == null) return;
+        pendingSensitivityConfig = null;
+        ModeCompletion completion = modeCompletion;
+        if (completion == null) return;
+        if (!sameSession(completion.session)) {
+            completeModeChange();
+            return;
+        }
+        if (config == null || !next.onlyRecordingSensitivityDiffersFrom(config)) {
+            modeCompletion = null;
+            sendConfigResult(completion.callback, completion.token, completion.session,
+                    completion.json, false, "sensitivity_apply_conflict",
+                    "deferred sensitivity no longer matches the active Motion configuration");
+            return;
+        }
+        MotionConfig previous = config;
+        MotionSessionRuntime.Change change = sessionRuntime.updateInPlaceConfig(
+                next, SystemClock.elapsedRealtime());
+        config = next;
+        applyRecordingSensitivity(previous, next, false);
+        completeModeChange();
+        if (change != MotionSessionRuntime.Change.NONE) applyEligibilityChange(sessionId, change);
     }
 
     private boolean analysisInFlight() {
@@ -2428,7 +2605,7 @@ public final class MotionDetectorShellMain {
     private void enqueueNativeDetection(String id, long generation, ImageReader ownerReader,
             ManualCheck check, long frameTimeNs, long packStartNs, long packEndNs,
             int width, int height, MotionYuvPacker.Plane y, MotionYuvPacker.Plane u,
-            MotionYuvPacker.Plane v, byte[] input, long policyRevision) {
+            MotionYuvPacker.Plane v, byte[] input, FrameSensitivity frameSensitivity) {
         OperationTrace trace = new OperationTrace(operationSequence.incrementAndGet(),
                 "frame", id, SystemClock.elapsedRealtimeNanos());
         try {
@@ -2441,7 +2618,7 @@ public final class MotionDetectorShellMain {
                 Throwable failure = null;
                 try {
                     raw = nativeApi.detect(input, MotionDetectorProtocol.INPUT_WIDTH,
-                            MotionDetectorProtocol.INPUT_HEIGHT, nativeSensitivity);
+                            MotionDetectorProtocol.INPUT_HEIGHT, frameSensitivity.nativeSensitivity);
                     detectNs = SystemClock.elapsedRealtimeNanos() - detectStartNs;
                     if (raw != MotionEventPolicy.ERROR_RESULT) nativeState = nativeApi.getState();
                 } catch (Throwable error) { failure = error; }
@@ -2450,7 +2627,7 @@ public final class MotionDetectorShellMain {
                         startedNs, finishedNs, detectNs, raw, nativeState, failure);
                 if (!control.post(() -> onNativeFrameComplete(id, generation, ownerReader, check,
                         frameTimeNs, packStartNs, packEndNs, width, height, y, u, v, result,
-                        policyRevision)))
+                        frameSensitivity.policyRevision)))
                     releaseAnalysis();
             });
         } catch (Throwable error) {
@@ -4471,6 +4648,10 @@ public final class MotionDetectorShellMain {
         ModeCompletion completion = modeCompletion;
         if (completion != null) sendConfigResult(completion.callback, completion.token,
                 completion.session, completion.json, completion.session != null, stage, detail);
+        if (pendingSensitivityConfig != null) {
+            pendingSensitivityConfig = null;
+            modeCompletion = null;
+        }
         sendError(appCallback, id, stage, detail);
     }
 

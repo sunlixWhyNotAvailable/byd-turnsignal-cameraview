@@ -26,7 +26,8 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 6;
+    private static final int VERSION = 7;
+    private static final int REVERSE_GUIDANCE_VERSION = 6;
     private static final int BORDER_VERSION = 4;
     private static final int LEGACY_GEOMETRY_VERSION = 3;
     private static final int PREVIOUS_VERSION = 2;
@@ -92,7 +93,9 @@ public final class CameraSettingsTransfer {
             result.put("schema", SCHEMA).put("version", version);
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
-                if (version < VERSION && isReverseGuidanceKey(entry.getKey())) continue;
+                if (entry.getKey().equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
+                        && version < VERSION) continue;
+                if (version < REVERSE_GUIDANCE_VERSION && isReverseGuidanceKey(entry.getKey())) continue;
                 if (version < 5 && (entry.getKey().endsWith("_strength_percent")
                         || entry.getKey().endsWith("_fov_precise")
                         || isNewReverseDisplayKey(entry.getKey())
@@ -207,11 +210,17 @@ public final class CameraSettingsTransfer {
         // group, must leave active Mirror and its local hide/preset state
         // untouched.
         boolean preserveMirror = !containsMirror(settings);
+        String cabinMirrorKey = RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY;
+        boolean preserveCabinMirror = !settings.containsKey(cabinMirrorKey)
+                && preferences.contains(cabinMirrorKey);
+        boolean cabinMirror = preserveCabinMirror && preferences.getBoolean(cabinMirrorKey, false);
         LegacyPlacementPlan placements = version < LEGACY_GEOMETRY_VERSION && geometry != null
                 ? legacyPlacementPlan(preferences, settings, geometry, preserveMirror)
                 : null;
         SharedPreferences.Editor editor = preferences.edit();
-        for (String key : cameraClearKeys(preserveMirror)) if (preferences.contains(key)) editor.remove(key);
+        Set<String> clearKeys = cameraClearKeys(preserveMirror);
+        if (preserveCabinMirror) clearKeys.remove(cabinMirrorKey);
+        for (String key : clearKeys) if (preferences.contains(key)) editor.remove(key);
         // Optional front calibration is independent; a supplied old calibration must not
         // inherit the destination's newer strength/FOV, while an omitted group stays intact.
         if (settings.containsKey("mirror_front_fov")) {
@@ -243,6 +252,7 @@ public final class CameraSettingsTransfer {
             RearviewMirrorSettings.writeSourceState(editor, integrated, showFront);
         }
         if (placements != null) placements.write(editor);
+        if (preserveCabinMirror) editor.putBoolean(cabinMirrorKey, cabinMirror);
         if (!editor.commit()) throw new IllegalStateException("camera preset commit failed");
     }
 
@@ -273,6 +283,10 @@ public final class CameraSettingsTransfer {
         String interiorKey = RemoteCameraView.PREFERENCE_KEY;
         boolean preserveInteriorCameras = !copy.containsKey(interiorKey)
                 && preferences.contains(interiorKey);
+        String cabinMirrorKey = RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY;
+        boolean preserveCabinMirror = !copy.containsKey(cabinMirrorKey)
+                && preferences.contains(cabinMirrorKey);
+        boolean cabinMirror = preserveCabinMirror && preferences.getBoolean(cabinMirrorKey, false);
         int interiorCameras = RemoteCameraView.NONE;
         if (preserveInteriorCameras) {
             interiorCameras = preferences.getInt(interiorKey, RemoteCameraView.NONE);
@@ -295,6 +309,7 @@ public final class CameraSettingsTransfer {
                 .putString(CameraButtonBindings.HAZARD_THANKS_SOURCE,
                         CameraButtonBindings.Source.AndroidKey.name());
         if (preserveInteriorCameras) editor.putInt(interiorKey, interiorCameras);
+        if (preserveCabinMirror) editor.putBoolean(cabinMirrorKey, cabinMirror);
         preserveMissingFrameAspects(editor, preferences, copy);
         preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
@@ -492,6 +507,8 @@ public final class CameraSettingsTransfer {
     private static Map<String, Object> effectiveCameraSettings(
             SharedPreferences p, GeometryResolver geometry) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        out.put(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY,
+                p.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
         out.put(BlindSpotOverlayController.PREF_ENABLED, bool(p, BlindSpotOverlayController.PREF_ENABLED, false));
         out.put(BlindSpotOverlayController.PREF_FRONT_ENABLED, bool(p, BlindSpotOverlayController.PREF_FRONT_ENABLED, false));
         out.put(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA,
@@ -1311,6 +1328,7 @@ public final class CameraSettingsTransfer {
 
     private static Set<String> cameraPresetKeys() {
         LinkedHashSet<String> keys = new LinkedHashSet<>();
+        keys.add(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
         keys.add(BlindSpotOverlayController.PREF_ENABLED); keys.add(BlindSpotOverlayController.PREF_FRONT_ENABLED);
         keys.add(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA);
         keys.add(BlindSpotOverlayController.PREF_FRONT_SUPPRESS_WHILE_PANORAMA);
@@ -1416,7 +1434,8 @@ public final class CameraSettingsTransfer {
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
         return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
-                || version < VERSION && isReverseGuidanceKey(key)
+                || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) && version < VERSION
+                || version < REVERSE_GUIDANCE_VERSION && isReverseGuidanceKey(key)
                 || isNewReverseDisplayKey(key)
                 || isBlindHoldDurationKey(key)
                 || version < BORDER_VERSION && isBorderKey(key)
@@ -1587,6 +1606,7 @@ public final class CameraSettingsTransfer {
                 || key.endsWith("_mirrored")
                 || key.equals(ParkingCameraSettings.PREF_ALLOW_DURING_REVERSE)
                 || key.equals("parking_camera_scale_sync")
+                || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
                 || key.equals(RearviewMirrorSettings.PREF_ENABLED)
                 || key.equals(RearviewMirrorSettings.PREF_FRONT_INTEGRATED)
                 || key.equals(RearviewMirrorSettings.PREF_SHOW_FRONT)
@@ -1779,6 +1799,7 @@ public final class CameraSettingsTransfer {
                 || key.equals("helper_apk_marker") || key.equals("assumed_latch_state")
                 || key.equals("user_shutdown_active") || key.equals("service_heartbeat_ms")) return false;
         if (key.equals(RemoteCameraView.PREFERENCE_KEY)) return true;
+        if (key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)) return true;
         if (key.startsWith("camera_") || key.startsWith("direct_crop_")
                 || key.startsWith("camera_dewarp_v2_") || key.startsWith("camera_dewarp_v3_")
                 || key.startsWith("camera_calibration_preset_v1_")) return true;

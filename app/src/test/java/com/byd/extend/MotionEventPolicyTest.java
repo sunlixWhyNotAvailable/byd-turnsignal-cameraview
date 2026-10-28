@@ -80,6 +80,36 @@ public class MotionEventPolicyTest {
         assertEquals(MotionEventPolicy.LEVEL_ONE, high.observe(-1, 2_500L).level);
     }
 
+    @Test public void liveSensitivityChangesPreserveCandidateAcrossBothThresholdDirections() {
+        MotionEventPolicy higherThreshold = new MotionEventPolicy();
+        higherThreshold.setEligible(true, 0L);
+        assertTrue(higherThreshold.observe(-1, 2_500L).suppressed);
+        assertTrue(higherThreshold.observe(-1, 4_000L).suppressed);
+        higherThreshold.setSensitivity(0);
+        assertTrue(higherThreshold.observe(-1, 8_499L).suppressed);
+        assertEquals(MotionEventPolicy.LEVEL_ONE, higherThreshold.observe(-1, 8_500L).level);
+
+        MotionEventPolicy lowerThreshold = new MotionEventPolicy();
+        lowerThreshold.setSensitivity(0);
+        lowerThreshold.setEligible(true, 0L);
+        assertTrue(lowerThreshold.observe(-1, 2_500L).suppressed);
+        assertTrue(lowerThreshold.observe(-1, 4_000L).suppressed);
+        lowerThreshold.setSensitivity(1);
+        assertTrue(lowerThreshold.observe(-1, 5_499L).suppressed);
+        assertEquals(MotionEventPolicy.LEVEL_ONE, lowerThreshold.observe(-1, 5_500L).level);
+    }
+
+    @Test public void unchangedSensitivityKeepsCandidateAndRevision() {
+        MotionEventPolicy policy = new MotionEventPolicy();
+        policy.setEligible(true, 0L);
+        assertTrue(policy.observe(-1, 2_500L).suppressed);
+        long revision = policy.revision();
+        policy.setSensitivity(MotionConfig.DEFAULT_RECORDING_SENSITIVITY);
+        assertEquals(revision, policy.revision());
+        assertTrue(policy.observe(-1, 5_499L).suppressed);
+        assertEquals(MotionEventPolicy.LEVEL_ONE, policy.observe(-1, 5_500L).level);
+    }
+
     @Test public void eligibilityResetAndExplicitStopClearWarning() {
         MotionEventPolicy policy = new MotionEventPolicy();
         policy.setEligible(true, 5L);

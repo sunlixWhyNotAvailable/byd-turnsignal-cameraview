@@ -20,11 +20,14 @@ import org.json.JSONObject;
 
 import java.util.UUID;
 
-/** App-owned, DUMP-protected persistence endpoint for the two existing Motion mode preferences. */
+/** App-owned, DUMP-protected persistence endpoint for shared camera preferences. */
 public final class CameraModeSettings extends ContentProvider {
     public static final String AUTHORITY = "com.byd.extend.camera_modes";
     public static final String METHOD_SNAPSHOT = "snapshot";
     public static final String METHOD_SET = "set";
+    public static final String METHOD_SET_SETTING = "setSetting";
+    public static final String SETTING_MIRROR_CABIN = "mirrorCabin";
+    public static final String SETTING_RECORDING_SENSITIVITY = "recordingSensitivity";
     public static final String MODE_TABLET = "tablet";
     public static final String MODE_RECORDING = "recording";
 
@@ -42,14 +45,22 @@ public final class CameraModeSettings extends ContentProvider {
                     throw new IllegalArgumentException("snapshot accepts no arguments");
                 return snapshot(getContext());
             }
-            if (!METHOD_SET.equals(method))
+            boolean setting = METHOD_SET_SETTING.equals(method);
+            if (!METHOD_SET.equals(method) && !setting)
                 throw new IllegalArgumentException("unsupported camera mode operation");
-            if (extras == null || extras.size() != 1 || !extras.containsKey(KEY_ENABLED)
-                    || !(extras.get(KEY_ENABLED) instanceof Boolean))
+            String valueKey = setting ? "value" : KEY_ENABLED;
+            if (extras == null || extras.size() != 1 || !extras.containsKey(valueKey))
+                throw new IllegalArgumentException("set requires exactly one " + valueKey + " value");
+            Object value = extras.get(valueKey);
+            if (setting) validateSetting(arg, value);
+            else if (!(value instanceof Boolean))
                 throw new IllegalArgumentException("set requires one boolean enabled value");
-            boolean enabled = (Boolean) extras.get(KEY_ENABLED);
             try {
-                MotionRuntime.setModeEnabled(getContext(), arg, enabled);
+                if (setting) {
+                    persistSettingPreference(getContext(), arg, value, "html");
+                    if (SETTING_RECORDING_SENSITIVITY.equals(arg))
+                        MotionRuntime.settingsChanged(getContext());
+                } else MotionRuntime.setModeEnabled(getContext(), arg, (Boolean) value);
                 return snapshot(getContext());
             } catch (CameraModeClient.ModeException failure) {
                 String reference = UUID.randomUUID().toString();
@@ -62,14 +73,66 @@ public final class CameraModeSettings extends ContentProvider {
                     result.putBoolean("available", false);
                     result.putString("applyState", "error");
                 }
-                Log.e(TAG, "camera_mode_set_failed code=" + failure.code()
+                Log.e(TAG, "camera_setting_set_failed operation=" + method + " setting=" + arg
+                        + " code=" + failure.code()
                         + " reference=" + reference, failure);
+                com.byd.extend.remote.CameraViewingDiagnostics.initializeApp(getContext());
+                com.byd.extend.remote.CameraViewingDiagnostics.failure(
+                        "camera_setting_set_failed_" + reference, "shared", failure);
                 result.putString("requestError", failure.code());
                 result.putString("errorRef", reference);
                 return result;
             }
         } finally {
             Binder.restoreCallingIdentity(callerIdentity);
+        }
+    }
+
+    /** Strict value types are shared by HTTP intake, Binder and local persistence. */
+    public static void validateSetting(String setting, Object value) {
+        if (SETTING_MIRROR_CABIN.equals(setting) && value instanceof Boolean) return;
+        if (SETTING_RECORDING_SENSITIVITY.equals(setting) && value instanceof Integer
+                && (Integer) value >= 0 && (Integer) value <= 2) return;
+        throw new IllegalArgumentException("invalid camera setting/value: " + setting);
+    }
+
+    public static void setRecordingSensitivity(Context context, int value)
+            throws CameraModeClient.ModeException {
+        persistSettingPreference(context, SETTING_RECORDING_SENSITIVITY, value);
+        MotionRuntime.settingsChanged(context);
+    }
+
+    public static boolean persistSettingPreference(Context context, String setting, Object value)
+            throws CameraModeClient.ModeException {
+        return persistSettingPreference(context, setting, value, "android");
+    }
+
+    private static boolean persistSettingPreference(Context context, String setting, Object value,
+            String source) throws CameraModeClient.ModeException {
+        if (context == null) throw modeFailure("invalid_request",
+                new IllegalArgumentException("context required"));
+        try {
+            validateSetting(setting, value);
+            boolean mirror = SETTING_MIRROR_CABIN.equals(setting);
+            SharedPreferences preferences = context.getSharedPreferences(
+                    mirror ? "settings" : MotionConfig.SCREEN_PREFS, Context.MODE_PRIVATE);
+            String key = mirror ? RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY
+                    : MotionConfig.KEY_RECORDING_SENSITIVITY;
+            Object previous = mirror ? preferences.getBoolean(key, false)
+                    : preferences.getInt(key, MotionConfig.DEFAULT_RECORDING_SENSITIVITY);
+            if (previous.equals(value)) return false;
+            SharedPreferences.Editor editor = preferences.edit();
+            if (mirror) editor.putBoolean(key, (Boolean) value);
+            else editor.putInt(key, (Integer) value);
+            if (!editor.commit()) throw new IllegalStateException("SharedPreferences commit returned false");
+            com.byd.extend.remote.CameraViewingDiagnostics.initializeApp(context);
+            com.byd.extend.remote.CameraViewingDiagnostics.detail("camera_setting_saved", "shared",
+                    "setting=" + setting + " old=" + previous + " new=" + value + " source=" + source);
+            return true;
+        } catch (IllegalArgumentException failure) {
+            throw modeFailure("invalid_setting", failure);
+        } catch (RuntimeException failure) {
+            throw modeFailure("persistence_failed", failure);
         }
     }
 
@@ -105,6 +168,9 @@ public final class CameraModeSettings extends ContentProvider {
         result.putBoolean("available", true);
         result.putBoolean("tabletEnabled", config.warningEnabled);
         result.putBoolean("recordingEnabled", config.recordingEnabled);
+        result.putBoolean(SETTING_MIRROR_CABIN, context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
+        result.putInt(SETTING_RECORDING_SENSITIVITY, config.recordingSensitivity);
         try {
             JSONObject status = MotionRuntime.applyStatus(config.toJson());
             result.putString("applyState", status.getString("applyState"));

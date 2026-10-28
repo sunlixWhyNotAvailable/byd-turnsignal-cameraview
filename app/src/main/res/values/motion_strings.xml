@@ -18,6 +18,7 @@
     <string name="cameras_charge_unavailable">"Unable to verify charge: %1$s. Protection for these readings is unavailable. Continue camera use at your discretion."</string>
     <string name="cameras_allow_viewing">"Allow remote viewing"</string>
     <string name="cameras_internal">"Show interior cameras"</string>
+    <string name="cameras_internal_mirroring">"Mirror cabin camera"</string>
     <string name="cameras_internal_none">"None"</string>
     <string name="cameras_internal_cabin">"Cabin"</string>
     <string name="cameras_internal_driver">"Driver"</string>

@@ -42,9 +42,21 @@ public final class CameraModeClient implements AutoCloseable {
                     new IllegalArgumentException("mode must be tablet or recording"));
         Bundle extras = new Bundle();
         extras.putBoolean("enabled", enabled);
+        return write(CameraModeSettings.METHOD_SET, mode, extras);
+    }
+
+    public JSONObject setSetting(String setting, Object value) throws Exception {
+        CameraModeSettings.validateSetting(setting, value);
+        Bundle extras = new Bundle();
+        if (value instanceof Boolean) extras.putBoolean("value", (Boolean) value);
+        else extras.putInt("value", (Integer) value);
+        return write(CameraModeSettings.METHOD_SET_SETTING, setting, extras);
+    }
+
+    private JSONObject write(String method, String name, Bundle extras) throws Exception {
         final Bundle response;
         try {
-            response = request(CameraModeSettings.METHOD_SET, mode, extras);
+            response = request(method, name, extras);
         } catch (ModeException failure) {
             throw failure;
         } catch (Throwable failure) {
@@ -80,9 +92,12 @@ public final class CameraModeClient implements AutoCloseable {
                     new IllegalStateException("app mode snapshot is unavailable"));
         Object tablet = response.get("tabletEnabled");
         Object recording = response.get("recordingEnabled");
+        Object mirror = response.get(CameraModeSettings.SETTING_MIRROR_CABIN);
+        Object sensitivity = response.get(CameraModeSettings.SETTING_RECORDING_SENSITIVITY);
         Object stateValue = response.get("applyState");
         if (!(tablet instanceof Boolean) || !(recording instanceof Boolean)
-                || !(stateValue instanceof String))
+                || !(mirror instanceof Boolean) || !(sensitivity instanceof Integer)
+                || (Integer) sensitivity < 0 || (Integer) sensitivity > 2 || !(stateValue instanceof String))
             throw new ModeException("modes_unavailable", optionalString(response, "errorRef"),
                     new IllegalStateException("app mode snapshot is incomplete"));
         String state = (String) stateValue;
@@ -93,6 +108,8 @@ public final class CameraModeClient implements AutoCloseable {
                 .put("available", true)
                 .put("tabletEnabled", (Boolean) tablet)
                 .put("recordingEnabled", (Boolean) recording)
+                .put(CameraModeSettings.SETTING_MIRROR_CABIN, mirror)
+                .put(CameraModeSettings.SETTING_RECORDING_SENSITIVITY, sensitivity)
                 .put("applyState", state);
         String error = optionalString(response, "error");
         String errorRef = optionalString(response, "errorRef");

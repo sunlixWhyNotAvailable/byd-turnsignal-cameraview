@@ -80,6 +80,7 @@ final class MotionGpuComposer implements AutoCloseable {
     private int[] interiorWidths;
     private int[] interiorHeights;
     private String liveLocale;
+    private boolean mirrorCabin;
     private boolean includeExterior;
     private final EGLContext sharedContext;
     private int glVersion;
@@ -101,6 +102,7 @@ final class MotionGpuComposer implements AutoCloseable {
     private Runnable closeCallback;
     private boolean cleanupResultPublished;
     private boolean cleanupSucceeded;
+    private volatile RuntimeException renderFailure;
     private boolean closeCallbackDelivered;
     private boolean startupMissingReported;
     private boolean firstCompositionLogged;
@@ -110,6 +112,9 @@ final class MotionGpuComposer implements AutoCloseable {
     private final Runnable missingInputDeadline = this::reportMissingInputs;
     private final FloatBuffer vertices = floats(-1,-1, 1,-1, -1,1, 1,1);
     private final FloatBuffer coordinates = floats(0,0, 1,0, 0,1, 1,1);
+    private final FloatBuffer mirroredCoordinates = floats(
+            RemoteCameraView.textureU(0f, true), 0, RemoteCameraView.textureU(1f, true), 0,
+            RemoteCameraView.textureU(0f, true), 1, RemoteCameraView.textureU(1f, true), 1);
     private final FloatBuffer iconVertices = floats(-1,-1, 1,-1, -1,1, 1,1);
     // Android bitmaps upload top row at GL v=0; flip v to keep the OEM PNG upright.
     private final FloatBuffer iconCoordinates = floats(0,1, 1,1, 0,0, 1,0);
@@ -120,25 +125,25 @@ final class MotionGpuComposer implements AutoCloseable {
             EGLContext sharedContext, int glVersion, Consumer<String> errors) throws Exception {
         this(resourcesContext, width, height, order, sessionId, frameTimestamp, sharedContext, glVersion,
                 false, RemoteCameraView.COMPOSITION, RemoteCameraView.NONE, RemoteCameraView.NONE,
-                new int[2], new int[2], "en", true, errors, (channel, reference) -> { });
+                new int[2], new int[2], "en", true, false, errors, (channel, reference) -> { });
     }
 
     MotionGpuComposer(Context resourcesContext, int width, int height,
             int[] order, String sessionId, MotionFrameTimestamp frameTimestamp,
             EGLContext sharedContext, int glVersion, boolean remoteLive, int liveView,
             int allowedInteriorMask, int availableInteriorMask, int[] interiorWidths,
-            int[] interiorHeights, String liveLocale, boolean includeExterior,
+            int[] interiorHeights, String liveLocale, boolean includeExterior, boolean mirrorCabin,
             Consumer<String> errors) throws Exception {
         this(resourcesContext, width, height, order, sessionId, frameTimestamp, sharedContext, glVersion,
                 remoteLive, liveView, allowedInteriorMask, availableInteriorMask, interiorWidths,
-                interiorHeights, liveLocale, includeExterior, errors, (channel, reference) -> { });
+                interiorHeights, liveLocale, includeExterior, mirrorCabin, errors, (channel, reference) -> { });
     }
 
     MotionGpuComposer(Context resourcesContext, int width, int height,
             int[] order, String sessionId, MotionFrameTimestamp frameTimestamp,
             EGLContext sharedContext, int glVersion, boolean remoteLive, int liveView,
             int allowedInteriorMask, int availableInteriorMask, int[] interiorWidths,
-            int[] interiorHeights, String liveLocale, boolean includeExterior,
+            int[] interiorHeights, String liveLocale, boolean includeExterior, boolean mirrorCabin,
             Consumer<String> errors, BiConsumer<Integer, String> channelFailure) throws Exception {
         this.appContext = resourcesContext;
         this.width = width; this.height = height; this.order = order.clone();
@@ -149,6 +154,7 @@ final class MotionGpuComposer implements AutoCloseable {
         this.interiorWidths = interiorWidths.clone();
         this.interiorHeights = interiorHeights.clone();
         this.liveLocale = liveLocale;
+        this.mirrorCabin = mirrorCabin;
         this.includeExterior = includeExterior;
         if (remoteLive) selectedDirection = liveView;
         if (frameTimestamp == null) throw new IllegalArgumentException("Motion frame clock is required");
@@ -466,7 +472,7 @@ final class MotionGpuComposer implements AutoCloseable {
 
     MotionRecordingOutput.LiveInputs updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
             boolean exteriorReady, int availableMask, int[] widths, int[] heights,
-            String locale) throws Exception {
+            String locale, boolean mirrorCabin) throws Exception {
         validateLiveSelection(view, allowedMask, exteriorReady, availableMask, widths, heights, locale);
         final FutureTask<MotionRecordingOutput.LiveInputs> task = new FutureTask<>(() -> {
             if (!remoteLive || closed || window == EGL14.EGL_NO_SURFACE)
@@ -476,6 +482,7 @@ final class MotionGpuComposer implements AutoCloseable {
             liveView = view; selectedDirection = view; allowedInteriorMask = allowedMask;
             includeExterior = exteriorReady; availableInteriorMask = availableMask;
             interiorWidths = widths.clone(); interiorHeights = heights.clone(); liveLocale = locale;
+            this.mirrorCabin = mirrorCabin;
             startupMissingReported = false;
             for (int channel = 0; channel < 4; channel++) {
                 // A pending exterior lease is preparation, not a failed camera.
@@ -498,6 +505,24 @@ final class MotionGpuComposer implements AutoCloseable {
         }
         try { return awaitResult(task, "live output update"); }
         catch (Exception failure) { throw failure; }
+    }
+
+    void updateCabinMirrored(boolean mirrorCabin) throws Exception {
+        FutureTask<Void> task = new FutureTask<>(() -> {
+            if (!remoteLive || closed || window == EGL14.EGL_NO_SURFACE)
+                throw renderFailure != null ? renderFailure
+                        : new IllegalStateException("remote live composer unavailable");
+            this.mirrorCabin = mirrorCabin;
+            handler.removeCallbacks(draw);
+            queued = false;
+            render();
+            if (renderFailure != null) throw renderFailure;
+            return null;
+        });
+        synchronized (lifecycleLock) {
+            if (closed || !handler.post(task)) throw new IllegalStateException("viewer composer closed");
+        }
+        await(task, "cabin mirror update");
     }
 
     private MotionRecordingOutput.LiveInputs liveInteriorInputsOnGlThread() {
@@ -794,6 +819,7 @@ final class MotionGpuComposer implements AutoCloseable {
                 logDiagnostic("first_composed_frame", "presentation_timestamp_ns=" + presentationTimeNs);
             }
         } catch(RuntimeException failure) {
+            renderFailure = failure;
             closed=true;
             if (remoteLive) {
                 String reference = java.util.UUID.randomUUID().toString().replace("-", "");
@@ -867,10 +893,12 @@ final class MotionGpuComposer implements AutoCloseable {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, names[direction]);
         GLES20.glUniform1i(sampler, 0);
         GLES20.glUniformMatrix4fv(matrix, 1, false, transforms[direction], 0);
-        vertices.position(0); coordinates.position(0);
+        FloatBuffer textureCoordinates = RemoteCameraView.mirrorsCabinChannel(direction, mirrorCabin)
+                ? mirroredCoordinates : coordinates;
+        vertices.position(0); textureCoordinates.position(0);
         GLES20.glEnableVertexAttribArray(position); GLES20.glEnableVertexAttribArray(uv);
         GLES20.glVertexAttribPointer(position, 2, GLES20.GL_FLOAT, false, 0, vertices);
-        GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 0, coordinates);
+        GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 0, textureCoordinates);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         GLES20.glDisableVertexAttribArray(position); GLES20.glDisableVertexAttribArray(uv);
         int inset = Math.max(0, Math.round(drawWidth * .0083f));

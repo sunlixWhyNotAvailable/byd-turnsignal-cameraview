@@ -88,6 +88,7 @@ import com.byd.extend.MotionRuntime
 import com.byd.extend.CameraChargeSettings
 import com.byd.extend.CameraModeSettings
 import com.byd.extend.R
+import com.byd.extend.remote.CameraViewingDiagnostics
 import com.byd.extend.ui.ActionButton as ProductionActionButton
 import com.byd.extend.ui.ChoiceField
 import com.byd.extend.ui.ImeDismissalEffect
@@ -249,9 +250,13 @@ internal fun FormScope.MotionIntegrationScreen(
                         contentDescription = strings.motionText(R.string.motion_recording_sensitivity)
                     }) { next ->
                     if (next != recordingSensitivity) {
-                        store.preferences.edit().putInt(MotionConfig.KEY_RECORDING_SENSITIVITY, next).apply()
-                        recordingSensitivity = next
-                        MotionRuntime.settingsChanged(context)
+                        try {
+                            CameraModeSettings.setRecordingSensitivity(context, next)
+                        } catch (failure: Exception) {
+                            CameraViewingDiagnostics.initializeApp(context)
+                            CameraViewingDiagnostics.failure("recording_sensitivity_update_failed", "shared", failure)
+                            Toast.makeText(context, strings.motionText(R.string.motion_save_error), Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
             }

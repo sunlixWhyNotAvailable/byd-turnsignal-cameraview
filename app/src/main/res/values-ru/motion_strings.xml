@@ -18,6 +18,7 @@
     <string name="cameras_charge_unavailable">"Не удалось проверить заряд: %1$s. Защита по этим показателям недоступна. Продолжайте работу камер на своё усмотрение."</string>
     <string name="cameras_allow_viewing">"Разрешить удалённый просмотр"</string>
     <string name="cameras_internal">"Показывать внутренние камеры"</string>
+    <string name="cameras_internal_mirroring">"Отражать камеру салона"</string>
     <string name="cameras_internal_none">"Нет"</string>
     <string name="cameras_internal_cabin">"Салона"</string>
     <string name="cameras_internal_driver">"Водителя"</string>

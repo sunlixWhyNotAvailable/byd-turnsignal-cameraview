@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 11;
+    public static final int WEB_REVISION = 12;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 

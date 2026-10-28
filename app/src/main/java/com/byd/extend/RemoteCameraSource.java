@@ -30,6 +30,7 @@ public final class RemoteCameraSource implements AutoCloseable {
     private boolean preparationRequested;
     private volatile boolean exteriorReady;
     private long outputGeneration;
+    private boolean mirrorCabin;
     private int requestId;
     private int preparedView = RemoteCameraView.COMPOSITION;
     private int allowedInteriorMask;
@@ -99,8 +100,8 @@ public final class RemoteCameraSource implements AutoCloseable {
         return !RemoteCameraView.needsExterior(view) || view == RemoteCameraView.COMBINED || exteriorReady;
     }
 
-    public void attach(Surface encoder, int width, int height, int view,
-            int interiorMask, String locale) throws Exception {
+    public synchronized void attach(Surface encoder, int width, int height, int view,
+            int interiorMask, String locale, boolean mirrorCabin) throws Exception {
         validateSelection(view, interiorMask);
         if (attached) throw new IllegalStateException("viewer already attached");
         if (!matchesPrepared(view, interiorMask)) throw new IllegalStateException("viewer source not prepared");
@@ -130,13 +131,14 @@ public final class RemoteCameraSource implements AutoCloseable {
             requestId = nextRequestId();
             data.writeInt(requestId);
             output.writeViewingToParcel(data, view, interiorMask, exteriorReady,
-                    specs.availableMask, specs.widths, specs.heights, language);
+                    specs.availableMask, specs.widths, specs.heights, language, mirrorCabin);
             if (!candidate.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
                 throw new IllegalStateException("camera viewer attach transaction unavailable");
             reply.readException();
             if (reply.readInt() != 1) throw new IllegalStateException("camera viewer attach refused");
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
             long[] inputGenerations = reply.createLongArray();
+            this.mirrorCabin = mirrorCabin;
             attached = true;
             interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
         } catch (Throwable error) {
@@ -148,7 +150,8 @@ public final class RemoteCameraSource implements AutoCloseable {
         }
     }
 
-    public void updateOutput(Surface encoder, int view, int interiorMask, String locale) throws Exception {
+    public synchronized void updateOutput(Surface encoder, int view, int interiorMask, String locale,
+            boolean mirrorCabin) throws Exception {
         validateSelection(view, interiorMask);
         if (!attached || host == null) throw new IllegalStateException("viewer not attached");
         if (!matchesPrepared(view, interiorMask)) throw new IllegalStateException("viewer source not prepared");
@@ -158,13 +161,12 @@ public final class RemoteCameraSource implements AutoCloseable {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
             data.writeInt(CameraRuntimeHost.VIEW_UPDATE_OUTPUT);
             data.writeStrongBinder(owner); data.writeString(session);
-            long generation = ++outputGeneration;
-            if (generation <= 0) throw new IllegalStateException("viewer output generation exhausted");
+            long generation = nextOutputGeneration();
             data.writeLong(generation);
             data.writeInt(MotionRecordingOutput.VIEWING_PARCEL_VERSION);
             data.writeInt(view); data.writeInt(interiorMask); data.writeInt(exteriorReady ? 1 : 0);
             data.writeInt(specs.availableMask); data.writeIntArray(specs.widths); data.writeIntArray(specs.heights);
-            data.writeString(language);
+            data.writeString(language); data.writeInt(mirrorCabin ? 1 : 0);
             data.writeInt(encoder == null ? 0 : 1);
             if (encoder != null) encoder.writeToParcel(data, 0);
             IBinder target = host;
@@ -174,9 +176,33 @@ public final class RemoteCameraSource implements AutoCloseable {
             if (reply.readInt() != 1) throw new IllegalStateException("viewer output update refused");
             Surface[] inputs = reply.createTypedArray(Surface.CREATOR);
             long[] inputGenerations = reply.createLongArray();
+            this.mirrorCabin = mirrorCabin;
             interiors.attachInputs(inputs, specs.availableMask, inputGenerations);
         } finally { data.recycle(); reply.recycle(); }
     }
+
+    public synchronized void setCabinMirrored(boolean mirrorCabin) throws Exception {
+        if (closing || !attached || host == null) throw new IllegalStateException("viewer not attached");
+        long generation = nextOutputGeneration();
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(CameraRuntimeHost.VIEW_UPDATE_CABIN_MIRROR);
+            data.writeStrongBinder(owner); data.writeString(session);
+            data.writeInt(MotionRecordingOutput.VIEWING_PARCEL_VERSION);
+            data.writeLong(generation); data.writeInt(mirrorCabin ? 1 : 0);
+            IBinder target = host;
+            if (!attached || target == null || !target.isBinderAlive()
+                    || !target.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
+                throw new IllegalStateException("viewer cabin mirror update unavailable");
+            reply.readException();
+            if (reply.readInt() != 1) throw new IllegalStateException("viewer cabin mirror update refused");
+            this.mirrorCabin = mirrorCabin;
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
+    /** Last mirror value acknowledged by the helper for this attached source. */
+    public synchronized boolean isCabinMirrored() { return mirrorCabin; }
 
     private IBinder findHost() throws Exception {
         IBinder candidate = (IBinder) Class.forName("android.os.ServiceManager")
@@ -184,6 +210,12 @@ public final class RemoteCameraSource implements AutoCloseable {
         TurnSignalController.Ping ping = TurnSignalController.ping(candidate);
         if (!ping.healthy()) throw new IllegalStateException("camera helper compatibility check failed: " + ping.error);
         return candidate;
+    }
+
+    private long nextOutputGeneration() {
+        if (outputGeneration == Long.MAX_VALUE)
+            throw new IllegalStateException("viewer output generation exhausted");
+        return ++outputGeneration;
     }
 
     private void sourceChannelUnavailable(int channel, String reference) {
@@ -250,7 +282,7 @@ public final class RemoteCameraSource implements AutoCloseable {
         }
     }
 
-    @Override public void close() throws Exception {
+    @Override public synchronized void close() throws Exception {
         Throwable first = null;
         closing = true;
         attached = false;

@@ -24,6 +24,21 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 
+internal fun resolveViewerMirrorCabin(
+    payload: JSONObject,
+    profileConfigs: Collection<JSONObject>,
+    current: Boolean,
+): Boolean {
+    val payloadValue = payload.opt("mirrorCabin")
+    require(!payload.has("mirrorCabin") || payloadValue is Boolean) {
+        "invalid mirrorCabin presentation value"
+    }
+    val persisted = profileConfigs.asSequence()
+        .mapNotNull { it.opt("viewerMirrorCabin") as? Boolean }
+        .firstOrNull()
+    return (payloadValue as? Boolean) ?: persisted ?: current
+}
+
 /** Independent shell-process owner. Only the local app IPC can change profiles. */
 class CameraViewingRuntime(private val context: Context, directory: File, ownerUid: Int) : AutoCloseable {
     @Volatile private var ownerThread: Thread? = null
@@ -36,10 +51,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private val profiles = linkedMapOf<String, Profile>()
     private val lease = CameraViewerLease()
     @Volatile private var viewer: Viewer? = null
-    private var source: RemoteCameraSource? = null
+    @Volatile private var source: RemoteCameraSource? = null
     private var sourceRun: Run? = null
     private var sourceStreamId: String? = null
-    private var sourceAttached = false
+    @Volatile private var sourceAttached = false
     private val archiveDelegate = lazy { CameraViewerArchive.create(context, ownerUid) }
     private val archive by archiveDelegate
     private val modeSettings = CameraModeClient(context)
@@ -47,6 +62,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     @Volatile private var locale = "en"
     @Volatile private var theme = "dark"
     @Volatile private var interiorCameras = RemoteCameraView.NONE
+    @Volatile private var mirrorCabin = false
+    @Volatile private var mirrorApplyState = "pending"
+    @Volatile private var mirrorApplyErrorRef: String? = null
     private var enabled = false
     @Volatile private var closed = false
     @Volatile private var latest = "{}"
@@ -152,6 +170,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     profile.config = JSONObject(config.toString()).put("authorized", false)
                         .put("revocationPending", false)
                         .put("viewerLocale", locale).put("viewerTheme", theme)
+                        .put("viewerMirrorCabin", mirrorCabin)
                         .put("revocationEpoch", profile.config.optLong("revocationEpoch"))
                     save(profile)
                 } else {
@@ -251,7 +270,15 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         val nextInterior = payload.optInt("interiorCameras", interiorCameras)
         RemoteCameraView.validateMask(nextInterior)
         val channelsChanged = nextInterior != interiorCameras
+        val nextMirrorCabin = resolveViewerMirrorCabin(payload,
+            profiles.values.map { it.config }, mirrorCabin)
+        val mirrorChanged = nextMirrorCabin != mirrorCabin
         interiorCameras = nextInterior
+        if (mirrorChanged) {
+            mirrorApplyState = "pending"
+            mirrorApplyErrorRef = null
+        }
+        mirrorCabin = nextMirrorCabin
         // Invalidate captured/encoded private channels before applying the new live layout.
         val active = viewer?.takeIf { channelsChanged && it.mode == "live" && it.profile.method == "vdo" }
         if (active != null) {
@@ -259,17 +286,14 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             closeVideo()
         }
         if (channelsChanged && viewer?.mode != "live" && source != null) closeVideo()
+        if (mirrorChanged || mirrorApplyState == "error") applyCabinMirrorToSource()
         locale = com.byd.extend.AppLanguage.normalize(payload.optString("locale",
             profiles.values.firstOrNull()?.config?.optString("viewerLocale", "en") ?: "en")).let {
             if (it == "zh-CN") "zh" else it
         }
         theme = if (payload.optString("theme",
                 profiles.values.firstOrNull()?.config?.optString("viewerTheme", "dark") ?: "dark") == "light") "light" else "dark"
-        profiles.values.forEach { p ->
-            if (p.config.optString("viewerLocale") != locale || p.config.optString("viewerTheme") != theme) {
-                p.config.put("viewerLocale", locale).put("viewerTheme", theme); save(p)
-            }
-        }
+        persistViewerPresentation()
         if (active != null && enabled && payload.optBoolean("enabled", enabled)) {
             active.run.deadline = SystemClock.elapsedRealtime() + 30_000
             prepare(active.profile, active.run)
@@ -404,6 +428,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     p, run, session, leave, selectionRevision)
                 override fun status(): JSONObject {
                     val modes = readModes()
+                    val settings = viewerSettings(modes)
                     val active = viewer?.takeIf { it.run === run }
                     return synchronized(active ?: run) {
                         val request = active?.request ?: ""
@@ -427,6 +452,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                             .put("selectionProgramTimeMs", if (selectionSegment >= 0 && active != null)
                                 window!!.selectionProgramTimeMs(active.selection.revision()) else -1L)
                             .put("selectionFailed", active != null && active.selection.revision() == run.failedSelectionRevision)
+                            .put("settings", settings)
                             .put("modes", modes)
                     }
                 }
@@ -437,7 +463,26 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                             "mode=$mode enabled=$enabled applyState=${it.optString("applyState")}") }
                     }
                 }
-                override fun presentation() = JSONObject().put("locale", locale).put("theme", theme).put("provider", p.method)
+                override fun setSetting(session: String, setting: String, value: Any): JSONObject? = serialized {
+                    if (!current(run, session) || run.server?.canControl(session) != true) return@serialized null
+                    val snapshot = modeSettings.setSetting(setting, value)
+                    if (setting == "mirrorCabin") {
+                        mirrorCabin = snapshot.getBoolean("mirrorCabin")
+                        mirrorApplyState = "pending"
+                        mirrorApplyErrorRef = null
+                        persistViewerPresentation()
+                        applyCabinMirrorToSource()
+                        publish()
+                    }
+                    viewerSettings(snapshot).also {
+                        viewer?.takeIf { current(run, session) }?.let { active ->
+                            sessionEvent("camera_setting_saved", active,
+                                "setting=$setting mirrorApplyState=$mirrorApplyState")
+                        }
+                    }
+                }
+                override fun presentation() = JSONObject().put("locale", locale).put("theme", theme)
+                    .put("mirrorCabin", mirrorCabin).put("provider", p.method)
                     .put("accessMode", accessMode).put("run", run.generation)
                 override fun firstFrame(session: String, mode: String) = execute(p, run) {
                     val active = viewer?.takeIf { current(run, session) } ?: return@execute
@@ -480,6 +525,73 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             CameraViewingDiagnostics.failure("viewer_modes_read", "shared", failure)
         }
         JSONObject().put("available", false).put("applyState", "error").put("error", "modes_unavailable")
+    }
+
+    private fun viewerSettings(snapshot: JSONObject): JSONObject {
+        val desiredMirror = snapshot.optBoolean("mirrorCabin", mirrorCabin)
+        val sourceMirror = source?.takeIf { sourceAttached }?.isCabinMirrored()
+        val sameRuntimeDesired = desiredMirror == mirrorCabin
+        val reportedMirrorState = when {
+            !sameRuntimeDesired -> "pending"
+            mirrorApplyState == "error" -> "error"
+            mirrorApplyState == "applied" && sourceMirror == desiredMirror -> "applied"
+            else -> "pending"
+        }
+        val result = JSONObject().put("available", snapshot.optBoolean("available"))
+            .put("mirrorCabin", desiredMirror)
+            .put("mirrorApplyState", reportedMirrorState)
+            .put("sensitivityApplyState", snapshot.optString("applyState", "error"))
+        val sensitivity = snapshot.opt("recordingSensitivity")
+        if (sensitivity is Int && sensitivity in 0..2) result.put("recordingSensitivity", sensitivity)
+        val mirrorError = reportedMirrorState == "error"
+        val error = if (mirrorError) "mirror_apply_failed" else snapshot.optString("error")
+        if (error.isNotEmpty()) result.put("error", error)
+        val errorRef = if (mirrorError) mirrorApplyErrorRef.orEmpty() else snapshot.optString("errorRef")
+        if (errorRef.isNotEmpty()) result.put("errorRef", errorRef)
+        return result
+    }
+
+    private fun persistViewerPresentation() {
+        profiles.values.forEach { profile ->
+            if (profile.config.optString("viewerLocale") != locale ||
+                profile.config.optString("viewerTheme") != theme ||
+                profile.config.opt("viewerMirrorCabin") != mirrorCabin) {
+                profile.config.put("viewerLocale", locale).put("viewerTheme", theme)
+                    .put("viewerMirrorCabin", mirrorCabin)
+                save(profile)
+            }
+        }
+    }
+
+    private fun applyCabinMirrorToSource() {
+        val camera = source
+        if (!sourceAttached || camera == null) {
+            if (mirrorApplyState != "error") {
+                mirrorApplyState = "pending"
+                mirrorApplyErrorRef = null
+            }
+            return
+        }
+        mirrorApplyState = "pending"
+        mirrorApplyErrorRef = null
+        try {
+            camera.setCabinMirrored(mirrorCabin)
+            if (camera.isCabinMirrored() == mirrorCabin) {
+                mirrorApplyState = "applied"
+                mirrorApplyErrorRef = null
+            } else {
+                mirrorApplyState = "pending"
+            }
+        } catch (failure: Exception) {
+            val reference = java.util.UUID.randomUUID().toString().replace("-", "")
+            mirrorApplyState = "error"
+            mirrorApplyErrorRef = reference
+            val active = viewer
+            CameraViewingDiagnostics.failure("viewer_mirror_apply_$reference",
+                active?.profile?.method ?: "shared", failure,
+                active?.profile?.config?.optString("password"),
+                active?.profile?.config?.optString("token"))
+        }
     }
 
     /** Only called after HTTP credentials or VDO's protected SDP + connection succeed. */
@@ -632,8 +744,14 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             val changed = run.outputView != direction || run.outputInteriorMask != mask ||
                 run.outputLocale != outputLocale || run.outputExteriorReady != camera.isExteriorReady
             if (changed) {
-                camera.updateOutput(null, direction, mask, outputLocale)
+                camera.updateOutput(null, direction, mask, outputLocale, mirrorCabin)
                 rememberOutput(run, direction, mask, outputLocale, camera)
+                if (camera.isCabinMirrored() == mirrorCabin) {
+                    mirrorApplyState = "applied"
+                    mirrorApplyErrorRef = null
+                } else {
+                    mirrorApplyState = "pending"
+                }
                 CameraViewingDiagnostics.detail("retained_output_updated", p.method,
                     "$diagnostic source=${camera.sessionId()} outputStream=$streamId exteriorReady=${camera.isExteriorReady}")
             }
@@ -669,11 +787,17 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     if (run.encoder === encoder) streamFailure(p, run, failure, encoder.window.streamId)
                 }
             }.also { run.encoder = it }.start()
-            if (sourceAttached) camera.updateOutput(surface, direction, mask, outputLocale)
+            if (sourceAttached) camera.updateOutput(surface, direction, mask, outputLocale, mirrorCabin)
             else {
                 camera.attach(surface, CameraHlsEncoder.WIDTH, CameraHlsEncoder.HEIGHT,
-                    direction, mask, outputLocale)
+                    direction, mask, outputLocale, mirrorCabin)
                 sourceAttached = true
+            }
+            if (camera.isCabinMirrored() == mirrorCabin) {
+                mirrorApplyState = "applied"
+                mirrorApplyErrorRef = null
+            } else {
+                mirrorApplyState = "pending"
             }
             sourceRun = run
             rememberOutput(run, direction, mask, outputLocale, camera)
@@ -710,7 +834,13 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private fun newSource(): RemoteCameraSource {
         lateinit var created: RemoteCameraSource
         created = RemoteCameraSource(context) { failure -> execute {
-            if (source === created) viewer?.let { streamFailure(it.profile, it.run, failure) }
+            if (source === created) {
+                if (mirrorApplyState != "error") {
+                    mirrorApplyState = "pending"
+                    mirrorApplyErrorRef = null
+                }
+                viewer?.let { streamFailure(it.profile, it.run, failure) }
+            }
         } }
         return created
     }
@@ -814,6 +944,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         }
         finally {
             if (camera == null || camera.isVideoDetached) {
+                if (mirrorApplyState != "error") {
+                    mirrorApplyState = "pending"
+                    mirrorApplyErrorRef = null
+                }
                 val previous = sourceRun
                 sourceRun = null
                 sourceStreamId = null
@@ -886,6 +1020,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private fun clearProfile(p: Profile) {
         p.config = JSONObject().put("name", p.config.optString("name")).put("password", "").put("token", "")
             .put("public", false).put("authorized", false).put("revocationPending", false)
+            .put("viewerLocale", p.config.optString("viewerLocale", locale))
+            .put("viewerTheme", p.config.optString("viewerTheme", theme))
+            .put("viewerMirrorCabin", p.config.optBoolean("viewerMirrorCabin", mirrorCabin))
             .put("revocationEpoch", p.config.optLong("revocationEpoch") + 1)
         save(p); p.phase = "idle"; p.error = null
     }
@@ -901,7 +1038,20 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             .put("authorizationRequest", p.authorizationRequest)
             .put("passwordConfigured", p.config.optString("password").isNotEmpty())
             .put("tokenConfigured", p.config.optString("token").isNotEmpty())) }
-        latest = JSONObject().put("enabled", enabled).put("interiorCameras", interiorCameras).put("profiles", entries).toString()
+        val sourceMirror = source?.takeIf { sourceAttached }?.isCabinMirrored()
+        val reportedMirrorState = when {
+            mirrorApplyState == "error" -> "error"
+            mirrorApplyState == "applied" && sourceMirror == mirrorCabin -> "applied"
+            else -> "pending"
+        }
+        val snapshot = JSONObject().put("enabled", enabled).put("interiorCameras", interiorCameras)
+            .put("mirrorCabin", mirrorCabin).put("mirrorApplyState", reportedMirrorState)
+            .put("profiles", entries)
+        if (reportedMirrorState == "error") {
+            snapshot.put("mirrorApplyError", "mirror_apply_failed")
+            mirrorApplyErrorRef?.let { snapshot.put("mirrorApplyErrorRef", it) }
+        }
+        latest = snapshot.toString()
         listener?.accept(JSONObject(latest))
     }
     private fun execute(p: Profile? = null, run: Run? = null, action: () -> Unit) {

@@ -3,6 +3,7 @@ package com.byd.extend;
 /** Live-only view selection; recorder directions remain the original four channels. */
 public final class RemoteCameraView {
     public static final String PREFERENCE_KEY = "cameras_viewing_interior";
+    public static final String MIRROR_CABIN_PREFERENCE_KEY = "cameras_viewing_mirror_cabin";
     public static final int COMPOSITION = -1, FRONT = 0, REAR = 1, LEFT = 2, RIGHT = 3,
             CABIN = 4, DRIVER = 5, INTERIOR = 6, COMBINED = 7;
     public static final int NONE = 0, ALLOW_CABIN = 1, ALLOW_DRIVER = 2, BOTH = 3;
@@ -56,6 +57,10 @@ public final class RemoteCameraView {
         if (!valid(view)) throw new IllegalArgumentException("invalid_view");
         return view <= RIGHT || view == COMBINED;
     }
+    static boolean mirrorsCabinChannel(int channel, boolean mirrorCabin) {
+        return mirrorCabin && channel == CABIN;
+    }
+    static float textureU(float u, boolean mirror) { return mirror ? 1f - u : u; }
     public static int defaultVdoView(int mask) {
         validateMask(mask);
         return mask == NONE ? COMPOSITION : COMBINED;

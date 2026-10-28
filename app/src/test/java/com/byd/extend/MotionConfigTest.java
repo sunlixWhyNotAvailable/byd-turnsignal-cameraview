@@ -55,7 +55,14 @@ public class MotionConfigTest {
         MotionConfig low = MotionConfig.parse("{\"enabled\":true,\"recordingSensitivity\":0}");
         MotionConfig reopened = MotionConfig.parse(low.toJson());
         assertEquals(0, reopened.recordingSensitivity);
-        assertFalse(reopened.onlyMotionModesDifferFrom(legacy));
+        assertTrue(reopened.onlyInPlaceMotionChangesDifferFrom(legacy));
+        assertTrue(reopened.onlyRecordingSensitivityDiffersFrom(legacy));
+        MotionConfig combined = MotionConfig.parse(
+                "{\"warning\":true,\"enabled\":true,\"recordingSensitivity\":0}");
+        assertTrue(combined.onlyInPlaceMotionChangesDifferFrom(legacy));
+        assertFalse(combined.onlyRecordingSensitivityDiffersFrom(legacy));
+        assertFalse(MotionConfig.parse("{\"enabled\":true,\"quality\":2}")
+                .onlyInPlaceMotionChangesDifferFrom(legacy));
         assertEquals(2, MotionConfig.parse("{\"recordingSensitivity\":99}").recordingSensitivity);
     }
 

@@ -89,14 +89,23 @@ public final class MotionConfig {
 
     public boolean motionEnabled() { return warningEnabled || recordingEnabled; }
     public boolean anyEnabled() { return motionEnabled() || remoteViewingEnabled; }
-    boolean onlyMotionModesDifferFrom(MotionConfig other) {
+    boolean onlyInPlaceMotionChangesDifferFrom(MotionConfig other) {
         return other != null && (warningEnabled != other.warningEnabled
-                || recordingEnabled != other.recordingEnabled)
-                && audioEnabled == other.audioEnabled
+                || recordingEnabled != other.recordingEnabled
+                || recordingSensitivity != other.recordingSensitivity)
+                && sameOutsideInPlaceMotionChanges(other);
+    }
+    boolean onlyRecordingSensitivityDiffersFrom(MotionConfig other) {
+        return other != null && recordingSensitivity != other.recordingSensitivity
+                && warningEnabled == other.warningEnabled
+                && recordingEnabled == other.recordingEnabled
+                && sameOutsideInPlaceMotionChanges(other);
+    }
+    private boolean sameOutsideInPlaceMotionChanges(MotionConfig other) {
+        return audioEnabled == other.audioEnabled
                 && remoteViewingEnabled == other.remoteViewingEnabled
                 && chargeSocThresholdPercent == other.chargeSocThresholdPercent
                 && chargeVoltageThresholdTenths == other.chargeVoltageThresholdTenths
-                && recordingSensitivity == other.recordingSensitivity
                 && lockCondition == other.lockCondition
                 && beforeSeconds == other.beforeSeconds && afterSeconds == other.afterSeconds
                 && quality == other.quality && primarySd == other.primarySd

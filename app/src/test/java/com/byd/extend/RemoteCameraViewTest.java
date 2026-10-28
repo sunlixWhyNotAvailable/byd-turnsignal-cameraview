@@ -64,6 +64,18 @@ public final class RemoteCameraViewTest {
                 RemoteCameraView.retainAllowed(RemoteCameraView.DRIVER, RemoteCameraView.BOTH));
     }
 
+    @Test public void cabinMirrorFlipsOnlyCabinTextureHorizontally() {
+        assertTrue(RemoteCameraView.mirrorsCabinChannel(RemoteCameraView.CABIN, true));
+        for (int channel : new int[]{0, 1, 2, 3, RemoteCameraView.DRIVER}) {
+            assertFalse(RemoteCameraView.mirrorsCabinChannel(channel, true));
+        }
+        assertFalse(RemoteCameraView.mirrorsCabinChannel(RemoteCameraView.CABIN, false));
+        assertEquals(1f, RemoteCameraView.textureU(0f, true), 0f);
+        assertEquals(0f, RemoteCameraView.textureU(1f, true), 0f);
+        assertEquals(.5f, RemoteCameraView.textureU(.5f, true), 0f);
+        assertEquals(.25f, RemoteCameraView.textureU(.25f, false), 0f);
+    }
+
     @Test public void retainedInteriorSourcesAccumulateSelectionsAndDropRevokedChannels() {
         int retained = RemoteCameraView.retainedInteriors(RemoteCameraView.NONE,
                 RemoteCameraView.interiorMask(RemoteCameraView.CABIN, RemoteCameraView.BOTH),

@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 11;
+  const WEB_REVISION = 12;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -38,7 +38,8 @@
       modeLoading: 'Loading settings…', modeUnavailable: 'Unavailable', modeLastKnown: 'Last known', modeSaving: 'Saving…',
       modeApplyPending: 'Saved; applying…', modeApplyError: 'The app could not apply this setting.', modeUpdateError: 'Could not update this setting.',
       modePermissionError: 'Permission is required. Change it in the app settings.',
-      modeNote: 'Modes run under app conditions and battery protection.',
+      modeNote: 'Modes run under app conditions and battery protection.', mirrorCabin: 'Mirror cabin camera',
+      recordingSensitivity: 'Recording sensitivity', sensitivityLow: 'Low', sensitivityMedium: 'Medium', sensitivityHigh: 'High',
       updateRequired: 'The viewer has changed. Refresh this page to continue.'
     },
     uk: {
@@ -60,7 +61,8 @@
       modeLoading: 'Завантаження налаштувань…', modeUnavailable: 'Недоступно', modeLastKnown: 'Останній стан', modeSaving: 'Збереження…',
       modeApplyPending: 'Збережено; застосовуємо…', modeApplyError: 'Застосунок не зміг застосувати цей параметр.', modeUpdateError: 'Не вдалося змінити параметр.',
       modePermissionError: 'Потрібен дозвіл. Змініть його в налаштуваннях застосунку.',
-      modeNote: 'Режими працюють за умовами застосунку та захистом заряду.',
+      modeNote: 'Режими працюють за умовами застосунку та захистом заряду.', mirrorCabin: 'Віддзеркалювати камеру салону',
+      recordingSensitivity: 'Чутливість запису', sensitivityLow: 'Низька', sensitivityMedium: 'Середня', sensitivityHigh: 'Висока',
       updateRequired: 'Версія переглядача змінилася. Оновіть сторінку, щоб продовжити.'
     },
     ru: {
@@ -82,7 +84,8 @@
       modeLoading: 'Загрузка настроек…', modeUnavailable: 'Недоступно', modeLastKnown: 'Последнее состояние', modeSaving: 'Сохранение…',
       modeApplyPending: 'Сохранено; применяется…', modeApplyError: 'Приложение не смогло применить этот параметр.', modeUpdateError: 'Не удалось изменить параметр.',
       modePermissionError: 'Требуется разрешение. Измените его в настройках приложения.',
-      modeNote: 'Режимы работают с учётом условий приложения и защиты заряда.',
+      modeNote: 'Режимы работают с учётом условий приложения и защиты заряда.', mirrorCabin: 'Отражать камеру салона',
+      recordingSensitivity: 'Чувствительность записи', sensitivityLow: 'Низкая', sensitivityMedium: 'Средняя', sensitivityHigh: 'Высокая',
       updateRequired: 'Версия просмотрщика изменилась. Обновите страницу, чтобы продолжить.'
     },
     zh: {
@@ -104,7 +107,8 @@
       modeLoading: '正在加载设置…', modeUnavailable: '不可用', modeLastKnown: '上次状态', modeSaving: '正在保存…',
       modeApplyPending: '已保存；正在应用…', modeApplyError: '应用无法启用此设置。', modeUpdateError: '无法更新此设置。',
       modePermissionError: '需要权限。请在应用设置中更改。',
-      modeNote: '模式按应用条件和电量保护规则运行。',
+      modeNote: '模式按应用条件和电量保护规则运行。', mirrorCabin: '车厢摄像头镜像',
+      recordingSensitivity: '录像灵敏度', sensitivityLow: '低', sensitivityMedium: '中', sensitivityHigh: '高',
       updateRequired: '查看器已更新。请刷新页面以继续。'
     }
   }[locale];
@@ -138,7 +142,11 @@
     localFirstFrame: false, liveRequest: null, liveStreamId: null, liveSelectionRevision: 0, livePlaylist: null,
     battery: null, batteryExpiresAt: 0,
     modes: { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null },
-    lastKnownModes: { tabletEnabled: null, recordingEnabled: null }, modePending: null, modeError: null, modesOpen: false
+    settings: { available: null, mirrorCabin: null, recordingSensitivity: null,
+      mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null },
+    lastKnownModes: { tabletEnabled: null, recordingEnabled: null },
+    lastKnownSettings: { mirrorCabin: null, recordingSensitivity: null },
+    modePending: null, modeError: null, settingPending: null, settingError: null, settingErrorRef: null, modesOpen: false
   };
   const cameraLabels = Object.fromEntries(cameras.map((key) => [key, text[key]]));
   let hlsScriptPromise;
@@ -149,6 +157,7 @@
   let controlQueue = Promise.resolve();
   let modeQueue = Promise.resolve();
   let modeWriteGeneration = 0;
+  let settingWriteGeneration = 0;
   let statusRequestGeneration = 0;
   let statusPollInFlight = false;
   let lastStatusPoll = 0;
@@ -259,7 +268,7 @@
   }
   const post = (path, body = {}) => {
     const send = () => api(path, { method: 'POST', body: JSON.stringify(body) });
-    if (path === '/modes') {
+    if (path === '/modes' || path === '/settings') {
       const pending = modeQueue.then(send, send);
       modeQueue = pending.catch(() => {});
       return pending;
@@ -366,15 +375,43 @@
   }
 
   function modePanel() {
-    return `<aside class="mode-panel" aria-label="${escapeHtml(text.modes)}"><h2 class="mode-heading mode-desktop-heading">${icon('sliders')}${escapeHtml(text.modes)}</h2><details class="mode-disclosure" id="mode-disclosure"${state.modesOpen ? ' open' : ''}><summary><span class="mode-summary-heading">${icon('sliders')}<span>${escapeHtml(text.modes)}<small>${escapeHtml(text.showOnTablet)} · ${escapeHtml(text.recordCameras)}</small></span></span>${icon('chevronDown')}</summary><div class="mode-content"><label class="mode-row" for="mode-tablet"><span class="mode-label"><strong>${escapeHtml(text.showOnTablet)}</strong><small id="mode-state-tablet"></small></span><input class="mode-toggle" id="mode-tablet" type="checkbox" data-mode="tablet" aria-describedby="mode-state-tablet"></label><label class="mode-row" for="mode-recording"><span class="mode-label"><strong>${escapeHtml(text.recordCameras)}</strong><small id="mode-state-recording"></small></span><input class="mode-toggle" id="mode-recording" type="checkbox" data-mode="recording" aria-describedby="mode-state-recording"></label><p class="mode-note">${escapeHtml(text.modeNote)}</p><p class="mode-feedback" id="mode-feedback" role="status" aria-live="polite"></p></div></details></aside>`;
+    return `<aside class="mode-panel" aria-label="${escapeHtml(text.modes)}">
+      <h2 class="mode-heading mode-desktop-heading">${icon('sliders')}${escapeHtml(text.modes)}</h2>
+      <details class="mode-disclosure" id="mode-disclosure"${state.modesOpen ? ' open' : ''}>
+        <summary><span class="mode-summary-heading">${icon('sliders')}<span>${escapeHtml(text.modes)}<small>${escapeHtml(text.showOnTablet)} · ${escapeHtml(text.recordCameras)}</small></span></span>${icon('chevronDown')}</summary>
+        <div class="mode-content">
+          <label class="mode-row" for="mode-tablet"><span class="mode-label"><strong>${escapeHtml(text.showOnTablet)}</strong><small id="mode-state-tablet"></small></span><input class="mode-toggle" id="mode-tablet" type="checkbox" data-mode="tablet" aria-describedby="mode-state-tablet"></label>
+          <label class="mode-row" for="mode-recording"><span class="mode-label"><strong>${escapeHtml(text.recordCameras)}</strong><small id="mode-state-recording"></small></span><input class="mode-toggle" id="mode-recording" type="checkbox" data-mode="recording" aria-describedby="mode-state-recording"></label>
+          <label class="mode-row" for="mode-mirror-cabin"><span class="mode-label"><strong>${escapeHtml(text.mirrorCabin)}</strong><small id="mode-state-mirror-cabin"></small></span><input class="mode-toggle" id="mode-mirror-cabin" type="checkbox" role="switch" data-setting="mirrorCabin" aria-describedby="mode-state-mirror-cabin"></label>
+          <section class="mode-setting" role="group" aria-labelledby="mode-setting-sensitivity">
+            <strong id="mode-setting-sensitivity">${escapeHtml(text.recordingSensitivity)}</strong>
+            <div class="setting-choices">
+              <button type="button" data-setting="recordingSensitivity" data-value="0" aria-pressed="false">${escapeHtml(text.sensitivityLow)}</button>
+              <button type="button" data-setting="recordingSensitivity" data-value="1" aria-pressed="false">${escapeHtml(text.sensitivityMedium)}</button>
+              <button type="button" data-setting="recordingSensitivity" data-value="2" aria-pressed="false">${escapeHtml(text.sensitivityHigh)}</button>
+            </div>
+            <small class="mode-setting-state" id="mode-state-sensitivity"></small>
+          </section>
+          <p class="mode-note">${escapeHtml(text.modeNote)}</p>
+          <p class="mode-feedback" id="mode-feedback" role="status" aria-live="polite"></p>
+        </div>
+      </details>
+    </aside>`;
   }
 
   function resetModes() {
     state.modes = { available: null, tabletEnabled: null, recordingEnabled: null, applyState: null, error: null };
+    state.settings = { available: null, mirrorCabin: null, recordingSensitivity: null,
+      mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null };
     state.modePending = null;
     state.modeError = null;
+    state.settingPending = null;
+    state.settingError = null;
+    state.settingErrorRef = null;
     state.lastKnownModes = { tabletEnabled: null, recordingEnabled: null };
+    state.lastKnownSettings = { mirrorCabin: null, recordingSensitivity: null };
     ++modeWriteGeneration;
+    ++settingWriteGeneration;
     ++statusRequestGeneration;
   }
 
@@ -396,6 +433,30 @@
     }
   }
 
+  function applySettingsSnapshot(settings) {
+    if (!settings || typeof settings !== 'object') {
+      state.settings = { available: null, mirrorCabin: null, recordingSensitivity: null,
+        mirrorApplyState: null, sensitivityApplyState: null, error: null, errorRef: null };
+      return;
+    }
+    const available = typeof settings.available === 'boolean' ? settings.available : null;
+    const mirrorCabin = typeof settings.mirrorCabin === 'boolean' ? settings.mirrorCabin : null;
+    const recordingSensitivity = Number.isInteger(settings.recordingSensitivity)
+      && settings.recordingSensitivity >= 0 && settings.recordingSensitivity <= 2
+      ? settings.recordingSensitivity : null;
+    state.settings = {
+      available,
+      mirrorCabin,
+      recordingSensitivity,
+      mirrorApplyState: ['applied', 'pending', 'error'].includes(settings.mirrorApplyState) ? settings.mirrorApplyState : null,
+      sensitivityApplyState: ['applied', 'pending', 'error'].includes(settings.sensitivityApplyState) ? settings.sensitivityApplyState : null,
+      error: typeof settings.error === 'string' ? settings.error : null,
+      errorRef: typeof settings.errorRef === 'string' ? settings.errorRef : null
+    };
+    if (mirrorCabin !== null) state.lastKnownSettings.mirrorCabin = mirrorCabin;
+    if (recordingSensitivity !== null) state.lastKnownSettings.recordingSensitivity = recordingSensitivity;
+  }
+
   function modeValueLabel(field) {
     if (state.modePending === (field === 'tabletEnabled' ? 'tablet' : 'recording')) return text.modeSaving;
     const value = state.modes[field];
@@ -405,15 +466,38 @@
     return state.modes.available === null ? text.modeLoading : text.modeUnavailable;
   }
 
+  function settingValueLabel(setting) {
+    if (state.settingPending === setting) return text.modeSaving;
+    const value = state.settings[setting]
+      ?? (state.settings.available === false ? state.lastKnownSettings[setting] : null);
+    const known = setting === 'mirrorCabin' ? typeof value === 'boolean'
+      : Number.isInteger(value) && value >= 0 && value <= 2;
+    if (state.settings.available === null) return text.modeLoading;
+    if (!known) return text.modeUnavailable;
+    const label = setting === 'mirrorCabin' ? (value ? text.modeEnabled : text.modeDisabled)
+      : [text.sensitivityLow, text.sensitivityMedium, text.sensitivityHigh][value];
+    return state.settings.available === false
+      ? `${text.modeUnavailable} · ${text.modeLastKnown.toLowerCase()}: ${label}` : label;
+  }
+
   function modeFeedback() {
-    if (state.modePending) return text.modeSaving;
+    if (state.modePending || state.settingPending) return text.modeSaving;
+    const settingApplyFailed = state.settings.mirrorApplyState === 'error'
+      || state.settings.sensitivityApplyState === 'error';
+    const settingCode = state.settingError || (settingApplyFailed
+      ? state.settings.error || state.settings.errorRef || 'apply_error' : null);
     const code = state.modeError || (state.modes.applyState === 'error' ? state.modes.error || 'apply_error' : null);
-    if (code) {
-      const message = code === 'permission_required' ? text.modePermissionError
-        : code === 'modes_unavailable' ? text.modeUnavailable
-          : state.modeError ? text.modeUpdateError : text.modeApplyError;
-      return `${message}${code === 'permission_required' ? '' : ` (${escapeHtml(code)})`}`;
+    if (settingCode || code) {
+      const failureCode = settingCode || code;
+      const message = failureCode === 'permission_required' ? text.modePermissionError
+        : failureCode === 'modes_unavailable' || failureCode === 'settings_unavailable' ? text.modeUnavailable
+          : state.modeError || state.settingError ? text.modeUpdateError : text.modeApplyError;
+      const reference = state.settingErrorRef || (settingApplyFailed ? state.settings.errorRef : null);
+      return `${message}${failureCode === 'permission_required' ? '' : ` (${escapeHtml(failureCode)})`}`
+        + (reference ? ` [${escapeHtml(reference)}]` : '');
     }
+    if (state.settings.mirrorApplyState === 'pending' || state.settings.sensitivityApplyState === 'pending')
+      return text.modeApplyPending;
     if (state.modes.applyState === 'pending') return text.modeApplyPending;
     if (state.modes.available !== true) return state.modes.available === null ? text.modeLoading : text.modeUnavailable;
     return '';
@@ -434,10 +518,35 @@
       const label = panel.querySelector(`#mode-state-${mode}`);
       if (label && label.textContent !== modeValueLabel(field)) label.textContent = modeValueLabel(field);
     }
+    const mirror = panel.querySelector('[data-setting="mirrorCabin"]');
+    if (mirror) {
+      const value = state.settings.mirrorCabin
+        ?? (state.settings.available === false ? state.lastKnownSettings.mirrorCabin : null);
+      const known = typeof value === 'boolean';
+      mirror.checked = known && value;
+      mirror.indeterminate = !known;
+      mirror.disabled = !state.authenticated || state.replaced || ['ended', 'replaced'].includes(state.status)
+        || state.settings.available !== true || !known || Boolean(state.settingPending);
+      const label = panel.querySelector('#mode-state-mirror-cabin');
+      if (label && label.textContent !== settingValueLabel('mirrorCabin'))
+        label.textContent = settingValueLabel('mirrorCabin');
+    }
+    const sensitivityKnown = Number.isInteger(state.settings.recordingSensitivity)
+      && state.settings.recordingSensitivity >= 0 && state.settings.recordingSensitivity <= 2;
+    for (const button of panel.querySelectorAll('button[data-setting="recordingSensitivity"]')) {
+      button.setAttribute('aria-pressed', String(sensitivityKnown
+        && Number(button.dataset.value) === state.settings.recordingSensitivity));
+      button.disabled = !state.authenticated || state.replaced || ['ended', 'replaced'].includes(state.status)
+        || state.settings.available !== true || !sensitivityKnown || Boolean(state.settingPending);
+    }
+    const sensitivityLabel = panel.querySelector('#mode-state-sensitivity');
+    if (sensitivityLabel && sensitivityLabel.textContent !== settingValueLabel('recordingSensitivity'))
+      sensitivityLabel.textContent = settingValueLabel('recordingSensitivity');
     const feedback = panel.querySelector('#mode-feedback');
     const message = modeFeedback();
     if (feedback && feedback.textContent !== message) feedback.textContent = message;
-    feedback?.classList.toggle('is-error', Boolean(state.modeError || state.modes.applyState === 'error'));
+    feedback?.classList.toggle('is-error', Boolean(state.modeError || state.modes.applyState === 'error'
+      || state.settingError || state.settings.mirrorApplyState === 'error' || state.settings.sensitivityApplyState === 'error'));
   }
 
   function syncModeDisclosure() {
@@ -484,6 +593,54 @@
       if (generation === modeWriteGeneration) {
         state.modePending = null;
         ++modeWriteGeneration;
+        ++statusRequestGeneration;
+        updateModePanel();
+      }
+    }
+    if (refresh && state.authenticated && !state.replaced) await pollStatus();
+  }
+
+  async function changeSetting(setting, value) {
+    const valid = setting === 'mirrorCabin' ? typeof value === 'boolean'
+      : setting === 'recordingSensitivity' && Number.isInteger(value) && value >= 0 && value <= 2;
+    if (!valid) return;
+    if (!state.authenticated || state.replaced || state.settingPending || state.settings.available !== true
+      || (setting === 'mirrorCabin' ? typeof state.settings.mirrorCabin !== 'boolean'
+        : !Number.isInteger(state.settings.recordingSensitivity))) {
+      updateModePanel();
+      return;
+    }
+    state.settingPending = setting;
+    state.settingError = null;
+    state.settingErrorRef = null;
+    const generation = ++settingWriteGeneration;
+    ++statusRequestGeneration;
+    updateModePanel();
+    let refresh = false;
+    try {
+      const result = await post('/settings', { setting, value });
+      if (generation !== settingWriteGeneration || !state.authenticated) return;
+      if (result.settings && typeof result.settings === 'object') applySettingsSnapshot(result.settings);
+      else {
+        state.settingError = 'settings_state_unavailable';
+        refresh = true;
+      }
+    } catch (failure) {
+      if (generation !== settingWriteGeneration) return;
+      if (failure.statusCode === 401) handleUnauthorized(failure);
+      else {
+        console.warn('Could not update remote camera setting', failure);
+        if (failure.body?.settings && typeof failure.body.settings === 'object')
+          applySettingsSnapshot(failure.body.settings);
+        state.settingError = failure.body?.settings?.error || failure.body?.settings?.errorRef
+          || failure.body?.status || 'request_failed';
+        state.settingErrorRef = failure.body?.errorRef || failure.body?.settings?.errorRef || null;
+        refresh = true;
+      }
+    } finally {
+      if (generation === settingWriteGeneration) {
+        state.settingPending = null;
+        ++settingWriteGeneration;
         ++statusRequestGeneration;
         updateModePanel();
       }
@@ -1419,6 +1576,7 @@
         if (state.mode === 'live') refreshLiveCameraTabs();
       }
       if (!state.modePending) applyModeSnapshot(data.modes);
+      if (!state.settingPending) applySettingsSnapshot(data.settings);
       updateModePanel();
       if (!['ready', 'preparing', 'connected', 'low_battery', 'error', 'ended'].includes(data.status)) {
         applyBatterySnapshot(null);
@@ -1600,6 +1758,11 @@
   });
 
   app.addEventListener('click', async (event) => {
+    const setting = event.target.closest('button[data-setting="recordingSensitivity"]');
+    if (setting && !setting.disabled) {
+      await changeSetting(setting.dataset.setting, Number(setting.dataset.value));
+      return;
+    }
     const button = event.target.closest('button[data-action]');
     if (!button || button.disabled) return;
     const action = button.dataset.action;
@@ -1690,6 +1853,10 @@
   });
   app.addEventListener('change', async (event) => {
     if (event.target.matches('input[data-mode]')) { await changeMode(event.target); return; }
+    if (event.target.matches('input[data-setting="mirrorCabin"]')) {
+      await changeSetting(event.target.dataset.setting, event.target.checked);
+      return;
+    }
     if (event.target.id === 'seek') { state.seeking = false; updateArchiveControls(); return; }
     if (event.target.id === 'playback-speed') {
       const video = document.getElementById('archive-video');

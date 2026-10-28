@@ -320,6 +320,10 @@ internal fun FormScope.CameraViewingScreen(
                 }
             }
         }
+        row("cabin-camera-mirror") {
+            SwitchLine(strings.motionText(R.string.cameras_internal_mirroring), "", state.config.mirrorCabin,
+                { controller.setCabinMirrored(it) }, colors, enabled = state.config.enabled)
+        }
         this
     }
     row("cameras-provider-gap") { Spacer(Modifier.height(12.dp)) }

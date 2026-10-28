@@ -1,6 +1,7 @@
 package com.byd.extend.remote;
 
 import com.byd.extend.CameraModeClient;
+import com.byd.extend.CameraModeSettings;
 import com.byd.extend.RemoteCameraView;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
@@ -50,6 +51,7 @@ public final class CameraViewerServer implements AutoCloseable {
         boolean archive(String session, boolean leave, long selectionRevision);
         JSONObject status();
         JSONObject setMode(String session, String mode, boolean enabled) throws Exception;
+        JSONObject setSetting(String session, String setting, Object value) throws Exception;
         JSONObject presentation();
         void firstFrame(String session, String mode);
         void viewFrame(String session, long revision, String streamId);
@@ -335,6 +337,40 @@ public final class CameraViewerServer implements AutoCloseable {
                 } catch (Exception failure) {
                     CameraViewingDiagnostics.failure("viewer_mode_set", "shared", failure);
                     json(socket, reply, 500, "modes_unavailable", null);
+                }
+                return;
+            }
+            case "/settings": {
+                if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
+                JSONObject input = bodyObject(request.body);
+                Object name = input.opt("setting");
+                Object value = input.opt("value");
+                try {
+                    if (input.length() != 2 || !(name instanceof String))
+                        throw new IllegalArgumentException("settings requires one named value");
+                    CameraModeSettings.validateSetting((String) name, value);
+                } catch (IllegalArgumentException invalid) {
+                    json(socket, reply, 400, "invalid_setting", null);
+                    return;
+                }
+                try {
+                    JSONObject settings = stream.setSetting(request.session, (String) name, value);
+                    if (settings == null) {
+                        json(socket, reply, 401, "replaced", null);
+                        return;
+                    }
+                    serveJson(socket, false, reply, new JSONObject().put("settings", settings));
+                } catch (Exception failure) {
+                    CameraModeClient.ModeException modeFailure = failure instanceof CameraModeClient.ModeException
+                            ? (CameraModeClient.ModeException) failure : null;
+                    String code = modeFailure == null ? "settings_unavailable" : modeFailure.code();
+                    if (!code.matches("[a-z_]{1,64}")) code = "settings_unavailable";
+                    String reference = modeFailure == null ? null : modeFailure.errorRef();
+                    if (reference == null || !reference.matches("[A-Za-z0-9_-]{1,80}"))
+                        reference = java.util.UUID.randomUUID().toString();
+                    CameraViewingDiagnostics.failure("viewer_setting_set_" + reference, "shared", failure);
+                    json(socket, reply, "permission_required".equals(code) ? 403 : 500,
+                            new JSONObject().put("status", code).put("errorRef", reference), null, null);
                 }
                 return;
             }
@@ -851,6 +887,7 @@ public final class CameraViewerServer implements AutoCloseable {
         if (path.startsWith("/archive")) return "archive";
         if (path.equals("/status")) return "status";
         if (path.equals("/modes")) return "modes";
+        if (path.equals("/settings")) return "settings";
         if (path.equals("/stop")) return "stop";
         if (path.equals("/diagnostic")) return "diagnostic";
         return "resource";
@@ -909,10 +946,13 @@ public final class CameraViewerServer implements AutoCloseable {
     private static void json(Socket socket, Reply reply, int status, String phase, String cookie,
             String extraHeaders)
             throws IOException {
-        String value;
-        try { value = new JSONObject().put("status", phase).toString(); }
+        try { json(socket, reply, status, new JSONObject().put("status", phase), cookie, extraHeaders); }
         catch (JSONException impossible) { throw new IOException("Cannot encode viewer response", impossible); }
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void json(Socket socket, Reply reply, int status, JSONObject body, String cookie,
+            String extraHeaders) throws IOException {
+        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         writeHeaders(socket, reply, status, "application/json; charset=utf-8", bytes.length, extraHeaders, cookie);
         if (!reply.head) socket.getOutputStream().write(bytes);
         socket.getOutputStream().flush();

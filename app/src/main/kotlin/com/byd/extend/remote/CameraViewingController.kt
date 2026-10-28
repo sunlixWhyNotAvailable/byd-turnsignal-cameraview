@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import com.byd.extend.CameraChargeSettings
 import com.byd.extend.AppLanguage
+import com.byd.extend.CameraModeSettings
 import com.byd.extend.CameraViewingShellClient
 import com.byd.extend.MotionRuntime
 import com.byd.extend.RemoteCameraView
@@ -20,7 +21,8 @@ import java.util.Base64
 import java.util.concurrent.Executors
 
 data class CameraViewingConfig(val enabled: Boolean = false, val transport: String = "vdo",
-    val tailscalePublic: Boolean = false, val streamId: String = "", val interiorCameras: Int = 0)
+    val tailscalePublic: Boolean = false, val streamId: String = "", val interiorCameras: Int = 0,
+    val mirrorCabin: Boolean = false)
 data class CameraViewingState(val config: CameraViewingConfig, val phase: String = "idle",
     val viewerUrl: String? = null, val authorizationUrl: String? = null, val error: String? = null,
     val passwordConfigured: Boolean = false, val tokenConfigured: Boolean = false,
@@ -34,7 +36,8 @@ class CameraViewingController private constructor(private val context: Context) 
     private val preferences = context.getSharedPreferences("camera_viewing", Context.MODE_PRIVATE)
     private val displaySettings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val displayObserver = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == AppLanguage.KEY || key == "ui_dark_theme" || key == RemoteCameraView.PREFERENCE_KEY) execute("viewer_presentation") {
+        if (key == AppLanguage.KEY || key == "ui_dark_theme" || key == RemoteCameraView.PREFERENCE_KEY
+            || key == RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) execute("viewer_presentation") {
             refresh()
             client?.let { accept(it.request("configure", presentationPayload()
                 .put("enabled", CameraChargeSettings.isRemoteViewingEnabled(context)))) }
@@ -46,6 +49,7 @@ class CameraViewingController private constructor(private val context: Context) 
     private var backendSetup: CameraViewingShellClient? = null
     private var backendResetRequested = false
     private var backendError: String? = null
+    private var mirrorApplyError: String? = null
     private val main = Handler(Looper.getMainLooper())
     private val mutable = MutableStateFlow(CameraViewingState(readConfig()))
     val state: StateFlow<CameraViewingState> = mutable.asStateFlow()
@@ -62,10 +66,18 @@ class CameraViewingController private constructor(private val context: Context) 
 
     private fun presentationPayload() = JSONObject().put("locale", AppLanguage.read(displaySettings))
         .put("theme", if (displaySettings.getBoolean("ui_dark_theme", true)) "dark" else "light")
-        .put("interiorCameras", interiorCameras())
+        .put("interiorCameras", interiorCameras()).put("mirrorCabin", cabinMirrored())
 
     private fun interiorCameras() = displaySettings.getInt(RemoteCameraView.PREFERENCE_KEY, 0)
         .also(RemoteCameraView::validateMask)
+
+    private fun cabinMirrored() = displaySettings.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false)
+
+    fun setCabinMirrored(value: Boolean) = execute("mirror_cabin") {
+        CameraModeSettings.persistSettingPreference(context,
+            CameraModeSettings.SETTING_MIRROR_CABIN, value)
+        refresh()
+    }
 
     fun setInteriorCameras(value: Int) = execute("interior_cameras") {
         RemoteCameraView.validateMask(value)
@@ -80,7 +92,8 @@ class CameraViewingController private constructor(private val context: Context) 
         preferences.getString("${method}_name", "")) ?: ""
     private fun publicMode() = preferences.getBoolean("draft_tailscale_public", preferences.getBoolean("tailscale_public", false))
     private fun readConfig() = selected().let { CameraViewingConfig(
-        CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it), interiorCameras()) }
+        CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it), interiorCameras(),
+        cabinMirrored()) }
     private fun secret(method: String, field: String): String {
         val bytes = secrets.get("draft.camera.$method.$field") ?: secrets.get("camera.$method.$field") ?: return ""
         return try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }
@@ -106,7 +119,8 @@ class CameraViewingController private constructor(private val context: Context) 
                 streamId = current.optString("name")) else config,
             phase = phase, viewerUrl = if (accessChangesPending) null else current?.nullable("viewerUrl"),
             authorizationUrl = current?.nullable("authorizationUrl"),
-            error = (current?.nullable("error") ?: backendError)?.let { context.getString(errorResource(it)) },
+            error = (current?.nullable("error") ?: mirrorApplyError ?: backendError)
+                ?.let { context.getString(errorResource(it)) },
             passwordConfigured = secret(method, "password").isNotEmpty(),
             tokenConfigured = secret(method, "token").isNotEmpty(),
             authorizationRequest = current?.optLong("authorizationRequest") ?: 0,
@@ -272,6 +286,10 @@ class CameraViewingController private constructor(private val context: Context) 
     }
 
     private fun accept(snapshot: JSONObject) {
+        if (snapshot.has("mirrorApplyState")) {
+            mirrorApplyError = if (snapshot.optString("mirrorApplyState") == "error")
+                snapshot.optString("mirrorApplyError", "mirror_apply_failed") else null
+        }
         val profiles = snapshot.optJSONArray("profiles") ?: return
         val editor = preferences.edit()
         for (i in 0 until profiles.length()) {
@@ -379,6 +397,7 @@ class CameraViewingController private constructor(private val context: Context) 
             "tailscale_local_client_failed", "tailscale_backend_stopped", "tailscale_backend_state_unknown" -> R.string.cameras_error_provider_start
             "camera_unavailable" -> R.string.cameras_error_camera_unavailable
             "camera_backend_unavailable", "helper_unavailable" -> R.string.cameras_error_helper
+            "mirror_apply_failed" -> R.string.cameras_error_helper
             "encoder_unavailable" -> R.string.cameras_error_encoder_unavailable
             else -> R.string.cameras_error_connection
         }

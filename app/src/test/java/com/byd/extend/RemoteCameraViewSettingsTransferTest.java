@@ -32,12 +32,15 @@ public final class RemoteCameraViewSettingsTransferTest {
 
     @Test public void legacyImportRestoresValidMaskAndPreservesItWhenOlderFileOmitsIt() {
         String xml = "<map><int name=\"cameras_viewing_interior\" value=\"3\" />"
+                + "<boolean name=\"" + RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY
+                + "\" value=\"true\" />"
                 + "<boolean name=\"guard_enabled\" value=\"false\" /></map>";
         Map<String, Object> values = CameraSettingsTransfer.parseLegacySettings(xml);
         CameraSettingsTransfer.applyLegacySettings(settings, values);
         assertEquals(RemoteCameraView.BOTH,
                 RuntimeEnvironment.getApplication().getSharedPreferences("settings", Context.MODE_PRIVATE)
                         .getInt(RemoteCameraView.PREFERENCE_KEY, RemoteCameraView.NONE));
+        assertTrue(settings.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
         assertFalse(settings.getBoolean("guard_enabled", true));
 
         Map<String, Object> olderValues = CameraSettingsTransfer.parseLegacySettings(
@@ -46,6 +49,7 @@ public final class RemoteCameraViewSettingsTransferTest {
         assertEquals(RemoteCameraView.BOTH,
                 RuntimeEnvironment.getApplication().getSharedPreferences("settings", Context.MODE_PRIVATE)
                         .getInt(RemoteCameraView.PREFERENCE_KEY, RemoteCameraView.NONE));
+        assertTrue(settings.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
     }
 
     @Test public void legacyImportRejectsMasksOutsideTheFourChoices() {
@@ -96,10 +100,16 @@ public final class RemoteCameraViewSettingsTransferTest {
     @Test public void configurationExportIncludesTheDefaultMaskWhenUnset() throws Exception {
         JSONObject configuration = new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings));
         assertEquals(RemoteCameraView.NONE, configuration.getInt(RemoteCameraView.PREFERENCE_KEY));
+        assertFalse(configuration.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY));
+        JSONObject preset = new JSONObject(CameraSettingsTransfer.exportCameraPreset(
+                RuntimeEnvironment.getApplication(), settings));
+        assertFalse(preset.getJSONObject("settings")
+                .getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY));
     }
 
     @Test public void configurationExportIncludesHazardThanksButCameraPresetDoesNot() throws Exception {
         settings.edit().putInt(RemoteCameraView.PREFERENCE_KEY, RemoteCameraView.BOTH)
+                .putBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, true)
                 .putString("cameras_viewing_token", "private-token")
                 .putBoolean(HazardThanksSettings.ENABLED, true)
                 .putInt(HazardThanksSettings.FLASH_COUNT, 3)
@@ -113,6 +123,7 @@ public final class RemoteCameraViewSettingsTransferTest {
 
         JSONObject configuration = new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings));
         assertEquals(RemoteCameraView.BOTH, configuration.getInt(RemoteCameraView.PREFERENCE_KEY));
+        assertTrue(configuration.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY));
         assertTrue(configuration.getBoolean(HazardThanksSettings.ENABLED));
         assertEquals(3, configuration.getInt(HazardThanksSettings.FLASH_COUNT));
         assertEquals(305, configuration.getInt(CameraButtonBindings.HAZARD_THANKS_KEY_CODE));
@@ -124,8 +135,28 @@ public final class RemoteCameraViewSettingsTransferTest {
 
         JSONObject preset = new JSONObject(CameraSettingsTransfer.exportCameraPreset(settings));
         assertFalse(preset.getJSONObject("settings").has(RemoteCameraView.PREFERENCE_KEY));
+        assertFalse(preset.getJSONObject("settings").has(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY));
         assertFalse(preset.getJSONObject("settings").has(HazardThanksSettings.ENABLED));
         assertFalse(preset.getJSONObject("settings").has(HazardThanksSettings.FLASH_COUNT));
         assertFalse(preset.getJSONObject("settings").has(CameraButtonBindings.HAZARD_THANKS_SOURCE));
+    }
+
+    @Test public void currentPresetTransfersCabinMirrorAndOldPresetPreservesIt() throws Exception {
+        Context app = RuntimeEnvironment.getApplication();
+        settings.edit().putBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, true).commit();
+        JSONObject exported = new JSONObject(CameraSettingsTransfer.exportCameraPreset(app, settings));
+        assertTrue(exported.getJSONObject("settings")
+                .getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY));
+        settings.edit().putBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false).commit();
+        CameraSettingsTransfer.applyCameraPreset(settings,
+                CameraSettingsTransfer.parseCameraPreset(exported.toString()));
+        assertTrue(settings.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
+
+        JSONObject old = new JSONObject(exported.toString()).put("version", 6);
+        old.getJSONObject("settings").remove(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
+        settings.edit().putBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, true).commit();
+        CameraSettingsTransfer.applyCameraPreset(settings,
+                CameraSettingsTransfer.parseCameraPreset(old.toString()));
+        assertTrue(settings.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
     }
 }

@@ -30,12 +30,16 @@ final class MotionSessionRuntime {
         recordingRevision++;
     }
 
-    Change updateModes(MotionConfig next, long nowMs) {
-        if (config == null || !next.onlyMotionModesDifferFrom(config))
-            throw new IllegalArgumentException("only Motion mode flags may change in place");
+    Change updateInPlaceConfig(MotionConfig next, long nowMs) {
+        if (nowMs < 0) throw new IllegalArgumentException("negative elapsed time");
+        if (config == null || !next.onlyInPlaceMotionChangesDifferFrom(config))
+            throw new IllegalArgumentException("only Motion modes and sensitivity may change in place");
+        boolean modesChanged = config.warningEnabled != next.warningEnabled
+                || config.recordingEnabled != next.recordingEnabled;
         if (config.recordingEnabled != next.recordingEnabled) recordingRevision++;
         config = next;
-        return advance(nowMs);
+        // Sensitivity does not affect eligibility. Let the existing warm-up callback advance it.
+        return modesChanged ? advance(nowMs) : Change.NONE;
     }
 
     Change telemetry(String epoch, String signal, int value, boolean baseline, long nowMs) {

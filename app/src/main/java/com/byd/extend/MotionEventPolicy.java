@@ -22,6 +22,13 @@ final class MotionEventPolicy {
         revision++;
     }
 
+    void setSensitivity(int recordingSensitivity) {
+        int nextThresholdMs = MotionConfig.rThresholdMsFor(recordingSensitivity);
+        if (nextThresholdMs == rThresholdMs) return;
+        rThresholdMs = nextThresholdMs;
+        revision++;
+    }
+
     long revision() { return revision; }
 
     void setEligible(boolean next, long nowMs) {

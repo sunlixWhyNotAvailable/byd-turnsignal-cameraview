@@ -14,7 +14,7 @@ import java.util.function.BiConsumer;
 /** Encoder ownership for local shared-YUV recording and legacy helper consumers. */
 final class MotionRecordingOutput {
     private static final String DESCRIPTOR = "com.byd.extend.MotionRecordingOutput";
-    static final int VIEWING_PARCEL_VERSION = 2;
+    static final int VIEWING_PARCEL_VERSION = 3;
     private static final IdentityHashMap<Surface, MotionRecordingOutput> OUTPUTS = new IdentityHashMap<>();
     final int width, height;
     final int[] order;
@@ -34,6 +34,7 @@ final class MotionRecordingOutput {
     private int[] interiorWidths = new int[2];
     private int[] interiorHeights = new int[2];
     private String liveLocale = "en";
+    private boolean mirrorCabin;
     private boolean includeExterior = true;
 
     static final class LiveInputs {
@@ -129,11 +130,12 @@ final class MotionRecordingOutput {
     }
 
     void writeViewingToParcel(Parcel data, int view, int allowedMask, boolean exteriorReady,
-            int availableMask, int[] widths, int[] heights, String locale) {
+            int availableMask, int[] widths, int[] heights, String locale, boolean mirrorCabin) {
         remoteLive = true; liveView = view; allowedInteriorMask = allowedMask;
         includeExterior = exteriorReady; availableInteriorMask = availableMask;
         interiorWidths = widths == null ? null : widths.clone();
         interiorHeights = heights == null ? null : heights.clone(); liveLocale = locale;
+        this.mirrorCabin = mirrorCabin;
         validateLiveSelection();
         data.writeInt(width); data.writeInt(height); data.writeIntArray(order);
         data.writeLong(clock.wallTimeMillis(0)); data.writeStrongBinder(callback);
@@ -141,7 +143,7 @@ final class MotionRecordingOutput {
         data.writeInt(view); data.writeInt(allowedMask); data.writeInt(exteriorReady ? 1 : 0);
         data.writeInt(availableMask);
         data.writeIntArray(widths); data.writeIntArray(heights);
-        data.writeString(locale);
+        data.writeString(locale); data.writeInt(mirrorCabin ? 1 : 0);
     }
 
     static MotionRecordingOutput readFromParcel(Parcel data, String session, Surface[] surfaces) {
@@ -168,6 +170,9 @@ final class MotionRecordingOutput {
         output.interiorWidths = data.createIntArray();
         output.interiorHeights = data.createIntArray();
         output.liveLocale = data.readString();
+        int mirror = data.readInt();
+        if (mirror != 0 && mirror != 1) throw new IllegalArgumentException("invalid cabin mirror flag");
+        output.mirrorCabin = mirror == 1;
         output.validateLiveSelection();
         return output;
     }
@@ -209,7 +214,7 @@ final class MotionRecordingOutput {
         composer = new MotionGpuComposer(context, width, height, order, session, clock,
                 sharedContext, glVersion, remoteLive, liveView, allowedInteriorMask,
                 availableInteriorMask, interiorWidths, interiorHeights, liveLocale,
-                includeExterior, this::failed, this::notifyLiveChannelUnavailable);
+                includeExterior, mirrorCabin, this::failed, this::notifyLiveChannelUnavailable);
         composer.initialize(viewingEncoders.isEmpty() ? surfaces[0]
                 : viewingEncoders.get(viewingEncoders.size() - 1));
         if (viewingDirection >= 0) composer.updateViewingOutput(null, viewingDirection);
@@ -232,22 +237,30 @@ final class MotionRecordingOutput {
 
     synchronized LiveInputs updateLiveViewingOutput(Surface encoder, int view, int allowedMask,
             boolean exteriorReady, int availableMask, int[] widths, int[] heights,
-            String locale) throws Exception {
+            String locale, boolean mirrorCabin) throws Exception {
         if (!remoteLive) throw new IllegalStateException("remote live composer unavailable");
         if (encoder != null) viewingEncoders.add(encoder);
         liveView = view; allowedInteriorMask = allowedMask; includeExterior = exteriorReady;
         availableInteriorMask = availableMask;
         interiorWidths = widths.clone(); interiorHeights = heights.clone();
         liveLocale = locale;
+        this.mirrorCabin = mirrorCabin;
         validateLiveSelection();
         LiveInputs inputs = composer.updateLiveViewingOutput(encoder, liveView,
                 allowedInteriorMask, includeExterior, availableInteriorMask,
-                interiorWidths, interiorHeights, liveLocale);
+                interiorWidths, interiorHeights, liveLocale, mirrorCabin);
         if (encoder != null) {
             for (int i = viewingEncoders.size() - 2; i >= 0; i--)
                 viewingEncoders.remove(i).release();
         }
         return inputs;
+    }
+
+    synchronized void updateCabinMirrored(boolean mirrorCabin) throws Exception {
+        if (!remoteLive || composer == null)
+            throw new IllegalStateException("remote live composer unavailable");
+        composer.updateCabinMirrored(mirrorCabin);
+        this.mirrorCabin = mirrorCabin;
     }
 
     synchronized void markLiveChannelUnavailable(int channel, String reference) {

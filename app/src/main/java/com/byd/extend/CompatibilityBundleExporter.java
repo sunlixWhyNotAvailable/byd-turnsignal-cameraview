@@ -594,6 +594,9 @@ final class CompatibilityBundleExporter {
         if (!keys.contains(RemoteCameraView.PREFERENCE_KEY)) {
             keys.add(RemoteCameraView.PREFERENCE_KEY);
         }
+        if (!keys.contains(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)) {
+            keys.add(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
+        }
         Collections.sort(keys);
         StringBuilder json = new StringBuilder("{");
         boolean first = true;
@@ -607,6 +610,11 @@ final class CompatibilityBundleExporter {
                     throw new IllegalStateException("interior camera preference must be an integer");
                 }
                 RemoteCameraView.validateMask((Integer) value);
+            }
+            if (RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY.equals(key)) {
+                if (value == null) value = false;
+                if (!(value instanceof Boolean))
+                    throw new IllegalStateException("cabin mirror preference must be a boolean");
             }
             if (!(value instanceof String || value instanceof Number || value instanceof Boolean)) {
                 continue;
@@ -627,6 +635,7 @@ final class CompatibilityBundleExporter {
                 || key.contains("token") || key.contains("fingerprint")
                 || key.contains("personal")) return false;
         return key.equals(RemoteCameraView.PREFERENCE_KEY)
+                || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
                 || key.startsWith("camera_") || key.startsWith("reverse_")
                 || key.startsWith("calibration_") || key.startsWith("dewarp_")
                 || key.startsWith("blindspot_") || key.startsWith("guard_")
