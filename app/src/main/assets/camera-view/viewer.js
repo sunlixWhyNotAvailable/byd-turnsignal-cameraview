@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 10;
+  const WEB_REVISION = 11;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -1278,7 +1278,8 @@
       if (!current()) return;
       if (!Hls || !Hls.isSupported()) { fail(null, 'hls'); return; }
       const transport = { requests: 0, completed: 0, aborted: 0, failed: 0, receivedBytes: 0,
-        completedBytes: 0, loadMs: 0, firstByteMs: 0, firstBytes: 0, lastStatus: 0 };
+        completedBytes: 0, loadMs: 0, firstByteMs: 0, firstBytes: 0, lastStatus: 0,
+        bufferedRecoveries: 0, missingFragments: 0 };
       let lastTransportReport = -Infinity;
       let transportReportInFlight = false;
       const reportTransport = (reason) => {
@@ -1289,6 +1290,7 @@
         post('/diagnostic', { event: 'playback_transport', reason, streamId: stream,
           revision: player.revision, ...transport, atMs: Math.round(lastTransportReport),
           currentMs: Math.round(video.currentTime * 1000), ready: video.readyState,
+          playbackRatePermille: Math.round(video.playbackRate * 1000),
           seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
           bufferEndMs: Math.round((video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0) * 1000)
         }).catch((error) => console.warn('Could not report playback transport', error))
@@ -1325,6 +1327,19 @@
           });
         } });
       player.hls = hls;
+      if (provider === 'tailscale') {
+        BydLiveRecovery.install(hls, Hls, (kind, detail) => {
+          if (kind === 'missing') {
+            transport.missingFragments++;
+            transport.lastMissingSequence = detail.sequence;
+          } else {
+            transport.bufferedRecoveries++;
+            transport.recoveryFromMs = detail.fromMs;
+            transport.recoveryTargetMs = detail.targetMs;
+          }
+          reportTransport('recovery');
+        });
+      }
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (current()) video.play().catch((error) => fail(error));
       });

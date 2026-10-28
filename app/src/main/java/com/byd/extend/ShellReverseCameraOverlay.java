@@ -103,7 +103,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 // role; otherwise a central-front-only mismatch would lose its diagnostics.
                 ReverseCameraCompositionView.PaneBufferMismatch mismatch =
                         root.firstPaneBufferMismatch(
-                                spec.layout, size.x, size.y, spec.bufferQuality);
+                                spec, size.x, size.y);
                 if (mismatch != null) {
                     quiesce("camera_buffer_size_changed");
                     throw new CameraShellProtocol.PrepareRestartRequired(
@@ -546,7 +546,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 spec.frontRightIntegrated && (spec.widgetVisible || spec.switchByGear),
                 centralFrontSourceEnabled);
         nextRoot.applyOverlayConfiguration(spec, centralFrontSourceEnabled);
-        nextRoot.setPaneBoundedBuffers(size.x, size.y, spec.bufferQuality);
+        nextRoot.setPaneBoundedBuffers(size.x, size.y, spec);
         root = nextRoot;
         WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
                 windowContext, display, WindowlessOverlayHost.REVERSE_LAYER,

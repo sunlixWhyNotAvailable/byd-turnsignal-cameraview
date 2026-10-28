@@ -795,8 +795,10 @@ final class DirectCameraSourceHub
             int width = 0, height = 0;
             for (Target target : targets) {
                 if (!target.active) continue;
-                width = Math.max(width, target.width);
-                height = Math.max(height, target.height);
+                width = Math.max(width, target.mapping == null
+                        ? target.width : target.mapping.captureWidth);
+                height = Math.max(height, target.mapping == null
+                        ? target.height : target.mapping.captureHeight);
             }
             pump.setOutputSize(width, height);
         }

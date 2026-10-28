@@ -284,6 +284,7 @@ public final class CameraViewerServer implements AutoCloseable {
             return;
         }
         if ((request.path.equals("/viewer.css") || request.path.equals("/viewer.js")
+                || request.path.equals("/live-recovery.js")
                 || request.path.equals("/favicon.ico"))
                 && isRead(request.method)) {
             String name = request.path.substring(1);

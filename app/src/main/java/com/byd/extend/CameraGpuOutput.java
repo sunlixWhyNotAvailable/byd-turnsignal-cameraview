@@ -33,6 +33,8 @@ final class CameraGpuOutput extends Binder {
 
     private final int width;
     private final int height;
+    private final int captureWidth;
+    private final int captureHeight;
     private final boolean lifecycleOnly;
     private final Consumer<CameraDewarpRenderer.Event> events;
     private CameraDewarpRenderer.MappingRequest request;
@@ -58,8 +60,16 @@ final class CameraGpuOutput extends Binder {
 
     CameraGpuOutput(int width, int height, CameraDewarpConfig config, long token,
             Consumer<CameraDewarpRenderer.Event> events, boolean lifecycleOnly) {
+        this(width, height, width, height, config, token, events, lifecycleOnly);
+    }
+
+    CameraGpuOutput(int width, int height, int captureWidth, int captureHeight,
+            CameraDewarpConfig config, long token,
+            Consumer<CameraDewarpRenderer.Event> events, boolean lifecycleOnly) {
         this.width = width;
         this.height = height;
+        this.captureWidth = captureWidth;
+        this.captureHeight = captureHeight;
         this.events = events;
         this.lifecycleOnly = lifecycleOnly;
         request = new CameraDewarpRenderer.MappingRequest(config, token);
@@ -275,6 +285,8 @@ final class CameraGpuOutput extends Binder {
             reply.writeLong(geometryRevision);
             reply.writeFloatArray(geometry);
             writePresentation(reply);
+            reply.writeInt(captureWidth);
+            reply.writeInt(captureHeight);
             return true;
         }
         IBinder sender = data.readStrongBinder();
@@ -331,6 +343,8 @@ final class CameraGpuOutput extends Binder {
         final int ownerUid;
         final int width;
         final int height;
+        final int captureWidth;
+        final int captureHeight;
         final boolean lifecycleOnly;
         final boolean frameEvents;
         volatile CameraDewarpRenderer.MappingRequest request;
@@ -367,6 +381,15 @@ final class CameraGpuOutput extends Binder {
                 accept(readMapping(reply));
                 acceptGeometry(reply);
                 acceptPresentation(reply);
+                // Old endpoints have equal capture/output dimensions.
+                int remaining = reply.dataAvail();
+                if (remaining != 0 && remaining != 8)
+                    throw new IllegalArgumentException("invalid GPU capture payload");
+                captureWidth = remaining == 8 ? reply.readInt() : width;
+                captureHeight = remaining == 8 ? reply.readInt() : height;
+                if (captureWidth < width || captureHeight < height
+                        || captureWidth > 4096 || captureHeight > 4096)
+                    throw new IllegalArgumentException("invalid GPU capture dimensions");
             } catch (RemoteException | RuntimeException error) {
                 try { close(); } catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
                 throw error;

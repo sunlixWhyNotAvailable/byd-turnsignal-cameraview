@@ -72,6 +72,40 @@ final class CameraBufferQuality {
         return new int[]{width, height};
     }
 
+    /** Final-buffer demand only; the full-frame snapshot retains bufferSizeForPane(). */
+    static int[] outputSizeForPane(int paneWidth, int paneHeight,
+            int sourceWidth, int sourceHeight, int quality, int cropNativeHeight) {
+        if (cropNativeHeight <= 0 || cropNativeHeight > sourceHeight)
+            throw new IllegalArgumentException("invalid crop buffer demand");
+        int[] preset = bufferSizeForPane(
+                paneWidth, paneHeight, sourceWidth, sourceHeight, quality);
+        if (paneWidth <= 1 || paneHeight <= 1) return preset;
+        int screenHeight = (int) Math.ceil(Math.max(paneHeight,
+                paneWidth * (double) sourceHeight / sourceWidth));
+        int height = Math.min(preset[1], Math.max(cropNativeHeight, screenHeight));
+        return new int[]{Math.min(preset[0], Math.max(1,
+                Math.round(height * (float) sourceWidth / sourceHeight))), height};
+    }
+
+    /** Position and mirroring do not affect allocation, including transient steering offsets. */
+    static int cropNativeHeight(int sourceWidth, int sourceHeight,
+            float cropWidth, float cropHeight, int rotationDegrees) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || !Float.isFinite(cropWidth)
+                || !Float.isFinite(cropHeight) || cropWidth <= 0 || cropHeight <= 0
+                || cropWidth > 1.0001f || cropHeight > 1.0001f
+                || !CameraRotation.isValid(rotationDegrees))
+            throw new IllegalArgumentException("invalid source crop dimensions");
+        if (cropWidth >= 1f && cropHeight >= 1f) return sourceHeight;
+        double angle = Math.toRadians(rotationDegrees);
+        double cosine = Math.abs(Math.cos(angle)), sine = Math.abs(Math.sin(angle));
+        double width = cropWidth * (double) sourceWidth;
+        double height = cropHeight * (double) sourceHeight;
+        double rows = sine * width + cosine * height;
+        double columns = cosine * width + sine * height;
+        double demand = Math.max(rows, columns * sourceHeight / sourceWidth);
+        return Math.min(sourceHeight, Math.max(100, (int) Math.ceil(demand / 100.0) * 100));
+    }
+
     static String label(int value) {
         switch (value) {
             case PERFORMANCE:

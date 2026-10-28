@@ -116,7 +116,8 @@ final class CameraMeshPreparation {
                     target == CameraDisplayTarget.TABLET ? Math.round(36 * density) : 0,
                     target == CameraDisplayTarget.TABLET ? Math.round(88 * density) : 0);
             int[] size = BlindSpotCameraView.paneBoundedBufferSize(
-                    spec.width, spec.height, spec.bufferQuality);
+                    spec.width, spec.height, spec.bufferQuality,
+                    BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
             add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
         }
     }
@@ -130,7 +131,8 @@ final class CameraMeshPreparation {
                     profile, 1, CameraDisplayTarget.TABLET,
                     metrics.widthPixels, metrics.heightPixels, settings);
             int[] size = BlindSpotCameraView.paneBoundedBufferSize(
-                    spec.width, spec.height, spec.bufferQuality);
+                    spec.width, spec.height, spec.bufferQuality,
+                    BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
             add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
         }
     }
@@ -151,7 +153,8 @@ final class CameraMeshPreparation {
         CameraShellProtocol.OverlaySpec spec = RearviewMirrorController.buildMeshPreparationSpec(
                 settings, 1, front, target, metrics.widthPixels, metrics.heightPixels);
         int[] size = BlindSpotCameraView.paneBoundedBufferSize(
-                spec.width, spec.height, spec.bufferQuality);
+                spec.width, spec.height, spec.bufferQuality,
+                BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
         add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
     }
 

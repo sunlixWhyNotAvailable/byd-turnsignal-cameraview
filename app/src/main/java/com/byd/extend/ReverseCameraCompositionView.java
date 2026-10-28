@@ -32,34 +32,35 @@ final class ReverseCameraCompositionView extends FrameLayout {
             throw new IllegalArgumentException("mesh preparation inputs are required");
         CameraShellProtocol.ReverseOverlaySpec spec =
                 ReverseCameraController.buildOverlaySpec(settings, 1);
+        int[] nativeHeights = nativeOutputHeights(spec);
         ReverseCameraLayout frontLayout = withCentralAndSideCalibration(
                 spec.layout, spec.frontLayout);
         ReverseCameraLayout frontRawLayout = withCentralAndSideCalibration(
                 spec.rawFallbackLayout, spec.frontRawFallbackLayout);
         appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
                 spec.rearDewarp, ReverseCameraLayout.REAR_CAMERA_INDEX,
-                spec.bufferQuality, spec.rearSteeringShift);
+                spec.bufferQuality, nativeHeights[0]);
         appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
                 spec.leftDewarp, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX,
-                spec.bufferQuality, false);
+                spec.bufferQuality, nativeHeights[1]);
         appendMeshRequest(context, requests, spec.layout, spec.rawFallbackLayout,
                 spec.rightDewarp, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX,
-                spec.bufferQuality, false);
+                spec.bufferQuality, nativeHeights[2]);
         if (spec.frontLeftIntegrated) {
             appendMeshRequest(context, requests, frontLayout,
                     frontRawLayout, spec.frontLeftDewarp,
-                    ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, spec.bufferQuality, false);
+                    ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX, spec.bufferQuality, nativeHeights[1]);
         }
         if (spec.frontRightIntegrated) {
             appendMeshRequest(context, requests, frontLayout,
                     frontRawLayout, spec.frontRightDewarp,
-                    ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, spec.bufferQuality, false);
+                    ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX, spec.bufferQuality, nativeHeights[2]);
         }
         if (spec.centralFrontIntegrated) {
             appendMeshRequest(context, requests, frontLayout,
                     frontRawLayout, spec.centralFrontDewarp,
                     ReverseCameraLayout.REAR_CAMERA_INDEX, spec.bufferQuality,
-                    spec.frontSteeringShift);
+                    nativeHeights[3]);
         }
     }
 
@@ -67,7 +68,7 @@ final class ReverseCameraCompositionView extends FrameLayout {
             List<CameraMeshCache.Request> requests,
             ReverseCameraLayout layout, ReverseCameraLayout rawLayout,
             CameraDewarpConfig config, int cameraIndex, int quality,
-            boolean steeringShiftEnabled) {
+            int nativeHeight) {
         int target = layout.targetFor(cameraIndex);
         Display display = CameraDisplayTarget.resolve(context, target);
         if (display == null) return;
@@ -77,21 +78,50 @@ final class ReverseCameraCompositionView extends FrameLayout {
         ReverseCameraLayout.PixelRect pane = ReverseCameraLayout.project(
                 layout.rectFor(cameraIndex, target), metrics.widthPixels, metrics.heightPixels);
         if (pane.width <= 0 || pane.height <= 0) return;
-        ReverseCameraLayout.Pane calibrated = layout.pane(cameraIndex);
         ReverseCameraLayout.Rect rawCrop = rawLayout.pane(cameraIndex).sourceCrop;
-        ReverseCameraLayout.Rect sourceCrop = effectiveSourceCrop(
-                layout, rawLayout, config, cameraIndex, false, steeringShiftEnabled,
-                Float.NaN, Float.NaN, Float.NaN);
-        ReverseCameraLayout.PixelRect texture = fittedTextureBounds(
-                sourceCrop, pane.width, pane.height, calibrated.rotationDegrees,
-                calibrated.displayMode);
-        int[] size = CameraBufferQuality.bufferSizeForPane(
-                texture.width, texture.height, SOURCE_WIDTH, SOURCE_HEIGHT, quality);
+        int[] size = BlindSpotCameraView.paneBoundedBufferSize(
+                pane.width, pane.height, quality, nativeHeight);
         if (size[0] <= 0 || size[1] <= 0) return;
         CameraMeshCache.Request request = CameraMeshPreparation.request(
                 config, rawCrop.left, rawCrop.top, rawCrop.width, rawCrop.height,
                 size[0], size[1]);
         if (request != null) requests.add(request);
+    }
+
+    static int[] nativeOutputHeights(CameraShellProtocol.ReverseOverlaySpec spec) {
+        return nativeOutputHeights(spec.layout, spec.rawFallbackLayout,
+                spec.frontLayout, spec.frontRawFallbackLayout,
+                spec.rearDewarp, spec.leftDewarp, spec.rightDewarp,
+                spec.centralFrontDewarp, spec.frontLeftDewarp, spec.frontRightDewarp,
+                spec.frontLeftIntegrated, spec.frontRightIntegrated);
+    }
+
+    static int[] nativeOutputHeights(ReverseCameraLayout rear, ReverseCameraLayout rawRear,
+            ReverseCameraLayout front, ReverseCameraLayout rawFront,
+            CameraDewarpConfig rearConfig, CameraDewarpConfig leftConfig, CameraDewarpConfig rightConfig,
+            CameraDewarpConfig frontConfig, CameraDewarpConfig frontLeftConfig,
+            CameraDewarpConfig frontRightConfig, boolean frontLeft, boolean frontRight) {
+        int center = nativeOutputHeight(rear, rawRear, rearConfig, ReverseCameraLayout.REAR_CAMERA_INDEX);
+        int left = nativeOutputHeight(rear, rawRear, leftConfig, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX);
+        int right = nativeOutputHeight(rear, rawRear, rightConfig, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX);
+        // Side surfaces are retained across the front/rear handover: reserve both configured views.
+        if (frontLeft) left = Math.max(left, nativeOutputHeight(
+                front, rawFront, frontLeftConfig, ReverseCameraLayout.REAR_LEFT_CAMERA_INDEX));
+        if (frontRight) right = Math.max(right, nativeOutputHeight(
+                front, rawFront, frontRightConfig, ReverseCameraLayout.REAR_RIGHT_CAMERA_INDEX));
+        return new int[]{center, left, right,
+                nativeOutputHeight(front, rawFront, frontConfig, ReverseCameraLayout.REAR_CAMERA_INDEX)};
+    }
+
+    private static int nativeOutputHeight(ReverseCameraLayout layout, ReverseCameraLayout raw,
+            CameraDewarpConfig config, int cameraIndex) {
+        ReverseCameraLayout.Pane pane = layout.pane(cameraIndex);
+        ReverseCameraLayout.Rect fallback = raw.pane(cameraIndex).sourceCrop;
+        int height = CameraBufferQuality.cropNativeHeight(SOURCE_WIDTH, SOURCE_HEIGHT,
+                fallback.width, fallback.height, pane.rotationDegrees);
+        return config.enabled ? Math.max(height, CameraBufferQuality.cropNativeHeight(
+                SOURCE_WIDTH, SOURCE_HEIGHT, pane.sourceCrop.width, pane.sourceCrop.height,
+                pane.rotationDegrees)) : height;
     }
 
     /** Resolves the same configured/raw crop and transient steering shift as a live pane. */
@@ -808,15 +838,18 @@ final class ReverseCameraCompositionView extends FrameLayout {
         applyModel();
     }
 
-    void setPaneBoundedBuffers(int viewportWidth, int viewportHeight, int quality) {
+    void setPaneBoundedBuffers(int viewportWidth, int viewportHeight,
+            CameraShellProtocol.ReverseOverlaySpec spec) {
+        int quality = spec.bufferQuality;
+        int[] nativeHeights = nativeOutputHeights(spec);
         int[][] bounds = paneBounds(model, viewportWidth, viewportHeight, displayTarget);
         for (int i = 0; i < panes.length; i++) {
             panes[i].texture.setPaneBoundedBuffer(
-                    bounds[i][0], bounds[i][1], quality);
+                    bounds[i][0], bounds[i][1], quality, nativeHeights[i]);
         }
         if (centralFrontPane != null) {
             centralFrontPane.texture.setPaneBoundedBuffer(
-                    bounds[0][0], bounds[0][1], quality);
+                    bounds[0][0], bounds[0][1], quality, nativeHeights[3]);
         }
         paneBufferViewportWidth = viewportWidth;
         paneBufferViewportHeight = viewportHeight;
@@ -831,16 +864,20 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     /** Returns the first retained pane-buffer comparison that does not match the requested spec. */
     PaneBufferMismatch firstPaneBufferMismatch(
-            ReverseCameraLayout layout, int viewportWidth, int viewportHeight, int quality) {
+            CameraShellProtocol.ReverseOverlaySpec spec, int viewportWidth, int viewportHeight) {
+        ReverseCameraLayout layout = spec.layout;
+        int quality = spec.bufferQuality;
+        int[] nativeHeights = nativeOutputHeights(spec);
         int[][] bounds = paneBounds(layout, viewportWidth, viewportHeight, displayTarget);
         for (int i = 0; i < panes.length; i++) {
             int expectedWidth = bounds[i][0];
             int expectedHeight = bounds[i][1];
             int[] expected = BlindSpotCameraView.paneBoundedBufferSize(
-                    expectedWidth, expectedHeight, quality);
+                    expectedWidth, expectedHeight, quality, nativeHeights[i]);
             int actualWidth = panes[i].texture.cameraBufferWidth();
             int actualHeight = panes[i].texture.cameraBufferHeight();
-            if (actualWidth != expected[0] || actualHeight != expected[1]) {
+            if (!panes[i].texture.usesPaneBoundedBuffer(
+                    expectedWidth, expectedHeight, quality, nativeHeights[i])) {
                 return new PaneBufferMismatch(
                         panes[i].sourceIndex, viewportWidth, viewportHeight,
                         paneBufferViewportWidth, paneBufferViewportHeight,
@@ -852,10 +889,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
             int expectedWidth = bounds[0][0];
             int expectedHeight = bounds[0][1];
             int[] expected = BlindSpotCameraView.paneBoundedBufferSize(
-                    expectedWidth, expectedHeight, quality);
+                    expectedWidth, expectedHeight, quality, nativeHeights[3]);
             int actualWidth = centralFrontPane.texture.cameraBufferWidth();
             int actualHeight = centralFrontPane.texture.cameraBufferHeight();
-            if (actualWidth != expected[0] || actualHeight != expected[1]) {
+            if (!centralFrontPane.texture.usesPaneBoundedBuffer(
+                    expectedWidth, expectedHeight, quality, nativeHeights[3])) {
                 return new PaneBufferMismatch(
                         centralFrontPane.sourceIndex, viewportWidth, viewportHeight,
                         paneBufferViewportWidth, paneBufferViewportHeight,
@@ -1731,6 +1769,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     private void applyModel(int width, int height) {
         if (applyingOverlayConfiguration) return;
+        int[] nativeHeights = nativeOutputHeights(model, rawFallbackModel, frontModel, frontRawFallbackModel,
+                rearDewarp, leftDewarp, rightDewarp, centralFrontDewarp, frontLeftDewarp, frontRightDewarp,
+                frontLeftIntegrated, frontRightIntegrated);
+        for (int i = 0; i < panes.length; i++) panes[i].texture.setNativeOutputHeight(nativeHeights[i]);
+        if (centralFrontPane != null) centralFrontPane.texture.setNativeOutputHeight(nativeHeights[3]);
         applyEffectiveVisibility();
         if (handover == null) applyBorders();
         for (PaneView pane : panes) {

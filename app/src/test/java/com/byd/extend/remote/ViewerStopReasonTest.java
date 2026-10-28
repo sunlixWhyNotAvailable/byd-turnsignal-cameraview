@@ -63,4 +63,17 @@ public class ViewerStopReasonTest {
                 .put("aborted", 1.5).put("receivedBytes", 9_007_199_254_740_992L).put("ready", 5);
         assertEquals("reason=progress completedBytes=1608091 seeking=1", ViewerStopReason.transport(sample));
     }
+
+    @Test public void recoveryMeasurementsRetainActualSpeedAndBoundedPositions() throws Exception {
+        JSONObject sample = new JSONObject().put("reason", "recovery")
+                .put("bufferedRecoveries", 2).put("missingFragments", 3).put("lastMissingSequence", 103)
+                .put("recoveryFromMs", 8020).put("recoveryTargetMs", 12400).put("playbackRatePermille", 1500)
+                .put("url", "https://private.example/?token=secret");
+        assertEquals("reason=recovery bufferedRecoveries=2 missingFragments=3 lastMissingSequence=103"
+                + " recoveryFromMs=8020 recoveryTargetMs=12400 playbackRatePermille=1500",
+                ViewerStopReason.transport(sample));
+        sample.put("playbackRatePermille", 16001).put("recoveryFromMs", -1).put("lastMissingSequence", "secret");
+        assertEquals("reason=recovery bufferedRecoveries=2 missingFragments=3 recoveryTargetMs=12400",
+                ViewerStopReason.transport(sample));
+    }
 }

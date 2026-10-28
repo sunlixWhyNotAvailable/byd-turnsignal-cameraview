@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 10;
+    public static final int WEB_REVISION = 11;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 
@@ -31,11 +31,13 @@ public final class ViewerStopReason {
     /** Cumulative browser transport measurements; no caller-supplied messages or URLs. */
     public static String transport(JSONObject value) {
         String reason = value.optString("reason");
-        if (!reason.matches("start|progress|stall|playing")) return null;
+        if (!reason.matches("start|progress|stall|playing|recovery")) return null;
         StringBuilder result = new StringBuilder("reason=").append(reason);
         for (String key : new String[] {"revision", "atMs", "requests", "completed", "aborted", "failed",
-                "receivedBytes", "completedBytes", "loadMs", "firstByteMs", "firstBytes", "currentMs", "bufferEndMs"})
+                "receivedBytes", "completedBytes", "loadMs", "firstByteMs", "firstBytes", "currentMs", "bufferEndMs",
+                "bufferedRecoveries", "missingFragments", "lastMissingSequence", "recoveryFromMs", "recoveryTargetMs"})
             number(result, value, key, 0, 9_007_199_254_740_991L);
+        number(result, value, "playbackRatePermille", 0, 16_000);
         number(result, value, "lastStatus", 0, 599);
         number(result, value, "ready", 0, 4);
         number(result, value, "seeking", 0, 1);
