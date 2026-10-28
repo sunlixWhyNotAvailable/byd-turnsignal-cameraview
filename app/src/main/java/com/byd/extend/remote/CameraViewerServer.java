@@ -73,6 +73,8 @@ public final class CameraViewerServer implements AutoCloseable {
     private final Map<Socket, String> socketSessions = new HashMap<>();
     private volatile boolean closed;
     private volatile String[] sessionRevision = {null, "unknown"};
+    private final java.util.concurrent.atomic.AtomicLong lastTransportDiagnostic =
+            new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
 
     public CameraViewerServer(String password, String privateProxyProof, Stream stream) throws IOException {
         this.access = new ViewerAccess(password, privateProxyProof);
@@ -411,6 +413,20 @@ public final class CameraViewerServer implements AutoCloseable {
                 JSONObject diagnostic = bodyObject(request.body);
                 String event = diagnostic.optString("event", "");
                 String mode = diagnostic.optString("mode", "");
+                if ("playback_transport".equals(event)) {
+                    String detail = ViewerStopReason.transport(diagnostic);
+                    FragmentedVideoWindow window = stream.video();
+                    if (detail == null || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))
+                            || !"tailscale".equals(stream.presentation().optString("provider"))) {
+                        json(socket, reply, 400, "invalid_event", null); return;
+                    }
+                    long time = now(), previous = lastTransportDiagnostic.get();
+                    if ((previous == Long.MIN_VALUE || time - previous >= 5_000)
+                            && lastTransportDiagnostic.compareAndSet(previous, time))
+                        CameraViewingDiagnostics.detail("browser_transport", "tailscale",
+                                "stream=" + window.getStreamId() + " " + detail);
+                    json(socket, reply, 200, "ok", null); return;
+                }
                 if ("view_frame".equals(event)) {
                     long revision = diagnostic.optLong("revision", -1);
                     String displayedStreamId = diagnostic.optString("streamId", "");

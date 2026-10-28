@@ -49,4 +49,18 @@ public class ViewerStopReasonTest {
             assertEquals("origin=playback_error", ViewerStopReason.describe(cause));
         }
     }
+
+    @Test public void transportMeasurementsPreserveCountsButExcludeUntrustedPayloads() throws Exception {
+        JSONObject sample = new JSONObject().put("reason", "stall").put("requests", 93)
+                .put("completed", 7).put("aborted", 86).put("receivedBytes", 9924255)
+                .put("completedBytes", 1608091).put("ready", 1).put("seeking", 1)
+                .put("url", "https://private.example/?token=secret").put("message", "secret");
+        assertEquals("reason=stall requests=93 completed=7 aborted=86 receivedBytes=9924255"
+                + " completedBytes=1608091 ready=1 seeking=1", ViewerStopReason.transport(sample));
+        sample.put("reason", "secret\nforged");
+        assertNull(ViewerStopReason.transport(sample));
+        sample.put("reason", "progress").put("requests", "secret").put("completed", -1)
+                .put("aborted", 1.5).put("receivedBytes", 9_007_199_254_740_992L).put("ready", 5);
+        assertEquals("reason=progress completedBytes=1608091 seeking=1", ViewerStopReason.transport(sample));
+    }
 }

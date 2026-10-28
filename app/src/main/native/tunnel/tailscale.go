@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -240,7 +242,7 @@ func (p *tailscaleProvider) Start(name string, localPort int, public bool, priva
 		result := failureWithDiagnostic("invalid_port", "start.local_proxy", err, privateProxyCredential)
 		return addSecondaryDiagnostic(result, "start.close_listener_after_proxy_failure", listener.Close(), privateProxyCredential)
 	}
-	handler := http.Handler(proxy)
+	handler := p.transportDiagnosticsHandler(proxy, public)
 	if !public {
 		handler = p.privateAdmissionHandler(handler, privateProxyCredential)
 	}
@@ -337,6 +339,100 @@ func (p *tailscaleProvider) privateAdmissionHandler(next http.Handler, privatePr
 		r.Header.Set(proxyCredentialHeader, privateProxyCredential)
 		r.Header.Set(tailnetUserHeader, peer.UserProfile.LoginName)
 		next.ServeHTTP(w, r)
+	})
+}
+
+type transportDiagnosticResponse struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *transportDiagnosticResponse) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *transportDiagnosticResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (p *tailscaleProvider) transportDiagnosticsHandler(next http.Handler, public bool) http.Handler {
+	server, generation := p.server, p.instanceID
+	var mu sync.Mutex
+	var last time.Time
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || (r.URL.Path != "/live" && r.URL.Path != "/diagnostic") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		response := &transportDiagnosticResponse{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(response, r)
+		if response.status != http.StatusOK {
+			return
+		}
+		mu.Lock()
+		eligible := time.Since(last) >= 30*time.Second
+		if eligible {
+			last = time.Now()
+		}
+		mu.Unlock()
+		if !eligible {
+			return
+		}
+		// Observe only accepted requests, off the serving path; never log peer addresses or keys.
+		remote, reason := r.RemoteAddr, r.URL.Path[1:]
+		go func() {
+			stage := "transport generation=" + generation + " reason=" + reason
+			if public {
+				nativeDiagnostic("tailscale", stage, "route=funnel viewer_peer_metrics=unavailable")
+				return
+			}
+			address, err := netip.ParseAddrPort(remote)
+			if err != nil {
+				nativeDiagnostic("tailscale", stage, nativeErrorDetail("peer_address", err, remote))
+				return
+			}
+			client, err := server.LocalClient()
+			if err != nil {
+				nativeDiagnostic("tailscale", stage, nativeErrorDetail("local_client", err))
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), tailscaleStatusTimeout)
+			defer cancel()
+			status, err := client.Status(ctx)
+			if err != nil {
+				nativeDiagnostic("tailscale", stage, nativeErrorDetail("peer_status", err))
+				return
+			}
+			if status == nil {
+				nativeDiagnostic("tailscale", stage, "peer_metrics=unavailable reason=empty_status")
+				return
+			}
+			for _, peer := range status.Peer {
+				if peer == nil {
+					continue
+				}
+				for _, ip := range peer.TailscaleIPs {
+					if ip.Unmap() != address.Addr().Unmap() {
+						continue
+					}
+					detail := fmt.Sprintf("direct_endpoint_known=%t peer_relay_known=%t derp_region_known=%t active=%t peer_tx_bytes_total=%d peer_rx_bytes_total=%d",
+						peer.CurAddr != "", peer.PeerRelay != "", peer.Relay != "", peer.Active, peer.TxBytes, peer.RxBytes)
+					// TSMP measures the existing data path without a disco endpoint-discovery probe.
+					ping, err := client.Ping(ctx, ip, tailcfg.PingTSMP)
+					if err != nil {
+						detail += " " + nativeErrorDetail("peer_ping", err, remote, ip.String(), peer.HostName, peer.DNSName)
+					} else if ping == nil {
+						detail += " rtt_ms=unknown reason=empty_ping"
+					} else if ping.Err != "" {
+						detail += " " + nativeErrorDetail("peer_ping", errors.New(ping.Err), remote, ip.String(), peer.HostName, peer.DNSName)
+					} else {
+						detail += fmt.Sprintf(" rtt_ms=%.3f", ping.LatencySeconds*1000)
+					}
+					nativeDiagnostic("tailscale", stage, detail)
+					return
+				}
+			}
+			nativeDiagnostic("tailscale", stage, "peer_metrics=unavailable reason=request_peer_not_in_status")
+		}()
 	})
 }
 

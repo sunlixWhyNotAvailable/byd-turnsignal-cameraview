@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 9;
+  const WEB_REVISION = 10;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -1085,6 +1085,7 @@
 
   function disposeLivePlayer(player) {
     if (!player) return;
+    clearSelectionCutover(player);
     player.frameToken = (player.frameToken || 0) + 1;
     if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
       player.video.cancelVideoFrameCallback(player.frameCallback);
@@ -1114,6 +1115,7 @@
 
   function selectionDisplayed(player, revision) {
     if (revision !== state.liveSelectionRevision || state.mode !== 'live' || !state.wantsLive) return;
+    clearSelectionCutover(player);
     state.selectionPending = false;
     state.localFirstFrame = true;
     if (!state.firstLiveFrame) {
@@ -1135,7 +1137,15 @@
     }
   }
 
-  function watchLiveSelection(player) {
+  function clearSelectionCutover(player) {
+    if (!player.cutoverListener) return;
+    player.video.removeEventListener('progress', player.cutoverListener);
+    player.hls?.off(window.Hls.Events.FRAG_BUFFERED, player.cutoverListener);
+    player.cutoverListener = null;
+  }
+
+  function watchLiveSelection(player, cutover = false) {
+    clearSelectionCutover(player);
     const revision = player.revision;
     const targetMs = state.selectionProgramTimeMs;
     if (!Number.isFinite(targetMs)) return;
@@ -1147,6 +1157,36 @@
     const valid = () => livePlayer === player && player.frameToken === token &&
       revision === state.liveSelectionRevision && state.mode === 'live' && state.wantsLive &&
       state.authenticated && !state.replaced;
+    if (cutover && provider === 'tailscale') {
+      const seekWhenBuffered = () => {
+        if (!valid()) { clearSelectionCutover(player); return; }
+        const fragments = player.hls?.levels[player.hls.currentLevel]?.details?.fragments || [];
+        const startDate = !player.hls && typeof video.getStartDate === 'function' ? video.getStartDate() : null;
+        const candidates = player.hls ? fragments.flatMap((fragment) => {
+          const date = fragment.programDateTime;
+          if (!Number.isFinite(date) || date + fragment.duration * 1000 <= targetMs) return [];
+          return [{ start: fragment.start + Math.max(0, (targetMs - date) / 1000),
+            end: fragment.start + fragment.duration }];
+        }) : startDate instanceof Date && Number.isFinite(startDate.getTime())
+          ? [{ start: (targetMs - startDate.getTime()) / 1000, end: Infinity }] : [];
+        for (const candidate of candidates) {
+          for (let i = 0; i < video.buffered.length; i++) {
+            const start = Math.max(candidate.start, video.buffered.start(i));
+            const end = Math.min(candidate.end, video.buffered.end(i));
+            if (end - start < 0.02) continue;
+            // Cut over once into downloaded new-layout media, never an unloaded live edge.
+            clearSelectionCutover(player);
+            if (video.currentTime < start || video.currentTime >= video.buffered.end(i))
+              video.currentTime = start + 0.01;
+            return;
+          }
+        }
+      };
+      player.cutoverListener = seekWhenBuffered;
+      video.addEventListener('progress', seekWhenBuffered);
+      player.hls?.on(window.Hls.Events.FRAG_BUFFERED, seekWhenBuffered);
+      seekWhenBuffered();
+    }
     const displayed = (mediaTime) => {
       if (!valid()) return true;
       // Program dates map the actual presented frame to the selected encoded fragment.
@@ -1184,10 +1224,10 @@
       if (livePlayer.revision !== revision) {
         livePlayer.revision = revision;
         livePlayer.view = view;
-        followLiveEdge(livePlayer);
+        if (provider !== 'tailscale') followLiveEdge(livePlayer);
         const player = livePlayer;
         if (player.video.paused) player.video.play().catch((error) => player.fail(error));
-        watchLiveSelection(player);
+        watchLiveSelection(player, true);
       }
       return;
     }
@@ -1237,14 +1277,66 @@
       const Hls = await loadHlsLibrary();
       if (!current()) return;
       if (!Hls || !Hls.isSupported()) { fail(null, 'hls'); return; }
-      const hls = new Hls({ liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3,
+      const transport = { requests: 0, completed: 0, aborted: 0, failed: 0, receivedBytes: 0,
+        completedBytes: 0, loadMs: 0, firstByteMs: 0, firstBytes: 0, lastStatus: 0 };
+      let lastTransportReport = -Infinity;
+      let transportReportInFlight = false;
+      const reportTransport = (reason) => {
+        if (provider !== 'tailscale' || !current() || transportReportInFlight ||
+            performance.now() - lastTransportReport < 10000) return;
+        lastTransportReport = performance.now();
+        transportReportInFlight = true;
+        post('/diagnostic', { event: 'playback_transport', reason, streamId: stream,
+          revision: player.revision, ...transport, atMs: Math.round(lastTransportReport),
+          currentMs: Math.round(video.currentTime * 1000), ready: video.readyState,
+          seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
+          bufferEndMs: Math.round((video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0) * 1000)
+        }).catch((error) => console.warn('Could not report playback transport', error))
+          .finally(() => { transportReportInFlight = false; });
+      };
+      const sync = provider === 'tailscale' ? { liveSyncDurationCount: 2 }
+        : { liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 };
+      const hls = new Hls({ ...sync,
         maxLiveSyncPlaybackRate: 1.5, maxBufferLength: 3,
-        xhrSetup: (xhr) => xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION)) });
+        xhrSetup: (xhr, url) => {
+          xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION));
+          if (provider !== 'tailscale' || !new URL(url, location.href).pathname.match(/\/segment\/\d+\.m4s$/)) return;
+          transport.requests++;
+          const started = performance.now();
+          let bytes = 0, completed = false, aborted = false, first = false;
+          xhr.addEventListener('progress', (event) => { bytes = event.loaded; });
+          xhr.addEventListener('readystatechange', () => {
+            if (xhr.readyState === 2 && !first) {
+              first = true; transport.firstBytes++;
+              transport.firstByteMs += Math.round(performance.now() - started);
+            }
+          });
+          xhr.addEventListener('load', () => { completed = xhr.status >= 200 && xhr.status < 300; });
+          xhr.addEventListener('abort', () => { aborted = true; });
+          xhr.addEventListener('loadend', () => {
+            if (completed) bytes = Math.max(bytes, xhr.response?.byteLength || 0);
+            transport.receivedBytes += bytes;
+            transport.loadMs += Math.round(performance.now() - started);
+            transport.lastStatus = xhr.status;
+            if (completed) { transport.completed++; transport.completedBytes += bytes; }
+            else if (aborted) transport.aborted++;
+            else transport.failed++;
+            reportTransport(video.readyState < 3 || video.seeking ? 'stall' : 'progress');
+          });
+        } });
       player.hls = hls;
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (current()) video.play().catch((error) => fail(error));
       });
-      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fail(data, 'hls'); });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) reportTransport('stall');
+        if (data.fatal) fail(data, 'hls');
+      });
+      if (provider === 'tailscale') {
+        video.addEventListener('waiting', () => reportTransport('stall'));
+        video.addEventListener('playing', () => reportTransport('playing'));
+        reportTransport('start');
+      }
       hls.loadSource(playlist);
       hls.attachMedia(video);
     } catch (failure) { fail(failure); }

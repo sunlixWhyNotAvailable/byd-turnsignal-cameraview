@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 9;
+    public static final int WEB_REVISION = 10;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 
@@ -26,6 +26,21 @@ public final class ViewerStopReason {
 
     public static String revision(String value) {
         return value != null && value.matches("[1-9][0-9]{0,5}|1000000") ? value : "unknown";
+    }
+
+    /** Cumulative browser transport measurements; no caller-supplied messages or URLs. */
+    public static String transport(JSONObject value) {
+        String reason = value.optString("reason");
+        if (!reason.matches("start|progress|stall|playing")) return null;
+        StringBuilder result = new StringBuilder("reason=").append(reason);
+        for (String key : new String[] {"revision", "atMs", "requests", "completed", "aborted", "failed",
+                "receivedBytes", "completedBytes", "loadMs", "firstByteMs", "firstBytes", "currentMs", "bufferEndMs"})
+            number(result, value, key, 0, 9_007_199_254_740_991L);
+        number(result, value, "lastStatus", 0, 599);
+        number(result, value, "ready", 0, 4);
+        number(result, value, "seeking", 0, 1);
+        number(result, value, "pending", 0, 1);
+        return result.toString();
     }
 
     /** Classify actual requests without retaining URLs, credentials or stream identifiers. */
