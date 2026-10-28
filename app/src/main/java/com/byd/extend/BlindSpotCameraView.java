@@ -90,7 +90,19 @@ final class BlindSpotCameraView extends FrameLayout
     private int bufferHeight = BUFFER_HEIGHT;
     private int automaticBufferQuality = -1;
     private int captureWidth = BUFFER_WIDTH, captureHeight = BUFFER_HEIGHT;
-    private int nativeOutputHeight;
+    private int outputQuality = CameraBufferQuality.ORIGINAL;
+    private int outputPaneWidth, outputPaneHeight;
+    private DirectCameraCrop outputCrop = DirectCameraCrop.requireUiGeometry(
+            0, 0, 1, 1, 0, CameraRotation.MODE_FIT);
+    private boolean localResize;
+    private final Runnable resizeOutput = () -> {
+        if (directOutput == null || handoverPresentation != 0 && !localResize) return;
+        int[] size = desiredOutputSize();
+        if (bufferWidth == size[0] && bufferHeight == size[1]) return;
+        beginHandover(() -> commitHandovers(new BlindSpotCameraView[]{this}));
+        localResize = true;
+        submitHandover();
+    };
 
     BlindSpotCameraView(Context context) {
         super(context);
@@ -178,20 +190,20 @@ final class BlindSpotCameraView extends FrameLayout
     }
 
     void setPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
-        setPaneBoundedBuffer(paneWidth, paneHeight, quality, BUFFER_HEIGHT);
+        setPaneBoundedBuffer(paneWidth, paneHeight, quality, outputCrop);
     }
 
-    void setPaneBoundedBuffer(int paneWidth, int paneHeight, int quality, int nativeHeight) {
+    void setPaneBoundedBuffer(int paneWidth, int paneHeight, int quality, DirectCameraCrop crop) {
         if (hasCameraInputLifecycle()) {
             throw new IllegalStateException("camera buffer must be sized before attach");
         }
         int[] capture = paneBoundedBufferSize(paneWidth, paneHeight, quality);
-        int[] size = directView == null ? capture
-                : paneBoundedBufferSize(paneWidth, paneHeight, quality, nativeHeight);
         automaticBufferQuality = -1;
-        nativeOutputHeight = nativeHeight;
+        outputQuality = quality;
+        setOutputCrop(crop, paneWidth, paneHeight);
         captureWidth = capture[0];
         captureHeight = capture[1];
+        int[] size = directView == null ? capture : desiredOutputSize();
         bufferWidth = size[0];
         bufferHeight = size[1];
         configureBuffer();
@@ -200,34 +212,35 @@ final class BlindSpotCameraView extends FrameLayout
     void setAutomaticBufferQuality(int quality) {
         CameraBufferQuality.scalePercent(quality);
         automaticBufferQuality = quality;
+        outputQuality = quality;
+        mainHandler.removeCallbacks(resizeOutput);
+        if (directOutput != null) mainHandler.post(resizeOutput);
     }
 
     boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight, int quality) {
-        return usesPaneBoundedBuffer(paneWidth, paneHeight, quality, BUFFER_HEIGHT);
-    }
-
-    boolean usesPaneBoundedBuffer(int paneWidth, int paneHeight, int quality, int nativeHeight) {
         int[] capture = paneBoundedBufferSize(paneWidth, paneHeight, quality);
-        int[] size = directView == null ? capture
-                : paneBoundedBufferSize(paneWidth, paneHeight, quality, nativeHeight);
-        return bufferWidth == size[0] && bufferHeight == size[1]
-                && captureWidth == capture[0] && captureHeight == capture[1];
+        // Final buffers may resize in place; only capture-policy changes need a new input.
+        return outputQuality == quality && captureWidth == capture[0] && captureHeight == capture[1];
     }
 
-    void setNativeOutputHeight(int value) {
-        if (value <= 0 || value > BUFFER_HEIGHT)
-            throw new IllegalArgumentException("invalid native output height");
-        nativeOutputHeight = value;
+    void setOutputCrop(DirectCameraCrop crop, int width, int height) {
+        if (width <= 1 || height <= 1) return;
+        if (outputPaneWidth == width && outputPaneHeight == height
+                && outputCrop.width == crop.width && outputCrop.height == crop.height
+                && outputCrop.rotationDegrees == crop.rotationDegrees
+                && outputCrop.rotationMode == crop.rotationMode) return;
+        outputCrop = crop;
+        outputPaneWidth = width;
+        outputPaneHeight = height;
+        mainHandler.removeCallbacks(resizeOutput);
+        if (directOutput != null) mainHandler.post(resizeOutput);
     }
 
-    static int nativeOutputHeight(CameraDewarpConfig config,
-            DirectCameraCrop corrected, DirectCameraCrop raw) {
-        int rawHeight = CameraBufferQuality.cropNativeHeight(
-                BUFFER_WIDTH, BUFFER_HEIGHT, raw.width, raw.height, raw.rotationDegrees);
-        // Keep enough output detail if correction falls back to its saved raw crop.
-        return config.enabled ? Math.max(rawHeight, CameraBufferQuality.cropNativeHeight(
-                BUFFER_WIDTH, BUFFER_HEIGHT, corrected.width, corrected.height,
-                corrected.rotationDegrees)) : rawHeight;
+    private int[] desiredOutputSize() {
+        int[] size = paneBoundedBufferSize(outputPaneWidth, outputPaneHeight, outputQuality, outputCrop);
+        size[0] = Math.min(size[0], captureWidth);
+        size[1] = Math.min(size[1], captureHeight);
+        return size;
     }
 
     int cameraBufferWidth() {
@@ -237,6 +250,9 @@ final class BlindSpotCameraView extends FrameLayout
     int cameraBufferHeight() {
         return bufferHeight;
     }
+
+    int cameraCaptureWidth() { return captureWidth; }
+    int cameraCaptureHeight() { return captureHeight; }
 
     static int[] paneBoundedBufferSize(int paneWidth, int paneHeight) {
         return paneBoundedBufferSize(
@@ -256,11 +272,14 @@ final class BlindSpotCameraView extends FrameLayout
                 : new int[]{configuredWidth, configuredHeight};
     }
 
-    static int[] paneBoundedBufferSize(int paneWidth, int paneHeight, int quality, int nativeHeight) {
+    static int[] paneBoundedBufferSize(int paneWidth, int paneHeight, int quality, DirectCameraCrop crop) {
         if (android.os.Build.VERSION.SDK_INT < 29)
             return paneBoundedBufferSize(paneWidth, paneHeight, quality);
         return CameraBufferQuality.outputSizeForPane(
-                paneWidth, paneHeight, BUFFER_WIDTH, BUFFER_HEIGHT, quality, nativeHeight);
+                paneWidth, paneHeight, BUFFER_WIDTH, BUFFER_HEIGHT, quality,
+                CameraBufferQuality.cropNativeHeight(BUFFER_WIDTH, BUFFER_HEIGHT,
+                        crop.width, crop.height, crop.rotationDegrees, crop.rotationMode,
+                        paneWidth, paneHeight));
     }
 
     void retireCameraInput() {
@@ -349,13 +368,29 @@ final class BlindSpotCameraView extends FrameLayout
     boolean canStageHandover() { return directOutput != null && directView.available(); }
 
     void beginHandover(Runnable ready) {
+        localResize = false;
         int slot = directView.stageOutput();
         handoverPresentation = directOutput.beginPresentation(directView.alternateSurface(), slot);
         handoverReady = false;
         handoverListener = ready;
     }
 
-    void submitHandover() { if (directOutput != null) directOutput.submitPresentation(); }
+    void submitHandover() {
+        if (directOutput == null) return;
+        int[] size = desiredOutputSize();
+        directView.resizeStagedOutput(size[0], size[1]);
+        directOutput.resizePresentation(size[0], size[1]);
+        if (bufferWidth != size[0] || bufferHeight != size[1]) {
+            // A resized mesh must acknowledge its own fallback, not a queued result for the old size.
+            directOutput.update(dewarpConfig, ++dewarpRequestToken);
+            android.util.Log.i("BlindSpotCameraView", "output_resize " + bufferWidth + "x" + bufferHeight
+                    + "->" + size[0] + "x" + size[1] + " capture=" + captureWidth + "x" + captureHeight
+                    + " crop=" + outputCrop.width + "x" + outputCrop.height
+                    + " rotation=" + outputCrop.rotationDegrees + " mode=" + outputCrop.rotationMode);
+        }
+        bufferWidth = size[0]; bufferHeight = size[1];
+        directOutput.submitPresentation();
+    }
     boolean handoverReady() { return handoverReady && directOutput != null; }
 
     static void commitHandovers(BlindSpotCameraView[] views) {
@@ -364,6 +399,8 @@ final class BlindSpotCameraView extends FrameLayout
             layers[i] = views[i].directView;
             views[i].handoverListener = null;
             views[i].handoverPresentation = 0;
+            views[i].localResize = false;
+            views[i].mainHandler.post(views[i].resizeOutput);
         }
         DirectCameraSurface.commitStages(layers);
     }
@@ -448,6 +485,7 @@ final class BlindSpotCameraView extends FrameLayout
         int height = getHeight();
         if (width <= 0 || height <= 0) return;
         DirectCameraCrop directCrop = rawFallbackActive ? rawFallbackCrop : requestedCrop;
+        setOutputCrop(directCrop, width, height);
         Matrix transform = new Matrix();
         RectF destination = new RectF(0.0f, 0.0f, width, height);
         CameraRotation.setSourceCropTransformForInput(
@@ -647,6 +685,8 @@ final class BlindSpotCameraView extends FrameLayout
     }
 
     private void retireActiveInput() {
+        mainHandler.removeCallbacks(resizeOutput);
+        localResize = false;
         dewarpGeneration++;
         handoverListener = null;
         handoverPresentation = 0;
@@ -688,12 +728,11 @@ final class BlindSpotCameraView extends FrameLayout
         if (automaticBufferQuality >= 0) {
             int[] capture = paneBoundedBufferSize(getWidth(), getHeight(), automaticBufferQuality);
             captureWidth = capture[0]; captureHeight = capture[1];
-            int nativeHeight = nativeOutputHeight > 0 ? nativeOutputHeight
-                    : nativeOutputHeight(dewarpConfig, requestedCrop, rawFallbackCrop);
-            int[] size = paneBoundedBufferSize(
-                    getWidth(), getHeight(), automaticBufferQuality, nativeHeight);
-            bufferWidth = size[0]; bufferHeight = size[1];
         }
+        if (!externalTransform) setOutputCrop(rawFallbackActive ? rawFallbackCrop : requestedCrop,
+                getWidth(), getHeight());
+        int[] size = desiredOutputSize();
+        bufferWidth = size[0]; bufferHeight = size[1];
         int generation = inputGeneration.next();
         DirectCameraSurface.Output layer = directView.createOutput(bufferWidth, bufferHeight);
         directOutput = new CameraGpuOutput(bufferWidth, bufferHeight, captureWidth, captureHeight, dewarpConfig,

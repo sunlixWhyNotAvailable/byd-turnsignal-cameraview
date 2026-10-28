@@ -23,6 +23,7 @@ final class CameraGpuOutput extends Binder {
     private static final int FRAME = BIND + 6;
     private static final int GEOMETRY = BIND + 7;
     private static final int PRESENTATION = BIND + 8;
+    private static final int SIZED_PRESENTATION = BIND + 9;
     static final float[] IDENTITY = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     private static final Map<Surface, Endpoint> OUTPUTS = new WeakHashMap<>();
     private static final class Endpoint {
@@ -31,8 +32,8 @@ final class CameraGpuOutput extends Binder {
         Endpoint(IBinder binder, int uid) { this.binder = binder; this.uid = uid; }
     }
 
-    private final int width;
-    private final int height;
+    private int width;
+    private int height;
     private final int captureWidth;
     private final int captureHeight;
     private final boolean lifecycleOnly;
@@ -139,10 +140,19 @@ final class CameraGpuOutput extends Binder {
         try {
             data.writeInterfaceToken(DESCRIPTOR);
             writePresentation(data);
-            if (!control.transact(PRESENTATION, data, null, FLAG_ONEWAY))
+            data.writeInt(width);
+            data.writeInt(height);
+            if (!control.transact(SIZED_PRESENTATION, data, null, FLAG_ONEWAY))
                 connectionLost("presentation", "transact_rejected", null);
         } catch (RemoteException error) { connectionLost("presentation", "remote_exception", error); }
         finally { data.recycle(); }
+    }
+
+    synchronized void resizePresentation(int width, int height) {
+        if (!staging || width <= 0 || height <= 0 || width > captureWidth || height > captureHeight)
+            throw new IllegalArgumentException("invalid staged GPU output size");
+        this.width = width;
+        this.height = height;
     }
 
     synchronized boolean acceptsFrame(long presentation, long mapping, long geometryVersion) {
@@ -352,6 +362,7 @@ final class CameraGpuOutput extends Binder {
         private long geometryRevision = -1;
         private long presentationRevision = -1;
         private int outputSlot;
+        private int outputWidth, outputHeight;
         private Surface alternateSurface;
         private FrameConfiguration cachedFrame;
         private boolean closed;
@@ -371,25 +382,28 @@ final class CameraGpuOutput extends Binder {
                     throw new IllegalStateException("GPU output bind rejected");
                 }
                 reply.readException();
-                width = reply.readInt();
-                height = reply.readInt();
-                lifecycleOnly = reply.readInt() != 0;
-                frameEvents = reply.readInt() != 0;
-                if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
-                    throw new IllegalArgumentException("invalid GPU output dimensions");
+                synchronized (this) {
+                    width = reply.readInt();
+                    height = reply.readInt();
+                    lifecycleOnly = reply.readInt() != 0;
+                    frameEvents = reply.readInt() != 0;
+                    if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+                        throw new IllegalArgumentException("invalid GPU output dimensions");
+                    }
+                    accept(readMapping(reply));
+                    acceptGeometry(reply);
+                    acceptPresentation(reply, false);
+                    // Old endpoints have equal capture/output dimensions.
+                    int remaining = reply.dataAvail();
+                    if (remaining != 0 && remaining != 8)
+                        throw new IllegalArgumentException("invalid GPU capture payload");
+                    captureWidth = remaining == 8 ? reply.readInt() : width;
+                    captureHeight = remaining == 8 ? reply.readInt() : height;
+                    if (captureWidth < width || captureHeight < height
+                            || captureWidth > 4096 || captureHeight > 4096
+                            || outputWidth > captureWidth || outputHeight > captureHeight)
+                        throw new IllegalArgumentException("invalid GPU capture dimensions");
                 }
-                accept(readMapping(reply));
-                acceptGeometry(reply);
-                acceptPresentation(reply);
-                // Old endpoints have equal capture/output dimensions.
-                int remaining = reply.dataAvail();
-                if (remaining != 0 && remaining != 8)
-                    throw new IllegalArgumentException("invalid GPU capture payload");
-                captureWidth = remaining == 8 ? reply.readInt() : width;
-                captureHeight = remaining == 8 ? reply.readInt() : height;
-                if (captureWidth < width || captureHeight < height
-                        || captureWidth > 4096 || captureHeight > 4096)
-                    throw new IllegalArgumentException("invalid GPU capture dimensions");
             } catch (RemoteException | RuntimeException error) {
                 try { close(); } catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
                 throw error;
@@ -416,14 +430,13 @@ final class CameraGpuOutput extends Binder {
             }
         }
 
-        private synchronized void acceptPresentation(Parcel parcel) {
+        private synchronized void acceptPresentation(Parcel parcel, boolean sized) {
             long revision = parcel.readLong();
             int slot = parcel.readInt();
             Surface alternate = parcel.readTypedObject(Surface.CREATOR);
             try {
                 if (revision < 0)
                     throw new IllegalArgumentException("invalid GPU presentation");
-                if (closed || revision <= presentationRevision) return;
                 if (slot < 0 || slot > 1)
                     throw new IllegalArgumentException("invalid GPU presentation");
                 if (slot == 1 && alternate == null)
@@ -434,14 +447,24 @@ final class CameraGpuOutput extends Binder {
                 long geometryVersion = parcel.readLong();
                 float[] matrix = parcel.createFloatArray();
                 validateGeometry(matrix);
+                int nextWidth = sized ? parcel.readInt() : width;
+                int nextHeight = sized ? parcel.readInt() : height;
+                if (nextWidth <= 0 || nextHeight <= 0 || nextWidth > 4096 || nextHeight > 4096
+                        || sized && captureWidth > 0 && captureHeight > 0
+                        && (nextWidth > captureWidth || nextHeight > captureHeight))
+                    throw new IllegalArgumentException("invalid GPU presentation size");
                 if (geometryVersion < 0)
                     throw new IllegalArgumentException("invalid GPU presentation");
+                // Consume the entire BIND payload even if an update arrived before its reply.
+                if (closed || revision <= presentationRevision) return;
                 if (alternateSurface == null && alternate != null) {
                     if (!alternate.isValid()) throw new IllegalArgumentException("invalid alternate surface");
                     alternateSurface = alternate; alternate = null;
                 }
                 presentationRevision = revision;
                 outputSlot = slot;
+                outputWidth = nextWidth;
+                outputHeight = nextHeight;
                 cachedFrame = null;
                 accept(next);
                 if (geometryVersion >= geometryRevision) {
@@ -453,7 +476,7 @@ final class CameraGpuOutput extends Binder {
 
         synchronized FrameConfiguration frameConfiguration() {
             if (cachedFrame == null) cachedFrame = new FrameConfiguration(request, geometry, geometryRevision,
-                    presentationRevision, outputSlot, alternateSurface);
+                    presentationRevision, outputSlot, alternateSurface, outputWidth, outputHeight);
             return cachedFrame;
         }
 
@@ -465,7 +488,9 @@ final class CameraGpuOutput extends Binder {
                 acceptGeometry(data);
                 return true;
             }
-            if (code == PRESENTATION) { acceptPresentation(data); return true; }
+            if (code == PRESENTATION || code == SIZED_PRESENTATION) {
+                acceptPresentation(data, code == SIZED_PRESENTATION); return true;
+            }
             if (code == RELEASE) { releaseTarget.run(); return true; }
             return false;
         }
@@ -523,11 +548,14 @@ final class CameraGpuOutput extends Binder {
         final float[] geometry;
         final long geometryRevision, presentation;
         final int slot;
+        final int width, height;
         final Surface alternate;
         FrameConfiguration(CameraDewarpRenderer.MappingRequest mapping, float[] geometry,
-                long geometryRevision, long presentation, int slot, Surface alternate) {
+                long geometryRevision, long presentation, int slot, Surface alternate,
+                int width, int height) {
             this.mapping = mapping; this.geometry = geometry; this.geometryRevision = geometryRevision;
             this.presentation = presentation; this.slot = slot; this.alternate = alternate;
+            this.width = width; this.height = height;
         }
     }
 }

@@ -117,7 +117,7 @@ final class CameraMeshPreparation {
                     target == CameraDisplayTarget.TABLET ? Math.round(88 * density) : 0);
             int[] size = BlindSpotCameraView.paneBoundedBufferSize(
                     spec.width, spec.height, spec.bufferQuality,
-                    BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
+                    spec.dewarp.enabled ? spec.crop() : spec.rawFallbackCrop);
             add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
         }
     }
@@ -132,7 +132,7 @@ final class CameraMeshPreparation {
                     metrics.widthPixels, metrics.heightPixels, settings);
             int[] size = BlindSpotCameraView.paneBoundedBufferSize(
                     spec.width, spec.height, spec.bufferQuality,
-                    BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
+                    spec.dewarp.enabled ? spec.crop() : spec.rawFallbackCrop);
             add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
         }
     }
@@ -154,7 +154,7 @@ final class CameraMeshPreparation {
                 settings, 1, front, target, metrics.widthPixels, metrics.heightPixels);
         int[] size = BlindSpotCameraView.paneBoundedBufferSize(
                 spec.width, spec.height, spec.bufferQuality,
-                BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
+                spec.dewarp.enabled ? spec.crop() : spec.rawFallbackCrop);
         add(requests, spec.dewarp, spec.rawFallbackCrop, size[0], size[1]);
     }
 

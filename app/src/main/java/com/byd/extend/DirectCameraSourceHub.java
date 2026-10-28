@@ -817,9 +817,9 @@ final class DirectCameraSourceHub
                 return;
             }
             if (target.mapping != null) {
-                // Managed buffers keep their quality size across view resize; a new input rebinds it.
-                target.width = target.mapping.width;
-                target.height = target.mapping.height;
+                CameraGpuOutput.FrameConfiguration frame = target.mapping.frameConfiguration();
+                target.width = frame.width;
+                target.height = frame.height;
                 return;
             }
             require(EGL14.eglQuerySurface(display, target.eglSurface, EGL14.EGL_WIDTH, queriedSize, 0),
@@ -1130,7 +1130,7 @@ final class DirectCameraSourceHub
                     ? null : target.mapping.frameConfiguration();
             CameraDewarpRenderer.MappingRequest rendered = target.mapping == null
                     || target.mapping.lifecycleOnly ? null
-                    : target.mesh.prepare(frame.mapping, target.mapping.width, target.mapping.height);
+                    : target.mesh.prepare(frame.mapping, frame.width, frame.height);
             // Keep the last presented buffer until the exact new mapping is ready.
             if (target.mapping != null && !target.mapping.lifecycleOnly && rendered == null) return null;
             EGLSurface output = target.eglSurface;
@@ -1145,6 +1145,18 @@ final class DirectCameraSourceHub
             }
             makeCurrent(output);
             if (target.mapping == null) updateTargetSize(target);
+            else { target.width = frame.width; target.height = frame.height; }
+            // EGL adopts a resized native window on buffer dequeue; never acknowledge the old size.
+            boolean sizeReady = true;
+            if (frame != null && !target.mapping.lifecycleOnly && target.sizedPresentation != frame.presentation) {
+                require(EGL14.eglQuerySurface(display, output, EGL14.EGL_WIDTH, queriedSize, 0),
+                        "staged output width query failed");
+                sizeReady = queriedSize[0] == frame.width;
+                require(EGL14.eglQuerySurface(display, output, EGL14.EGL_HEIGHT, queriedSize, 0),
+                        "staged output height query failed");
+                sizeReady &= queriedSize[0] == frame.height;
+                if (sizeReady) target.sizedPresentation = frame.presentation;
+            }
             GLES20.glViewport(0, 0, target.width, target.height);
             GLES20.glUseProgram(program);
             positions.position(0);
@@ -1197,6 +1209,7 @@ final class DirectCameraSourceHub
                         + " retiring=" + target.retiring + " egl=" + eglError);
             }
             long swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+            if (!sizeReady) return null;
             if (rendered != null && target.acknowledgedToken != rendered.token) {
                 target.mapping.applied(rendered.token, target.mesh.rawFallback,
                         target.mesh.vertices.capacity() / 4, target.mesh.generationNs);
@@ -2021,6 +2034,7 @@ final class DirectCameraSourceHub
         final MappingMesh mesh;
         final DrawTiming timing = new DrawTiming();
         long acknowledgedToken = -1;
+        long sizedPresentation = -1;
 
         Target(SourceWorker worker, Surface surface, int index, EGLSurface eglSurface,
                 int requestId, int producerEpoch) {

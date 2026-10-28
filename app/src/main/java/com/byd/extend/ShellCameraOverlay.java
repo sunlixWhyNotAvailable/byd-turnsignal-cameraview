@@ -197,8 +197,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                 throw new CameraShellProtocol.PrepareRestartRequired(
                         "camera_geometry_changed");
             } else if (!preview.usesPaneBoundedBuffer(
-                    spec.width, spec.height, spec.bufferQuality,
-                    BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop))) {
+                    spec.width, spec.height, spec.bufferQuality)) {
                 quiesce("camera_buffer_size_changed");
                 throw new CameraShellProtocol.PrepareRestartRequired(
                         "camera_buffer_size_changed");
@@ -439,7 +438,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
         BlindSpotCameraView nextPreview = new BlindSpotCameraView(windowContext);
         nextPreview.setPreserveInputFrameTimestamp(cameraId < CameraOverlayProfile.BLIND_COUNT);
         nextPreview.setPaneBoundedBuffer(spec.width, spec.height, spec.bufferQuality,
-                BlindSpotCameraView.nativeOutputHeight(spec.dewarp, spec.crop(), spec.rawFallbackCrop));
+                spec.dewarp.enabled ? spec.crop() : spec.rawFallbackCrop);
         nextPreview.setCallback(this);
         nextPreview.setDewarpStatsSink(this::emitDewarpStats);
         nextPreview.setDewarpEventSink(this::emitDewarpEvent);

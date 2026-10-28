@@ -23,7 +23,7 @@ final class DirectCameraSurface extends SurfaceView implements SurfaceHolder.Cal
     static final class Output {
         final SurfaceControl layer;
         final Surface surface;
-        final int width, height;
+        int width, height;
         Output alternate;
         Output(SurfaceControl layer, Surface surface, int width, int height) {
             this.layer = layer; this.surface = surface; this.width = width; this.height = height;
@@ -96,6 +96,17 @@ final class DirectCameraSurface extends SurfaceView implements SurfaceHolder.Cal
     }
 
     Surface alternateSurface() { return current.alternate.surface; }
+
+    void resizeStagedOutput(int width, int height) {
+        if (!staging) throw new IllegalStateException("camera resize requires a staged output");
+        Output output = stagedSlot == 0 ? current : current.alternate;
+        if (output.width == width && output.height == height) return;
+        try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {
+            transaction.setBufferSize(output.layer, width, height).apply();
+        }
+        output.width = width;
+        output.height = height;
+    }
 
     static void commitStages(DirectCameraSurface... views) {
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {

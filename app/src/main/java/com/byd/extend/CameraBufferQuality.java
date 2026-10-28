@@ -89,20 +89,28 @@ final class CameraBufferQuality {
 
     /** Position and mirroring do not affect allocation, including transient steering offsets. */
     static int cropNativeHeight(int sourceWidth, int sourceHeight,
-            float cropWidth, float cropHeight, int rotationDegrees) {
+            float cropWidth, float cropHeight, int rotationDegrees,
+            int mode, int paneWidth, int paneHeight) {
         if (sourceWidth <= 0 || sourceHeight <= 0 || !Float.isFinite(cropWidth)
                 || !Float.isFinite(cropHeight) || cropWidth <= 0 || cropHeight <= 0
                 || cropWidth > 1.0001f || cropHeight > 1.0001f
-                || !CameraRotation.isValid(rotationDegrees))
+                || !CameraRotation.isValid(rotationDegrees) || !CameraRotation.isValidMode(mode))
             throw new IllegalArgumentException("invalid source crop dimensions");
-        if (cropWidth >= 1f && cropHeight >= 1f) return sourceHeight;
-        double angle = Math.toRadians(rotationDegrees);
-        double cosine = Math.abs(Math.cos(angle)), sine = Math.abs(Math.sin(angle));
-        double width = cropWidth * (double) sourceWidth;
-        double height = cropHeight * (double) sourceHeight;
-        double rows = sine * width + cosine * height;
-        double columns = cosine * width + sine * height;
-        double demand = Math.max(rows, columns * sourceHeight / sourceWidth);
+        if (paneWidth <= 1 || paneHeight <= 1) return sourceHeight;
+        double demand;
+        if (mode == CameraRotation.MODE_ALIGNED) {
+            demand = Math.max(cropWidth, cropHeight) * sourceHeight;
+        } else {
+            // Invert the actual display transform: Fill clips the rotated crop's bounding box.
+            float[] m = CameraRotation.sourceAwareProportionalTransformValues(
+                    0, 0, cropWidth, cropHeight, 0, 0, paneWidth, paneHeight,
+                    rotationDegrees, mode, sourceWidth, sourceHeight,
+                    sourceWidth, sourceHeight, false);
+            double determinant = Math.abs((double) m[0] * m[4] - (double) m[1] * m[3]);
+            double columns = paneWidth * Math.hypot(m[4], m[3]) / determinant;
+            double rows = paneHeight * Math.hypot(m[1], m[0]) / determinant;
+            demand = Math.max(rows, columns * sourceHeight / sourceWidth);
+        }
         return Math.min(sourceHeight, Math.max(100, (int) Math.ceil(demand / 100.0) * 100));
     }
 
