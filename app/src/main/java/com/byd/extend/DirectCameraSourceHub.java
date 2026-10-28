@@ -36,6 +36,8 @@ final class DirectCameraSourceHub
         void onSourceFailure(int index, Throwable error);
         void onStats(int index, Stats stats);
 
+        default void onWorkerPriority(Object... fields) {}
+
         default void onCommandStats(CameraCommandMetrics.Report report) {
         }
 
@@ -548,6 +550,7 @@ final class DirectCameraSourceHub
             handler = new Handler(thread.getLooper());
             call(command(CameraCommandMetrics.Operation.WORKER_INITIALIZE, index,
                     context(index, -1, -1, null, false)), () -> {
+                CameraFramePump.applyExteriorThreadPriority(index, listener::onWorkerPriority);
                 initialize();
                 return null;
             });
@@ -775,6 +778,9 @@ final class DirectCameraSourceHub
                         }
                         @Override public void acquired(CameraFramePump.Acquisition sample) {
                             recordAcquisition(sample);
+                        }
+                        @Override public void priority(Object... fields) {
+                            listener.onWorkerPriority(fields);
                         }
                     });
             try { pump.start(); }

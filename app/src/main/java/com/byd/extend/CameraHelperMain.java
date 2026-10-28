@@ -2373,6 +2373,11 @@ final class CameraHelperMain {
                 int openedHubGeneration = ++sourceHubGeneration;
                 openedHub = DirectCameraSourceHub.create(renderingContext, new DirectCameraSourceHub.Listener() {
                     @Override
+                    public void onWorkerPriority(Object... fields) {
+                        callbackHandler.post(() -> emit("camera_worker_priority", fields));
+                    }
+
+                    @Override
                     public void onConsumerFailure(
                             Surface failedSurface, int index, int failedRequestId,
                             int failedProducerEpoch, Throwable error) {

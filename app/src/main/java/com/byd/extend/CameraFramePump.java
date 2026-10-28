@@ -18,6 +18,7 @@ import android.view.Surface;
 
 import java.nio.FloatBuffer;
 import java.util.Arrays;
+import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 
 /** Drains the OEM input without ever calling a downstream window's eglSwapBuffers. */
@@ -26,6 +27,7 @@ final class CameraFramePump {
         void available();
         void failed(Throwable error);
         void acquired(Acquisition sample);
+        default void priority(Object... fields) {}
     }
 
     static final class Acquisition {
@@ -107,10 +109,48 @@ final class CameraFramePump {
         thread.start();
         handler = new Handler(thread.getLooper());
         DirectCameraSourceHub.SerializedCall<Void> ready = new DirectCameraSourceHub.SerializedCall<>();
-        if (!handler.post(() -> ready.run(() -> { initialize(); return null; }))) {
+        if (!handler.post(() -> ready.run(() -> {
+            applyExteriorThreadPriority(index, listener::priority);
+            initialize();
+            return null;
+        }))) {
             throw new IllegalStateException("camera acquisition thread stopped");
         }
         ready.result();
+    }
+
+    static void applyExteriorThreadPriority(int index, Consumer<Object[]> report) {
+        if (index < 1 || index > 4) return;
+        final int requested = -10;
+        int tid = Process.myTid();
+        Integer before = null, actual = null;
+        RuntimeException failure = null;
+        String operation = "getThreadPriority_before";
+        try {
+            before = Process.getThreadPriority(tid);
+            operation = "setThreadPriority";
+            // Apply on this worker after its Looper starts: a denial must not kill the thread.
+            Process.setThreadPriority(requested);
+        } catch (RuntimeException error) {
+            failure = error;
+        }
+        try {
+            actual = Process.getThreadPriority(tid);
+        } catch (RuntimeException error) {
+            if (failure == null) {
+                operation = "getThreadPriority_after";
+                failure = error;
+            } else {
+                failure.addSuppressed(error);
+            }
+        }
+        report.accept(new Object[]{
+                "source_index", index, "worker", Thread.currentThread().getName(),
+                "pid", Process.myPid(), "uid", Process.myUid(), "tid", tid,
+                "requested_nice", requested, "previous_nice", before, "actual_nice", actual,
+                "applied", failure == null && actual != null && actual == requested,
+                "failed_operation", failure == null ? "" : operation,
+                "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(failure)});
     }
 
     void setOutputSize(int width, int height) {
