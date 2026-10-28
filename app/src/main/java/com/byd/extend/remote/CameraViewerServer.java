@@ -80,6 +80,8 @@ public final class CameraViewerServer implements AutoCloseable {
     private volatile String[] sessionRevision = {null, "unknown"};
     private final java.util.concurrent.atomic.AtomicLong lastTransportDiagnostic =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    private final java.util.concurrent.atomic.AtomicLong lastPlaybackSnapshot =
+            new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
 
     public CameraViewerServer(String password, String privateProxyProof, Stream stream) throws IOException {
         this.access = new ViewerAccess(password, privateProxyProof);
@@ -305,7 +307,15 @@ public final class CameraViewerServer implements AutoCloseable {
         switch (request.path) {
             case "/stop":
                 if (!request.method.equals("POST")) { methodNotAllowed(socket, reply); return; }
-                stop(request.session, socket, ViewerStopReason.describe(bodyObject(request.body)));
+                JSONObject stopInput = bodyObject(request.body);
+                if ("playback_error".equals(stopInput.optString("origin"))) {
+                    // Keep the snapshot in the stop request so teardown cannot overtake it.
+                    try { logPlaybackSnapshot(stopInput.optJSONObject("snapshot")); }
+                    catch (RuntimeException failure) {
+                        CameraViewingDiagnostics.failure("browser_snapshot_failed", "viewer", failure);
+                    }
+                }
+                stop(request.session, socket, ViewerStopReason.describe(stopInput));
                 json(socket, reply, 200, "ended", expiredCookie());
                 return;
             case "/status":
@@ -481,6 +491,10 @@ public final class CameraViewerServer implements AutoCloseable {
                 JSONObject diagnostic = bodyObject(request.body);
                 String event = diagnostic.optString("event", "");
                 String mode = diagnostic.optString("mode", "");
+                if ("playback_snapshot".equals(event)) {
+                    boolean valid = logPlaybackSnapshot(diagnostic);
+                    json(socket, reply, valid ? 200 : 400, valid ? "ok" : "invalid_event", null); return;
+                }
                 if ("playback_transport".equals(event)) {
                     FragmentedVideoWindow window = stream.video();
                     if (!ViewerStopReason.validTransportReason(diagnostic) || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))
@@ -661,6 +675,19 @@ public final class CameraViewerServer implements AutoCloseable {
             json(socket, reply, 401, "replaced", null);
             return false;
         }
+        return true;
+    }
+
+    private boolean logPlaybackSnapshot(JSONObject value) {
+        String detail = ViewerStopReason.playbackSnapshot(value);
+        if (detail == null) return false;
+        FragmentedVideoWindow window = stream.video();
+        if (window == null || !window.getStreamId().equals(value.optString("streamId"))) return false;
+        long time = now(), previous = lastPlaybackSnapshot.get();
+        if ((previous == Long.MIN_VALUE || time - previous >= 10_000)
+                && lastPlaybackSnapshot.compareAndSet(previous, time))
+            CameraViewingDiagnostics.detail("browser_playback_snapshot", stream.presentation().optString("provider"),
+                    "stream=" + window.getStreamId() + " " + detail);
         return true;
     }
 

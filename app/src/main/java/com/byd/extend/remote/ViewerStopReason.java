@@ -32,6 +32,24 @@ public final class ViewerStopReason {
         return value.optString("reason").matches("start|progress|stall|playing|recovery");
     }
 
+    /** Sparse failure state, independent of extended cumulative transport logging. */
+    public static String playbackSnapshot(JSONObject value) {
+        if (value == null || !value.optString("reason").matches("stall|http404|fatal")) return null;
+        StringBuilder result = new StringBuilder("reason=").append(value.optString("reason"));
+        for (String key : new String[] {"revision", "currentMs", "bufferAheadMs", "fragment", "lastFragment",
+                "lastLoadMs", "lastBytes", "lastFragmentAgeMs", "recoveryAgeMs"})
+            number(result, value, key, 0, 9_007_199_254_740_991L);
+        number(result, value, "httpStatus", 100, 599);
+        number(result, value, "playbackRatePermille", 0, 16_000);
+        number(result, value, "ready", 0, 4);
+        number(result, value, "seeking", 0, 1);
+        number(result, value, "pending", 0, 1);
+        String recovery = value.optString("recovery");
+        if (recovery.matches("none|refresh_playlist|await_playlist|buffered_seek|stop"))
+            result.append(" recovery=").append(recovery);
+        return result.toString();
+    }
+
     /** Cumulative browser transport measurements; no caller-supplied messages or URLs. */
     public static String transport(JSONObject value) {
         String reason = value.optString("reason");

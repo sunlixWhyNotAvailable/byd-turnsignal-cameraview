@@ -76,4 +76,32 @@ public class ViewerStopReasonTest {
         assertEquals("reason=recovery bufferedRecoveries=2 missingFragments=3 recoveryTargetMs=12400",
                 ViewerStopReason.transport(sample));
     }
+
+    @Test public void playbackSnapshotKeepsFragmentBufferAndRecoveryEvidenceWithoutSecrets() throws Exception {
+        JSONObject sample = new JSONObject().put("reason", "http404").put("revision", 3)
+                .put("currentMs", 23000).put("bufferAheadMs", 120).put("fragment", 42)
+                .put("lastFragment", 41).put("lastLoadMs", 2600).put("lastBytes", 250000)
+                .put("lastFragmentAgeMs", 900).put("recoveryAgeMs", 0).put("httpStatus", 404)
+                .put("playbackRatePermille", 1500).put("ready", 2).put("seeking", 0).put("pending", 1)
+                .put("recovery", "refresh_playlist").put("url", "https://private.example/?token=secret")
+                .put("message", "secret\nforged");
+        assertEquals("reason=http404 revision=3 currentMs=23000 bufferAheadMs=120 fragment=42"
+                + " lastFragment=41 lastLoadMs=2600 lastBytes=250000 lastFragmentAgeMs=900 recoveryAgeMs=0"
+                + " httpStatus=404 playbackRatePermille=1500 ready=2 seeking=0 pending=1 recovery=refresh_playlist",
+                ViewerStopReason.playbackSnapshot(sample));
+    }
+
+    @Test public void playbackSnapshotRejectsProgressInjectionAndInvalidMeasurements() throws Exception {
+        assertNull(ViewerStopReason.playbackSnapshot(null));
+        for (String reason : new String[] {"progress", "playing", "stall\nsecret"})
+            assertNull(ViewerStopReason.playbackSnapshot(new JSONObject().put("reason", reason)));
+        JSONObject sample = new JSONObject().put("reason", "stall").put("lastBytes", "secret")
+                .put("bufferAheadMs", -1).put("lastLoadMs", 1.5).put("lastFragmentAgeMs", 9_007_199_254_740_992L)
+                .put("httpStatus", 600).put("ready", 5).put("seeking", 2).put("pending", -1)
+                .put("playbackRatePermille", 16001).put("recovery", "stop\nsecret");
+        assertEquals("reason=stall", ViewerStopReason.playbackSnapshot(sample));
+        // Native HLS or a failure before the first download has no fragment measurement.
+        assertEquals("reason=fatal recovery=stop", ViewerStopReason.playbackSnapshot(
+                new JSONObject().put("reason", "fatal").put("recovery", "stop")));
+    }
 }

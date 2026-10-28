@@ -155,6 +155,8 @@
   let mediaGeneration = 0;
   let livePlayer = null;
   let pendingLivePlayer = null;
+  let lastPlaybackSnapshot = -Infinity;
+  let playbackSnapshotInFlight = false;
   let controlQueue = Promise.resolve();
   let modeQueue = Promise.resolve();
   let modeWriteGeneration = 0;
@@ -1492,6 +1494,37 @@
     const current = () => generation === mediaGeneration && video.isConnected && state.authenticated &&
       !state.replaced && !player.suspended && state.mode === 'live'
       && (pendingLivePlayer === player || livePlayer === player);
+    let lastFragment = null, recovery = null, hasPlayed = false;
+    const snapshot = (reason, cause, terminal = false) => {
+      const now = performance.now();
+      if (!current() || now - lastPlaybackSnapshot < 10000 || (!terminal && playbackSnapshotInFlight)) return;
+      lastPlaybackSnapshot = now;
+      let bufferAheadMs = 0;
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= video.currentTime && video.currentTime < video.buffered.end(i)) {
+          bufferAheadMs = Math.round((video.buffered.end(i) - video.currentTime) * 1000);
+          break;
+        }
+      }
+      return { event: 'playback_snapshot', reason, streamId: stream, revision: player.revision,
+        currentMs: Math.round(video.currentTime * 1000), bufferAheadMs, ready: video.readyState,
+        playbackRatePermille: Math.round(video.playbackRate * 1000),
+        seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
+        fragment: cause?.frag?.sn, httpStatus: cause?.response?.code,
+        lastFragment: lastFragment?.sequence, lastLoadMs: lastFragment?.loadMs,
+        lastBytes: lastFragment?.bytes, lastFragmentAgeMs: lastFragment ? Math.round(now - lastFragment.at) : undefined,
+        recovery: terminal ? 'stop' : recovery?.action || 'none',
+        recoveryAgeMs: !terminal && recovery ? Math.round(now - recovery.at) : undefined };
+    };
+    const reportSnapshot = (reason, cause) => {
+      const sample = snapshot(reason, cause);
+      if (!sample) return;
+      playbackSnapshotInFlight = true;
+      post('/diagnostic', sample).catch((error) => console.warn('Could not report playback snapshot', error))
+        .finally(() => { playbackSnapshotInFlight = false; });
+    };
+    video.addEventListener('playing', () => { hasPlayed = true; });
+    video.addEventListener('waiting', () => { if (hasPlayed) reportSnapshot('stall'); });
     const fail = (cause, category = 'play') => {
       if (!current()) return;
       console.warn('Live playback failed', category, cause);
@@ -1500,7 +1533,8 @@
       state.liveFailed = true; state.wantsLive = false; state.status = 'error';
       post('/stop', { origin: 'playback_error', category, mediaCode: video.error?.code,
         exception: cause?.error?.name || cause?.name, hlsType: cause?.type, hlsDetails: cause?.details,
-        fragment: cause?.frag?.sn, httpStatus: cause?.response?.code, clientRevision: WEB_REVISION }).catch(() => {});
+        fragment: cause?.frag?.sn, httpStatus: cause?.response?.code, clientRevision: WEB_REVISION,
+        snapshot: snapshot('fatal', cause, true) }).catch(() => {});
       state.authenticated = false;
       stopLiveMedia();
       renderMain(true);
@@ -1590,8 +1624,15 @@
           });
         } });
       player.hls = hls;
+      hls.on(Hls.Events.FRAG_LOADED, (_, data) => {
+        if (!current() || data.frag.type !== 'main' || !Number.isSafeInteger(data.frag.sn)) return;
+        const loading = data.frag.stats.loading;
+        lastFragment = { sequence: data.frag.sn, loadMs: Math.round(loading.end - loading.start),
+          bytes: data.payload.byteLength, at: performance.now() };
+      });
       if (provider === 'tailscale') {
         BydLiveRecovery.install(hls, Hls, (kind, detail) => {
+          recovery = { action: kind === 'missing' ? detail.action : 'buffered_seek', at: performance.now() };
           const sample = activeTransport();
           if (!sample) return;
           if (kind === 'missing') {
@@ -1609,8 +1650,12 @@
         if (current()) video.play().catch((error) => fail(error));
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) reportTransport('stall');
-        if (data.fatal) fail(data, 'hls');
+        if (data.fatal) { fail(data, 'hls'); return; }
+        if (data.response?.code === 404) reportSnapshot('http404', data);
+        if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+          reportTransport('stall');
+          if (hasPlayed) reportSnapshot('stall', data);
+        }
       });
       if (provider === 'tailscale') {
         video.addEventListener('waiting', () => reportTransport('stall'));

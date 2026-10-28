@@ -74,7 +74,8 @@
           data.response?.code !== 404 || data.frag?.type !== 'main' ||
           !Number.isSafeInteger(data.frag.sn)) return;
       missingThrough = Math.max(missingThrough, data.frag.sn);
-      report('missing', { sequence: data.frag.sn, httpStatus: 404 });
+      report('missing', { sequence: data.frag.sn, httpStatus: 404,
+        action: awaitingPlaylist ? 'await_playlist' : 'refresh_playlist' });
       if (awaitingPlaylist) return;
       // The failed response is complete. Refresh once before requesting another old segment.
       awaitingPlaylist = true;
