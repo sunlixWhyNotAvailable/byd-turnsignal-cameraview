@@ -9,11 +9,13 @@ public class MotionScreenCyclePolicyTest {
         policy.beginSession();
 
         assertTrue(policy.mayStartPreflight(true, true, false));
+        assertFalse(policy.mayStartPreflight(true, true, true));
         assertTrue(policy.mayWriteWake());
         policy.beginWakeAttempt();
         policy.markUserTakeover();
 
         assertTrue(policy.mayStartPreflight(true, true, false));
+        assertTrue(policy.mayStartPreflight(true, true, true));
         assertFalse(policy.mayWriteWake());
         assertTrue(policy.needsFreshBlackOffBaseline());
 
@@ -24,6 +26,7 @@ public class MotionScreenCyclePolicyTest {
         policy.markUncertain();
 
         assertTrue(policy.mayStartPreflight(true, true, false));
+        assertTrue(policy.mayStartPreflight(true, true, true));
         assertFalse(policy.mayWriteWake());
         policy.confirmFreshBlackOffBaseline();
         assertTrue(policy.mayWriteWake());

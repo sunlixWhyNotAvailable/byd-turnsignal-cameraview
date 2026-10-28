@@ -64,6 +64,7 @@ final class CameraRuntimeHost {
     private final String viewingHelperApkIdentity;
     private final String motionSourceEpoch = java.util.UUID.randomUUID().toString();
     private final MotionWakeOwnership motionWake = new MotionWakeOwnership();
+    private final MotionWakeRecovery motionWakeRecovery = new MotionWakeRecovery();
     private JSONObject motionPower, motionLock, motionDisplay;
     private final CameraSourceDemand.PowerGate vehiclePower = new CameraSourceDemand.PowerGate();
     private String vehiclePowerStateLine;
@@ -243,7 +244,11 @@ final class CameraRuntimeHost {
                     if (operation == MOTION_ATTACH) {
                         consumed[0] = true;
                         helper.attachMotionDetector(detector);
-                    } else if (operation == MOTION_DETACH) helper.detachMotionDetector();
+                    } else if (operation == MOTION_DETACH) {
+                        int epoch = helper.motionProducerEpoch();
+                        helper.detachMotionDetector();
+                        finishMotionWakeRecovery(session, epoch);
+                    }
                     else if (operation == MOTION_RECORD_ATTACH) {
                         if (recording == null || recording.length != 4 || requestId <= 0)
                             throw new IllegalArgumentException("four motion surfaces required");
@@ -259,8 +264,10 @@ final class CameraRuntimeHost {
                     } else if (operation == MOTION_END_WAKE) motionWake.clearPending();
                     else if (operation == MOTION_UNBIND_WORKER) {
                         // A successful reply is also the worker's permission to release consumers.
+                        int epoch = helper.motionProducerEpoch();
                         helper.detachMotionRecording();
                         helper.detachMotionDetector();
+                        finishMotionWakeRecovery(session, epoch);
                         clearMotion();
                     }
                 }
@@ -868,6 +875,8 @@ final class CameraRuntimeHost {
     }
 
     private void clearMotion() {
+        String retiringSession = motionSession;
+        int retiringEpoch = helper.motionProducerEpoch();
         motionWake.clear();
         if (motionWorker != null && motionDeath != null) motionWorker.unlinkToDeath(motionDeath, 0);
         motionWorker = null;
@@ -878,6 +887,8 @@ final class CameraRuntimeHost {
         catch (Exception error) { event("motion_recording_detach_error", "error", error.toString()); }
         try { helper.detachMotionDetector(); }
         catch (Exception error) { event("motion_detach_error", "error", error.toString()); }
+        finishMotionWakeRecovery(retiringSession, retiringEpoch);
+        motionWakeRecovery.clear();
     }
 
     private void initialize() {
@@ -979,17 +990,21 @@ final class CameraRuntimeHost {
             if (event != null && "motion_vehicle_state".equals(event.optString("kind"))) {
                 if ("power".equals(event.optString("signal"))) {
                     motionPower = event;
+                    sendMotion(event);
                     if (AvasEventPolicy.normalizedPower(event.optInt("value", -1)) == 1) {
                         if (motionWake.takeRetainedForPowerOn(helper.motionProducerEpoch())) {
                             event("motion_retained_source_power_on", "session", motionSession);
-                            helper.recoverCameraSourceAfterWake();
+                            recoverCameraSourceAfterWake();
                         }
                     } else if (!motionPowerOff()) motionWake.clearPending();
-                } else if ("lock".equals(event.optString("signal"))) motionLock = event;
-                sendMotion(event);
+                } else {
+                    if ("lock".equals(event.optString("signal"))) motionLock = event;
+                    sendMotion(event);
+                }
             }
             if (event != null && "shell_power_state".equals(DiagnosticLogPolicy.kind(line))) {
                 motionDisplay = event;
+                sendMotion(event);
                 if (lifetime.updateAwakeSession(event.optLong("awake_session_id", -1),
                                 event.optBoolean("interactive"))) {
                     boolean owned = motionWake.consume(motionSession, helper.motionProducerEpoch(),
@@ -997,9 +1012,8 @@ final class CameraRuntimeHost {
                                     event.optString("action")), android.os.SystemClock.elapsedRealtime());
                     if (owned) event("motion_owned_wake_source_retained", "session", motionSession,
                             "producer_epoch", helper.motionProducerEpoch());
-                    else helper.recoverCameraSourceAfterWake();
+                    else recoverCameraSourceAfterWake();
                 }
-                sendMotion(event);
             }
             if (lifetime.started()) dispatch(line, event);
         });
@@ -1070,6 +1084,74 @@ final class CameraRuntimeHost {
 
     private boolean motionPowerOff() {
         return motionPower != null && motionPower.optInt("value", -1) == 0;
+    }
+
+    private void recoverCameraSourceAfterWake() {
+        int producer = helper.motionProducerEpoch();
+        String session = motionSession;
+        IBinder worker = motionWorker;
+        if (producer <= 0 || session == null || worker == null || !worker.isBinderAlive()) {
+            motionWakeRecovery.clear();
+            helper.recoverCameraSourceAfterWake();
+            return;
+        }
+        long request = motionWakeRecovery.begin(session, producer);
+        if (request == 0) return;
+        // Do not block the host handler: stopping eligibility may call back into this host.
+        new Thread(() -> {
+            Bundle decision = null;
+            Throwable failure = null;
+            Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
+                data.writeString(session);
+                data.writeString(motionSourceEpoch);
+                if (!worker.transact(MotionDetectorProtocol.TX_PREPARE_WAKE_RECOVERY, data, reply, 0))
+                    throw new IllegalStateException("Motion wake recovery decision unavailable");
+                reply.readException();
+                decision = reply.readBundle(getClass().getClassLoader());
+                if (decision == null || !(decision.get("retain") instanceof Boolean)
+                        || reply.dataAvail() != 0)
+                    throw new IllegalStateException("invalid Motion wake recovery decision");
+                if (decision.getBoolean("retain")
+                        && (!(decision.get("deadline_elapsed_ms") instanceof Long)
+                            || decision.getLong("deadline_elapsed_ms") < 0
+                            || !(decision.get("recording_generation") instanceof Integer)
+                            || decision.getInt("recording_generation") <= 0))
+                    throw new IllegalStateException("invalid Motion recording tail identity");
+            } catch (Throwable error) { failure = error; }
+            finally { data.recycle(); reply.recycle(); }
+            Bundle result = decision;
+            Throwable error = failure;
+            handler.post(() -> {
+                if (worker != motionWorker || !motionWakeRecovery.matches(request,
+                        motionSession, helper.motionProducerEpoch())) return;
+                if (error == null && result.getBoolean("retain")) {
+                    motionWakeRecovery.retain(request, session, producer,
+                            result.getLong("deadline_elapsed_ms"), result.getInt("recording_generation"));
+                    event("motion_wake_reset_deferred", "session", session,
+                            "producer_epoch", producer, "recording_generation",
+                            motionWakeRecovery.recordingGeneration(), "deadline_elapsed_ms",
+                            motionWakeRecovery.deadline());
+                    return;
+                }
+                if (error != null) {
+                    StringWriter stack = new StringWriter();
+                    error.printStackTrace(new PrintWriter(stack));
+                    event("motion_wake_reset_decision_failed", "session", session,
+                            "producer_epoch", producer, "error", error.toString(), "stack", stack.toString());
+                }
+                motionWakeRecovery.clear();
+                helper.recoverCameraSourceAfterWake(producer);
+            });
+        }, "motion-wake-recovery").start();
+    }
+
+    private void finishMotionWakeRecovery(String session, int producer) {
+        int expected = motionWakeRecovery.takeAfterDetach(session, producer);
+        if (expected <= 0) return;
+        event("motion_wake_reset_released", "session", session, "producer_epoch", expected);
+        helper.recoverCameraSourceAfterWake(expected);
     }
 
     private void sendMotionBaseline(JSONObject value) {
@@ -1146,7 +1228,10 @@ final class CameraRuntimeHost {
     private void acceptCameraLine(String line) {
         handler.post(() -> {
             if (lifetime.stopped() || !lifetime.started()) return;
-            sendMotion(parseEvent(line));
+            JSONObject event = parseEvent(line);
+            if (event != null && "camera_producer_closed".equals(event.optString("kind")))
+                motionWakeRecovery.sourceClosed(event.optInt("producer_epoch", -1));
+            sendMotion(event);
             dispatch(line);
             journal.accept(line);
             send(EVENT, line, null);

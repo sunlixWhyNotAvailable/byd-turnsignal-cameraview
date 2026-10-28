@@ -89,6 +89,29 @@ final class MotionScreenControl implements AutoCloseable {
         });
     }
 
+    void reconcilePriorWarning(String id, int generation) {
+        handler.post(() -> {
+            if (!sameSession(id)) return;
+            warningGeneration = generation;
+            if (!eligible || !offContinuous || !cycle.needsFreshBlackOffBaseline()) {
+                reportPreflight("retry_reconcile_skipped", "no eligible completed uncertain screen cycle",
+                        "power=not_checked,interactive=not_checked,display=not_checked,animation=not_checked,descriptor=not_checked");
+                return;
+            }
+            handler.removeCallbacks(observe);
+            String fresh = observeFreshBlackOffBaseline();
+            if (fresh == null) return;
+            if (!eligible || !offContinuous || hasCurrentTakeover(generation)) {
+                reportPreflight("retry_reconcile_skipped",
+                        "eligibility or user takeover changed during reconciliation", fresh);
+                return;
+            }
+            cycle.confirmFreshBlackOffBaseline();
+            resetLocalWarningCycle();
+            report("prior_cycle_reconciled", fresh);
+        });
+    }
+
     void wakeForWarning(String id, int generation) {
         handler.post(() -> {
             if (!sameSession(id)) return;
@@ -97,48 +120,32 @@ final class MotionScreenControl implements AutoCloseable {
             synchronized (this) { sleepCommandIssued = false; }
             if (takeoverGeneration == generation) {
                 cycle.markUserTakeover();
-                report("wake_skipped", "PowerON or user takeover arrived before the wake request");
+                reportPreflight("wake_skipped", "PowerON or user takeover arrived before the wake request",
+                        "power=not_checked,interactive=not_checked,display=not_checked,animation=not_checked,descriptor=not_checked");
                 return;
             }
             if (!cycle.mayStartPreflight(eligible, offContinuous, ownsWake)) {
-                report("wake_skipped", "session is not eligible or screen is already worker-owned");
+                reportPreflight("wake_skipped", "screen preflight is not currently permitted",
+                        "power=not_checked,interactive=not_checked,display=not_checked,animation=not_checked,descriptor=not_checked");
                 return;
             }
             boolean rearming = cycle.needsFreshBlackOffBaseline();
+            String fresh = observeFreshBlackOffBaseline();
+            if (fresh == null) return;
+            if (rearming) {
+                cycle.confirmFreshBlackOffBaseline();
+                resetLocalWarningCycle();
+                report("black_baseline_observed", fresh);
+            }
+            if (!cycle.mayWriteWake()) {
+                reportPreflight("wake_skipped", "screen cycle remains uncertain", fresh);
+                return;
+            }
             try {
-                requireShellUid();
-                int powerState = readPower();
-                if (powerState != POWER_OFF) {
-                    offContinuous = false;
-                    cycle.markUncertain();
-                    report("wake_skipped", "vehicle Power is not OFF; screen writes remain disabled");
-                    return;
-                }
-                boolean interactive = isInteractive();
-                int display = displayState();
-                String animation = animationStatus();
-                String descriptor = animationDescriptor();
-                if (interactive || display != DISPLAY_OFF || !"1".equals(animation)
-                        || !ANIMATION_IFACE.equals(descriptor)) {
-                    if (!rearming) cycle.markUncertain();
-                    report("wake_skipped", rearming
-                            ? "user-owned screen has not returned to confirmed black/off state"
-                            : "OFF/display/animation preflight was not confirmed");
-                    return;
-                }
-                if (rearming) {
-                    cycle.confirmFreshBlackOffBaseline();
-                    resetLocalWarningCycle();
-                    report("black_baseline_observed", "fresh Power/display/animation preflight confirmed");
-                }
-                if (!cycle.mayWriteWake()) {
-                    report("wake_skipped", "screen cycle remains uncertain");
-                    return;
-                }
                 synchronized (this) {
                     if (takeoverGeneration == generation) {
                         cycle.markUserTakeover();
-                        report("wake_skipped", "PowerON or user takeover arrived before the wake request");
+                        reportPreflight("wake_skipped", "PowerON or user takeover arrived before the wake request", fresh);
                         return;
                     }
                     cycle.beginWakeAttempt(); // No repeat unless a full black/off baseline is observed.
@@ -168,12 +175,66 @@ final class MotionScreenControl implements AutoCloseable {
                     SystemClock.sleep(50L);
                 }
                 cycle.markUncertain();
-                report("wake_uncertain", "wake returned without a confirmed interactive transition");
+                reportPreflight("wake_uncertain", "wake returned without a confirmed interactive transition", fresh);
             } catch (Throwable error) {
                 cycle.markUncertain();
-                report("wake_uncertain", summary(error));
+                reportPreflight("wake_uncertain", summary(error), fresh);
             }
         });
+    }
+
+    private String observeFreshBlackOffBaseline() {
+        String power = "not_checked";
+        String interactive = "not_checked";
+        String display = "not_checked";
+        String animation = "not_checked";
+        String descriptor = "not_checked";
+        try {
+            requireShellUid();
+            int powerState = readPower();
+            power = Integer.toString(powerState);
+            if (powerState != POWER_OFF) {
+                offContinuous = false;
+                cycle.markUncertain();
+                reportPreflight("wake_skipped", "vehicle Power is not OFF", freshChecks(
+                        power, interactive, display, animation, descriptor));
+                return null;
+            }
+            boolean isInteractive = isInteractive();
+            interactive = Boolean.toString(isInteractive);
+            int displayState = displayState();
+            display = Integer.toString(displayState);
+            animation = animationStatus();
+            descriptor = animationDescriptor();
+            if (isInteractive || displayState != DISPLAY_OFF || !"1".equals(animation)
+                    || !ANIMATION_IFACE.equals(descriptor)) {
+                cycle.markUncertain();
+                reportPreflight("wake_skipped", "fresh OFF/black preflight was not confirmed",
+                        freshChecks(power, interactive, display, animation, descriptor));
+                return null;
+            }
+            return freshChecks(power, interactive, display, animation, descriptor);
+        } catch (Throwable failure) {
+            cycle.markUncertain();
+            reportPreflight("wake_uncertain", summary(failure),
+                    freshChecks(power, interactive, display, animation, descriptor));
+            return null;
+        }
+    }
+
+    private static String freshChecks(String power, String interactive, String display,
+            String animation, String descriptor) {
+        return "power=" + power + ",interactive=" + interactive + ",display=" + display
+                + ",animation=" + animation + ",descriptor=" + descriptor;
+    }
+
+    private void reportPreflight(String state, String reason, String freshChecks) {
+        report(state, "reason=" + reason + "; eligible=" + eligible
+                + "; offContinuous=" + offContinuous + "; ownsWake=" + ownsWake
+                + "; uncertain=" + cycle.uncertain() + "; wakeAttempted=" + cycle.wakeAttempted()
+                + "; takeover=" + cycle.userTookOver() + "; takeoverRequested=" + userTakeoverRequested
+                + "; session=" + sessionId + "; warningGeneration=" + warningGeneration
+                + "; fresh=" + freshChecks);
     }
 
     /** Called only after the app-owned fullscreen warning window reports that it is ready. */
@@ -398,6 +459,12 @@ final class MotionScreenControl implements AutoCloseable {
 
     private boolean takeoverRequested() {
         return userTakeoverRequested || cycle.userTookOver();
+    }
+
+    boolean hasCurrentTakeover(int generation) {
+        synchronized (this) {
+            return userTakeoverRequested && takeoverGeneration == generation;
+        }
     }
 
     private boolean sameSession(String id) {

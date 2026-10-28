@@ -421,7 +421,8 @@ final class StockAvmPreview {
             // Shell cleanup owns partial opens too; acknowledge output only after detach succeeds.
             panoApi = openedApi;
             surface = requestedSurface;
-            throw new StageException(currentStage, error);
+            throw new StageException(error instanceof BydStockAvm.CloudConfigStatException
+                    ? "byd_cloud_config_stat" : currentStage, error);
         }
     }
 

@@ -17,7 +17,7 @@ public final class MotionDetectorProtocol {
     static final String CONFIG_PATH = STATE_ROOT + "/config.json";
     static final String ACTION_SHOW_WARNING = "com.byd.extend.action.SHOW_MOTION_WARNING";
     static final String EXTRA_SESSION = "motion_session_id";
-    static final int VERSION = 18;
+    static final int VERSION = 19;
     static final int CONFIG_PENDING = 0;
     static final int CONFIG_APPLIED = 1;
     static final int CONFIG_MODE_ONLY = 2;
@@ -73,6 +73,7 @@ public final class MotionDetectorProtocol {
 
     static final int TX_CONFIGURE_STORAGE = IBinder.FIRST_CALL_TRANSACTION + 29;
     static final int TX_SUSPEND_STORAGE = IBinder.FIRST_CALL_TRANSACTION + 30;
+    static final int TX_PREPARE_WAKE_RECOVERY = IBinder.FIRST_CALL_TRANSACTION + 31;
 
     static final int CB_PREPARED = IBinder.FIRST_CALL_TRANSACTION;
     static final int CB_STATUS = IBinder.FIRST_CALL_TRANSACTION + 1;

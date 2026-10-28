@@ -192,9 +192,38 @@ public final class StockAvmShellMain {
                                 requestId, attempt, () -> checkCancellation(cancellation)));
                         if (!handler.post(task)) throw new IllegalStateException("AVM main handler rejected open");
                         surfaceTransferred = true;
-                        Surface input = task.get(15, TimeUnit.SECONDS);
-                        reply.writeNoException();
-                        input.writeToParcel(reply, 0);
+                        try {
+                            Surface input = task.get(15, TimeUnit.SECONDS);
+                            reply.writeNoException();
+                            reply.writeInt(StockAvmShellProtocol.OPEN_RESULT_OK);
+                            input.writeToParcel(reply, 0);
+                        } catch (Throwable error) {
+                            releaseBeforeTransfer(surfaceTransferred, surface::release);
+                            BydStockAvm.CloudConfigStatException statFailure =
+                                    findCloudConfigStatFailure(error);
+                            if (statFailure != null
+                                    && StockAvmShellProtocol.isEacces(statFailure.errno)) {
+                                Throwable source = statFailure.getCause();
+                                String errorReference = StockAvmShellProtocol.errorReference(
+                                        Process.myPid(), requestId, attempt);
+                                reply.writeNoException();
+                                reply.writeInt(StockAvmShellProtocol.OPEN_RESULT_BYD_CONFIG_EACCES);
+                                reply.writeInt(requestId);
+                                reply.writeInt(attempt);
+                                reply.writeInt(Process.myUid());
+                                reply.writeInt(Process.myPid());
+                                reply.writeInt(statFailure.errno);
+                                reply.writeString("byd_cloud_config_stat");
+                                reply.writeString("stat");
+                                reply.writeString(BydStockAvm.CLOUD_CONFIG_PATH);
+                                reply.writeString(StockAvmShellProtocol.errnoName(statFailure.errno));
+                                reply.writeString(source.getClass().getName());
+                                reply.writeString(source.getMessage());
+                                reply.writeString(errorReference);
+                                return true;
+                            }
+                            throw error;
+                        }
                     } catch (Throwable error) {
                         releaseBeforeTransfer(surfaceTransferred, surface::release);
                         throw error;
@@ -297,9 +326,18 @@ public final class StockAvmShellMain {
                 if (!preview.isOpen()) activeRequestId = 0;
                 String stage = error instanceof StockAvmPreview.StageException
                         ? ((StockAvmPreview.StageException) error).stage : "open";
+                BydStockAvm.CloudConfigStatException statFailure =
+                        findCloudConfigStatFailure(error);
+                String errorReference = statFailure != null
+                        && StockAvmShellProtocol.isEacces(statFailure.errno)
+                        ? StockAvmShellProtocol.errorReference(Process.myPid(), requestId, attempt)
+                        : "";
+                int preflightErrno = errorReference.isEmpty() ? 0 : statFailure.errno;
                 emit("camera_error", "renderer", "stock_avm_shell", "stage", stage, "view", view,
                         "viewpoint", viewpoint, "request_id", requestId, "attempt", attempt,
                         "shell_uid", Process.myUid(),
+                        "preflight_errno", preflightErrno,
+                        "error_ref", errorReference,
                         "error", StockAvmShellProtocol.diagnostic(error));
                 throw new IllegalStateException(summary(error), error);
             } finally {
@@ -436,6 +474,16 @@ public final class StockAvmShellMain {
                 || current instanceof StockAvmPreview.StageException)) current = current.getCause();
         String message = current.getMessage();
         return current.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+    }
+
+    private static BydStockAvm.CloudConfigStatException findCloudConfigStatFailure(
+            Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof BydStockAvm.CloudConfigStatException) {
+                return (BydStockAvm.CloudConfigStatException) current;
+            }
+        }
+        return null;
     }
 
     private static final class OwnerLock {

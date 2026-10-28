@@ -7,13 +7,14 @@ final class MotionScreenCyclePolicy {
     private boolean uncertain;
 
     boolean mayStartPreflight(boolean eligible, boolean offContinuous, boolean ownsWake) {
-        return eligible && offContinuous && !ownsWake
+        return eligible && offContinuous && (!ownsWake || needsFreshBlackOffBaseline())
                 && (needsFreshBlackOffBaseline() || !wakeAttempted);
     }
 
     boolean needsFreshBlackOffBaseline() { return userTakeover || uncertain; }
     boolean userTookOver() { return userTakeover; }
     boolean uncertain() { return uncertain; }
+    boolean wakeAttempted() { return wakeAttempted; }
     boolean mayWriteWake() { return !needsFreshBlackOffBaseline() && !wakeAttempted; }
 
     void beginWakeAttempt() { wakeAttempted = true; }

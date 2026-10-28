@@ -25,6 +25,10 @@ public final class CameraChargePolicy {
     private int voltageThresholdTenths;
     private Integer socPercent;
     private Float voltageVolts;
+    private String socOrigin = "unknown";
+    private String voltageOrigin = "unknown";
+    private long socSampleElapsedMs = -1L;
+    private long voltageSampleElapsedMs = -1L;
     private int lowCauses;
     private boolean monitoring;
     private boolean latchPersistenceHealthy = true;
@@ -65,6 +69,12 @@ public final class CameraChargePolicy {
 
     /** A null, out-of-range, or stale value marks this metric unavailable without clearing its latch. */
     public synchronized State updateSoc(Integer value) {
+        return updateSoc(value, "unknown", -1L);
+    }
+
+    synchronized State updateSoc(Integer value, String origin, long sampleElapsedMs) {
+        socOrigin = validOrigin(origin);
+        socSampleElapsedMs = sampleElapsedMs >= 0L ? sampleElapsedMs : -1L;
         if (value == null || value < 0 || value > 100) {
             socPercent = null;
             return state();
@@ -77,6 +87,12 @@ public final class CameraChargePolicy {
 
     /** Zero, non-finite and implausibly high voltages are unavailable, not low readings. */
     public synchronized State updateVoltage(Float value) {
+        return updateVoltage(value, "unknown", -1L);
+    }
+
+    synchronized State updateVoltage(Float value, String origin, long sampleElapsedMs) {
+        voltageOrigin = validOrigin(origin);
+        voltageSampleElapsedMs = sampleElapsedMs >= 0L ? sampleElapsedMs : -1L;
         if (value == null || !Float.isFinite(value) || value <= 0.0f || value > 20.0f) {
             voltageVolts = null;
             return state();
@@ -99,7 +115,12 @@ public final class CameraChargePolicy {
         int missing = (socPercent == null ? MISSING_SOC : 0)
                 | (voltageVolts == null ? MISSING_VOLTAGE : 0);
         return new State(socPercent, voltageVolts, missing, lowCauses, monitoring,
-                latchPersistenceHealthy);
+                latchPersistenceHealthy, socThresholdPercent, voltageThresholdTenths,
+                socOrigin, voltageOrigin, socSampleElapsedMs, voltageSampleElapsedMs);
+    }
+
+    private static String validOrigin(String origin) {
+        return "callback".equals(origin) || "get".equals(origin) ? origin : "unknown";
     }
 
     private void setCause(int cause, boolean low) {
@@ -164,15 +185,35 @@ public final class CameraChargePolicy {
         private final int lowCauses;
         private final boolean monitoring;
         private final boolean latchPersistenceHealthy;
+        private final int socThresholdPercent;
+        private final int voltageThresholdTenths;
+        private final String socOrigin;
+        private final String voltageOrigin;
+        private final long socSampleElapsedMs;
+        private final long voltageSampleElapsedMs;
 
         State(Integer socPercent, Float voltageVolts, int missingMetrics,
                 int lowCauses, boolean monitoring, boolean latchPersistenceHealthy) {
+            this(socPercent, voltageVolts, missingMetrics, lowCauses, monitoring,
+                    latchPersistenceHealthy, -1, -1, "unknown", "unknown", -1L, -1L);
+        }
+
+        State(Integer socPercent, Float voltageVolts, int missingMetrics,
+                int lowCauses, boolean monitoring, boolean latchPersistenceHealthy,
+                int socThresholdPercent, int voltageThresholdTenths, String socOrigin,
+                String voltageOrigin, long socSampleElapsedMs, long voltageSampleElapsedMs) {
             this.socPercent = socPercent;
             this.voltageVolts = voltageVolts;
             this.missingMetrics = missingMetrics;
             this.lowCauses = lowCauses;
             this.monitoring = monitoring;
             this.latchPersistenceHealthy = latchPersistenceHealthy;
+            this.socThresholdPercent = socThresholdPercent;
+            this.voltageThresholdTenths = voltageThresholdTenths;
+            this.socOrigin = validOrigin(socOrigin);
+            this.voltageOrigin = validOrigin(voltageOrigin);
+            this.socSampleElapsedMs = socSampleElapsedMs >= 0L ? socSampleElapsedMs : -1L;
+            this.voltageSampleElapsedMs = voltageSampleElapsedMs >= 0L ? voltageSampleElapsedMs : -1L;
         }
 
         public Integer socPercent() { return socPercent; }
@@ -181,6 +222,12 @@ public final class CameraChargePolicy {
         public boolean isSocUnavailable() { return (missingMetrics & MISSING_SOC) != 0; }
         public boolean isVoltageUnavailable() { return (missingMetrics & MISSING_VOLTAGE) != 0; }
         public int lowCauses() { return lowCauses; }
+        public int socThresholdPercent() { return socThresholdPercent; }
+        public int voltageThresholdTenths() { return voltageThresholdTenths; }
+        public String socOrigin() { return socOrigin; }
+        public String voltageOrigin() { return voltageOrigin; }
+        public long socSampleElapsedMs() { return socSampleElapsedMs; }
+        public long voltageSampleElapsedMs() { return voltageSampleElapsedMs; }
         public boolean isBlocked() { return lowCauses != 0; }
         public boolean isMonitoring() { return monitoring; }
         public boolean isLatchPersistenceHealthy() { return latchPersistenceHealthy; }
@@ -201,8 +248,7 @@ public final class CameraChargePolicy {
             result = 31 * result + missingMetrics;
             result = 31 * result + lowCauses;
             result = 31 * result + (monitoring ? 1 : 0);
-            result = 31 * result + (latchPersistenceHealthy ? 1 : 0);
-            return result;
+            return 31 * result + (latchPersistenceHealthy ? 1 : 0);
         }
 
         private static boolean equal(Object first, Object second) {

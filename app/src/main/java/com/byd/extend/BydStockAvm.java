@@ -4,6 +4,10 @@ import android.content.Context;
 import android.graphics.SurfaceTexture;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Process;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
 import android.view.Surface;
 import java.io.File;
 import java.lang.reflect.Method;
@@ -13,6 +17,9 @@ import static com.byd.extend.StockAvmPreview.*;
 
 /** The BYD renderer contract from SL06 AutoVideo, separate from TS JSON/layout APIs. */
 final class BydStockAvm implements AutoCloseable {
+    static final String CLOUD_CONFIG_PATH =
+            "/collect2/cota/apps/com.byd.avc/avm_config.yaml";
+
     private final BiConsumer<String, String> stage;
     private Object api;
     private Surface input;
@@ -28,6 +35,9 @@ final class BydStockAvm implements AutoCloseable {
         ClassLoader loader = context.getClassLoader();
         String nextConfiguration = config.detail() + ";" + config.intrinsic + ";"
                 + selection.resourceSuffix + ";" + selection.packageLastUpdateTime;
+        if (api == null || !nextConfiguration.equals(configuration)) {
+            preflightCloudConfigStat();
+        }
         if (api != null && !nextConfiguration.equals(configuration)) {
             close();
             invoke(api, "terminate", new Class<?>[0]);
@@ -130,6 +140,37 @@ final class BydStockAvm implements AutoCloseable {
                 + ";camera_order=" + (rearLeftRightFront ? "rear_left_right_front" : "rear_left_front_right"));
         configuration = nextConfiguration;
         attach(display, viewpoint, horizontal);
+    }
+
+    private void preflightCloudConfigStat() throws CloudConfigStatException {
+        int uid = Process.myUid();
+        int pid = Process.myPid();
+        try {
+            Os.stat(CLOUD_CONFIG_PATH);
+            stage.accept("byd_cloud_config_stat", "operation=stat;path=" + CLOUD_CONFIG_PATH
+                    + ";renderer=BYD;implementation=AvmAPI.initialize;uid=" + uid
+                    + ";pid=" + pid + ";result=present");
+        } catch (ErrnoException failure) {
+            boolean optionalMissing = failure.errno == OsConstants.ENOENT;
+            stage.accept("byd_cloud_config_stat", "operation=stat;path=" + CLOUD_CONFIG_PATH
+                    + ";renderer=BYD;implementation=AvmAPI.initialize;uid=" + uid
+                    + ";pid=" + pid + ";result=" + (optionalMissing ? "optional_missing" : "error")
+                    + ";errno=" + failure.errno + ";errno_name="
+                    + StockAvmShellProtocol.errnoName(failure.errno));
+            if (optionalMissing) return;
+            throw new CloudConfigStatException(failure);
+        }
+    }
+
+    static final class CloudConfigStatException extends Exception {
+        final int errno;
+
+        CloudConfigStatException(ErrnoException cause) {
+            super("BYD cloud config stat failed: path=" + CLOUD_CONFIG_PATH
+                    + ";errno=" + cause.errno + ";errno_name="
+                    + StockAvmShellProtocol.errnoName(cause.errno), cause);
+            errno = cause.errno;
+        }
     }
 
     private void attach(Surface display, int viewpoint, boolean horizontal) throws Exception {

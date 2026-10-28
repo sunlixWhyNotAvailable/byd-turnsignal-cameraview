@@ -905,19 +905,21 @@ public final class MotionStorage {
         }
     }
 
-    void discard(Output output) {
-        if (output == null) return;
+    Throwable discard(Output output) {
+        if (output == null) return null;
         if (output.pendingMediaStore) {
             try {
                 mediaProvider.delete(output.uri, ownedMediaSelection() + " AND "
                         + MediaStore.MediaColumns.IS_PENDING + "=1", ownedMediaArgs());
             }
-            catch (RuntimeException e) { Log.w(TAG, "pending_delete_failed uri=" + output.uri, e); }
+            catch (RuntimeException e) { return e; }
         } else {
             if (output.temporaryFile != null && output.temporaryFile.exists() && !output.temporaryFile.delete()) {
-                Log.w(TAG, "temporary_delete_failed " + output.temporaryFile.getName());
+                return new IOException(
+                        "Cannot delete temporary Motion clip: " + output.temporaryFile.getName());
             }
         }
+        return null;
     }
 
     Uri collectionUri(Volume volume) {

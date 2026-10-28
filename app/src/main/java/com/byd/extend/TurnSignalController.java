@@ -862,6 +862,7 @@ final class TurnSignalController {
                                 "attempt", attempt + 1, "cancelled", isStockAvmCanceled(openState),
                                 "error", StockAvmShellProtocol.diagnostic(error));
                         if (isStockAvmCanceled(openState)
+                                || error instanceof StockAvmShellProtocol.BydConfigAccessDeniedException
                                 || !shouldRetryStockAvm(transactionComplete, resetRetried, stopped)) {
                             throw error;
                         }
@@ -893,13 +894,19 @@ final class TurnSignalController {
                         "error", StockAvmShellProtocol.diagnostic(error));
                 boolean shellFailureNotified = false;
                 if (isStockAvmCanceled(openState)) return;
-                if (!transactionComplete && value != null && !avmPing(value)) {
-                    shellFailureNotified = avmShellLost(value, epoch, summary(error));
-                }
-                if (!transactionComplete && !shellFailureNotified) {
-                    emit("stock_avm_shell_died", "avm_shell_epoch", epoch,
-                            "camera_shell_epoch", openState.cameraEpoch, "request_id", requestId,
-                            "error", summary(error));
+                if (!transactionComplete) {
+                    if (value == null) {
+                        emit("stock_avm_shell_died", "avm_shell_epoch", epoch,
+                                "camera_shell_epoch", openState.cameraEpoch,
+                                "request_id", requestId, "error", summary(error));
+                    } else if (!avmPing(value)) {
+                        shellFailureNotified = avmShellLost(value, epoch, summary(error));
+                        if (!shellFailureNotified) {
+                            emit("stock_avm_shell_died", "avm_shell_epoch", epoch,
+                                    "camera_shell_epoch", openState.cameraEpoch,
+                                    "request_id", requestId, "error", summary(error));
+                        }
+                    }
                 }
                 emit("camera_error", "renderer", "stock_avm_shell",
                         "stage", "avm_shell_launch_or_open",
@@ -3344,6 +3351,35 @@ final class TurnSignalController {
             config.writeToParcel(data);
             data.writeStrongBinder(cancellation);
             requireTransact(value, StockAvmShellProtocol.TX_OPEN, data, reply);
+            int result = reply.readInt();
+            if (result == StockAvmShellProtocol.OPEN_RESULT_BYD_CONFIG_EACCES) {
+                int deniedRequestId = reply.readInt();
+                int deniedAttempt = reply.readInt();
+                int shellUid = reply.readInt();
+                int shellPid = reply.readInt();
+                int errno = reply.readInt();
+                String stage = reply.readString();
+                String operation = reply.readString();
+                String path = reply.readString();
+                String errnoName = reply.readString();
+                String sourceErrorType = reply.readString();
+                String sourceErrorMessage = reply.readString();
+                String errorReference = reply.readString();
+                if (deniedRequestId != requestId || deniedAttempt != attempt
+                        || shellUid != 2000 || shellPid <= 0
+                        || !StockAvmShellProtocol.isEacces(errno) || reply.dataAvail() != 0)
+                    throw new IllegalStateException("invalid stock AVM config rejection"
+                            + ";request_id=" + deniedRequestId + ";attempt=" + deniedAttempt
+                            + ";shell_uid=" + shellUid + ";shell_pid=" + shellPid
+                            + ";errno=" + errno + ";error_ref=" + errorReference);
+                throw new StockAvmShellProtocol.BydConfigAccessDeniedException(
+                        deniedRequestId, deniedAttempt, shellUid, shellPid, errno,
+                        stage, operation, path, errnoName, sourceErrorType,
+                        sourceErrorMessage, errorReference);
+            }
+            if (result != StockAvmShellProtocol.OPEN_RESULT_OK) {
+                throw new IllegalStateException("unknown stock AVM open result: " + result);
+            }
             Surface inputSurface = Surface.CREATOR.createFromParcel(reply);
             if (inputSurface == null || !inputSurface.isValid()) {
                 if (inputSurface != null) inputSurface.release();
@@ -4042,7 +4078,9 @@ final class TurnSignalController {
                     stockAvmRetryRequestId > 0, stockAvmRetryRequestId, stockAvmRetryAttempt,
                     eventRequestId, eventAttempt)
                     && "camera_error".equals(kind)
-                    && "stock_avm_shell".equals(event.optString("renderer"))) {
+                    && "stock_avm_shell".equals(event.optString("renderer"))
+                    && !StockAvmShellProtocol.isEacces(
+                            event.optInt("preflight_errno", 0))) {
                 emit("stock_avm_retry_error", "request_id", eventRequestId,
                         "error", event.optString("error", ""));
                 return;

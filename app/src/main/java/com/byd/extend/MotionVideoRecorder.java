@@ -19,6 +19,8 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
+import com.byd.extend.remote.CameraViewingDiagnostics;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -39,6 +41,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /** Surface-input H.264 recorder with bounded keyframe-aware pre-roll and event post-roll. */
 public final class MotionVideoRecorder implements AutoCloseable {
@@ -53,6 +56,7 @@ public final class MotionVideoRecorder implements AutoCloseable {
     private static final long AUDIO_FORMAT_WAIT_MS = 1_500L;
     private static final int AUDIO_SAMPLE_RATE = 16_000;
     private static final int AUDIO_CHANNEL_COUNT = 1;
+    private static final Pattern MP4_URI = Pattern.compile("(?i)\\b(?:content|file)://[^\\s<>\"']+");
 
     static final class InputSurfaceLease {
         private boolean retained;
@@ -1123,86 +1127,149 @@ public final class MotionVideoRecorder implements AutoCloseable {
         String segmentId = UUID.randomUUID().toString().replace("-", "");
         String uri = null;
         String preferred = library.selectedVolumeId(config.primarySd);
+        String operation = "prepare_output";
         long preparationStarted = SystemClock.elapsedRealtime();
         try {
             output = storage.createOutput(preferred, config.fallbackEnabled, name, checkup ? null : config,
                     checkup ? null : library, requiredBytes, firstAttemptVolumeId);
-            logDiagnostic("output_prepared", "elapsed_ms="
+            logDiagnostic("output_prepared", "clip_id=" + segmentId + " elapsed_ms="
                     + (SystemClock.elapsedRealtime() - preparationStarted));
+            operation = "validate_recording_state";
             if (stopRequested) throw new IOException("recording stopped during output preparation");
+            operation = "resolve_output_uri";
             uri = output.uri.toString();
-            logDiagnostic("mp4_create", "volume=" + output.volumeId + " name=" + output.displayName
+            logDiagnostic("mp4_create", "clip_id=" + segmentId + " volume=" + output.volumeId
+                    + " name=" + output.displayName
                     + " media_id=" + (output.uri.getLastPathSegment() == null ? "unknown" : output.uri.getLastPathSegment()));
+            operation = "acquire_media_lease";
             lease = MotionMediaLease.acquire(library.leaseDirectory(), uri);
+            operation = "prepare_index_record";
             MotionMediaIndex.Record record = new MotionMediaIndex.Record(uri,
                     output.recoveryUri == null ? null : output.recoveryUri.toString(),
                     output.volumeId, output.displayName, segmentId, wallFromElapsed(startElapsedMs),
                     startElapsedMs, config.width(), config.height(), MotionMediaIndex.RECORDING,
                     config.cameraOrder);
+            operation = "index_record";
             index.put(record);
             if (output.descriptor != null) {
+                operation = "create_muxer_from_descriptor";
                 muxer = new MediaMuxer(output.descriptor.getFileDescriptor(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             } else if (output.temporaryFile != null) {
+                operation = "create_muxer_from_temporary_file";
                 muxer = new MediaMuxer(output.temporaryFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             } else {
                 throw new IOException("Motion storage returned no muxer target");
             }
+            operation = "add_video_track";
             int videoTrack = muxer.addTrack(videoFormat);
             int audioTrack = -1;
             MediaFormat selectedAudioFormat = config.audioEnabled && !audioFailed ? audioFormat : null;
-            if (selectedAudioFormat != null) audioTrack = muxer.addTrack(selectedAudioFormat);
+            if (selectedAudioFormat != null) {
+                operation = "add_audio_track";
+                audioTrack = muxer.addTrack(selectedAudioFormat);
+            }
+            operation = "start_muxer";
             muxer.start();
-            logDiagnostic("mp4_muxer_started", "volume=" + output.volumeId + " name=" + output.displayName);
+            logDiagnostic("mp4_muxer_started", "clip_id=" + segmentId + " volume=" + output.volumeId
+                    + " name=" + output.displayName);
+            operation = "prepare_clip_state";
             Clip clip = new Clip(output, muxer, lease, record, videoTrack, audioTrack,
                     selectedAudioFormat != null, startElapsedMs);
             activeClip = clip;
             recording = true;
             if (firstAttemptVolumeId != null) clearOutputRestart();
             clip.storageWriteLimitBytes = output.initialOwnAllowanceBytes;
+            operation = "read_output_size";
             clip.segmentSizeBytes = Math.max(0, storage.outputSizeBytes(output));
+            operation = "persist_initial_episode";
             persistCurrentEpisode(clip, false);
             for (EncodedPacket packet : initialPackets) {
                 if (packet.elapsedUs >= startElapsedMs * 1_000L) {
+                    operation = packet.track == VIDEO_TRACK
+                            ? "write_initial_video_sample" : "write_initial_audio_sample";
                     if (!hasStorageForPacket(clip, packet.data.length)) {
                         scheduleOutputContinuation(clip.output.volumeId);
                         closeActiveClip();
                         return false;
                     }
-                    writePacket(clip, packet);
+                    writePacket(clip, packet, operation);
                     if (activeClip != clip) return false;
                 }
             }
             return true;
         } catch (IOException | RuntimeException failure) {
-            Log.e(TAG, "motion_segment_open_failed", failure);
-            logDiagnostic("mp4_create_failed", "name=" + name
-                    + " error=" + failure.getClass().getSimpleName());
             notifyState("motion_storage_unavailable:" + failure.getClass().getSimpleName());
-            if (output != null) scheduleOutputContinuation(output.volumeId);
-            else if (firstAttemptVolumeId != null) scheduleOutputContinuationTo(firstAttemptVolumeId);
-            else scheduleOutputContinuationTo(storage.oppositeVolumeId(preferred));
-            if (muxer != null) {
-                try { muxer.stop(); } catch (RuntimeException ignored) { }
-                try { muxer.release(); } catch (RuntimeException ignored) { }
+            try {
+                if (output != null) scheduleOutputContinuation(output.volumeId);
+                else if (firstAttemptVolumeId != null) scheduleOutputContinuationTo(firstAttemptVolumeId);
+                else scheduleOutputContinuationTo(storage.oppositeVolumeId(preferred));
+            } catch (RuntimeException secondary) {
+                suppress(failure, secondary);
             }
-            closeDescriptor(output);
+            if (muxer != null) {
+                try { muxer.stop(); } catch (RuntimeException secondary) { suppress(failure, secondary); }
+                try { muxer.release(); } catch (RuntimeException secondary) { suppress(failure, secondary); }
+            }
+            if (output != null && output.descriptor != null) {
+                try { output.descriptor.close(); }
+                catch (IOException secondary) { suppress(failure, secondary); }
+            }
             if (output != null) {
                 if (checkup) {
                     try { storage.deleteTemporaryOutput(output); }
-                    catch (IOException | RuntimeException cleanup) { notifyState("checkup_delete_failed:" + cleanup); }
-                } else storage.discard(output);
+                    catch (IOException | RuntimeException secondary) {
+                        suppress(failure, secondary);
+                        notifyState("checkup_delete_failed:" + secondary.getClass().getSimpleName());
+                    }
+                } else {
+                    try {
+                        Throwable secondary = storage.discard(output);
+                        if (secondary != null) suppress(failure, secondary);
+                    } catch (RuntimeException secondary) { suppress(failure, secondary); }
+                }
             }
-            if (lease != null) try { lease.close(); } catch (IOException ignored) { }
+            if (lease != null) try { lease.close(); }
+            catch (IOException secondary) { suppress(failure, secondary); }
             if (uri != null) {
-                try { index.remove(uri); } catch (IOException ignored) { }
+                try { index.remove(uri); }
+                catch (IOException secondary) { suppress(failure, secondary); }
             }
             activeClip = null;
             recording = false;
+            String diagnostic = mp4FailureDiagnostic(failure,
+                    output == null || output.uri == null ? null : output.uri.toString());
+            Log.e(TAG, "motion_segment_open_failed operation=" + operation
+                    + " clip_id=" + segmentId + " error=" + diagnostic);
+            logDiagnostic("mp4_create_failed", "operation=" + operation
+                    + " source=" + storageSource(output)
+                    + " volume=" + (output == null ? preferred : output.volumeId)
+                    + " clip_id=" + segmentId + " correlation_id=" + segmentId
+                    + " name=" + name + " error_class=" + failure.getClass().getName()
+                    + " error=" + diagnostic);
             return false;
         }
     }
 
+    private static void suppress(Throwable primary, Throwable secondary) {
+        if (secondary != primary) primary.addSuppressed(secondary);
+    }
+
+    private static String mp4FailureDiagnostic(Throwable failure, String uri) {
+        return MP4_URI.matcher(CameraViewingDiagnostics.describe(failure, uri))
+                .replaceAll("[URI redacted]").replace("\r", "\\r").replace("\n", "\\n");
+    }
+
+    private static String storageSource(MotionStorage.Output output) {
+        return output == null ? "motion_storage_selection"
+                : output.descriptor != null ? "media_provider_descriptor"
+                : output.temporaryFile != null ? "temporary_file" : "missing_muxer_target";
+    }
+
     private void writePacket(Clip clip, EncodedPacket packet) {
+        writePacket(clip, packet, null);
+    }
+
+    private void writePacket(Clip clip, EncodedPacket packet, String initialOpenOperation) {
         if (videoFailed && packet.track == AUDIO_TRACK && packet.elapsedUs > lastVideoElapsedUs) return;
         int track = packet.track == VIDEO_TRACK ? clip.videoTrack : clip.audioTrack;
         if (track < 0 || (packet.track == AUDIO_TRACK && !clip.audioIncluded)) return;
@@ -1226,10 +1293,26 @@ public final class MotionVideoRecorder implements AutoCloseable {
             }
         } catch (RuntimeException failure) {
             Log.e(TAG, "motion_muxer_write_failed", failure);
+            if (initialOpenOperation != null) {
+                logInitialSampleWriteFailure(initialOpenOperation, clip, failure);
+            }
             notifyState("motion_muxer_write_failed");
             scheduleOutputContinuation(clip.output.volumeId);
             closeActiveClip();
         }
+    }
+
+    private void logInitialSampleWriteFailure(String operation, Clip clip, Throwable failure) {
+        String clipId = clip.record.segmentId;
+        String diagnostic = mp4FailureDiagnostic(failure,
+                clip.output.uri == null ? null : clip.output.uri.toString());
+        logDiagnostic("mp4_create_failed", "operation=" + operation
+                + " source=" + storageSource(clip.output)
+                + " volume=" + clip.output.volumeId
+                + " clip_id=" + clipId + " correlation_id=" + clipId
+                + " name=" + clip.output.displayName
+                + " error_class=" + failure.getClass().getName()
+                + " error=" + diagnostic);
     }
 
     private void closeActiveClip() {
@@ -1276,7 +1359,21 @@ public final class MotionVideoRecorder implements AutoCloseable {
                         + " audio_samples=" + clip.audioSamples + " status=" + status);
                 if (checkup) checkupSavedAndDeleted = checkupDurationComplete;
             } else if (clip.videoSamples == 0) {
-                if (!checkup) storage.discard(clip.output);
+                if (!checkup) {
+                    Throwable discardFailure = storage.discard(clip.output);
+                    if (discardFailure != null) {
+                        String diagnostic = mp4FailureDiagnostic(discardFailure,
+                                clip.output.uri == null ? null : clip.output.uri.toString());
+                        logDiagnostic("mp4_discard_failed", "operation=discard_empty_output"
+                                + " source=" + storageSource(clip.output)
+                                + " volume=" + clip.output.volumeId
+                                + " clip_id=" + clip.record.segmentId
+                                + " correlation_id=" + clip.record.segmentId
+                                + " name=" + clip.output.displayName
+                                + " error_class=" + discardFailure.getClass().getName()
+                                + " error=" + diagnostic);
+                    }
+                }
                 index.remove(clip.record.uri);
                 logDiagnostic("mp4_finalize_discard", "volume=" + clip.output.volumeId
                         + " name=" + clip.output.displayName + " reason=no_video_samples");

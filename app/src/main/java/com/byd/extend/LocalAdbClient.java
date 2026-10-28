@@ -372,12 +372,7 @@ final class LocalAdbClient {
                 context, fixedCommand, output, maxBytes, readTimeoutMs,
                 cancellation, eventSink);
         String text = new String(output.toByteArray(), StandardCharsets.UTF_8);
-        if (result.ok) {
-            return Result.ok(text, result.exitCode, result.fingerprint, result.publicKeySent);
-        }
-        return result.authorizationRequired
-                ? Result.authorizationRequired(result.error, result.publicKeySent, result.fingerprint)
-                : Result.failed(result.error, text, result.exitCode, result.fingerprint);
+        return result.withOutput(text);
     }
 
     private static Result connectOnly(
@@ -945,6 +940,12 @@ final class LocalAdbClient {
         static Result transportUnavailable(String error) {
             return new Result(false, false, false, false, false,
                     "", -1, error, "unavailable", true);
+        }
+
+        Result withOutput(String value) {
+            return new Result(ok, authorizationRequired, publicKeySent, superseded,
+                    commandReadTimeout, value, exitCode, error, fingerprint,
+                    transportUnavailable, publicKeyWriteStarted);
         }
     }
 

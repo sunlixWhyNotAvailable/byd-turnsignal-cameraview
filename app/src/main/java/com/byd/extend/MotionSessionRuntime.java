@@ -120,5 +120,6 @@ final class MotionSessionRuntime {
     long recordingRevision() { return recordingRevision; }
     boolean suspended() { return suspended; }
     void blockWarningRetry() { warningRetryBlocked = true; }
+    void warningBaselineReconciled() { warningRetryBlocked = false; }
     boolean warningRetryBlocked() { return warningRetryBlocked; }
 }

@@ -1954,6 +1954,11 @@ final class CameraHelperMain {
             if (persistentPanoProducer) tearDownPersistentProducer(VEHICLE_WAKE_RECOVERY, null);
         }
 
+        synchronized void recoverCameraSourceAfterWake(int expectedEpoch) {
+            if (persistentPanoProducer && producerEpoch == expectedEpoch)
+                tearDownPersistentProducer(VEHICLE_WAKE_RECOVERY, null);
+        }
+
 
         synchronized String closeCamera(String reason) {
             if (CameraTransition.reasonEquals(reason, ACTIVITY_RESUME_COLD_RESET)

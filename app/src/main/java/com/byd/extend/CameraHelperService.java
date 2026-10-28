@@ -25,6 +25,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -1301,30 +1302,50 @@ public final class CameraHelperService extends Service {
     }
 
     private void recoverWeatherAccessibility(long epoch, String reason) {
+        int user = AvasNotificationAccess.userIdForUid(Process.myUid());
+        String correlationId = newWeatherAccessibilityCorrelationId();
         String outcome = "cancelled";
+        String stage = "recovery";
+        String attempt = "none";
         try {
             if (!weatherAccessibilityRecovery.isCurrent(epoch)) return;
-            if (!applyWeatherAccessibility(true, false, epoch)) {
+            stage = "registration";
+            attempt = "initial";
+            String initialCorrelationId = correlationId + "-initial";
+            if (!applyWeatherAccessibility(true, false, epoch, initialCorrelationId)) {
                 outcome = weatherAccessibilityRecovery.isCurrent(epoch)
                         ? "registration_failed" : "cancelled";
                 return;
             }
-            if (WeatherRefreshAccessibilityService.awaitConnection(
-                    ACCESSIBILITY_CONNECTION_WAIT_MS)) {
+            stage = "bind_wait";
+            if (awaitWeatherAccessibilityConnection(
+                    epoch, user, initialCorrelationId, "initial")) {
                 outcome = "connected";
                 return;
             }
-            if (!weatherAccessibilityRecovery.isCurrent(epoch)) return;
-            if (!applyWeatherAccessibility(true, true, epoch)) {
+            if (!weatherAccessibilityRecovery.isCurrent(epoch)) {
+                outcome = "superseded";
+                return;
+            }
+            stage = "rebind";
+            attempt = "rebind";
+            String rebindCorrelationId = correlationId + "-rebind";
+            if (!applyWeatherAccessibility(true, true, epoch, rebindCorrelationId)) {
                 outcome = weatherAccessibilityRecovery.isCurrent(epoch)
                         ? "rebind_failed" : "cancelled";
                 return;
             }
-            outcome = WeatherRefreshAccessibilityService.awaitConnection(
-                    ACCESSIBILITY_CONNECTION_WAIT_MS) ? "rebind_connected" : "timeout";
+            stage = "bind_wait";
+            boolean connected = awaitWeatherAccessibilityConnection(
+                    epoch, user, rebindCorrelationId, "rebind");
+            outcome = connected ? "rebind_connected"
+                    : !weatherAccessibilityRecovery.isCurrent(epoch) ? "superseded"
+                    : Thread.currentThread().isInterrupted() ? "interrupted" : "timeout";
         } finally {
             lifecycle("weather_accessibility_recovery", "reason", reason,
-                    "outcome", outcome);
+                    "outcome", outcome, "stage", stage, "attempt", attempt,
+                    "status", outcome, "recovery_epoch", epoch, "user", user,
+                    "correlation_id", correlationId);
             List<AccessibilityRecoveryCallback> callbacks = null;
             synchronized (weatherAccessibilityCallbackLock) {
                 if (weatherAccessibilityRecovery.finish(epoch)) {
@@ -1358,64 +1379,136 @@ public final class CameraHelperService extends Service {
         });
     }
 
-    private boolean applyWeatherAccessibility(boolean enabled, boolean forceRebind) {
-        return applyWeatherAccessibility(enabled, forceRebind, 0);
-    }
-
     private boolean applyWeatherAccessibility(
-            boolean enabled, boolean forceRebind, long recoveryEpoch) {
+            boolean enabled, boolean forceRebind, long recoveryEpoch, String correlationId) {
         if (!enabled) return true;
         int user = AvasNotificationAccess.userIdForUid(Process.myUid());
+        AccessibilitySettingsWriter.Failure[] operationFailure = new AccessibilitySettingsWriter.Failure[1];
+        String[] operationStage = {"read_services"};
         AccessibilitySettingsWriter.Result result;
         try {
             result = AccessibilitySettingsWriter.ensureEnabled(new AccessibilitySettingsWriter.Access() {
+                    @Override public void stage(String value) { operationStage[0] = value; }
+
+                    @Override public AccessibilitySettingsWriter.Failure failure() {
+                        return operationFailure[0];
+                    }
+
                     @Override public String readServices() {
-                        LocalAdbClient.Result read = LocalAdbClient.executeAuthorizedText(
-                                CameraHelperService.this, "settings --user " + user
+                        LocalAdbClient.Result read = executeWeatherAccessibilityOperation(
+                                "settings --user " + user
                                         + " get secure enabled_accessibility_services",
-                                8_192, CameraHelperService.this::lifecycle);
-                        if (!read.ok) throw new IllegalStateException(read.error);
+                                true, 8_192, operationStage[0], user, recoveryEpoch,
+                                correlationId, operationFailure);
+                        if (!read.ok) throw new AccessibilitySettingsWriter.OperationFailure(
+                                operationFailure[0], null);
                         return read.output;
                     }
 
                     @Override public boolean writeServices(String value) {
-                        return runWeatherAccessibilityCommand("settings --user " + user
-                                + " put secure enabled_accessibility_services " + quote(value));
+                        LocalAdbClient.Result write = executeWeatherAccessibilityOperation(
+                                "settings --user " + user
+                                        + " put secure enabled_accessibility_services " + quote(value),
+                                false, 0, operationStage[0], user, recoveryEpoch,
+                                correlationId, operationFailure);
+                        return write.ok;
                     }
 
                     @Override public boolean enableAccessibility() {
-                        LocalAdbClient.Result read = LocalAdbClient.executeAuthorizedText(
-                                CameraHelperService.this, "settings --user " + user
-                                        + " get secure accessibility_enabled",
-                                64, CameraHelperService.this::lifecycle);
+                        stage("read_enabled_setting");
+                        LocalAdbClient.Result read = executeWeatherAccessibilityOperation(
+                                "settings --user " + user + " get secure accessibility_enabled",
+                                true, 64, operationStage[0], user, recoveryEpoch,
+                                correlationId, operationFailure);
                         if (!read.ok) return false;
                         if ("1".equals(read.output == null ? "" : read.output.trim())) return true;
-                        if (!runWeatherAccessibilityCommand("settings --user " + user
-                                + " put secure accessibility_enabled 1")) return false;
-                        LocalAdbClient.Result readback = LocalAdbClient.executeAuthorizedText(
-                                CameraHelperService.this, "settings --user " + user
-                                        + " get secure accessibility_enabled",
-                                64, CameraHelperService.this::lifecycle);
-                        return readback.ok && "1".equals(readback.output == null
+                        stage("write_enabled_setting");
+                        LocalAdbClient.Result write = executeWeatherAccessibilityOperation(
+                                "settings --user " + user + " put secure accessibility_enabled 1",
+                                false, 0, operationStage[0], user, recoveryEpoch,
+                                correlationId, operationFailure);
+                        if (!write.ok) return false;
+                        stage("readback_enabled_setting");
+                        LocalAdbClient.Result readback = executeWeatherAccessibilityOperation(
+                                "settings --user " + user + " get secure accessibility_enabled",
+                                true, 64, operationStage[0], user, recoveryEpoch,
+                                correlationId, operationFailure);
+                        if (!readback.ok) return false;
+                        boolean enabled = "1".equals(readback.output == null
                                 ? "" : readback.output.trim());
+                        if (!enabled) operationFailure[0] = new AccessibilitySettingsWriter.Failure(
+                                operationStage[0], "readback_mismatch", "",
+                                "Accessibility setting readback was "
+                                        + AdbRecoveryDiagnostics.safeText(readback.output));
+                        return enabled;
                     }
                     }, forceRebind,
                     () -> recoveryEpoch != 0
                             && !weatherAccessibilityRecovery.isCurrent(recoveryEpoch),
                     CameraHelperService::pauseWeatherAccessibility,
-                    event -> lifecycle(event, "epoch", recoveryEpoch));
+                    new AccessibilitySettingsWriter.Events() {
+                        @Override public void log(String event) {
+                            lifecycle(event, "recovery_epoch", recoveryEpoch,
+                                    "correlation_id", correlationId, "user", user);
+                        }
+
+                        @Override public void log(String event,
+                                AccessibilitySettingsWriter.Failure failure) {
+                            lifecycle(event, "stage", failure.stage, "status", failure.status,
+                                    "error_class", failure.errorClass,
+                                    "error", AdbRecoveryDiagnostics.safeText(failure.error),
+                                    "recovery_epoch", recoveryEpoch,
+                                    "correlation_id", correlationId, "user", user);
+                            if (failure.diagnosticCause != null) {
+                                AdbRecoveryDiagnostics.failure(CameraHelperService.this::lifecycle,
+                                        "weather_accessibility_restore_failure_detail",
+                                        failure.stage, failure.diagnosticCause,
+                                        "recovery_epoch", recoveryEpoch,
+                                        "correlation_id", correlationId, "user", user);
+                            }
+                        }
+                    });
         } catch (RuntimeException failure) {
-            lifecycle("weather_accessibility_failed", "enabled", true,
-                    "error", failure.getClass().getSimpleName());
+            AdbRecoveryDiagnostics.failure(this::lifecycle,
+                    "weather_accessibility_failed", operationStage[0], failure,
+                    "stage", operationStage[0], "status", "exception",
+                    "enabled", true, "correlation_id", correlationId,
+                    "recovery_epoch", recoveryEpoch, "user", user,
+                    "rebind", forceRebind);
             clearWeatherAccessibilityTarget(true);
             return false;
         }
         boolean bound = WeatherRefreshAccessibilityService.isConnected();
+        AccessibilitySettingsWriter.Failure detail = result.failure;
+        String status = detail == null ? result.ok ? "applied" : "readback_failed" : detail.status;
         lifecycle(result.ok ? "weather_accessibility_applied" : "weather_accessibility_failed",
                 "enabled", true, "listed", result.listed, "rebind", forceRebind,
-                "granted", result.ok, "cancelled", result.cancelled);
+                "granted", result.ok, "cancelled", result.cancelled,
+                "stage", detail == null ? "apply" : detail.stage,
+                "status", status,
+                "error_class", detail == null ? "" : detail.errorClass,
+                "error", detail == null ? "" : AdbRecoveryDiagnostics.safeText(detail.error),
+                "user", user, "recovery_epoch", recoveryEpoch,
+                "correlation_id", correlationId);
+        if (detail != null && detail.secondary != null) {
+            lifecycle("weather_accessibility_secondary_failure",
+                    "stage", detail.secondary.stage, "status", detail.secondary.status,
+                    "error_class", detail.secondary.errorClass,
+                    "error", AdbRecoveryDiagnostics.safeText(detail.secondary.error),
+                    "user", user, "recovery_epoch", recoveryEpoch,
+                    "correlation_id", correlationId);
+        }
+        if (detail != null && detail.diagnosticCause != null) {
+            AdbRecoveryDiagnostics.failure(this::lifecycle,
+                    "weather_accessibility_failure_detail", detail.stage,
+                    detail.diagnosticCause, "correlation_id", correlationId,
+                    "recovery_epoch", recoveryEpoch, "user", user,
+                    "rebind", forceRebind);
+        }
         lifecycle("weather_accessibility_binding_readback", "bound", bound,
-                "rebind", forceRebind);
+                "stage", "bind_readback", "status", bound ? "bound" : "not_bound",
+                "rebind", forceRebind, "user", user,
+                "recovery_epoch", recoveryEpoch, "correlation_id", correlationId);
         if (!result.ok && !result.cancelled) clearWeatherAccessibilityTarget(true);
         return result.ok;
     }
@@ -1427,13 +1520,87 @@ public final class CameraHelperService extends Service {
         }
     }
 
-    private boolean runWeatherAccessibilityCommand(String command) {
-        LocalAdbClient.Result result = LocalAdbClient.executeAuthorized(
-                this, command, this::lifecycle);
-        if (!result.ok) {
-            lifecycle("weather_accessibility_command_failed", "error", result.error);
+    private LocalAdbClient.Result executeWeatherAccessibilityOperation(
+            String command, boolean text, int maxBytes, String stage, int user,
+            long recoveryEpoch, String correlationId,
+            AccessibilitySettingsWriter.Failure[] operationFailure) {
+        final boolean[] deferred = {false};
+        java.util.function.BiConsumer<String, Object[]> events = (event, fields) -> {
+            if ("background_deferred".equals(event)
+                    || hasStage(fields, "background_deferred")) deferred[0] = true;
+            lifecycle(event, weatherAccessibilityFields(fields, correlationId,
+                    stage, user, recoveryEpoch));
+        };
+        final LocalAdbClient.Result result;
+        try {
+            result = text
+                    ? LocalAdbClient.executeAuthorizedText(this, command, maxBytes, events)
+                    : LocalAdbClient.executeAuthorized(this, command, events);
+        } catch (RuntimeException failure) {
+            AdbRecoveryDiagnostics.failure(events,
+                    "weather_accessibility_operation_exception", stage, failure);
+            operationFailure[0] = new AccessibilitySettingsWriter.Failure(stage,
+                    "exception", failure.getClass().getName(), failure.getMessage());
+            throw new AccessibilitySettingsWriter.OperationFailure(operationFailure[0], failure);
         }
-        return result.ok;
+        operationFailure[0] = result.ok ? null : weatherAccessibilityFailure(stage, result, deferred[0]);
+        return result;
+    }
+
+    private static AccessibilitySettingsWriter.Failure weatherAccessibilityFailure(
+            String stage, LocalAdbClient.Result result, boolean deferred) {
+        String status;
+        if (deferred) status = "deferred";
+        else if (result.superseded) status = "superseded";
+        else if (result.authorizationRequired) status = "authorization_required";
+        else if (result.transportUnavailable) status = "transport_unavailable";
+        else if (result.commandReadTimeout) status = "command_read_timeout";
+        else if (result.exitCode >= 0) status = "command_failure";
+        else status = "operation_failure";
+        return new AccessibilitySettingsWriter.Failure(stage, status, "",
+                AdbRecoveryDiagnostics.safeText(result.error));
+    }
+
+    private static Object[] weatherAccessibilityFields(Object[] fields, String correlationId,
+            String stage, int user, long recoveryEpoch) {
+        Object[] source = fields == null ? new Object[0] : fields;
+        Object[] result = Arrays.copyOf(source, source.length + 8);
+        int offset = source.length;
+        result[offset] = "correlation_id";
+        result[offset + 1] = correlationId;
+        result[offset + 2] = "accessibility_stage";
+        result[offset + 3] = stage;
+        result[offset + 4] = "android_user";
+        result[offset + 5] = user;
+        result[offset + 6] = "recovery_epoch";
+        result[offset + 7] = recoveryEpoch;
+        return result;
+    }
+
+    private static boolean hasStage(Object[] fields, String expected) {
+        for (int i = 0; fields != null && i + 1 < fields.length; i += 2) {
+            if ("stage".equals(fields[i]) && expected.equals(fields[i + 1])) return true;
+        }
+        return false;
+    }
+
+    private static String newWeatherAccessibilityCorrelationId() {
+        return "weather-accessibility-" + Process.myPid() + "-"
+                + Long.toHexString(SystemClock.elapsedRealtimeNanos());
+    }
+
+    private boolean awaitWeatherAccessibilityConnection(long epoch, int user,
+            String correlationId, String attempt) {
+        boolean connected = WeatherRefreshAccessibilityService.awaitConnection(
+                ACCESSIBILITY_CONNECTION_WAIT_MS);
+        lifecycle("weather_accessibility_bind_wait", "stage", "bind_wait",
+                "status", connected ? "bound"
+                        : !weatherAccessibilityRecovery.isCurrent(epoch) ? "superseded"
+                        : Thread.currentThread().isInterrupted() ? "interrupted" : "timeout",
+                "attempt", attempt, "timeout_ms", ACCESSIBILITY_CONNECTION_WAIT_MS,
+                "user", user, "recovery_epoch", epoch,
+                "correlation_id", correlationId);
+        return connected;
     }
 
     private static String quote(String value) {

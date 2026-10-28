@@ -145,6 +145,10 @@ public final class MotionDetectorShellMain {
     private PowerManager.WakeLock wakeLock;
     private int recordingGeneration;
     private int recordingRequestId;
+    private int recordingTailGeneration;
+    private int wakeRecoveryTailGeneration;
+    private long recordingTailDeadlineElapsedMs;
+    private boolean recordingTailActive;
     private boolean recordingAttached;
     private boolean recordingStopRequested;
     private long recordingAttemptRevision;
@@ -180,6 +184,9 @@ public final class MotionDetectorShellMain {
     private IBinder.DeathRecipient telemetryHostDeath;
     private boolean warningVisible;
     private boolean warningClosing;
+    private boolean warningReconciliationPending;
+    private int warningReconciliationGeneration = -1;
+    private long warningReconciliationSessionGeneration = -1L;
     private boolean warningRestoreAllowed;
     private boolean warningWindowLaunched;
     private int warningWindowGeneration;
@@ -481,7 +488,11 @@ public final class MotionDetectorShellMain {
         });
         screen = new MotionScreenControl((active, generation, screenState, detail) -> control.post(() -> {
             if (!sameSession(active)) return;
-            if (generation >= 0 && generation != warningWindowGeneration) return;
+            if (generation >= 0 && generation != warningWindowGeneration) {
+                if (warningReconciliationPending && generation == warningReconciliationGeneration)
+                    clearWarningReconciliation();
+                return;
+            }
             sendScreen(active, screenState, detail);
             if ("wake_requested".equals(screenState)) {
                 launchWarningWindow(active, generation);
@@ -499,6 +510,18 @@ public final class MotionDetectorShellMain {
             if ("black_restore_observed".equals(screenState)) {
                 closeWarningAfterBlackRestore(active, generation);
                 endOwnedWake(active);
+                return;
+            }
+            if ("prior_cycle_reconciled".equals(screenState)) {
+                if (warningReconciliationPending && generation == warningReconciliationGeneration
+                        && warningReconciliationSessionGeneration == sessionGeneration) {
+                    if (mayClearWarningRetry(generation)) sessionRuntime.warningBaselineReconciled();
+                    clearWarningReconciliation();
+                }
+                return;
+            }
+            if (warningReconciliationPending && generation == warningReconciliationGeneration) {
+                clearWarningReconciliation();
                 return;
             }
             if (isWarningCycleFailure(screenState)) {
@@ -561,6 +584,8 @@ public final class MotionDetectorShellMain {
                 if (reply != null) reply.writeException(new SecurityException("viewing helper registration requires app UID"));
                 return true;
             }
+            boolean wakeRecoveryRequest = code == MotionDetectorProtocol.TX_PREPARE_WAKE_RECOVERY
+                    && callerUid == 2000;
             if (isViewingHelperOperation(code)) {
                 boolean appChargeRead = code == MotionDetectorProtocol.TX_READ_CHARGE
                         && callerUid == appUid;
@@ -568,7 +593,7 @@ public final class MotionDetectorShellMain {
                     if (reply != null) reply.writeException(new SecurityException("unregistered viewing helper"));
                     return true;
                 }
-            } else if (callerUid != appUid && !(code == MotionDetectorProtocol.TX_PING
+            } else if (callerUid != appUid && !wakeRecoveryRequest && !(code == MotionDetectorProtocol.TX_PING
                     && isRegisteredViewingCaller(callerUid, Binder.getCallingPid()))) {
                 if (reply != null) reply.writeException(new SecurityException("motion caller denied"));
                 return true;
@@ -633,6 +658,20 @@ public final class MotionDetectorShellMain {
                         callControl(() -> { onCameraHostReadyOnControl(); return null; });
                         reply.writeNoException();
                         return true;
+                    case MotionDetectorProtocol.TX_PREPARE_WAKE_RECOVERY: {
+                        if (callerUid != 2000)
+                            throw new SecurityException("Motion wake recovery requires shell UID");
+                        String id = data.readString();
+                        String sourceEpoch = data.readString();
+                        if (!MotionDetectorProtocol.validSession(id) || sourceEpoch == null
+                                || sourceEpoch.isEmpty() || sourceEpoch.length() > 128
+                                || data.dataAvail() != 0)
+                            throw new IllegalArgumentException("invalid Motion wake recovery request");
+                        Bundle decision = callControl(() -> prepareWakeRecoveryOnControl(id, sourceEpoch));
+                        reply.writeNoException();
+                        reply.writeBundle(decision);
+                        return true;
+                    }
                     case MotionDetectorProtocol.TX_CONFIGURE: {
                         int version = data.readInt();
                         int build = data.readInt();
@@ -1255,26 +1294,24 @@ public final class MotionDetectorShellMain {
         if (!chargeHandlingEnabled || !next.isMonitoring() || !sameSession(id)
                 || config == null) return;
 
+        if (previous.isBlocked() != next.isBlocked())
+            logChargeTransition(id, next, next.isBlocked() ? "blocked" : "resumed");
+
         if (!previous.isBlocked() && next.isBlocked()) {
             clearRemoteViewLeases();
             if (config.motionEnabled()) {
                 try {
                     if (eligible) setEligibleOnControl(id, false);
                     else if (warning) finishWarning(id, false);
-                    if (recorder != null && recorder.isRecording() && !recordingTailPending()) {
-                        long tailMs = Math.max(0L, config.afterSeconds * 1000L);
-                        recorder.finishAfter(SystemClock.elapsedRealtime() + tailMs);
-                        state = "recording_tail";
-                        control.removeCallbacks(recordingTailFinished);
-                        control.postDelayed(recordingTailFinished, tailMs);
-                    }
+                    if (recorder != null && recorder.isRecording() && !recordingTailPending())
+                        beginRecordingTail(id);
                 } catch (Throwable failure) {
                     fail(id, "camera_charge_block", failure);
                     return;
                 }
             }
             updateCameraDemand();
-            if (!recordingTailPending() && !warning) state = "charge_blocked";
+            state = "charge_blocked";
             sendStatus(id, "charge_blocked", "a confirmed low-charge cause pauses tablet warning, recording and remote viewing");
             return;
         }
@@ -1303,6 +1340,45 @@ public final class MotionDetectorShellMain {
             target.transact(MotionDetectorProtocol.CB_CHARGE, data, null, IBinder.FLAG_ONEWAY);
         } catch (RemoteException ignored) { detachUiOnControl(id, target); }
         finally { data.recycle(); }
+    }
+
+    private void logChargeTransition(String id, CameraChargePolicy.State snapshot, String transition) {
+        long now = SystemClock.elapsedRealtime();
+        logEvent("motion_charge_transition", id,
+                "transition", transition,
+                "session_generation", sessionGeneration,
+                "soc_percent", snapshot.socPercent() == null ? "unknown" : snapshot.socPercent(),
+                "soc_unit", "percent",
+                "soc_threshold_percent", snapshot.socThresholdPercent() < 0
+                        ? "unknown" : snapshot.socThresholdPercent(),
+                "soc_origin", snapshot.socOrigin(),
+                "soc_age_ms", chargeSampleAge(snapshot.socSampleElapsedMs(), now),
+                "voltage_volts", snapshot.voltageVolts() == null ? "unknown" : snapshot.voltageVolts(),
+                "voltage_unit", "V",
+                "voltage_threshold_tenths", snapshot.voltageThresholdTenths() < 0
+                        ? "unknown" : snapshot.voltageThresholdTenths(),
+                "voltage_threshold_unit", "0.1V",
+                "voltage_origin", snapshot.voltageOrigin(),
+                "voltage_age_ms", chargeSampleAge(snapshot.voltageSampleElapsedMs(), now),
+                "low_causes", snapshot.lowCauses(),
+                "missing_metrics", snapshot.missingMetrics());
+    }
+
+    private static String chargeSampleAge(long sampledAtElapsedMs, long nowElapsedMs) {
+        return sampledAtElapsedMs < 0L || sampledAtElapsedMs > nowElapsedMs
+                ? "unknown" : Long.toString(nowElapsedMs - sampledAtElapsedMs);
+    }
+
+    private void clearWarningReconciliation() {
+        warningReconciliationPending = false;
+        warningReconciliationGeneration = -1;
+        warningReconciliationSessionGeneration = -1L;
+    }
+
+    private boolean mayClearWarningRetry(int generation) {
+        return !warning && !warningClosing && eligible && sessionRuntime.power() == 0
+                && !sessionRuntime.suspended() && !teardownPending
+                && !screen.hasCurrentTakeover(generation);
     }
 
     private void cancelCheck(ManualCheck check) {
@@ -1659,6 +1735,11 @@ public final class MotionDetectorShellMain {
         cameraHostPending = false;
         cameraHostReadyDuringBinding = false;
         state = "preparing";
+        clearWarningReconciliation();
+        recordingTailActive = false;
+        recordingTailGeneration = 0;
+        wakeRecoveryTailGeneration = 0;
+        recordingTailDeadlineElapsedMs = 0L;
         prepared = false;
         eligible = false;
         attached = false;
@@ -2092,11 +2173,7 @@ public final class MotionDetectorShellMain {
             screen.setEligible(id, false);
             if (warning) finishWarning(id, false);
             if (recorder != null && recorder.isRecording()) {
-                long deadline = SystemClock.elapsedRealtime() + config.afterSeconds * 1000L;
-                recorder.finishAfter(deadline);
-                control.removeCallbacks(recordingTailFinished);
-                control.postDelayed(recordingTailFinished, config.afterSeconds * 1000L);
-                state = "recording_tail";
+                beginRecordingTail(id);
             } else {
                 boolean recordingStopped = stopRecording("eligibility_ended", false);
                 boolean readerDetached = composer == null && detachAndCloseReader(false);
@@ -2129,16 +2206,19 @@ public final class MotionDetectorShellMain {
     }
 
     private void activateEligibleReader(String id) {
+        if (wakeRecoveryTailActive()) return;
         if (!sameSession(id) || !attached || reader == null || cameraChargeState.isBlocked()
                 || !sessionRuntime.armed() || teardownPending) return;
         cameraRecovering = false;
         eligible = true;
         policy.setEligible(true, SystemClock.elapsedRealtime() - MotionDetectorProtocol.WARMUP_MS);
         screen.setEligible(id, true);
-        if (recorder != null && recorder.isBuffering() && !recordingStopRequested) {
+        if (recorder != null && recorder.isBuffering() && !recordingStopRequested
+                && config != null && config.recordingEnabled) {
             control.removeCallbacks(recordingTailFinished);
             recorder.resumeAfterFinish();
         }
+        clearOrdinaryTailAfterEligibilityResume(id);
         state = "waiting_for_frames";
         lastReportedDetectorState = "";
         firstInferenceReceived = false;
@@ -2146,6 +2226,18 @@ public final class MotionDetectorShellMain {
         control.postDelayed(firstInferenceTimeout, FIRST_INFERENCE_TIMEOUT_MS);
         if (config.recordingEnabled) startRecording(id);
         sendStatus(id, "waiting_for_frames", "camera Surface attached; status remains pending until first successful native inference");
+    }
+
+    private void clearOrdinaryTailAfterEligibilityResume(String id) {
+        if (!sameSession(id) || !eligible || !recordingTailActive || wakeRecoveryTailActive()
+                || manualCheck != null || cameraChargeState.isBlocked() || config == null
+                || shuttingDown || teardownPending || "error".equals(state) || "stopping".equals(state))
+            return;
+        control.removeCallbacks(recordingTailFinished);
+        recordingTailActive = false;
+        recordingTailGeneration = 0;
+        wakeRecoveryTailGeneration = 0;
+        recordingTailDeadlineElapsedMs = 0L;
     }
 
     private void attachReader(String id, ManualCheck check) throws Exception {
@@ -2731,8 +2823,17 @@ public final class MotionDetectorShellMain {
     }
 
     private void requestWarningWake(String id) {
-        if (!sameSession(id) || !eligible || warning || warningClosing || sessionRuntime.warningRetryBlocked()
+        if (!sameSession(id) || !eligible || warning || warningClosing
                 || config == null || !config.warningEnabled || cameraChargeState.isBlocked()) return;
+        if (sessionRuntime.warningRetryBlocked()) {
+            if (!warningReconciliationPending) {
+                warningReconciliationPending = true;
+                warningReconciliationGeneration = ++warningWindowGeneration;
+                warningReconciliationSessionGeneration = sessionGeneration;
+                screen.reconcilePriorWarning(id, warningReconciliationGeneration);
+            }
+            return;
+        }
         warning = true;
         warningWindowPending = false;
         warningWindowDrawn = false;
@@ -2995,6 +3096,7 @@ public final class MotionDetectorShellMain {
         warningCloseSent = false;
         warningSleepAttempted = false;
         warningScreenFinishIssued = false;
+        clearWarningReconciliation();
         warningWindowGeneration++;
         endOwnedWake(id);
         sendStatus(id, cancelled ? "warning_user_dismissed" : closed ? "warning_window_closed" : "warning_window_unavailable",
@@ -3381,7 +3483,8 @@ public final class MotionDetectorShellMain {
             completeCheck(check, MotionCheckupClient.ERROR, "check_failed", kind + ": " + reason, true);
             if (!sameSession(id)) return;
         }
-        sendStatus(id, "camera_recovering", kind + ":" + reason
+        state = cameraChargeState.isBlocked() ? "charge_blocked" : "camera_recovering";
+        sendStatus(id, state, kind + ":" + reason
                 + (detail.isEmpty() ? "" : ":" + detail));
         sessionRuntime.cameraLost();
         cameraRecovering = true;
@@ -3396,8 +3499,13 @@ public final class MotionDetectorShellMain {
             if (warning) finishWarning(id, false);
             boolean recordingStopped = stopRecording("camera_source_lost", producerClosed);
             boolean readerDetached = detachAndCloseReader(producerClosed);
-            if (!recordingStopped || !readerDetached)
-                sendStatus(id, "camera_recovering", "camera consumer retained until host detach or producer closure is confirmed");
+            if (recordingTailActive) reconcileRecordingTailState(id,
+                    "camera source loss released the recording tail");
+            if (!recordingStopped || !readerDetached) {
+                state = cameraChargeState.isBlocked() ? "charge_blocked"
+                        : recordingTailActive ? "recording_teardown_pending" : "camera_recovering";
+                sendStatus(id, state, "camera consumer retained until host detach or producer closure is confirmed");
+            }
             applyEligibilityChange(id, sessionRuntime.advance(SystemClock.elapsedRealtime()));
             if (!sessionRuntime.arming() && !sessionRuntime.armed() && !warning
                     && (recorder == null || !recorder.isRecording())) holdCpu(false);
@@ -3407,9 +3515,47 @@ public final class MotionDetectorShellMain {
         }
     }
 
+    private Bundle prepareWakeRecoveryOnControl(String id, String sourceEpoch) throws Exception {
+        Bundle decision = new Bundle();
+        decision.putBoolean("retain", false);
+        decision.putInt("recording_generation", 0);
+        decision.putLong("deadline_elapsed_ms", 0L);
+        if (!sameSession(id) || !expectedSourceEpoch.equals(sourceEpoch) || config == null
+                || !config.motionEnabled() || !config.recordingEnabled || !prepared
+                || manualCheck != null || cameraRecovering || teardownPending || shuttingDown
+                || sessionRuntime.suspended() || "error".equals(state) || "stopping".equals(state))
+            return decision;
+
+        boolean sourceReady = attached && !readerAttachPending && reader != null
+                && surface != null && sharedSource != null;
+        boolean activeRecording = recorder != null && recorder.isRecording();
+        if (!recordingTailActive) {
+            if (!sourceReady || readerDetachPending || composer == null || recorder == null
+                    || !recorder.isBuffering() || !activeRecording) return decision;
+            if (eligible) setEligibleOnControl(id, false);
+            else beginRecordingTail(id);
+        }
+
+        if (!recordingTailActive || cameraRecovering || "error".equals(state)
+                || "stopping".equals(state) || teardownPending || shuttingDown)
+            return decision;
+        boolean readerResourcesPending = reader != null || sharedSource != null || surface != null;
+        if (!sourceReady && !readerDetachPending && !readerResourcesPending) {
+            reconcileRecordingTailState(id, "recording tail no longer has a live Motion source");
+            return decision;
+        }
+        if (recordingTailGeneration <= 0 || recordingTailDeadlineElapsedMs < 0L)
+            return decision;
+        wakeRecoveryTailGeneration = recordingTailGeneration;
+        decision.putBoolean("retain", true);
+        decision.putInt("recording_generation", recordingTailGeneration);
+        decision.putLong("deadline_elapsed_ms", recordingTailDeadlineElapsedMs);
+        return decision;
+    }
+
     private void startRecording(String id) {
         if (!sameSession(id) || !eligible || config == null || !config.recordingEnabled
-                || cameraChargeState.isBlocked() || recorder != null || shuttingDown || teardownPending
+                || cameraChargeState.isBlocked() || recordingTailActive || recorder != null || shuttingDown || teardownPending
                 || recordingFailureRevision == sessionRuntime.recordingRevision()) return;
         startRecording(id, null);
     }
@@ -3424,6 +3570,8 @@ public final class MotionDetectorShellMain {
         recordingAttemptRevision = sessionRuntime.recordingRevision();
         try {
             int generation = ++recordingGeneration;
+            recordingTailGeneration = generation;
+            wakeRecoveryTailGeneration = 0;
             ensureMediaBridge();
             final MotionVideoRecorder[] owner = new MotionVideoRecorder[1];
             MotionVideoRecorder created = new MotionVideoRecorder(mediaContext, mediaLibrary, id,
@@ -3452,6 +3600,8 @@ public final class MotionDetectorShellMain {
             if (sharedSource == null) throw new IllegalStateException("Motion shared source is not attached");
             composer.startLocal(mediaContext.ownerResourcesContext(), sharedSource);
             recordingRequestId = recordingRequestId == Integer.MAX_VALUE ? 1 : recordingRequestId + 1;
+            recordingTailActive = false;
+            recordingTailDeadlineElapsedMs = 0L;
             deliberatelyDetachedProducerReason = "";
             sendStatus(id, "recording_buffering", "hardware encoder shares the original OEM 4123 input with detection");
         } catch (Throwable error) {
@@ -3528,37 +3678,70 @@ public final class MotionDetectorShellMain {
 
     private boolean stopRecording(String reason) { return stopRecording(reason, false); }
 
+    private void beginRecordingTail(String id) {
+        if (!sameSession(id) || recorder == null || config == null || recordingTailActive) return;
+        long tailMs = Math.max(0L, config.afterSeconds * 1000L);
+        recordingTailActive = true;
+        recordingTailGeneration = recordingGeneration;
+        recordingTailDeadlineElapsedMs = SystemClock.elapsedRealtime() + tailMs;
+        recorder.finishAfter(recordingTailDeadlineElapsedMs);
+        state = "recording_tail";
+        control.removeCallbacks(recordingTailFinished);
+        control.postDelayed(recordingTailFinished, tailMs);
+    }
+
     private void finishRecordingTail() {
         if (teardownPending) {
             continuePendingTeardown();
             return;
         }
         String id = sessionId;
-        if (id == null || eligible || !"recording_tail".equals(state)) return;
-        boolean stopped = stopRecording("postroll_finished", false);
+        if (id == null || (eligible && !wakeRecoveryTailActive()) || !recordingTailActive) return;
+        stopRecording("postroll_finished", false);
         if (id == null || !sameSession(id)) return;
-        if (stopped && finishRecordingTailIfReady(id)) {
-            updateCameraDemand();
-            return;
-        }
-        if (!stopped || recordingTailPending()) {
-            state = "recording_teardown_pending";
-            sendStatus(id, state, "camera host has not confirmed encoder drain; consumer resources retained");
-        }
+        reconcileRecordingTailState(id, "camera host has not confirmed encoder drain; consumer resources retained");
         updateCameraDemand();
     }
 
     private boolean recordingTailPending() {
-        return "recording_tail".equals(state) || "recording_teardown_pending".equals(state);
+        return recordingTailActive;
+    }
+
+    private boolean wakeRecoveryTailActive() {
+        return recordingTailActive && recordingTailGeneration > 0
+                && wakeRecoveryTailGeneration == recordingTailGeneration;
     }
 
     private boolean finishRecordingTailIfReady(String id) {
-        if (!sameSession(id) || eligible || manualCheck != null || !recordingTailPending()
-                || recordingAttached || composer != null || recorder != null
-                || !detachAndCloseReader(false)) return false;
-        state = "prepared";
-        sendStatus(id, state, "recording post-roll completed and encoder detached");
+        return reconcileRecordingTailState(id, "recording post-roll completed and encoder detached");
+    }
+
+    private boolean reconcileRecordingTailState(String id, String detail) {
+        if (!sameSession(id) || (eligible && !wakeRecoveryTailActive())
+                || manualCheck != null || !recordingTailActive
+                || teardownPending || shuttingDown || "stopping".equals(state) || "error".equals(state))
+            return false;
+        if (recordingAttached || recordingDetachPending || composer != null || recorder != null
+                || readerAttachPending || readerDetachPending || !detachAndCloseReader(false)) {
+            if (!cameraChargeState.isBlocked()) state = "recording_teardown_pending";
+            sendStatus(id, state, "recording output or reader detach is still pending");
+            return false;
+        }
+        recordingTailActive = false;
+        recordingTailGeneration = 0;
+        wakeRecoveryTailGeneration = 0;
+        recordingTailDeadlineElapsedMs = 0L;
+        state = postRecordingState();
+        sendStatus(id, state, detail);
         return true;
+    }
+
+    private String postRecordingState() {
+        if (cameraChargeState.isBlocked()) return "charge_blocked";
+        if (cameraRecovering) return "camera_recovering";
+        if (warning) return warningVisible ? "warning_active" : "warning_waking";
+        if (config != null && !config.motionEnabled()) return "viewing_only";
+        return prepared ? "prepared" : "preparing";
     }
 
     private boolean stopRecording(String reason, boolean surfacesDrained) {
@@ -3645,8 +3828,11 @@ public final class MotionDetectorShellMain {
                 // A self-ended encoder must keep its Surface until camera and GL owners release it.
                 oldRecorder.releaseInputSurface();
                 if (oldRecorder.isBuffering()) {
-                    if (sameSession(id)) sendStatus(id, "recording_teardown_pending",
-                            "encoder drain is still active; shared media provider retained");
+                    if (sameSession(id) && !teardownPending && !shuttingDown
+                            && !"stopping".equals(state) && !"error".equals(state)) {
+                        if (!cameraChargeState.isBlocked()) state = "recording_teardown_pending";
+                        sendStatus(id, state, "encoder drain is still active; shared media provider retained");
+                    }
                     logEvent("motion_teardown_pending", id, "resource", "recorder",
                             "reason", reason, "buffering", true);
                     return false;
@@ -3824,6 +4010,7 @@ public final class MotionDetectorShellMain {
             return;
         }
         control.removeCallbacks(warningCloseTimeout);
+        clearWarningReconciliation();
         warningWindowGeneration++;
         warningWindowCommands = null;
         warningWindowLaunched = false;
@@ -3862,6 +4049,10 @@ public final class MotionDetectorShellMain {
         teardownCallback = null;
         cameraHostPending = false;
         cameraHostReadyDuringBinding = false;
+        recordingTailActive = false;
+        recordingTailGeneration = 0;
+        wakeRecoveryTailGeneration = 0;
+        recordingTailDeadlineElapsedMs = 0L;
         sessionId = null;
         completeModeChange();
         state = finishedState;
@@ -3959,6 +4150,8 @@ public final class MotionDetectorShellMain {
                             continueManualCheckCleanup(check);
                         }
                         if (teardownPending) continuePendingTeardown();
+                        else if (recordingTailActive)
+                            reconcileRecordingTailState(id, "recording post-roll completed and reader detached");
                         else if (sessionRuntime.armed() && !eligible && prepared
                                 && !cameraChargeState.isBlocked()) {
                             try { setEligibleOnControl(id, true); }

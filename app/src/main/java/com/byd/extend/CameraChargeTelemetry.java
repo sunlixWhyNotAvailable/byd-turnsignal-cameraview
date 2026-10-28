@@ -3,6 +3,7 @@ package com.byd.extend;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.File;
@@ -242,14 +243,20 @@ public final class CameraChargeTelemetry {
                     Float voltage = null;
                     Throwable socFailure = null;
                     Throwable voltageFailure = null;
+                    long socSampleElapsedMs = -1L;
+                    long voltageSampleElapsedMs = -1L;
                     if (source != null) {
                         try { soc = source.readInt(SOC_DEVICE, SOC_FID); }
                         catch (Throwable failure) { socFailure = failure; }
+                        socSampleElapsedMs = SystemClock.elapsedRealtime();
                         try { voltage = source.readFloat(VOLTAGE_DEVICE, VOLTAGE_FID); }
                         catch (Throwable failure) { voltageFailure = failure; }
+                        voltageSampleElapsedMs = SystemClock.elapsedRealtime();
                     }
                     Integer socValue = soc;
                     Float voltageValue = voltage;
+                    long socSampleAt = socSampleElapsedMs;
+                    long voltageSampleAt = voltageSampleElapsedMs;
                     Throwable subscriptionError = subscribeFailure;
                     Throwable socError = socFailure;
                     Throwable voltageError = voltageFailure;
@@ -271,8 +278,10 @@ public final class CameraChargeTelemetry {
                                 reportFailure("soc_read", socError);
                                 reportFailure("voltage_read", voltageError);
                             }
-                            if (applySocRead) policy.updateSoc(socValue);
-                            if (applyVoltageRead) policy.updateVoltage(voltageValue);
+                            if (applySocRead) policy.updateSoc(socValue,
+                                    source == null ? "unknown" : "get", socSampleAt);
+                            if (applyVoltageRead) policy.updateVoltage(voltageValue,
+                                    source == null ? "unknown" : "get", voltageSampleAt);
                             CameraChargePolicy.State state = policy.snapshot();
                             sink.onState(state);
                             completion.complete(state, null);
@@ -314,7 +323,7 @@ public final class CameraChargeTelemetry {
                                     if (fence == null) return;
                                     synchronized (callbackDispatchLock) {
                                         if (!callbackLifetime.runIfCurrent(token, fence::callbackArrived)) return;
-                                        handler.post(() -> acceptCallback(token, device, fid, value));
+                                        handler.post(() -> acceptCallback(token, device, fid, value, receivedMs));
                                     }
                                 }
 
@@ -342,11 +351,11 @@ public final class CameraChargeTelemetry {
             return null;
         }
 
-        private void acceptCallback(long token, int device, int fid, int raw) {
+        private void acceptCallback(long token, int device, int fid, int raw, long receivedMs) {
             if (!active || !callbackLifetime.isCurrent(token)) return;
-            if (device == SOC_DEVICE && fid == SOC_FID) policy.updateSoc(raw);
+            if (device == SOC_DEVICE && fid == SOC_FID) policy.updateSoc(raw, "callback", receivedMs);
             else if (device == VOLTAGE_DEVICE && fid == VOLTAGE_FID)
-                policy.updateVoltage(Float.intBitsToFloat(raw));
+                policy.updateVoltage(Float.intBitsToFloat(raw), "callback", receivedMs);
             else return;
             reportFailure("callback", null);
             sink.onState(policy.snapshot());

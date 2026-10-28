@@ -85,6 +85,22 @@ public class CameraChargePolicyTest {
         assertFalse(CameraChargeSettings.isValidSocThreshold(9));
     }
 
+    @Test public void snapshotsRetainPerMetricOriginAgeAnchorAndDecisionThresholds() throws Exception {
+        CameraChargePolicy policy = newPolicy();
+        policy.setMonitoring(true);
+        policy.updateSoc(19, "callback", 8_000L);
+        CameraChargePolicy.State current = policy.updateVoltage(12.3f, "get", 9_000L);
+        CameraChargePolicy.State sameDecision = policy.updateSoc(19, "callback", 10_000L);
+
+        assertEquals(20, current.socThresholdPercent());
+        assertEquals(124, current.voltageThresholdTenths());
+        assertEquals("callback", current.socOrigin());
+        assertEquals(8_000L, current.socSampleElapsedMs());
+        assertEquals("get", current.voltageOrigin());
+        assertEquals(9_000L, current.voltageSampleElapsedMs());
+        assertEquals(current, sameDecision);
+    }
+
     private static CameraChargePolicy newPolicy() throws Exception {
         return new CameraChargePolicy(
                 Files.createTempDirectory("camera-charge-state-").toFile(), 20, 124);
