@@ -321,6 +321,24 @@ internal fun FormScope.CameraViewingScreen(
             SwitchLine(strings.motionText(R.string.cameras_internal_mirroring), "", state.config.mirrorCabin,
                 { controller.setCabinMirrored(it) }, colors, enabled = state.config.enabled)
         }
+        row("restore-cellular") {
+            SwitchLine(strings.motionText(R.string.cameras_restore_cellular), "", state.config.restoreCellular,
+                { controller.setRestoreCellular(it) }, colors)
+            if (state.config.restoreCellular) {
+                val status = state.config.cellularStatus
+                val text = when (status) {
+                    "found" -> R.string.cameras_cellular_found
+                    "failed" -> R.string.cameras_cellular_failed
+                    else -> R.string.cameras_cellular_pending
+                }
+                Text(strings.motionText(text), fontSize = 13.sp,
+                    color = when (status) {
+                        "found" -> Color(0xFF65C889)
+                        "failed" -> Color(0xFFFF6B6B)
+                        else -> colors.muted
+                    })
+            }
+        }
         this
     }
     row("cameras-provider-gap") { Spacer(Modifier.height(12.dp)) }

@@ -479,6 +479,7 @@ final class DiagnosticLogExporter {
         String name = file.getName();
         return name.endsWith(".jsonl")
                 && (name.startsWith("guard-camera-") || name.startsWith("helper-service-")
+                    || name.equals(CellularRecoveryDiagnostics.FILE_NAME)
                     || name.equals("avas-recovery-journal.jsonl")
                     || name.equals("avas-recovery-journal.1.jsonl"));
     }

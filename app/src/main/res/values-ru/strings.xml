@@ -303,4 +303,8 @@
     <string name="keep_wifi_car_off">"Удерживать Wi-Fi на выключенном авто"</string>
     <string name="keep_wifi_car_off_hint">"Сохранение подключения к сети Wi-Fi при выключении и на выключенном авто предотвращает закрытие ADB из-за потери Wi-Fi."</string>
     <string name="avm_mode_deferred">Поддержка этого режима отложена</string>
+    <string name="cameras_restore_cellular">"Восстанавливать сотовую связь"</string>
+    <string name="cameras_cellular_pending">Определение команды восстановления…</string>
+    <string name="cameras_cellular_found">Команда восстановления определена</string>
+    <string name="cameras_cellular_failed">Автоопределение не удалось. Используется код по умолчанию</string>
 </resources>

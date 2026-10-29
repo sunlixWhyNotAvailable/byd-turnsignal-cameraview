@@ -23,7 +23,8 @@ import java.util.concurrent.Executors
 
 data class CameraViewingConfig(val enabled: Boolean = false, val transport: String = "vdo",
     val tailscalePublic: Boolean = false, val streamId: String = "", val interiorCameras: Int = 0,
-    val mirrorCabin: Boolean = false)
+    val mirrorCabin: Boolean = false, val restoreCellular: Boolean = false,
+    val cellularStatus: String = "pending")
 data class CameraViewingState(val config: CameraViewingConfig, val phase: String = "idle",
     val viewerUrl: String? = null, val authorizationUrl: String? = null, val error: String? = null,
     val passwordConfigured: Boolean = false, val tokenConfigured: Boolean = false,
@@ -36,7 +37,13 @@ class CameraViewingController private constructor(private val context: Context) 
     private var configDeliveryGeneration = 0L
     private val preferences = context.getSharedPreferences("camera_viewing", Context.MODE_PRIVATE)
     private val displaySettings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val cellularDiagnostics = context.getSharedPreferences("cellular_diagnostics", Context.MODE_PRIVATE)
+    private val cellularObserver = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        execute("cellular_status") { refresh() }
+    }
     private val displayObserver = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == com.byd.extend.MotionConfig.CELLULAR_PREF || key == com.byd.extend.MotionConfig.CELLULAR_GENERATION_PREF)
+            execute("cellular_setting") { refresh() }
         if (key == AppLanguage.KEY || key == "ui_dark_theme" || key == RemoteCameraView.PREFERENCE_KEY
             || key == RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) execute("viewer_presentation") {
             refresh()
@@ -62,6 +69,7 @@ class CameraViewingController private constructor(private val context: Context) 
     init {
         CameraViewingDiagnostics.initializeApp(context)
         displaySettings.registerOnSharedPreferenceChangeListener(displayObserver)
+        cellularDiagnostics.registerOnSharedPreferenceChangeListener(cellularObserver)
         execute("initial_state") { refresh() }
     }
 
@@ -83,6 +91,17 @@ class CameraViewingController private constructor(private val context: Context) 
         refresh()
     }
 
+    fun setRestoreCellular(value: Boolean) = execute("restore_cellular") {
+        val old = displaySettings.getBoolean(com.byd.extend.MotionConfig.CELLULAR_PREF, false)
+        val generation = displaySettings.getLong(com.byd.extend.MotionConfig.CELLULAR_GENERATION_PREF, 0)
+        if (value && !old) cellularDiagnostics.edit().putString("status", "pending").apply()
+        check(displaySettings.edit().putBoolean(com.byd.extend.MotionConfig.CELLULAR_PREF, value)
+            .putLong(com.byd.extend.MotionConfig.CELLULAR_GENERATION_PREF,
+                if (value && !old) generation + 1 else generation).commit()) { "cellular_setting_commit_failed" }
+        MotionRuntime.settingsChanged(context)
+        refresh()
+    }
+
     fun setInteriorCameras(value: Int) = execute("interior_cameras") {
         RemoteCameraView.validateMask(value)
         check(displaySettings.edit().putInt(RemoteCameraView.PREFERENCE_KEY, value).commit()) {
@@ -97,7 +116,8 @@ class CameraViewingController private constructor(private val context: Context) 
     private fun publicMode() = preferences.getBoolean("draft_tailscale_public", preferences.getBoolean("tailscale_public", false))
     private fun readConfig() = selected().let { CameraViewingConfig(
         CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it), interiorCameras(),
-        cabinMirrored()) }
+        cabinMirrored(), displaySettings.getBoolean(com.byd.extend.MotionConfig.CELLULAR_PREF, false),
+        cellularDiagnostics.getString("status", "pending") ?: "pending") }
     private fun secret(method: String, field: String): String {
         val bytes = secrets.get("draft.camera.$method.$field") ?: secrets.get("camera.$method.$field") ?: return ""
         return try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }

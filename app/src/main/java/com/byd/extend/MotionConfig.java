@@ -13,6 +13,10 @@ public final class MotionConfig {
     public static final String KEY_RECORDING_SENSITIVITY = "recording_sensitivity";
     public static final int DEFAULT_RECORDING_SENSITIVITY = 1;
     public final boolean warningEnabled, recordingEnabled, audioEnabled, remoteViewingEnabled;
+    public static final String CELLULAR_PREF = "camera_restore_cellular";
+    public static final String CELLULAR_GENERATION_PREF = "camera_cellular_generation";
+    public final boolean restoreCellular;
+    public final long cellularGeneration;
     public final int chargeSocThresholdPercent, chargeVoltageThresholdTenths;
     public final int recordingSensitivity;
     public final int lockCondition, beforeSeconds, afterSeconds, quality;
@@ -21,6 +25,8 @@ public final class MotionConfig {
     public final int[] cameraOrder;
 
     private MotionConfig(JSONObject json) {
+        restoreCellular = json.optBoolean("restoreCellular", false);
+        cellularGeneration = Math.max(0, json.optLong("cellularGeneration", 0));
         warningEnabled = json.optBoolean("warning", false);
         recordingEnabled = json.optBoolean("enabled", false);
         audioEnabled = json.optBoolean("audio", false);
@@ -59,6 +65,9 @@ public final class MotionConfig {
         JSONObject json = new JSONObject(recording.getAll());
         int lock = normalizeLockMode(screen.getInt("lock", 1));
         try {
+            SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+            json.put("restoreCellular", settings.getBoolean(CELLULAR_PREF, false));
+            json.put("cellularGeneration", settings.getLong(CELLULAR_GENERATION_PREF, 0));
             json.put("warning", screen.getBoolean("enabled", false));
             json.put("recordingSensitivity", screen.getInt(KEY_RECORDING_SENSITIVITY,
                     DEFAULT_RECORDING_SENSITIVITY));
@@ -89,11 +98,18 @@ public final class MotionConfig {
 
     public boolean motionEnabled() { return warningEnabled || recordingEnabled; }
     public boolean anyEnabled() { return motionEnabled() || remoteViewingEnabled; }
+    public boolean requiresHelper() { return anyEnabled() || restoreCellular; }
     boolean onlyInPlaceMotionChangesDifferFrom(MotionConfig other) {
         return other != null && (warningEnabled != other.warningEnabled
                 || recordingEnabled != other.recordingEnabled
-                || recordingSensitivity != other.recordingSensitivity)
+                || recordingSensitivity != other.recordingSensitivity
+                || restoreCellular != other.restoreCellular || cellularGeneration != other.cellularGeneration)
                 && sameOutsideInPlaceMotionChanges(other);
+    }
+    boolean onlyCellularChangesDifferFrom(MotionConfig other) {
+        return other != null && warningEnabled == other.warningEnabled
+                && recordingEnabled == other.recordingEnabled && recordingSensitivity == other.recordingSensitivity
+                && onlyInPlaceMotionChangesDifferFrom(other);
     }
     boolean onlyRecordingSensitivityDiffersFrom(MotionConfig other) {
         return other != null && recordingSensitivity != other.recordingSensitivity
@@ -126,6 +142,7 @@ public final class MotionConfig {
     public String toJson() {
         try {
             return new JSONObject().put("warning", warningEnabled).put("enabled", recordingEnabled)
+                    .put("restoreCellular", restoreCellular).put("cellularGeneration", cellularGeneration)
                     .put("remoteViewingEnabled", remoteViewingEnabled)
                     .put("chargeSocThreshold", chargeSocThresholdPercent)
                     .put("chargeVoltageTenths", chargeVoltageThresholdTenths)

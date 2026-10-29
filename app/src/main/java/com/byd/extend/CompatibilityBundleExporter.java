@@ -591,6 +591,7 @@ final class CompatibilityBundleExporter {
         if (preferences == null) return "{}";
         Map<String, ?> all = preferences.getAll();
         List<String> keys = new ArrayList<>(all.keySet());
+        if (!keys.contains(MotionConfig.CELLULAR_PREF)) keys.add(MotionConfig.CELLULAR_PREF);
         if (!keys.contains(RemoteCameraView.PREFERENCE_KEY)) {
             keys.add(RemoteCameraView.PREFERENCE_KEY);
         }
@@ -604,6 +605,11 @@ final class CompatibilityBundleExporter {
             String lower = key == null ? "" : key.toLowerCase(Locale.US);
             if (!isSafePreferenceKey(lower)) continue;
             Object value = all.get(key);
+            if (MotionConfig.CELLULAR_PREF.equals(key)) {
+                if (value == null) value = false;
+                if (!(value instanceof Boolean))
+                    throw new IllegalStateException("cellular recovery preference must be a boolean");
+            }
             if (RemoteCameraView.PREFERENCE_KEY.equals(key)) {
                 if (value == null) value = RemoteCameraView.NONE;
                 if (!(value instanceof Integer)) {

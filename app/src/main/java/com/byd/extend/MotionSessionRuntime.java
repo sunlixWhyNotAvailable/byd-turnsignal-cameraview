@@ -110,7 +110,7 @@ final class MotionSessionRuntime {
     }
 
     boolean needsTelemetry() {
-        return !suspended && config != null && config.anyEnabled() && !telemetry.readyFor(config);
+        return !suspended && config != null && config.requiresHelper() && !telemetry.readyFor(config);
     }
 
     String sessionId() { return sessionId; }

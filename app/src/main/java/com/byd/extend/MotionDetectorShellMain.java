@@ -483,6 +483,25 @@ public final class MotionDetectorShellMain {
         }
     }
 
+    private CellularRecovery cellular;
+    private IBinder cellularCallback;
+
+    private void sendCellularSnapshot() {
+        IBinder target = cellularCallback;
+        if (target == null || cellular == null) return;
+        Parcel data = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(MotionDetectorProtocol.CALLBACK_DESCRIPTOR);
+            data.writeString(cellular.snapshot());
+            if (!target.transact(MotionDetectorProtocol.CB_CELLULAR, data, null, IBinder.FLAG_ONEWAY))
+                throw new RemoteException("APP rejected cellular diagnostic callback");
+        } catch (RemoteException error) {
+            logEvent("cellular_callback_error", sessionId, "error",
+                    CellularRecovery.diagnosticDetail(error, "stage=cellular_callback"));
+            if (cellularCallback == target) cellularCallback = null;
+        } finally { data.recycle(); }
+    }
+
     private MotionDetectorShellMain(int appUid, String extendIdentity, Context systemContext) {
         this.appUid = appUid;
         this.extendIdentity = extendIdentity;
@@ -505,6 +524,10 @@ public final class MotionDetectorShellMain {
                 });
             }
         });
+        cellular = new CellularRecovery((snapshot, diagnostic) -> control.post(() -> {
+            if (!diagnostic.isEmpty()) logEvent("cellular_recovery", sessionId, "detail", diagnostic);
+            sendCellularSnapshot();
+        }));
         screen = new MotionScreenControl((active, generation, screenState, detail) -> control.post(() -> {
             if (!sameSession(active)) return;
             if (generation >= 0 && generation != warningWindowGeneration) {
@@ -513,7 +536,7 @@ public final class MotionDetectorShellMain {
                 return;
             }
             sendScreen(active, screenState, detail);
-            if ("wake_requested".equals(screenState)) {
+            if ("wake_requested".equals(screenState) || "screen_ready".equals(screenState)) {
                 launchWarningWindow(active, generation);
                 return;
             }
@@ -523,10 +546,10 @@ public final class MotionDetectorShellMain {
                 warningVisible = true;
                 policy.beginVisibleWarning(SystemClock.elapsedRealtime());
                 scheduleWarningDeadline();
-                sendStatus(active, "warning_visible", "warning interval begins after owned cover release was confirmed");
+                sendStatus(active, "warning_visible", "warning interval begins after the visible display was confirmed");
                 return;
             }
-            if ("black_restore_observed".equals(screenState)) {
+            if ("black_restore_observed".equals(screenState) || "warning_restored_awake".equals(screenState)) {
                 closeWarningAfterBlackRestore(active, generation);
                 endOwnedWake(active);
                 return;
@@ -567,7 +590,7 @@ public final class MotionDetectorShellMain {
                     || "sleep_skipped".equals(screenState) || "sleep_uncertain".equals(screenState)
                     || "black_restore_uncertain".equals(screenState) || "finish_uncertain".equals(screenState)
                     || "off_session_lost".equals(screenState)) endOwnedWake(active);
-        }));
+        }), cellular);
     }
 
     private void publish() throws Exception {
@@ -988,6 +1011,9 @@ public final class MotionDetectorShellMain {
             }
         }
         MotionSessionConfigStore.Snapshot next = configStore.write(configJson);
+        cellularCallback = configureCallback;
+        cellular.configure(cameraSettings);
+        sendCellularSnapshot();
         modeCompletion = null; // A newer desired snapshot supersedes the previous acknowledgement.
         pendingSensitivityConfig = null;
         if (deferSensitivityUntilCheckEnds) {
@@ -1078,6 +1104,11 @@ public final class MotionDetectorShellMain {
         if (!sameSession(id) || teardownPending || shuttingDown || sessionRuntime.suspended()
                 || previous == null || !next.config.onlyInPlaceMotionChangesDifferFrom(previous))
             throw new IllegalStateException("Motion session cannot accept an in-place update");
+        if (next.config.onlyCellularChangesDifferFrom(previous)) {
+            sessionRuntime.updateInPlaceConfig(next.config, SystemClock.elapsedRealtime());
+            config = next.config;
+            return true;
+        }
         boolean modesChanged = previous.warningEnabled != next.config.warningEnabled
                 || previous.recordingEnabled != next.config.recordingEnabled;
         boolean sensitivityOnly = next.config.onlyRecordingSensitivityDiffersFrom(previous);
@@ -1889,6 +1920,7 @@ public final class MotionDetectorShellMain {
         String id = snapshot.sessionId;
         synchronized (analysisLock) { sessionGeneration++; }
         config = snapshot.config;
+        cellular.configure(config);
         applyRecordingSensitivity(null, config, true);
         sessionRuntime.configure(id, config);
         shuttingDown = false;
@@ -1940,7 +1972,7 @@ public final class MotionDetectorShellMain {
         screen.beginSession(id);
         chargeHandlingEnabled = false;
         long generation = sessionGeneration;
-        if (startChargeTelemetry(config, id, generation)) {
+        if (config.anyEnabled() && startChargeTelemetry(config, id, generation)) {
             sendStatus(id, "preparing", "waiting for a fresh charge sample before camera or native preparation");
             return true;
         }
@@ -2105,6 +2137,8 @@ public final class MotionDetectorShellMain {
         if (!callback.isBinderAlive()) throw new IllegalStateException("Motion UI callback is dead");
         detachUiOnControl(id, appCallback);
         appCallback = callback;
+        cellularCallback = callback;
+        sendCellularSnapshot();
         appCallbackDeath = () -> control.post(() -> detachUiOnControl(id, callback));
         callback.linkToDeath(appCallbackDeath, 0);
         if (prepared) sendPrepared(id);
@@ -2143,6 +2177,7 @@ public final class MotionDetectorShellMain {
 
     private int suspendForExplicitShutdown(String id, String reason) {
         if (!sameSession(id)) return 1;
+        cellular.close();
         pendingConfig = null;
         pendingConfigureCallback = null;
         pendingConfigureToken = null;
@@ -3124,7 +3159,7 @@ public final class MotionDetectorShellMain {
                     }
                     warningWakeTokenOwned = true;
                     screen.wakeForWarning(id, generation);
-                    sendStatus(id, "warning_waking", "shell registered the current OFF-state camera producer before wake reason 13");
+                    sendStatus(id, "warning_waking", "shell registered the current OFF-state camera producer before screen preflight");
                 });
     }
 
@@ -3535,8 +3570,10 @@ public final class MotionDetectorShellMain {
                 return;
             }
             boolean terminal = teardownPending || shuttingDown || "error".equals(state);
-            if (!terminal && ("helper_death".equals(kind) || "helper_ping_failed".equals(kind))) {
+            if ("helper_death".equals(kind) || "helper_ping_failed".equals(kind)) {
                 if (!expectedSourceEpoch.equals(event.optString("source_epoch", ""))) return;
+                cellular.powerChanged(-1);
+                if (terminal) return;
                 sessionRuntime.invalidateTelemetry();
                 cameraPreparation.stop();
                 handleProducerLoss(id, kind, kind, event.optString("error", ""));
@@ -3548,6 +3585,7 @@ public final class MotionDetectorShellMain {
             String epoch = event.optString("source_epoch", "");
             if (epoch.isEmpty() || !epoch.equals(expectedSourceEpoch)) return;
             int value = event.optInt("value", Integer.MIN_VALUE);
+            if ("power".equals(signal)) cellular.powerChanged(value);
             if (terminal) {
                 if (warning && "power".equals(signal)
                         && AvasEventPolicy.normalizedPower(value) == 1)
@@ -3708,6 +3746,7 @@ public final class MotionDetectorShellMain {
             try { watchTelemetryHost(id, null); } catch (RemoteException ignored) { }
             workerBound = false;
             expectedSourceEpoch = "";
+            cellular.powerChanged(-1);
             sessionRuntime.invalidateTelemetry();
             cameraPreparation.stop();
             handleProducerLoss(id, "camera_producer_closed", "telemetry_host_died", "Binder died");
@@ -4126,6 +4165,7 @@ public final class MotionDetectorShellMain {
 
     private void shutdownFromHost(String id, String reason, boolean surfacesDrained) {
         if (!sameSession(id)) return;
+        cellular.close();
         pendingConfig = null;
         pendingConfigureCallback = null;
         pendingConfigureToken = null;

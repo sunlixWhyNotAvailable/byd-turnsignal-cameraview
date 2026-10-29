@@ -303,4 +303,8 @@
     <string name="keep_wifi_car_off">"Утримувати Wi-Fi на вимкненому авто"</string>
     <string name="keep_wifi_car_off_hint">"Збереження підключення до мережі Wi-Fi під час вимкнення та на вимкненому авто запобігає закриттю ADB через втрату Wi-Fi."</string>
     <string name="avm_mode_deferred">Підтримку цього режиму відкладено</string>
+    <string name="cameras_restore_cellular">"Відновлювати стільниковий зв’язок"</string>
+    <string name="cameras_cellular_pending">Визначення команди відновлення…</string>
+    <string name="cameras_cellular_found">Команду відновлення визначено</string>
+    <string name="cameras_cellular_failed">Автовизначення не вдалося. Використовується код за замовчуванням</string>
 </resources>

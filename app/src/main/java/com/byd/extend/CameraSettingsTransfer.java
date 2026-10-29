@@ -313,6 +313,14 @@ public final class CameraSettingsTransfer {
         preserveMissingFrameAspects(editor, preferences, copy);
         preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
+        if (!copy.containsKey(MotionConfig.CELLULAR_PREF)) {
+            if (preferences.contains(MotionConfig.CELLULAR_PREF))
+                editor.putBoolean(MotionConfig.CELLULAR_PREF, preferences.getBoolean(MotionConfig.CELLULAR_PREF, false));
+        } else if (Boolean.TRUE.equals(copy.get(MotionConfig.CELLULAR_PREF))
+                && !preferences.getBoolean(MotionConfig.CELLULAR_PREF, false)) {
+            editor.putLong(MotionConfig.CELLULAR_GENERATION_PREF,
+                    preferences.getLong(MotionConfig.CELLULAR_GENERATION_PREF, 0) + 1);
+        }
         if (placements != null) placements.write(editor);
         if (!editor.commit()) throw new IllegalStateException("legacy settings commit failed");
     }
@@ -1761,7 +1769,8 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean legacyBooleanKey(String key) {
-        return isBooleanKey(key) || key.equals("guard_enabled") || key.equals("music_visualizer_enabled")
+        return key.equals(MotionConfig.CELLULAR_PREF)
+                || isBooleanKey(key) || key.equals("guard_enabled") || key.equals("music_visualizer_enabled")
                 || key.equals("parking_any_enabled") || key.equals("weather_enabled")
                 || key.equals("auto_start_enabled");
     }
@@ -1789,6 +1798,7 @@ public final class CameraSettingsTransfer {
 
     private static boolean isLegacyAllowedKey(String key) {
         if (key == null || key.isEmpty()) return false;
+        if (key.equals(MotionConfig.CELLULAR_GENERATION_PREF)) return false;
         // Removed from the app, but retained in settings files upgraded from older versions.
         if (key.equals("reverse_camera_parking_guidelines")) return false;
         // These flags only record one-time migration/initialization state.

@@ -88,7 +88,7 @@ public final class MotionRuntime implements AutoCloseable {
         MotionConfig current = MotionConfig.read(target);
         String desired = current.toJson();
         target.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
-                .putBoolean("motion_monitoring_enabled", current.anyEnabled()).apply();
+                .putBoolean("motion_monitoring_enabled", current.requiresHelper()).apply();
         if (!markPendingForSchedule(desired)) return;
 
         MotionRuntime runtime = active;
@@ -204,7 +204,7 @@ public final class MotionRuntime implements AutoCloseable {
         boolean modified = !nextJson.equals(submittedConfig);
         config = next;
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
-                .putBoolean("motion_monitoring_enabled", next.anyEnabled()).apply();
+                .putBoolean("motion_monitoring_enabled", next.requiresHelper()).apply();
 
         if (detector == null) detector = new MotionDetectorClient(context);
         if (!modified && (!explicitPublish || nextJson.equals(inFlightConfig))) return;
@@ -212,7 +212,7 @@ public final class MotionRuntime implements AutoCloseable {
         submittedConfig = nextJson;
         inFlightConfig = nextJson;
         markPending(nextJson);
-        event("motion_config_publish", "enabled", next.anyEnabled(), "config", nextJson);
+        event("motion_config_publish", "enabled", next.requiresHelper(), "config", nextJson);
         final String requestedConfig = nextJson;
         MotionDetectorClient client = detector;
         try {
@@ -230,6 +230,10 @@ public final class MotionRuntime implements AutoCloseable {
                     }
                     clearInFlight(requestedConfig);
                     markAppliedIfCurrent(context, requestedConfig);
+                }
+
+                @Override public void onCellular(String snapshot) {
+                    CellularRecoveryDiagnostics.accept(context, snapshot);
                 }
 
                 @Override public void onStatus(String state, String detail, long elapsedMs) {
@@ -328,7 +332,7 @@ public final class MotionRuntime implements AutoCloseable {
         String requestedConfig = current.toJson();
         if (!markPendingForSchedule(requestedConfig)) return;
         try {
-            if (current.anyEnabled()) {
+            if (current.requiresHelper()) {
                 CameraHelperService.startPersistent(context, "motion_bootstrap");
                 return;
             }
@@ -340,6 +344,10 @@ public final class MotionRuntime implements AutoCloseable {
             backgroundInFlight = requestedConfig;
             try {
                 oneShot.configure(requestedConfig, new MotionDetectorClient.Listener() {
+                    @Override public void onCellular(String snapshot) {
+                        CellularRecoveryDiagnostics.accept(context, snapshot);
+                    }
+
                     @Override public void onConfigured(boolean retainViewing) {
                         markAppliedIfCurrent(context, requestedConfig);
                         finishBackgroundPublish(oneShot, requestedConfig);

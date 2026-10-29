@@ -17,7 +17,7 @@ public final class MotionDetectorProtocol {
     static final String CONFIG_PATH = STATE_ROOT + "/config.json";
     static final String ACTION_SHOW_WARNING = "com.byd.extend.action.SHOW_MOTION_WARNING";
     static final String EXTRA_SESSION = "motion_session_id";
-    static final int VERSION = 21;
+    static final int VERSION = 22;
     static final int CONFIG_PENDING = 0;
     static final int CONFIG_APPLIED = 1;
     static final int CONFIG_MODE_ONLY = 2;
@@ -82,6 +82,7 @@ public final class MotionDetectorProtocol {
     static final int CB_ERROR = IBinder.FIRST_CALL_TRANSACTION + 3;
     static final int CB_SCREEN = IBinder.FIRST_CALL_TRANSACTION + 4;
     static final int CB_CHARGE = IBinder.FIRST_CALL_TRANSACTION + 5;
+    static final int CB_CELLULAR = IBinder.FIRST_CALL_TRANSACTION + 8;
     static final int CB_CONFIGURED = IBinder.FIRST_CALL_TRANSACTION + 6;
     static final int CB_CONFIGURE_ERROR = IBinder.FIRST_CALL_TRANSACTION + 7;
     static final String VIEW_CHARGE_CALLBACK_DESCRIPTOR = "com.byd.extend.ICameraViewingChargeCallback";

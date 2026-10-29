@@ -55,7 +55,7 @@ final class MotionSessionConfigStore {
             if (!MotionDetectorProtocol.validSession(id))
                 throw new IOException("Motion config session ID invalid");
             MotionConfig config = MotionConfig.parse(envelope.getString("config")).cameraConfig();
-            if (!config.anyEnabled()) return null;
+            if (!config.requiresHelper()) return null;
             return new Snapshot(id, config);
         } catch (JSONException invalid) {
             throw new IOException("Motion config is malformed", invalid);
@@ -66,7 +66,7 @@ final class MotionSessionConfigStore {
         final MotionConfig config;
         try { config = MotionConfig.parse(configJson).cameraConfig(); }
         catch (JSONException invalid) { throw new IOException("invalid Motion config", invalid); }
-        if (!config.anyEnabled()) {
+        if (!config.requiresHelper()) {
             delete();
             return null;
         }

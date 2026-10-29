@@ -30,6 +30,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (storageError == null) onConfigured(retainViewing);
             else onError("storage_configure", storageError, SystemClock.elapsedRealtime());
         }
+        default void onCellular(String snapshot) {}
         default void onStatus(String state, String detail, long elapsedMs) {}
         default void onDetection(int level, long elapsedMs, int rawResult, int nativeState,
                 long frameNumber, long frameTimestampNs, long warningUntilMs) {}
@@ -459,7 +460,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (!isCurrentRequest(generation)) return;
             if (id == null || id.isEmpty()) {
                 synchronized (lock) { sessionId = null; }
-                boolean enabled = MotionConfig.parse(requestedConfig).anyEnabled();
+                boolean enabled = MotionConfig.parse(requestedConfig).requiresHelper();
                 if (retainViewing) throw new IllegalStateException("retained Motion result has no active session");
                 if (enabled && configuredAcknowledged) {
                     configuredAcknowledged = false;
@@ -493,7 +494,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         if (id == null || json == null || json.length() > 8192 || retained < 0 || retained > 1)
             return false;
         try {
-            boolean enabled = MotionConfig.parse(json).anyEnabled();
+            boolean enabled = MotionConfig.parse(json).requiresHelper();
             return enabled ? MotionDetectorProtocol.validSession(id) : id.isEmpty() && retained == 0;
         } catch (Exception invalid) { return false; }
     }
@@ -1063,6 +1064,14 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (Binder.getCallingUid() != 2000) throw new SecurityException("motion callback sender denied");
             if (!isCurrentCallback(this)) throw new SecurityException("unregistered Motion callback capability");
             data.enforceInterface(MotionDetectorProtocol.CALLBACK_DESCRIPTOR);
+            if (code == MotionDetectorProtocol.CB_CELLULAR) {
+                String snapshot = data.readString();
+                if (snapshot == null || snapshot.length() > 196_608 || data.dataAvail() != 0)
+                    throw new SecurityException("invalid cellular diagnostic callback");
+                Listener target = listener;
+                main.post(() -> { if (isCurrentCallback(this) && target != null) target.onCellular(snapshot); });
+                return true;
+            }
             if (code == MotionDetectorProtocol.CB_CONFIGURED || code == MotionDetectorProtocol.CB_CONFIGURE_ERROR) {
                 int protocol = data.readInt();
                 int build = data.readInt();

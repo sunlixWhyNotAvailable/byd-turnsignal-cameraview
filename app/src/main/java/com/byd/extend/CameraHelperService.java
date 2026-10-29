@@ -1827,7 +1827,7 @@ public final class CameraHelperService extends Service {
                 && AvasRecoveryPolicy.daemonRequired(
                 GuardRecovery.shouldRecover(this),
                 GuardRecovery.isUserShutdownActive(this),
-                AvasNotificationAccess.hasEnabledAvasAudio(settings) || MotionConfig.read(this).anyEnabled());
+                AvasNotificationAccess.hasEnabledAvasAudio(settings) || MotionConfig.read(this).requiresHelper());
     }
 
     private boolean logcatRecordingRequested(SharedPreferences settings) {
