@@ -93,7 +93,6 @@
     <string name="cameras_error_connection">"Could not establish the viewing connection. Check authorization and network access."</string>
     <string name="cameras_error_helper">"The internal viewing or camera service is unavailable. This is not an account authorization error."</string>
     <string name="cameras_error_secret">"Could not read or save encrypted access data. Details are in diagnostic logs."</string>
-    <string name="motion_notice">"Operation depends on the available vehicle components. Required capabilities are checked at runtime; failures and their causes are logged."</string>
     <string name="motion_enable">"Show a warning when motion is detected"</string>
     <string name="motion_timing">"Vehicle off • wait 2.5 s • show for 10 s; repeated detection extends the display."</string>
     <string name="motion_lock">"Lock state"</string>

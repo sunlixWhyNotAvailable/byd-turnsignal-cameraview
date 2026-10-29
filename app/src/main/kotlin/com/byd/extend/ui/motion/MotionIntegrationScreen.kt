@@ -273,10 +273,6 @@ internal fun FormScope.MotionIntegrationScreen(
         Spacer(Modifier.height(12.dp))
     }
     if (tab == 0) {
-        row("motion-notice") {
-            Text(strings.motionText(R.string.motion_notice), color = colors.muted, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-        }
         row("motion-tablet-settings") {
             val toggle: (Boolean) -> Unit = {
                         try {

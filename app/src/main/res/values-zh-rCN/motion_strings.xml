@@ -93,7 +93,6 @@
     <string name="cameras_error_connection">"无法建立查看连接。请检查授权和网络。"</string>
     <string name="cameras_error_helper">"内部查看或摄像头服务不可用。这不是账户授权错误。"</string>
     <string name="cameras_error_secret">"无法读取或保存加密访问数据。详情见诊断日志。"</string>
-    <string name="motion_notice">"功能取决于车辆可用的组件。运行时会检查所需能力，并将错误及其原因写入日志。"</string>
     <string name="motion_enable">"检测到移动时显示警示"</string>
     <string name="motion_timing">"车辆关闭 • 等待2.5秒 • 显示10秒；再次检测到移动时延长显示。"</string>
     <string name="motion_lock">"车锁状态"</string>
