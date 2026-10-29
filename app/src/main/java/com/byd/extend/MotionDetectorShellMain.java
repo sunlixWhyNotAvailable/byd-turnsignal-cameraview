@@ -620,6 +620,19 @@ public final class MotionDetectorShellMain {
             try {
                 data.enforceInterface(MotionDetectorProtocol.DESCRIPTOR);
                 switch (code) {
+                    case MotionDetectorProtocol.TX_RECHECK_STORAGE: {
+                        int reason = data.readInt();
+                        if ((reason != 1 && reason != 2) || data.dataAvail() != 0)
+                            throw new IllegalArgumentException("invalid storage notification");
+                        // Only an existing active policy may act on this app notification.
+                        callControl(() -> {
+                            if (oemRetention != null) oemRetention.request(reason == 1
+                                    ? "archive_changed" : "volume_changed");
+                            return true;
+                        });
+                        reply.writeNoException();
+                        return true;
+                    }
                     case MotionDetectorProtocol.TX_CONFIGURE_STORAGE: {
                         String json = data.readString();
                         if (json == null || json.length() > 8192 || data.dataAvail() != 0)

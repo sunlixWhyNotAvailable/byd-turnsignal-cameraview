@@ -40,6 +40,7 @@ public final class MotionRuntime implements AutoCloseable {
     private final Consumer<String> events;
     private final HandlerThread thread = new HandlerThread("motion-runtime-observer");
     private final Handler handler;
+    private final MotionOemRetentionObserver retentionObserver;
     private final SharedPreferences screenPrefs;
     private final SharedPreferences recordingPrefs;
     private final SharedPreferences chargePrefs;
@@ -64,6 +65,7 @@ public final class MotionRuntime implements AutoCloseable {
         normalizeStoredLockMode(screenPrefs);
         thread.start();
         handler = new Handler(thread.getLooper());
+        retentionObserver = new MotionOemRetentionObserver(this.context, handler, this::recheckOemRetention);
         screenPrefs.registerOnSharedPreferenceChangeListener(changed);
         recordingPrefs.registerOnSharedPreferenceChangeListener(changed);
         chargePrefs.registerOnSharedPreferenceChangeListener(changed);
@@ -185,9 +187,19 @@ public final class MotionRuntime implements AutoCloseable {
         enqueueBackgroundPublish(context);
     }
 
+    private void recheckOemRetention(int reason) {
+        if (closed || GuardRecovery.isUserShutdownActive(context) || detector == null) return;
+        try { detector.recheckOemRetention(reason); }
+        catch (RuntimeException failure) { retentionObserver.failure("notify_worker", failure); }
+    }
+
     private void refreshOnObserver(boolean explicitPublish) {
-        if (closed || GuardRecovery.isUserShutdownActive(context)) return;
+        if (closed || GuardRecovery.isUserShutdownActive(context)) {
+            retentionObserver.close();
+            return;
+        }
         MotionConfig next = MotionConfig.read(context);
+        retentionObserver.setEnabled(next.oemCleanup);
         String nextJson = next.toJson();
         boolean modified = !nextJson.equals(submittedConfig);
         config = next;
@@ -497,6 +509,7 @@ public final class MotionRuntime implements AutoCloseable {
         recordingPrefs.unregisterOnSharedPreferenceChangeListener(changed);
         chargePrefs.unregisterOnSharedPreferenceChangeListener(changed);
         FutureTask<Void> task = new FutureTask<>(() -> {
+            retentionObserver.close();
             MotionDetectorClient old = detector;
             detector = null;
             if (old != null) old.close(); // Detaches only this observer; worker session survives.

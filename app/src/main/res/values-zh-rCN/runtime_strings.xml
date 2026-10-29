@@ -20,6 +20,7 @@
     <string name="runtime_archive_picker_failed">无法打开系统文件选择器</string>
     <string name="runtime_weather_disabled">没有位置权限，天气仍保持关闭</string>
     <string name="runtime_weather_off">天气已关闭</string>
+    <string name="runtime_weather_power_suspended">天气更新已暂停，等待车辆启动</string>
     <string name="runtime_finish_migration">请先完成旧应用的迁移</string>
     <string name="runtime_weather_refreshed">天气已更新</string>
     <string name="runtime_weather_failed">无法更新天气</string>

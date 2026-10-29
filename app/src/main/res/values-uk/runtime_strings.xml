@@ -20,6 +20,7 @@
     <string name="runtime_archive_picker_failed">Не вдалося відкрити системний вибір файлу</string>
     <string name="runtime_weather_disabled">Погода залишилась вимкненою без доступу до геолокації</string>
     <string name="runtime_weather_off">Погоду вимкнено</string>
+    <string name="runtime_weather_power_suspended">Погоду призупинено до ввімкнення авто</string>
     <string name="runtime_finish_migration">Спочатку завершіть перенесення зі старого застосунку</string>
     <string name="runtime_weather_refreshed">Погоду оновлено</string>
     <string name="runtime_weather_failed">Не вдалося оновити погоду</string>

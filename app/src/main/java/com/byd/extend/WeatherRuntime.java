@@ -79,6 +79,7 @@ public final class WeatherRuntime {
         return thread;
     });
     private final Object stateLock = new Object();
+    private final WeatherPowerState vehiclePower = new WeatherPowerState();
     private volatile boolean started;
     private volatile boolean enabled;
     private volatile boolean inFlight;
@@ -154,12 +155,32 @@ public final class WeatherRuntime {
             if (started) return;
             started = true;
             enabled = preferences.getBoolean(PREF_ENABLED, false);
-            if (!enabled) return;
-            long dueAt = lastSuccessMs <= 0L ? 0L : lastSuccessMs
-                    + TimeUnit.MINUTES.toMillis(intervalMinutes());
-            scheduleLocked(Math.max(0L, dueAt - System.currentTimeMillis()));
+            if (enabled) scheduleLocked(0L);
         }
     }
+
+    public void vehiclePowerChanged(boolean known, boolean off) {
+        ResultCallback cancelled = null;
+        synchronized (stateLock) {
+            if (!vehiclePower.update(known, off)) return;
+            emit("weather_vehicle_power", "known", known, "off", off,
+                    "suspended", !vehiclePower.allowsRequests());
+            if (vehiclePower.allowsRequests()) {
+                if (started && enabled) scheduleLocked(0L);
+            } else {
+                cancelled = requestPending ? pendingCallback : activeCallback;
+                activeCallback = null;
+                generation++;
+                cancelScheduledLocked();
+                clearPendingLocked();
+                cancelActiveLocked();
+                unregisterPrerequisiteCallbacksLocked();
+            }
+        }
+        deliver(cancelled, false, "vehicle_power_suspended");
+    }
+
+    public boolean isPowerSuspended() { return !vehiclePower.allowsRequests(); }
 
     /** Re-read the user switch and interval. Disabling invalidates in-flight work immediately. */
     public void settingsChanged() {
@@ -179,10 +200,12 @@ public final class WeatherRuntime {
                 cancelActiveLocked();
                 unregister = true;
                 emit("weather_disabled", "reason", "settings");
+            } else if (!vehiclePower.allowsRequests()) {
+                emit("weather_suspended", "reason", "vehicle_power");
             } else if (requestPending) {
                 queuePrerequisiteCheckLocked("settings");
             } else if (started || changed) {
-                long dueAt = lastSuccessMs <= 0L ? 0L : lastSuccessMs
+                long dueAt = changed || lastSuccessMs <= 0L ? 0L : lastSuccessMs
                         + TimeUnit.MINUTES.toMillis(interval);
                 scheduleLocked(Math.max(0L, dueAt - System.currentTimeMillis()));
                 emit("weather_enabled", "interval_minutes", interval);
@@ -199,7 +222,7 @@ public final class WeatherRuntime {
     /** Queues one request. A second request while one is active is deliberately ignored. */
     public boolean requestNow(String reason, ResultCallback callback) {
         synchronized (stateLock) {
-            if (!started || !enabled || inFlight || requestPending) return false;
+            if (!started || !enabled || !vehiclePower.allowsRequests() || inFlight || requestPending) return false;
             cancelScheduledLocked();
             requestPending = true;
             locationAttempt.clear();
@@ -255,6 +278,7 @@ public final class WeatherRuntime {
     }
 
     static int errorMessageResource(String error) {
+        if ("vehicle_power_suspended".equals(error)) return R.string.runtime_weather_power_suspended;
         if ("location_permission_denied".equals(error)) {
             return R.string.runtime_weather_location_permission_needed;
         }
@@ -269,6 +293,7 @@ public final class WeatherRuntime {
             long requestGeneration, String reason, ResultCallback callback,
             LocationSnapshot location) {
         boolean success = false;
+        boolean retryPrerequisites = false;
         String error = "";
         try {
             emit("weather_request", "reason", reason,
@@ -279,6 +304,12 @@ public final class WeatherRuntime {
             if (!isCurrent(requestGeneration)) throw new InterruptedException("weather disabled");
             emitLocationDetail(location);
             City city = geocode(location.value);
+            if (!isCurrent(requestGeneration)) throw new InterruptedException("weather cancelled");
+            if (!hasValidatedDefaultNetwork() || WeatherLocationSelection.rejectionReason(
+                    locationElapsedNanos(location.value), SystemClock.elapsedRealtimeNanos()) != null) {
+                retryPrerequisites = true;
+                return;
+            }
             String query = coordinateQuery(location.value);
             JSONObject forecast = getJson("https://api.open-meteo.com/v1/forecast?" + query
                     + "&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,uv_index"
@@ -302,6 +333,7 @@ public final class WeatherRuntime {
             }
             emit("weather_provider_written");
             synchronized (stateLock) {
+                if (!isCurrent(requestGeneration)) throw new InterruptedException("weather cancelled");
                 success = true;
                 lastSuccessMs = System.currentTimeMillis();
                 preferences.edit().putLong(PREF_LAST_SUCCESS_MS, lastSuccessMs).apply();
@@ -312,7 +344,7 @@ public final class WeatherRuntime {
             error = "cancelled";
         } catch (Throwable failure) {
             if (error.isEmpty()) error = summary(failure);
-            emit("weather_failure", "error", error, "cause", summary(failure));
+            emit("weather_failure", "error", error, "cause", android.util.Log.getStackTraceString(failure));
         } finally {
             boolean networkValidated = hasValidatedDefaultNetwork();
             boolean deliverCallback;
@@ -322,8 +354,16 @@ public final class WeatherRuntime {
                 if (deliverCallback) {
                     inFlight = false;
                     activeFuture = null;
-                    if (started && enabled && !executor.isShutdown()) {
-                        if (success) {
+                    if (started && enabled && vehiclePower.allowsRequests() && !executor.isShutdown()) {
+                        if (retryPrerequisites) {
+                            requestPending = true;
+                            pendingGeneration = generation;
+                            pendingReason = reason;
+                            pendingCallback = callback;
+                            locationAttempt.clear();
+                            queuePrerequisiteCheckLocked("prerequisites_changed");
+                            deliverCallback = false;
+                        } else if (success) {
                             scheduleLocked(delayAfterResultMs(true, intervalMinutes()));
                         } else if (shouldUseFailureTimer(false, networkValidated)) {
                             scheduleLocked(delayAfterResultMs(false, intervalMinutes()));
@@ -453,7 +493,7 @@ public final class WeatherRuntime {
     private void prerequisiteChanged(String trigger, Location location) {
         Location incoming = location == null ? null : new Location(location);
         synchronized (stateLock) {
-            if (!started || !enabled || !requestPending || executor.isShutdown()) return;
+            if (!started || !enabled || !vehiclePower.allowsRequests() || !requestPending || executor.isShutdown()) return;
             if (incoming != null) {
                 long incomingNanos = locationElapsedNanos(incoming);
                 long retainedNanos = locationElapsedNanos(callbackLocation);
@@ -470,11 +510,12 @@ public final class WeatherRuntime {
     }
 
     private void queuePrerequisiteCheckLocked(String trigger) {
-        if (!started || !enabled || !requestPending || prerequisiteCheckQueued
+        if (!started || !enabled || !vehiclePower.allowsRequests() || !requestPending || prerequisiteCheckQueued
                 || executor.isShutdown()) return;
         prerequisiteCheckQueued = true;
+        final long requestGeneration = pendingGeneration;
         FutureTask<Void> task = new FutureTask<>(() -> {
-            runPrerequisiteCheck(trigger);
+            runPrerequisiteCheck(trigger, requestGeneration);
             return null;
         });
         activeFuture = task;
@@ -486,31 +527,25 @@ public final class WeatherRuntime {
         }
     }
 
-    private void runPrerequisiteCheck(String trigger) {
-        long requestGeneration;
+    private void runPrerequisiteCheck(String trigger, long requestGeneration) {
         synchronized (stateLock) {
-            if (!started || !enabled || !requestPending) {
-                prerequisiteCheckQueued = false;
-                activeFuture = null;
-                return;
-            }
-            requestGeneration = pendingGeneration;
+            if (!isCurrent(requestGeneration) || !requestPending || pendingGeneration != requestGeneration) return;
         }
 
-        LocationSnapshot location = currentLocation();
         boolean networkReady = hasValidatedDefaultNetwork();
-        PrerequisiteState state = prerequisiteState(
-                location.authorized, location.value != null, networkReady);
+        // Do not spend the location acquisition window waiting for internet after power-on.
+        LocationSnapshot location = networkReady ? currentLocation()
+                : new LocationSnapshot(true, null, null, 0L, 0L, null);
+        PrerequisiteState state = networkReady ? prerequisiteState(
+                location.authorized, location.value != null, true) : PrerequisiteState.WAIT_NETWORK;
         String reason = null;
         ResultCallback callback = null;
         boolean startRequest = false;
         String prerequisiteError = null;
         boolean readinessRetry = false;
         synchronized (stateLock) {
-            if (!started || !enabled || !requestPending
+            if (!isCurrent(requestGeneration) || !requestPending
                     || pendingGeneration != requestGeneration) {
-                prerequisiteCheckQueued = false;
-                activeFuture = null;
                 return;
             }
             PrerequisiteState previous = waitState;
@@ -523,7 +558,7 @@ public final class WeatherRuntime {
                 waitState = state;
                 prerequisiteCheckQueued = false;
                 activeFuture = null;
-                boolean needLocation = location.value == null;
+                boolean needLocation = networkReady && location.value == null;
                 if (needLocation) locationAttempt.start(SystemClock.elapsedRealtime());
                 else locationAttempt.clear();
                 if (needLocation && locationAttempt.remaining(SystemClock.elapsedRealtime()) == 0L) {
@@ -542,7 +577,7 @@ public final class WeatherRuntime {
                     }
                 }
                 if (transition && prerequisiteError == null) {
-                    if (location.value == null) {
+                    if (needLocation) {
                         emit("weather_prerequisite_wait", "missing", waitLabel(state),
                                 "location_rejections", locationWaitRejections(location));
                     } else {
@@ -618,7 +653,7 @@ public final class WeatherRuntime {
             String error = summary(failure);
             if (locationDiagnostics.add(operation + ":" + provider + ":" + error)) {
                 emit("weather_location_failed", "operation", operation, "provider", provider,
-                        "error", error);
+                        "error", error, "stack", android.util.Log.getStackTraceString(failure));
             }
         }
     }
@@ -748,8 +783,7 @@ public final class WeatherRuntime {
     private void updatePrerequisiteCallbacksLocked(PrerequisiteState state) {
         boolean needLocation = state == PrerequisiteState.WAIT_LOCATION
                 || state == PrerequisiteState.WAIT_BOTH;
-        boolean needNetwork = state == PrerequisiteState.WAIT_NETWORK
-                || state == PrerequisiteState.WAIT_BOTH;
+        boolean needNetwork = state != PrerequisiteState.READY;
         if (needLocation) registerLocationCallbackLocked();
         else unregisterLocationCallbackLocked();
         if (needNetwork) registerNetworkCallbackLocked();
@@ -795,7 +829,8 @@ public final class WeatherRuntime {
             manager.registerDefaultNetworkCallback(networkWaitCallback);
             waitingConnectivityManager = manager;
             networkCallbackRegistered = true;
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException failure) {
+            emit("weather_network_subscribe_failed", "error", android.util.Log.getStackTraceString(failure));
         }
     }
 
@@ -948,11 +983,12 @@ public final class WeatherRuntime {
     }
 
     private boolean isCurrent(long requestGeneration) {
-        return started && enabled && generation == requestGeneration && !Thread.currentThread().isInterrupted();
+        return started && enabled && vehiclePower.allowsRequests()
+                && generation == requestGeneration && !Thread.currentThread().isInterrupted();
     }
 
     private void scheduleLocked(long delayMs) {
-        if (!canScheduleNormal(started, enabled, inFlight, requestPending,
+        if (!canScheduleNormal(started, enabled && vehiclePower.allowsRequests(), inFlight, requestPending,
                 executor.isShutdown())) return;
         cancelScheduledLocked();
         scheduled = executor.schedule(() -> requestNow("scheduled"), Math.max(0L, delayMs), TimeUnit.MILLISECONDS);

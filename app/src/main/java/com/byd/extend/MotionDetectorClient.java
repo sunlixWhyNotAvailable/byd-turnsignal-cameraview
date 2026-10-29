@@ -269,6 +269,26 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
         synchronized (STORAGE_APPLY_LOCK) { suspendStorageWorker(context); }
     }
 
+    /** Notification only: never launches or reconfigures cameras or storage. */
+    void recheckOemRetention(int reason) {
+        try {
+            // This handle was authenticated when configuration/attachment completed.
+            IBinder candidate = worker;
+            if (closed || candidate == null || !candidate.isBinderAlive()) return;
+            Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
+                data.writeInt(reason);
+                if (!candidate.transact(MotionDetectorProtocol.TX_RECHECK_STORAGE, data, reply, 0))
+                    throw new IllegalStateException("Motion storage notification unavailable");
+                reply.readException();
+                if (reply.dataAvail() != 0) throw new IllegalStateException("Unexpected storage notification reply");
+            } finally { data.recycle(); reply.recycle(); }
+        } catch (Exception failure) {
+            throw new IllegalStateException("Motion storage notification failed", failure);
+        }
+    }
+
     private static void suspendStorageWorker(Context context) throws Exception {
         IBinder candidate = resolveWorker();
         if (candidate == null || !candidate.isBinderAlive()) return;

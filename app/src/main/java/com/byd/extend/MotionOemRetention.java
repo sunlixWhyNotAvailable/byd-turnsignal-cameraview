@@ -2,12 +2,6 @@ package com.byd.extend;
 
 import com.byd.extend.remote.CameraViewingDiagnostics;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.database.ContentObserver;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
@@ -17,19 +11,14 @@ import java.io.File;
 /** One shell-owned cleanup queue, independent of camera sessions and Activity lifetime. */
 final class MotionOemRetention {
     private static final long RECONCILE_MS = 5 * 60_000L;
-    private static final Uri NORMAL_URI = Uri.parse("content://cdr/cdr_video_normal");
     private final MotionShellMediaContext mediaContext;
     private final MotionMediaLibrary library;
     private final File stateFile;
     private final Handler handler;
     private final Object lock = new Object();
-    private final ContentObserver observer;
-    private final BroadcastReceiver mounts;
     private volatile MotionOemRetentionState state;
     private String pendingReason;
     private String lastOutcome;
-    private boolean observing;
-    private boolean receiving;
     private final Runnable sweep = this::run;
 
     MotionOemRetention(MotionShellMediaContext context, MotionMediaLibrary library, Handler control)
@@ -42,12 +31,6 @@ final class MotionOemRetention {
         HandlerThread thread = new HandlerThread("motion-oem-retention");
         thread.start();
         handler = new Handler(thread.getLooper());
-        observer = new ContentObserver(control) {
-            @Override public void onChange(boolean selfChange) { request("archive_changed"); }
-        };
-        mounts = new BroadcastReceiver() {
-            @Override public void onReceive(Context ignored, Intent intent) { request("volume_changed"); }
-        };
         request("worker_restored");
     }
 
@@ -77,43 +60,15 @@ final class MotionOemRetention {
             System.out.println("oem_retention_policy reason=" + reason + " enabled=" + next.enabled
                     + " suspended=" + next.suspended + " sd=" + next.primarySd + " limit_gb=" + next.limitGb);
             if (next.active()) request(reason);
-            else handler.post(this::updateListeners);
         }
     }
 
-    private void request(String reason) {
+    void request(String reason) {
         synchronized (lock) {
             if (!state.active()) return;
             pendingReason = reason;
             handler.removeCallbacks(sweep);
             handler.post(sweep);
-        }
-    }
-
-    private void updateListeners() {
-        Context context = mediaContext.systemContext();
-        if (state.active()) {
-            if (!observing) try {
-                context.getContentResolver().registerContentObserver(NORMAL_URI, true, observer);
-                observing = true;
-            } catch (RuntimeException failure) { failure("subscribe_archive", failure); }
-            if (!receiving) try {
-                IntentFilter filter = new IntentFilter(Intent.ACTION_MEDIA_MOUNTED);
-                filter.addAction(Intent.ACTION_MEDIA_UNMOUNTED);
-                filter.addAction(Intent.ACTION_MEDIA_EJECT);
-                filter.addDataScheme("file");
-                context.registerReceiver(mounts, filter);
-                receiving = true;
-            } catch (RuntimeException failure) { failure("subscribe_volume", failure); }
-        } else {
-            if (observing) try {
-                context.getContentResolver().unregisterContentObserver(observer);
-                observing = false;
-            } catch (RuntimeException failure) { failure("unsubscribe_archive", failure); }
-            if (receiving) try {
-                context.unregisterReceiver(mounts);
-                receiving = false;
-            } catch (RuntimeException failure) { failure("unsubscribe_volume", failure); }
         }
     }
 
@@ -128,7 +83,6 @@ final class MotionOemRetention {
         if (!current.active()) return;
         long started = SystemClock.elapsedRealtime();
         try {
-            updateListeners();
             String volumeId = library.selectedVolumeId(current.primarySd);
             MotionStorage storage = library.storage();
             MotionStorage.Volume volume = volumeId == null ? null : storage.findVolume(volumeId);

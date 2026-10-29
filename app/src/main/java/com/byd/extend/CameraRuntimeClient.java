@@ -32,6 +32,12 @@ final class CameraRuntimeClient {
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
     private String lastVehiclePowerState;
+    private java.util.function.BiConsumer<Boolean, Boolean> vehiclePowerListener;
+
+    synchronized void setVehiclePowerListener(java.util.function.BiConsumer<Boolean, Boolean> listener) {
+        vehiclePowerListener = listener;
+        if (listener != null) listener.accept(lastVehiclePowerKnown, lastVehiclePowerOff);
+    }
     private long lastVehiclePowerSourceEpoch = -1;
     private long lastVehiclePowerRevision = -1;
     private boolean lastVehiclePowerKnown;
@@ -318,6 +324,7 @@ final class CameraRuntimeClient {
                 lastVehiclePowerKnown = known;
                 lastVehiclePowerOff = off;
                 lastVehiclePowerFailureCount = failures;
+                if (vehiclePowerListener != null) vehiclePowerListener.accept(known, off);
                 if (cluster != null) cluster.acceptEvent(line);
             } else if ("shell_power_state".equals(kind) && cluster != null) {
                 cluster.acceptEvent(line);
@@ -351,6 +358,7 @@ final class CameraRuntimeClient {
 
     synchronized void detach() {
         detached = true;
+        vehiclePowerListener = null;
         settings.unregisterOnSharedPreferenceChangeListener(preferenceListener);
         handler.removeCallbacks(preferenceSync);
         if (pano != null) { pano.stopForTeardown(); pano = null; }

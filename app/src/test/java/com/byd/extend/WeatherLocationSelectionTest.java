@@ -8,6 +8,34 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public final class WeatherLocationSelectionTest {
+    @Test public void vehiclePowerSuspendsUnknownAndOffAndDeduplicatesOn() {
+        WeatherPowerState power = new WeatherPowerState();
+        assertFalse(power.allowsRequests());
+        assertFalse(power.update(false, false));
+        assertTrue(power.update(true, true));
+        assertFalse(power.allowsRequests());
+        assertTrue(power.update(true, false));
+        assertTrue(power.allowsRequests());
+        assertFalse(power.update(true, false));
+        assertTrue(power.update(false, false));
+        assertFalse(power.allowsRequests());
+        assertTrue(power.update(true, false));
+        assertTrue(power.allowsRequests());
+    }
+
+    @Test public void suspendedPowerCannotScheduleOrAcceptAnOlderRequestGeneration() {
+        WeatherPowerState power = new WeatherPowerState();
+        assertFalse(WeatherRuntime.canScheduleNormal(true, power.allowsRequests(), false, false, false));
+        power.update(true, false);
+        assertTrue(WeatherRuntime.canScheduleNormal(true, power.allowsRequests(), false, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, power.allowsRequests(), true, false, false));
+        assertFalse(WeatherRuntime.canScheduleNormal(true, power.allowsRequests(), false, true, false));
+        power.update(true, true);
+        assertFalse(WeatherRuntime.canScheduleNormal(true, power.allowsRequests(), false, false, false));
+        assertFalse(WeatherRuntime.ownsGeneration(4, 5));
+        assertTrue(WeatherRuntime.ownsGeneration(5, 5));
+    }
+
     @Test
     public void acquisitionDeadlineIsNotExtendedByRepeatedChecks() {
         WeatherLocationAttempt attempt = new WeatherLocationAttempt();

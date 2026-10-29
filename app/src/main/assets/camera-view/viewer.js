@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 14;
+  const WEB_REVISION = 15;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -1262,11 +1262,7 @@
   function disposeLivePlayer(player) {
     if (!player) return;
     if (state.mirrorWait?.player === player) clearMirrorWait();
-    clearSelectionCutover(player);
-    player.frameToken = (player.frameToken || 0) + 1;
-    if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
-      player.video.cancelVideoFrameCallback(player.frameCallback);
-    if (player.frameListener) player.video.removeEventListener('timeupdate', player.frameListener);
+    clearSelectionWatcher(player);
     player.hls?.destroy();
     player.video.onerror = null;
     player.video.pause();
@@ -1334,7 +1330,7 @@
     const player = livePlayer;
     if (!player || player.suspended) return;
     player.suspended = true;
-    clearSelectionCutover(player);
+    clearSelectionWatcher(player);
     player.video.pause();
     if (player.hls) player.hls.stopLoad();
     else { player.video.removeAttribute('src'); player.video.load(); }
@@ -1367,7 +1363,7 @@
 
   function selectionDisplayed(player, revision) {
     if (revision !== state.liveSelectionRevision || state.mode !== 'live' || !state.wantsLive) return;
-    clearSelectionCutover(player);
+    clearSelectionWatcher(player);
     state.selectionPending = false;
     state.localFirstFrame = true;
     if (!state.firstLiveFrame) {
@@ -1396,19 +1392,30 @@
     player.cutoverListener = null;
   }
 
-  function watchLiveSelection(player, cutover = false) {
+  function clearSelectionWatcher(player) {
     clearSelectionCutover(player);
-    const revision = player.revision;
-    const targetMs = state.selectionProgramTimeMs;
-    if (!Number.isFinite(targetMs)) return;
-    const token = player.frameToken = (player.frameToken || 0) + 1;
+    player.frameToken = (player.frameToken || 0) + 1;
     if (player.frameCallback != null && player.video.cancelVideoFrameCallback)
       player.video.cancelVideoFrameCallback(player.frameCallback);
     if (player.frameListener) player.video.removeEventListener('timeupdate', player.frameListener);
+    player.frameCallback = null;
+    player.frameListener = null;
+    player.frameRevision = null;
+    player.frameTargetMs = null;
+  }
+
+  function watchLiveSelection(player, cutover = false) {
+    clearSelectionWatcher(player);
+    const revision = player.revision;
+    const targetMs = state.selectionProgramTimeMs;
+    if (!Number.isFinite(targetMs)) return;
+    const token = player.frameToken;
+    player.frameRevision = revision;
+    player.frameTargetMs = targetMs;
     const video = player.video;
     const valid = () => livePlayer === player && player.frameToken === token &&
       revision === state.liveSelectionRevision && state.mode === 'live' && state.wantsLive &&
-      state.authenticated && !state.replaced;
+      state.authenticated && !state.replaced && !player.suspended && !state.selectionFailed;
     if (cutover && provider === 'tailscale') {
       const seekWhenBuffered = () => {
         if (!valid()) { clearSelectionCutover(player); return; }
@@ -1444,6 +1451,7 @@
       // Program dates map the actual presented frame to the selected encoded fragment.
       // A playing event or an advancing composite alone does not prove the new layout was shown.
       const frameMs = presentedProgramTime(player, mediaTime);
+      player.presentedTimeMs = frameMs;
       if (!Number.isFinite(frameMs) || frameMs < targetMs || video.paused || video.readyState < 2) return false;
       selectionDisplayed(player, revision);
       return true;
@@ -1478,6 +1486,9 @@
         const player = livePlayer;
         if (player.video.paused) player.video.play().catch((error) => player.fail(error));
         watchLiveSelection(player, true);
+      } else if (state.selectionPending && livePlayer.frameRevision !== revision) {
+        // First playing can precede the selected fragment's program date at the same revision.
+        watchLiveSelection(livePlayer, true);
       }
       return;
     }
@@ -1494,7 +1505,7 @@
     const current = () => generation === mediaGeneration && video.isConnected && state.authenticated &&
       !state.replaced && !player.suspended && state.mode === 'live'
       && (pendingLivePlayer === player || livePlayer === player);
-    let lastFragment = null, recovery = null, hasPlayed = false;
+    let lastFragment = null, recovery = null, hasPlayed = false, stallStarted = null, lastStallMs;
     const snapshot = (reason, cause, terminal = false) => {
       const now = performance.now();
       if (!current() || now - lastPlaybackSnapshot < 10000 || (!terminal && playbackSnapshotInFlight)) return;
@@ -1510,6 +1521,11 @@
         currentMs: Math.round(video.currentTime * 1000), bufferAheadMs, ready: video.readyState,
         playbackRatePermille: Math.round(video.playbackRate * 1000),
         seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
+        watcher: player.frameRevision === player.revision ? 1 : 0,
+        targetMs: Number.isFinite(player.frameTargetMs) ? Math.round(player.frameTargetMs) : undefined,
+        presentedMs: Number.isFinite(player.presentedTimeMs) ? Math.round(player.presentedTimeMs) : undefined,
+        hidden: document.hidden ? 1 : 0,
+        stallMs: stallStarted == null ? undefined : Math.round(now - stallStarted), lastStallMs,
         fragment: cause?.frag?.sn, httpStatus: cause?.response?.code,
         lastFragment: lastFragment?.sequence, lastLoadMs: lastFragment?.loadMs,
         lastBytes: lastFragment?.bytes, lastFragmentAgeMs: lastFragment ? Math.round(now - lastFragment.at) : undefined,
@@ -1523,8 +1539,19 @@
       post('/diagnostic', sample).catch((error) => console.warn('Could not report playback snapshot', error))
         .finally(() => { playbackSnapshotInFlight = false; });
     };
-    video.addEventListener('playing', () => { hasPlayed = true; });
-    video.addEventListener('waiting', () => { if (hasPlayed) reportSnapshot('stall'); });
+    video.addEventListener('playing', () => {
+      hasPlayed = true;
+      if (stallStarted != null) {
+        lastStallMs = Math.round(performance.now() - stallStarted);
+        stallStarted = null;
+        reportSnapshot('recovered');
+      }
+    });
+    video.addEventListener('waiting', () => {
+      if (!hasPlayed) return;
+      if (stallStarted == null) stallStarted = performance.now();
+      reportSnapshot('stall');
+    });
     const fail = (cause, category = 'play') => {
       if (!current()) return;
       console.warn('Live playback failed', category, cause);
@@ -1590,9 +1617,7 @@
         }).catch((error) => console.warn('Could not report playback transport', error))
           .finally(() => { transportReportInFlight = false; });
       };
-      const sync = provider === 'tailscale' ? { liveSyncDurationCount: 2 }
-        : { liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 };
-      const hls = new Hls({ ...sync,
+      const hls = new Hls({ liveSyncDurationCount: 2,
         maxLiveSyncPlaybackRate: 1.5, maxBufferLength: 3,
         xhrSetup: (xhr, url) => {
           xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION));
@@ -1626,9 +1651,11 @@
       player.hls = hls;
       hls.on(Hls.Events.FRAG_LOADED, (_, data) => {
         if (!current() || data.frag.type !== 'main' || !Number.isSafeInteger(data.frag.sn)) return;
-        const loading = data.frag.stats.loading;
+        const stats = data.part?.stats || data.frag.stats;
+        const loading = stats.loading;
         lastFragment = { sequence: data.frag.sn, loadMs: Math.round(loading.end - loading.start),
-          bytes: data.payload.byteLength, at: performance.now() };
+          bytes: Number.isSafeInteger(stats.loaded) && stats.loaded >= 0 ? stats.loaded : undefined,
+          at: performance.now() };
       });
       if (provider === 'tailscale') {
         BydLiveRecovery.install(hls, Hls, (kind, detail) => {
@@ -1776,6 +1803,9 @@
           state.selectionPending = true;
         state.selectionFailed = data.selectionFailed === true;
         if (state.selectionFailed) state.selectionPending = false;
+        if (livePlayer && (state.selectionFailed || state.selectionPending &&
+            (!Number.isFinite(state.selectionProgramTimeMs) || state.selectionSegment == null)))
+          clearSelectionWatcher(livePlayer);
         if (data.status === 'connected' && !state.livePlaylist) data.status = 'preparing';
       }
       if (state.mode === 'archive' && currentSelectionSnapshot && data.streamId !== state.liveStreamId) {

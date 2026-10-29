@@ -881,6 +881,7 @@ public final class CameraHelperService extends Service {
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
         ensureHelperCreated();
+        cameraRuntime.setVehiclePowerListener(weatherRuntime::vehiclePowerChanged);
         controllersInitialized = true;
     }
 
@@ -1188,7 +1189,8 @@ public final class CameraHelperService extends Service {
                         weatherRuntime.isRequestInFlight()
                                 ? WEATHER_RESULT_BUSY : WEATHER_RESULT_FAILED,
                         runtimeText(this, weatherRuntime.isRequestInFlight()
-                                ? R.string.runtime_weather_busy : R.string.runtime_weather_off));
+                                ? R.string.runtime_weather_busy : weatherRuntime.isEnabled() && weatherRuntime.isPowerSuspended()
+                                ? R.string.runtime_weather_power_suspended : R.string.runtime_weather_off));
             }
         } else if (ACTION_SETTINGS_RELOADED.equals(action)) {
             reloadSettings(command.fullImport);

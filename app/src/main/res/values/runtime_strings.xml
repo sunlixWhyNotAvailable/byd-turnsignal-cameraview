@@ -20,6 +20,7 @@
     <string name="runtime_archive_picker_failed">Could not open the system file picker</string>
     <string name="runtime_weather_disabled">Weather remains disabled without location access</string>
     <string name="runtime_weather_off">Weather is disabled</string>
+    <string name="runtime_weather_power_suspended">Weather is paused until the vehicle is on</string>
     <string name="runtime_finish_migration">Finish migration from the old app first</string>
     <string name="runtime_weather_refreshed">Weather updated</string>
     <string name="runtime_weather_failed">Could not update weather</string>

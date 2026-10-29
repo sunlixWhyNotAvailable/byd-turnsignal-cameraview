@@ -5,6 +5,17 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ViewerStopReasonTest {
+    @Test public void snapshotRetainsFrameWatcherAndStallMeasurementsWithoutInventingBytes() throws Exception {
+        JSONObject sample = new JSONObject().put("reason", "recovered").put("watcher", 1)
+                .put("targetMs", 1793290000000L).put("presentedMs", 1793290000800L)
+                .put("lastStallMs", 1800).put("hidden", 0);
+        assertEquals("reason=recovered targetMs=1793290000000 presentedMs=1793290000800"
+                + " lastStallMs=1800 watcher=1 hidden=0", ViewerStopReason.playbackSnapshot(sample));
+        sample.put("watcher", 2).put("targetMs", "secret").put("presentedMs", -1)
+                .put("lastStallMs", -1).put("hidden", 2);
+        assertEquals("reason=recovered", ViewerStopReason.playbackSnapshot(sample));
+    }
+
     @Test public void retainsCodesWithoutLoggingBrowserMessagesUrlsOrCredentials() throws Exception {
         JSONObject cause = new JSONObject().put("origin", "playback_error").put("category", "hls")
                 .put("mediaCode", 3).put("exception", "NotSupportedError")

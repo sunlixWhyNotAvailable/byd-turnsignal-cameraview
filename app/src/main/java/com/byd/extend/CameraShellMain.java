@@ -196,8 +196,8 @@ public final class CameraShellMain {
                 if (reply != null) reply.writeException(new SecurityException("caller uid denied"));
                 return true;
             }
-            // Binder descriptor queries carry no custom interface token.
-            if (code == IBinder.INTERFACE_TRANSACTION)
+            // Framework diagnostics, like descriptor queries, carry no application token.
+            if (code == IBinder.INTERFACE_TRANSACTION || code == IBinder.DUMP_TRANSACTION)
                 return super.onTransact(code, data, reply, flags);
             try {
                 data.enforceInterface(CameraShellProtocol.DESCRIPTOR);
