@@ -100,10 +100,12 @@ final class CellularApnPlatform {
         String iface = property("net.lte.apn2.ifname");
         boolean present = apnInterfacePresent(iface);
         if (!iface.equals(property("net.lte.apn2.ifname"))) throw new IOException("APN2 identity changed during observation");
-        return new ApnState(present, iface, present ? "interface_present" : "interface_absent");
+        return new ApnState(present, iface, iface.isEmpty() ? "interface_name_absent"
+                : present ? "interface_present" : "interface_absent");
     }
 
     static boolean apnInterfacePresent(String iface) throws IOException {
+        if ("".equals(iface)) return false;
         if (iface == null || !iface.matches("[a-zA-Z0-9_.-]{1,15}"))
             throw new IOException("APN2 identity unknown or invalid: net.lte.apn2.ifname=" + iface);
         return NetworkInterface.getByName(iface) != null;

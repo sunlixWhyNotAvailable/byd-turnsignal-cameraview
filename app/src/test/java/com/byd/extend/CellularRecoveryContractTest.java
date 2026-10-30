@@ -116,8 +116,14 @@ public class CellularRecoveryContractTest {
         java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
         assertTrue("Host must expose an interface for this real OS check", interfaces.hasMoreElements());
         assertTrue(CellularApnPlatform.apnInterfacePresent(interfaces.nextElement().getName()));
-        try { CellularApnPlatform.apnInterfacePresent(""); fail("Unknown APN identity must not become absent"); }
-        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("identity")); }
+    }
+
+    @Test public void emptyApnMappingAllowsRecoveryButInvalidMappingsRemainErrors() throws Exception {
+        assertFalse(CellularApnPlatform.apnInterfacePresent(""));
+        for (String invalid : new String[] { null, " ", "invalid/name" }) {
+            try { CellularApnPlatform.apnInterfacePresent(invalid); fail("Invalid APN identity must remain an error"); }
+            catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("identity")); }
+        }
     }
 
     @Test public void persistedBacklightOwnershipIsLimitedToTheRecordedBoot() throws Exception {

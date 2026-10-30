@@ -324,20 +324,19 @@ internal fun FormScope.CameraViewingScreen(
         row("restore-cellular") {
             SwitchLine(strings.motionText(R.string.cameras_restore_cellular), "", state.config.restoreCellular,
                 { controller.setRestoreCellular(it) }, colors)
-            if (state.config.restoreCellular) {
-                val status = state.config.cellularStatus
-                val text = when (status) {
-                    "found" -> R.string.cameras_cellular_found
-                    "failed" -> R.string.cameras_cellular_failed
-                    else -> R.string.cameras_cellular_pending
-                }
-                Text(strings.motionText(text), fontSize = 13.sp,
-                    color = when (status) {
-                        "found" -> Color(0xFF65C889)
-                        "failed" -> Color(0xFFFF6B6B)
-                        else -> colors.muted
-                    })
+            val status = if (state.config.restoreCellular) state.config.cellularStatus else "disabled"
+            val text = when (status) {
+                "disabled" -> R.string.ui_gap_017
+                "found" -> R.string.cameras_cellular_found
+                "failed" -> R.string.cameras_cellular_failed
+                else -> R.string.cameras_cellular_pending
             }
+            Text(strings.motionText(text), fontSize = 13.sp,
+                color = when (status) {
+                    "found" -> Color(0xFF65C889)
+                    "failed" -> Color(0xFFFF6B6B)
+                    else -> colors.muted
+                })
         }
         row("cellular-screen-off") {
             SwitchLine(strings.motionText(R.string.cameras_screen_off_after_cellular), "", state.config.screenOffAfterCellular,
