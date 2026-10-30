@@ -45,6 +45,12 @@ final class MotionScreenControl implements AutoCloseable {
     private boolean priorBlackCover;
     private volatile boolean restoreCommandIssued;
     private final CellularRecovery cellular;
+    private boolean cellularOwnWake;
+    private boolean cellularDarkened;
+    private boolean warningRaisedBacklight;
+    private boolean warningBorrowedCellularDarkness;
+    private int cellularVehiclePower = -1;
+    private volatile long cellularPowerEpoch;
     private boolean coverAttempted;
     private boolean coverRemoved;
     private boolean finishAttempted;
@@ -59,6 +65,162 @@ final class MotionScreenControl implements AutoCloseable {
         this.stateListener = stateListener;
         thread.start();
         handler = new Handler(thread.getLooper());
+        cellular.attachScreen(this);
+        handler.post(() -> {
+            try {
+                // A replacement helper releases our old gate, but never inherits permission to darken again.
+                cellularDarkened = cellular.hasOwnedBacklight();
+                restoreCellularBacklight("helper_replaced");
+            } catch (Exception error) { cellularError("ownership_recovery", error); }
+        });
+    }
+
+    void cellularSettingsChanged() {
+        handler.post(() -> {
+            try {
+                if (!cellular.screenOffAfterRecovery()) restoreCellularBacklight("settings_changed");
+                else darkenAfterCellular();
+                if (!cellular.enabled()) cellularOwnWake = false;
+            } catch (Exception error) { cellularError("settings", error); }
+        });
+    }
+
+    synchronized void cellularPowerChanged(int raw) {
+        int normalized = raw == 0 ? 0 : raw >= 1 && raw <= 4 ? 1 : -1;
+        if (cellularVehiclePower == normalized) return;
+        cellularVehiclePower = normalized;
+        cellularPowerEpoch++;
+        handler.post(() -> {
+            if (normalized <= 0) return;
+            try { restoreCellularBacklight("vehicle_on"); }
+            catch (Exception error) { cellularError("power_on", error); }
+            cellularOwnWake = false;
+        });
+    }
+
+    void cellularChecked(String request, boolean ready, boolean needsWake, int reason) {
+        long powerEpoch = cellularPowerEpoch;
+        handler.post(() -> {
+            try {
+                if (powerEpoch != cellularPowerEpoch || !cellular.enabled()
+                        || !request.equals(OemWakeDiscovery.request())) return;
+                if (needsWake && !warningActive) {
+                    boolean woke = controlCall("APN2 wakeUp reason=" + reason, () -> {
+                        CellularApnPlatform platform = new CellularApnPlatform(
+                                SystemClock.elapsedRealtime() + WAIT_MS, request);
+                        if (powerEpoch != cellularPowerEpoch || platform.disabledReason() != null
+                                || platform.vehiclePower() != POWER_OFF) return false;
+                        CellularApnPlatform.DisplayState before = platform.display();
+                        if (before.awake()) return false;
+                        if (!before.asleep()) throw new IllegalStateException("APN2 display state unknown: " + before);
+                        if (platform.wifiConnected() || platform.apn2().ready) return false;
+                        if (powerEpoch != cellularPowerEpoch || platform.disabledReason() != null
+                                || platform.vehiclePower() != POWER_OFF) return false;
+                        before = platform.display();
+                        if (before.awake()) return false;
+                        if (!before.asleep()) throw new IllegalStateException("APN2 pre-wake state unknown: " + before);
+                        CellularRecovery.log("apn2_wake_attempt reason=" + reason + " " + before);
+                        platform.wake(reason);
+                        return true;
+                    });
+                    if (woke) {
+                        long until = SystemClock.elapsedRealtime() + WAIT_MS;
+                        boolean confirmed = false;
+                        do {
+                            if (powerEpoch != cellularPowerEpoch || !cellular.enabled() || readPower() != POWER_OFF) break;
+                            if (isInteractive() && displayState() == DISPLAY_ON) { confirmed = true; break; }
+                            SystemClock.sleep(50L);
+                        } while (SystemClock.elapsedRealtime() < until);
+                        if (!confirmed) throw new IllegalStateException("APN2 wake returned; logical awake transition unconfirmed");
+                        cellularOwnWake = true;
+                        if (cellularDarkened) cellular.recordBacklightOwnership(false);
+                        cellularDarkened = false;
+                        CellularRecovery.log("apn2_wake_confirmed owner=extend logical_awake=true");
+                        darkenAfterCellular();
+                    }
+                }
+                if (ready) darkenAfterCellular();
+            } catch (Exception error) { cellularError("screen_check", error); }
+        });
+    }
+
+    private void darkenAfterCellular() throws Exception {
+        if (!cellularOwnWake || cellularDarkened || !cellular.screenOffAfterRecovery() || warningActive) return;
+        controlCall("APN2 backlight OFF", () -> {
+            synchronized (cellular) {
+                CellularApnPlatform platform = new CellularApnPlatform(
+                        SystemClock.elapsedRealtime() + WAIT_MS, OemWakeDiscovery.request());
+                int power = platform.vehiclePower();
+                if (!MotionScreenOwnership.mayDarken(cellularOwnWake, cellular.enabled(),
+                        cellular.screenOffAfterRecovery(), power, warningActive, platform.apn2().ready)) return false;
+                CellularApnPlatform.DisplayState display = platform.display();
+                if (!display.awake()) return false;
+                if (backlightRaw() == 0) return false; // Already darkened by somebody else.
+                if (platform.disabledReason() != null || platform.vehiclePower() != POWER_OFF) return false;
+                cellular.recordBacklightOwnership(true);
+                cellularDarkened = true; // Retain ownership even if write/readback is interrupted.
+                setBacklightRaw(false);
+                CellularRecovery.log("apn2_backlight_off confirmed=true logical_sleep_sent=false");
+                return true;
+            }
+        });
+    }
+
+    private void restoreCellularBacklight(String cause) throws Exception {
+        if (!cellularDarkened) return;
+        controlCall("APN2 backlight ON cause=" + cause, () -> {
+            if (backlightRaw() == 0) setBacklightRaw(true);
+            return true;
+        });
+        cellular.recordBacklightOwnership(false);
+        cellularDarkened = false;
+        CellularRecovery.log("apn2_backlight_restored cause=" + cause);
+    }
+
+    private void prepareWarningBacklight() throws Exception {
+        warningBorrowedCellularDarkness = cellularDarkened;
+        try {
+            Class<?> api = Class.forName(DISPLAY_IFACE);
+            api.getMethod("getPowerScreenStatus", int.class);
+            api.getMethod("turnBacklightOn", int.class, long.class);
+            api.getMethod("turnBacklightOff", int.class, long.class);
+        } catch (NoSuchMethodException | ClassNotFoundException unsupported) {
+            if (cellularDarkened) throw unsupported;
+            // Older displays retain their existing Motion wake/cover path; no backlight write was owned.
+            cellularError("motion_backlight_api_absent", unsupported);
+            return;
+        }
+        warningRaisedBacklight = controlCall("Motion backlight ON if needed", () -> {
+            if (takeoverRequested() || readPowerRaw() != POWER_OFF)
+                throw new IllegalStateException("Motion ownership changed before backlight preparation");
+            if (backlightRaw() != 0) return false;
+            setBacklightRaw(true);
+            return true;
+        });
+        if (warningRaisedBacklight) {
+            if (cellularDarkened) cellular.recordBacklightOwnership(false);
+            cellularDarkened = false;
+        }
+    }
+
+    private static int backlightRaw() throws Exception {
+        requireShellUid();
+        int value = (Integer) Class.forName(DISPLAY_IFACE).getMethod("getPowerScreenStatus", int.class)
+                .invoke(service(DISPLAY_IFACE), 0);
+        if (value != 0 && value != 1) throw new IllegalStateException("Unexpected display backlight flag: " + value);
+        return value;
+    }
+
+    private static void setBacklightRaw(boolean on) throws Exception {
+        requireShellUid();
+        Class.forName(DISPLAY_IFACE).getMethod(on ? "turnBacklightOn" : "turnBacklightOff", int.class, long.class)
+                .invoke(service(DISPLAY_IFACE), 0, SystemClock.uptimeMillis());
+        int actual = backlightRaw();
+        if (actual != (on ? 1 : 0)) throw new IllegalStateException("Backlight " + on + " readback=" + actual);
+    }
+
+    private static void cellularError(String stage, Throwable error) {
+        CellularRecovery.log(CellularRecovery.diagnosticDetail(error, "stage=cellular_screen_" + stage));
     }
 
     void beginSession(String id) {
@@ -161,6 +323,7 @@ final class MotionScreenControl implements AutoCloseable {
                 warningActive = true;
                 restoreCommandIssued = false;
                 if (priorDisplayOn) {
+                    prepareWarningBacklight();
                     handler.postDelayed(observe, POLL_MS);
                     report("screen_ready", "prior_display_on=true; prior_black_cover=" + priorBlackCover + "; no_wake_sent=true");
                     return;
@@ -187,6 +350,7 @@ final class MotionScreenControl implements AutoCloseable {
                     return true;
                 });
                 if (!wakeSent) {
+                    prepareWarningBacklight();
                     handler.postDelayed(observe, POLL_MS);
                     report("screen_ready", "prior_display_on=true; prior_black_cover=" + priorBlackCover + "; no_wake_sent=true");
                     return;
@@ -200,6 +364,10 @@ final class MotionScreenControl implements AutoCloseable {
                     }
                     if (isInteractive() && displayState() == DISPLAY_ON) {
                         ownsWake = true;
+                        if (cellular.enabled()) cellularOwnWake = true;
+                        if (cellularDarkened) cellular.recordBacklightOwnership(false);
+                        cellularDarkened = false;
+                        prepareWarningBacklight();
                         handler.removeCallbacks(observe);
                         handler.postDelayed(observe, POLL_MS);
                         report("wake_requested", "reason=13; app warning window may now be shown");
@@ -457,8 +625,23 @@ final class MotionScreenControl implements AutoCloseable {
         } else if (!isInteractive() || displayState() != DISPLAY_ON || !"0".equals(animationStatus())) {
             throw new IllegalStateException("Borrowed visible display changed before completion");
         }
+        if (warningRaisedBacklight && priorDisplayOn
+                && (!warningBorrowedCellularDarkness || cellular.screenOffAfterRecovery())) {
+            controlCall("Motion restore prior backlight OFF", () -> {
+                if (takeoverRequested() || readPowerRaw() != POWER_OFF)
+                    throw new IllegalStateException("Motion ownership changed before backlight restoration");
+                if (warningBorrowedCellularDarkness) {
+                    cellular.recordBacklightOwnership(true);
+                    cellularDarkened = true;
+                }
+                setBacklightRaw(false);
+                return true;
+            });
+        }
         cycle.confirmOwnedBlackRestore();
         resetLocalWarningCycle();
+        try { darkenAfterCellular(); }
+        catch (Exception error) { cellularError("after_warning", error); }
         report("warning_restored_awake", "no_sleep_sent=true; restored_initial_black_cover=" + priorBlackCover);
     }
 
@@ -473,6 +656,9 @@ final class MotionScreenControl implements AutoCloseable {
             if (!sameWarning(id, generation)) return;
             cycle.markUserTakeover();
             ownsWake = false;
+            cellularOwnWake = false;
+            try { restoreCellularBacklight("user_takeover"); }
+            catch (Exception error) { cellularError("takeover", error); }
             stopPowerObservation();
             report("user_takeover", "this cycle will not sleep; later wake requires fresh black/off confirmation");
         });
@@ -488,6 +674,9 @@ final class MotionScreenControl implements AutoCloseable {
             if (!sameWarning(id, generation)) return;
             cycle.markUserTakeover();
             ownsWake = false;
+            cellularOwnWake = false;
+            try { restoreCellularBacklight("activity_paused"); }
+            catch (Exception error) { cellularError("activity_paused", error); }
             stopPowerObservation();
             report("user_takeover", "warning Activity paused before the owned sleep command");
         });
@@ -510,6 +699,18 @@ final class MotionScreenControl implements AutoCloseable {
         handler.postDelayed(observe, POLL_MS);
     }
 
+    void warningWindowClosed(String id, int generation) {
+        handler.post(() -> {
+            if (!sameWarning(id, generation)) return;
+            warningActive = false;
+            warningRaisedBacklight = false;
+            warningBorrowedCellularDarkness = false;
+            stopPowerObservation();
+            try { darkenAfterCellular(); }
+            catch (Exception error) { cellularError("window_closed", error); }
+        });
+    }
+
     private void stopPowerObservation() {
         handler.removeCallbacks(observe);
     }
@@ -519,6 +720,8 @@ final class MotionScreenControl implements AutoCloseable {
         stopPowerObservation();
         ownsWake = false;
         warningActive = false;
+        warningRaisedBacklight = false;
+        warningBorrowedCellularDarkness = false;
         coverAttempted = false;
         coverRemoved = false;
         finishAttempted = false;
@@ -700,8 +903,10 @@ final class MotionScreenControl implements AutoCloseable {
         handler.post(() -> {
             eligible = false;
             sessionId = null;
+            try { restoreCellularBacklight("helper_close"); }
+            catch (Exception error) { cellularError("close", error); }
+            finally { systemCalls.shutdownNow(); }
         });
         thread.quitSafely();
-        systemCalls.shutdownNow();
     }
 }

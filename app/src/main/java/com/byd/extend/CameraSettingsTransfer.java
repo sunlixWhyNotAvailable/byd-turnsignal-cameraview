@@ -313,6 +313,9 @@ public final class CameraSettingsTransfer {
         preserveMissingFrameAspects(editor, preferences, copy);
         preserveMissingDefaultOnCameraOptions(editor, preferences, copy);
         for (Map.Entry<String, Object> entry : copy.entrySet()) put(editor, entry.getKey(), entry.getValue());
+        if (!copy.containsKey(MotionConfig.CELLULAR_SCREEN_OFF_PREF))
+            editor.putBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF,
+                    preferences.getBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF, true));
         if (!copy.containsKey(MotionConfig.CELLULAR_PREF)) {
             if (preferences.contains(MotionConfig.CELLULAR_PREF))
                 editor.putBoolean(MotionConfig.CELLULAR_PREF, preferences.getBoolean(MotionConfig.CELLULAR_PREF, false));
@@ -1770,6 +1773,7 @@ public final class CameraSettingsTransfer {
 
     private static boolean legacyBooleanKey(String key) {
         return key.equals(MotionConfig.CELLULAR_PREF)
+                || key.equals(MotionConfig.CELLULAR_SCREEN_OFF_PREF)
                 || isBooleanKey(key) || key.equals("guard_enabled") || key.equals("music_visualizer_enabled")
                 || key.equals("parking_any_enabled") || key.equals("weather_enabled")
                 || key.equals("auto_start_enabled");

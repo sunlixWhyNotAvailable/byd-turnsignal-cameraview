@@ -14,8 +14,10 @@ public final class MotionConfig {
     public static final int DEFAULT_RECORDING_SENSITIVITY = 1;
     public final boolean warningEnabled, recordingEnabled, audioEnabled, remoteViewingEnabled;
     public static final String CELLULAR_PREF = "camera_restore_cellular";
+    public static final String CELLULAR_SCREEN_OFF_PREF = "camera_cellular_screen_off";
     public static final String CELLULAR_GENERATION_PREF = "camera_cellular_generation";
     public final boolean restoreCellular;
+    public final boolean screenOffAfterCellular;
     public final long cellularGeneration;
     public final int chargeSocThresholdPercent, chargeVoltageThresholdTenths;
     public final int recordingSensitivity;
@@ -26,6 +28,7 @@ public final class MotionConfig {
 
     private MotionConfig(JSONObject json) {
         restoreCellular = json.optBoolean("restoreCellular", false);
+        screenOffAfterCellular = json.optBoolean("screenOffAfterCellular", true);
         cellularGeneration = Math.max(0, json.optLong("cellularGeneration", 0));
         warningEnabled = json.optBoolean("warning", false);
         recordingEnabled = json.optBoolean("enabled", false);
@@ -67,6 +70,7 @@ public final class MotionConfig {
         try {
             SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
             json.put("restoreCellular", settings.getBoolean(CELLULAR_PREF, false));
+            json.put("screenOffAfterCellular", settings.getBoolean(CELLULAR_SCREEN_OFF_PREF, true));
             json.put("cellularGeneration", settings.getLong(CELLULAR_GENERATION_PREF, 0));
             json.put("warning", screen.getBoolean("enabled", false));
             json.put("recordingSensitivity", screen.getInt(KEY_RECORDING_SENSITIVITY,
@@ -103,7 +107,8 @@ public final class MotionConfig {
         return other != null && (warningEnabled != other.warningEnabled
                 || recordingEnabled != other.recordingEnabled
                 || recordingSensitivity != other.recordingSensitivity
-                || restoreCellular != other.restoreCellular || cellularGeneration != other.cellularGeneration)
+                || restoreCellular != other.restoreCellular || cellularGeneration != other.cellularGeneration
+                || screenOffAfterCellular != other.screenOffAfterCellular)
                 && sameOutsideInPlaceMotionChanges(other);
     }
     boolean onlyCellularChangesDifferFrom(MotionConfig other) {
@@ -143,6 +148,7 @@ public final class MotionConfig {
         try {
             return new JSONObject().put("warning", warningEnabled).put("enabled", recordingEnabled)
                     .put("restoreCellular", restoreCellular).put("cellularGeneration", cellularGeneration)
+                    .put("screenOffAfterCellular", screenOffAfterCellular)
                     .put("remoteViewingEnabled", remoteViewingEnabled)
                     .put("chargeSocThreshold", chargeSocThresholdPercent)
                     .put("chargeVoltageTenths", chargeVoltageThresholdTenths)

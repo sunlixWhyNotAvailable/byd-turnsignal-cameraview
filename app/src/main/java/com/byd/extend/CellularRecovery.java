@@ -18,6 +18,8 @@ final class CellularRecovery implements AutoCloseable {
     private final LinkedHashMap<String, String> observations = new LinkedHashMap<>();
     private JSONObject snapshot = new JSONObject();
     private volatile boolean enabled;
+    private volatile boolean screenOffAfterRecovery = true;
+    private MotionScreenControl screen;
     private OemWakeDiscovery discovery;
     private CellularApnRecovery recovery;
     private long generation = -1;
@@ -34,12 +36,40 @@ final class CellularRecovery implements AutoCloseable {
     }
 
     boolean enabled() { return enabled; }
+    boolean screenOffAfterRecovery() { return enabled && screenOffAfterRecovery; }
+    void attachScreen(MotionScreenControl value) { screen = value; }
+    synchronized boolean hasOwnedBacklight() throws Exception {
+        return ownsBacklight(snapshot, bootId());
+    }
+    static boolean ownsBacklight(JSONObject snapshot, String bootId) {
+        return !bootId.isEmpty() && bootId.equals(snapshot.optString("backlight_boot"))
+                && snapshot.optBoolean("backlight_owned", false);
+    }
+    synchronized void recordBacklightOwnership(boolean owned) throws Exception {
+        snapshot.put("backlight_boot", bootId()).put("backlight_owned", owned);
+        persistAndNotify("");
+    }
+    private static String bootId() throws Exception {
+        String id = new String(Files.readAllBytes(Paths.get("/proc/sys/kernel/random/boot_id")),
+                StandardCharsets.UTF_8).trim();
+        if (id.isEmpty()) throw new java.io.IOException("Kernel boot identity unavailable for backlight ownership");
+        return id;
+    }
+    void checked(String request, boolean ready, boolean needsWake, int reason) {
+        if (screen != null) screen.cellularChecked(request, ready, needsWake, reason);
+    }
     synchronized String snapshot() { return snapshot.toString(); }
 
     void configure(MotionConfig config) {
         boolean next = config != null && config.restoreCellular;
         long nextGeneration = config == null ? Math.max(0, generation) : config.cellularGeneration;
-        if (next == enabled && generation == nextGeneration && (!next || recovery != null)) return;
+        boolean nextScreenOff = config == null || config.screenOffAfterCellular;
+        boolean screenOptionChanged = nextScreenOff != screenOffAfterRecovery;
+        screenOffAfterRecovery = nextScreenOff;
+        if (next == enabled && generation == nextGeneration && (!next || recovery != null)) {
+            if (screen != null && screenOptionChanged) screen.cellularSettingsChanged();
+            return;
+        }
         // Publish cancellation before terminating children; every wake checks this request again.
         Exception publishFailure = null;
         try {
@@ -47,6 +77,7 @@ final class CellularRecovery implements AutoCloseable {
                     (nextGeneration + ":" + (next ? "1" : "0") + ":0").getBytes(StandardCharsets.UTF_8));
         } catch (Exception error) { publishFailure = error; }
         synchronized (this) { enabled = next; generation = nextGeneration; }
+        if (screen != null) screen.cellularSettingsChanged();
         if (recovery != null) { recovery.close(); recovery = null; }
         if (discovery != null) { discovery.close(); discovery = null; }
         if (publishFailure != null) {
@@ -59,7 +90,7 @@ final class CellularRecovery implements AutoCloseable {
         }
         if (next) {
             discovery = new OemWakeDiscovery();
-            recovery = new CellularApnRecovery(discovery);
+            recovery = new CellularApnRecovery(discovery, this);
             discovery.start();
             recovery.start();
         }
@@ -67,8 +98,13 @@ final class CellularRecovery implements AutoCloseable {
     }
 
     void powerChanged(int raw) {
+        powerObserved(raw);
         CellularApnRecovery active = recovery;
         if (active != null) active.powerChanged(raw >= 0 && raw <= 4 ? raw : -1);
+    }
+
+    void powerObserved(int raw) {
+        if (screen != null) screen.cellularPowerChanged(raw);
     }
 
     static void discoveryStatus(String json) {

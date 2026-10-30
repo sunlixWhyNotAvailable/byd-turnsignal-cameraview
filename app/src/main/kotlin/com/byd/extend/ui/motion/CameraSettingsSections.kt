@@ -339,6 +339,10 @@ internal fun FormScope.CameraViewingScreen(
                     })
             }
         }
+        row("cellular-screen-off") {
+            SwitchLine(strings.motionText(R.string.cameras_screen_off_after_cellular), "", state.config.screenOffAfterCellular,
+                { controller.setScreenOffAfterCellular(it) }, colors, enabled = state.config.restoreCellular)
+        }
         this
     }
     row("cameras-provider-gap") { Spacer(Modifier.height(12.dp)) }

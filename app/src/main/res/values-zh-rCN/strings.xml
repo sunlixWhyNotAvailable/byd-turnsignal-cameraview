@@ -303,7 +303,8 @@
     <string name="keep_wifi_car_off">"车辆关闭后保持 Wi-Fi 开启"</string>
     <string name="keep_wifi_car_off_hint">"在车辆关闭过程中及关闭后保持连接到 Wi-Fi 网络，可防止因 Wi-Fi 断开而关闭 ADB。"</string>
     <string name="avm_mode_deferred">此模式的支持已暂缓</string>
-    <string name="cameras_restore_cellular">"恢复蜂窝网络连接"</string>
+    <string name="cameras_restore_cellular">"恢复蜂窝网络连接..."</string>
+    <string name="cameras_screen_off_after_cellular">"...并在恢复后关闭平板屏幕"</string>
     <string name="cameras_cellular_pending">正在确定恢复命令…</string>
     <string name="cameras_cellular_found">已确定恢复命令</string>
     <string name="cameras_cellular_failed">自动检测失败。正在使用默认代码</string>

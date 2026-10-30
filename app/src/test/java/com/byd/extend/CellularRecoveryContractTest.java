@@ -20,6 +20,7 @@ public class CellularRecoveryContractTest {
     @Test public void independentRecoveryPersistsWithoutCameraDemandAndToggleRetainsSession() throws Exception {
         MotionConfig legacy = MotionConfig.parse("{\"remoteViewingEnabled\":true}");
         assertFalse(legacy.restoreCellular);
+        assertTrue(legacy.screenOffAfterCellular);
         File root = temporary.newFolder();
         MotionSessionConfigStore store = new MotionSessionConfigStore(root, 10123);
         MotionSessionConfigStore.Snapshot only = store.write("{\"restoreCellular\":true,\"cellularGeneration\":1}");
@@ -82,6 +83,12 @@ public class CellularRecoveryContractTest {
                 runtime.updateInPlaceConfig(MotionConfig.parse(update.toString()), 4_100));
         assertTrue(runtime.armed());
         assertEquals(revision, runtime.recordingRevision());
+        update.put("screenOffAfterCellular", false);
+        MotionConfig childDisabled = MotionConfig.parse(update.toString());
+        assertEquals(MotionSessionRuntime.Change.NONE, runtime.updateInPlaceConfig(childDisabled, 4_200));
+        assertTrue(runtime.armed());
+        assertEquals(revision, runtime.recordingRevision());
+        assertFalse(MotionConfig.parse(childDisabled.toJson()).screenOffAfterCellular);
     }
 
     @Test public void onlyOwnWakeWithoutRecoveryMayBeSlept() {
@@ -92,6 +99,41 @@ public class CellularRecoveryContractTest {
         assertTrue(MotionScreenOwnership.maySleep(false, true, false));
         // An enable arriving after warning start changes the decision at command dispatch.
         assertFalse(MotionScreenOwnership.maySleep(false, true, true));
+    }
+
+    @Test public void backlightRestorationRequiresOwnWakeBothSwitchesAndIdleMotion() {
+        assertTrue(MotionScreenOwnership.mayDarken(true, true, true, 0, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(false, true, true, 0, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, false, true, 0, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, false, 0, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 1, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, -1, false, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 0, true, true));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 0, false, false));
+    }
+
+    @Test public void interfacePresenceUsesActualHostInterfaceWithoutIpOrInternet() throws Exception {
+        java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+        assertTrue("Host must expose an interface for this real OS check", interfaces.hasMoreElements());
+        assertTrue(CellularApnPlatform.apnInterfacePresent(interfaces.nextElement().getName()));
+        try { CellularApnPlatform.apnInterfacePresent(""); fail("Unknown APN identity must not become absent"); }
+        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("identity")); }
+    }
+
+    @Test public void persistedBacklightOwnershipIsLimitedToTheRecordedBoot() throws Exception {
+        File directory = temporary.newFolder();
+        JSONObject owned = new JSONObject().put("backlight_boot", "boot-a").put("backlight_owned", true);
+        CellularRecoveryDiagnostics.write(directory, owned);
+        JSONObject reopened = new JSONObject(new String(Files.readAllBytes(new File(directory,
+                CellularRecoveryDiagnostics.FILE_NAME).toPath()), StandardCharsets.UTF_8)).getJSONObject("snapshot");
+        assertTrue(CellularRecovery.ownsBacklight(reopened, "boot-a"));
+        assertFalse(CellularRecovery.ownsBacklight(reopened, "boot-b"));
+        assertFalse(CellularRecovery.ownsBacklight(reopened, ""));
+        owned.put("backlight_owned", false);
+        CellularRecoveryDiagnostics.write(directory, owned);
+        String last = new String(Files.readAllBytes(new File(directory,
+                CellularRecoveryDiagnostics.FILE_NAME).toPath()), StandardCharsets.UTF_8);
+        assertFalse(CellularRecovery.ownsBacklight(new JSONObject(last).getJSONObject("snapshot"), "boot-a"));
     }
 
     @Test public void completeDiagnosticSurvivesAppZipAndSaveCopyWithoutSystemCollector() throws Exception {

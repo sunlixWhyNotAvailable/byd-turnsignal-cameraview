@@ -303,7 +303,8 @@
     <string name="keep_wifi_car_off">"Keep Wi-Fi on while the car is off"</string>
     <string name="keep_wifi_car_off_hint">"Staying connected to a Wi-Fi network during shutdown and while the car is off prevents Wi-Fi disconnection from disabling ADB."</string>
     <string name="avm_mode_deferred">Support for this mode is deferred</string>
-    <string name="cameras_restore_cellular">"Restore cellular connection"</string>
+    <string name="cameras_restore_cellular">"Restore cellular connection..."</string>
+    <string name="cameras_screen_off_after_cellular">"... and turn off the tablet screen after recovery"</string>
     <string name="cameras_cellular_pending">Determining the recovery command…</string>
     <string name="cameras_cellular_found">Recovery command identified</string>
     <string name="cameras_cellular_failed">Automatic detection failed. Using the default code</string>

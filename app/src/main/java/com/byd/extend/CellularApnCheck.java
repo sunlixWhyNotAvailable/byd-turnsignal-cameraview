@@ -76,55 +76,43 @@ public final class CellularApnCheck {
         stage = "settings";
         String disabled = platform.disabledReason();
         if (disabled != null) { event("check_skipped", "reason=" + disabled); return; }
-        stage = "wifi";
-        boolean wifiConnected = platform.wifiConnected();
-        event("wifi", "connected=" + wifiConnected);
-        if (wifiConnected) { event("wake_skipped", "reason=wifi_connected"); return; }
         stage = "network";
         CellularApnPlatform.ApnState apn = platform.apn2();
         if (apn.ready) { event("ready", apn.toString()); return; }
         stage = "display";
         CellularApnPlatform.DisplayState display = platform.display();
         event("observation", apn + " " + display);
-        if (!display.blackAsleep()) { event("wake_skipped", "reason=display_not_asleep_under_black_cover"); return; }
-        stage = "network_recheck";
-        apn = platform.apn2();
-        if (apn.ready) { event("ready", "before_dispatch=true " + apn); return; }
-        stage = "guards_recheck";
-        disabled = platform.disabledReason();
-        if (disabled != null) { event("wake_skipped", "reason=" + disabled); return; }
-        power = platform.vehiclePower();
-        event("power", Integer.toString(power));
-        display = platform.display();
-        if (power != 0 || !display.blackAsleep()) { event("wake_skipped", "reason=guards_changed " + display); return; }
-        disabled = platform.disabledReason();
-        if (disabled != null) { event("wake_skipped", "reason=" + disabled); return; }
-        stage = "wifi_recheck";
-        wifiConnected = platform.wifiConnected();
-        event("wifi", "connected=" + wifiConnected + " before_dispatch=true");
-        if (wifiConnected) { event("wake_skipped", "reason=wifi_connected before_dispatch=true"); return; }
-        platform.checkActive();
-        stage = "wake_dispatch";
-        event("wake_attempt", "power=0 wifi_connected=false reason=" + reason + " reason_source=" + source + " " + apn + " " + display);
-        platform.wake(reason);
-        event("wake_returned", "display_and_apn2_not_yet_verified=true");
-        stage = "display_verify";
-        long until = Math.min(deadline, SystemClock.elapsedRealtime() + 1500L);
-        do {
+        // Backlight OFF is still logically awake: never repeat recovery writes in that state.
+        if (display.awake()) { event("wake_skipped", "reason=already_awake"); return; }
+        if (!display.asleep()) throw new IllegalStateException("Logical display state unknown: " + display);
+        stage = "wifi";
+        boolean wifiConnected = platform.wifiConnected();
+        event("wifi", "connected=" + wifiConnected);
+        if (wifiConnected) { event("wake_skipped", "reason=wifi_connected"); return; }
+        stage = "mobile_data";
+        boolean data = platform.mobileDataEnabled();
+        event("mobile_data", "enabled=" + data);
+        if (!data) {
+            stage = "data_guards";
+            disabled = platform.disabledReason();
             power = platform.vehiclePower();
-            event("power", Integer.toString(power));
             display = platform.display();
-            if (power != 0) { event("display_verification_stopped", "reason=vehicle_on"); return; }
-            if (display.blackAwake()) {
-                event("display_confirmed", "power=0 " + display + " apn2_verify_on_next_cycle=true");
+            if (disabled != null || power != 0 || !display.asleep() || platform.wifiConnected()) {
+                event("data_enable_skipped", "reason=guards_changed power=" + power + " disabled=" + disabled + " " + display);
                 return;
             }
-            if (!"1".equals(display.blackCover)) {
-                event("display_unconfirmed", "reason=black_cover_changed " + display); return;
-            }
-            Thread.sleep(50L);
-        } while (SystemClock.elapsedRealtime() < until);
-        event("display_unconfirmed", "reason=transition_timeout " + display);
+            stage = "data_enable";
+            event("data_enable_attempt", "command=svc_data_enable");
+            platform.enableMobileData();
+            stage = "data_readback";
+            if (!platform.mobileDataEnabled()) throw new IllegalStateException("Mobile data remains disabled after svc data enable");
+            event("data_enabled", "readback=true");
+        }
+        stage = "network_recheck";
+        apn = platform.apn2();
+        if (apn.ready) { event("ready", apn.toString()); return; }
+        // The existing Motion screen owner rechecks guards and serializes the actual wake.
+        event("wake_required", "reason=" + reason + " reason_source=" + source + " " + apn);
     }
 
     private static void event(String name, String detail) {

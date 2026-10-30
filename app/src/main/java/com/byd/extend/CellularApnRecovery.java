@@ -10,11 +10,14 @@ final class CellularApnRecovery implements AutoCloseable {
     private boolean stopping;
     private int power = -1;
     private long epoch, nextCheck;
-    private long attempts;
     private final OwnedShellProcess child = new OwnedShellProcess();
     private final OemWakeDiscovery discovery;
+    private final CellularRecovery owner;
 
-    CellularApnRecovery(OemWakeDiscovery discovery) { this.discovery = discovery; }
+    CellularApnRecovery(OemWakeDiscovery discovery, CellularRecovery owner) {
+        this.discovery = discovery;
+        this.owner = owner;
+    }
 
     void start() {
         monitor.setDaemon(true);
@@ -65,15 +68,24 @@ final class CellularApnRecovery implements AutoCloseable {
             token = child.token();
         }
         WakeDiscoveryState.Selection selected = discovery.selection();
+        String request = OemWakeDiscovery.request();
         try {
             OwnedShellProcess.Result result = child.run(token, CellularApnCheck.class.getName(),
                     "bydextend_apn2_check", SystemClock.elapsedRealtime() + CHECK_BUDGET_MS,
-                    Integer.toString(selected.reason), selected.source, OemWakeDiscovery.request());
+                    Integer.toString(selected.reason), selected.source, request);
             recordOutput(checkEpoch, result.output);
             if (result.exitCode != 0) throw new java.io.IOException("APN2 child exit=" + result.exitCode + "\n" + result.output);
+            boolean ready = false, needsWake = false;
+            for (String line : result.output.split("\\r?\\n")) {
+                ready |= line.startsWith("APN2 ready ");
+                needsWake |= line.startsWith("APN2 wake_required ");
+            }
+            synchronized (lock) {
+                if (!stopping && epoch == checkEpoch) owner.checked(request, ready, needsWake, selected.reason);
+            }
             log("check_finished", "epoch=" + checkEpoch + " exit_code=" + result.exitCode);
         } catch (OwnedShellProcess.Failure error) {
-            // A dispatched wake remains an attempt even if ON/cancellation interrupts confirmation.
+            // Preserve observations even if ON/cancellation interrupts the short check.
             recordOutput(checkEpoch, error.output);
             throw error;
         }
@@ -83,16 +95,17 @@ final class CellularApnRecovery implements AutoCloseable {
         for (String line : output.split("\\r?\\n")) {
             if (!line.startsWith("APN2 ")) continue;
             synchronized (lock) {
-                if (line.startsWith("APN2 wake_attempt ")) attempts++;
-                if (!stopping && epoch == checkEpoch && line.matches("APN2 power [0-4]"))
+                if (!stopping && epoch == checkEpoch && line.matches("APN2 power [0-4]")) {
                     power = line.endsWith(" 0") ? 0 : 1;
+                    owner.powerObserved(power);
+                }
                 CellularRecovery.observation(line);
             }
         }
     }
     private void log(String event, String detail) {
         if (!event.equals("check_finished") || DiagnosticLogPolicy.extended())
-            CellularRecovery.log("apn2_" + event + " attempts=" + attempts + " " + detail);
+            CellularRecovery.log("apn2_" + event + " " + detail);
     }
 
     @Override public void close() {

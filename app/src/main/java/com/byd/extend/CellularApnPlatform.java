@@ -1,22 +1,19 @@
 package com.byd.extend;
 
 import android.net.ConnectivityManager;
-import android.net.LinkAddress;
-import android.net.LinkProperties;
-import android.net.Network;
 import android.net.NetworkInfo;
 import android.os.IBinder;
-import android.os.Parcel;
 import android.os.Process;
 import android.os.SystemClock;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
+import java.net.NetworkInterface;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 
-/** Shell-only adapter for the SL07 logical-display/APN2 path. Never puts the display to sleep. */
+/** Shell-only adapter for APN2 observations and mobile data. Never puts the display to sleep. */
 final class CellularApnPlatform {
     private final long deadline;
     private final String request;
@@ -100,40 +97,52 @@ final class CellularApnPlatform {
     ApnState apn2() throws Exception {
         String apnType = property("persist.sys.byd.apn_type");
         if (!"double_apn".equals(apnType)) throw new IOException("APN2 configuration unsupported or unknown: " + apnType);
-        String iface = property("net.lte.apn2.ifname"), ip = property("net.lte.apn2.ip");
-        List<LinkProperties> links = new ArrayList<>();
-        if (!iface.isEmpty() && !ip.isEmpty()) {
-            Object connectivity = service("connectivity", networkApi);
-            Network[] networks = (Network[]) networkApi.getMethod("getAllNetworks").invoke(connectivity);
-            checkActive();
-            if (networks == null) throw new IOException("Connectivity service returned null networks");
-            for (Network network : networks) {
-                checkActive();
-                links.add((LinkProperties) networkApi.getMethod("getLinkProperties", Network.class)
-                        .invoke(connectivity, network));
-            }
-        }
-        checkActive();
-        return assessApn2(iface, ip, links, property("net.lte.apn2.ifname"), property("net.lte.apn2.ip"));
+        String iface = property("net.lte.apn2.ifname");
+        boolean present = apnInterfacePresent(iface);
+        if (!iface.equals(property("net.lte.apn2.ifname"))) throw new IOException("APN2 identity changed during observation");
+        return new ApnState(present, iface, present ? "interface_present" : "interface_absent");
     }
 
-    static ApnState assessApn2(String iface, String ip, List<LinkProperties> links,
-                              String afterIface, String afterIp) throws IOException {
-        if (iface == null || ip == null || afterIface == null || afterIp == null || links == null) {
-            throw new IOException("APN2 observation incomplete");
-        }
-        if (!iface.equals(afterIface) || !ip.equals(afterIp)) throw new IOException("APN2 changed during observation");
-        if (iface.isEmpty() || ip.isEmpty()) return new ApnState(false, iface, ip, "interface_or_ip_missing");
-        if (!iface.matches("rmnet_data\\d+") || !android.util.Patterns.IP_ADDRESS.matcher(ip).matches()) {
-            throw new IOException("Unsupported APN2 interface/IP value: " + iface + "/" + ip);
-        }
-        for (LinkProperties link : links) {
-            if (link == null || !iface.equals(link.getInterfaceName())) continue;
-            for (LinkAddress address : link.getLinkAddresses()) {
-                if (ip.equals(address.getAddress().getHostAddress())) return new ApnState(true, iface, ip, "network_matched");
+    static boolean apnInterfacePresent(String iface) throws IOException {
+        if (iface == null || !iface.matches("[a-zA-Z0-9_.-]{1,15}"))
+            throw new IOException("APN2 identity unknown or invalid: net.lte.apn2.ifname=" + iface);
+        return NetworkInterface.getByName(iface) != null;
+    }
+
+    boolean mobileDataEnabled() throws Exception {
+        String stage = "default_subscription";
+        try {
+            Class<?> subApi = Class.forName("com.android.internal.telephony.ISub");
+            int subId = (Integer) subApi.getMethod("getDefaultDataSubId").invoke(service("isub", subApi));
+            if (subId < 0 || subId == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID)
+                throw new IOException("Invalid default data subscription: " + subId);
+            stage = "user_data_enabled sub_id=" + subId;
+            Class<?> phoneApi = Class.forName("com.android.internal.telephony.ITelephony");
+            boolean enabled = (Boolean) phoneApi.getMethod("isDataEnabledForReason", int.class, int.class)
+                    .invoke(service("phone", phoneApi), subId, TelephonyManager.DATA_ENABLED_REASON_USER);
+            checkActive();
+            return enabled;
+        } catch (Exception error) { throw new IOException("Mobile data read failed at " + stage, error); }
+    }
+
+    void enableMobileData() throws Exception {
+        checkActive();
+        // Fixed command, inside the already bounded/owned child process group.
+        java.lang.Process command = new ProcessBuilder("/system/bin/svc", "data", "enable")
+                .redirectErrorStream(true).start();
+        String output;
+        try (java.io.InputStream input = command.getInputStream()) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            for (int count; (count = input.read(buffer)) != -1;) {
+                if (bytes.size() + count > 4096) throw new IOException("svc data enable output exceeds 4096 bytes");
+                bytes.write(buffer, 0, count);
             }
+            output = bytes.toString("UTF-8");
         }
-        return new ApnState(false, iface, ip, "no_matching_current_network");
+        int exit = command.waitFor();
+        checkActive();
+        if (exit != 0) throw new IOException("svc data enable exit=" + exit + " output=" + output);
     }
 
     void wake(int reason) throws Exception {
@@ -155,8 +164,8 @@ final class CellularApnPlatform {
             this.blackCover = blackCover;
         }
 
-        boolean blackAsleep() { return !interactive && state == 1 && "1".equals(blackCover); }
-        boolean blackAwake() { return interactive && state == 2 && "1".equals(blackCover); }
+        boolean asleep() { return !interactive && state == 1; }
+        boolean awake() { return interactive && state == 2; }
 
         @Override public String toString() {
             return "interactive=" + interactive + " display=" + state + " black_cover=" + blackCover;
@@ -165,12 +174,11 @@ final class CellularApnPlatform {
 
     static final class ApnState {
         final boolean ready;
-        final String iface, ip, reason;
+        final String iface, reason;
 
-        ApnState(boolean ready, String iface, String ip, String reason) {
+        ApnState(boolean ready, String iface, String reason) {
             this.ready = ready;
             this.iface = iface;
-            this.ip = ip;
             this.reason = reason;
         }
 

@@ -3369,6 +3369,7 @@ public final class MotionDetectorShellMain {
             if (eligible) sessionRuntime.blockWarningRetry();
             screen.markUserTakeover(id, warningWindowGeneration);
         }
+        if (closed || !warningWindowLaunched) screen.warningWindowClosed(id, warningWindowGeneration);
         warning = false;
         warningWindowPending = false;
         warningWindowDrawn = false;

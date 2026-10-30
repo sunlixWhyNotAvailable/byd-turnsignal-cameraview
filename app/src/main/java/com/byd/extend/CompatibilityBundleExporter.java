@@ -592,6 +592,7 @@ final class CompatibilityBundleExporter {
         Map<String, ?> all = preferences.getAll();
         List<String> keys = new ArrayList<>(all.keySet());
         if (!keys.contains(MotionConfig.CELLULAR_PREF)) keys.add(MotionConfig.CELLULAR_PREF);
+        if (!keys.contains(MotionConfig.CELLULAR_SCREEN_OFF_PREF)) keys.add(MotionConfig.CELLULAR_SCREEN_OFF_PREF);
         if (!keys.contains(RemoteCameraView.PREFERENCE_KEY)) {
             keys.add(RemoteCameraView.PREFERENCE_KEY);
         }
@@ -605,6 +606,11 @@ final class CompatibilityBundleExporter {
             String lower = key == null ? "" : key.toLowerCase(Locale.US);
             if (!isSafePreferenceKey(lower)) continue;
             Object value = all.get(key);
+            if (MotionConfig.CELLULAR_SCREEN_OFF_PREF.equals(key)) {
+                if (value == null) value = true;
+                if (!(value instanceof Boolean))
+                    throw new IllegalStateException("cellular backlight preference must be a boolean");
+            }
             if (MotionConfig.CELLULAR_PREF.equals(key)) {
                 if (value == null) value = false;
                 if (!(value instanceof Boolean))

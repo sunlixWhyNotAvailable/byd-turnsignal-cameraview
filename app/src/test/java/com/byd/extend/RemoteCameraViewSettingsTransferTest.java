@@ -25,18 +25,25 @@ public final class RemoteCameraViewSettingsTransferTest {
     @Test public void cellularSettingExportsAndImportsWithoutCopyingTheLocalRetryGeneration() throws Exception {
         assertFalse(new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings))
                 .getBoolean(MotionConfig.CELLULAR_PREF));
+        assertTrue(new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings))
+                .getBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF));
         settings.edit().putLong(MotionConfig.CELLULAR_GENERATION_PREF, 4).commit();
         Map<String, Object> values = CameraSettingsTransfer.parseLegacySettings(
                 "<map><boolean name=\"camera_restore_cellular\" value=\"true\"/>"
-                + "<long name=\"camera_cellular_generation\" value=\"99\"/></map>");
+                + "<long name=\"camera_cellular_generation\" value=\"99\"/>"
+                + "<boolean name=\"camera_cellular_screen_off\" value=\"false\"/></map>");
         CameraSettingsTransfer.applyLegacySettings(settings, values);
         assertTrue(settings.getBoolean(MotionConfig.CELLULAR_PREF, false));
         assertEquals(5, settings.getLong(MotionConfig.CELLULAR_GENERATION_PREF, 0));
+        assertFalse(settings.getBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF, true));
         assertTrue(new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings))
                 .getBoolean(MotionConfig.CELLULAR_PREF));
         CameraSettingsTransfer.applyLegacySettings(settings, CameraSettingsTransfer.parseLegacySettings("<map/>"));
         assertTrue(settings.getBoolean(MotionConfig.CELLULAR_PREF, false));
         assertEquals(5, settings.getLong(MotionConfig.CELLULAR_GENERATION_PREF, 0));
+        assertFalse(settings.getBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF, true));
+        assertFalse(new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings))
+                .getBoolean(MotionConfig.CELLULAR_SCREEN_OFF_PREF));
     }
     private SharedPreferences settings;
 
