@@ -17,7 +17,7 @@ public final class MotionDetectorProtocol {
     static final String CONFIG_PATH = STATE_ROOT + "/config.json";
     static final String ACTION_SHOW_WARNING = "com.byd.extend.action.SHOW_MOTION_WARNING";
     static final String EXTRA_SESSION = "motion_session_id";
-    static final int VERSION = 22;
+    static final int VERSION = 23;
     static final int CONFIG_PENDING = 0;
     static final int CONFIG_APPLIED = 1;
     static final int CONFIG_MODE_ONLY = 2;
@@ -75,6 +75,7 @@ public final class MotionDetectorProtocol {
     static final int TX_SUSPEND_STORAGE = IBinder.FIRST_CALL_TRANSACTION + 30;
     static final int TX_PREPARE_WAKE_RECOVERY = IBinder.FIRST_CALL_TRANSACTION + 31;
     static final int TX_RECHECK_STORAGE = IBinder.FIRST_CALL_TRANSACTION + 32;
+    static final int TX_SET_DIAGNOSTICS = IBinder.FIRST_CALL_TRANSACTION + 33;
 
     static final int CB_PREPARED = IBinder.FIRST_CALL_TRANSACTION;
     static final int CB_STATUS = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -167,6 +168,11 @@ public final class MotionDetectorProtocol {
         return "camera_producer_closed".equals(kind)
                 || "camera_error".equals(kind) && "motion_recording".equals(owner)
                 && activeRecordingRequestId > 0 && requestId == activeRecordingRequestId;
+    }
+
+    static boolean isIdleProducerClose(String kind, String reason, boolean hasDemandOrResources) {
+        return "camera_producer_closed".equals(kind) && "source_demand_idle".equals(reason)
+                && !hasDemandOrResources;
     }
 
     static boolean validSession(String sessionId) {

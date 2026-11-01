@@ -161,6 +161,12 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         history.finished(operation, clock.now(), android.os.Debug.threadCpuTimeNanos());
     }
 
+    String confirmationEvidence() {
+        long now = clock.now();
+        return DiagnosticLogPolicy.extended() ? history.snapshot(now, metrics(now).getAgeMs)
+                : history.blinkEvidence(now);
+    }
+
     private void expireReconciliation(long now) {
         if (!reconciliation.expired(now, dataFresh(now))) return;
         if ((reconciliation.mask() & LIVE_STALK) != 0) stalk = reconciliation.stalk();
@@ -330,6 +336,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         long now = clock.now();
         long readDuration = elapsed(now, readStartedAt);
         lastReadDurationMs = readDuration;
+        history.getBlink(read.blink);
         history.getFinished(now, "stalk=" + read.stalk + ",steering_raw=" + read.steering
                 + ",blink=" + read.blink + ",speed_raw=" + read.speed);
         if (!active || before != arrivals) return;

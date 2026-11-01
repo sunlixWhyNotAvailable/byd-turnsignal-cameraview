@@ -329,6 +329,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             IBinder candidate = resolveWorker();
             WorkerIdentity identity = readIdentity(candidate);
             if (matchesCurrentApk(identity)) {
+                configureDiagnostics(context, candidate);
                 worker = candidate;
                 return candidate;
             }
@@ -401,6 +402,7 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
             if (!isCurrentRequest(generation)) return;
             if (!matchesCurrentApk(identity))
                 throw new IllegalStateException("motion shell worker readiness/protocol mismatch");
+            configureDiagnostics(context, candidate);
             synchronized (lock) {
                 if (closed || generation != requestGeneration || callback == null
                         || callback.generation != generation) return;
@@ -844,7 +846,40 @@ public final class MotionDetectorClient implements AutoCloseable, MotionMediaLib
     }
 
     private boolean healthy(IBinder candidate) {
-        return matchesCurrentApk(readIdentity(candidate));
+        if (!matchesCurrentApk(readIdentity(candidate))) return false;
+        configureDiagnostics(context, candidate);
+        return true;
+    }
+
+    /** Passive notification: never launches or configures Motion to collect diagnostics. */
+    static void syncExistingDiagnostics(Context context) {
+        try {
+            IBinder candidate = resolveWorker();
+            if (candidate == null || !candidate.isBinderAlive()) return;
+            WorkerIdentity identity = readIdentity(candidate);
+            if (identity == null || identity.version != MotionDetectorProtocol.VERSION
+                    || identity.build != BuildConfig.VERSION_CODE
+                    || !currentApkIdentity(context).equals(identity.apk)) return;
+            configureDiagnostics(context, candidate);
+        } catch (Throwable failure) {
+            CameraViewingDiagnostics.failure("motion_diagnostics_lookup", "motion_worker", failure);
+        }
+    }
+
+    private static void configureDiagnostics(Context context, IBinder target) {
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(MotionDetectorProtocol.DESCRIPTOR);
+            data.writeLong(SystemClock.elapsedRealtimeNanos());
+            data.writeInt(context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                    .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false) ? 1 : 0);
+            if (!target.transact(MotionDetectorProtocol.TX_SET_DIAGNOSTICS, data, reply, 0))
+                throw new IllegalStateException("Motion diagnostics transaction rejected");
+            reply.readException();
+            if (reply.dataAvail() != 0) throw new IllegalStateException("Motion diagnostics trailing reply");
+        } catch (Throwable failure) {
+            CameraViewingDiagnostics.failure("motion_diagnostics_configure", "motion_worker", failure);
+        } finally { data.recycle(); reply.recycle(); }
     }
 
     private boolean matchesCurrentApk(WorkerIdentity identity) {

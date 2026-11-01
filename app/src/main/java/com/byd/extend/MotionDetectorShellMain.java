@@ -92,6 +92,10 @@ public final class MotionDetectorShellMain {
     private final Context systemContext;
     private final HandlerThread controlThread = new HandlerThread("motion-detector-control");
     private final Handler control;
+    private final ProcessCpuWindow cpuWindow = new ProcessCpuWindow();
+    private final Runnable cpuSample = this::sampleProcessCpu;
+    private boolean appOwnsDiagnostics;
+    private long appDiagnosticsRevision = -1L;
     private final ExecutorService hostOperations = Executors.newSingleThreadExecutor(r ->
             new Thread(r, "motion-camera-host-ops"));
     private final ExecutorService nativeOperations = Executors.newSingleThreadExecutor(r ->
@@ -645,6 +649,20 @@ public final class MotionDetectorShellMain {
             try {
                 data.enforceInterface(MotionDetectorProtocol.DESCRIPTOR);
                 switch (code) {
+                    case MotionDetectorProtocol.TX_SET_DIAGNOSTICS: {
+                        long revision = data.readLong();
+                        boolean enabled = readFlag(data);
+                        if (revision < 0L || data.dataAvail() != 0)
+                            throw new IllegalArgumentException("invalid diagnostics request");
+                        if (!control.post(() -> {
+                            if (revision < appDiagnosticsRevision) return;
+                            appDiagnosticsRevision = revision;
+                            appOwnsDiagnostics = true;
+                            configureDiagnostics(enabled);
+                        })) throw new IllegalStateException("Motion diagnostics handler closed");
+                        reply.writeNoException();
+                        return true;
+                    }
                     case MotionDetectorProtocol.TX_RECHECK_STORAGE: {
                         int reason = data.readInt();
                         if ((reason != 1 && reason != 2) || data.dataAvail() != 0)
@@ -3552,8 +3570,8 @@ public final class MotionDetectorShellMain {
                     motionDiagnosticSourceEpoch = sourceEpoch;
                     resetMotionDiagnosticAccumulators();
                 }
-                if (event.has("extended_logs"))
-                    DiagnosticLogPolicy.configure(event.getBoolean("extended_logs"));
+                if (!appOwnsDiagnostics && event.has("extended_logs"))
+                    configureDiagnostics(event.getBoolean("extended_logs"));
                 refreshMotionDiagnosticRevision();
             }
             String kind = event.optString("kind", "");
@@ -3773,9 +3791,11 @@ public final class MotionDetectorShellMain {
         boolean deliberate = !eligible && reason.equals(deliberatelyDetachedProducerReason)
                 && ("motion_detector_idle".equals(reason) || "motion_recording_stop".equals(reason)
                     || "source_demand_idle".equals(reason));
-        boolean viewingIdle = producerClosed && "source_demand_idle".equals(reason)
-                && !eligible && !attached && recorder == null && manualCheck == null
-                && config != null && !config.motionEnabled();
+        boolean viewingIdle = MotionDetectorProtocol.isIdleProducerClose(kind, reason,
+                eligible || sessionRuntime.arming() || sessionRuntime.armed()
+                        || attached || readerAttachPending || readerDetachPending || reader != null || surface != null
+                        || recorder != null || composer != null || recordingAttached
+                        || recordingTailActive || manualCheck != null);
         if (deliberate || viewingIdle || !sameSession(id) || shuttingDown) return;
         ManualCheck check = manualCheck;
         if (check != null) {
@@ -4186,6 +4206,7 @@ public final class MotionDetectorShellMain {
 
     private int stopOnControl(String id, String reason) {
         if (!sameSession(id)) return 0;
+        if (cpuWindow.started() && DiagnosticLogPolicy.extended()) sampleProcessCpu("session_stop");
         beginTeardown(id, reason, true, false, false, appCallback, "idle");
         return 1;
     }
@@ -4858,6 +4879,42 @@ public final class MotionDetectorShellMain {
         } catch (Throwable error) {
             System.err.println("motion_log_failure kind=" + kind + " error=" + summary(error));
         }
+    }
+
+    private void configureDiagnostics(boolean enabled) {
+        boolean changed = DiagnosticLogPolicy.extended() != enabled;
+        DiagnosticLogPolicy.configure(enabled);
+        refreshMotionDiagnosticRevision();
+        if (!changed && cpuWindow.started() == enabled) return;
+        control.removeCallbacks(cpuSample);
+        cpuWindow.reset();
+        if (enabled) {
+            cpuWindow.sample(Process.myPid(), SystemClock.elapsedRealtime(),
+                    SystemClock.uptimeMillis(), Process.getElapsedCpuTime());
+            control.postDelayed(cpuSample, 30_000L);
+        }
+    }
+
+    private void sampleProcessCpu() {
+        sampleProcessCpu("periodic");
+    }
+
+    private void sampleProcessCpu(String reason) {
+        if (!DiagnosticLogPolicy.extended()) { cpuWindow.reset(); return; }
+        ProcessCpuWindow.Sample sample = cpuWindow.sample(Process.myPid(), SystemClock.elapsedRealtime(),
+                SystemClock.uptimeMillis(), Process.getElapsedCpuTime());
+        if (sample != null) logEvent("motion_process_cpu", sessionId,
+                "reason", reason, "partial", !"periodic".equals(reason),
+                "window_ms", sample.elapsedMs, "awake_ms", sample.uptimeMs,
+                "sleep_ms", Math.max(0L, sample.elapsedMs - sample.uptimeMs),
+                "cpu_ms", sample.cpuMs, "cpu_percent_one_core", sample.percent(),
+                "process_cpu_time_ms", cpuWindow.cpuMs,
+                "state_at_end", state, "eligible_at_end", eligible,
+                "reader_attached_at_end", attached,
+                "recording_at_end", recorder != null && recorder.isRecording(),
+                "extended_revision", DiagnosticLogPolicy.revision());
+        control.removeCallbacks(cpuSample);
+        control.postDelayed(cpuSample, 30_000L);
     }
 
     private void refreshMotionDiagnosticRevision() {

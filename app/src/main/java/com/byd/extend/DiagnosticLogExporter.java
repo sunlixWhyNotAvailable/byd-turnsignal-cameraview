@@ -67,6 +67,9 @@ final class DiagnosticLogExporter {
             new CollectorSpec(
                     "system/dropbox-tombstone.txt",
                     "for tag in system_server_tombstone system_app_tombstone data_app_tombstone SYSTEM_TOMBSTONE; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
+            new CollectorSpec("system/dropbox-tombstones.zip", "extend_dropbox_binary_export", true),
+            new CollectorSpec("system/dropbox-export-stderr.txt",
+                    "cat /data/local/tmp/bydextend-dropbox-export.err"),
             new CollectorSpec(
                     "system/dropbox-watchdog.txt",
                     "for tag in system_server_watchdog system_server_wtf; do dumpsys dropbox --print \"$tag\" 2>/dev/null; done | tail -c 1048576"),
@@ -163,7 +166,9 @@ final class DiagnosticLogExporter {
                         context, command, 16L * 1024 * 1024, 5_000, control, (kind, fields) -> {})),
                 (command, output) -> fromAdbResult(
                         LocalAdbClient.executeAuthorizedStreaming(
-                                context, command, output, Long.MAX_VALUE, 5_000, control,
+                                context, "extend_dropbox_binary_export".equals(command)
+                                        ? DropBoxTombstoneCollector.command(context.getApplicationInfo().sourceDir)
+                                        : command, output, Long.MAX_VALUE, 5_000, control,
                                 (kind, fields) -> {})),
                 System.currentTimeMillis(), control);
     }

@@ -7,6 +7,21 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class TurnSignalTelemetryHistoryTest {
+    @Test public void compactBlinkEvidenceKeepsIndependentCallbackAndGetWithTimestamps() throws Exception {
+        TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
+        history.received(1004, TurnSignalTelemetryController.BLINK_FID, 1, 100, 1, 1);
+        history.processed(1004, TurnSignalTelemetryController.BLINK_FID, 1, 1, 120, "applied");
+        history.getStarted(130, 140);
+        history.getBlink(4);
+        history.getFinished(150, "blink=4");
+        JSONObject value = new JSONObject(history.blinkEvidence(200));
+        assertEquals(4, value.getInt("get_raw"));
+        assertEquals(50, value.getLong("get_age_ms"));
+        assertEquals(1, value.getJSONObject("callback").getInt("raw"));
+        assertEquals(120, value.getJSONObject("callback").getLong("processed_t_ms"));
+        history.clear();
+        assertTrue(new JSONObject(history.blinkEvidence(250)).isNull("callback"));
+    }
     @Test public void operationHistorySeparatesQueueWallAndCpuAndKeepsInProgressWork() throws Exception {
         TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
         for (int i = 0; i < 20; i++) {

@@ -899,6 +899,7 @@ public final class CameraHelperService extends Service {
         runtimeThread = new HandlerThread("service-runtime");
         runtimeThread.start();
         runtimeHandler = new Handler(runtimeThread.getLooper());
+        runtimeHandler.post(() -> MotionDetectorClient.syncExistingDiagnostics(this));
         runtimeQueue = new RuntimeLifecycleGate.Queue() {
             @Override
             public void clear() {
@@ -1068,6 +1069,7 @@ public final class CameraHelperService extends Service {
         if (ACTION_DIAGNOSTICS_CHANGED.equals(action)) {
             DiagnosticLogPolicy.configure(getSharedPreferences("settings", MODE_PRIVATE)
                     .getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
+            MotionDetectorClient.syncExistingDiagnostics(this);
             if (helper != null) helper.configureLogging();
             if (cameraRuntime != null) cameraRuntime.settingsChanged("logging");
             com.byd.extend.remote.CameraViewingController.get(this).diagnosticSettingsChanged();
@@ -1801,6 +1803,7 @@ public final class CameraHelperService extends Service {
     private void reloadSettings(boolean fullImport) {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         DiagnosticLogPolicy.configure(settings.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false));
+        MotionDetectorClient.syncExistingDiagnostics(this);
         if (helper != null) {
             helper.configureLogging();
             RuntimeSettingsSnapshot.read(settings, anyParkingEnabled()).replay(helper);

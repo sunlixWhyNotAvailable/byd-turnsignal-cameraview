@@ -103,6 +103,7 @@ final class TurnSignalGuardRuntime {
     private int assumedLatchState;
     private boolean confirmationPending;
     private long confirmationDeadline;
+    private long writeSequence, lastWriteId, correctionWriteId, manualWriteId;
     private boolean manualCommandPending;
     private int manualConfirmationGeneration;
     private boolean initialLatchApplied;
@@ -333,6 +334,7 @@ final class TurnSignalGuardRuntime {
         }
         try {
             int status = writeTurnSignal(payload, "manual_" + manualActionName(payload));
+            manualWriteId = lastWriteId;
             emit("manual_turn_state_requested", "action", manualActionName(payload),
                     "feature_id", TURN_SIGNAL_SET_FID, "payload", payload,
                     "status", status, "gear", gear.raw, "blink_before", blink.raw);
@@ -388,6 +390,8 @@ final class TurnSignalGuardRuntime {
                     "operation", manualConfirmationOperation(payload),
                     "payload", payload, "requested_payload", payload,
                     "reason", "blink_confirmation_timeout",
+                    "command_id", manualWriteId,
+                    "feedback_evidence", telemetryController.confirmationEvidence(),
                     "blink", blink.raw, "expected_blink", expected,
                     "observed_blink", blink.raw, "timeout_ms", CORRECTION_CONFIRM_MS,
                     "framework_accepted", true, "framework_status", 0,
@@ -1522,6 +1526,8 @@ final class TurnSignalGuardRuntime {
             int expected = payload == LATCH_UNKNOWN
                     ? sessionDirection : expectedBlinkForPayload(payload);
             emit("correction_failed", "reason", "blink_confirmation_timeout",
+                    "command_id", correctionWriteId,
+                    "feedback_evidence", telemetryController.confirmationEvidence(),
                     "operation", "guard_correction",
                     "direction", directionName(sessionDirection),
                     "payload", payload, "requested_payload", payload,
@@ -1546,6 +1552,7 @@ final class TurnSignalGuardRuntime {
         int status;
         try {
             status = writeTurnSignal(payload, "guard_correction");
+            correctionWriteId = lastWriteId;
         } catch (Throwable failure) {
             emit("correction_failed", "reason", summary(failure),
                     "direction", directionName(direction), "feature_id", TURN_SIGNAL_SET_FID,
@@ -1567,6 +1574,7 @@ final class TurnSignalGuardRuntime {
         confirmationPending = true;
         confirmationDeadline = now + CORRECTION_CONFIRM_MS;
         emit("correction_requested", "direction", directionName(direction),
+                "command_id", correctionWriteId,
                 "feature_id", TURN_SIGNAL_SET_FID, "payload", payload,
                 "status", status, "correction_delay_ms", correctionDelayMs);
     }
@@ -1676,6 +1684,7 @@ final class TurnSignalGuardRuntime {
             throw new IllegalStateException("BYD light control unavailable");
         }
         int previous = assumedLatchState;
+        lastWriteId = ++writeSequence;
         writeInFlight = true;
         TurnSignalTelemetryHistory.Operation operation = telemetryController.beginOperation(
                 "WRITE:" + reason, SystemClock.elapsedRealtime());
@@ -1693,6 +1702,7 @@ final class TurnSignalGuardRuntime {
                 assumedLatchState = payload;
             }
             emit("turn_state_write", "feature_id", TURN_SIGNAL_SET_FID,
+                    "command_id", lastWriteId, "write_started_ms", operation.started,
                     "origin", "fid_871366669", "reason", reason,
                     "requested_payload", payload,
                     "framework_status", status,
@@ -1704,6 +1714,7 @@ final class TurnSignalGuardRuntime {
             return status;
         } catch (Exception failure) {
             emit("turn_state_write_failed", "feature_id", TURN_SIGNAL_SET_FID,
+                    "command_id", lastWriteId, "write_started_ms", operation.started,
                     "reason", reason, "requested_payload", payload,
                     "previous_assumed_latch_state", previous,
                     "blink_before", latestBlink, "stalk", latestStalk,

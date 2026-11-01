@@ -53,7 +53,9 @@ public class CameraChargePolicyTest {
         assertEquals(CameraChargePolicy.CAUSE_VOLTAGE,
                 reopened.updateSoc(21).lowCauses());
         assertTrue(reopened.snapshot().isBlocked());
-        assertEquals(0, reopened.updateVoltage(12.5f).lowCauses());
+        assertTrue(reopened.updateVoltage(12.5f, "get", 1_000L).isBlocked());
+        assertTrue(reopened.updateVoltage(12.6f, "get", 2_000L).isBlocked());
+        assertEquals(0, reopened.updateVoltage(12.6f, "get", 7_000L).lowCauses());
         assertFalse(reopened.snapshot().isBlocked());
     }
 
@@ -66,7 +68,8 @@ public class CameraChargePolicyTest {
         assertEquals(3, policy.snapshot().lowCauses());
         assertFalse(policy.snapshot().isLatchPersistenceHealthy());
         assertEquals(CameraChargePolicy.CAUSE_VOLTAGE, policy.updateSoc(25).lowCauses());
-        assertEquals(0, policy.updateVoltage(12.8f).lowCauses());
+        assertTrue(policy.updateVoltage(12.8f, "get", 1_000L).isBlocked());
+        assertEquals(0, policy.updateVoltage(12.8f, "get", 6_000L).lowCauses());
     }
 
     @Test public void independentTypedSamplesPreserveTheOtherSignalOnReadFailure() throws Exception {
@@ -104,5 +107,24 @@ public class CameraChargePolicyTest {
     private static CameraChargePolicy newPolicy() throws Exception {
         return new CameraChargePolicy(
                 Files.createTempDirectory("camera-charge-state-").toFile(), 20, 124);
+    }
+
+    @Test public void voltageRecoveryRequiresUnbrokenFreshWindowAndDoesNotClearSoc() throws Exception {
+        CameraChargePolicy policy = newPolicy();
+        policy.updateSoc(10);
+        policy.updateVoltage(12.3f, "get", 0);
+        assertEquals(3, policy.updateVoltage(12.7f, "callback", 122).lowCauses());
+        assertEquals(3, policy.updateVoltage(12.7f, "get", 5_000).lowCauses());
+        policy.markUnavailable(CameraChargePolicy.MISSING_VOLTAGE);
+        assertEquals(3, policy.updateVoltage(12.7f, "get", 6_000).lowCauses());
+        assertEquals(3, policy.updateVoltage(12.7f, "get", 16_001).lowCauses());
+        assertEquals(CameraChargePolicy.CAUSE_SOC,
+                policy.updateVoltage(12.7f, "get", 21_001).lowCauses());
+        assertFalse(policy.updateSoc(50).isBlocked());
+        assertTrue(policy.updateVoltage(12.4f, "get", 21_002).isBlocked());
+        policy.updateVoltage(12.7f, "get", 22_000);
+        policy.setThresholds(20, 125);
+        assertTrue(policy.updateVoltage(12.7f, "get", 27_000).isBlocked());
+        assertFalse(policy.updateVoltage(12.7f, "get", 32_000).isBlocked());
     }
 }

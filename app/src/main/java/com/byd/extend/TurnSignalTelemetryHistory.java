@@ -17,6 +17,7 @@ final class TurnSignalTelemetryHistory {
     private long getStart = -1;
     private long getEnd = -1;
     private String getResult = "not_started";
+    private int getBlink = TurnSignalTelemetryController.MISSING;
     private final Operation[] operations = new Operation[16];
     private int operationNext, operationSize;
 
@@ -49,6 +50,7 @@ final class TurnSignalTelemetryHistory {
         steeringCount = speedCount = 0;
         getDue = getStart = getEnd = -1;
         getResult = "not_started";
+        getBlink = TurnSignalTelemetryController.MISSING;
         java.util.Arrays.fill(operations, null);
         operationNext = operationSize = 0;
     }
@@ -80,6 +82,7 @@ final class TurnSignalTelemetryHistory {
     }
 
     synchronized void getStarted(long due, long start) {
+        getBlink = TurnSignalTelemetryController.MISSING;
         getDue = due;
         getStart = start;
         getEnd = -1;
@@ -89,6 +92,22 @@ final class TurnSignalTelemetryHistory {
     synchronized void getFinished(long end, String result) {
         getEnd = end;
         getResult = result;
+    }
+
+    synchronized void getBlink(int raw) { getBlink = raw; }
+
+    synchronized String blinkEvidence(long now) {
+        Entry latest = null;
+        for (int i = 0; i < size; i++) {
+            Entry entry = controls[(next - 1 - i + controls.length) % controls.length];
+            if (entry.fid == TurnSignalTelemetryController.BLINK_FID) { latest = entry; break; }
+        }
+        try {
+            return new JSONObject().put("captured_t_ms", now).put("callback", json(latest))
+                    .put("get_raw", getBlink).put("get_start_t_ms", getStart)
+                    .put("get_end_t_ms", getEnd).put("get_result", getResult)
+                    .put("get_age_ms", getEnd < 0 ? -1 : Math.max(0, now - getEnd)).toString();
+        } catch (JSONException failure) { throw new IllegalStateException("blink evidence serialization", failure); }
     }
 
     synchronized String snapshot(long now, long lastSuccessfulAge) {

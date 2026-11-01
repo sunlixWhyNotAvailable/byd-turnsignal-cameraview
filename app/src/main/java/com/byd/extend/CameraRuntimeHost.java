@@ -10,7 +10,6 @@ import android.os.Parcel;
 import android.view.Surface;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.json.JSONObject;
@@ -33,6 +32,12 @@ final class CameraRuntimeHost {
     static final int EVENT = 1, PREFERENCES = 2, AVM_CONFIG = 3;
     private final HandlerThread thread = new HandlerThread("camera-runtime");
     private final Handler handler;
+    private final java.util.concurrent.atomic.AtomicLong callSequence = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicInteger queuedCalls = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile CameraRuntimeTask<?> runningCall;
+    private String lastTimeoutStack = "";
+    private long lastTimeoutAt;
+    private long repeatedTimeouts;
     private final CameraRuntimeContext context;
     private final int appUid;
     private final Consumer<String> journal;
@@ -126,7 +131,7 @@ final class CameraRuntimeHost {
         boolean initialPreview = operation == ATTACH && data.readInt() != 0;
         int platformValue = operation == PANO || operation == POWER ? data.readInt() : 0;
         String scope = operation == SETTINGS || operation == PANO ? data.readString() : "";
-        Bundle pending = call(() -> {
+        Bundle pending = call("app_" + operation, () -> {
             if (lifetime.stopped() && operation != STOP) throw new IllegalStateException("camera runtime stopped");
             if (operation != ATTACH && (owner == null || lifetime.client() != owner))
                 throw new IllegalStateException("camera client attachment expired");
@@ -213,7 +218,7 @@ final class CameraRuntimeHost {
                 ? data.createTypedArray(android.view.Surface.CREATOR) : null;
         int requestId = operation == MOTION_RECORD_ATTACH ? data.readInt() : 0;
         MotionRecordingOutput recordingOutput = null;
-        boolean[] consumed = {false};
+        java.util.concurrent.atomic.AtomicBoolean dispatched = new java.util.concurrent.atomic.AtomicBoolean();
         try {
             if (operation == MOTION_RECORD_ATTACH) {
                 recordingOutput = MotionRecordingOutput.readFromParcel(data, session, recording);
@@ -221,68 +226,79 @@ final class CameraRuntimeHost {
             }
             if (!MotionDetectorProtocol.validSession(session) || data.dataAvail() != 0)
                 throw new IllegalArgumentException("invalid motion session");
-            call(() -> {
-                if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
-                if (operation == MOTION_AUTHORIZE || operation == MOTION_BIND_WORKER) {
-                    if (worker == null || !worker.isBinderAlive())
-                        throw new IllegalStateException("motion owner unavailable");
-                    try { lifetime.start(this::initialize); }
-                    catch (RuntimeException error) { stopOnHandler(); throw error; }
-                    if (!session.equals(motionSession) || worker != motionWorker) clearMotion();
-                    motionSession = session;
-                    if (motionWorker == null) {
-                        motionWorker = worker;
-                        motionDeath = () -> handler.post(() -> {
-                            if (motionWorker == worker) clearMotion();
-                        });
-                        worker.linkToDeath(motionDeath, 0);
+            MotionRecordingOutput submittedOutput = recordingOutput;
+            call("motion_" + operation, () -> {
+                boolean consumed = false;
+                try {
+                    if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
+                    if (operation == MOTION_AUTHORIZE || operation == MOTION_BIND_WORKER) {
+                        if (worker == null || !worker.isBinderAlive())
+                            throw new IllegalStateException("motion owner unavailable");
+                        try { lifetime.start(this::initialize); }
+                        catch (RuntimeException error) { stopOnHandler(); throw error; }
+                        if (!session.equals(motionSession) || worker != motionWorker) clearMotion();
+                        motionSession = session;
+                        if (motionWorker == null) {
+                            motionWorker = worker;
+                            motionDeath = () -> handler.post(() -> {
+                                if (motionWorker == worker) clearMotion();
+                            });
+                            worker.linkToDeath(motionDeath, 0);
+                        }
+                        if (operation == MOTION_BIND_WORKER) {
+                            sendMotionBaseline(motionDisplay);
+                        }
+                    } else {
+                        if (!session.equals(motionSession) || motionWorker == null
+                                || !motionWorker.isBinderAlive() || worker != motionWorker)
+                            throw new SecurityException("motion session expired");
+                        if (operation == MOTION_ATTACH) {
+                            consumed = true;
+                            helper.attachMotionDetector(detector);
+                        } else if (operation == MOTION_DETACH) {
+                            int epoch = helper.motionProducerEpoch();
+                            helper.detachMotionDetector();
+                            finishMotionWakeRecovery(session, epoch);
+                        }
+                        else if (operation == MOTION_RECORD_ATTACH) {
+                            if (recording == null || recording.length != 4 || requestId <= 0)
+                                throw new IllegalArgumentException("four motion surfaces required");
+                            consumed = true;
+                            helper.attachMotionRecording(recording, requestId);
+                        } else if (operation == MOTION_RECORD_DETACH) helper.detachMotionRecording();
+                        else if (operation == MOTION_OWN_WAKE) {
+                            int epoch = helper.motionProducerEpoch();
+                            if (!motionPowerOff() || epoch <= 0)
+                                throw new IllegalStateException("Motion wake requires live OFF-state producer");
+                            motionWake.arm(session, epoch, android.os.SystemClock.elapsedRealtime());
+                            event("motion_owned_wake_registered", "session", session, "producer_epoch", epoch);
+                        } else if (operation == MOTION_END_WAKE) motionWake.clearPending();
+                        else if (operation == MOTION_UNBIND_WORKER) {
+                            // A successful reply is also the worker's permission to release consumers.
+                            int epoch = helper.motionProducerEpoch();
+                            helper.detachMotionRecording();
+                            helper.detachMotionDetector();
+                            finishMotionWakeRecovery(session, epoch);
+                            clearMotion();
+                        }
                     }
-                    if (operation == MOTION_BIND_WORKER) {
-                        sendMotionBaseline(motionDisplay);
-                    }
-                } else {
-                    if (!session.equals(motionSession) || motionWorker == null
-                            || !motionWorker.isBinderAlive() || worker != motionWorker)
-                        throw new SecurityException("motion session expired");
-                    if (operation == MOTION_ATTACH) {
-                        consumed[0] = true;
-                        helper.attachMotionDetector(detector);
-                    } else if (operation == MOTION_DETACH) {
-                        int epoch = helper.motionProducerEpoch();
-                        helper.detachMotionDetector();
-                        finishMotionWakeRecovery(session, epoch);
-                    }
-                    else if (operation == MOTION_RECORD_ATTACH) {
-                        if (recording == null || recording.length != 4 || requestId <= 0)
-                            throw new IllegalArgumentException("four motion surfaces required");
-                        consumed[0] = true;
-                        helper.attachMotionRecording(recording, requestId);
-                    } else if (operation == MOTION_RECORD_DETACH) helper.detachMotionRecording();
-                    else if (operation == MOTION_OWN_WAKE) {
-                        int epoch = helper.motionProducerEpoch();
-                        if (!motionPowerOff() || epoch <= 0)
-                            throw new IllegalStateException("Motion wake requires live OFF-state producer");
-                        motionWake.arm(session, epoch, android.os.SystemClock.elapsedRealtime());
-                        event("motion_owned_wake_registered", "session", session, "producer_epoch", epoch);
-                    } else if (operation == MOTION_END_WAKE) motionWake.clearPending();
-                    else if (operation == MOTION_UNBIND_WORKER) {
-                        // A successful reply is also the worker's permission to release consumers.
-                        int epoch = helper.motionProducerEpoch();
-                        helper.detachMotionRecording();
-                        helper.detachMotionDetector();
-                        finishMotionWakeRecovery(session, epoch);
-                        clearMotion();
+                    return null;
+                } finally {
+                    if (submittedOutput != null) submittedOutput.unregister();
+                    if (!consumed) {
+                        if (detector != null) detector.release();
+                        if (recording != null) for (Surface surface : recording)
+                            if (surface != null) surface.release();
                     }
                 }
-                return null;
-            });
+            }, dispatched);
             reply.writeNoException();
             reply.writeInt(1);
             if (operation == MOTION_BIND_WORKER) reply.writeString(motionSourceEpoch);
             return operation;
         } finally {
-            if (recordingOutput != null) recordingOutput.unregister();
-            if (!consumed[0]) {
+            if (!dispatched.get()) {
+                if (recordingOutput != null) recordingOutput.unregister();
                 if (detector != null) detector.release();
                 if (recording != null) for (android.view.Surface surface : recording)
                     if (surface != null) surface.release();
@@ -309,7 +325,7 @@ final class CameraRuntimeHost {
             CameraViewingShellProtocol.Identity identity = CameraViewingShellProtocol.readIdentity(helperProcess);
             if (identity == null || !identity.matches(pid, viewingHelperApkIdentity))
                 throw new SecurityException("viewing helper APK/PID identity mismatch");
-            call(() -> {
+            call("viewer_register", () -> {
                 if (viewingHelper == helperProcess && viewingHelperPid == pid) return null;
                 if (viewingHelper != null && viewingHelper.isBinderAlive())
                     throw new SecurityException("another viewing helper is already registered");
@@ -424,7 +440,7 @@ final class CameraRuntimeHost {
                 if (generation <= 0 || data.dataAvail() != 0
                         || encoder != null && !encoder.isValid())
                     throw new IllegalArgumentException("invalid viewer output update");
-                ViewerReply result = call(() -> {
+                ViewerReply result = call("viewer_update_output", () -> {
                     if (!pending.compareAndSet(true, false))
                         throw new IllegalStateException("viewer output update expired before dispatch");
                     if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
@@ -466,7 +482,7 @@ final class CameraRuntimeHost {
                     || (channel != 4 && channel != 5) || reference == null
                     || !reference.matches("[0-9a-fA-F]{32}") || data.dataAvail() != 0)
                 throw new IllegalArgumentException("invalid viewer channel failure notice");
-            call(() -> {
+            call("viewer_channel_unavailable", () -> {
                 if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session)
                         || viewerOutput == null)
                     throw new SecurityException("stale viewer channel failure owner/session");
@@ -500,7 +516,7 @@ final class CameraRuntimeHost {
 
         if (operation == VIEW_DETACH) {
             if (data.dataAvail() != 0) throw new IllegalArgumentException("unexpected viewer detach payload");
-            call(() -> {
+            call("viewer_detach", () -> {
                 if (viewerOwner == null) return null;
                 if (viewerOwner != owner || !java.util.Objects.equals(viewerSession, session))
                     throw new SecurityException("camera viewer owner changed");
@@ -810,34 +826,7 @@ final class CameraRuntimeHost {
 
     private <T> T callViewerOwned(java.util.concurrent.Callable<T> task,
             java.util.concurrent.atomic.AtomicBoolean dispatched) throws Exception {
-        if (android.os.Looper.myLooper() == handler.getLooper()) {
-            dispatched.set(true);
-            return task.call();
-        }
-        java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(0);
-        FutureTask<T> queued = new FutureTask<>(() -> {
-            if (!state.compareAndSet(0, 1)) throw new java.util.concurrent.CancellationException();
-            dispatched.set(true);
-            return task.call();
-        });
-        if (!handler.post(queued)) throw new IllegalStateException("camera runtime handler closed");
-        try {
-            return queued.get(10, TimeUnit.SECONDS);
-        } catch (InterruptedException interrupted) {
-            if (state.compareAndSet(0, 2)) queued.cancel(false);
-            else if (state.get() == 1) dispatched.set(true);
-            Thread.currentThread().interrupt();
-            throw interrupted;
-        } catch (java.util.concurrent.TimeoutException timeout) {
-            if (state.compareAndSet(0, 2)) queued.cancel(false);
-            else if (state.get() == 1) dispatched.set(true);
-            throw timeout;
-        } catch (java.util.concurrent.ExecutionException failed) {
-            Throwable cause = failed.getCause();
-            if (cause instanceof Exception) throw (Exception) cause;
-            if (cause instanceof Error) throw (Error) cause;
-            throw new IllegalStateException(cause);
-        }
+        return call("viewer_surface_owned", task, dispatched);
     }
 
     private void cleanupUninstalledOutput(MotionRecordingOutput output, Throwable primary) {
@@ -1246,7 +1235,7 @@ final class CameraRuntimeHost {
 
     private StockAvmPreview.Config readAvmConfig() throws Exception {
         // Called on the camera worker, never while the runtime handler waits for the app main thread.
-        IBinder target = call(lifetime::client);
+        IBinder target = call("avm_config_client", lifetime::client);
         if (target == null) throw new IllegalStateException("AVM config app unavailable");
         Parcel data = Parcel.obtain(), reply = Parcel.obtain();
         try {
@@ -1323,27 +1312,92 @@ final class CameraRuntimeHost {
         finally { data.recycle(); }
     }
 
-    private <T> T call(java.util.concurrent.Callable<T> task) throws Exception {
-        if (android.os.Looper.myLooper() == handler.getLooper()) return task.call();
-        FutureTask<T> queued = new FutureTask<>(task);
-        if (!handler.post(queued)) throw new IllegalStateException("camera runtime closed");
-        return queued.get(10, TimeUnit.SECONDS);
+    private <T> T call(String operation, java.util.concurrent.Callable<T> task) throws Exception {
+        return call(operation, task, null);
+    }
+
+    private <T> T call(String operation, java.util.concurrent.Callable<T> task,
+            java.util.concurrent.atomic.AtomicBoolean dispatched) throws Exception {
+        if (android.os.Looper.myLooper() == handler.getLooper()) {
+            if (dispatched != null) dispatched.set(true);
+            return task.call();
+        }
+        long requestId = callSequence.incrementAndGet();
+        CameraRuntimeTask<T> queued = new CameraRuntimeTask<>(requestId, operation, () -> {
+            try { return task.call(); }
+            catch (Exception | Error failure) {
+                // The original caller may already have timed out while this OEM operation was running.
+                event("camera_runtime_call_failed", "request_id", requestId, "operation", operation,
+                        "failure", com.byd.extend.remote.CameraViewingDiagnostics.describe(failure));
+                throw failure;
+            }
+        });
+        queuedCalls.incrementAndGet();
+        Runnable dispatch = () -> {
+            queuedCalls.decrementAndGet();
+            runningCall = queued;
+            try { queued.run(); } finally { runningCall = null; }
+        };
+        if (!handler.post(dispatch)) {
+            queuedCalls.decrementAndGet();
+            throw new IllegalStateException("camera runtime closed: " + operation);
+        }
+        try { return queued.get(10, TimeUnit.SECONDS); }
+        catch (java.util.concurrent.TimeoutException timeout) {
+            queued.cancelQueued();
+            reportCallTimeout(queued, timeout);
+            throw timeout;
+        } catch (InterruptedException interrupted) {
+            queued.cancelQueued();
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (java.util.concurrent.ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw new IllegalStateException(cause);
+        } finally {
+            if (dispatched != null && queued.started()) dispatched.set(true);
+        }
+    }
+
+    private synchronized void reportCallTimeout(CameraRuntimeTask<?> task, Throwable timeout) {
+        CameraRuntimeTask<?> running = runningCall;
+        long now = System.nanoTime();
+        String stack = java.util.Arrays.toString(thread.getStackTrace());
+        String signature = (running == null ? 0 : running.id) + ":" + stack;
+        if (signature.equals(lastTimeoutStack) && now - lastTimeoutAt < 60_000_000_000L) {
+            repeatedTimeouts++;
+            return;
+        }
+        event("camera_runtime_call_timeout", "request_id", task.id, "operation", task.operation,
+                "queued_ms", ((task.startedNs == 0 ? now : task.startedNs) - task.enqueuedNs) / 1_000_000.0,
+                "run_ms", task.startedNs == 0 ? 0 : (now - task.startedNs) / 1_000_000.0,
+                "cancelled_before_start", task.isCancelled(), "queue_depth", queuedCalls.get(),
+                "running_id", running == null ? 0 : running.id,
+                "running_operation", running == null ? "handler_callback" : running.operation,
+                "runtime_stack", stack, "previous_repeats", repeatedTimeouts,
+                "failure", com.byd.extend.remote.CameraViewingDiagnostics.describe(timeout));
+        lastTimeoutStack = signature;
+        lastTimeoutAt = now;
+        repeatedTimeouts = 0;
     }
 
     void shutdown() {
-        try { call(() -> { stopOnHandler(); return null; }); }
-        catch (Exception error) { journal.accept("{\"kind\":\"camera_runtime_shutdown_error\"}"); }
+        try { call("shutdown", () -> { stopOnHandler(); return null; }); }
+        catch (Exception error) { event("camera_runtime_shutdown_error", "failure",
+                com.byd.extend.remote.CameraViewingDiagnostics.describe(error)); }
     }
 
     boolean isStopped() { return lifetime.stopped(); }
 
     boolean hasMotionWorker() {
-        try { return call(() -> motionWorker != null && motionWorker.isBinderAlive()); }
+        try { return call("has_motion_worker", () -> motionWorker != null && motionWorker.isBinderAlive()); }
         catch (Exception error) { return false; }
     }
 
     boolean ownsMotionWorker(String session, IBinder worker) {
-        try { return call(() -> session != null && session.equals(motionSession)
+        try { return call("owns_motion_worker", () -> session != null && session.equals(motionSession)
                 && worker != null && worker == motionWorker && worker.isBinderAlive()); }
         catch (Exception error) { return false; }
     }

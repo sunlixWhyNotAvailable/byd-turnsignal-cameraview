@@ -32,6 +32,8 @@ public final class CameraChargePolicy {
     private int lowCauses;
     private boolean monitoring;
     private boolean latchPersistenceHealthy = true;
+    private long voltageRecoverySince = -1L;
+    private long voltageRecoveryLastSample = -1L;
 
     public CameraChargePolicy(File root, int socThresholdPercent, int voltageThresholdTenths)
             throws IOException {
@@ -55,6 +57,7 @@ public final class CameraChargePolicy {
                 || voltageThresholdTenths < CameraChargeSettings.MIN_VOLTAGE_THRESHOLD_TENTHS
                 || voltageThresholdTenths > CameraChargeSettings.MAX_VOLTAGE_THRESHOLD_TENTHS)
             throw new IllegalArgumentException("invalid camera charge thresholds");
+        if (this.voltageThresholdTenths != voltageThresholdTenths) resetVoltageRecovery();
         this.socThresholdPercent = socThresholdPercent;
         this.voltageThresholdTenths = voltageThresholdTenths;
     }
@@ -62,6 +65,7 @@ public final class CameraChargePolicy {
     public synchronized void setMonitoring(boolean enabled) {
         monitoring = enabled;
         if (!enabled) {
+            resetVoltageRecovery();
             socPercent = null;
             voltageVolts = null;
         }
@@ -87,7 +91,7 @@ public final class CameraChargePolicy {
 
     /** Zero, non-finite and implausibly high voltages are unavailable, not low readings. */
     public synchronized State updateVoltage(Float value) {
-        return updateVoltage(value, "unknown", -1L);
+        return updateVoltage(value, "unknown", System.nanoTime() / 1_000_000L);
     }
 
     synchronized State updateVoltage(Float value, String origin, long sampleElapsedMs) {
@@ -95,17 +99,41 @@ public final class CameraChargePolicy {
         voltageSampleElapsedMs = sampleElapsedMs >= 0L ? sampleElapsedMs : -1L;
         if (value == null || !Float.isFinite(value) || value <= 0.0f || value > 20.0f) {
             voltageVolts = null;
+            resetVoltageRecovery();
             return state();
         }
         voltageVolts = value;
-        if (value * 10.0f <= voltageThresholdTenths) setCause(CAUSE_VOLTAGE, true);
-        else setCause(CAUSE_VOLTAGE, false);
+        if (value * 10.0f <= voltageThresholdTenths) {
+            resetVoltageRecovery();
+            setCause(CAUSE_VOLTAGE, true);
+        } else if ((lowCauses & CAUSE_VOLTAGE) != 0) {
+            if (value * 10.0f < voltageThresholdTenths + 2 || sampleElapsedMs < 0L) {
+                resetVoltageRecovery();
+            } else {
+                // Two fresh samples span the recovery window; a missed pair of GETs breaks it.
+                if (voltageRecoverySince < 0L || sampleElapsedMs < voltageRecoveryLastSample
+                        || sampleElapsedMs - voltageRecoveryLastSample > 10_000L)
+                    voltageRecoverySince = sampleElapsedMs;
+                voltageRecoveryLastSample = sampleElapsedMs;
+                if (sampleElapsedMs - voltageRecoverySince >= 5_000L) {
+                    setCause(CAUSE_VOLTAGE, false);
+                    resetVoltageRecovery();
+                }
+            }
+        }
         return state();
+    }
+
+    private void resetVoltageRecovery() {
+        voltageRecoverySince = voltageRecoveryLastSample = -1L;
     }
 
     public synchronized State markUnavailable(int missingMask) {
         if ((missingMask & MISSING_SOC) != 0) socPercent = null;
-        if ((missingMask & MISSING_VOLTAGE) != 0) voltageVolts = null;
+        if ((missingMask & MISSING_VOLTAGE) != 0) {
+            voltageVolts = null;
+            resetVoltageRecovery();
+        }
         return state();
     }
 

@@ -13,7 +13,8 @@ public class DiagnosticLogPolicyTest {
     @Test public void ordinaryModeKeepsFunctionalDeliveryAndUnknownEventsWithoutFps() {
         DiagnosticLogPolicy.configure(false);
         for (String kind : new String[]{"camera_fps_window_stats", "camera_source_output_stats",
-                "camera_source_command_stats", "camera_dewarp_stats", "motion_frame_performance"}) {
+                "camera_source_command_stats", "camera_dewarp_stats", "motion_frame_performance",
+                "motion_process_cpu"}) {
             assertFalse(kind, DiagnosticLogPolicy.shouldPersist(kind));
             assertFalse(kind, DiagnosticLogPolicy.shouldProduce(kind));
         }
@@ -25,6 +26,7 @@ public class DiagnosticLogPolicyTest {
         assertTrue(DiagnosticLogPolicy.shouldPersist("camera_source_command_failed"));
         assertTrue(DiagnosticLogPolicy.shouldPersist("a_new_event"));
         DiagnosticLogPolicy.configure(true);
+        assertTrue(DiagnosticLogPolicy.shouldProduce("motion_process_cpu"));
         assertTrue(DiagnosticLogPolicy.shouldProduce("camera_fps_window_stats"));
     }
 
