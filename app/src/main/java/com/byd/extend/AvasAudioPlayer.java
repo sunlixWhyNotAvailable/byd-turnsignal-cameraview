@@ -1486,6 +1486,15 @@ final class AvasAudioPlayer implements AutoCloseable {
     private void logNavSourceDiagnostics(AvasAudioDiagnostics.Context diagnostics,
             AvasNavSourceGate gate, AvasNavSourcePlayback.Trace trace) {
         AvasNavSourceGate.Diagnostics state = gate.diagnostics();
+        if (!"open".equals(trace.outcome) || gate.hadFailure()) {
+            event(diagnostics, "avas_nav_source_failure_evidence", "outcome", trace.outcome,
+                    "route_focus_timeline", diagnostics == null ? "no_request_context" : diagnostics.timeline(),
+                    "evidence", gate.evidence(), "registration_error", state.lastError,
+                    "initial_status", trace.initialStatus, "initial_value", trace.initialValue,
+                    "final_status", trace.finalStatus, "final_value", trace.finalValue,
+                    "play_called_ms", trace.playCalledMs, "zero_output_started_ms", trace.zeroStartedMs,
+                    "gate_opened_ms", trace.gateOpenedMs, "silence_frames", trace.silenceFrames);
+        }
         event(diagnostics, "avas_nav_source_listener", "registration_failed",
                 state.registrationFailed, "registration_finished_ms", state.registrationFinishedMs,
                 "callback_count", state.callbacks, "callback_error_count", state.callbackErrors,
@@ -1593,6 +1602,7 @@ final class AvasAudioPlayer implements AutoCloseable {
     }
 
     private void event(AvasAudioDiagnostics.Context context, String kind, Object... fields) {
+        if (context != null) context.record(SystemClock.elapsedRealtime(), kind, fields);
         if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         if (log == null) return;
         try {

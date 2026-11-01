@@ -49,23 +49,31 @@ public final class CameraShellMain {
                 "usage: CameraShellMain <appUid> <versionCode>");
         int appUid = Integer.parseInt(args[0]);
         int versionCode = Integer.parseInt(args[1]);
+        startupStage("lock_begin");
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
         try {
+            startupStage("context_begin");
             prepareMainLooperForShell();
             Context context = TurnSignalShellMain.shellContext(systemContext());
+            startupStage("context_ready_provider_begin");
             try (AvasShellSettings.ProviderHandle settings = prepareSettings(context)) {
+                startupStage("provider_ready");
                 int blastAdapter = Settings.Global.getInt(
                         context.getContentResolver(), "use_blast_adapter_sv", 1);
+                startupStage("fonts_begin");
                 initializeSystemFontsForShell();
+                startupStage("fonts_ready_windows_begin");
                 Handler handler = new Handler(Looper.getMainLooper());
                 ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
+                startupStage("windows_ready_binder_begin");
                 binder.attachInterface(null, CameraShellProtocol.DESCRIPTOR);
                 try {
                     Class<?> serviceManager = Class.forName("android.os.ServiceManager");
                     Method addService = serviceManager.getMethod(
                             "addService", String.class, IBinder.class);
                     addService.invoke(null, CameraShellProtocol.SERVICE_NAME, binder);
+                    startupStage("binder_registered");
                     System.out.println("READY pid=" + Process.myPid()
                             + " protocol=" + CameraShellProtocol.VERSION
                             + " build=" + versionCode
@@ -82,6 +90,12 @@ public final class CameraShellMain {
             DiagnosticLogPolicy.flushOutput();
             owner.close();
         }
+    }
+
+    static void startupStage(String stage) {
+        System.err.println("camera_startup stage=" + stage + " elapsed_ms=" + SystemClock.elapsedRealtime()
+                + " pid=" + Process.myPid() + " uid=" + Process.myUid() + " build=" + BuildConfig.VERSION_CODE);
+        System.err.flush();
     }
 
     private static AvasShellSettings.ProviderHandle prepareSettings(Context context)

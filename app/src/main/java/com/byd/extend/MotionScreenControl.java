@@ -139,31 +139,62 @@ final class MotionScreenControl implements AutoCloseable {
                         darkenAfterCellular();
                     }
                 }
-                if (ready) darkenAfterCellular();
+                darkenAfterCellular();
             } catch (Exception error) { cellularError("screen_check", error); }
         });
     }
 
     private void darkenAfterCellular() throws Exception {
-        if (!cellularOwnWake || cellularDarkened || !cellular.screenOffAfterRecovery() || warningActive) return;
+        if (!cellularOwnWake || cellularDarkened || !cellular.screenOffAfterRecovery() || warningActive) {
+            logDarkeningDecision("skip", "ownership_or_policy", -1, -1);
+            return;
+        }
         controlCall("APN2 backlight OFF", () -> {
             synchronized (cellular) {
                 CellularApnPlatform platform = new CellularApnPlatform(
                         SystemClock.elapsedRealtime() + WAIT_MS, OemWakeDiscovery.request());
                 int power = platform.vehiclePower();
                 if (!MotionScreenOwnership.mayDarken(cellularOwnWake, cellular.enabled(),
-                        cellular.screenOffAfterRecovery(), power, warningActive, platform.apn2().ready)) return false;
+                        cellular.screenOffAfterRecovery(), power, warningActive)) {
+                    logDarkeningDecision("skip", "power_or_policy", power, -1);
+                    return false;
+                }
                 CellularApnPlatform.DisplayState display = platform.display();
-                if (!display.awake()) return false;
-                if (backlightRaw() == 0) return false; // Already darkened by somebody else.
-                if (platform.disabledReason() != null || platform.vehiclePower() != POWER_OFF) return false;
+                if (!display.awake()) {
+                    logDarkeningDecision("skip", "display_not_awake:" + display, power, -1);
+                    return false;
+                }
+                int backlight = backlightRaw();
+                if (backlight == 0) {
+                    logDarkeningDecision("skip", "already_dark_no_ownership_taken", power, backlight);
+                    return false;
+                }
+                String disabled = platform.disabledReason();
+                int freshPower = platform.vehiclePower();
+                if (disabled != null || freshPower != POWER_OFF) {
+                    logDarkeningDecision("skip", "prewrite:" + disabled, freshPower, backlight);
+                    return false;
+                }
                 cellular.recordBacklightOwnership(true);
                 cellularDarkened = true; // Retain ownership even if write/readback is interrupted.
                 setBacklightRaw(false);
+                logDarkeningDecision("darkened", "write_readback_complete", power, 0);
                 CellularRecovery.log("apn2_backlight_off confirmed=true logical_sleep_sent=false");
                 return true;
             }
         });
+    }
+
+    private String lastDarkeningDecision;
+
+    private void logDarkeningDecision(String action, String reason, int power, int backlight) {
+        String detail = "action=" + action + " reason=" + reason + " own_wake=" + cellularOwnWake
+                + " owned_darkness=" + cellularDarkened + " recovery=" + cellular.enabled()
+                + " screen_off=" + cellular.screenOffAfterRecovery() + " warning=" + warningActive
+                + " power=" + power + " backlight=" + backlight;
+        if (detail.equals(lastDarkeningDecision)) return;
+        lastDarkeningDecision = detail;
+        CellularRecovery.log("apn2_darkening_decision " + detail);
     }
 
     private void restoreCellularBacklight(String cause) throws Exception {

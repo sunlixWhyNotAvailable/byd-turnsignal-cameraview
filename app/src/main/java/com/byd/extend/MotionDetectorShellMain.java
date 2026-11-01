@@ -514,7 +514,9 @@ public final class MotionDetectorShellMain {
                 control.post(() -> cameraPreparationSample(id, power, online, stream, error));
             }
             @Override public void onRelease(String id, String error) {
-                logEvent("motion_camera_release", id, "confirmed", error.isEmpty(), "error", error);
+                logEvent("motion_camera_release", id, "confirmed", error.isEmpty(), "error", error,
+                        "operation", "SET", "device", 1049, "command", "stream0",
+                        "retry_pending", !error.isEmpty(), "retry_min_ms", error.isEmpty() ? 0 : 1000);
             }
             @Override public void onStopped() {
                 control.post(() -> {
@@ -2381,8 +2383,7 @@ public final class MotionDetectorShellMain {
                 boolean recordingStopped = stopRecording("eligibility_ended", false);
                 boolean readerDetached = composer == null && detachAndCloseReader(false);
                 state = recordingStopped && readerDetached ? "prepared" : "recording_detach_pending";
-                if (composer == null && !readerDetached)
-                    sendError(id, "camera_detach", "shared Surface detach remains pending");
+                // Completion owns errors and resource disposal; pending is not an apply failure.
             }
             sendStatus(id, state, "fresh Motion telemetry no longer meets the configured activation mode");
             updateCameraDemand();

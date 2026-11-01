@@ -17,6 +17,30 @@ final class TurnSignalTelemetryHistory {
     private long getStart = -1;
     private long getEnd = -1;
     private String getResult = "not_started";
+    private final Operation[] operations = new Operation[16];
+    private int operationNext, operationSize;
+
+    static final class Operation {
+        final String name;
+        final long queued, started, cpuStarted;
+        long finished = -1, cpuNs = -1;
+        Operation(String name, long queued, long started, long cpuStarted) {
+            this.name = name; this.queued = queued; this.started = started; this.cpuStarted = cpuStarted;
+        }
+    }
+
+    synchronized Operation started(String name, long queued, long started, long cpu) {
+        Operation operation = new Operation(name, queued, started, cpu);
+        operations[operationNext] = operation;
+        operationNext = (operationNext + 1) % operations.length;
+        operationSize = Math.min(operations.length, operationSize + 1);
+        return operation;
+    }
+
+    synchronized void finished(Operation operation, long now, long cpu) {
+        operation.finished = now;
+        operation.cpuNs = Math.max(0, cpu - operation.cpuStarted);
+    }
 
     synchronized void clear() {
         java.util.Arrays.fill(controls, null);
@@ -25,6 +49,8 @@ final class TurnSignalTelemetryHistory {
         steeringCount = speedCount = 0;
         getDue = getStart = getEnd = -1;
         getResult = "not_started";
+        java.util.Arrays.fill(operations, null);
+        operationNext = operationSize = 0;
     }
 
     synchronized void received(int device, int fid, int raw, long received,
@@ -68,10 +94,20 @@ final class TurnSignalTelemetryHistory {
     synchronized String snapshot(long now, long lastSuccessfulAge) {
         try {
             JSONArray history = new JSONArray();
+            JSONArray work = new JSONArray();
+            for (int i = 0; i < operationSize; i++) {
+                Operation op = operations[(operationNext - operationSize + i + operations.length) % operations.length];
+                work.put(new JSONObject().put("operation", op.name).put("queued_ms", op.queued)
+                        .put("started_ms", op.started).put("finished_ms", op.finished)
+                        .put("queue_ms", Math.max(0, op.started - op.queued))
+                        .put("wall_ms", (op.finished < 0 ? now : op.finished) - op.started)
+                        .put("cpu_ns", op.cpuNs));
+            }
             for (int index = 0; index < size; index++) {
                 history.put(json(controls[(next - size + index + controls.length) % controls.length]));
             }
             return new JSONObject().put("captured_t_ms", now)
+                    .put("operations", work)
                     .put("control_callbacks", history)
                     .put("steering_latest", json(steering)).put("steering_count", steeringCount)
                     .put("speed_latest", json(speed)).put("speed_count", speedCount)

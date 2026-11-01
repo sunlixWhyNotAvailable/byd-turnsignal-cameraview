@@ -402,6 +402,7 @@ final class AvasExteriorRoute {
     }
 
     private void event(AvasAudioDiagnostics.Context diagnostics, String kind, Object... fields) {
+        if (diagnostics != null) diagnostics.record(android.os.SystemClock.elapsedRealtime(), kind, fields);
         if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
         if (log == null) return;
         try {

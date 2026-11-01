@@ -30,6 +30,7 @@ final class MotionCameraPreparation {
     private Method getInt, setInt, setBuffer;
     private int streamRequest, idcWake, onlineFid, streamFid;
     private boolean releaseNeeded;
+    private long nextReleaseAttemptMs;
     private final StreamCadence streamCadence = new StreamCadence();
 
     MotionCameraPreparation(Context context, Listener listener) {
@@ -50,7 +51,8 @@ final class MotionCameraPreparation {
     }
 
     synchronized void stop() {
-        if (requestedSession.isEmpty() && stopped) return;
+        // A pending release already owns its retry. Repeated stop must not accelerate it.
+        if (requestedSession.isEmpty()) return;
         requestedSession = "";
         readySession = "";
         handler.post(reconcile);
@@ -157,10 +159,14 @@ final class MotionCameraPreparation {
     private boolean release() {
         readySession = "";
         if (!releaseNeeded) return true;
+        long now = SystemClock.elapsedRealtime();
+        if (now < nextReleaseAttemptMs) return false;
+        nextReleaseAttemptMs = now + STREAM_PERIOD_MS;
         String error = "";
         try {
             requireSuccess("stream0", setInt.invoke(manager, 1049, streamRequest, 0));
             releaseNeeded = false;
+            nextReleaseAttemptMs = 0;
         } catch (Exception failure) { error = describe(failure); }
         listener.onRelease(activeSession, error);
         return !releaseNeeded;
@@ -172,7 +178,6 @@ final class MotionCameraPreparation {
     }
 
     private static String describe(Throwable error) {
-        while (error.getCause() != null) error = error.getCause();
-        return error.toString();
+        return StockAvmShellProtocol.diagnostic(error);
     }
 }

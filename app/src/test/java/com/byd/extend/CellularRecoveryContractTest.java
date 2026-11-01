@@ -102,14 +102,13 @@ public class CellularRecoveryContractTest {
     }
 
     @Test public void backlightRestorationRequiresOwnWakeBothSwitchesAndIdleMotion() {
-        assertTrue(MotionScreenOwnership.mayDarken(true, true, true, 0, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(false, true, true, 0, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, false, true, 0, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, true, false, 0, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 1, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, -1, false, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 0, true, true));
-        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 0, false, false));
+        assertTrue(MotionScreenOwnership.mayDarken(true, true, true, 0, false));
+        assertFalse(MotionScreenOwnership.mayDarken(false, true, true, 0, false));
+        assertFalse(MotionScreenOwnership.mayDarken(true, false, true, 0, false));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, false, 0, false));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 1, false));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, -1, false));
+        assertFalse(MotionScreenOwnership.mayDarken(true, true, true, 0, true));
     }
 
     @Test public void interfacePresenceUsesActualHostInterfaceWithoutIpOrInternet() throws Exception {

@@ -89,6 +89,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     private final Sink sink;
     private final Map<String, String> lastDiagnostics = new HashMap<>();
     private final TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
+    private final TurnSignalReconciliation reconciliation = new TurnSignalReconciliation();
     private volatile ArrivalState arrivals = new ArrivalState();
     private volatile long generation;
     private Subscription subscription;
@@ -130,6 +131,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     void tick() {
         if (!active) return;
         long now = clock.now();
+        expireReconciliation(now);
         if (!subscribed && elapsed(now, lastSubscribeAttempt) >= SUBSCRIBE_RETRY_MS) {
             trySubscribe("retry");
             if (subscribed) readAndApply(Source.RECOVERY_SEED);
@@ -148,6 +150,26 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     }
 
     boolean subscriptionHealthy() { return subscribed && seeded; }
+
+    boolean reconciliationPending() { return reconciliation.pending(); }
+
+    TurnSignalTelemetryHistory.Operation beginOperation(String name, long queued) {
+        return history.started(name, queued, clock.now(), android.os.Debug.threadCpuTimeNanos());
+    }
+
+    void endOperation(TurnSignalTelemetryHistory.Operation operation) {
+        history.finished(operation, clock.now(), android.os.Debug.threadCpuTimeNanos());
+    }
+
+    private void expireReconciliation(long now) {
+        if (!reconciliation.expired(now, dataFresh(now))) return;
+        if ((reconciliation.mask() & LIVE_STALK) != 0) stalk = reconciliation.stalk();
+        if ((reconciliation.mask() & LIVE_BLINK) != 0) blink = reconciliation.blink();
+        reportDiagnostic("turn_telemetry_reconcile_expired", "pending_mask", reconciliation.mask(),
+                "deadline_ms", reconciliation.deadline(), "diagnostic_snapshot", history.snapshot(now, metrics(now).getAgeMs));
+        reconciliation.clear();
+        sink.onSnapshot(snapshot(), Source.RECONCILE, 0, true, now);
+    }
 
     boolean dataFresh(long now) {
         return seeded && lastGetAt != Long.MIN_VALUE
@@ -232,8 +254,16 @@ final class TurnSignalTelemetryController implements AutoCloseable {
             history.processed(device, fid, listenerGeneration, sequence, appliedAt, "out_of_order");
             return;
         }
+        expireReconciliation(appliedAt);
         history.processed(device, fid, listenerGeneration, sequence, appliedAt, "applied");
         set(device, fid, value);
+        boolean wasPending = reconciliation.pending();
+        reconciliation.callback(liveMask(device, fid), value);
+        if (device == BLINK_DEVICE && fid == BLINK_FID && value != 1 && value != 2 && value != 4)
+            reconciliation.clear(); // Hazard/fault handling must not wait for an ordinary edge.
+        if (wasPending && !reconciliation.pending())
+            reportDiagnostic("turn_telemetry_reconcile_settled", "device", device, "fid", fid,
+                    "callback_dispatch_age_ms", dispatchAge, "received_t_ms", receivedMs);
         Snapshot snapshot = snapshot();
         if (!snapshot.valid()) return;
         boolean first = !seeded;
@@ -279,6 +309,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         history.getStarted(due, readStartedAt);
         reportFreshnessFailure(readStartedAt);
         Snapshot read;
+        TurnSignalTelemetryHistory.Operation getOperation = beginOperation("GET", due);
         try {
             read = transport.read();
         } catch (RuntimeException failure) {
@@ -293,6 +324,8 @@ final class TurnSignalTelemetryController implements AutoCloseable {
                     "read_duration_ms", lastReadDurationMs,
                     "diagnostic_snapshot", history.snapshot(failedAt, metrics(failedAt).getAgeMs));
             throw failure;
+        } finally {
+            endOperation(getOperation);
         }
         long now = clock.now();
         long readDuration = elapsed(now, readStartedAt);
@@ -343,9 +376,11 @@ final class TurnSignalTelemetryController implements AutoCloseable {
             reportInvalidGet("speed", SPEED_DEVICE, SPEED_FID,
                     read.speed, apply[3], previousGetAge);
         }
-        if (apply[0]) stalk = read.stalk;
+        boolean reconcileControls = seeded && source == Source.RECONCILE;
+        boolean unsafeBlink = apply[2] && read.blink != 1 && read.blink != 2 && read.blink != 4;
+        if (apply[0] && (!reconcileControls || unsafeBlink)) stalk = read.stalk;
         if (apply[1]) steering = read.steering;
-        if (apply[2]) blink = read.blink;
+        if (apply[2] && (!reconcileControls || unsafeBlink)) blink = read.blink;
         if (apply[3]) speed = read.speed;
         Snapshot combined = snapshot();
         boolean invalidApplied = (apply[0] && !validStalk(read.stalk))
@@ -382,13 +417,20 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         if (controlMismatch) {
             reportReconciliationConflict(old, read, apply, previousGetAge, readDuration);
         }
+        if (!unsafeBlink && (controlMismatch || reconciliation.pending())) {
+            reconciliation.expect(
+                    (apply[0] && (read.stalk != old.stalk || (reconciliation.mask() & LIVE_STALK) != 0) ? LIVE_STALK : 0)
+                            | (apply[2] && (read.blink != old.blink || (reconciliation.mask() & LIVE_BLINK) != 0) ? LIVE_BLINK : 0),
+                    read.stalk, read.blink, now, lastGetAt + CALLBACK_GET_DEADLINE_MS);
+        }
+        if (unsafeBlink) reconciliation.clear();
         if (seeded && !all(apply)) {
             // The raced field belongs to its newer callback. Only non-racing stalk/blink changes
             // make control history ambiguous; numeric steering/speed updates remain state only.
-            if (controlMismatch) sink.onSnapshot(combined, Source.RECONCILE, 0, true, now);
+            if (controlMismatch) sink.onSnapshot(combined, Source.RECONCILE, 0, unsafeBlink, now);
             return;
         }
-        boolean conflict = controlMismatch;
+        boolean conflict = controlMismatch && unsafeBlink;
         boolean first = !seeded;
         seeded = true;
         if (!subscribed) fallbackReadsWorking = true;
@@ -414,6 +456,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     }
 
     private void resetBaseline() {
+        reconciliation.clear();
         seeded = false;
         lastGetAt = Long.MIN_VALUE;
         resetBaselineValues();
@@ -434,7 +477,10 @@ final class TurnSignalTelemetryController implements AutoCloseable {
 
     private void safeDispatch(Runnable task, String operation,
             int device, int fid, long receivedMs) {
-        try { dispatcher.execute(task); }
+        try { dispatcher.execute(() -> {
+            TurnSignalTelemetryHistory.Operation work = beginOperation(operation, receivedMs);
+            try { task.run(); } finally { endOperation(work); }
+        }); }
         catch (RuntimeException failure) {
             long dispatchAge = elapsed(clock.now(), receivedMs);
             lastCallbackDispatchAgeMs = dispatchAge;

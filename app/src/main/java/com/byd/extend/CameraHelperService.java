@@ -472,6 +472,7 @@ public final class CameraHelperService extends Service {
         if (newlyReady) {
             provisionAppPermissions("adb_recovery_ready");
             postRuntime(() -> {
+                if (avasRecoveryDaemon != null) avasRecoveryDaemon.authenticatedTransportRestored();
                 handleStartCommand(ServiceRuntimeCommand.capture(
                         new Intent().setAction(ACTION_ADB_READY), 0, ACTION_START));
                 if (helper != null) helper.adbTransportRestored();
@@ -498,6 +499,8 @@ public final class CameraHelperService extends Service {
             if (authorized) service.provisionAppPermissions("foreground_adb_authorized", permissionsFinished);
             if (LegacySettingsImporter.blocksRuntime(service)) return;
             if (authorized) {
+                if (service.avasRecoveryDaemon != null)
+                    service.avasRecoveryDaemon.authenticatedTransportRestored();
                 service.handleStartCommand(ServiceRuntimeCommand.capture(
                         new Intent().setAction(ACTION_ADB_READY), 0, ACTION_START));
             }

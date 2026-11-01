@@ -2670,16 +2670,21 @@ final class CameraHelperMain {
 
                     @Override
                     public void onTargetStall(
-                            Surface surface, int index, long swapWaitNs) {
+                            Surface surface, int index, long swapWaitNs, Object... evidence) {
                         callbackHandler.post(() -> {
                             if (sourceHubGeneration != openedHubGeneration
                                     || !persistentPanoProducer) return;
-                            emit("camera_source_target_stall",
+                            ConsumerGroup owner = persistentSession.groupContaining(surface);
+                            java.util.ArrayList<Object> fields = new java.util.ArrayList<>(java.util.Arrays.asList(
                                     "producer_epoch", producerEpoch,
                                     "preview_index", index,
                                     "worker", DirectCameraSourceHub.workerThreadName(index),
                                     "target_surface_id", System.identityHashCode(surface),
-                                    "swap_wait_ms", milliseconds(swapWaitNs));
+                                    "owner_at_report", owner == null ? "detached_or_unknown" : owner.owner,
+                                    "owner_request_at_report", owner == null ? -1 : owner.requestId,
+                                    "swap_wait_ms", milliseconds(swapWaitNs)));
+                            java.util.Collections.addAll(fields, evidence);
+                            emit("camera_source_target_stall", fields.toArray());
                         });
                     }
                 });

@@ -99,6 +99,10 @@ final class AvasNavSourceGate implements AutoCloseable {
     private int zeroCallbacks;
     private int oneCallbacks;
     private long firstZeroCallbackMs = -1;
+    private int lastGetStatus = Integer.MIN_VALUE, lastGetValue = Integer.MIN_VALUE;
+    private String firstReadError = "", lastReadError = "";
+    private String registrationError = "";
+    private final java.util.ArrayDeque<String> timeline = new java.util.ArrayDeque<>();
 
     AvasNavSourceGate(Transport transport, Clock clock) {
         this.transport = transport;
@@ -115,6 +119,7 @@ final class AvasNavSourceGate implements AutoCloseable {
                         callbacks++;
                         lastCallbackMs = clock.now();
                         lastCallbackValue = next;
+                        record("callback value=" + next);
                         if (next == 0) {
                             zeroCallbacks++;
                             if (firstZeroCallbackMs < 0) firstZeroCallbackMs = lastCallbackMs;
@@ -134,6 +139,7 @@ final class AvasNavSourceGate implements AutoCloseable {
                         callbackErrors++;
                         lastCallbackMs = clock.now();
                         lastError = detail == null ? "" : detail;
+                        record("callback_error");
                         fallbackPolling = true;
                         AvasNavSourceGate.this.notifyAll();
                     }
@@ -143,7 +149,9 @@ final class AvasNavSourceGate implements AutoCloseable {
         } catch (Exception failure) {
             synchronized (this) {
                 registrationFailed = true;
-                lastError = failure.toString();
+                lastError = diagnostic(failure);
+                registrationError = lastError;
+                record("subscribe_error");
                 registrationFinishedMs = clock.now();
                 fallbackPolling = true;
             }
@@ -160,13 +168,22 @@ final class AvasNavSourceGate implements AutoCloseable {
         Snapshot snapshot;
         try {
             snapshot = transport.read();
-        } catch (Exception ignored) {
+        } catch (Exception failure) {
+            synchronized (this) {
+                lastReadError = diagnostic(failure);
+                if (firstReadError.isEmpty()) firstReadError = lastReadError;
+                record("get_exception " + failure.getClass().getName());
+            }
             snapshot = new Snapshot(Integer.MIN_VALUE, Integer.MIN_VALUE);
         }
         synchronized (this) {
             getFinishedMs = clock.now();
             if (waitActive) nextPoll = getFinishedMs + RECONCILE_POLL_MILLIS;
             getStale = revision != startedRevision;
+            lastGetStatus = snapshot.status;
+            lastGetValue = snapshot.value;
+            record("get status=" + snapshot.status + " value=" + snapshot.value
+                    + " stale=" + getStale + " started_revision=" + startedRevision);
             if (!closed && revision == startedRevision) {
                 revision++;
                 value = snapshot.valid() ? snapshot.value : Integer.MIN_VALUE;
@@ -177,6 +194,30 @@ final class AvasNavSourceGate implements AutoCloseable {
     }
 
     synchronized boolean ready() { return !closed && valid && value == 0; }
+
+    synchronized boolean hadFailure() {
+        return registrationFailed || callbackErrors > 0 || !firstReadError.isEmpty();
+    }
+
+    synchronized String evidence() {
+        return "device=" + DEVICE + " fid=" + FID + " revision=" + revision
+                + " get_status=" + lastGetStatus + " get_value=" + lastGetValue
+                + " get_stale=" + getStale + " observed=" + value + " valid=" + valid
+                + " timeline=" + timeline + "\nregistration_exception=" + registrationError
+                + "\nfirst_get_exception=" + firstReadError
+                + "\nlast_get_exception=" + lastReadError;
+    }
+
+    private void record(String detail) {
+        if (timeline.size() == 64) timeline.removeFirst();
+        timeline.addLast(clock.now() + ":r" + revision + ":" + detail);
+    }
+
+    private static String diagnostic(Throwable failure) {
+        java.io.StringWriter text = new java.io.StringWriter();
+        failure.printStackTrace(new java.io.PrintWriter(text));
+        return text.toString();
+    }
 
     synchronized int value() { return valid ? value : Integer.MIN_VALUE; }
 

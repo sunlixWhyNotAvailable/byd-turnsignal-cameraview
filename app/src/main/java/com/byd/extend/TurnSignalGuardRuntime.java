@@ -1055,6 +1055,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateStartupAwakeSessionCleanup() {
+        if (telemetryController.reconciliationPending()) return;
         long generation = awakeSessionGeneration;
         if (startupCleanupMarkerPendingGeneration == generation) return;
         if (!canRunStartupAwakeSessionCleanup(
@@ -1166,6 +1167,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateGuardDisableReset() {
+        if (telemetryController.reconciliationPending()) return;
         if (hazardThanksOwnsRequest || !guardDisableResetPending || requestedEnabled
                 || !telemetryReady()
                 || !safeGuardDisableResetBlink(latestBlink)) {
@@ -1190,6 +1192,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateSpeedLimitCleanup() {
+        if (telemetryController.reconciliationPending()) return;
         if (hazardThanksOwnsRequest || !canRunSpeedLimitCleanup(
                 speedLimitCleanupPending, requestedEnabled,
                 telemetryReady(), latestBlink, latestStalk)) {
@@ -1213,6 +1216,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateTelemetryRecoveryCleanup() {
+        if (telemetryController.reconciliationPending()) return;
         boolean controlIdle = !sessionActive
                 && speedDeferred.direction() == 0
                 && pendingNeutralizeReason == null
@@ -1510,6 +1514,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateCorrection(long now) {
+        if (telemetryController.reconciliationPending()) return;
         if (!sessionActive || hazardThanksOwnsRequest) return;
         if (confirmationPending && now >= confirmationDeadline) {
             int payload = sessionDirection == BLINK_LEFT ? 2
@@ -1567,6 +1572,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateNeutralization() {
+        if (telemetryController.reconciliationPending()) return;
         if (hazardThanksOwnsRequest || latestBlink != BLINK_OFF) return;
 
         if (pendingNeutralizeReason != null) {
@@ -1588,6 +1594,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private void evaluateHazardCleanup() {
+        if (telemetryController.reconciliationPending()) return;
         if (hazardThanksOwnsRequest || !hazardCleanupPending || latestBlink != BLINK_OFF) return;
         if (latestStalk != 1) {
             cancelHazardCleanup("stalk_not_neutral_after_hazard");
@@ -1615,6 +1622,7 @@ final class TurnSignalGuardRuntime {
     }
 
     private boolean neutralizeControlLatch(String reason, boolean allowAboveSpeed) {
+        if (telemetryController.reconciliationPending()) return false;
         if (hazardThanksOwnsRequest) {
             emit("control_latch_reset_deferred", "reason", reason,
                     "owner", "hazard_thanks", "feature_id", TURN_SIGNAL_SET_FID,
@@ -1669,6 +1677,8 @@ final class TurnSignalGuardRuntime {
         }
         int previous = assumedLatchState;
         writeInFlight = true;
+        TurnSignalTelemetryHistory.Operation operation = telemetryController.beginOperation(
+                "WRITE:" + reason, SystemClock.elapsedRealtime());
         try {
             Object value = eventValueType.getDeclaredConstructor().newInstance();
             Field intValue = eventValueType.getField("intValue");
@@ -1701,6 +1711,7 @@ final class TurnSignalGuardRuntime {
             throw failure;
         } finally {
             writeInFlight = false;
+            telemetryController.endOperation(operation);
         }
     }
 
@@ -1714,6 +1725,7 @@ final class TurnSignalGuardRuntime {
         lastControlInitAttemptAt = now;
         boolean wasReady = telemetryReady();
         String operation = "connect_autoservice";
+        TurnSignalTelemetryHistory.Operation initialization = telemetryController.beginOperation("CONTROL_INIT", now);
         try {
             connectAutoservice();
             operation = "prepare_light_control";
@@ -1747,6 +1759,8 @@ final class TurnSignalGuardRuntime {
                 emit("turn_control_initialization_failed", "operation", operation,
                         "retryable", retryable, "error", detail);
             }
+        } finally {
+            telemetryController.endOperation(initialization);
         }
     }
 
@@ -1883,7 +1897,11 @@ final class TurnSignalGuardRuntime {
     }
 
     private void postTimer(Runnable task, long delayMs) {
-        Message message = Message.obtain(handler, task);
+        long due = SystemClock.elapsedRealtime() + delayMs;
+        Message message = Message.obtain(handler, () -> {
+            TurnSignalTelemetryHistory.Operation operation = telemetryController.beginOperation("TIMER", due);
+            try { task.run(); } finally { telemetryController.endOperation(operation); }
+        });
         message.obj = timerToken;
         handler.sendMessageDelayed(message, delayMs);
     }

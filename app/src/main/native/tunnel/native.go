@@ -7,6 +7,7 @@ package main
 import "C"
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -514,6 +516,14 @@ func failureWithDiagnostic(code, stage string, err error, secrets ...string) tun
 	var networkError *net.OpError
 	var dnsError *net.DNSError
 	result.NetworkFailure = (errors.As(err, &networkError) && networkError.Net != "") || errors.As(err, &dnsError)
+	// TLS handshake timeouts are wrapped by net/http, not necessarily net.OpError.
+	var requestError *url.Error
+	if errors.As(err, &requestError) && requestError.Timeout() && !errors.Is(err, context.Canceled) {
+		result.NetworkFailure = true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, errSecureStore) {
+		result.NetworkFailure = false
+	}
 	if err != nil {
 		result.ErrorDetail = nativeErrorDetail(stage, err, secrets...)
 	}

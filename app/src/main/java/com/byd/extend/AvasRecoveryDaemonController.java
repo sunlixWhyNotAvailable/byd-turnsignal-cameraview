@@ -27,6 +27,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
     private final String apkIdentity;
     private final WifiPolicyRecovery wifiPolicy;
     private long retryAfterMs;
+    private boolean transportFailureBackoff;
     private boolean closed;
     private long desiredGeneration;
     private boolean desiredRequired;
@@ -46,6 +47,16 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
 
     synchronized void reconcile(boolean required, String reason) {
         reconcile(required, false, reason);
+    }
+
+    synchronized void authenticatedTransportRestored() {
+        if (closed) return;
+        worker.execute(() -> {
+            if (!transportFailureBackoff) return;
+            transportFailureBackoff = false;
+            retryAfterMs = 0;
+            emit("avas_recovery_daemon_backoff_cleared", "reason", "authenticated_transport_restored");
+        });
     }
 
     synchronized void reconcile(boolean recovery, boolean recording, String reason) {
@@ -82,6 +93,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         setOwnsRecovery(recovery && current.healthy(apkIdentity));
         if (!required) {
             retryAfterMs = 0L;
+            transportFailureBackoff = false;
             if (current.binder != null) control(current.binder, false, true);
             emit("avas_recovery_daemon_reconcile", "required", false,
                     "reason", reason, "pid", current.pid, "status", current.error);
@@ -89,6 +101,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         }
         if (current.healthy(apkIdentity)) {
             retryAfterMs = 0L;
+            transportFailureBackoff = false;
             if (!isCurrent(required, generation)) return;
             control(current.binder, recovery, false, recording, keepWifi);
             emit("avas_recovery_daemon_reconcile", "required", true,
@@ -116,9 +129,12 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
         }
         if (!shouldAwaitReadiness(launch)) {
             retryAfterMs = now + FAILURE_BACKOFF_MS;
+            transportFailureBackoff = launch.transportFailed();
             emit("avas_recovery_daemon_launch", "ok", false,
                     "authorization_required", launch.authorizationRequired,
-                    "error", launch.error, "output", launch.output);
+                    "error", launch.error, "output", launch.output,
+                    "transport_failure", transportFailureBackoff,
+                    "error_stack", launch.cause == null ? "" : android.util.Log.getStackTraceString(launch.cause));
             return;
         }
         DaemonPing started;
@@ -142,6 +158,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             }
             retryAfterMs = 0L;
             control(started.binder, recovery, false, recording, keepWifi);
+            transportFailureBackoff = false;
             setOwnsRecovery(recovery);
             if (launch.commandReadTimeout) {
                 emit("avas_recovery_daemon_launch", "ok", true,
@@ -158,6 +175,7 @@ final class AvasRecoveryDaemonController implements AutoCloseable {
             return;
         }
         retryAfterMs = SystemClock.elapsedRealtime() + FAILURE_BACKOFF_MS;
+        transportFailureBackoff = false;
         emit("avas_recovery_daemon_launch", "ok", false,
                 "error", "readiness_timeout", "output", launch.output);
     }

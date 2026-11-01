@@ -263,6 +263,7 @@ final class LocalAdbClient {
                 result = error instanceof TransportUnavailableException
                         ? Result.transportUnavailable(summary(error))
                         : Result.failed(summary(error), "", -1, "unavailable");
+                result = result.withCause(error);
             }
         } finally {
             if (connection != null) connection.close();
@@ -874,6 +875,8 @@ final class LocalAdbClient {
         final String error;
         final String fingerprint;
 
+        final Throwable cause;
+
         private Result(boolean ok, boolean authorizationRequired, boolean publicKeySent,
                 boolean superseded, boolean commandReadTimeout,
                 String output, int exitCode, String error, String fingerprint) {
@@ -893,6 +896,14 @@ final class LocalAdbClient {
                 boolean superseded, boolean commandReadTimeout,
                 String output, int exitCode, String error, String fingerprint,
                 boolean transportUnavailable, boolean publicKeyWriteStarted) {
+            this(ok, authorizationRequired, publicKeySent, superseded, commandReadTimeout,
+                    output, exitCode, error, fingerprint, transportUnavailable, publicKeyWriteStarted, null);
+        }
+
+        private Result(boolean ok, boolean authorizationRequired, boolean publicKeySent,
+                boolean superseded, boolean commandReadTimeout, String output, int exitCode,
+                String error, String fingerprint, boolean transportUnavailable,
+                boolean publicKeyWriteStarted, Throwable cause) {
             this.ok = ok;
             this.authorizationRequired = authorizationRequired;
             this.publicKeySent = publicKeySent;
@@ -904,6 +915,7 @@ final class LocalAdbClient {
             this.exitCode = exitCode;
             this.error = error;
             this.fingerprint = fingerprint;
+            this.cause = cause;
         }
 
         static Result ok(String output, int exitCode, String fingerprint, boolean publicKeySent) {
@@ -945,7 +957,21 @@ final class LocalAdbClient {
         Result withOutput(String value) {
             return new Result(ok, authorizationRequired, publicKeySent, superseded,
                     commandReadTimeout, value, exitCode, error, fingerprint,
-                    transportUnavailable, publicKeyWriteStarted);
+                    transportUnavailable, publicKeyWriteStarted, cause);
+        }
+
+        Result withCause(Throwable value) {
+            return new Result(ok, authorizationRequired, publicKeySent, superseded,
+                    commandReadTimeout, output, exitCode, error, fingerprint,
+                    transportUnavailable, publicKeyWriteStarted, value);
+        }
+
+        boolean transportFailed() {
+            if (authorizationRequired || superseded) return false;
+            if (transportUnavailable) return true;
+            return cause instanceof java.net.SocketException
+                    || cause instanceof java.net.SocketTimeoutException
+                    || cause instanceof java.io.EOFException;
         }
     }
 

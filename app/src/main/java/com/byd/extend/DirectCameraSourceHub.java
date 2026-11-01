@@ -49,7 +49,7 @@ final class DirectCameraSourceHub
         }
 
         /** Optional diagnostic callback; older listeners do not need to implement it. */
-        default void onTargetStall(Surface surface, int index, long swapWaitNs) {
+        default void onTargetStall(Surface surface, int index, long swapWaitNs, Object... evidence) {
         }
     }
 
@@ -1221,7 +1221,9 @@ final class DirectCameraSourceHub
 
         private DrawTiming draw(Target target, long acquiredFrameTimestampNanos,
                 boolean collectStats) throws Exception {
-            long startedNs = collectStats ? SystemClock.elapsedRealtimeNanos() : 0L;
+            long startedNs = SystemClock.elapsedRealtimeNanos();
+            long frameAgeNs = Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos);
+            long cpuStartedNs = android.os.Debug.threadCpuTimeNanos();
             CameraGpuOutput.FrameConfiguration frame = target.mapping == null
                     ? null : target.mapping.frameConfiguration();
             CameraDewarpRenderer.MappingRequest rendered = target.mapping == null
@@ -1324,8 +1326,15 @@ final class DirectCameraSourceHub
                     && swapStartedNs - target.lastStallReportNs >= STALL_REPORT_INTERVAL_NS) {
                 target.lastStallReportNs = swapStartedNs;
                 try {
+                    Object[] evidence = {"request_id", target.requestId, "target_epoch", target.producerEpoch,
+                            "width", target.width, "height", target.height,
+                            "frame_age_before_draw_ms", frameAgeNs / 1_000_000L,
+                            "frame_acquired_monotonic_ns", acquiredFrameTimestampNanos,
+                            "pre_swap_ms", (swapStartedNs - startedNs) / 1_000_000L,
+                            "draw_cpu_ns", android.os.Debug.threadCpuTimeNanos() - cpuStartedNs,
+                            "retiring", target.retiring};
                     postCoordinator(() -> listener.onTargetStall(
-                            target.surface, target.index, swapWaitNs));
+                            target.surface, target.index, swapWaitNs, evidence));
                 } catch (Throwable error) {
                     Log.w(LOG_TAG, "target stall listener failed", error);
                 }

@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 15;
+    public static final int WEB_REVISION = 16;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 
@@ -37,7 +37,8 @@ public final class ViewerStopReason {
         if (value == null || !value.optString("reason").matches("stall|http404|fatal|recovered")) return null;
         StringBuilder result = new StringBuilder("reason=").append(value.optString("reason"));
         for (String key : new String[] {"revision", "currentMs", "bufferAheadMs", "fragment", "lastFragment",
-                "lastLoadMs", "lastBytes", "lastFragmentAgeMs", "recoveryAgeMs",
+                "lastLoadMs", "lastFirstByteMs", "lastReceiveMs", "lastBufferedFragment", "lastAppendMs",
+                "lastBufferedAgeMs", "lastBytes", "lastFragmentAgeMs", "recoveryAgeMs",
                 "targetMs", "presentedMs", "stallMs", "lastStallMs"})
             number(result, value, key, 0, 9_007_199_254_740_991L);
         number(result, value, "httpStatus", 100, 599);

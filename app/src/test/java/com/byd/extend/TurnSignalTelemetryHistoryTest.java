@@ -7,6 +7,24 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class TurnSignalTelemetryHistoryTest {
+    @Test public void operationHistorySeparatesQueueWallAndCpuAndKeepsInProgressWork() throws Exception {
+        TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
+        for (int i = 0; i < 20; i++) {
+            TurnSignalTelemetryHistory.Operation op = history.started("GET", i, i + 5, 100);
+            history.finished(op, i + 15, 400);
+        }
+        history.started("WRITE", 30, 40, 500);
+        JSONArray entries = new JSONObject(history.snapshot(60, 10)).getJSONArray("operations");
+        assertEquals(16, entries.length());
+        assertEquals(5, entries.getJSONObject(0).getLong("queued_ms"));
+        assertEquals(5, entries.getJSONObject(0).getLong("queue_ms"));
+        assertEquals(10, entries.getJSONObject(0).getLong("wall_ms"));
+        assertEquals(300, entries.getJSONObject(0).getLong("cpu_ns"));
+        assertEquals(20, entries.getJSONObject(15).getLong("wall_ms"));
+        assertEquals(-1, entries.getJSONObject(15).getLong("finished_ms"));
+        history.clear();
+        assertEquals(0, new JSONObject(history.snapshot(70, 10)).getJSONArray("operations").length());
+    }
     @Test public void retainsLatest64ReceiptsAndDistinguishesPendingFromApplied() throws Exception {
         TurnSignalTelemetryHistory history = new TurnSignalTelemetryHistory();
         for (int i = 1; i <= 70; i++) {

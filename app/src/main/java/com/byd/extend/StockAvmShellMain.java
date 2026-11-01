@@ -77,16 +77,21 @@ public final class StockAvmShellMain {
                 .put("build", versionCode).put("protocol", StockAvmShellProtocol.VERSION));
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;
+        CameraShellMain.startupStage("avm_context_begin");
         CameraShellMain.prepareMainLooperForShell();
         Context context = systemContext();
+        CameraShellMain.startupStage("avm_context_ready_fonts_begin");
         CameraShellMain.initializeSystemFontsForShell();
+        CameraShellMain.startupStage("avm_fonts_ready_windows_begin");
         Handler handler = new Handler(Looper.getMainLooper());
         ShellBinder binder = new ShellBinder(context, handler, appUid, versionCode);
+        CameraShellMain.startupStage("avm_windows_ready_binder_begin");
         binder.attachInterface(null, StockAvmShellProtocol.DESCRIPTOR);
         try {
             Class<?> serviceManager = Class.forName("android.os.ServiceManager");
             Method addService = serviceManager.getMethod("addService", String.class, IBinder.class);
             addService.invoke(null, StockAvmShellProtocol.SERVICE_NAME, binder);
+            CameraShellMain.startupStage("avm_binder_registered");
             System.out.println("READY pid=" + Process.myPid()
                     + " protocol=" + StockAvmShellProtocol.VERSION
                     + " build=" + versionCode);

@@ -1505,7 +1505,7 @@
     const current = () => generation === mediaGeneration && video.isConnected && state.authenticated &&
       !state.replaced && !player.suspended && state.mode === 'live'
       && (pendingLivePlayer === player || livePlayer === player);
-    let lastFragment = null, recovery = null, hasPlayed = false, stallStarted = null, lastStallMs;
+    let lastFragment = null, lastBuffered = null, recovery = null, hasPlayed = false, stallStarted = null, lastStallMs;
     const snapshot = (reason, cause, terminal = false) => {
       const now = performance.now();
       if (!current() || now - lastPlaybackSnapshot < 10000 || (!terminal && playbackSnapshotInFlight)) return;
@@ -1528,6 +1528,9 @@
         stallMs: stallStarted == null ? undefined : Math.round(now - stallStarted), lastStallMs,
         fragment: cause?.frag?.sn, httpStatus: cause?.response?.code,
         lastFragment: lastFragment?.sequence, lastLoadMs: lastFragment?.loadMs,
+        lastFirstByteMs: lastFragment?.firstByteMs, lastReceiveMs: lastFragment?.receiveMs,
+        lastBufferedFragment: lastBuffered?.sequence, lastAppendMs: lastBuffered?.appendMs,
+        lastBufferedAgeMs: lastBuffered ? Math.round(now - lastBuffered.at) : undefined,
         lastBytes: lastFragment?.bytes, lastFragmentAgeMs: lastFragment ? Math.round(now - lastFragment.at) : undefined,
         recovery: terminal ? 'stop' : recovery?.action || 'none',
         recoveryAgeMs: !terminal && recovery ? Math.round(now - recovery.at) : undefined };
@@ -1654,8 +1657,16 @@
         const stats = data.part?.stats || data.frag.stats;
         const loading = stats.loading;
         lastFragment = { sequence: data.frag.sn, loadMs: Math.round(loading.end - loading.start),
+          firstByteMs: Math.round(loading.first - loading.start),
+          receiveMs: Math.round(loading.end - loading.first),
           bytes: Number.isSafeInteger(stats.loaded) && stats.loaded >= 0 ? stats.loaded : undefined,
           at: performance.now() };
+      });
+      hls.on(Hls.Events.FRAG_BUFFERED, (_, data) => {
+        if (!current() || data.frag.type !== 'main' || !Number.isSafeInteger(data.frag.sn)) return;
+        const stats = data.part?.stats || data.frag.stats;
+        lastBuffered = { sequence: data.frag.sn,
+          appendMs: Math.round(stats.buffering.end - stats.loading.end), at: performance.now() };
       });
       if (provider === 'tailscale') {
         BydLiveRecovery.install(hls, Hls, (kind, detail) => {

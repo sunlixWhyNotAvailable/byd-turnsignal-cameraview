@@ -15,6 +15,17 @@ final class AvasAudioDiagnostics {
         final int helperPid;
         final long acceptedMs;
         final long enqueuedMs;
+        private final java.util.ArrayDeque<String> timeline = new java.util.ArrayDeque<>();
+
+        synchronized void record(long time, String kind, Object... fields) {
+            if (!(kind.startsWith("avas_route_") || kind.startsWith("avas_focus_")
+                    || kind.equals("avas_audio_preparation") || kind.equals("avas_play_call_timing")
+                    || kind.equals("avas_first_positive_write") || kind.equals("avas_first_wav_submission"))) return;
+            timeline.addLast(time + " " + kind + " " + java.util.Arrays.toString(fields));
+            while (timeline.size() > 48) timeline.removeFirst();
+        }
+
+        synchronized String timeline() { return timeline.toString(); }
 
         Context(long requestId, String profile, String source, int helperPid,
                 long acceptedMs, long enqueuedMs) {

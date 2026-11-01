@@ -82,6 +82,9 @@ public final class CameraViewerServer implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
     private final java.util.concurrent.atomic.AtomicLong lastPlaybackSnapshot =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    private final java.util.concurrent.atomic.AtomicLong lastHttpSnapshot =
+            new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    private final ViewerHttpHistory httpHistory = new ViewerHttpHistory();
 
     public CameraViewerServer(String password, String privateProxyProof, Stream stream) throws IOException {
         this.access = new ViewerAccess(password, privateProxyProof);
@@ -119,8 +122,12 @@ public final class CameraViewerServer implements AutoCloseable {
                 try {
                     Socket socket = server.accept();
                     sockets.add(socket);
-                    try { requests.execute(() -> serve(socket)); }
+                    ViewerHttpHistory.Entry trace = httpHistory.accept(now());
+                    try { requests.execute(() -> serve(socket, trace)); }
                     catch (RejectedExecutionException busy) {
+                        trace.failure = busy.getClass().getName();
+                        httpHistory.finish(trace, now());
+                        logHttpSnapshot("queue_full");
                         sockets.remove(socket);
                         socket.close();
                     }
@@ -144,6 +151,7 @@ public final class CameraViewerServer implements AutoCloseable {
             if (current != null && access.expire(now())) expired = current;
         }
         if (expired == null) return;
+        logHttpSnapshot("heartbeat_timeout");
         closePlayback(expired);
         closeSessionSockets(expired, null);
         try { stream.disconnected(expired, "origin=heartbeat_timeout"); }
@@ -152,16 +160,19 @@ public final class CameraViewerServer implements AutoCloseable {
         }
     }
 
-    private void serve(Socket socket) {
-        Reply reply = new Reply();
+    private void serve(Socket socket, ViewerHttpHistory.Entry trace) {
+        trace.start = now();
+        Reply reply = new Reply(trace);
         String operation = "request";
         try (socket) {
             try {
                 Request request = readRequest(socket);
                 reply.head = request.method.equals("HEAD");
                 operation = operationName(request.path);
+                trace.request(request.path, operation, now());
                 route(socket, request, reply);
             } catch (Exception failure) {
+                trace.failure = failure.getClass().getName();
                 if (!isExpectedDisconnect(failure, reply.started, operation)) {
                     if (failure instanceof HttpFailure
                             && "invalid_json".equals(((HttpFailure) failure).bodyStatus)) {
@@ -193,6 +204,8 @@ public final class CameraViewerServer implements AutoCloseable {
         } catch (IOException closeFailure) {
             CameraViewingDiagnostics.failure("viewer_http_close", "shared", closeFailure);
         } finally {
+            httpHistory.finish(trace, now());
+            if (trace.status == 404 || !trace.failure.isEmpty()) logHttpSnapshot("request_failure");
             unregisterSessionSocket(socket);
             sockets.remove(socket);
         }
@@ -555,6 +568,7 @@ public final class CameraViewerServer implements AutoCloseable {
         FragmentedVideoWindow window = stream.video();
         String mediaPath = window == null ? null : window.resourcePath(request.path);
         if (mediaPath != null) {
+            reply.trace.revision = window.selectionRevision();
             if ((mediaPath.equals("/live.m3u8") || mediaPath.matches("/live-[0-9]{1,18}\\.m3u8"))
                     && isRead(request.method)) {
                 long from = mediaPath.equals("/live.m3u8") ? 0
@@ -685,15 +699,29 @@ public final class CameraViewerServer implements AutoCloseable {
         if (window == null || !window.getStreamId().equals(value.optString("streamId"))) return false;
         long time = now(), previous = lastPlaybackSnapshot.get();
         if ((previous == Long.MIN_VALUE || time - previous >= 10_000)
-                && lastPlaybackSnapshot.compareAndSet(previous, time))
+                && lastPlaybackSnapshot.compareAndSet(previous, time)) {
             CameraViewingDiagnostics.detail("browser_playback_snapshot", stream.presentation().optString("provider"),
                     "stream=" + window.getStreamId() + " " + detail);
+            logHttpSnapshot("browser_" + value.optString("reason"));
+        }
         return true;
+    }
+
+    private void logHttpSnapshot(String reason) {
+        long time = now(), previous = lastHttpSnapshot.get();
+        if ((previous == Long.MIN_VALUE || time - previous >= 10_000)
+                && lastHttpSnapshot.compareAndSet(previous, time)) {
+            JSONObject presentation = stream.presentation();
+            CameraViewingDiagnostics.detail("viewer_http_snapshot", presentation.optString("provider"),
+                    "reason=" + reason + " run=" + presentation.optLong("run", -1) + " "
+                    + httpHistory.snapshot(time, requests.getActiveCount(), requests.getQueue().size()));
+        }
     }
 
     private void stop(String session, Socket responseSocket, String reason) {
         closePlayback(session);
         if (access.release(session)) {
+            logHttpSnapshot("session_end");
             synchronized (playbackLock) { archiveSelections.remove(session); }
             closeSessionSockets(session, responseSocket);
             stream.disconnected(session, reason);
@@ -736,7 +764,9 @@ public final class CameraViewerServer implements AutoCloseable {
         catch (java.io.FileNotFoundException missing) { json(socket, reply, 404, "not_found", null); return; }
         catch (HttpFailure expired) { json(socket, reply, expired.status, expired.bodyStatus, null); return; }
         long transfer = transferIds.incrementAndGet(), sent = 0, promised = 0;
-        String context = "transfer=" + transfer + " record=" + id + " revision=" + revision;
+        reply.trace.revision = revision;
+        String context = "transfer=" + transfer + " http_request=" + reply.trace.id
+                + " record=" + id + " revision=" + revision;
         String outcome = "opening";
         CameraViewingDiagnostics.detail("archive_transfer_begin", "shared", context);
         try (CameraViewerArchive.RangeFile closeable = playback.playback.openDescriptor()) {
@@ -755,6 +785,7 @@ public final class CameraViewerServer implements AutoCloseable {
             }
             int status = range.partial ? 206 : 200;
             promised = request.method.equals("HEAD") ? 0 : range.length();
+            reply.trace.rangeStart = range.start;
             CameraViewingDiagnostics.detail("archive_transfer_range", "shared",
                     context + " start=" + range.start + " bytes=" + promised);
             String extra = "Accept-Ranges: bytes\r\n" + (range.partial
@@ -765,6 +796,7 @@ public final class CameraViewerServer implements AutoCloseable {
             byte[] buffer = new byte[VIDEO_CHUNK];
             long offset = range.start;
             long remaining = range.length();
+            reply.trace.bodyStart = now();
             while (remaining > 0) {
                 if (!transferCurrent(request.session) || !isTransferRegistered(request.session, playback, socket))
                     throw new SocketException("Viewer session or recording was superseded");
@@ -781,10 +813,12 @@ public final class CameraViewerServer implements AutoCloseable {
                 if (read <= 0) throw new EOFException("Motion recording ended before the requested range");
                 socket.getOutputStream().write(buffer, 0, read);
                 sent += read;
+                reply.trace.written = sent;
                 offset += read;
                 remaining -= read;
             }
             socket.getOutputStream().flush();
+            reply.trace.bodyEnd = now();
             outcome = "complete";
         } catch (Exception failure) {
             if (!isPlaybackCurrent(request.session, playback)) {
@@ -1052,8 +1086,11 @@ public final class CameraViewerServer implements AutoCloseable {
             String extraHeaders) throws IOException {
         writeHeaders(socket, reply, 200, mime, body.length, extraHeaders, null);
         if (!head) {
+            reply.trace.bodyStart = now();
             socket.getOutputStream().write(body);
+            reply.trace.written = body.length;
             socket.getOutputStream().flush();
+            reply.trace.bodyEnd = now();
         }
     }
 
@@ -1073,8 +1110,13 @@ public final class CameraViewerServer implements AutoCloseable {
             String extraHeaders) throws IOException {
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         writeHeaders(socket, reply, status, "application/json; charset=utf-8", bytes.length, extraHeaders, cookie);
-        if (!reply.head) socket.getOutputStream().write(bytes);
+        if (!reply.head) {
+            reply.trace.bodyStart = now();
+            socket.getOutputStream().write(bytes);
+            reply.trace.written = bytes.length;
+        }
         socket.getOutputStream().flush();
+        if (!reply.head) reply.trace.bodyEnd = now();
     }
 
     private static void methodNotAllowed(Socket socket, Reply reply) throws IOException {
@@ -1096,8 +1138,11 @@ public final class CameraViewerServer implements AutoCloseable {
                 + (extraHeaders == null ? "" : extraHeaders)
                 + (cookie == null ? "" : "Set-Cookie: " + cookie + "\r\n") + "\r\n";
         reply.started = true;
+        reply.trace.status = status;
+        reply.trace.promised = reply.head ? 0 : length;
         socket.getOutputStream().write(headers.getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
+        reply.trace.headers = now();
     }
 
     private static String reason(int status) {
@@ -1121,6 +1166,7 @@ public final class CameraViewerServer implements AutoCloseable {
     }
 
     @Override public void close() {
+        logHttpSnapshot("server_shutdown");
         closed = true;
         String current = access.current();
         boolean released = current != null && access.release(current);
@@ -1167,7 +1213,11 @@ public final class CameraViewerServer implements AutoCloseable {
         }
     }
 
-    private static final class Reply { boolean started; boolean head; }
+    private static final class Reply {
+        boolean started; boolean head;
+        final ViewerHttpHistory.Entry trace;
+        Reply(ViewerHttpHistory.Entry trace) { this.trace = trace; }
+    }
 
     static final class HttpFailure extends IOException {
         final int status;

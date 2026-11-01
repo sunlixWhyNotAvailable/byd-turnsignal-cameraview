@@ -73,6 +73,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     private var chargeObservation: AutoCloseable? = null
     private var networkRegistered = false
     private var activeNetwork: Network? = null
+    private var networkEpoch = 0L
+    private var networkValidated = false
+    private var networkProperties: android.net.LinkProperties? = null
     @Volatile private var chargeSnapshot = ViewerBatteryStatus(null, 0L)
     private val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -81,31 +84,74 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             execute {
                 if (activeNetwork != network) {
                     activeNetwork = network
+                    networkEpoch++
+                    networkValidated = false
+                    networkProperties = null
                     profiles.values.forEach { it.run?.publisher?.networkChanged() }
                 }
+                retryStoppedProfiles(network, "available")
             }
         }
         override fun onLost(network: Network) {
             CameraTunnelProvider.notifyNetworkChanged()
-            execute { if (activeNetwork == network) activeNetwork = null }
+            execute { if (activeNetwork == network) { activeNetwork = null; networkEpoch++ } }
         }
         override fun onCapabilitiesChanged(network: Network, capabilities: android.net.NetworkCapabilities) {
-            if (!capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
-                !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
             execute {
-                if (activeNetwork != network || !enabled) return@execute
-                profiles.values.filter { it.retryOnNetwork && it.run == null && it.authorized && !it.pendingRevoke }
-                    .forEach { p ->
-                        p.retryOnNetwork = false
-                        try { connect(p, false) } catch (failure: Exception) { failed(p, failure) }
-                    }
+                if (activeNetwork == network && networkValidated &&
+                    (!capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                     !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED))) {
+                    networkValidated = false
+                    networkEpoch++
+                }
+                retryStoppedProfiles(network, "capabilities")
             }
         }
         override fun onLinkPropertiesChanged(network: Network, properties: android.net.LinkProperties) {
             CameraTunnelProvider.notifyNetworkChanged()
             execute {
                 if (activeNetwork == network) profiles.values.forEach { it.run?.publisher?.networkChanged() }
+                retryStoppedProfiles(network, "link_properties")
             }
+        }
+    }
+
+    private fun retryStoppedProfiles(network: Network, trigger: String) {
+        if (closed || activeNetwork != network) return
+        val capabilities = connectivity.getNetworkCapabilities(network) ?: return
+        val validated = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val properties = connectivity.getLinkProperties(network)
+        if (validated != networkValidated || properties != networkProperties) {
+            networkValidated = validated
+            networkProperties = properties
+            networkEpoch++
+        }
+        // Available/capability/DNS notifications for the same network state form one retry.
+        val key = networkEpoch
+        profiles.values.filter { it.retryOnNetwork && it.run == null }.forEach { p ->
+            val skip = when {
+                !enabled -> "disabled"
+                !p.authorized || p.pendingRevoke -> "authorization_or_revoke"
+                !validated -> "network_not_validated"
+                p.lastNetworkRetry == key -> "already_attempted"
+                else -> null
+            }
+            if (skip != null) {
+                val decision = "$key:$skip"
+                if (p.lastNetworkDecision != decision) {
+                    p.lastNetworkDecision = decision
+                    CameraViewingDiagnostics.detail("network_retry_skipped", p.method,
+                        "reason=$skip generation=${p.generation} epoch=$key trigger=$trigger")
+                }
+                return@forEach
+            }
+            p.lastNetworkDecision = null
+            p.lastNetworkRetry = key
+            p.retryOnNetwork = false
+            CameraViewingDiagnostics.detail("network_retry", p.method,
+                "trigger=$trigger generation=${p.generation} validated=true epoch=$networkEpoch")
+            try { connect(p, false) } catch (failure: Exception) { failed(p, failure) }
         }
     }
 
@@ -118,6 +164,8 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         var run: Run? = null
         var generation = 0L
         var retryOnNetwork = false
+        var lastNetworkRetry = -1L
+        var lastNetworkDecision: String? = null
         val authorized get() = config.optBoolean("authorized")
         val pendingRevoke get() = config.optBoolean("revocationPending")
     }
@@ -1130,6 +1178,9 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                 capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true
             p.retryOnNetwork = enabled && p.authorized && !p.pendingRevoke &&
                 ((failure as? RuntimeFailure)?.networkFailure == true || offlineTimeout)
+            CameraViewingDiagnostics.detail("network_retry_decision", p.method,
+                "generation=${p.generation} error=$code retry=${p.retryOnNetwork} " +
+                    "validated=${capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true}")
         }
     }
     override fun close() {

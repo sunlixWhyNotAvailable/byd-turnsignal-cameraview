@@ -5,6 +5,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ViewerStopReasonTest {
+    @Test public void snapshotKeepsDownloadAndAppendTimingsAndRejectsNonNumericInput() throws Exception {
+        JSONObject value = new JSONObject().put("reason", "stall").put("lastFirstByteMs", 200)
+                .put("lastReceiveMs", 400).put("lastBufferedFragment", 17).put("lastAppendMs", 100)
+                .put("lastBufferedAgeMs", 600);
+        assertEquals("reason=stall lastFirstByteMs=200 lastReceiveMs=400 lastBufferedFragment=17"
+                + " lastAppendMs=100 lastBufferedAgeMs=600", ViewerStopReason.playbackSnapshot(value));
+        value.put("lastFirstByteMs", "secret").put("lastReceiveMs", -1).put("lastAppendMs", 0.5);
+        assertEquals("reason=stall lastBufferedFragment=17 lastBufferedAgeMs=600",
+                ViewerStopReason.playbackSnapshot(value));
+    }
     @Test public void snapshotRetainsFrameWatcherAndStallMeasurementsWithoutInventingBytes() throws Exception {
         JSONObject sample = new JSONObject().put("reason", "recovered").put("watcher", 1)
                 .put("targetMs", 1793290000000L).put("presentedMs", 1793290000800L)

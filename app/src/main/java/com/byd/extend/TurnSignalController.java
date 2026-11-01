@@ -55,6 +55,9 @@ final class TurnSignalController {
     private final AvasAudioLibrary avasLibrary;
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private java.util.concurrent.CompletableFuture<LocalAdbClient.Result> cameraLaunch, avmLaunch;
+    private boolean cameraLaunchReplacement, avmLaunchReplacement;
+    private volatile boolean terminatePendingLaunches;
     private final AtomicReference<Runnable> pendingReverseSteering = new AtomicReference<>();
     private final ReverseOverlayVisibilityGate reverseVisibilityGate =
             new ReverseOverlayVisibilityGate();
@@ -207,6 +210,7 @@ final class TurnSignalController {
         }
         synchronized (this) {
             stopped = true;
+            terminatePendingLaunches |= terminateShells || keepAvas;
             desiredAvasAudition = "";
             desiredAvasMicrophone = "";
         }
@@ -2986,20 +2990,19 @@ final class TurnSignalController {
                 } : this::resolveCameraHelper,
                 () -> {
                     if (stopped || (!cameraRuntimeHost && !migrateHelperNamespace())) {
-                        return LocalAdbClient.Result.failed(
-                                "helper_namespace_migration_failed", "", -1, "unavailable");
+                        return java.util.concurrent.CompletableFuture.completedFuture(LocalAdbClient.Result.failed(
+                                "helper_namespace_migration_failed", "", -1, "unavailable"));
                     }
-                    LocalAdbClient.Result result = launchCameraProcess(false);
-                    if (result.ok) {
-                        emit("camera_shell_launch", "ok", true, "output", result.output);
-                    }
-                    return result;
+                    return launchCameraAsync(false, forceFresh);
                 },
                 SystemClock::elapsedRealtime,
                 Thread::sleep,
                 3_000);
         IBinder value = resolution.binder;
         LocalAdbClient.Result launch = resolution.launch;
+        if (stopped) throw new IllegalStateException("camera launch cancelled by shutdown");
+        if (value == null || cameraHelper != value)
+            emitCameraStartupJournal(false, value == null ? "not_ready" : "binder_ready");
         if (launch != null) {
             if (value == null) {
                 throw new IllegalStateException(cameraHelperFailureMessage(launch));
@@ -3011,6 +3014,7 @@ final class TurnSignalController {
         }
         if (!cameraPing(value)) throw new IllegalStateException("camera_shell_binder_timeout");
         if (cameraHelper != value) {
+            emit("camera_process_binder_ready", "avm", false, "elapsed_ms", SystemClock.elapsedRealtime());
             long epoch = installCameraHelper(value);
             try {
                 transactCameraCallback(value);
@@ -3067,18 +3071,26 @@ final class TurnSignalController {
     }
 
     private IBinder ensureAvmShell() throws Exception {
+        return ensureAvmShell(false, null);
+    }
+
+    private IBinder ensureAvmShell(boolean replacement, IBinder stale) throws Exception {
         if (stopped || LegacySettingsImporter.blocksRuntime(context)) {
             throw new IllegalStateException("runtime blocked by shutdown or legacy handover");
         }
         CameraHelperResolution resolution = resolveCameraHelperFlow(
-                avmShell,
+                replacement ? null : avmShell,
                 this::avmPing,
-                this::resolveAvmShell,
-                () -> launchCameraProcess(true),
+                () -> {
+                    IBinder candidate = resolveAvmShell();
+                    return replacement && candidate == stale ? null : candidate;
+                },
+                () -> launchCameraAsync(true, replacement),
                 SystemClock::elapsedRealtime,
                 Thread::sleep,
                 3_000);
         IBinder value = resolution.binder;
+        if (stopped) throw new IllegalStateException("AVM launch cancelled by shutdown");
         if (value == null) {
             emitAvmStartupJournal();
             LocalAdbClient.Result launch = resolution.launch;
@@ -3091,6 +3103,7 @@ final class TurnSignalController {
         if (!avmPing(value)) throw new IllegalStateException("stock_avm_shell_ping_failed: "
                 + lastAvmPingFailure);
         if (avmShell != value) {
+            emit("camera_process_binder_ready", "avm", true, "elapsed_ms", SystemClock.elapsedRealtime());
             long epoch = installAvmShell(value);
             try {
                 transactAvmCallback(value);
@@ -3201,12 +3214,10 @@ final class TurnSignalController {
     }
 
     private void resetAvmShell() throws Exception {
+        IBinder stale = avmShell;
+        if (stale == null) stale = resolveAvmShell();
         clearAvmShell(null);
-        LocalAdbClient.Result result = launchCameraProcess(true);
-        if (!result.ok) throw new IllegalStateException(
-                "stock_avm_shell_reset_failed: " + result.error + ";exit=" + result.exitCode
-                        + ";output=" + result.output);
-        ensureAvmShell();
+        ensureAvmShell(true, stale);
     }
 
     private LocalAdbClient.Result launchCameraProcess(boolean avm) {
@@ -3215,30 +3226,64 @@ final class TurnSignalController {
         String command = avm ? avmLaunchCommand(apk, owner, BuildConfig.VERSION_CODE)
                 : cameraLaunchCommand(apk, owner, BuildConfig.VERSION_CODE);
         if (!cameraRuntimeHost) return LocalAdbClient.executeAuthorized(context, command, this::emit);
-        if (avm) return launchAvmProcess(command);
-        // Already shell UID: launch only our two fixed, package-derived camera entry points.
-        // No app RSA key, app callback, user-supplied command, or 5555 connection is involved.
-        try {
-            java.lang.Process process = new ProcessBuilder("/system/bin/sh", "-c", command)
-                    .redirectErrorStream(true).redirectOutput(new java.io.File("/dev/null")).start();
-            if (!process.waitFor(8, java.util.concurrent.TimeUnit.SECONDS)) {
-                process.destroy();
-                return LocalAdbClient.Result.failed("camera_launch_timeout", "", -1, "shell");
+        return launchShellProcess(command, avm);
+    }
+
+    private synchronized java.util.concurrent.CompletableFuture<LocalAdbClient.Result> launchCameraAsync(
+            boolean avm, boolean replacement) {
+        java.util.concurrent.CompletableFuture<LocalAdbClient.Result> previous = avm ? avmLaunch : cameraLaunch;
+        if (previous != null && !previous.isDone()
+                && (!replacement || (avm ? avmLaunchReplacement : cameraLaunchReplacement))) return previous;
+        java.util.concurrent.CompletableFuture<LocalAdbClient.Result> next = new java.util.concurrent.CompletableFuture<>();
+        if (avm) { avmLaunch = next; avmLaunchReplacement = replacement; }
+        else { cameraLaunch = next; cameraLaunchReplacement = replacement; }
+        new Thread(() -> {
+            try {
+                if (previous != null && !previous.isDone()) previous.join();
+                if (stopped) { next.complete(LocalAdbClient.Result.cancelled()); return; }
+                emitCameraStartupJournal(avm, "before_replacement");
+                long began = SystemClock.elapsedRealtime();
+                emit("camera_process_launch_begin", "avm", avm, "elapsed_ms", began);
+                LocalAdbClient.Result result = launchCameraProcess(avm);
+                emit("camera_process_launch_end", "avm", avm, "ok", result.ok,
+                        "elapsed_ms", SystemClock.elapsedRealtime(), "duration_ms", SystemClock.elapsedRealtime() - began,
+                        "error", result.error, "output", result.output);
+                emitCameraStartupJournal(avm, "command_finished");
+                if (terminatePendingLaunches) {
+                    if (avm) shutdownAvmShell(); else shutdownCameraHelper();
+                }
+                next.complete(result);
+            } catch (Throwable failure) {
+                emit("camera_process_launch_error", "avm", avm,
+                        "error", StockAvmShellProtocol.diagnostic(failure));
+                next.complete(LocalAdbClient.Result.failed(StockAvmShellProtocol.diagnostic(failure), "", -1, "launch"));
             }
-            return process.exitValue() == 0 ? LocalAdbClient.Result.ok("", 0, "shell", false)
-                    : LocalAdbClient.Result.failed("camera_launch_failed", "", process.exitValue(), "shell");
+        }, avm ? "avm-launch" : "camera-launch").start();
+        return next;
+    }
+
+    private void emitCameraStartupJournal(boolean avm, String phase) {
+        java.io.File file = new java.io.File(avm ? StockAvmShellProtocol.LOG_PATH : CameraShellProtocol.LOG_PATH);
+        if (!file.exists()) return;
+        try (java.io.RandomAccessFile log = new java.io.RandomAccessFile(file, "r")) {
+            long length = log.length(), offset = Math.max(0, length - 32_768);
+            byte[] bytes = new byte[(int) (length - offset)];
+            log.seek(offset); log.readFully(bytes);
+            emit("camera_process_startup_evidence", "avm", avm, "phase", phase, "tail_offset", offset,
+                    "output", com.byd.extend.remote.CameraViewingDiagnostics.safeText(
+                            new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception error) {
-            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return LocalAdbClient.Result.failed(summary(error), "", -1, "shell");
+            emit("camera_process_startup_evidence_failed", "phase", phase, "avm", avm,
+                    "error", StockAvmShellProtocol.diagnostic(error));
         }
     }
 
-    private LocalAdbClient.Result launchAvmProcess(String command) {
+    private LocalAdbClient.Result launchShellProcess(String command, boolean avm) {
         java.io.File output = null;
         java.lang.Process process = null;
         boolean retainOutput = false;
         try {
-            output = java.io.File.createTempFile("bydextend-avm-launch-", ".log",
+            output = java.io.File.createTempFile(avm ? "bydextend-avm-launch-" : "bydextend-camera-launch-", ".log",
                     new java.io.File("/data/local/tmp"));
             process = new ProcessBuilder("/system/bin/sh", "-c", command)
                     .redirectErrorStream(true).redirectOutput(output).start();
@@ -3252,12 +3297,12 @@ final class TurnSignalController {
                         java.nio.charset.StandardCharsets.UTF_8);
             } catch (Exception diagnosticFailure) {
                 retainOutput = true;
-                emit("stock_avm_launch_output_failed", "request_id", stockAvmRetryRequestId,
+                emit(avm ? "stock_avm_launch_output_failed" : "camera_launch_output_failed", "request_id", stockAvmRetryRequestId,
                         "attempt", stockAvmRetryAttempt, "launch_error", error, "exit", exit,
                         "full_log", output.getPath(),
                         "error", StockAvmShellProtocol.diagnostic(diagnosticFailure));
             }
-            emit("stock_avm_launch_result", "request_id", stockAvmRetryRequestId,
+            emit(avm ? "stock_avm_launch_result" : "camera_launch_result", "request_id", stockAvmRetryRequestId,
                     "attempt", stockAvmRetryAttempt, "exit", exit, "finished", finished,
                     "output", captured, "error", error);
             return error.isEmpty() ? LocalAdbClient.Result.ok(captured, exit, "shell", false)
@@ -3276,13 +3321,13 @@ final class TurnSignalController {
                 } catch (Exception diagnosticFailure) { failure.addSuppressed(diagnosticFailure); }
             }
             String detail = StockAvmShellProtocol.diagnostic(failure);
-            emit("stock_avm_launch_failed", "request_id", stockAvmRetryRequestId,
+            emit(avm ? "stock_avm_launch_failed" : "camera_launch_failed", "request_id", stockAvmRetryRequestId,
                     "attempt", stockAvmRetryAttempt, "error", detail, "output", captured,
                     "full_log", output == null ? "" : output.getPath());
             return LocalAdbClient.Result.failed(detail, captured, -1, "shell");
         } finally {
             if (output != null && !retainOutput && !output.delete()) {
-                emit("stock_avm_launch_log_cleanup_failed", "path", output.getPath(),
+                emit(avm ? "stock_avm_launch_log_cleanup_failed" : "camera_launch_log_cleanup_failed", "path", output.getPath(),
                         "error", "temporary launch diagnostic could not be deleted");
             }
         }
@@ -4635,7 +4680,7 @@ final class TurnSignalController {
             IBinder cached,
             Predicate<IBinder> ping,
             Supplier<IBinder> resolve,
-            Supplier<LocalAdbClient.Result> launch,
+            Supplier<java.util.concurrent.CompletableFuture<LocalAdbClient.Result>> launch,
             LongSupplier clock,
             CameraHelperSleeper sleeper,
             long timeoutMs) throws InterruptedException {
@@ -4644,9 +4689,14 @@ final class TurnSignalController {
         value = resolve.get();
         if (ping.test(value)) return new CameraHelperResolution(value, null);
 
-        LocalAdbClient.Result result = launch.get();
-        long deadline = clock.getAsLong() + timeoutMs;
+        java.util.concurrent.CompletableFuture<LocalAdbClient.Result> pending = launch.get();
+        LocalAdbClient.Result result = null;
+        long deadline = Long.MAX_VALUE;
         do {
+            if (result == null && pending.isDone()) {
+                result = pending.join();
+                deadline = clock.getAsLong() + timeoutMs;
+            }
             value = resolve.get();
             if (ping.test(value)) return new CameraHelperResolution(value, result);
             sleeper.sleep(100);

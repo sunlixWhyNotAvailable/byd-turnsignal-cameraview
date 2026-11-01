@@ -39,6 +39,7 @@ public final class FragmentedVideoWindow extends OutputStream {
         this.onReady = onReady;
     }
     public String getStreamId() { return streamId; }
+    synchronized long selectionRevision() { return selectionRevision; }
     public String getPlaylistPath() { return "/media/" + streamId + "/live.m3u8"; }
     public String resourcePath(String path) {
         String prefix = "/media/" + streamId;
