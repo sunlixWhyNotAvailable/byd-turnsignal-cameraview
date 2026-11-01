@@ -94,6 +94,10 @@ public final class CameraModeClient implements AutoCloseable {
         Object recording = response.get("recordingEnabled");
         Object mirror = response.get(CameraModeSettings.SETTING_MIRROR_CABIN);
         Object sensitivity = response.get(CameraModeSettings.SETTING_RECORDING_SENSITIVITY);
+        Object quality = response.get(CameraModeSettings.SETTING_VIEWING_QUALITY);
+        Object initialView = response.get(CameraModeSettings.SETTING_INITIAL_VIEW);
+        CameraModeSettings.validateSetting(CameraModeSettings.SETTING_VIEWING_QUALITY, quality);
+        CameraModeSettings.validateSetting(CameraModeSettings.SETTING_INITIAL_VIEW, initialView);
         Object stateValue = response.get("applyState");
         if (!(tablet instanceof Boolean) || !(recording instanceof Boolean)
                 || !(mirror instanceof Boolean) || !(sensitivity instanceof Integer)
@@ -110,6 +114,8 @@ public final class CameraModeClient implements AutoCloseable {
                 .put("recordingEnabled", (Boolean) recording)
                 .put(CameraModeSettings.SETTING_MIRROR_CABIN, mirror)
                 .put(CameraModeSettings.SETTING_RECORDING_SENSITIVITY, sensitivity)
+                .put(CameraModeSettings.SETTING_VIEWING_QUALITY, quality)
+                .put(CameraModeSettings.SETTING_INITIAL_VIEW, initialView)
                 .put("applyState", state);
         String error = optionalString(response, "error");
         String errorRef = optionalString(response, "errorRef");

@@ -28,6 +28,8 @@ public final class CameraModeSettings extends ContentProvider {
     public static final String METHOD_SET_SETTING = "setSetting";
     public static final String SETTING_MIRROR_CABIN = "mirrorCabin";
     public static final String SETTING_RECORDING_SENSITIVITY = "recordingSensitivity";
+    public static final String SETTING_VIEWING_QUALITY = "viewingQuality";
+    public static final String SETTING_INITIAL_VIEW = "initialView";
     public static final String MODE_TABLET = "tablet";
     public static final String MODE_RECORDING = "recording";
 
@@ -93,6 +95,12 @@ public final class CameraModeSettings extends ContentProvider {
         if (SETTING_MIRROR_CABIN.equals(setting) && value instanceof Boolean) return;
         if (SETTING_RECORDING_SENSITIVITY.equals(setting) && value instanceof Integer
                 && (Integer) value >= 0 && (Integer) value <= 2) return;
+        if (SETTING_VIEWING_QUALITY.equals(setting) && value instanceof Integer) {
+            com.byd.extend.remote.ViewerQuality.validate((Integer) value); return;
+        }
+        if (SETTING_INITIAL_VIEW.equals(setting) && value instanceof Integer) {
+            RemoteCameraView.initialView((Integer) value); return;
+        }
         throw new IllegalArgumentException("invalid camera setting/value: " + setting);
     }
 
@@ -114,12 +122,15 @@ public final class CameraModeSettings extends ContentProvider {
         try {
             validateSetting(setting, value);
             boolean mirror = SETTING_MIRROR_CABIN.equals(setting);
+            boolean sensitivity = SETTING_RECORDING_SENSITIVITY.equals(setting);
             SharedPreferences preferences = context.getSharedPreferences(
-                    mirror ? "settings" : MotionConfig.SCREEN_PREFS, Context.MODE_PRIVATE);
+                    sensitivity ? MotionConfig.SCREEN_PREFS : "settings", Context.MODE_PRIVATE);
             String key = mirror ? RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY
-                    : MotionConfig.KEY_RECORDING_SENSITIVITY;
+                    : sensitivity ? MotionConfig.KEY_RECORDING_SENSITIVITY
+                    : SETTING_VIEWING_QUALITY.equals(setting) ? com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY
+                    : RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY;
             Object previous = mirror ? preferences.getBoolean(key, false)
-                    : preferences.getInt(key, MotionConfig.DEFAULT_RECORDING_SENSITIVITY);
+                    : preferences.getInt(key, sensitivity ? MotionConfig.DEFAULT_RECORDING_SENSITIVITY : 0);
             if (previous.equals(value)) return false;
             SharedPreferences.Editor editor = preferences.edit();
             if (mirror) editor.putBoolean(key, (Boolean) value);
@@ -171,6 +182,9 @@ public final class CameraModeSettings extends ContentProvider {
         result.putBoolean(SETTING_MIRROR_CABIN, context.getSharedPreferences("settings", Context.MODE_PRIVATE)
                 .getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
         result.putInt(SETTING_RECORDING_SENSITIVITY, config.recordingSensitivity);
+        SharedPreferences viewing = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        result.putInt(SETTING_VIEWING_QUALITY, viewing.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY, 0));
+        result.putInt(SETTING_INITIAL_VIEW, viewing.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0));
         try {
             JSONObject status = MotionRuntime.applyStatus(config.toJson());
             result.putString("applyState", status.getString("applyState"));

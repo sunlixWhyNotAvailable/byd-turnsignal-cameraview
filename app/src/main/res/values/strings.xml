@@ -308,4 +308,13 @@
     <string name="cameras_cellular_pending">Determining the recovery command…</string>
     <string name="cameras_cellular_found">Recovery command identified</string>
     <string name="cameras_cellular_failed">Automatic detection failed. Using the default code</string>
+    <string name="cameras_viewing_quality">"Viewing quality"</string>
+    <string name="cameras_quality_auto">"Auto"</string>
+    <string name="cameras_quality_low">"Low"</string>
+    <string name="cameras_quality_medium">"Medium"</string>
+    <string name="cameras_quality_high">"High"</string>
+    <string name="cameras_initial_view">"Initial view"</string>
+    <string name="cameras_initial_composition">"Full composition"</string>
+    <string name="cameras_initial_exterior">"Exterior"</string>
+    <string name="cameras_initial_interior">"Interior"</string>
 </resources>

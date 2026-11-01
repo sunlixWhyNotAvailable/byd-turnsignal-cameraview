@@ -302,8 +302,17 @@ internal fun FormScope.CameraViewingScreen(
                     submit(nextTransport = listOf("vdo", "tailscale", "zrok")[selected])
                 }, colors, enabled = state.config.enabled)
         }
+        row("quality") {
+            Text(strings.motionText(R.string.cameras_viewing_quality), color = colors.text, fontSize = 16.sp)
+            Segmented(listOf(R.string.cameras_quality_auto, R.string.cameras_quality_low,
+                R.string.cameras_quality_medium, R.string.cameras_quality_high).map { strings.motionText(it) },
+                if (transport == "vdo") 0 else state.config.viewingQuality, colors, Modifier.fillMaxWidth(),
+                enabled = { state.config.enabled && transport != "vdo" }) {
+                controller.setViewingSetting(com.byd.extend.CameraModeSettings.SETTING_VIEWING_QUALITY, it)
+            }
+        }
         row("interior-cameras") {
-            Text(strings.motionText(R.string.cameras_internal), color = colors.text, fontSize = 16.sp)
+            Text(strings.motionText(if (transport == "vdo") R.string.cameras_internal else R.string.cameras_initial_view), color = colors.text, fontSize = 16.sp)
             Box(Modifier.fillMaxWidth().heightIn(min = 42.dp), contentAlignment = Alignment.CenterStart) {
                 if (transport == "vdo") {
                     Segmented(listOf(R.string.cameras_internal_none, R.string.cameras_internal_cabin,
@@ -313,9 +322,16 @@ internal fun FormScope.CameraViewingScreen(
                         controller.setInteriorCameras(it)
                     }
                 } else {
-                    Text(strings.motionText(R.string.cameras_internal_viewer_hint), color = colors.muted, fontSize = 13.sp)
+                    Segmented(listOf(R.string.cameras_initial_composition, R.string.cameras_initial_exterior,
+                        R.string.cameras_initial_interior).map { strings.motionText(it) },
+                        state.config.initialView, colors, Modifier.fillMaxWidth(), enabled = { state.config.enabled }) {
+                        controller.setViewingSetting(com.byd.extend.CameraModeSettings.SETTING_INITIAL_VIEW, it)
+                    }
                 }
             }
+        }
+        if (transport != "vdo") row("interior-camera-hint") {
+            Text(strings.motionText(R.string.cameras_internal_viewer_hint), color = colors.muted, fontSize = 13.sp)
         }
         row("cabin-camera-mirror") {
             SwitchLine(strings.motionText(R.string.cameras_internal_mirroring), "", state.config.mirrorCabin,

@@ -56,6 +56,7 @@ public final class CameraViewerServer implements AutoCloseable {
         JSONObject presentation();
         void firstFrame(String session, String mode);
         void viewFrame(String session, long revision, String streamId);
+        void playbackFeedback(String session, ViewerPlaybackFeedback sample);
         FragmentedVideoWindow video();
         CameraViewerArchive recordings() throws Exception;
         byte[] resource(String name) throws IOException;
@@ -81,6 +82,8 @@ public final class CameraViewerServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicLong lastTransportDiagnostic =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
     private final java.util.concurrent.atomic.AtomicLong lastPlaybackSnapshot =
+            new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    private final java.util.concurrent.atomic.AtomicLong lastPlaybackProgress =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
     private final java.util.concurrent.atomic.AtomicLong lastHttpSnapshot =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
@@ -504,14 +507,22 @@ public final class CameraViewerServer implements AutoCloseable {
                 JSONObject diagnostic = bodyObject(request.body);
                 String event = diagnostic.optString("event", "");
                 String mode = diagnostic.optString("mode", "");
+                if ("playback_feedback".equals(event)) {
+                    try {
+                        stream.playbackFeedback(request.session, new ViewerPlaybackFeedback(diagnostic));
+                        json(socket, reply, 200, "ok", null);
+                    } catch (IllegalArgumentException invalid) {
+                        json(socket, reply, 400, "invalid_event", null);
+                    }
+                    return;
+                }
                 if ("playback_snapshot".equals(event)) {
                     boolean valid = logPlaybackSnapshot(diagnostic);
                     json(socket, reply, valid ? 200 : 400, valid ? "ok" : "invalid_event", null); return;
                 }
                 if ("playback_transport".equals(event)) {
                     FragmentedVideoWindow window = stream.video();
-                    if (!ViewerStopReason.validTransportReason(diagnostic) || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))
-                            || !"tailscale".equals(stream.presentation().optString("provider"))) {
+                    if (!ViewerStopReason.validTransportReason(diagnostic) || window == null || !window.getStreamId().equals(diagnostic.optString("streamId"))) {
                         json(socket, reply, 400, "invalid_event", null); return;
                     }
                     if (!DiagnosticLogPolicy.extended()) {
@@ -520,7 +531,7 @@ public final class CameraViewerServer implements AutoCloseable {
                     long time = now(), previous = lastTransportDiagnostic.get();
                     if ((previous == Long.MIN_VALUE || time - previous >= 5_000)
                             && lastTransportDiagnostic.compareAndSet(previous, time))
-                        CameraViewingDiagnostics.verbose("browser_transport", "tailscale",
+                        CameraViewingDiagnostics.verbose("browser_transport", stream.presentation().optString("provider"),
                                 () -> "stream=" + window.getStreamId() + " " + ViewerStopReason.transport(diagnostic));
                     json(socket, reply, 200, "ok", null); return;
                 }
@@ -697,12 +708,15 @@ public final class CameraViewerServer implements AutoCloseable {
         if (detail == null) return false;
         FragmentedVideoWindow window = stream.video();
         if (window == null || !window.getStreamId().equals(value.optString("streamId"))) return false;
-        long time = now(), previous = lastPlaybackSnapshot.get();
+        boolean progress = "progress".equals(value.optString("reason"));
+        if (progress && !DiagnosticLogPolicy.extended()) return true;
+        java.util.concurrent.atomic.AtomicLong clock = progress ? lastPlaybackProgress : lastPlaybackSnapshot;
+        long time = now(), previous = clock.get();
         if ((previous == Long.MIN_VALUE || time - previous >= 10_000)
-                && lastPlaybackSnapshot.compareAndSet(previous, time)) {
+                && clock.compareAndSet(previous, time)) {
             CameraViewingDiagnostics.detail("browser_playback_snapshot", stream.presentation().optString("provider"),
                     "stream=" + window.getStreamId() + " " + detail);
-            logHttpSnapshot("browser_" + value.optString("reason"));
+            if (!progress) logHttpSnapshot("browser_" + value.optString("reason"));
         }
         return true;
     }

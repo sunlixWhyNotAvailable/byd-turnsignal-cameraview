@@ -308,4 +308,13 @@
     <string name="cameras_cellular_pending">正在确定恢复命令…</string>
     <string name="cameras_cellular_found">已确定恢复命令</string>
     <string name="cameras_cellular_failed">自动检测失败。正在使用默认代码</string>
+    <string name="cameras_viewing_quality">"观看画质"</string>
+    <string name="cameras_quality_auto">"自动"</string>
+    <string name="cameras_quality_low">"低"</string>
+    <string name="cameras_quality_medium">"中"</string>
+    <string name="cameras_quality_high">"高"</string>
+    <string name="cameras_initial_view">"初始画面"</string>
+    <string name="cameras_initial_composition">"完整组合"</string>
+    <string name="cameras_initial_exterior">"车外"</string>
+    <string name="cameras_initial_interior">"车内"</string>
 </resources>

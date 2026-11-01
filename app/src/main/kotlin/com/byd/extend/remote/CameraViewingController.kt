@@ -24,7 +24,8 @@ import java.util.concurrent.Executors
 data class CameraViewingConfig(val enabled: Boolean = false, val transport: String = "vdo",
     val tailscalePublic: Boolean = false, val streamId: String = "", val interiorCameras: Int = 0,
     val mirrorCabin: Boolean = false, val restoreCellular: Boolean = false,
-    val cellularStatus: String = "pending", val screenOffAfterCellular: Boolean = true)
+    val cellularStatus: String = "pending", val screenOffAfterCellular: Boolean = true,
+    val viewingQuality: Int = 0, val initialView: Int = 0)
 data class CameraViewingState(val config: CameraViewingConfig, val phase: String = "idle",
     val viewerUrl: String? = null, val authorizationUrl: String? = null, val error: String? = null,
     val passwordConfigured: Boolean = false, val tokenConfigured: Boolean = false,
@@ -46,7 +47,8 @@ class CameraViewingController private constructor(private val context: Context) 
             || key == com.byd.extend.MotionConfig.CELLULAR_SCREEN_OFF_PREF)
             execute("cellular_setting") { refresh() }
         if (key == AppLanguage.KEY || key == "ui_dark_theme" || key == RemoteCameraView.PREFERENCE_KEY
-            || key == RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) execute("viewer_presentation") {
+            || key == RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY
+            || key == ViewerQuality.PREFERENCE_KEY || key == RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY) execute("viewer_presentation") {
             refresh()
             client?.let { accept(it.request("configure", presentationPayload()
                 .put("enabled", CameraChargeSettings.isRemoteViewingEnabled(context)))) }
@@ -59,6 +61,7 @@ class CameraViewingController private constructor(private val context: Context) 
     private var backendResetRequested = false
     private var backendError: String? = null
     private var mirrorApplyError: String? = null
+    private var qualityApplyError: String? = null
     private val main = Handler(Looper.getMainLooper())
     private val mutable = MutableStateFlow(CameraViewingState(readConfig()))
     val state: StateFlow<CameraViewingState> = mutable.asStateFlow()
@@ -77,6 +80,8 @@ class CameraViewingController private constructor(private val context: Context) 
     private fun presentationPayload() = JSONObject().put("locale", AppLanguage.read(displaySettings))
         .put("theme", if (displaySettings.getBoolean("ui_dark_theme", true)) "dark" else "light")
         .put("interiorCameras", interiorCameras()).put("mirrorCabin", cabinMirrored())
+        .put("viewingQuality", displaySettings.getInt(ViewerQuality.PREFERENCE_KEY, 0))
+        .put("initialView", displaySettings.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0))
         .put("extendedLogs", extendedLogsEnabled())
 
     private fun extendedLogsEnabled() = displaySettings.getBoolean(DiagnosticLogPolicy.PREF_ENABLED, false)
@@ -89,6 +94,12 @@ class CameraViewingController private constructor(private val context: Context) 
     fun setCabinMirrored(value: Boolean) = execute("mirror_cabin") {
         CameraModeSettings.persistSettingPreference(context,
             CameraModeSettings.SETTING_MIRROR_CABIN, value)
+        refresh()
+    }
+
+    fun setViewingSetting(setting: String, value: Int) = execute("viewer_setting") {
+        require(setting == CameraModeSettings.SETTING_VIEWING_QUALITY || setting == CameraModeSettings.SETTING_INITIAL_VIEW)
+        CameraModeSettings.persistSettingPreference(context, setting, value)
         refresh()
     }
 
@@ -128,7 +139,9 @@ class CameraViewingController private constructor(private val context: Context) 
         CameraChargeSettings.isRemoteViewingEnabled(context), it, publicMode(), draftName(it), interiorCameras(),
         cabinMirrored(), displaySettings.getBoolean(com.byd.extend.MotionConfig.CELLULAR_PREF, false),
         cellularDiagnostics.getString("status", "pending") ?: "pending",
-        displaySettings.getBoolean(com.byd.extend.MotionConfig.CELLULAR_SCREEN_OFF_PREF, true)) }
+        displaySettings.getBoolean(com.byd.extend.MotionConfig.CELLULAR_SCREEN_OFF_PREF, true),
+        displaySettings.getInt(ViewerQuality.PREFERENCE_KEY, 0),
+        displaySettings.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0)) }
     private fun secret(method: String, field: String): String {
         val bytes = secrets.get("draft.camera.$method.$field") ?: secrets.get("camera.$method.$field") ?: return ""
         return try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }
@@ -154,7 +167,7 @@ class CameraViewingController private constructor(private val context: Context) 
                 streamId = current.optString("name")) else config,
             phase = phase, viewerUrl = if (accessChangesPending) null else current?.nullable("viewerUrl"),
             authorizationUrl = current?.nullable("authorizationUrl"),
-            error = (current?.nullable("error") ?: mirrorApplyError ?: backendError)
+            error = (current?.nullable("error") ?: mirrorApplyError ?: qualityApplyError ?: backendError)
                 ?.let { context.getString(errorResource(it)) },
             passwordConfigured = secret(method, "password").isNotEmpty(),
             tokenConfigured = secret(method, "token").isNotEmpty(),
@@ -323,6 +336,7 @@ class CameraViewingController private constructor(private val context: Context) 
     }
 
     private fun accept(snapshot: JSONObject) {
+        qualityApplyError = snapshot.nullable("qualityApplyError")
         if (snapshot.has("mirrorApplyState")) {
             mirrorApplyError = if (snapshot.optString("mirrorApplyState") == "error")
                 snapshot.optString("mirrorApplyError", "mirror_apply_failed") else null

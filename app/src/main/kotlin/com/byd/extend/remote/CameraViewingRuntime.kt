@@ -63,6 +63,8 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
     @Volatile private var theme = "dark"
     @Volatile private var interiorCameras = RemoteCameraView.NONE
     @Volatile private var mirrorCabin = false
+    @Volatile private var viewingQuality = 0
+    @Volatile private var initialView = 0
     private var mirrorRevision = 0L
     @Volatile private var mirrorApplyState = "pending"
     @Volatile private var mirrorApplyErrorRef: String? = null
@@ -220,6 +222,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                         .put("revocationPending", false)
                         .put("viewerLocale", locale).put("viewerTheme", theme)
                         .put("viewerMirrorCabin", mirrorCabin)
+                        .put("viewerQuality", viewingQuality).put("viewerInitialView", initialView)
                         .put("revocationEpoch", profile.config.optLong("revocationEpoch"))
                     save(profile)
                 } else {
@@ -342,6 +345,13 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         }
         theme = if (payload.optString("theme",
                 profiles.values.firstOrNull()?.config?.optString("viewerTheme", "dark") ?: "dark") == "light") "light" else "dark"
+        val nextQuality = payload.opt("viewingQuality") ?: profiles.values.firstOrNull()?.config?.opt("viewerQuality") ?: viewingQuality
+        val nextInitial = payload.opt("initialView") ?: profiles.values.firstOrNull()?.config?.opt("viewerInitialView") ?: initialView
+        com.byd.extend.CameraModeSettings.validateSetting("viewingQuality", nextQuality)
+        com.byd.extend.CameraModeSettings.validateSetting("initialView", nextInitial)
+        viewingQuality = nextQuality as Int
+        initialView = nextInitial as Int
+        viewer?.run?.encoder?.setQuality(viewingQuality)
         persistViewerPresentation()
         if (active != null && enabled && payload.optBoolean("enabled", enabled)) {
             active.run.deadline = SystemClock.elapsedRealtime() + 30_000
@@ -515,6 +525,13 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                 override fun setSetting(session: String, setting: String, value: Any): JSONObject? = serialized {
                     if (!current(run, session) || run.server?.canControl(session) != true) return@serialized null
                     val snapshot = modeSettings.setSetting(setting, value)
+                    if (setting == "viewingQuality" || setting == "initialView") {
+                        viewingQuality = snapshot.getInt("viewingQuality")
+                        initialView = snapshot.getInt("initialView")
+                        viewer?.run?.encoder?.setQuality(viewingQuality)
+                        persistViewerPresentation()
+                        publish()
+                    }
                     if (setting == "mirrorCabin") {
                         mirrorCabin = snapshot.getBoolean("mirrorCabin")
                         mirrorApplyState = "pending"
@@ -544,6 +561,17 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
                     val active = viewer?.takeIf { current(run, session) } ?: return@execute
                     if (active.selection.revision() == revision && active.selection.streamId() == streamId)
                         sessionEvent("selection_displayed_frame", active)
+                }
+                override fun playbackFeedback(session: String, sample: ViewerPlaybackFeedback) = execute(p, run) {
+                    val active = viewer?.takeIf { current(run, session) && run.server?.canControl(session) == true }
+                        ?: return@execute
+                    if (active.mode != "live" || active.selection.streamId() != sample.streamId ||
+                        active.selection.revision() != sample.revision) return@execute
+                    run.encoder?.let { encoder ->
+                        val previousError = encoder.qualityErrorRef
+                        encoder.feedback(sample)
+                        if (previousError != encoder.qualityErrorRef) publish()
+                    }
                 }
                 override fun recordings() = archive
                 override fun video() = run.encoder?.window?.takeIf { window ->
@@ -593,6 +621,12 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             .put("mirrorStreamId", sourceRun?.encoder?.window?.streamId)
             .put("mirrorProgramTimeMs", sourceRun?.encoder?.window?.mirrorProgramTimeMs(mirrorRevision) ?: -1L)
             .put("sensitivityApplyState", snapshot.optString("applyState", "error"))
+        val encoder = viewer?.run?.encoder
+        result.put("viewingQuality", snapshot.opt("viewingQuality") ?: viewingQuality)
+            .put("initialView", snapshot.opt("initialView") ?: initialView)
+            .put("qualityApplyState", if (encoder?.qualityErrorRef != null) "error" else if (encoder == null) "pending" else "applied")
+            .put("appliedBitrate", encoder?.appliedBitrate ?: 0)
+            .put("qualityErrorRef", encoder?.qualityErrorRef)
         val sensitivity = snapshot.opt("recordingSensitivity")
         if (sensitivity is Int && sensitivity in 0..2) result.put("recordingSensitivity", sensitivity)
         val mirrorError = reportedMirrorState == "error"
@@ -607,9 +641,11 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         profiles.values.forEach { profile ->
             if (profile.config.optString("viewerLocale") != locale ||
                 profile.config.optString("viewerTheme") != theme ||
-                profile.config.opt("viewerMirrorCabin") != mirrorCabin) {
+                profile.config.opt("viewerMirrorCabin") != mirrorCabin ||
+                profile.config.opt("viewerQuality") != viewingQuality || profile.config.opt("viewerInitialView") != initialView) {
                 profile.config.put("viewerLocale", locale).put("viewerTheme", theme)
                     .put("viewerMirrorCabin", mirrorCabin)
+                    .put("viewerQuality", viewingQuality).put("viewerInitialView", initialView)
                 save(profile)
             }
         }
@@ -829,11 +865,11 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         try {
             check(run.retiringEncoder == null) { "Previous viewer encoder is not released" }
             run.retiringEncoder = run.encoder
-            val surface = run.publisher?.startVideo() ?: CameraHlsEncoder(streamId, { event, frames, bytes ->
+            val surface = run.publisher?.startVideo() ?: CameraHlsEncoder(streamId, viewingQuality, { event, frames, bytes ->
                 execute(p, run) { viewer?.takeIf { it.run === run }?.let {
                     if (event == "encoder_statistics") {
                         CameraViewingDiagnostics.verbose(event, p.method,
-                            { "${sessionContext(it)} frames=$frames bytes=$bytes" })
+                            { "${sessionContext(it)} frames=$frames bytes=$bytes targetBitrate=${run.encoder?.appliedBitrate} quality=$viewingQuality" })
                     } else sessionEvent(event, it, "frames=$frames bytes=$bytes")
                 } }
             }, { encoder -> execute(p, run) {
@@ -1085,6 +1121,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
             .put("viewerLocale", p.config.optString("viewerLocale", locale))
             .put("viewerTheme", p.config.optString("viewerTheme", theme))
             .put("viewerMirrorCabin", p.config.optBoolean("viewerMirrorCabin", mirrorCabin))
+            .put("viewerQuality", viewingQuality).put("viewerInitialView", initialView)
             .put("revocationEpoch", p.config.optLong("revocationEpoch") + 1)
         save(p); p.phase = "idle"; p.error = null
     }
@@ -1108,6 +1145,7 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         }
         val snapshot = JSONObject().put("enabled", enabled).put("interiorCameras", interiorCameras)
             .put("mirrorCabin", mirrorCabin).put("mirrorApplyState", reportedMirrorState)
+            .put("qualityApplyError", viewer?.run?.encoder?.qualityErrorRef?.let { "quality_apply_failed" })
             .put("profiles", entries)
         if (reportedMirrorState == "error") {
             snapshot.put("mirrorApplyError", "mirror_apply_failed")

@@ -599,6 +599,8 @@ final class CompatibilityBundleExporter {
         if (!keys.contains(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)) {
             keys.add(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
         }
+        for (String key : new String[]{com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY,
+                RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY}) if (!keys.contains(key)) keys.add(key);
         Collections.sort(keys);
         StringBuilder json = new StringBuilder("{");
         boolean first = true;
@@ -615,6 +617,12 @@ final class CompatibilityBundleExporter {
                 if (value == null) value = false;
                 if (!(value instanceof Boolean))
                     throw new IllegalStateException("cellular recovery preference must be a boolean");
+            }
+            if (com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY.equals(key)
+                    || RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY.equals(key)) {
+                if (value == null) value = 0;
+                CameraModeSettings.validateSetting(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY.equals(key)
+                        ? "viewingQuality" : "initialView", value);
             }
             if (RemoteCameraView.PREFERENCE_KEY.equals(key)) {
                 if (value == null) value = RemoteCameraView.NONE;
@@ -646,7 +654,9 @@ final class CompatibilityBundleExporter {
                 || key.contains("device_id") || key.contains("vin")
                 || key.contains("token") || key.contains("fingerprint")
                 || key.contains("personal")) return false;
-        return key.equals(RemoteCameraView.PREFERENCE_KEY)
+        return key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)
+                || key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)
+                || key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
                 || key.startsWith("camera_") || key.startsWith("reverse_")
                 || key.startsWith("calibration_") || key.startsWith("dewarp_")

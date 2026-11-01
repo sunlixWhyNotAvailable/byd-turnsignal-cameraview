@@ -308,4 +308,13 @@
     <string name="cameras_cellular_pending">Визначення команди відновлення…</string>
     <string name="cameras_cellular_found">Команду відновлення визначено</string>
     <string name="cameras_cellular_failed">Автовизначення не вдалося. Використовується код за замовчуванням</string>
+    <string name="cameras_viewing_quality">"Якість перегляду"</string>
+    <string name="cameras_quality_auto">"Авто"</string>
+    <string name="cameras_quality_low">"Низька"</string>
+    <string name="cameras_quality_medium">"Середня"</string>
+    <string name="cameras_quality_high">"Висока"</string>
+    <string name="cameras_initial_view">"Стартова сторінка"</string>
+    <string name="cameras_initial_composition">"Повна композиція"</string>
+    <string name="cameras_initial_exterior">"Зовнішні"</string>
+    <string name="cameras_initial_interior">"Внутрішні"</string>
 </resources>

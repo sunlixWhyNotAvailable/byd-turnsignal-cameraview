@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 internal class CameraHlsEncoder(
     streamId: String,
+    qualityMode: Int,
     private val diagnostics: (String, Long, Long) -> Unit,
     private val ready: (CameraHlsEncoder) -> Unit,
     private val failed: (CameraHlsEncoder, Throwable) -> Unit,
@@ -37,6 +38,39 @@ internal class CameraHlsEncoder(
     private var bytes = 0L
     private var lastStatisticsNs = 0L
     private var statisticsRevision = -1L
+    private val quality = ViewerQuality(qualityMode)
+    @Volatile var appliedBitrate = quality.target()
+        private set
+    @Volatile var qualityErrorRef: String? = null
+        private set
+
+    // The runtime owner serializes these calls with codec start/close; adaptation never owns the camera.
+    fun setQuality(mode: Int) {
+        if (quality.mode() == mode) return
+        quality.reset(mode)
+        qualityErrorRef = null
+        applyBitrate(quality.target())
+    }
+
+    fun feedback(sample: ViewerPlaybackFeedback) {
+        if (sample.quality != quality.mode() || qualityErrorRef != null) return
+        applyBitrate(quality.sample(android.os.SystemClock.elapsedRealtime(), sample.atMs,
+            sample.stalled, sample.advancing, sample.bufferMs, sample.lagMs,
+            sample.downloadPressure, sample.throughputBps))
+    }
+
+    private fun applyBitrate(target: Int) {
+        if (target == appliedBitrate || stopped.get() || qualityErrorRef != null) return
+        val active = codec ?: return
+        try {
+            active.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, target) })
+            appliedBitrate = target
+        } catch (failure: Exception) {
+            val reference = java.util.UUID.randomUUID().toString()
+            qualityErrorRef = reference
+            CameraViewingDiagnostics.failure("hls_bitrate_${target}_$reference", "shared", failure)
+        }
+    }
 
     fun start(): Surface {
         check(codec == null)
@@ -52,7 +86,7 @@ internal class CameraHlsEncoder(
             codec = encoder
             val format = MediaFormat.createVideoFormat("video/avc", WIDTH, HEIGHT).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
+                setInteger(MediaFormat.KEY_BIT_RATE, appliedBitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)

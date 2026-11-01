@@ -308,4 +308,13 @@
     <string name="cameras_cellular_pending">Определение команды восстановления…</string>
     <string name="cameras_cellular_found">Команда восстановления определена</string>
     <string name="cameras_cellular_failed">Автоопределение не удалось. Используется код по умолчанию</string>
+    <string name="cameras_viewing_quality">"Качество просмотра"</string>
+    <string name="cameras_quality_auto">"Авто"</string>
+    <string name="cameras_quality_low">"Низкое"</string>
+    <string name="cameras_quality_medium">"Среднее"</string>
+    <string name="cameras_quality_high">"Высокое"</string>
+    <string name="cameras_initial_view">"Стартовая страница"</string>
+    <string name="cameras_initial_composition">"Полная композиция"</string>
+    <string name="cameras_initial_exterior">"Внешние"</string>
+    <string name="cameras_initial_interior">"Внутренние"</string>
 </resources>

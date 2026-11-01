@@ -22,6 +22,19 @@ import java.util.Map;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 33)
 public final class RemoteCameraViewSettingsTransferTest {
+    @Test public void viewingChoicesRoundTripAndOlderImportsPreserveThem() throws Exception {
+        CameraSettingsTransfer.applyLegacySettings(settings, CameraSettingsTransfer.parseLegacySettings(
+                "<map><int name=\"cameras_viewing_quality\" value=\"2\"/>"
+                + "<int name=\"cameras_viewing_initial_view\" value=\"1\"/></map>"));
+        JSONObject exported = new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings));
+        assertEquals(2, exported.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY));
+        assertEquals(1, exported.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY));
+        CameraSettingsTransfer.applyLegacySettings(settings, CameraSettingsTransfer.parseLegacySettings("<map/>"));
+        assertEquals(2, settings.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY, 0));
+        assertEquals(1, settings.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0));
+        assertThrows(IllegalArgumentException.class, () -> CameraSettingsTransfer.parseLegacySettings(
+                "<map><int name=\"cameras_viewing_initial_view\" value=\"3\"/></map>"));
+    }
     @Test public void cellularSettingExportsAndImportsWithoutCopyingTheLocalRetryGeneration() throws Exception {
         assertFalse(new JSONObject(CompatibilityBundleExporter.sanitizedPreferences(settings))
                 .getBoolean(MotionConfig.CELLULAR_PREF));

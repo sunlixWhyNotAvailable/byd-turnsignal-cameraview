@@ -308,6 +308,10 @@ public final class CameraSettingsTransfer {
                         CameraButtonBindings.Press.Single.name())
                 .putString(CameraButtonBindings.HAZARD_THANKS_SOURCE,
                         CameraButtonBindings.Source.AndroidKey.name());
+        for (String key : new String[]{com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY,
+                RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY}) {
+            if (!copy.containsKey(key)) editor.putInt(key, preferences.getInt(key, 0));
+        }
         if (preserveInteriorCameras) editor.putInt(interiorKey, interiorCameras);
         if (preserveCabinMirror) editor.putBoolean(cabinMirrorKey, cabinMirror);
         preserveMissingFrameAspects(editor, preferences, copy);
@@ -1657,6 +1661,8 @@ public final class CameraSettingsTransfer {
                 || key.contains("_speed") || key.endsWith("_distance_cm")
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_DP)
                 || key.equals(RearviewMirrorSettings.PREF_BORDER_ARGB)
+                || key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)
+                || key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.equals("mirror_fov") || key.equals("mirror_projection")
                 || key.equals("mirror_output_mode") || key.equals("mirror_rotation")
@@ -1732,6 +1738,8 @@ public final class CameraSettingsTransfer {
             if (key.equals(BlindSpotOverlayController.PREF_TRANSPARENCY_PERCENT)) requireRange(n, 0, 100, key);
             if (key.equals(CameraBufferQuality.PREF_QUALITY)) requireRange(n, 0, 3, key);
             if (key.equals(BlindSpotOverlayController.PREF_WARNING_MODE)) requireRange(n, 0, 2, key);
+            if (key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)) requireRange(n, 0, 3, key);
+            if (key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)) requireRange(n, 0, 2, key);
             if (key.equals(RemoteCameraView.PREFERENCE_KEY)) {
                 RemoteCameraView.validateMask(((Number) value).intValue());
             }
@@ -1812,6 +1820,8 @@ public final class CameraSettingsTransfer {
                 || key.equals("reverse_camera_editor_selection") || key.equals("weather_last_success_ms")
                 || key.equals("helper_apk_marker") || key.equals("assumed_latch_state")
                 || key.equals("user_shutdown_active") || key.equals("service_heartbeat_ms")) return false;
+        if (key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)
+                || key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)) return true;
         if (key.equals(RemoteCameraView.PREFERENCE_KEY)) return true;
         if (key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)) return true;
         if (key.startsWith("camera_") || key.startsWith("direct_crop_")

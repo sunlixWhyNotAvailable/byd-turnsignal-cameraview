@@ -18,6 +18,23 @@ import static org.junit.Assert.assertThrows;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 33)
 public final class CameraModeSettingsPreferencesTest {
+    @Test public void viewerChoicesPersistWithoutChangingCameraModes() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        settings.edit().clear().commit();
+        assertEquals(0, settings.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY, 0));
+        assertEquals(RemoteCameraView.COMBINED, RemoteCameraView.initialView(
+                settings.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0)));
+        CameraModeSettings.persistSettingPreference(context, "viewingQuality", 3);
+        CameraModeSettings.persistSettingPreference(context, "initialView", 2);
+        SharedPreferences reopened = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        assertEquals(3, reopened.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY, 0));
+        assertEquals(RemoteCameraView.INTERIOR, RemoteCameraView.initialView(
+                reopened.getInt(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY, 0)));
+        assertThrows(CameraModeClient.ModeException.class,
+                () -> CameraModeSettings.persistSettingPreference(context, "viewingQuality", 4));
+        assertEquals(3, reopened.getInt(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY, 0));
+    }
     @Test public void sharedSettingsPersistIndependentlyWithoutChangingModes() throws Exception {
         Context app = RuntimeEnvironment.getApplication();
         SharedPreferences screen = app.getSharedPreferences(MotionConfig.SCREEN_PREFS, Context.MODE_PRIVATE);

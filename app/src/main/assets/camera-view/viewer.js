@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 16;
+  const WEB_REVISION = 17;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -20,6 +20,7 @@
   const localeTags = { en: 'en-US', uk: 'uk-UA', ru: 'ru-RU', zh: 'zh-CN' };
   const text = {
     en: {
+      quality: 'Quality', qualityAuto: 'Auto', qualityLow: 'Low', qualityMedium: 'Medium', qualityHigh: 'High', initialView: 'Initial view', initialCombined: 'Full composition', initialHint: 'Applies the next time you connect.',
       title: 'Remote cameras', subtitle: 'Secure camera viewer', loginTitle: 'Camera access', loginHint: 'Sign in to view cameras and recordings.', password: 'Password', signIn: 'Continue',
       live: 'Live', archive: 'Recordings', end: 'End session', composition: 'Composition', front: 'Front', rear: 'Rear', left: 'Left', right: 'Right',
       combined: 'Combined', exterior: 'Exterior', interior: 'Interior', cabin: 'Cabin', driver: 'Driver',
@@ -43,6 +44,7 @@
       updateRequired: 'The viewer has changed. Refresh this page to continue.'
     },
     uk: {
+      quality: 'Якість', qualityAuto: 'Авто', qualityLow: 'Низька', qualityMedium: 'Середня', qualityHigh: 'Висока', initialView: 'Стартова сторінка', initialCombined: 'Повна композиція', initialHint: 'Застосовується під час наступного підключення.',
       title: 'Віддалені камери', subtitle: 'Захищений перегляд камер', loginTitle: 'Доступ до камер', loginHint: 'Увійдіть, щоб переглядати камери й записи.', password: 'Пароль', signIn: 'Продовжити',
       live: 'Наживо', archive: 'Архів записів', end: 'Завершити сеанс', composition: 'Композиція', front: 'Перед', rear: 'Зад', left: 'Ліво', right: 'Право',
       combined: 'Усі камери', exterior: 'Зовнішні', interior: 'Внутрішні', cabin: 'Салон', driver: 'Водій',
@@ -66,6 +68,7 @@
       updateRequired: 'Версія переглядача змінилася. Оновіть сторінку, щоб продовжити.'
     },
     ru: {
+      quality: 'Качество', qualityAuto: 'Авто', qualityLow: 'Низкое', qualityMedium: 'Среднее', qualityHigh: 'Высокое', initialView: 'Стартовая страница', initialCombined: 'Полная композиция', initialHint: 'Применяется при следующем подключении.',
       title: 'Удалённые камеры', subtitle: 'Защищённый просмотр камер', loginTitle: 'Доступ к камерам', loginHint: 'Войдите, чтобы смотреть камеры и записи.', password: 'Пароль', signIn: 'Продолжить',
       live: 'Эфир', archive: 'Архив записей', end: 'Завершить сеанс', composition: 'Композиция', front: 'Перед', rear: 'Зад', left: 'Слева', right: 'Справа',
       combined: 'Все камеры', exterior: 'Внешние', interior: 'Внутренние', cabin: 'Салон', driver: 'Водитель',
@@ -89,6 +92,7 @@
       updateRequired: 'Версия просмотрщика изменилась. Обновите страницу, чтобы продолжить.'
     },
     zh: {
+      quality: '画质', qualityAuto: '自动', qualityLow: '低', qualityMedium: '中', qualityHigh: '高', initialView: '初始视图', initialCombined: '完整组合', initialHint: '下次连接时生效。',
       title: '远程摄像头', subtitle: '安全摄像头查看器', loginTitle: '摄像头访问', loginHint: '登录以查看摄像头和录像。', password: '密码', signIn: '继续',
       live: '实时', archive: '录像', end: '结束会话', composition: '全景', front: '前方', rear: '后方', left: '左侧', right: '右侧',
       combined: '组合画面', exterior: '车外', interior: '车内', cabin: '座舱', driver: '驾驶员',
@@ -246,7 +250,7 @@
     return monthKey(new Date(year, month - 1 + delta, 1, 12));
   };
 
-  async function api(path, options = {}) {
+  async function api(path, options = {}, raw = false) {
     if (contractBlocked) throw new Error('viewer_update_required');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -266,7 +270,7 @@
       failure.body = body;
       throw failure;
     }
-    return body;
+    return raw ? bodyText : body;
     } finally { clearTimeout(timeout); }
   }
   const post = (path, body = {}) => {
@@ -383,6 +387,11 @@
       <details class="mode-disclosure" id="mode-disclosure"${state.modesOpen ? ' open' : ''}>
         <summary><span class="mode-summary-heading">${icon('sliders')}<span>${escapeHtml(text.modes)}<small>${escapeHtml(text.showOnTablet)} · ${escapeHtml(text.recordCameras)}</small></span></span>${icon('chevronDown')}</summary>
         <div class="mode-content">
+          <div class="view-settings">
+            <label><span>${escapeHtml(text.quality)}</span><select data-setting="viewingQuality" aria-label="${escapeHtml(text.quality)}">${[text.qualityAuto, text.qualityLow, text.qualityMedium, text.qualityHigh].map((v,i) => `<option value="${i}">${escapeHtml(v)}</option>`).join('')}</select></label>
+            <label><span>${escapeHtml(text.initialView)}</span><select data-setting="initialView" aria-label="${escapeHtml(text.initialView)}">${[text.initialCombined, text.exterior, text.interior].map((v,i) => `<option value="${i}">${escapeHtml(v)}</option>`).join('')}</select></label>
+          </div>
+          <p class="view-settings-hint">${escapeHtml(text.initialHint)}</p>
           <label class="mode-row" for="mode-tablet"><span class="mode-label"><strong>${escapeHtml(text.showOnTablet)}</strong><small id="mode-state-tablet"></small></span><input class="mode-toggle" id="mode-tablet" type="checkbox" data-mode="tablet" aria-describedby="mode-state-tablet"></label>
           <label class="mode-row" for="mode-recording"><span class="mode-label"><strong>${escapeHtml(text.recordCameras)}</strong><small id="mode-state-recording"></small></span><input class="mode-toggle" id="mode-recording" type="checkbox" data-mode="recording" aria-describedby="mode-state-recording"></label>
           <label class="mode-row" for="mode-mirror-cabin"><span class="mode-label"><strong>${escapeHtml(text.mirrorCabin)}</strong><small id="mode-state-mirror-cabin"></small></span><input class="mode-toggle" id="mode-mirror-cabin" type="checkbox" role="switch" data-setting="mirrorCabin" aria-describedby="mode-state-mirror-cabin"></label>
@@ -452,6 +461,11 @@
       available,
       mirrorCabin,
       recordingSensitivity,
+      viewingQuality: Number.isInteger(settings.viewingQuality) && settings.viewingQuality >= 0 && settings.viewingQuality <= 3 ? settings.viewingQuality : null,
+      initialView: Number.isInteger(settings.initialView) && settings.initialView >= 0 && settings.initialView <= 2 ? settings.initialView : null,
+      qualityApplyState: settings.qualityApplyState,
+      qualityErrorRef: settings.qualityErrorRef,
+      appliedBitrate: settings.appliedBitrate,
       mirrorApplyState: ['applied', 'pending', 'error'].includes(settings.mirrorApplyState) ? settings.mirrorApplyState : null,
       mirrorRevision: settings.mirrorRevision,
       mirrorStreamId: settings.mirrorStreamId,
@@ -490,9 +504,9 @@
   function modeFeedback() {
     if (state.modePending || state.settingPending.size || state.mirrorWait) return text.modeSaving;
     const settingApplyFailed = state.settings.mirrorApplyState === 'error'
-      || state.settings.sensitivityApplyState === 'error';
+      || state.settings.sensitivityApplyState === 'error' || state.settings.qualityApplyState === 'error';
     const settingCode = state.settingError || (settingApplyFailed
-      ? state.settings.error || state.settings.errorRef || 'apply_error' : null);
+      ? state.settings.error || state.settings.qualityErrorRef || state.settings.errorRef || 'apply_error' : null);
     const code = state.modeError || (state.modes.applyState === 'error' ? state.modes.error || 'apply_error' : null);
     if (settingCode || code) {
       const failureCode = settingCode || code;
@@ -525,6 +539,14 @@
       const label = panel.querySelector(`#mode-state-${mode}`);
       if (label && label.textContent !== modeValueLabel(field)) label.textContent = modeValueLabel(field);
     }
+    for (const setting of ['viewingQuality', 'initialView']) {
+      const input = panel.querySelector(`select[data-setting="${setting}"]`);
+      if (!input) continue;
+      const value = state.settings[setting];
+      input.disabled = !state.authenticated || state.replaced || state.settings.available !== true
+        || !Number.isInteger(value) || state.settingPending.has(setting);
+      if (Number.isInteger(value)) input.value = String(value);
+    }
     const mirror = panel.querySelector('[data-setting="mirrorCabin"]');
     if (mirror) {
       const value = state.settings.mirrorCabin
@@ -553,7 +575,7 @@
     const message = modeFeedback();
     if (feedback && feedback.textContent !== message) feedback.textContent = message;
     feedback?.classList.toggle('is-error', Boolean(state.modeError || state.modes.applyState === 'error'
-      || state.settingError || state.settings.mirrorApplyState === 'error' || state.settings.sensitivityApplyState === 'error'));
+      || state.settingError || state.settings.mirrorApplyState === 'error' || state.settings.sensitivityApplyState === 'error' || state.settings.qualityApplyState === 'error'));
   }
 
   function syncModeDisclosure() {
@@ -609,12 +631,13 @@
 
   async function changeSetting(setting, value) {
     const valid = setting === 'mirrorCabin' ? typeof value === 'boolean'
-      : setting === 'recordingSensitivity' && Number.isInteger(value) && value >= 0 && value <= 2;
+      : ['recordingSensitivity', 'initialView', 'viewingQuality'].includes(setting) && Number.isInteger(value)
+        && value >= 0 && value <= (setting === 'viewingQuality' ? 3 : 2);
     if (!valid) return;
     if (!state.authenticated || state.replaced || state.settingPending.has(setting)
       || (setting === 'mirrorCabin' && state.mirrorWait) || state.settings.available !== true
       || (setting === 'mirrorCabin' ? typeof state.settings.mirrorCabin !== 'boolean'
-        : !Number.isInteger(state.settings.recordingSensitivity))) {
+        : !Number.isInteger(state.settings[setting]))) {
       updateModePanel();
       return;
     }
@@ -1375,14 +1398,44 @@
     post('/diagnostic', { event: 'view_frame', revision, streamId: player.stream }).catch(console.warn);
   }
 
-  function followLiveEdge(player) {
-    const video = player.video;
-    const edge = player.hls?.liveSyncPosition;
-    if (Number.isFinite(edge) && edge > video.currentTime + 0.25) video.currentTime = edge;
-    else if (!player.hls && video.seekable.length) {
-      const end = video.seekable.end(video.seekable.length - 1);
-      if (end > video.currentTime + 1) video.currentTime = Math.max(video.seekable.start(0), end - 0.25);
+  const finiteMs = (value) => Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+  function liveEdge(player) {
+    const details = player.hls?.levels[player.hls.currentLevel]?.details;
+    if (Number.isFinite(details?.edge)) return details.edge;
+    const seekable = player.video.seekable;
+    return seekable.length ? seekable.end(seekable.length - 1) : NaN;
+  }
+  function bufferAhead(video) {
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= video.currentTime && video.currentTime < video.buffered.end(i))
+        return video.buffered.end(i) - video.currentTime;
     }
+    return 0;
+  }
+  function reportPlaybackFeedback(player, current, fragment, stalled, reportSnapshot) {
+    const now = performance.now(), video = player.video;
+    if (!current() || document.hidden || video.paused || video.seeking || state.selectionPending
+        || !Number.isInteger(state.settings.viewingQuality) || player.feedbackInFlight
+        || now - (player.feedbackAt ?? -Infinity) < 2000) return;
+    const advancing = player.feedbackPosition != null && video.currentTime > player.feedbackPosition + 0.05;
+    player.feedbackPosition = video.currentTime;
+    player.feedbackAt = now;
+    const edge = liveEdge(player), lag = Number.isFinite(edge) ? Math.max(0, edge - video.currentTime) : -1;
+    const fresh = fragment && fragment.sequence !== player.feedbackFragment && now - fragment.at <= 5000;
+    if (fresh) player.feedbackFragment = fragment.sequence;
+    const throughput = fresh && fragment.bytes > 0 && fragment.loadMs > 0
+      ? Math.min(1000000000, Math.round(fragment.bytes * 8000 / fragment.loadMs)) : -1;
+    const sample = { event: 'playback_feedback', streamId: player.stream, revision: player.revision,
+      atMs: Math.round(now), quality: state.settings.viewingQuality, stalled, advancing,
+      bufferAheadMs: Math.min(3600000, Math.round(bufferAhead(video) * 1000)),
+      lagMs: lag < 0 ? -1 : Math.min(3600000, Math.round(lag * 1000)), throughputBps: throughput,
+      downloadPressure: Boolean(fresh && fragment.durationMs > 0 && fragment.loadMs >= fragment.durationMs) };
+    player.feedbackInFlight = true;
+    post('/diagnostic', sample).catch((failure) => {
+      if (current() && failure.statusCode === 401) handleUnauthorized(failure);
+      else console.warn('Could not report live quality feedback', failure);
+    }).finally(() => { player.feedbackInFlight = false; });
+    if (state.extendedDiagnostics) reportSnapshot('progress');
   }
 
   function clearSelectionCutover(player) {
@@ -1470,19 +1523,19 @@
     }
   }
 
-  async function startLiveMedia() {
+  async function startLiveMedia(force = false) {
     const stage = document.querySelector('#live-panel .live-stage');
     if (!stage || state.mode !== 'live' || !state.wantsLive || state.liveFailed || state.selectionFailed || !state.livePlaylist ||
       !Number.isSafeInteger(state.selectionSegment) || !Number.isFinite(state.selectionProgramTimeMs)) return;
     const revision = state.liveSelectionRevision;
     const stream = state.liveStreamId;
     const view = state.view;
-    if (livePlayer?.stream === stream) {
+    if (!force && livePlayer?.stream === stream) {
       resumeLiveMedia(livePlayer);
       if (livePlayer.revision !== revision) {
         livePlayer.revision = revision;
         livePlayer.view = view;
-        if (provider !== 'tailscale') followLiveEdge(livePlayer);
+
         const player = livePlayer;
         if (player.video.paused) player.video.play().catch((error) => player.fail(error));
         watchLiveSelection(player, true);
@@ -1492,7 +1545,7 @@
       }
       return;
     }
-    if (pendingLivePlayer?.revision === revision && pendingLivePlayer.stream === stream) return;
+    if (!force && pendingLivePlayer?.revision === revision && pendingLivePlayer.stream === stream) return;
     const generation = ++mediaGeneration;
     disposeLivePlayer(pendingLivePlayer);
     const video = document.createElement('video');
@@ -1506,10 +1559,13 @@
       !state.replaced && !player.suspended && state.mode === 'live'
       && (pendingLivePlayer === player || livePlayer === player);
     let lastFragment = null, lastBuffered = null, recovery = null, hasPlayed = false, stallStarted = null, lastStallMs;
+    let lastProgressSnapshot = -Infinity;
     const snapshot = (reason, cause, terminal = false) => {
       const now = performance.now();
-      if (!current() || now - lastPlaybackSnapshot < 10000 || (!terminal && playbackSnapshotInFlight)) return;
-      lastPlaybackSnapshot = now;
+      const progress = reason === 'progress';
+      if (!current() || now - (progress ? lastProgressSnapshot : lastPlaybackSnapshot) < 10000
+          || (!terminal && playbackSnapshotInFlight)) return;
+      if (progress) lastProgressSnapshot = now; else lastPlaybackSnapshot = now;
       let bufferAheadMs = 0;
       for (let i = 0; i < video.buffered.length; i++) {
         if (video.buffered.start(i) <= video.currentTime && video.currentTime < video.buffered.end(i)) {
@@ -1523,10 +1579,12 @@
         seeking: video.seeking ? 1 : 0, pending: state.selectionPending ? 1 : 0,
         watcher: player.frameRevision === player.revision ? 1 : 0,
         targetMs: Number.isFinite(player.frameTargetMs) ? Math.round(player.frameTargetMs) : undefined,
-        presentedMs: Number.isFinite(player.presentedTimeMs) ? Math.round(player.presentedTimeMs) : undefined,
+        presentedMs: finiteMs(presentedProgramTime(player, video.currentTime)),
+        edgeMs: finiteMs(liveEdge(player) * 1000), lagMs: finiteMs((liveEdge(player) - video.currentTime) * 1000),
+        targetLatencyMs: 2000, quality: state.settings.viewingQuality, appliedBitrate: state.settings.appliedBitrate,
         hidden: document.hidden ? 1 : 0,
         stallMs: stallStarted == null ? undefined : Math.round(now - stallStarted), lastStallMs,
-        fragment: cause?.frag?.sn, httpStatus: cause?.response?.code,
+        fragment: cause?.frag?.sn, httpStatus: cause?.response?.code, mediaCode: video.error?.code,
         lastFragment: lastFragment?.sequence, lastLoadMs: lastFragment?.loadMs,
         lastFirstByteMs: lastFragment?.firstByteMs, lastReceiveMs: lastFragment?.receiveMs,
         lastBufferedFragment: lastBuffered?.sequence, lastAppendMs: lastBuffered?.appendMs,
@@ -1570,7 +1628,16 @@
       renderMain(true);
     };
     player.fail = fail;
-    video.onerror = () => fail(video.error, video.error?.code === 3 ? 'decode' : 'load');
+    player.feedback = () => reportPlaybackFeedback(player, current, lastFragment, stallStarted != null, reportSnapshot);
+    player.recover = () => {};
+
+    video.onerror = () => {
+      const cause = video.error;
+      if (player.nativeRecovery && cause?.code !== 3) {
+        player.nativeRecovery(cause).then((recovered) => { if (!recovered && current()) fail(cause, 'load'); })
+          .catch((error) => { console.warn('Native HLS recovery failed', error, cause); if (current()) fail(cause, 'load'); });
+      } else fail(cause, cause?.code === 3 ? 'decode' : 'load');
+    };
     video.addEventListener('playing', () => {
       if (!current()) return;
       disposeLivePlayer(livePlayer);
@@ -1583,6 +1650,46 @@
     const playlist = state.livePlaylist;
     try {
       if (video.canPlayType('application/vnd.apple.mpegurl') && typeof video.getStartDate === 'function') {
+        let recoveryPending = false, nativeTarget = null;
+        const nativeTick = () => {
+          if (!current() || video.seeking || !video.seekable.length) return;
+          const first = video.seekable.start(0), edge = liveEdge(player);
+          const ranges = Array.from({ length: video.buffered.length }, (_, i) =>
+            ({ start: video.buffered.start(i), end: video.buffered.end(i) }));
+          if (nativeTarget == null) nativeTarget = !player.nativeStarted
+            ? Math.max(first + 0.01, edge - 2)
+            : BydLiveRecovery.liveTarget(video.currentTime, first, edge, state.settings.viewingQuality === 0 ? 4 : 6);
+          if (nativeTarget == null) return;
+          if (nativeTarget < first) nativeTarget = Math.max(first + 0.01, edge - 2);
+          if (BydLiveRecovery.bufferedAt(nativeTarget, ranges)) {
+            video.currentTime = nativeTarget;
+            nativeTarget = null; player.nativeStarted = true;
+          } else if (player.nativeStarted && !pendingLivePlayer && !recoveryPending) {
+            // Native HLS cannot request a fragment independently. Keep the old picture until
+            // a fresh browser player is ready, without releasing the server/OEM camera lease.
+            recoveryPending = true;
+            startLiveMedia(true).catch((failure) => { recoveryPending = false; if (current()) fail(failure); });
+          }
+        };
+        player.recover = nativeTick;
+        player.nativeRecovery = async (cause) => {
+          if (!current() || recoveryPending) return true;
+          recoveryPending = true;
+          try {
+            const content = await api(playlist, {}, true);
+            const firstDate = content.match(/#EXT-X-PROGRAM-DATE-TIME:([^\r\n]+)/);
+            const oldestMs = firstDate ? Date.parse(firstDate[1]) : NaN;
+            const presented = presentedProgramTime(player, video.currentTime);
+            if (!current()) return true;
+            if (!Number.isFinite(oldestMs) || !Number.isFinite(presented) || presented >= oldestMs) return false;
+            console.warn('Native HLS expired media; staging current playlist', cause);
+            reportSnapshot('expired', cause);
+            await startLiveMedia(true);
+            return true;
+          } finally { recoveryPending = false; }
+        };
+        video.addEventListener('progress', nativeTick);
+        video.addEventListener('loadedmetadata', nativeTick);
         video.src = playlist;
         await video.play();
         return;
@@ -1605,7 +1712,7 @@
         return transport;
       };
       const reportTransport = (reason) => {
-        if (!state.extendedDiagnostics || provider !== 'tailscale' || !current() || transportReportInFlight) return;
+        if (!state.extendedDiagnostics || !current() || transportReportInFlight) return;
         const sample = activeTransport();
         if (!sample ||
             performance.now() - lastTransportReport < 10000) return;
@@ -1620,11 +1727,11 @@
         }).catch((error) => console.warn('Could not report playback transport', error))
           .finally(() => { transportReportInFlight = false; });
       };
-      const hls = new Hls({ liveSyncDurationCount: 2,
+      const hls = new Hls({ liveSyncDuration: 2, liveSyncOnStallIncrease: 0,
         maxLiveSyncPlaybackRate: 1.5, maxBufferLength: 3,
         xhrSetup: (xhr, url) => {
           xhr.setRequestHeader(REVISION_HEADER, String(WEB_REVISION));
-          if (!state.extendedDiagnostics || provider !== 'tailscale' || !new URL(url, location.href).pathname.match(/\/segment\/\d+\.m4s$/)) return;
+          if (!state.extendedDiagnostics || !new URL(url, location.href).pathname.match(/\/segment\/\d+\.m4s$/)) return;
           const sample = activeTransport();
           sample.requests++;
           const started = performance.now();
@@ -1656,7 +1763,7 @@
         if (!current() || data.frag.type !== 'main' || !Number.isSafeInteger(data.frag.sn)) return;
         const stats = data.part?.stats || data.frag.stats;
         const loading = stats.loading;
-        lastFragment = { sequence: data.frag.sn, loadMs: Math.round(loading.end - loading.start),
+        lastFragment = { sequence: data.frag.sn, durationMs: Math.round(data.frag.duration * 1000), loadMs: Math.round(loading.end - loading.start),
           firstByteMs: Math.round(loading.first - loading.start),
           receiveMs: Math.round(loading.end - loading.first),
           bytes: Number.isSafeInteger(stats.loaded) && stats.loaded >= 0 ? stats.loaded : undefined,
@@ -1668,8 +1775,8 @@
         lastBuffered = { sequence: data.frag.sn,
           appendMs: Math.round(stats.buffering.end - stats.loading.end), at: performance.now() };
       });
-      if (provider === 'tailscale') {
-        BydLiveRecovery.install(hls, Hls, (kind, detail) => {
+      {
+        player.recover = BydLiveRecovery.install(hls, Hls, (kind, detail) => {
           recovery = { action: kind === 'missing' ? detail.action : 'buffered_seek', at: performance.now() };
           const sample = activeTransport();
           if (!sample) return;
@@ -1682,7 +1789,7 @@
             sample.recoveryTargetMs = detail.targetMs;
           }
           reportTransport('recovery');
-        });
+        }, () => state.settings.viewingQuality === 0 ? 4 : 6);
       }
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (current()) video.play().catch((error) => fail(error));
@@ -1695,14 +1802,21 @@
           if (hasPlayed) reportSnapshot('stall', data);
         }
       });
-      if (provider === 'tailscale') {
+      {
         video.addEventListener('waiting', () => reportTransport('stall'));
         video.addEventListener('playing', () => reportTransport('playing'));
         reportTransport('start');
       }
       hls.loadSource(playlist);
       hls.attachMedia(video);
-    } catch (failure) { fail(failure); }
+    } catch (failure) {
+      // A native load error also rejects play(); keep it on the same recovery path.
+      if (!current()) return;
+      if (player.nativeRecovery && video.error) {
+        console.warn('Native HLS play rejected after media error', failure, video.error);
+        video.onerror();
+      } else fail(failure);
+    }
   }
 
   function stopLiveMedia() {
@@ -1922,6 +2036,9 @@
       try {
         const current = await api('/status');
         state.interiorCameras = normalizeInteriorCameraMask(current.interiorCameras) ?? 0;
+        applySettingsSnapshot(current.settings);
+        if (!Number.isInteger(state.settings.initialView)) throw new Error('initial_view_unavailable');
+        state.view = ['combined', 'composition', 'interior'][state.settings.initialView];
         if (Number.isSafeInteger(current.selectionRevision) && current.selectionRevision >= 0)
           state.liveSelectionRevision = current.selectionRevision;
       } catch (failure) {
@@ -1929,15 +2046,18 @@
           state.authenticated = false;
           throw failure;
         }
-        console.warn('Initial camera selection unavailable; using exterior composition', failure);
+        throw failure;
       }
-      state.view = state.interiorCameras ? 'combined' : 'composition';
+
       renderShell();
       if (preferredMode() === 'archive') await openArchive();
       else await startLive();
       if (state.authenticated && !state.replaced) await pollStatus();
       if (state.authenticated && !state.replaced) state.poll = setInterval(() => {
         if (state.selectionPending || Date.now() - lastStatusPoll >= 2000) pollStatus();
+        const player = livePlayer || pendingLivePlayer;
+        player?.recover?.();
+        player?.feedback?.();
       }, 500);
     } catch (failure) {
       console.warn('Camera viewer sign-in failed', failure);
@@ -2050,6 +2170,9 @@
     updateArchiveControls();
   });
   app.addEventListener('change', async (event) => {
+    if (event.target.matches('select[data-setting]')) {
+      await changeSetting(event.target.dataset.setting, Number(event.target.value)); return;
+    }
     if (event.target.matches('input[data-mode]')) { await changeMode(event.target); return; }
     if (event.target.matches('input[data-setting="mirrorCabin"]')) {
       await changeSetting(event.target.dataset.setting, event.target.checked);

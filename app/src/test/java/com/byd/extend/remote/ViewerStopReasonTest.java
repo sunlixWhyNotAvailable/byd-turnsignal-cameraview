@@ -129,9 +129,13 @@ public class ViewerStopReasonTest {
                 ViewerStopReason.playbackSnapshot(sample));
     }
 
-    @Test public void playbackSnapshotRejectsProgressInjectionAndInvalidMeasurements() throws Exception {
+    @Test public void playbackSnapshotAcceptsCurrentProgressButRejectsUnknownReasonsAndInvalidMeasurements() throws Exception {
         assertNull(ViewerStopReason.playbackSnapshot(null));
-        for (String reason : new String[] {"progress", "playing", "stall\nsecret"})
+        assertEquals("reason=progress currentMs=12000 edgeMs=14000 lagMs=2000 targetLatencyMs=2000",
+                ViewerStopReason.playbackSnapshot(new JSONObject().put("reason", "progress")
+                        .put("currentMs", 12000).put("edgeMs", 14000).put("lagMs", 2000)
+                        .put("targetLatencyMs", 2000).put("url", "secret")));
+        for (String reason : new String[] {"render", "playing", "stall\nsecret"})
             assertNull(ViewerStopReason.playbackSnapshot(new JSONObject().put("reason", reason)));
         JSONObject sample = new JSONObject().put("reason", "stall").put("lastBytes", "secret")
                 .put("bufferAheadMs", -1).put("lastLoadMs", 1.5).put("lastFragmentAgeMs", 9_007_199_254_740_992L)
