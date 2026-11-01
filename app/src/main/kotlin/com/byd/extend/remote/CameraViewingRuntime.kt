@@ -624,8 +624,10 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         val encoder = viewer?.run?.encoder
         result.put("viewingQuality", snapshot.opt("viewingQuality") ?: viewingQuality)
             .put("initialView", snapshot.opt("initialView") ?: initialView)
-            .put("qualityApplyState", if (encoder?.qualityErrorRef != null) "error" else if (encoder == null) "pending" else "applied")
-            .put("appliedBitrate", encoder?.appliedBitrate ?: 0)
+            .put("qualityApplyState", if (encoder?.qualityErrorRef != null) "error" else if (encoder == null) "pending" else "configured")
+            .put("requestedBitrate", encoder?.requestedBitrate ?: 0)
+            .put("submittedBitrate", encoder?.submittedBitrate ?: 0)
+            .put("initialConfiguredBitrate", encoder?.initialConfiguredBitrate ?: 0)
             .put("qualityErrorRef", encoder?.qualityErrorRef)
         val sensitivity = snapshot.opt("recordingSensitivity")
         if (sensitivity is Int && sensitivity in 0..2) result.put("recordingSensitivity", sensitivity)
@@ -865,11 +867,14 @@ class CameraViewingRuntime(private val context: Context, directory: File, ownerU
         try {
             check(run.retiringEncoder == null) { "Previous viewer encoder is not released" }
             run.retiringEncoder = run.encoder
-            val surface = run.publisher?.startVideo() ?: CameraHlsEncoder(streamId, viewingQuality, { event, frames, bytes ->
-                execute(p, run) { viewer?.takeIf { it.run === run }?.let {
+            val surface = run.publisher?.startVideo() ?: CameraHlsEncoder(streamId, viewingQuality, { event, frames, bytes, windowMs, observedBitrate ->
+                execute(p, run) { viewer?.takeIf { it.run === run && it.selection.streamId() == streamId &&
+                    run.encoder?.window?.streamId == streamId }?.let {
                     if (event == "encoder_statistics") {
                         CameraViewingDiagnostics.verbose(event, p.method,
-                            { "${sessionContext(it)} frames=$frames bytes=$bytes targetBitrate=${run.encoder?.appliedBitrate} quality=$viewingQuality" })
+                            { "${sessionContext(it)} frames=$frames bytes=$bytes windowMs=$windowMs observedBitrate=$observedBitrate " +
+                                "requestedBitrate=${run.encoder?.requestedBitrate} submittedBitrate=${run.encoder?.submittedBitrate} " +
+                                "initialConfiguredBitrate=${run.encoder?.initialConfiguredBitrate} bitrateMode=CBR quality=$viewingQuality" })
                     } else sessionEvent(event, it, "frames=$frames bytes=$bytes")
                 } }
             }, { encoder -> execute(p, run) {

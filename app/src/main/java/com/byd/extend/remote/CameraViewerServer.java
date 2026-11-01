@@ -30,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.GZIPOutputStream;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -88,6 +89,7 @@ public final class CameraViewerServer implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicLong lastHttpSnapshot =
             new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
     private final ViewerHttpHistory httpHistory = new ViewerHttpHistory();
+    private final Map<String, byte[]> compressedAssets = new ConcurrentHashMap<>();
 
     public CameraViewerServer(String password, String privateProxyProof, Stream stream) throws IOException {
         this.access = new ViewerAccess(password, privateProxyProof);
@@ -306,15 +308,12 @@ public final class CameraViewerServer implements AutoCloseable {
             servePage(socket, request.method.equals("HEAD"), reply);
             return;
         }
-        if ((request.path.equals("/viewer.css") || request.path.equals("/viewer.js")
-                || request.path.equals("/live-recovery.js")
-                || request.path.equals("/favicon.ico"))
-                && isRead(request.method)) {
-            String name = request.path.substring(1);
-            serveBytes(socket, request.method.equals("HEAD"), reply,
-                    name.equals("favicon.ico") ? "image/vnd.microsoft.icon"
-                            : name.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8",
-                    stream.resource(name), null);
+        String assetPrefix = "/static/" + ViewerStopReason.WEB_REVISION + "/";
+        boolean versionedAsset = request.path.startsWith(assetPrefix);
+        String assetName = request.path.substring(versionedAsset ? assetPrefix.length() : 1);
+        if (isRead(request.method) && (assetName.equals("viewer.css") || assetName.equals("viewer.js")
+                || assetName.equals("live-recovery.js") || assetName.equals("hls.js") || assetName.equals("favicon.ico"))) {
+            serveAsset(socket, request, reply, assetName, versionedAsset);
             return;
         }
 
@@ -405,18 +404,6 @@ public final class CameraViewerServer implements AutoCloseable {
                 }
                 return;
             }
-            case "/viewer.css":
-            case "/viewer.js":
-                if (!isRead(request.method)) { methodNotAllowed(socket, reply); return; }
-                serveBytes(socket, request.method.equals("HEAD"), reply,
-                        request.path.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8",
-                        stream.resource(request.path.endsWith(".css") ? "viewer.css" : "viewer.js"), null);
-                return;
-            case "/hls.js":
-                if (!isRead(request.method)) { methodNotAllowed(socket, reply); return; }
-                serveBytes(socket, request.method.equals("HEAD"), reply,
-                        "application/javascript; charset=utf-8", stream.resource("hls.js"), null);
-                return;
             case "/archive":
                 if (!isRead(request.method)) { methodNotAllowed(socket, reply); return; }
                 serveText(socket, request.method.equals("HEAD"), reply, "application/json; charset=utf-8",
@@ -680,7 +667,50 @@ public final class CameraViewerServer implements AutoCloseable {
             throw new IOException("Cannot encode camera viewer presentation", failure);
         }
         page = page.replace("<!--VIEWER_BOOTSTRAP-->", jsonForHtml(bootstrap.toString()));
+        page = page.replace("<!--VIEWER_ASSET_BASE-->", "/static/" + ViewerStopReason.WEB_REVISION + "/");
         serveText(socket, head, reply, "text/html; charset=utf-8", page);
+    }
+
+    private void serveAsset(Socket socket, Request request, Reply reply, String name, boolean versioned)
+            throws IOException {
+        boolean gzip = acceptsGzip(request.fields.get("accept-encoding"));
+        byte[] body = gzip ? compressedAssets.get(name) : null;
+        if (body == null) {
+            body = stream.resource(name);
+            if (gzip) {
+                ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+                try (GZIPOutputStream output = new GZIPOutputStream(compressed)) { output.write(body); }
+                body = compressed.toByteArray();
+                compressedAssets.putIfAbsent(name, body);
+            }
+        }
+        // Only revision-addressed public code/images are cacheable, never sessions or media.
+        if (versioned) reply.cacheControl = "public, max-age=31536000, immutable";
+        serveBytes(socket, request.method.equals("HEAD"), reply,
+                name.equals("favicon.ico") ? "image/vnd.microsoft.icon"
+                        : name.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8",
+                body, "Vary: Accept-Encoding\r\n" + (gzip ? "Content-Encoding: gzip\r\n" : ""));
+    }
+
+    static boolean acceptsGzip(String header) {
+        if (header == null) return false;
+        boolean wildcard = false;
+        for (String coding : header.split(",")) {
+            String[] parts = coding.trim().split(";");
+            if (parts.length == 0) continue;
+            if (!parts[0].equalsIgnoreCase("gzip") && !parts[0].equals("*")) continue;
+            double quality = 1;
+            for (int i = 1; i < parts.length; i++) {
+                String parameter = parts[i].trim();
+                if (!parameter.regionMatches(true, 0, "q=", 0, 2)) continue;
+                try { quality = Double.parseDouble(parameter.substring(2)); }
+                catch (NumberFormatException invalid) { quality = 0; }
+            }
+            boolean accepted = quality > 0 && quality <= 1;
+            if (parts[0].equalsIgnoreCase("gzip")) return accepted;
+            wildcard = accepted;
+        }
+        return wildcard;
     }
 
     private boolean authorized(String session, Socket socket, Reply reply) throws IOException {
@@ -1144,7 +1174,7 @@ public final class CameraViewerServer implements AutoCloseable {
                 + "Content-Type: " + mime + "\r\n"
                 + "Content-Length: " + length + "\r\n"
                 + ViewerStopReason.REVISION_HEADER + ": " + ViewerStopReason.WEB_REVISION + "\r\n"
-                + "Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+                + "Connection: close\r\nCache-Control: " + reply.cacheControl + "\r\nX-Content-Type-Options: nosniff\r\n"
                 + "Referrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\n"
                 + "Content-Security-Policy: default-src 'self'; script-src 'self'; "
                 + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; "
@@ -1229,6 +1259,7 @@ public final class CameraViewerServer implements AutoCloseable {
 
     private static final class Reply {
         boolean started; boolean head;
+        String cacheControl = "no-store";
         final ViewerHttpHistory.Entry trace;
         Reply(ViewerHttpHistory.Entry trace) { this.trace = trace; }
     }

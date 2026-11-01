@@ -4,7 +4,7 @@ import org.json.JSONObject;
 
 /** Only bounded browser codes, never messages, media URLs or credentials. */
 public final class ViewerStopReason {
-    public static final int WEB_REVISION = 17;
+    public static final int WEB_REVISION = 18;
     public static final String REVISION_HEADER = "X-Byd-Viewer-Revision";
     private ViewerStopReason() {}
 
@@ -39,7 +39,7 @@ public final class ViewerStopReason {
         for (String key : new String[] {"revision", "currentMs", "bufferAheadMs", "fragment", "lastFragment",
                 "lastLoadMs", "lastFirstByteMs", "lastReceiveMs", "lastBufferedFragment", "lastAppendMs",
                 "lastBufferedAgeMs", "lastBytes", "lastFragmentAgeMs", "recoveryAgeMs",
-                "targetMs", "presentedMs", "edgeMs", "lagMs", "targetLatencyMs", "quality", "appliedBitrate", "stallMs", "lastStallMs"})
+                "targetMs", "presentedMs", "edgeMs", "lagMs", "targetLatencyMs", "quality", "requestedBitrate", "submittedBitrate", "initialConfiguredBitrate", "stallMs", "lastStallMs"})
             number(result, value, key, 0, 9_007_199_254_740_991L);
         number(result, value, "httpStatus", 100, 599);
         number(result, value, "mediaCode", 1, 4);

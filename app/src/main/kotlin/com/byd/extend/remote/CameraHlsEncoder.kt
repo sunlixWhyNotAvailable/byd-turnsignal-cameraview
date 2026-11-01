@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class CameraHlsEncoder(
     streamId: String,
     qualityMode: Int,
-    private val diagnostics: (String, Long, Long) -> Unit,
+    private val diagnostics: (String, Long, Long, Long, Long) -> Unit,
     private val ready: (CameraHlsEncoder) -> Unit,
     private val failed: (CameraHlsEncoder, Throwable) -> Unit,
 ) : AutoCloseable {
@@ -37,9 +37,14 @@ internal class CameraHlsEncoder(
     private var frames = 0L
     private var bytes = 0L
     private var lastStatisticsNs = 0L
+    private var statisticsBytes = 0L
     private var statisticsRevision = -1L
     private val quality = ViewerQuality(qualityMode)
-    @Volatile var appliedBitrate = quality.target()
+    @Volatile var requestedBitrate = quality.target()
+        private set
+    @Volatile var submittedBitrate = 0
+        private set
+    @Volatile var initialConfiguredBitrate = 0
         private set
     @Volatile var qualityErrorRef: String? = null
         private set
@@ -60,11 +65,12 @@ internal class CameraHlsEncoder(
     }
 
     private fun applyBitrate(target: Int) {
-        if (target == appliedBitrate || stopped.get() || qualityErrorRef != null) return
+        requestedBitrate = target
+        if (target == submittedBitrate || stopped.get() || qualityErrorRef != null) return
         val active = codec ?: return
         try {
             active.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, target) })
-            appliedBitrate = target
+            submittedBitrate = target
         } catch (failure: Exception) {
             val reference = java.util.UUID.randomUUID().toString()
             qualityErrorRef = reference
@@ -78,15 +84,19 @@ internal class CameraHlsEncoder(
             info.isEncoder && info.supportedTypes.any { it.equals("video/avc", true) } &&
                 hardware(info) && info.getCapabilitiesForType("video/avc").colorFormats
                     .contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface) &&
+                info.getCapabilitiesForType("video/avc").encoderCapabilities
+                    .isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) &&
                 info.getCapabilitiesForType("video/avc").videoCapabilities
                     .areSizeAndRateSupported(WIDTH, HEIGHT, FPS.toDouble())
-        } ?: throw IllegalStateException("hardware_h264_unavailable")
+        } ?: throw IllegalStateException("hardware_h264_cbr_unavailable_${WIDTH}x${HEIGHT}")
         try {
             val encoder = MediaCodec.createByCodecName(selected.name)
             codec = encoder
             val format = MediaFormat.createVideoFormat("video/avc", WIDTH, HEIGHT).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, appliedBitrate)
+                setInteger(MediaFormat.KEY_BIT_RATE, requestedBitrate)
+                // Android 12's VBR quality floor can raise Low's bitrate fivefold.
+                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                 setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
@@ -96,6 +106,15 @@ internal class CameraHlsEncoder(
             val surface = encoder.createInputSurface()
             input = surface
             encoder.start()
+            submittedBitrate = requestedBitrate
+            val configured = encoder.inputFormat
+            initialConfiguredBitrate = if (configured.containsKey(MediaFormat.KEY_BIT_RATE))
+                configured.getInteger(MediaFormat.KEY_BIT_RATE) else 0
+            val configuredMode = if (configured.containsKey(MediaFormat.KEY_BITRATE_MODE))
+                configured.getInteger(MediaFormat.KEY_BITRATE_MODE).toString() else "unknown"
+            CameraViewingDiagnostics.detail("encoder_configured", "shared",
+                "codec=${selected.name} requestedBitrate=$requestedBitrate submittedBitrate=$submittedBitrate " +
+                    "initialConfiguredBitrate=$initialConfiguredBitrate requestedBitrateMode=CBR configuredBitrateMode=$configuredMode")
             drain = Thread({ drain(encoder) }, "camera-view-encode").also { it.start() }
             return surface
         } catch (error: Throwable) {
@@ -137,19 +156,22 @@ internal class CameraHlsEncoder(
                                     BufferInfo(pts, info.size, if (key) C.BUFFER_FLAG_KEY_FRAME else 0))
                                 previousPts = lastPts
                                 lastPts = pts
-                                if (firstFrame) diagnostics("first_encoded_frame", 1, info.size.toLong())
+                                if (firstFrame) diagnostics("first_encoded_frame", 1, info.size.toLong(), 0, 0)
                                 if (DiagnosticLogPolicy.extended()) {
                                     val revision = DiagnosticLogPolicy.revision()
                                     if (revision != statisticsRevision) {
                                         statisticsRevision = revision
-                                        frames = 0; bytes = 0; lastStatisticsNs = 0
+                                        frames = 0; bytes = 0; lastStatisticsNs = 0; statisticsBytes = 0
                                     }
                                     frames++; bytes += info.size
                                     val now = android.os.SystemClock.elapsedRealtimeNanos()
-                                    if (frames == 1L) lastStatisticsNs = now
+                                    if (frames == 1L) { lastStatisticsNs = now; statisticsBytes = bytes }
                                     else if (now - lastStatisticsNs >= 10_000_000_000L) {
+                                        val elapsedNs = now - lastStatisticsNs
+                                        val observedBitrate = ((bytes - statisticsBytes) * 8_000_000_000.0 / elapsedNs).toLong()
+                                        diagnostics("encoder_statistics", frames, bytes, elapsedNs / 1_000_000, observedBitrate)
                                         lastStatisticsNs = now
-                                        diagnostics("encoder_statistics", frames, bytes)
+                                        statisticsBytes = bytes
                                     }
                                 }
                             }

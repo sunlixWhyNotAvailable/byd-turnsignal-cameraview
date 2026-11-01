@@ -14,6 +14,8 @@ html[data-theme="light"] {
 * { box-sizing:border-box; }
 body { margin:0; min-width:320px; min-height:100vh; color:var(--text); background:var(--page); }
 button,input,select { font:inherit; color:inherit; }
+select { appearance:none; text-align:center; text-align-last:center; min-height:40px; border:1px solid var(--line); border-radius:8px; background-color:var(--panel); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m3 4 3 3 3-3' fill='none' stroke='%2396a4b1' stroke-width='1.5'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 6px center; background-size:12px; }
+option { text-align:center; background:var(--panel); color:var(--text); }
 button { cursor:pointer; }
 button:disabled { cursor:default; opacity:.48; }
 button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
@@ -181,7 +183,7 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 .transport { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:7px; }
 .transport button,.icon-button { display:grid; place-items:center; width:40px; height:40px; padding:7px; }
 .transport .play { border-color:var(--blue); background:var(--blue-soft); color:var(--blue); }
-.transport select { min-height:40px; max-width:82px; padding:5px 7px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.transport select { max-width:96px; padding:5px 18px; }
 .loading { width:25px; height:25px; margin:30vh auto; border:3px solid var(--line); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 #app.is-expanded > .head,#app.is-expanded > .statusrow,#app.is-expanded .viewer-main > .nav { display:none; }
@@ -258,12 +260,12 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   .play-controls { padding:8px; }
   .transport { gap:5px; }
   .transport button,.icon-button { width:38px; height:40px; }
-  .transport select { min-height:40px; max-width:68px; padding:4px; }
+  .transport select { max-width:82px; padding:4px 14px; }
 }
 
 /* Keep both approved controls on one row, including the collapsed phone panel. */
 .view-settings { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.4fr); gap:10px; }
 .view-settings label { min-width:0; display:flex; flex-direction:column; gap:6px; }
-.view-settings label > span { min-height:2.6em; display:flex; align-items:flex-end; font-size:13px; }
-.view-settings select { width:100%; min-width:0; padding:8px 4px; font-size:12px; }
+.view-settings label > span { min-height:2.6em; display:flex; align-items:flex-end; justify-content:center; text-align:center; font-size:13px; }
+.view-settings select { width:100%; min-width:0; padding:8px 20px; font-size:12px; }
 .view-settings-hint { color:var(--muted); font-size:11px; margin:8px 0; }

@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 17;
+  const WEB_REVISION = 18;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.
@@ -465,7 +465,9 @@
       initialView: Number.isInteger(settings.initialView) && settings.initialView >= 0 && settings.initialView <= 2 ? settings.initialView : null,
       qualityApplyState: settings.qualityApplyState,
       qualityErrorRef: settings.qualityErrorRef,
-      appliedBitrate: settings.appliedBitrate,
+      requestedBitrate: settings.requestedBitrate,
+      submittedBitrate: settings.submittedBitrate,
+      initialConfiguredBitrate: settings.initialConfiguredBitrate,
       mirrorApplyState: ['applied', 'pending', 'error'].includes(settings.mirrorApplyState) ? settings.mirrorApplyState : null,
       mirrorRevision: settings.mirrorRevision,
       mirrorStreamId: settings.mirrorStreamId,
@@ -1264,7 +1266,7 @@
     if (window.Hls) return window.Hls;
     if (!hlsScriptPromise) hlsScriptPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/hls.js';
+      script.src = `/static/${WEB_REVISION}/hls.js`;
       script.onload = () => window.Hls ? resolve(window.Hls) : reject(new Error('HLS library did not expose its player'));
       script.onerror = () => reject(new Error('HLS library could not be loaded'));
       document.head.appendChild(script);
@@ -1581,7 +1583,9 @@
         targetMs: Number.isFinite(player.frameTargetMs) ? Math.round(player.frameTargetMs) : undefined,
         presentedMs: finiteMs(presentedProgramTime(player, video.currentTime)),
         edgeMs: finiteMs(liveEdge(player) * 1000), lagMs: finiteMs((liveEdge(player) - video.currentTime) * 1000),
-        targetLatencyMs: 2000, quality: state.settings.viewingQuality, appliedBitrate: state.settings.appliedBitrate,
+        targetLatencyMs: 2000, quality: state.settings.viewingQuality,
+        requestedBitrate: state.settings.requestedBitrate, submittedBitrate: state.settings.submittedBitrate,
+        initialConfiguredBitrate: state.settings.initialConfiguredBitrate,
         hidden: document.hidden ? 1 : 0,
         stallMs: stallStarted == null ? undefined : Math.round(now - stallStarted), lastStallMs,
         fragment: cause?.frag?.sn, httpStatus: cause?.response?.code, mediaCode: video.error?.code,
@@ -1656,6 +1660,9 @@
           const first = video.seekable.start(0), edge = liveEdge(player);
           const ranges = Array.from({ length: video.buffered.length }, (_, i) =>
             ({ start: video.buffered.start(i), end: video.buffered.end(i) }));
+          if (nativeTarget != null && video.currentTime >= nativeTarget) {
+            nativeTarget = null; player.nativeStarted = true;
+          }
           if (nativeTarget == null) nativeTarget = !player.nativeStarted
             ? Math.max(first + 0.01, edge - 2)
             : BydLiveRecovery.liveTarget(video.currentTime, first, edge, state.settings.viewingQuality === 0 ? 4 : 6);
@@ -1664,7 +1671,8 @@
           if (BydLiveRecovery.bufferedAt(nativeTarget, ranges)) {
             video.currentTime = nativeTarget;
             nativeTarget = null; player.nativeStarted = true;
-          } else if (player.nativeStarted && !pendingLivePlayer && !recoveryPending) {
+          } else if (player.nativeStarted && !pendingLivePlayer && !recoveryPending &&
+              !ranges.some((range) => range.start <= nativeTarget && range.end > nativeTarget)) {
             // Native HLS cannot request a fragment independently. Keep the old picture until
             // a fresh browser player is ready, without releasing the server/OEM camera lease.
             recoveryPending = true;
@@ -2229,5 +2237,9 @@
 
   if (checkRevision(bootstrap.webRevision)) {
     renderLogin();
+    const video = document.createElement('video');
+    if (!(video.canPlayType('application/vnd.apple.mpegurl') && typeof video.getStartDate === 'function')) {
+      loadHlsLibrary().catch((failure) => console.warn('HLS preloading failed; playback can retry', failure));
+    }
   }
 })();

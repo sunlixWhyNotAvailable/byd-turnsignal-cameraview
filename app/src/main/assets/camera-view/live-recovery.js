@@ -19,8 +19,8 @@
     if (position >= start && edge - position <= maximum) return null;
     return Math.max(start + 0.01, edge - TARGET_SECONDS);
   }
-  function bufferedAt(target, ranges) {
-    return Number.isFinite(target) && ranges.some((range) => range.start <= target && range.end > target + 0.05);
+  function bufferedAt(target, ranges, cushion = 1) {
+    return Number.isFinite(target) && ranges.some((range) => range.start <= target && range.end >= target + cushion);
   }
   function install(hls, Hls, report, maximum = () => 4) {
     const controller = hls.streamController;
@@ -35,6 +35,13 @@
     }
     let missingThrough = -1, missingCandidate = null, awaitingPlaylist = false;
     let disposed = false, pendingTarget = null, latestDetails = null;
+    let cushion = 1;
+    const loaded = (_, data) => {
+      if (data.frag.type !== 'main' || !Number.isSafeInteger(data.frag.sn)) return;
+      const loading = (data.part?.stats || data.frag.stats).loading;
+      // Keep enough media for another observed download, without growing the live target.
+      cushion = Math.min(TARGET_SECONDS, Math.max(1, (loading.end - loading.start) / 1000));
+    };
     const tick = () => {
       const video = hls.media;
       if (disposed || !hls.hasEnoughToStart || !video || video.seeking) return;
@@ -45,17 +52,17 @@
       hls.config.maxBufferLength = maximum() === 4 ? 3 : 6;
       if (first) {
         // Retarget only after expiration; a moving target would continually abort useful downloads.
-        if (pendingTarget != null && pendingTarget < first.start) pendingTarget = null;
+        if (pendingTarget != null && (pendingTarget < first.start || video.currentTime >= pendingTarget)) pendingTarget = null;
         if (pendingTarget == null) {
           const target = liveTarget(video.currentTime, first.start, details.edge, maximum());
           if (target != null) {
             pendingTarget = target;
-            if (!bufferedAt(target, ranges)) hls.startLoad(target, true);
+            // getLoadPosition redirects the next request; finish useful in-flight work first.
           }
         }
       }
       if (pendingTarget != null) {
-        if (bufferedAt(pendingTarget, ranges)) {
+        if (bufferedAt(pendingTarget, ranges, cushion)) {
           const from = video.currentTime, target = pendingTarget;
           pendingTarget = null;
           video.currentTime = target;
@@ -64,7 +71,7 @@
         return;
       }
       const target = bufferedTarget(video.currentTime, ranges, hls.config.maxBufferHole);
-      if (target === null) return;
+      if (target === null || !bufferedAt(target, ranges, cushion)) return;
       const loading = controller.fragCurrent;
       if (loading && ['FRAG_LOADING', 'PARSING', 'PARSED'].includes(controller.state)
           && loading.start + loading.duration < target) return;
@@ -113,6 +120,7 @@
     const destroy = () => {
       disposed = true;
       hls.off(Hls.Events.FRAG_BUFFERED, tick);
+      hls.off(Hls.Events.FRAG_LOADED, loaded);
       hls.off(Hls.Events.LEVEL_UPDATED, refreshed);
       hls.off(Hls.Events.ERROR, error);
       hls.off(Hls.Events.DESTROYING, destroy);
@@ -121,6 +129,7 @@
       controller.getLoadPosition = loadPosition;
     };
     hls.on(Hls.Events.FRAG_BUFFERED, tick);
+    hls.on(Hls.Events.FRAG_LOADED, loaded);
     hls.on(Hls.Events.LEVEL_UPDATED, refreshed);
     hls.on(Hls.Events.ERROR, error);
     hls.on(Hls.Events.DESTROYING, destroy);

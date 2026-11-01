@@ -17,6 +17,20 @@ import static org.junit.Assert.*;
 
 /** Real loopback input into the production parser; no substitute Stream or camera/helper results. */
 public class CameraViewerRequestTest {
+    @Test public void compressionHonorsTheBrowsersEncodingPreference() throws Exception {
+        for (String encoding : new String[] {"gzip, deflate, br", "GZip;q=0.5", "*;q=1"}) {
+            CameraViewerServer.Request request = parse("GET /static/18/hls.js HTTP/1.1\r\nAccept-Encoding: "
+                    + encoding + "\r\n\r\n");
+            assertTrue(CameraViewerServer.acceptsGzip(request.fields.get("accept-encoding")));
+        }
+        for (String encoding : new String[] {"br", "gzip;q=0, *;q=1", "gzip;q=NaN", "gzip;q=invalid", ";"}) {
+            CameraViewerServer.Request request = parse("GET /static/18/hls.js HTTP/1.1\r\nAccept-Encoding: "
+                    + encoding + "\r\n\r\n");
+            assertFalse(CameraViewerServer.acceptsGzip(request.fields.get("accept-encoding")));
+        }
+        assertFalse(CameraViewerServer.acceptsGzip(parse("GET / HTTP/1.1\r\n\r\n").fields.get("accept-encoding")));
+    }
+
     @Test public void delayedArchiveReadsAndClosesCannotReplaceTheSelectedRecording() {
         CameraViewerServer.ArchiveSelection selection = new CameraViewerServer.ArchiveSelection();
         assertFalse(selection.select(1, "a"));
