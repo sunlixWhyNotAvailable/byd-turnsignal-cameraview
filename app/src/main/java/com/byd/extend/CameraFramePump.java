@@ -75,9 +75,11 @@ final class CameraFramePump {
     private final IntPredicate preparedForOutputPredicate = this::preparedForOutput;
     private final Acquisition acquisition = new Acquisition();
     private int signals;
-    private boolean queued, failed, matrixReported;
+    private boolean queued, matrixReported;
+    private volatile boolean failed;
     private boolean trackingCaptureFence, captureFenceNotReady;
     private long firstCallbackNs, lastFrameTimestamp;
+    private final CameraFrameFreshness freshness = new CameraFrameFreshness();
     private int nextPreparationSlot;
     private int reportedSourceWidth = -1, reportedSourceHeight = -1;
     private int reportedOutputWidth = Integer.MIN_VALUE, reportedOutputHeight = Integer.MIN_VALUE;
@@ -208,9 +210,14 @@ final class CameraFramePump {
 
     Handler acquisitionHandler() { return handler; }
 
+    long lastSourceFrameMs() {
+        return closed || failed ? -1L : freshness.lastAdvanceMs();
+    }
+
     /** Runs on acquisitionHandler; completes all source reads before the caller closes its Image. */
     boolean snapshotImage(android.media.Image image) {
         if (closed || failed) return false;
+        freshness.acquired(image.getTimestamp(), SystemClock.elapsedRealtime());
         long size = outputSize;
         int width = (int) (size >>> 32), height = (int) size;
         if (width <= 0 || height <= 0) return false;
@@ -343,6 +350,7 @@ final class CameraFramePump {
                 try {
                     timestamp = input.getTimestamp();
                     sample.producerTimestampNs = timestamp;
+                    freshness.acquired(timestamp, SystemClock.elapsedRealtime());
                 } catch (Throwable error) {
                     failure = appendFailure(failure, "read camera SurfaceTexture timestamp", error);
                 }

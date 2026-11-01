@@ -22,7 +22,7 @@ final class CameraRuntimeHost {
     static final int MOTION_ATTACH = 13, MOTION_DETACH = 14, MOTION_AUTHORIZE = 15,
             MOTION_RECORD_ATTACH = 16, MOTION_RECORD_DETACH = 17,
             MOTION_OWN_WAKE = 18, MOTION_END_WAKE = 19, MOTION_BIND_WORKER = 20,
-            MOTION_UNBIND_WORKER = 21;
+            MOTION_UNBIND_WORKER = 21, MOTION_SOURCE_FRAME = 28;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
             VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26,
             VIEW_UPDATE_CABIN_MIRROR = 27;
@@ -117,7 +117,8 @@ final class CameraRuntimeHost {
                 || operation == VIEW_UPDATE_OUTPUT || operation == VIEW_MARK_CHANNEL_UNAVAILABLE
                 || operation == VIEW_UPDATE_CABIN_MIRROR)
             return transactViewing(operation, data, reply);
-        if (operation >= MOTION_ATTACH && operation <= MOTION_UNBIND_WORKER)
+        if (operation >= MOTION_ATTACH && operation <= MOTION_UNBIND_WORKER
+                || operation == MOTION_SOURCE_FRAME)
             return transactMotion(operation, data, reply);
         if (Binder.getCallingUid() != appUid) throw new SecurityException("camera app caller required");
         IBinder owner = operation == ATTACH ? null : data.readStrongBinder();
@@ -227,7 +228,7 @@ final class CameraRuntimeHost {
             if (!MotionDetectorProtocol.validSession(session) || data.dataAvail() != 0)
                 throw new IllegalArgumentException("invalid motion session");
             MotionRecordingOutput submittedOutput = recordingOutput;
-            call("motion_" + operation, () -> {
+            long sourceFrameMs = call("motion_" + operation, () -> {
                 boolean consumed = false;
                 try {
                     if (lifetime.stopped()) throw new IllegalStateException("camera runtime stopped");
@@ -252,6 +253,8 @@ final class CameraRuntimeHost {
                         if (!session.equals(motionSession) || motionWorker == null
                                 || !motionWorker.isBinderAlive() || worker != motionWorker)
                             throw new SecurityException("motion session expired");
+                        if (operation == MOTION_SOURCE_FRAME)
+                            return helper.lastExteriorSourceFrameMs();
                         if (operation == MOTION_ATTACH) {
                             consumed = true;
                             helper.attachMotionDetector(detector);
@@ -282,7 +285,7 @@ final class CameraRuntimeHost {
                             clearMotion();
                         }
                     }
-                    return null;
+                    return -1L;
                 } finally {
                     if (submittedOutput != null) submittedOutput.unregister();
                     if (!consumed) {
@@ -295,6 +298,7 @@ final class CameraRuntimeHost {
             reply.writeNoException();
             reply.writeInt(1);
             if (operation == MOTION_BIND_WORKER) reply.writeString(motionSourceEpoch);
+            if (operation == MOTION_SOURCE_FRAME) reply.writeLong(sourceFrameMs);
             return operation;
         } finally {
             if (!dispatched.get()) {

@@ -236,6 +236,8 @@ public final class MotionDetectorShellMain {
     private volatile byte[] nativeInput;
     private volatile ImageReader reader;
     private MotionSharedSource sharedSource;
+    private long readerSessionGeneration = -1L;
+    private String readerSourceEpoch = "";
     private Surface surface;
     private long frameNumber;
     private boolean analysisBusy;
@@ -1299,8 +1301,8 @@ public final class MotionDetectorShellMain {
         }
         RemoteViewLease lease = remoteViewLeases.get(owner);
         if (lease != null) {
-            result.succeed(completeRemoteViewPreparation(id, owner, lease,
-                    cameraChargeState, sessionId, sessionGeneration));
+            finishRemoteViewPreparation(id, owner, cameraChargeState,
+                    sessionId, sessionGeneration, result);
             return;
         }
         String requestedSession = sessionId;
@@ -1316,18 +1318,64 @@ public final class MotionDetectorShellMain {
                 return;
             }
             try {
-                result.succeed(completeRemoteViewPreparation(id, owner,
-                        remoteViewLeases.get(owner), fresh, requestedSession, generation));
+                finishRemoteViewPreparation(id, owner, fresh, requestedSession, generation, result);
             } catch (Throwable error) { result.fail(error); }
         });
     }
 
+    private void finishRemoteViewPreparation(String id, IBinder owner, CameraChargePolicy.State fresh,
+            String requestedSession, long generation, PendingResult<Boolean> result) {
+        boolean ready = completeRemoteViewPreparation(id, owner, remoteViewLeases.get(owner),
+                fresh, requestedSession, generation, -1L);
+        IBinder host = telemetryHost;
+        String epoch = expectedSourceEpoch;
+        RemoteViewLease lease = remoteViewLeases.get(owner);
+        if (ready || lease == null || !lease.id.equals(id) || sessionRuntime.power() != 0
+                || !workerBound || host == null || !host.isBinderAlive()) {
+            result.succeed(ready);
+            return;
+        }
+        // Query the existing producer off the control thread; never open a camera to prove freshness.
+        hostOperations.execute(() -> {
+            try {
+                long frameAtMs = readCameraSourceFrame(host, requestedSession);
+                if (!control.post(() -> {
+                    if (result.isDone()) return;
+                    if (remoteViewLeases.get(owner) != lease) { result.succeed(false); return; }
+                    try {
+                        boolean sameHost = workerBound && telemetryHost == host
+                                && host.isBinderAlive() && epoch.equals(expectedSourceEpoch);
+                        result.succeed(completeRemoteViewPreparation(id, owner, remoteViewLeases.get(owner),
+                                fresh, requestedSession, generation, sameHost ? frameAtMs : -1L));
+                    } catch (Throwable failure) { result.fail(failure); }
+                })) throw new IllegalStateException("Motion control thread refused source freshness reply");
+            } catch (Throwable failure) { result.fail(failure); }
+        });
+    }
+
+    private long readCameraSourceFrame(IBinder host, String session) throws Exception {
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(MotionDetectorProtocol.CAMERA_SOURCE_FRAME);
+            data.writeString(session);
+            data.writeStrongBinder(binder);
+            if (!host.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
+                throw new IllegalStateException("camera source freshness transaction unavailable");
+            reply.readException();
+            if (reply.readInt() != 1 || reply.dataAvail() != Long.BYTES)
+                throw new IllegalStateException("invalid camera source freshness reply");
+            return reply.readLong();
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     private boolean completeRemoteViewPreparation(String id, IBinder owner, RemoteViewLease lease,
-            CameraChargePolicy.State fresh, String requestedSession, long generation) {
+            CameraChargePolicy.State fresh, String requestedSession, long generation, long frameAtMs) {
         if (!operationIsCurrent(requestedSession, generation, sessionId, sessionGeneration)
                 || shuttingDown || teardownPending || sessionRuntime.suspended()
                 || config == null || !config.remoteViewingEnabled || owner == null
-                || !owner.isBinderAlive() || fresh == null || !fresh.isMonitoring() || fresh.isBlocked())
+                || !owner.isBinderAlive() || fresh == null || !fresh.isMonitoring() || fresh.isBlocked()
+                || cameraChargeState.isBlocked())
             return false;
         int power = sessionRuntime.power();
         if (power != 0 && power != 1 && power != 2) return false;
@@ -1339,8 +1387,14 @@ public final class MotionDetectorShellMain {
             remoteViewLeases.put(owner, lease);
         }
         updateCameraDemand();
-        // OFF uses the same owner as Motion preparation. ON/standby viewing has no IDC requirement.
-        return power != 0 || cameraPreparation.ready(sessionId);
+        if (attached && !readerAttachPending && !readerDetachPending && reader != null
+                && sharedSource != null && readerSessionGeneration == generation
+                && readerSourceEpoch.equals(expectedSourceEpoch) && workerBound
+                && telemetryHost != null && telemetryHost.isBinderAlive())
+            frameAtMs = Math.max(frameAtMs, sharedSource.lastSourceFrameMs());
+        // Keep preparation owned while live frames override only its IDC/AVM readiness result.
+        return MotionCameraPreparation.remoteReady(power, cameraPreparation.ready(sessionId),
+                frameAtMs, SystemClock.elapsedRealtime());
     }
 
     private static boolean sameNullableSession(String left, String right) {
@@ -2475,6 +2529,8 @@ public final class MotionDetectorShellMain {
                 control.post(() -> { if (sameSession(id)) fail(id, "shared_source", error); }));
         reader = ImageReader.newInstance(MotionDetectorProtocol.INPUT_WIDTH,
                 MotionDetectorProtocol.INPUT_HEIGHT, ImageFormat.YUV_420_888, 2);
+        readerSessionGeneration = generation;
+        readerSourceEpoch = expectedSourceEpoch;
         surface = reader.getSurface();
         ImageReader ownerReader = reader;
         MotionSharedSource ownerSource = sharedSource;

@@ -12,6 +12,7 @@ final class CameraCommandMetrics {
     enum Operation {
         HUB_INITIALIZE("hub_initialize"),
         SOURCE_ACQUIRE("source_acquire"),
+        SOURCE_FRESHNESS("source_freshness"),
         ATTACH_BATCH("attach_batch"),
         DETACH_BATCH("detach_batch"),
         ACTIVATE_TARGET("activate_target"),

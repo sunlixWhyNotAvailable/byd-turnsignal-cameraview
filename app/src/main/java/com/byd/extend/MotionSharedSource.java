@@ -47,6 +47,7 @@ final class MotionSharedSource {
     }
 
     Handler handler() { return pump.acquisitionHandler(); }
+    long lastSourceFrameMs() { return pump == null ? -1L : pump.lastSourceFrameMs(); }
     void snapshot(Image image) {
         long now = android.os.SystemClock.elapsedRealtime();
         if (windowStart == 0) windowStart = now;

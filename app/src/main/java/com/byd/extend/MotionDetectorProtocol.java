@@ -99,6 +99,7 @@ public final class MotionDetectorProtocol {
     static final int CAMERA_END_WAKE = 19;
     static final int CAMERA_BIND_WORKER = 20;
     static final int CAMERA_UNBIND_WORKER = 21;
+    static final int CAMERA_SOURCE_FRAME = 28;
     static final int SURFACE_INDEX = 4123;
 
     static final int INPUT_WIDTH = 3840;

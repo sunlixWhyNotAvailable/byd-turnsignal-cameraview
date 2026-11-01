@@ -65,6 +65,11 @@ final class MotionCameraPreparation {
         return power == 0 && online == 1 && stream == 1;
     }
 
+    static boolean remoteReady(int power, boolean prepared, long frameAtMs, long nowMs) {
+        return power == 1 || power == 2
+                || power == 0 && (prepared || CameraFrameFreshness.fresh(frameAtMs, nowMs));
+    }
+
     static final class StreamCadence {
         private long nextAttemptMs;
 

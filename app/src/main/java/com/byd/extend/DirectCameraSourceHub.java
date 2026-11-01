@@ -172,6 +172,18 @@ final class DirectCameraSourceHub
         return nextWindowId;
     }
 
+    long lastSourceFrameMs() throws Exception {
+        return call(command(CameraCommandMetrics.Operation.SOURCE_FRESHNESS, -1,
+                CameraCommandMetrics.Context.EMPTY), () -> {
+            long latest = -1L;
+            if (!closed) for (SourceWorker worker : workers) {
+                if (worker != null && !worker.released && worker.pump != null)
+                    latest = Math.max(latest, worker.pump.lastSourceFrameMs());
+            }
+            return latest;
+        });
+    }
+
     private FpsMeasurementWindow refreshFpsMeasurementPolicy() {
         long revision = DiagnosticLogPolicy.revision();
         FpsMeasurementWindow current = fpsWindow;

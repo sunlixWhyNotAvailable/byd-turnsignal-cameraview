@@ -2344,6 +2344,11 @@ final class CameraHelperMain {
                     || "reverse_preview_direct".equals(view);
         }
 
+        synchronized long lastExteriorSourceFrameMs() throws Exception {
+            return persistentPanoProducer && camera != null && rawSourceHub != null
+                    ? rawSourceHub.lastSourceFrameMs() : -1L;
+        }
+
         private String openPersistentProducer(
                 ConsumerGroup target,
                 Surface[] requestedSurfaces,
