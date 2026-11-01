@@ -1,5 +1,5 @@
 (() => {
-  const WEB_REVISION = 15;
+  const WEB_REVISION = 16;
   const REVISION_HEADER = 'X-Byd-Viewer-Revision';
   const app = document.getElementById('app');
   // Keep the video on page composition only for desktop Firefox; mobile keeps its existing path.

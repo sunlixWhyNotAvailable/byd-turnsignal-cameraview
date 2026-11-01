@@ -1,6 +1,17 @@
 package com.byd.extend;
 
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
+import android.os.Process;
 import android.os.SystemClock;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 /** POWER edges schedule checks; ON cancels all OFF work without stopping the observer. */
 final class CellularApnRecovery implements AutoCloseable {
@@ -8,11 +19,33 @@ final class CellularApnRecovery implements AutoCloseable {
     private final Object lock = new Object();
     private final Thread monitor = new Thread(this::monitor, "byd-apn2-monitor");
     private boolean stopping;
-    private int power = -1;
-    private long epoch, nextCheck;
+    private long epoch;
+    private final CellularApnSchedule schedule = new CellularApnSchedule();
+    private final Map<Network, String> cellularInterfaces = new HashMap<>();
+    private ConnectivityManager connectivity;
+    private boolean networkRegistered;
     private final OwnedShellProcess child = new OwnedShellProcess();
     private final OemWakeDiscovery discovery;
     private final CellularRecovery owner;
+    private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
+        @Override public void onLost(Network network) {
+            String iface;
+            synchronized (lock) { iface = cellularInterfaces.remove(network); }
+            networkChanged(network, iface, "lost");
+        }
+
+        @Override public void onLinkPropertiesChanged(Network network, LinkProperties properties) {
+            String iface = properties.getInterfaceName();
+            boolean changed;
+            synchronized (lock) {
+                if (stopping) return;
+                boolean known = cellularInterfaces.containsKey(network);
+                String previous = cellularInterfaces.put(network, iface);
+                changed = known && !Objects.equals(previous, iface);
+            }
+            if (changed) networkChanged(network, iface, "interface_changed");
+        }
+    };
 
     CellularApnRecovery(OemWakeDiscovery discovery, CellularRecovery owner) {
         this.discovery = discovery;
@@ -26,10 +59,8 @@ final class CellularApnRecovery implements AutoCloseable {
 
     void powerChanged(int value) {
         synchronized (lock) {
-            if (stopping || power == value) return;
-            power = value;
+            if (stopping || !schedule.powerChanged(value, SystemClock.elapsedRealtime())) return;
             epoch++;
-            nextCheck = value > 0 ? Long.MAX_VALUE : 0L;
             child.cancel();
             log("power_transition", "power=" + value + " epoch=" + epoch + " source=telemetry_callback");
             lock.notifyAll();
@@ -37,28 +68,82 @@ final class CellularApnRecovery implements AutoCloseable {
     }
 
     private void monitor() {
-        log("monitor_started", "off_interval_ms=" + 30_000L);
+        log("monitor_started", "fast_interval_ms=" + CellularApnSchedule.FAST_INTERVAL_MS
+                + " fast_window_ms=" + CellularApnSchedule.FAST_WINDOW_MS
+                + " off_interval_ms=" + CellularApnSchedule.STEADY_INTERVAL_MS);
         try {
+            registerNetworkCallback();
             while (true) {
                 long checkEpoch;
+                boolean fromNetwork;
                 synchronized (lock) {
-                    while (!stopping && nextCheck > SystemClock.elapsedRealtime()) {
-                        if (nextCheck == Long.MAX_VALUE) lock.wait();
-                        else lock.wait(Math.max(1L, nextCheck - SystemClock.elapsedRealtime()));
+                    long delay;
+                    while (!stopping && (delay = schedule.delayMs(SystemClock.elapsedRealtime())) > 0L) {
+                        if (delay == Long.MAX_VALUE) lock.wait();
+                        else lock.wait(delay);
                     }
                     if (stopping) return;
                     checkEpoch = epoch;
+                    fromNetwork = schedule.checkStarted(SystemClock.elapsedRealtime());
                 }
+                if (fromNetwork || DiagnosticLogPolicy.extended())
+                    log("check_started", "epoch=" + checkEpoch + " trigger=" + (fromNetwork ? "network" : "timer")
+                            + " elapsed_ms=" + SystemClock.elapsedRealtime());
                 try { runCheck(checkEpoch); }
                 catch (InterruptedException error) { throw error; }
                 catch (Exception error) { log("check_error", CellularRecovery.diagnosticDetail(error, "stage=check_process")); }
                 synchronized (lock) {
-                    if (epoch == checkEpoch) nextCheck = power > 0 ? Long.MAX_VALUE
-                            : SystemClock.elapsedRealtime() + 30_000L;
+                    if (epoch == checkEpoch) schedule.checkFinished(SystemClock.elapsedRealtime());
                 }
             }
         } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
-        finally { log("monitor_stopped", "no_sleep_requested=true"); }
+        finally {
+            unregisterNetworkCallback();
+            log("monitor_stopped", "no_sleep_requested=true");
+        }
+    }
+
+    private void registerNetworkCallback() {
+        // This monitor thread has the shell process identity, never an incoming app Binder caller.
+        try {
+            if (Process.myUid() != 2000) throw new SecurityException("APN2 observer requires shell UID 2000");
+            Context shell = TurnSignalShellMain.shellContext(TurnSignalShellMain.systemContext());
+            if (!"com.android.shell".equals(shell.getOpPackageName()) || shell.getApplicationInfo().uid != 2000)
+                throw new SecurityException("APN2 observer attribution is not shell");
+            if (shell.checkSelfPermission(android.Manifest.permission.ACCESS_NETWORK_STATE) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("APN2 observer lacks ACCESS_NETWORK_STATE");
+            connectivity = (ConnectivityManager) shell.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (connectivity == null) throw new IllegalStateException("ConnectivityManager unavailable");
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR).build();
+            connectivity.registerNetworkCallback(request, networkCallback);
+            networkRegistered = true;
+            log("network_registered", "uid=" + Process.myUid() + " pid=" + Process.myPid()
+                    + " user=0 package=" + shell.getOpPackageName() + " transport=cellular passive=true");
+        } catch (Exception error) {
+            log("network_registration_error", CellularRecovery.diagnosticDetail(error,
+                    "operation=registerNetworkCallback uid=" + Process.myUid() + " pid=" + Process.myPid()
+                            + " package=com.android.shell polling_retained=true"));
+        }
+    }
+
+    private void networkChanged(Network network, String iface, String reason) {
+        synchronized (lock) {
+            if (stopping || !schedule.networkChanged()) return;
+            log("network_event", "reason=" + reason + " network=" + network + " interface=" + iface
+                    + " elapsed_ms=" + SystemClock.elapsedRealtime());
+            lock.notifyAll();
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        if (networkRegistered) {
+            try { connectivity.unregisterNetworkCallback(networkCallback); }
+            catch (Exception error) { log("network_cleanup_error", CellularRecovery.diagnosticDetail(error,
+                    "operation=unregisterNetworkCallback uid=" + Process.myUid() + " pid=" + Process.myPid())); }
+            networkRegistered = false;
+        }
+        synchronized (lock) { cellularInterfaces.clear(); }
     }
 
     private void runCheck(long checkEpoch) throws Exception {
@@ -96,8 +181,9 @@ final class CellularApnRecovery implements AutoCloseable {
             if (!line.startsWith("APN2 ")) continue;
             synchronized (lock) {
                 if (!stopping && epoch == checkEpoch && line.matches("APN2 power [0-4]")) {
-                    power = line.endsWith(" 0") ? 0 : 1;
-                    owner.powerObserved(power);
+                    int observedPower = line.endsWith(" 0") ? 0 : 1;
+                    schedule.powerChanged(observedPower, SystemClock.elapsedRealtime());
+                    owner.powerObserved(observedPower);
                 }
                 CellularRecovery.observation(line);
             }

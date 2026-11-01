@@ -17,6 +17,91 @@ import static org.junit.Assert.*;
 public class CellularRecoveryContractTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
+    @Test public void offCycleChecksEveryFiveSecondsForThirtySecondsThenEveryThirty() {
+        CellularApnSchedule schedule = new CellularApnSchedule();
+        assertTrue(schedule.powerChanged(0, 100_000));
+        for (long at : new long[] {100_000, 105_000, 110_000, 115_000, 120_000, 125_000, 130_000}) {
+            assertEquals(0, schedule.delayMs(at));
+            assertFalse(schedule.checkStarted(at));
+            schedule.checkFinished(at + 300);
+            assertEquals(at < 130_000 ? 4_700 : 29_700, schedule.delayMs(at + 300));
+        }
+        assertEquals(1, schedule.delayMs(159_999));
+        assertEquals(0, schedule.delayMs(160_000));
+        schedule.checkStarted(160_000);
+        schedule.checkFinished(160_300);
+        assertEquals(29_700, schedule.delayMs(160_300));
+    }
+
+    @Test public void networkEventsCoalesceAndSurviveAnInProgressCheckWithoutMovingTimer() {
+        CellularApnSchedule schedule = new CellularApnSchedule();
+        schedule.powerChanged(0, 100_000);
+        schedule.checkStarted(100_000);
+        schedule.checkFinished(100_300);
+        assertTrue(schedule.networkChanged());
+        assertFalse(schedule.networkChanged());
+        assertEquals(0, schedule.delayMs(102_000));
+        assertTrue(schedule.checkStarted(102_000));
+        assertTrue(schedule.networkChanged());
+        schedule.checkFinished(102_300);
+        assertEquals(0, schedule.delayMs(102_300));
+        assertTrue(schedule.checkStarted(102_300));
+        schedule.checkFinished(102_600);
+        assertEquals(2_400, schedule.delayMs(102_600));
+        schedule.checkStarted(130_000);
+        schedule.checkFinished(130_300);
+        assertTrue(schedule.networkChanged());
+        assertTrue(schedule.checkStarted(140_000));
+        schedule.checkFinished(140_300);
+        assertEquals(19_700, schedule.delayMs(140_300));
+    }
+
+    @Test public void powerOnCancelsPendingWorkAndRepeatedOffOrTelemetryGapDoesNotRestartWindow() {
+        CellularApnSchedule schedule = new CellularApnSchedule();
+        schedule.powerChanged(0, 100_000);
+        schedule.checkStarted(100_000);
+        schedule.checkFinished(100_300);
+        assertFalse(schedule.powerChanged(0, 129_000));
+        assertTrue(schedule.powerChanged(-1, 129_100));
+        assertTrue(schedule.networkChanged());
+        assertTrue(schedule.powerChanged(0, 129_200));
+        assertTrue(schedule.checkStarted(129_200));
+        schedule.checkFinished(129_500);
+        assertEquals(500, schedule.delayMs(129_500));
+        schedule.checkStarted(130_000);
+        schedule.checkFinished(130_300);
+        assertEquals(29_700, schedule.delayMs(130_300));
+        assertTrue(schedule.networkChanged());
+        schedule.powerChanged(1, 131_000);
+        assertFalse(schedule.networkChanged());
+        schedule.checkFinished(132_000);
+        assertEquals(Long.MAX_VALUE, schedule.delayMs(132_000));
+        schedule.powerChanged(0, 150_000);
+        assertEquals(0, schedule.delayMs(150_000));
+        schedule.checkStarted(150_000);
+        schedule.checkFinished(150_300);
+        assertEquals(4_700, schedule.delayMs(150_300));
+    }
+
+    @Test public void lateChecksSkipMissedTicksAndInitialPowerReadbackRetainsNetworkEvent() {
+        CellularApnSchedule schedule = new CellularApnSchedule();
+        assertEquals(0, schedule.delayMs(99_000));
+        schedule.checkStarted(99_000);
+        assertTrue(schedule.networkChanged());
+        schedule.powerChanged(0, 100_000);
+        schedule.checkFinished(100_300);
+        assertEquals(0, schedule.delayMs(100_300));
+        assertTrue(schedule.checkStarted(100_300));
+        schedule.checkFinished(112_000);
+        assertEquals(3_000, schedule.delayMs(112_000));
+        schedule.checkStarted(115_000);
+        schedule.checkFinished(131_000);
+        assertEquals(29_000, schedule.delayMs(131_000));
+        schedule.checkStarted(231_000);
+        schedule.checkFinished(231_300);
+        assertEquals(18_700, schedule.delayMs(231_300));
+    }
+
     @Test public void independentRecoveryPersistsWithoutCameraDemandAndToggleRetainsSession() throws Exception {
         MotionConfig legacy = MotionConfig.parse("{\"remoteViewingEnabled\":true}");
         assertFalse(legacy.restoreCellular);

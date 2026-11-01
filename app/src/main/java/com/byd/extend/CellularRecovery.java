@@ -134,7 +134,8 @@ final class CellularRecovery implements AutoCloseable {
         synchronized (active) {
             try {
                 if (detail.contains("error") || detail.contains("Exception")) {
-                    String key = detail.contains("child_") ? "cleanup_error" : "last_error";
+                    String key = detail.contains("child_") || detail.contains("cleanup_error")
+                            ? "cleanup_error" : "last_error";
                     active.snapshot.put(key, detail);
                 }
                 active.snapshot.put("last_event", detail);

@@ -1,3 +1,5 @@
+import com.android.build.api.artifact.SingleArtifact
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -111,6 +113,29 @@ val copyPerformanceApkToBuildOutput by tasks.registering(Copy::class) {
     from(layout.buildDirectory.file("outputs/apk/performance/app-performance.apk"))
     into(rootProject.layout.projectDirectory.dir("build_output"))
     rename { "byd-extend-v${android.defaultConfig.versionName}.apk" }
+}
+
+androidComponents.onVariants(androidComponents.selector().withBuildType("performance")) { variant ->
+    val viewerAssets = variant.artifacts.get(SingleArtifact.ASSETS)
+    tasks.withType<Test>().matching { it.name == "testPerformanceUnitTest" }.configureEach {
+        dependsOn(viewerAssets)
+        inputs.file(viewerAssets.map { it.file("camera-view/viewer.js") })
+        systemProperty("cameraViewerAssets", viewerAssets.get().asFile.absolutePath)
+    }
+    val verifyCameraViewerRevision = tasks.register<Test>("verifyCameraViewerRevision") {
+        description = "Checks the packaged viewer script against the compiled server revision."
+        dependsOn("compilePerformanceUnitTestJavaWithJavac", viewerAssets)
+        val unitTests = tasks.named<Test>("testPerformanceUnitTest").get()
+        testClassesDirs = unitTests.testClassesDirs
+        classpath = unitTests.classpath
+        inputs.file(viewerAssets.map { it.file("camera-view/viewer.js") })
+        systemProperty("cameraViewerAssets", viewerAssets.get().asFile.absolutePath)
+        filter.includeTestsMatching(
+            "com.byd.extend.remote.ViewerStopReasonTest.packagedScriptMatchesServerRevision")
+    }
+    tasks.matching { it.name == "packagePerformance" }.configureEach {
+        dependsOn(verifyCameraViewerRevision)
+    }
 }
 
 tasks.matching { it.name == "assemblePerformance" }.configureEach {

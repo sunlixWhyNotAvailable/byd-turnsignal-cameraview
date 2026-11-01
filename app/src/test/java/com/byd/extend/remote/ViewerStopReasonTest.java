@@ -2,9 +2,26 @@ package com.byd.extend.remote;
 
 import org.json.JSONObject;
 import org.junit.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import static org.junit.Assert.*;
 
 public class ViewerStopReasonTest {
+    @Test public void packagedScriptMatchesServerRevision() throws Exception {
+        Path assets = Path.of(System.getProperty("cameraViewerAssets", "src/main/assets"));
+        String script = new String(Files.readAllBytes(assets.resolve("camera-view/viewer.js")),
+                StandardCharsets.UTF_8);
+        Matcher revision = Pattern.compile("(?m)^\\s*const WEB_REVISION = ([1-9][0-9]*);\\s*$")
+                .matcher(script);
+        assertTrue("Packaged viewer has no declared protocol revision", revision.find());
+        assertEquals("Packaged viewer and server are incompatible", ViewerStopReason.WEB_REVISION,
+                Integer.parseInt(revision.group(1)));
+        assertFalse("Packaged viewer declares multiple protocol revisions", revision.find());
+    }
+
     @Test public void snapshotKeepsDownloadAndAppendTimingsAndRejectsNonNumericInput() throws Exception {
         JSONObject value = new JSONObject().put("reason", "stall").put("lastFirstByteMs", 200)
                 .put("lastReceiveMs", 400).put("lastBufferedFragment", 17).put("lastAppendMs", 100)
