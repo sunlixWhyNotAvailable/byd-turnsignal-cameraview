@@ -121,6 +121,12 @@ try {
     $resetError = 'fmt.Errorf("tsnet.Up: clearing serve config: %w", err)'
     if (-not $patched.Contains($resetError)) { throw "Pinned Serve error wrapper changed." }
     $patched = $patched.Replace($resetError, 'fmt.Errorf("tsnet.Up: clearing serve config: %w", srvResetErr)')
+    # http.Server.Serve can serve h2 only when this already-wrapped listener advertises it.
+    # Match ListenTLS's config, leaving ListenFunnel's independent config unchanged.
+    $privateTlsConfig = "return tls.NewListener(ln, &tls.Config{" + $newline + "`t`tGetCertificate: s.getCert,"
+    if (-not $patched.Contains($privateTlsConfig)) { throw "Pinned private TLS config changed." }
+    $patched = $patched.Replace($privateTlsConfig,
+        $privateTlsConfig + $newline + "`t`t" + 'NextProtos: []string{"h2", "http/1.1"},')
     [IO.File]::WriteAllText($patchedTsnet, $patched, [Text.UTF8Encoding]::new($false))
 
     $localCertPath = Join-Path $patchedTsnetModule "ipn\localapi\cert.go"
